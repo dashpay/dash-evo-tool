@@ -1,9 +1,9 @@
-use dash_sdk::{Sdk, SdkBuilder, RequestSettings}; // Adjust imports
+use crate::config::Config;
+use crate::logging::initialize_logger;
+use dash_sdk::{RequestSettings, Sdk, SdkBuilder}; // Adjust imports
+use dpp::version::PlatformVersion;
 use std::time::Duration;
 use tracing::info;
-use crate::logging::initialize_logger;
-use dpp::version::PlatformVersion;
-use crate::config::Config;
 
 pub fn initialize_sdk(config: &Config) -> Sdk {
     initialize_logger();

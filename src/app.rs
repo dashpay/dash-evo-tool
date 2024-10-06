@@ -1,8 +1,8 @@
-use eframe::{App, egui};
-use crate::ui::main::MainScreen;
-use std::sync::Arc;
 use crate::context::AppContext;
-use crate::ui::{Screen, ScreenType};
+use crate::ui::main::MainScreen;
+use crate::ui::{Screen, ScreenLike, ScreenType};
+use eframe::{egui, App};
+use std::sync::Arc;
 
 pub struct AppState {
     pub main_screen: Screen,
@@ -19,7 +19,7 @@ pub enum DesiredAppAction {
 }
 
 impl DesiredAppAction {
-    pub fn create_action(&self, app_context: &Arc<AppContext>) -> AppAction{
+    pub fn create_action(&self, app_context: &Arc<AppContext>) -> AppAction {
         match self {
             DesiredAppAction::None => AppAction::None,
             DesiredAppAction::PopScreen => AppAction::PopScreen,
@@ -35,12 +35,12 @@ impl DesiredAppAction {
 pub enum AppAction {
     None,
     PopScreen,
+    PopScreenAndRefresh,
     GoToMainScreen,
     AddScreen(Screen),
 }
 impl AppState {
     pub fn new() -> Self {
-
         let app_context = Arc::new(AppContext::new());
 
         let main_screen = MainScreen::new(&app_context);
@@ -82,17 +82,26 @@ impl App for AppState {
         let action = self.visible_screen_mut().ui(ctx);
 
         match action {
-            AppAction::AddScreen(screen) => {
-                self.screen_stack.push(screen)
-            }
+            AppAction::AddScreen(screen) => self.screen_stack.push(screen),
             AppAction::None => {}
             AppAction::PopScreen => {
                 if !self.screen_stack.is_empty() {
                     self.screen_stack.pop();
                 }
             }
+            AppAction::PopScreenAndRefresh => {
+                if !self.screen_stack.is_empty() {
+                    self.screen_stack.pop();
+                }
+                if let Some(screen) = self.screen_stack.last_mut() {
+                    screen.refresh();
+                } else {
+                    self.main_screen.refresh();
+                }
+            }
             AppAction::GoToMainScreen => {
                 self.screen_stack = vec![];
+                self.main_screen.refresh();
             }
         }
     }

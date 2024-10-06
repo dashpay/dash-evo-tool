@@ -1,13 +1,14 @@
 use tokio::runtime::Runtime;
 
 mod app;
+mod config;
 mod database;
 mod logging;
 mod sdk_wrapper;
 mod ui;
-mod config;
 
 mod context;
+mod model;
 
 fn main() -> eframe::Result<()> {
     // Initialize the Tokio runtime

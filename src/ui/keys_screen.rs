@@ -1,22 +1,21 @@
-use std::sync::Arc;
-use dpp::identity::accessors::IdentityGettersV0;
-use dpp::identity::Identity;
-use dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
-use eframe::egui::{self, Context};
 use crate::app::AppAction;
 use crate::context::AppContext;
+use crate::ui::ScreenLike;
+use dpp::identity::accessors::IdentityGettersV0;
+use dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+use dpp::identity::Identity;
+use eframe::egui::{self, Context};
+use std::sync::Arc;
 
 pub struct KeysScreen {
     pub identity: Identity,
     pub app_context: Arc<AppContext>,
 }
 
-impl KeysScreen {
-    pub fn new(identity: Identity, app_context: &Arc<AppContext>) -> Self {
-        Self { identity, app_context: app_context.clone() }
-    }
+impl ScreenLike for KeysScreen {
+    fn refresh(&mut self) {}
 
-    pub fn ui(&self, ctx: &Context) -> AppAction {
+    fn ui(&mut self, ctx: &Context) -> AppAction {
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("Identity Keys");
 
@@ -40,5 +39,14 @@ impl KeysScreen {
             });
         });
         AppAction::None
+    }
+}
+
+impl KeysScreen {
+    pub fn new(identity: Identity, app_context: &Arc<AppContext>) -> Self {
+        Self {
+            identity,
+            app_context: app_context.clone(),
+        }
     }
 }

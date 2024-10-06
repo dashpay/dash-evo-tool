@@ -1,6 +1,6 @@
+use std::panic;
 use tracing::error;
 use tracing_subscriber::EnvFilter;
-use std::panic;
 
 pub fn initialize_logger() {
     // Initialize logger
@@ -28,12 +28,13 @@ pub fn initialize_logger() {
             .downcast_ref::<&str>()
             .unwrap_or(&"unknown");
 
-        let location = panic_info.location().unwrap_or_else(|| panic::Location::caller());
+        let location = panic_info
+            .location()
+            .unwrap_or_else(|| panic::Location::caller());
 
         error!(
             location = tracing::field::display(location),
-            "Panic occurred: {}",
-            message
+            "Panic occurred: {}", message
         );
 
         default_panic_hook(panic_info);

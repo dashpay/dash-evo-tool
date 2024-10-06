@@ -1,12 +1,13 @@
-use eframe::egui::{Context};
-use std::sync::{Arc, Mutex};
+use crate::app::AppAction;
+use crate::context::AppContext;
+use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::ScreenLike;
 use dash_sdk::platform::Fetch;
 use dpp::identifier::Identifier;
 use dpp::identity::Identity;
 use dpp::platform_value::string_encoding::Encoding;
-use crate::app::AppAction;
-use crate::context::AppContext;
-use crate::ui::components::top_panel::add_top_panel;
+use eframe::egui::Context;
+use std::sync::{Arc, Mutex};
 
 pub struct AddIdentityScreen {
     identity_id_input: String,
@@ -24,9 +25,21 @@ impl AddIdentityScreen {
             app_context: app_context.clone(),
         }
     }
+}
 
-    pub fn ui(&mut self, ctx: &Context) -> AppAction {
-        let mut action = add_top_panel(ctx, &self.app_context, vec![("Identities", AppAction::GoToMainScreen), ("Add Identity", AppAction::None)], None);
+impl ScreenLike for AddIdentityScreen {
+    fn refresh(&mut self) {}
+
+    fn ui(&mut self, ctx: &Context) -> AppAction {
+        let mut action = add_top_panel(
+            ctx,
+            &self.app_context,
+            vec![
+                ("Identities", AppAction::GoToMainScreen),
+                ("Add Identity", AppAction::None),
+            ],
+            None,
+        );
 
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("Add Identity");
@@ -54,21 +67,27 @@ impl AddIdentityScreen {
                 // Spawn the async task
                 tokio::spawn(async move {
                     // Parse the identity ID
-                    let identity_id = match Identifier::from_string(&identity_id_input, Encoding::Base58) {
-                        Ok(id) => id,
-                        Err(_) => match Identifier::from_string(&identity_id_input, Encoding::Hex) {
+                    let identity_id =
+                        match Identifier::from_string(&identity_id_input, Encoding::Base58) {
                             Ok(id) => id,
-                            Err(e) => {
-                                // Store the error and return early
-                                let mut identity_result = identity_result_clone.lock().unwrap();
-                                *identity_result = Some(Err(format!("Identifier error: {}", e)));
-                                return;
+                            Err(_) => {
+                                match Identifier::from_string(&identity_id_input, Encoding::Hex) {
+                                    Ok(id) => id,
+                                    Err(e) => {
+                                        // Store the error and return early
+                                        let mut identity_result =
+                                            identity_result_clone.lock().unwrap();
+                                        *identity_result =
+                                            Some(Err(format!("Identifier error: {}", e)));
+                                        return;
+                                    }
+                                }
                             }
-                        },
-                    };
+                        };
 
                     // Fetch the identity using the cloned sdk_instance
-                    let fetch_result = Identity::fetch_by_identifier(&sdk_instance, identity_id).await;
+                    let fetch_result =
+                        Identity::fetch_by_identifier(&sdk_instance, identity_id).await;
 
                     let result = match fetch_result {
                         Ok(Some(identity)) => Ok(identity),

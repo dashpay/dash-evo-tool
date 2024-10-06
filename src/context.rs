@@ -1,11 +1,12 @@
+use crate::config::Config;
+use crate::database::Database;
+use crate::model::qualified_identity::QualifiedIdentity;
+use crate::sdk_wrapper::initialize_sdk;
+use dash_sdk::Sdk;
 use dpp::dashcore::Network;
 use dpp::identity::Identity;
-use crate::database::Database;
 use rusqlite::Result;
 use std::sync::{Arc, Mutex};
-use dash_sdk::Sdk;
-use crate::config::Config;
-use crate::sdk_wrapper::initialize_sdk;
 
 #[derive(Debug)]
 pub struct AppContext {
@@ -35,10 +36,10 @@ impl AppContext {
         }
     }
     pub fn insert_identity(&self, identity: &Identity) -> Result<()> {
-        self.db.insert_identity(identity, self)
+        self.db.insert_identity(&identity.clone().into(), self)
     }
 
-    pub fn load_identities(&self) -> Result<Vec<Identity>> {
+    pub fn load_identities(&self) -> Result<Vec<QualifiedIdentity>> {
         self.db.get_identities(self)
     }
 }

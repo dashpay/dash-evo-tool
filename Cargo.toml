@@ -16,6 +16,7 @@ copypasta = "0.10.1"
 dpp = { git = "https://github.com/dashpay/platform", commit = "1d431ce3ef6d1df7f1dc4788643de156e9bdb147", features = [
     "client",
 ] }
+platform-serialization-derive = { git = "https://github.com/dashpay/platform", commit = "1d431ce3ef6d1df7f1dc4788643de156e9bdb147" }
 dash-sdk = { git = "https://github.com/dashpay/platform", commit = "1d431ce3ef6d1df7f1dc4788643de156e9bdb147" }
 drive = { git = "https://github.com/dashpay/platform", commit = "1d431ce3ef6d1df7f1dc4788643de156e9bdb147" }
 drive-proof-verifier = { git = "https://github.com/dashpay/platform", commit = "1d431ce3ef6d1df7f1dc4788643de156e9bdb147" }
@@ -51,6 +52,7 @@ dashmap = "5.5.3"
 grovedb-version = "2.0.3"
 sha2 = "0.10.8"
 arboard = { version = "3.4.0", default-features = false, features = ["windows-sys"] }
+
 hdrhistogram = "7.5.4"
 rusqlite = { version = "0.32.1"}
 

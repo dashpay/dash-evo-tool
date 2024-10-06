@@ -1,7 +1,7 @@
-use std::sync::Arc;
-use egui::{Align, Color32, Context, Frame, Layout, Margin, RichText, Stroke, TopBottomPanel, Ui};
 use crate::app::{AppAction, DesiredAppAction};
 use crate::context::AppContext;
+use egui::{Align, Color32, Context, Frame, Layout, Margin, RichText, Stroke, TopBottomPanel, Ui};
+use std::sync::Arc;
 
 fn add_location_view(ui: &mut Ui, location: Vec<(&str, AppAction)>) -> AppAction {
     let mut action = AppAction::None;
@@ -10,7 +10,10 @@ fn add_location_view(ui: &mut Ui, location: Vec<(&str, AppAction)>) -> AppAction
         ui.horizontal(|ui| {
             let len = location.len();
             for (index, (text, location_action)) in location.into_iter().enumerate() {
-                if ui.button(RichText::new(text).color(Color32::WHITE)).clicked() {
+                if ui
+                    .button(RichText::new(text).color(Color32::WHITE))
+                    .clicked()
+                {
                     action = location_action;
                 }
 
@@ -25,12 +28,19 @@ fn add_location_view(ui: &mut Ui, location: Vec<(&str, AppAction)>) -> AppAction
     action
 }
 
-pub fn add_top_panel(ctx: &Context, app_context: &Arc<AppContext>, location: Vec<(&str, AppAction)>, right_button: Option<(&str, DesiredAppAction)>) -> AppAction {
+pub fn add_top_panel(
+    ctx: &Context,
+    app_context: &Arc<AppContext>,
+    location: Vec<(&str, AppAction)>,
+    right_button: Option<(&str, DesiredAppAction)>,
+) -> AppAction {
     let mut action = AppAction::None;
     TopBottomPanel::top("top_panel")
-        .frame(Frame::none()
-            .fill(Color32::from_rgb(21, 101, 192)) // Dash blue color
-            .inner_margin(Margin::symmetric(10.0, 10.0))) // Customize inner margin (top/bottom padding)
+        .frame(
+            Frame::none()
+                .fill(Color32::from_rgb(21, 101, 192)) // Dash blue color
+                .inner_margin(Margin::symmetric(10.0, 10.0)),
+        ) // Customize inner margin (top/bottom padding)
         .exact_height(50.0) // Set exact height for the panel
         .show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
@@ -41,10 +51,10 @@ pub fn add_top_panel(ctx: &Context, app_context: &Arc<AppContext>, location: Vec
                     // Right-aligned content with white text
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         let button = egui::Button::new(RichText::new(text).color(Color32::WHITE))
-                            .fill(Color32::from_rgb(0, 128, 255))  // Button background color
+                            .fill(Color32::from_rgb(0, 128, 255)) // Button background color
                             .frame(true) // Frame to make it look like a button
                             .rounding(3.0) // Rounded corners
-                            .stroke(Stroke::new(1.0, Color32::WHITE))// Border with white stroke
+                            .stroke(Stroke::new(1.0, Color32::WHITE)) // Border with white stroke
                             .min_size(egui::vec2(100.0, 30.0));
 
                         if ui.add(button).clicked() {

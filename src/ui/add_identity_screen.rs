@@ -359,7 +359,7 @@ impl ScreenLike for AddIdentityScreen {
                                 {
                                     self.error_message = Some(format!("Database error: {}", e));
                                 } else {
-                                    action = AppAction::PopScreen;
+                                    action = AppAction::PopScreenAndRefresh;
                                 }
                             }
                         }

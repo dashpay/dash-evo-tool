@@ -1,16 +1,16 @@
 use crate::context::AppContext;
 use dash_sdk::dpp::system_data_contracts::dpns_contract;
 use dash_sdk::platform::{DataContract, Fetch, Identifier};
+use dash_sdk::Sdk;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) enum ContractTask {
     FetchDPNSContract,
     FetchContract(Identifier, Option<String>),
 }
 
 impl AppContext {
-    pub async fn run_contract_task(&self, task: ContractTask) -> Result<(), String> {
-        let sdk = self.sdk.read().expect("expected to get sdk");
+    pub async fn run_contract_task(&self, task: ContractTask, sdk: &Sdk) -> Result<(), String> {
         match task {
             ContractTask::FetchContract(identifier, name) => {
                 match DataContract::fetch(&sdk, identifier).await {

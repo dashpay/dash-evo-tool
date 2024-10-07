@@ -1,4 +1,5 @@
 use crate::context::AppContext;
+use crate::platform::BackendTask;
 use crate::ui::dpns_contested_names_screen::DPNSContestedNamesScreen;
 use crate::ui::identities_screen::IdentitiesScreen;
 use crate::ui::{RootScreenType, Screen, ScreenLike, ScreenType};
@@ -23,6 +24,7 @@ pub enum DesiredAppAction {
     PopScreen,
     GoToMainScreen,
     AddScreenType(ScreenType),
+    BackendTask(BackendTask),
 }
 
 impl DesiredAppAction {
@@ -34,13 +36,11 @@ impl DesiredAppAction {
             DesiredAppAction::AddScreenType(screen_type) => {
                 AppAction::AddScreen(screen_type.create_screen(app_context))
             }
+            DesiredAppAction::BackendTask(backend_task) => {
+                AppAction::BackendTask(backend_task.clone())
+            }
         }
     }
-}
-
-#[derive(Debug, PartialEq)]
-pub enum BackendAction {
-    VoteForContestant(Identifier, ResourceVoteChoice),
 }
 
 #[derive(Debug, PartialEq)]
@@ -51,7 +51,7 @@ pub enum AppAction {
     GoToMainScreen,
     SetMainScreen(RootScreenType),
     AddScreen(Screen),
-    BackendAction(BackendAction),
+    BackendTask(BackendTask),
 }
 
 impl BitOrAssign for AppAction {
@@ -153,7 +153,15 @@ impl App for AppState {
                 self.screen_stack = vec![];
                 self.active_root_screen_mut().refresh();
             }
-            AppAction::BackendAction(_) => {}
+            AppAction::BackendTask(task) => {
+                let app_context = self.app_context.clone();
+                // Spawn a new task to run `run_backend_task`
+                tokio::spawn(async move {
+                    if let Err(e) = app_context.run_backend_task(task).await {
+                        eprintln!("Error running backend task: {}", e);
+                    }
+                });
+            }
             AppAction::SetMainScreen(root_screen_type) => {
                 self.selected_main_screen = root_screen_type;
                 self.active_root_screen_mut().refresh();

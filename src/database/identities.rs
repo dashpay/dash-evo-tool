@@ -18,7 +18,7 @@ impl Database {
 
         let network = app_context.network_string();
 
-        self.conn.execute(
+        self.execute(
             "INSERT OR REPLACE INTO identity (id, data, is_local, alias, identity_type, network)
          VALUES (?, ?, 1, ?, ?, ?)",
             params![id, data, alias, identity_type, network],
@@ -41,14 +41,14 @@ impl Database {
         let network = app_context.network_string();
 
         // Check if the identity already exists
-        let mut stmt = self
-            .conn
-            .prepare("SELECT COUNT(*) FROM identity WHERE id = ? AND network = ?")?;
+        let conn = self.conn.lock().unwrap();
+        let mut stmt =
+            conn.prepare("SELECT COUNT(*) FROM identity WHERE id = ? AND network = ?")?;
         let count: i64 = stmt.query_row(params![id, network], |row| row.get(0))?;
 
         // If the identity doesn't exist, insert it
         if count == 0 {
-            self.conn.execute(
+            self.execute(
                 "INSERT INTO identity (id, data, is_local, alias, identity_type, network)
              VALUES (?, ?, 0, ?, ?, ?)",
                 params![id, data, alias, identity_type, network],
@@ -64,7 +64,8 @@ impl Database {
     ) -> rusqlite::Result<Vec<QualifiedIdentity>> {
         let network = app_context.network_string();
 
-        let mut stmt = self.conn.prepare(
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
             "SELECT id, data, alias, identity_type FROM identity WHERE is_local = 1 AND network = ? AND data IS NOT NULL",
         )?;
         let identity_iter = stmt.query_map(params![network], |row| {

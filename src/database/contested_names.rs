@@ -8,7 +8,8 @@ use std::collections::{BTreeMap, HashMap};
 impl Database {
     pub fn get_contested_names(&self, app_context: &AppContext) -> Result<Vec<ContestedName>> {
         let network = app_context.network_string();
-        let mut stmt = self.conn.prepare(
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
             "SELECT
                 cn.normalized_contested_name,
                 cn.locked_votes,
@@ -94,7 +95,8 @@ impl Database {
         let network = app_context.network_string();
 
         // Check if the contested name already exists and get the current values if it does
-        let mut stmt = self.conn.prepare(
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
             "SELECT locked_votes, abstain_votes, awarded_to, ending_time
              FROM contested_name
              WHERE normalized_contested_name = ? AND network = ?",
@@ -123,7 +125,7 @@ impl Database {
 
                 if should_update {
                     // Update the entry if any field has changed
-                    self.conn.execute(
+                    self.execute(
                         "UPDATE contested_name
                          SET locked_votes = ?, abstain_votes = ?, awarded_to = ?, ending_time = ?
                          WHERE normalized_contested_name = ? AND network = ?",
@@ -140,7 +142,7 @@ impl Database {
             }
             Err(rusqlite::Error::QueryReturnedNoRows) => {
                 // If the contested name doesn't exist, insert it
-                self.conn.execute(
+                self.execute(
                     "INSERT INTO contested_name (normalized_contested_name, locked_votes, abstain_votes, awarded_to, ending_time, network)
                      VALUES (?, ?, ?, ?, ?, ?)",
                     params![
@@ -175,7 +177,8 @@ impl Database {
         network: &str,
     ) -> Result<()> {
         // Check if the contestant already exists and get the current values if it does
-        let mut stmt = self.conn.prepare(
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
             "SELECT name, info, votes
              FROM contestant
              WHERE contest_id = ? AND identity_id = ? AND network = ?",
@@ -199,7 +202,7 @@ impl Database {
 
                 if should_update {
                     // Update the entry if any field has changed
-                    self.conn.execute(
+                    self.execute(
                         "UPDATE contestant
                          SET name = ?, info = ?, votes = ?
                          WHERE contest_id = ? AND identity_id = ? AND network = ?",
@@ -216,7 +219,7 @@ impl Database {
             }
             Err(rusqlite::Error::QueryReturnedNoRows) => {
                 // If the contestant doesn't exist, insert it
-                self.conn.execute(
+                self.execute(
                     "INSERT INTO contestant (contest_id, identity_id, name, info, votes, network)
                      VALUES (?, ?, ?, ?, ?, ?)",
                     params![

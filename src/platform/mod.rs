@@ -5,7 +5,7 @@ use crate::platform::contract::ContractTask;
 pub mod contested_names;
 mod contract;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) enum BackendTask {
     ContractTask(ContractTask),
     ContestedResourceTask(ContestedResourceTask),
@@ -20,10 +20,13 @@ impl AppContext {
     }
 
     pub async fn run_backend_task(&self, task: BackendTask) -> Result<(), String> {
+        let sdk = self.sdk.read().expect("expected to get sdk").clone();
         match task {
-            BackendTask::ContractTask(contract_task) => self.run_contract_task(contract_task).await,
+            BackendTask::ContractTask(contract_task) => {
+                self.run_contract_task(contract_task, &sdk).await
+            }
             BackendTask::ContestedResourceTask(contested_resource_task) => {
-                self.run_contested_resource_task(contested_resource_task)
+                self.run_contested_resource_task(contested_resource_task, &sdk)
                     .await
             }
         }

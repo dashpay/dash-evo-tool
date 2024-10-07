@@ -3,7 +3,7 @@ use crate::database::Database;
 impl Database {
     pub fn initialize(&self) -> rusqlite::Result<()> {
         // Create the identities table
-        self.conn.execute(
+        self.execute(
             "CREATE TABLE IF NOT EXISTS identity (
                 id BLOB PRIMARY KEY,
                 data BLOB,
@@ -17,7 +17,7 @@ impl Database {
         )?;
 
         // Create the contested names table
-        self.conn.execute(
+        self.execute(
             "CREATE TABLE IF NOT EXISTS contested_name (
                 normalized_contested_name TEXT,
                 locked_votes INTEGER,
@@ -31,7 +31,7 @@ impl Database {
         )?;
 
         // Create the contestants table
-        self.conn.execute(
+        self.execute(
             "CREATE TABLE IF NOT EXISTS contestant (
                 contest_id TEXT,
                 identity_id BLOB,
@@ -46,7 +46,7 @@ impl Database {
         )?;
 
         // Create the contracts table
-        self.conn.execute(
+        self.execute(
             "CREATE TABLE IF NOT EXISTS contract (
                 contract_id BLOB,
                 contract BLOB,
@@ -57,7 +57,7 @@ impl Database {
             [],
         )?;
 
-        self.conn.execute(
+        self.execute(
             "CREATE INDEX IF NOT EXISTS idx_name_network ON contract (name, network)",
             [],
         )?;

@@ -31,7 +31,7 @@ use dash_sdk::{
 };
 use drive_proof_verifier::types::ContestedResource;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) enum ContestedResourceTask {
     QueryDPNSContestedResources,
     // QueryVoteContenders(String, Vec<Value>, String, Identifier),
@@ -42,12 +42,12 @@ impl AppContext {
     pub async fn run_contested_resource_task(
         &self,
         task: ContestedResourceTask,
+        sdk: &Sdk,
     ) -> Result<(), String> {
-        let sdk = self.sdk.read().expect("expected to get sdk");
         match &task {
             ContestedResourceTask::QueryDPNSContestedResources => {
                 if self.dpns_contract.is_none() {
-                    self.run_contract_task(ContractTask::FetchDPNSContract)
+                    self.run_contract_task(ContractTask::FetchDPNSContract, sdk)
                         .await?;
                 }
                 let Some(data_contract) = self.dpns_contract.as_ref() else {

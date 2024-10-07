@@ -23,7 +23,7 @@ impl Database {
         let network = app_context.network_string();
 
         // Insert the contract if it does not exist
-        self.conn.execute(
+        self.execute(
             "INSERT OR IGNORE INTO contract (contract_id, contract, name, network) VALUES (?, ?, ?, ?)",
             params![contract_id, contract_bytes, contract_name, network],
         )?;
@@ -39,9 +39,9 @@ impl Database {
         let network = app_context.network_string();
 
         // Query the contract by ID
-        let mut stmt = self
-            .conn
-            .prepare("SELECT contract FROM contract WHERE contract_id = ? AND network = ?")?;
+        let conn = self.conn.lock().unwrap();
+        let mut stmt =
+            conn.prepare("SELECT contract FROM contract WHERE contract_id = ? AND network = ?")?;
 
         let contract_bytes: Result<Vec<u8>> =
             stmt.query_row(params![contract_id_bytes, network], |row| row.get(0));
@@ -75,9 +75,9 @@ impl Database {
         let network = app_context.network_string();
 
         // Query the contract by name
-        let mut stmt = self
-            .conn
-            .prepare("SELECT contract FROM contract WHERE name = ? AND network = ?")?;
+        let conn = self.conn.lock().unwrap();
+        let mut stmt =
+            conn.prepare("SELECT contract FROM contract WHERE name = ? AND network = ?")?;
 
         let contract_bytes: Result<Vec<u8>> =
             stmt.query_row(params![name, network], |row| row.get(0));

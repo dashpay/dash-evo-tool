@@ -2,6 +2,7 @@ use crate::context::AppContext;
 use crate::ui::main::MainScreen;
 use crate::ui::{Screen, ScreenLike, ScreenType};
 use eframe::{egui, App};
+use std::ops::BitOrAssign;
 use std::sync::Arc;
 
 pub struct AppState {
@@ -38,6 +39,18 @@ pub enum AppAction {
     PopScreenAndRefresh,
     GoToMainScreen,
     AddScreen(Screen),
+}
+
+impl BitOrAssign for AppAction {
+    fn bitor_assign(&mut self, rhs: Self) {
+        if matches!(rhs, AppAction::None) {
+            // If rhs is None, keep the current value.
+            return;
+        }
+
+        // Otherwise, assign rhs to self.
+        *self = rhs;
+    }
 }
 impl AppState {
     pub fn new() -> Self {

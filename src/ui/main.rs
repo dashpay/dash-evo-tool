@@ -5,22 +5,97 @@ use crate::model::qualified_identity::EncryptedPrivateKeyTarget::{
 };
 use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::{ScreenLike, ScreenType};
+use crate::ui::key_info::KeyInfoScreen;
+use crate::ui::{Screen, ScreenLike, ScreenType};
 use dpp::identity::accessors::IdentityGettersV0;
 use dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
-use dpp::identity::{KeyID, Purpose};
+use dpp::identity::{Identity, KeyID, Purpose};
 use dpp::platform_value::string_encoding::Encoding;
 use dpp::prelude::IdentityPublicKey;
 use eframe::egui::{self, Context};
 use eframe::emath::Align;
 use egui::{Color32, Frame, Margin, Ui};
 use egui_extras::{Column, TableBuilder};
-use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 pub struct MainScreen {
     identities: Arc<Mutex<Vec<QualifiedIdentity>>>,
     app_context: Arc<AppContext>,
+}
+
+impl MainScreen {
+    fn show_alias(ui: &mut Ui, qualified_identity: &QualifiedIdentity) {
+        if let Some(alias) = qualified_identity.alias.as_ref() {
+            ui.label(alias.clone());
+        }
+    }
+    fn show_identity_id(ui: &mut Ui, qualified_identity: &QualifiedIdentity) {
+        let encoding = match qualified_identity.identity_type {
+            IdentityType::User => Encoding::Base58,
+            IdentityType::Masternode | IdentityType::Evonode => Encoding::Hex,
+        };
+        let identifier_as_string = qualified_identity.identity.id().to_string(encoding);
+        ui.label(format!("{}", identifier_as_string));
+    }
+    fn show_balance(ui: &mut Ui, qualified_identity: &QualifiedIdentity) {
+        // Calculate the balance in DASH (10^-11 conversion)
+        let balance_in_dash = qualified_identity.identity.balance() as f64 * 1e-11;
+
+        // Format the balance with 4 decimal places
+        let formatted_balance = format!("{:.4} DASH", balance_in_dash);
+
+        // Add the label with hover text
+        ui.add(egui::Label::new(formatted_balance).sense(egui::Sense::hover()))
+            .on_hover_text(format!("{}", qualified_identity.identity.balance()));
+    }
+
+    fn show_public_key(
+        &self,
+        ui: &mut Ui,
+        identity: &Identity,
+        key: &IdentityPublicKey,
+        encrypted_private_key: Option<&Vec<u8>>,
+    ) -> AppAction {
+        let button_color = if encrypted_private_key.is_some() {
+            Color32::from_rgb(167, 232, 232)
+            // Light green-blue color if private key exists
+        } else {
+            Color32::from_rgb(169, 169, 169)
+            // Gray if no private key
+        };
+
+        let name = match key.purpose() {
+            Purpose::AUTHENTICATION => {
+                format!("A{}", key.id())
+            }
+            Purpose::ENCRYPTION => {
+                format!("En{}", key.id())
+            }
+            Purpose::DECRYPTION => {
+                format!("De{}", key.id())
+            }
+            Purpose::TRANSFER => format!("W{}", key.id()),
+            Purpose::SYSTEM => format!("S{}", key.id()),
+            Purpose::VOTING => format!("V{}", key.id()),
+        };
+
+        let button = egui::Button::new(name)
+            .fill(button_color)
+            .frame(true)
+            .rounding(3.0)
+            .min_size(egui::vec2(80.0, 30.0));
+
+        if ui.add(button).clicked() {
+            AppAction::AddScreen(Screen::KeyInfoScreen(KeyInfoScreen::new(
+                identity.clone(),
+                key.clone(),
+                encrypted_private_key.cloned(),
+                &self.app_context,
+            )))
+        } else {
+            AppAction::None
+        }
+    }
 }
 
 impl ScreenLike for MainScreen {
@@ -30,7 +105,7 @@ impl ScreenLike for MainScreen {
     }
 
     fn ui(&mut self, ctx: &Context) -> AppAction {
-        let action = add_top_panel(
+        let mut action = add_top_panel(
             ctx,
             &self.app_context,
             vec![("Home", AppAction::None)],
@@ -60,6 +135,7 @@ impl ScreenLike for MainScreen {
                             .resizable(true)
                             .cell_layout(egui::Layout::left_to_right(Align::Center))
                             // Define columns with resizing and alignment
+                            .column(Column::initial(40.0).resizable(true)) // Name
                             .column(Column::initial(200.0).resizable(true)) // Identity ID
                             .column(Column::initial(100.0).resizable(true)) // Balance
                             .column(Column::initial(100.0).resizable(true)) // Type
@@ -67,6 +143,9 @@ impl ScreenLike for MainScreen {
                             .column(Column::initial(80.0).resizable(true)) // Withdraw
                             .column(Column::initial(80.0).resizable(true)) // Transfer
                             .header(30.0, |mut header| {
+                                header.col(|ui| {
+                                    ui.heading("Name");
+                                });
                                 header.col(|ui| {
                                     ui.heading("Identity ID");
                                 });
@@ -96,18 +175,13 @@ impl ScreenLike for MainScreen {
                                         .map(|(identity, _)| identity.public_keys());
                                     body.row(25.0, |mut row| {
                                         row.col(|ui| {
-                                            let encoding = match qualified_identity.identity_type {
-                                                IdentityType::User => Encoding::Base58,
-                                                IdentityType::Masternode
-                                                | IdentityType::Evonode => Encoding::Hex,
-                                            };
-                                            ui.label(format!(
-                                                "{}",
-                                                identity.id().to_string(encoding)
-                                            ));
+                                            Self::show_alias(ui, qualified_identity);
                                         });
                                         row.col(|ui| {
-                                            ui.label(format!("{}", identity.balance()));
+                                            Self::show_identity_id(ui, qualified_identity);
+                                        });
+                                        row.col(|ui| {
+                                            Self::show_balance(ui, qualified_identity);
                                         });
                                         row.col(|ui| {
                                             ui.label(format!(
@@ -116,53 +190,16 @@ impl ScreenLike for MainScreen {
                                             ));
                                         });
                                         row.col(|ui| {
-                                            fn show_public_key(
-                                                ui: &mut Ui,
-                                                key: &IdentityPublicKey,
-                                                holding_private_key: bool,
-                                            ) {
-                                                let button_color = if holding_private_key {
-                                                    Color32::from_rgb(167, 232, 232)
-                                                // Light green-blue color if private key exists
-                                                } else {
-                                                    Color32::from_rgb(169, 169, 169)
-                                                    // Gray if no private key
-                                                };
-
-                                                let name = match key.purpose() {
-                                                    Purpose::AUTHENTICATION => {
-                                                        format!("A{}", key.id())
-                                                    }
-                                                    Purpose::ENCRYPTION => {
-                                                        format!("En{}", key.id())
-                                                    }
-                                                    Purpose::DECRYPTION => {
-                                                        format!("De{}", key.id())
-                                                    }
-                                                    Purpose::TRANSFER => format!("W{}", key.id()),
-                                                    Purpose::SYSTEM => format!("S{}", key.id()),
-                                                    Purpose::VOTING => format!("V{}", key.id()),
-                                                };
-
-                                                let button = egui::Button::new(name)
-                                                    .fill(button_color)
-                                                    .frame(true)
-                                                    .rounding(3.0)
-                                                    .min_size(egui::vec2(80.0, 30.0));
-
-                                                if ui.add(button).clicked() {
-                                                    // Implement action when the key button is clicked
-                                                    // For example, navigate to a detailed key view or perform another action
-                                                }
-                                            }
                                             for (key_id, key) in public_keys.iter() {
                                                 let holding_private_key = qualified_identity
                                                     .encrypted_private_keys
-                                                    .contains_key(&(
-                                                        PrivateKeyOnMainIdentity,
-                                                        *key_id,
-                                                    ));
-                                                show_public_key(ui, key, holding_private_key);
+                                                    .get(&(PrivateKeyOnMainIdentity, *key_id));
+                                                action |= self.show_public_key(
+                                                    ui,
+                                                    &qualified_identity.identity,
+                                                    key,
+                                                    holding_private_key,
+                                                );
                                             }
                                             if let Some(voting_identity_public_keys) =
                                                 voter_identity_public_keys
@@ -172,11 +209,13 @@ impl ScreenLike for MainScreen {
                                                 {
                                                     let holding_private_key = qualified_identity
                                                         .encrypted_private_keys
-                                                        .contains_key(&(
-                                                            PrivateKeyOnVoterIdentity,
-                                                            *key_id,
-                                                        ));
-                                                    show_public_key(ui, key, holding_private_key);
+                                                        .get(&(PrivateKeyOnVoterIdentity, *key_id));
+                                                    action |= self.show_public_key(
+                                                        ui,
+                                                        &qualified_identity.identity,
+                                                        key,
+                                                        holding_private_key,
+                                                    );
                                                 }
                                             }
                                         });

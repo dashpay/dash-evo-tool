@@ -70,6 +70,8 @@ impl AppContext {
 
                     let contested_resources = ContestedResource::fetch_many(&sdk, query).await;
 
+                    println!("{:?}", contested_resources);
+
                     Ok(())
                 } else {
                     Err("No contested index on dpns domains".to_string())

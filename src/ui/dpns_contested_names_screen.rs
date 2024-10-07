@@ -1,10 +1,11 @@
 use crate::app::{AppAction, DesiredAppAction};
 use crate::context::AppContext;
 use crate::model::contested_name::ContestedName;
+use crate::platform::contested_names::ContestedResourceTask;
+use crate::platform::BackendTask;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::{RootScreenType, ScreenLike};
-use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use egui::{Context, Frame, Margin, Ui};
 use egui_extras::{Column, TableBuilder};
 use std::sync::{Arc, Mutex};
@@ -56,7 +57,12 @@ impl ScreenLike for DPNSContestedNamesScreen {
             ctx,
             &self.app_context,
             vec![("Home", AppAction::None)],
-            None,
+            Some((
+                "Refresh",
+                DesiredAppAction::BackendTask(BackendTask::ContestedResourceTask(
+                    ContestedResourceTask::QueryDPNSContestedResources,
+                )),
+            )),
         );
 
         action |= add_left_panel(

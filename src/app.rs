@@ -2,9 +2,8 @@ use crate::context::AppContext;
 use crate::platform::BackendTask;
 use crate::ui::dpns_contested_names_screen::DPNSContestedNamesScreen;
 use crate::ui::identities_screen::IdentitiesScreen;
+use crate::ui::transition_visualizer_screen::TransitionVisualizerScreen;
 use crate::ui::{RootScreenType, Screen, ScreenLike, ScreenType};
-use dash_sdk::dpp::prelude::Identifier;
-use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
 use eframe::{egui, App};
 use std::collections::BTreeMap;
 use std::ops::BitOrAssign;
@@ -71,6 +70,7 @@ impl AppState {
 
         let identities_screen = IdentitiesScreen::new(&app_context);
         let dpns_contested_names_screen = DPNSContestedNamesScreen::new(&app_context);
+        let transition_visualizer_screen = TransitionVisualizerScreen::new(&app_context);
 
         Self {
             main_screens: [
@@ -81,6 +81,10 @@ impl AppState {
                 (
                     RootScreenType::RootScreenDPNSContestedNames,
                     Screen::DPNSContestedNamesScreen(dpns_contested_names_screen),
+                ),
+                (
+                    RootScreenType::RootScreenTransitionVisualizerScreen,
+                    Screen::TransitionVisualizerScreen(transition_visualizer_screen),
                 ),
             ]
             .into(),

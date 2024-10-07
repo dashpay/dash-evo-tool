@@ -5,6 +5,7 @@ use crate::ui::dpns_contested_names_screen::DPNSContestedNamesScreen;
 use crate::ui::identities_screen::IdentitiesScreen;
 use crate::ui::key_info::KeyInfoScreen;
 use crate::ui::keys_screen::KeysScreen;
+use crate::ui::transition_visualizer_screen::TransitionVisualizerScreen;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::Identity;
 use dash_sdk::dpp::prelude::IdentityPublicKey;
@@ -19,11 +20,13 @@ pub mod dpns_contested_names_screen;
 pub mod identities_screen;
 pub mod key_info;
 pub mod keys_screen;
+pub mod transition_visualizer_screen;
 
 #[derive(Debug, Clone, Copy, Ord, PartialOrd, Eq, PartialEq, Hash)]
 pub enum RootScreenType {
     RootScreenIdentities,
     RootScreenDPNSContestedNames,
+    RootScreenTransitionVisualizerScreen,
 }
 
 impl From<RootScreenType> for ScreenType {
@@ -31,6 +34,9 @@ impl From<RootScreenType> for ScreenType {
         match value {
             RootScreenType::RootScreenIdentities => ScreenType::Identities,
             RootScreenType::RootScreenDPNSContestedNames => ScreenType::DPNSContestedNames,
+            RootScreenType::RootScreenTransitionVisualizerScreen => {
+                ScreenType::TransitionVisualizerScreen
+            }
         }
     }
 }
@@ -40,6 +46,7 @@ pub enum ScreenType {
     Identities,
     DPNSContestedNames,
     AddIdentity,
+    TransitionVisualizerScreen,
     KeyInfo(Identity, IdentityPublicKey, Option<Vec<u8>>),
     Keys(Identity),
 }
@@ -65,6 +72,9 @@ impl ScreenType {
                     app_context,
                 ))
             }
+            ScreenType::TransitionVisualizerScreen => {
+                Screen::TransitionVisualizerScreen(TransitionVisualizerScreen::new(app_context))
+            }
         }
     }
 }
@@ -81,6 +91,7 @@ pub enum Screen {
     AddIdentityScreen(AddIdentityScreen),
     KeyInfoScreen(KeyInfoScreen),
     KeysScreen(KeysScreen),
+    TransitionVisualizerScreen(TransitionVisualizerScreen),
 }
 
 pub trait ScreenLike {
@@ -110,6 +121,7 @@ impl ScreenLike for Screen {
             Screen::KeysScreen(keys_screen) => keys_screen.refresh(),
             Screen::KeyInfoScreen(key_info_screen) => key_info_screen.refresh(),
             Screen::DPNSContestedNamesScreen(contests) => contests.refresh(),
+            Screen::TransitionVisualizerScreen(screen) => screen.refresh(),
         }
     }
     fn ui(&mut self, ctx: &Context) -> AppAction {
@@ -119,6 +131,7 @@ impl ScreenLike for Screen {
             Screen::KeysScreen(keys_screen) => keys_screen.ui(ctx),
             Screen::KeyInfoScreen(key_info_screen) => key_info_screen.ui(ctx),
             Screen::DPNSContestedNamesScreen(contests_screen) => contests_screen.ui(ctx),
+            Screen::TransitionVisualizerScreen(screen) => screen.ui(ctx),
         }
     }
 }
@@ -135,6 +148,7 @@ impl Screen {
             ),
             Screen::IdentitiesScreen(_) => ScreenType::Identities,
             Screen::DPNSContestedNamesScreen(_) => ScreenType::DPNSContestedNames,
+            Screen::TransitionVisualizerScreen(_) => ScreenType::TransitionVisualizerScreen,
         }
     }
 }

@@ -4,7 +4,6 @@ use crate::ui::{RootScreenType, ScreenType};
 use eframe::epaint::{Color32, Margin, Stroke};
 use egui::{Context, Frame, Layout, RichText, SidePanel, TopBottomPanel};
 use std::sync::Arc;
-
 pub fn add_left_panel(
     ctx: &Context,
     app_context: &Arc<AppContext>,
@@ -12,8 +11,20 @@ pub fn add_left_panel(
 ) -> AppAction {
     let mut action = AppAction::None;
 
+    let panel_width = 50.0 + 20.0; // Button width (50) + 10px margin on each side (20 total)
+
     SidePanel::left("left_panel")
-        .frame(Frame::none().fill(ctx.style().visuals.panel_fill)) // Optional: adjust styling
+        .default_width(panel_width)
+        .frame(
+            Frame::none()
+                .fill(ctx.style().visuals.panel_fill)
+                .inner_margin(Margin {
+                    left: 10.0,
+                    right: 10.0,
+                    top: 10.0,
+                    bottom: 0.0, // No bottom margin since we'll manage the vertical space manually
+                }),
+        )
         .show(ctx, |ui| {
             ui.vertical_centered(|ui| {
                 // "I" button for Identities screen

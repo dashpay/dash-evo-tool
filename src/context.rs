@@ -36,16 +36,32 @@ impl AppContext {
             config,
         }
     }
-    pub fn insert_identity(&self, identity: &Identity) -> Result<()> {
-        self.db.insert_identity(&identity.clone().into(), self)
+
+    pub(crate) fn network_string(&self) -> String {
+        match self.network {
+            Network::Dash => "dash".to_string(),
+            Network::Testnet => "testnet".to_string(),
+            Network::Devnet => format!("devnet:{}", self.devnet_name.clone().unwrap_or_default()),
+            Network::Regtest => "regtest".to_string(),
+            _ => "unknown".to_string(),
+        }
     }
 
-    pub fn insert_qualified_identity(&self, qualified_identity: &QualifiedIdentity) -> Result<()> {
-        self.db.insert_identity(qualified_identity, self)
+    pub fn insert_local_identity(&self, identity: &Identity) -> Result<()> {
+        self.db
+            .insert_local_qualified_identity(&identity.clone().into(), self)
     }
 
-    pub fn load_identities(&self) -> Result<Vec<QualifiedIdentity>> {
-        self.db.get_identities(self)
+    pub fn insert_local_qualified_identity(
+        &self,
+        qualified_identity: &QualifiedIdentity,
+    ) -> Result<()> {
+        self.db
+            .insert_local_qualified_identity(qualified_identity, self)
+    }
+
+    pub fn load_local_qualified_identities(&self) -> Result<Vec<QualifiedIdentity>> {
+        self.db.get_local_qualified_identities(self)
     }
 
     pub fn load_contested_names(&self) -> Result<Vec<ContestedName>> {

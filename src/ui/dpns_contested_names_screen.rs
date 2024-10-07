@@ -64,7 +64,7 @@ impl ScreenLike for DPNSContestedNamesScreen {
         //     DesiredAppAction::AddScreenType(ScreenType::AddDPNSUsername),
         // )),
 
-        let mut action = add_left_panel(
+        action |= add_left_panel(
             ctx,
             &self.app_context,
             RootScreenType::RootScreenDPNSContestedNames,

@@ -355,7 +355,7 @@ impl ScreenLike for AddIdentityScreen {
                                 // Insert qualified identity into the database
                                 if let Err(e) = self
                                     .app_context
-                                    .insert_qualified_identity(&qualified_identity)
+                                    .insert_local_qualified_identity(&qualified_identity)
                                 {
                                     self.error_message = Some(format!("Database error: {}", e));
                                 } else {

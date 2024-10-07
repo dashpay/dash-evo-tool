@@ -105,7 +105,10 @@ impl IdentitiesScreen {
 impl ScreenLike for IdentitiesScreen {
     fn refresh(&mut self) {
         let mut identities = self.identities.lock().unwrap();
-        *identities = self.app_context.load_identities().unwrap_or_default();
+        *identities = self
+            .app_context
+            .load_local_qualified_identities()
+            .unwrap_or_default();
     }
 
     fn ui(&mut self, ctx: &Context) -> AppAction {
@@ -119,8 +122,7 @@ impl ScreenLike for IdentitiesScreen {
             )),
         );
 
-        let mut action =
-            add_left_panel(ctx, &self.app_context, RootScreenType::RootScreenIdentities);
+        action |= add_left_panel(ctx, &self.app_context, RootScreenType::RootScreenIdentities);
 
         // Main content
         egui::CentralPanel::default().show(ctx, |ui| {
@@ -250,7 +252,9 @@ impl ScreenLike for IdentitiesScreen {
 impl IdentitiesScreen {
     pub fn new(app_context: &Arc<AppContext>) -> Self {
         let identities = Arc::new(Mutex::new(
-            app_context.load_identities().unwrap_or_default(),
+            app_context
+                .load_local_qualified_identities()
+                .unwrap_or_default(),
         ));
         Self {
             identities,

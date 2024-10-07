@@ -1,5 +1,6 @@
 use crate::config::Config;
 use crate::database::Database;
+use crate::model::contested_name::ContestedName;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::sdk_wrapper::initialize_sdk;
 use dash_sdk::Sdk;
@@ -45,5 +46,9 @@ impl AppContext {
 
     pub fn load_identities(&self) -> Result<Vec<QualifiedIdentity>> {
         self.db.get_identities(self)
+    }
+
+    pub fn load_contested_names(&self) -> Result<Vec<ContestedName>> {
+        Ok(vec![])
     }
 }

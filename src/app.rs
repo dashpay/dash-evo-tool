@@ -1,12 +1,18 @@
 use crate::context::AppContext;
-use crate::ui::main::MainScreen;
-use crate::ui::{Screen, ScreenLike, ScreenType};
+use crate::ui::dpns_contested_names_screen::DPNSContestedNamesScreen;
+use crate::ui::identities_screen::IdentitiesScreen;
+use crate::ui::{RootScreenType, Screen, ScreenLike, ScreenType};
+use dpp::prelude::Identifier;
+use dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
 use eframe::{egui, App};
+use std::collections::BTreeMap;
 use std::ops::BitOrAssign;
 use std::sync::Arc;
+use std::vec;
 
 pub struct AppState {
-    pub main_screen: Screen,
+    pub main_screens: BTreeMap<RootScreenType, Screen>,
+    pub selected_main_screen: RootScreenType,
     pub screen_stack: Vec<Screen>,
     pub app_context: Arc<AppContext>,
 }
@@ -33,12 +39,19 @@ impl DesiredAppAction {
 }
 
 #[derive(Debug, PartialEq)]
+pub enum BackendAction {
+    VoteForContestant(Identifier, ResourceVoteChoice),
+}
+
+#[derive(Debug, PartialEq)]
 pub enum AppAction {
     None,
     PopScreen,
     PopScreenAndRefresh,
     GoToMainScreen,
+    SetMainScreen(RootScreenType),
     AddScreen(Screen),
+    BackendAction(BackendAction),
 }
 
 impl BitOrAssign for AppAction {
@@ -56,28 +69,52 @@ impl AppState {
     pub fn new() -> Self {
         let app_context = Arc::new(AppContext::new());
 
-        let main_screen = MainScreen::new(&app_context);
+        let identities_screen = IdentitiesScreen::new(&app_context);
+        let dpns_contested_names_screen = DPNSContestedNamesScreen::new(&app_context);
 
         Self {
-            main_screen: Screen::MainScreen(main_screen),
+            main_screens: [
+                (
+                    RootScreenType::RootScreenIdentities,
+                    Screen::IdentitiesScreen(identities_screen),
+                ),
+                (
+                    RootScreenType::RootScreenDPNSContestedNames,
+                    Screen::DPNSContestedNamesScreen(dpns_contested_names_screen),
+                ),
+            ]
+            .into(),
+            selected_main_screen: RootScreenType::RootScreenIdentities,
             screen_stack: vec![],
             app_context,
         }
+    }
+
+    pub fn active_root_screen(&self) -> &Screen {
+        self.main_screens
+            .get(&self.selected_main_screen)
+            .expect("expected to get screen")
+    }
+
+    pub fn active_root_screen_mut(&mut self) -> &mut Screen {
+        self.main_screens
+            .get_mut(&self.selected_main_screen)
+            .expect("expected to get screen")
     }
 
     pub fn visible_screen(&self) -> &Screen {
         if let Some(last_screen) = self.screen_stack.last() {
             last_screen
         } else {
-            &self.main_screen
+            self.active_root_screen()
         }
     }
 
     pub fn visible_screen_mut(&mut self) -> &mut Screen {
-        if let Some(last_screen) = self.screen_stack.last_mut() {
-            last_screen
+        if self.screen_stack.is_empty() {
+            self.active_root_screen_mut()
         } else {
-            &mut self.main_screen
+            self.screen_stack.last_mut().unwrap()
         }
     }
 
@@ -85,7 +122,7 @@ impl AppState {
         if let Some(last_screen) = self.screen_stack.last() {
             last_screen.screen_type()
         } else {
-            ScreenType::Main
+            self.selected_main_screen.into()
         }
     }
 }
@@ -109,12 +146,17 @@ impl App for AppState {
                 if let Some(screen) = self.screen_stack.last_mut() {
                     screen.refresh();
                 } else {
-                    self.main_screen.refresh();
+                    self.active_root_screen_mut().refresh();
                 }
             }
             AppAction::GoToMainScreen => {
                 self.screen_stack = vec![];
-                self.main_screen.refresh();
+                self.active_root_screen_mut().refresh();
+            }
+            AppAction::BackendAction(_) => {}
+            AppAction::SetMainScreen(root_screen_type) => {
+                self.selected_main_screen = root_screen_type;
+                self.active_root_screen_mut().refresh();
             }
         }
     }

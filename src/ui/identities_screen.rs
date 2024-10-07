@@ -4,9 +4,10 @@ use crate::model::qualified_identity::EncryptedPrivateKeyTarget::{
     PrivateKeyOnMainIdentity, PrivateKeyOnVoterIdentity,
 };
 use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
+use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::key_info::KeyInfoScreen;
-use crate::ui::{Screen, ScreenLike, ScreenType};
+use crate::ui::{RootScreenType, Screen, ScreenLike, ScreenType};
 use dpp::identity::accessors::IdentityGettersV0;
 use dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dpp::identity::{Identity, KeyID, Purpose};
@@ -18,24 +19,27 @@ use egui::{Color32, Frame, Margin, Ui};
 use egui_extras::{Column, TableBuilder};
 use std::sync::{Arc, Mutex};
 
-pub struct MainScreen {
+pub struct IdentitiesScreen {
     identities: Arc<Mutex<Vec<QualifiedIdentity>>>,
     app_context: Arc<AppContext>,
 }
 
-impl MainScreen {
+impl IdentitiesScreen {
     fn show_alias(ui: &mut Ui, qualified_identity: &QualifiedIdentity) {
         if let Some(alias) = qualified_identity.alias.as_ref() {
             ui.label(alias.clone());
         }
     }
     fn show_identity_id(ui: &mut Ui, qualified_identity: &QualifiedIdentity) {
-        let encoding = match qualified_identity.identity_type {
-            IdentityType::User => Encoding::Base58,
-            IdentityType::Masternode | IdentityType::Evonode => Encoding::Hex,
+        let (encoding, helper) = match qualified_identity.identity_type {
+            IdentityType::User => (Encoding::Base58, "UserId".to_string()),
+            IdentityType::Masternode | IdentityType::Evonode => {
+                (Encoding::Hex, "ProTxHash".to_string())
+            }
         };
         let identifier_as_string = qualified_identity.identity.id().to_string(encoding);
-        ui.label(format!("{}", identifier_as_string));
+        ui.add(egui::Label::new(identifier_as_string).sense(egui::Sense::hover()))
+            .on_hover_text(helper);
     }
     fn show_balance(ui: &mut Ui, qualified_identity: &QualifiedIdentity) {
         // Calculate the balance in DASH (10^-11 conversion)
@@ -98,7 +102,7 @@ impl MainScreen {
     }
 }
 
-impl ScreenLike for MainScreen {
+impl ScreenLike for IdentitiesScreen {
     fn refresh(&mut self) {
         let mut identities = self.identities.lock().unwrap();
         *identities = self.app_context.load_identities().unwrap_or_default();
@@ -114,6 +118,9 @@ impl ScreenLike for MainScreen {
                 DesiredAppAction::AddScreenType(ScreenType::AddIdentity),
             )),
         );
+
+        let mut action =
+            add_left_panel(ctx, &self.app_context, RootScreenType::RootScreenIdentities);
 
         // Main content
         egui::CentralPanel::default().show(ctx, |ui| {
@@ -240,7 +247,7 @@ impl ScreenLike for MainScreen {
     }
 }
 
-impl MainScreen {
+impl IdentitiesScreen {
     pub fn new(app_context: &Arc<AppContext>) -> Self {
         let identities = Arc::new(Mutex::new(
             app_context.load_identities().unwrap_or_default(),

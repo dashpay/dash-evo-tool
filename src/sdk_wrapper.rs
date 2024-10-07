@@ -1,7 +1,7 @@
 use crate::config::Config;
 use crate::logging::initialize_logger;
+use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::{RequestSettings, Sdk, SdkBuilder}; // Adjust imports
-use dpp::version::PlatformVersion;
 use std::time::Duration;
 use tracing::info;
 

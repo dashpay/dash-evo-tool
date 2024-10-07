@@ -1,10 +1,91 @@
 use crate::context::AppContext;
 use crate::database::Database;
 use crate::model::contested_name::{Contestant, ContestedName};
-use dpp::identifier::Identifier;
+use dash_sdk::dpp::identifier::Identifier;
 use rusqlite::{params, Result};
+use std::collections::{BTreeMap, HashMap};
 
 impl Database {
+    pub fn get_contested_names(&self, app_context: &AppContext) -> Result<Vec<ContestedName>> {
+        let network = app_context.network_string();
+        let mut stmt = self.conn.prepare(
+            "SELECT
+                cn.normalized_contested_name,
+                cn.locked_votes,
+                cn.abstain_votes,
+                cn.awarded_to,
+                cn.ending_time,
+                c.identity_id,
+                c.name,
+                c.votes,
+                i.info
+             FROM contested_name cn
+             LEFT JOIN contestant c
+             ON cn.normalized_contested_name = c.contest_id
+             AND cn.network = c.network
+             LEFT JOIN identity i
+             ON c.identity_id = i.id
+             AND c.network = i.network
+             WHERE cn.network = ?",
+        )?;
+
+        // A hashmap to collect contested names, keyed by their normalized name
+        let mut contested_name_map: HashMap<String, ContestedName> = HashMap::new();
+
+        // Iterate over the joined rows
+        let rows = stmt.query_map(params![network], |row| {
+            let normalized_contested_name: String = row.get(0)?;
+            let locked_votes: u64 = row.get(1)?;
+            let abstain_votes: u64 = row.get(2)?;
+            let awarded_to: Option<Vec<u8>> = row.get(3)?;
+            let ending_time: Option<u64> = row.get(4)?;
+            let identity_id: Option<Vec<u8>> = row.get(5)?;
+            let contestant_name: Option<String> = row.get(6)?;
+            let votes: Option<u64> = row.get(7)?;
+            let identity_info: Option<String> = row.get(8)?;
+
+            let awarded_to_id = awarded_to
+                .map(|id| Identifier::from_bytes(&id).expect("Expected 32 bytes for awarded_to"));
+
+            // Create or get the contested name from the hashmap
+            let contested_name = contested_name_map
+                .entry(normalized_contested_name.clone())
+                .or_insert(ContestedName {
+                    normalized_contested_name: normalized_contested_name.clone(),
+                    locked_votes,
+                    abstain_votes,
+                    awarded_to: awarded_to_id,
+                    ending_time,
+                    contestants: Vec::new(),
+                    my_votes: BTreeMap::new(), // Assuming this is filled elsewhere
+                });
+
+            // If there are contestant details in the row, add them
+            if let (Some(identity_id), Some(contestant_name), Some(votes)) =
+                (identity_id, contestant_name, votes)
+            {
+                let contestant = Contestant {
+                    id: Identifier::from_bytes(&identity_id)
+                        .expect("Expected 32 bytes for identity_id"),
+                    name: contestant_name,
+                    info: identity_info.unwrap_or_default(),
+                    votes,
+                };
+                contested_name.contestants.push(contestant);
+            }
+
+            Ok(())
+        })?;
+
+        // Iterate over rows to populate contested names and contestants
+        for row_result in rows {
+            row_result?;
+        }
+
+        // Collect the values from the hashmap into a vector and return it
+        Ok(contested_name_map.into_values().collect())
+    }
+
     pub fn insert_or_update_name_contest(
         &self,
         contested_name: &ContestedName,

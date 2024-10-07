@@ -6,16 +6,16 @@ use crate::model::qualified_identity::EncryptedPrivateKeyTarget::{
 use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::ScreenLike;
+use dash_sdk::dpp::dashcore::secp256k1::Secp256k1;
+use dash_sdk::dpp::dashcore::PrivateKey;
+use dash_sdk::dpp::identifier::{Identifier, MasternodeIdentifiers};
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+use dash_sdk::dpp::identity::{Identity, KeyID, KeyType, Purpose};
+use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+use dash_sdk::dpp::prelude::IdentityPublicKey;
+use dash_sdk::dpp::ProtocolError;
 use dash_sdk::platform::Fetch;
-use dpp::dashcore::secp256k1::Secp256k1;
-use dpp::dashcore::PrivateKey;
-use dpp::identifier::{Identifier, MasternodeIdentifiers};
-use dpp::identity::accessors::IdentityGettersV0;
-use dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
-use dpp::identity::{Identity, KeyID, KeyType, Purpose};
-use dpp::platform_value::string_encoding::Encoding;
-use dpp::prelude::IdentityPublicKey;
-use dpp::ProtocolError;
 use eframe::egui::Context;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -210,7 +210,7 @@ impl ScreenLike for AddIdentityScreen {
 
                     // Lock the mutex and clone the Sdk
                     let sdk_instance = {
-                        let sdk = sdk_clone.lock().unwrap();
+                        let sdk = sdk_clone.read().unwrap();
                         sdk.clone() // Assuming Sdk implements Clone
                     };
                     // Now sdk_instance is owned and can be moved into the async block

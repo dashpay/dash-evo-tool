@@ -3,19 +3,23 @@ use crate::database::Database;
 use crate::model::contested_name::ContestedName;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::sdk_wrapper::initialize_sdk;
+use dash_sdk::dpp::dashcore::Network;
+use dash_sdk::dpp::identity::Identity;
+use dash_sdk::dpp::version::PlatformVersion;
+use dash_sdk::platform::DataContract;
 use dash_sdk::Sdk;
-use dpp::dashcore::Network;
-use dpp::identity::Identity;
 use rusqlite::Result;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, RwLock};
 
 #[derive(Debug)]
 pub struct AppContext {
     pub(crate) network: Network,
     pub(crate) devnet_name: Option<String>,
     pub(crate) db: Arc<Database>,
-    pub(crate) sdk: Arc<Mutex<Sdk>>,
+    pub(crate) sdk: Arc<RwLock<Sdk>>,
     pub(crate) config: Config,
+    pub(crate) dpns_contract: Arc<Option<DataContract>>,
+    pub(crate) platform_version: &'static PlatformVersion,
 }
 
 impl AppContext {
@@ -26,15 +30,28 @@ impl AppContext {
 
         db.initialize().unwrap();
 
-        let sdk = Arc::new(Mutex::new(initialize_sdk(&config)));
+        let sdk = Arc::new(RwLock::new(initialize_sdk(&config)));
 
-        AppContext {
+        let mut app_context = AppContext {
             network: config.core_network(),
             devnet_name: None,
             db,
             sdk,
             config,
+            dpns_contract: Arc::new(None),
+            platform_version: PlatformVersion::latest(),
+        };
+
+        let contract = app_context
+            .db
+            .get_contract_by_name("dpns", &app_context)
+            .expect("expected to be able to get contract");
+
+        if let Some(contract) = contract {
+            app_context.dpns_contract = Arc::new(Some(contract));
         }
+
+        app_context
     }
 
     pub(crate) fn network_string(&self) -> String {
@@ -65,6 +82,6 @@ impl AppContext {
     }
 
     pub fn load_contested_names(&self) -> Result<Vec<ContestedName>> {
-        Ok(vec![])
+        self.db.get_contested_names(self)
     }
 }

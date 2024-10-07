@@ -1,5 +1,5 @@
 use bincode::{Decode, Encode};
-use dpp::identity::{Identity, KeyID};
+use dash_sdk::dpp::identity::{Identity, KeyID};
 use std::collections::BTreeMap;
 use std::fmt::{Display, Formatter};
 

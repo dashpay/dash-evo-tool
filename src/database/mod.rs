@@ -1,9 +1,10 @@
 mod contested_names;
+mod contracts;
 mod identities;
 mod initialization;
 
-use dpp::identity::accessors::IdentityGettersV0;
-use dpp::serialization::PlatformSerializable;
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::dpp::serialization::PlatformSerializable;
 use rusqlite::Connection;
 use std::path::Path;
 #[derive(Debug)]

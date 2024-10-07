@@ -1,9 +1,9 @@
 use crate::app::AppAction;
 use crate::context::AppContext;
 use crate::ui::ScreenLike;
-use dpp::identity::accessors::IdentityGettersV0;
-use dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
-use dpp::identity::Identity;
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+use dash_sdk::dpp::identity::Identity;
 use eframe::egui::{self, Context};
 use std::sync::Arc;
 

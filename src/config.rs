@@ -1,8 +1,8 @@
 use std::{path::PathBuf, str::FromStr};
 
+use dash_sdk::dapi_client::AddressList;
+use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::sdk::Uri;
-use dpp::dashcore::Network;
-use rs_dapi_client::AddressList;
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize, Clone)]

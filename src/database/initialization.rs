@@ -37,13 +37,31 @@ impl Database {
                 identity_id BLOB,
                 name TEXT,
                 votes INTEGER,
+                network TEXT NOT NULL,
                 PRIMARY KEY (contest_id, identity_id, network),
                 FOREIGN KEY (contest_id) REFERENCES contested_names(contest_id),
-                FOREIGN KEY (identity_id) REFERENCES identities(id),
-                network TEXT NOT NULL
+                FOREIGN KEY (identity_id) REFERENCES identities(id)
             )",
             [],
         )?;
+
+        // Create the contracts table
+        self.conn.execute(
+            "CREATE TABLE IF NOT EXISTS contract (
+                contract_id BLOB,
+                contract BLOB,
+                name TEXT,
+                network TEXT NOT NULL,
+                PRIMARY KEY (contract_id, network)
+            )",
+            [],
+        )?;
+
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_name_network ON contract (name, network)",
+            [],
+        )?;
+
         Ok(())
     }
 }

@@ -8,11 +8,11 @@ use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::key_info::KeyInfoScreen;
 use crate::ui::{RootScreenType, Screen, ScreenLike, ScreenType};
-use dpp::identity::accessors::IdentityGettersV0;
-use dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
-use dpp::identity::{Identity, KeyID, Purpose};
-use dpp::platform_value::string_encoding::Encoding;
-use dpp::prelude::IdentityPublicKey;
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+use dash_sdk::dpp::identity::{Identity, Purpose};
+use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+use dash_sdk::dpp::prelude::IdentityPublicKey;
 use eframe::egui::{self, Context};
 use eframe::emath::Align;
 use egui::{Color32, Frame, Margin, Ui};
@@ -81,6 +81,7 @@ impl IdentitiesScreen {
             Purpose::TRANSFER => format!("W{}", key.id()),
             Purpose::SYSTEM => format!("S{}", key.id()),
             Purpose::VOTING => format!("V{}", key.id()),
+            Purpose::OWNER => format!("O{}", key.id()),
         };
 
         let button = egui::Button::new(name)

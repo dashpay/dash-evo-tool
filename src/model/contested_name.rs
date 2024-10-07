@@ -1,8 +1,8 @@
 use crate::model::qualified_identity::EncryptedPrivateKeyTarget;
 use bincode::{Decode, Encode};
-use dpp::identity::{KeyID, TimestampMillis};
-use dpp::prelude::Identifier;
-use dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
+use dash_sdk::dpp::identity::{KeyID, TimestampMillis};
+use dash_sdk::dpp::prelude::Identifier;
+use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
 use std::collections::BTreeMap;
 
 #[derive(Debug, Encode, Decode, Clone)]

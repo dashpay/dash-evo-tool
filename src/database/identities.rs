@@ -1,8 +1,8 @@
 use crate::context::AppContext;
 use crate::database::Database;
 use crate::model::qualified_identity::QualifiedIdentity;
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::platform::Identifier;
-use dpp::identity::accessors::IdentityGettersV0;
 use rusqlite::params;
 
 impl Database {

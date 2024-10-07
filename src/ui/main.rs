@@ -1,14 +1,21 @@
 use crate::app::{AppAction, DesiredAppAction};
 use crate::context::AppContext;
+use crate::model::qualified_identity::EncryptedPrivateKeyTarget::{
+    PrivateKeyOnMainIdentity, PrivateKeyOnVoterIdentity,
+};
 use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::{ScreenLike, ScreenType};
 use dpp::identity::accessors::IdentityGettersV0;
+use dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+use dpp::identity::{KeyID, Purpose};
 use dpp::platform_value::string_encoding::Encoding;
+use dpp::prelude::IdentityPublicKey;
 use eframe::egui::{self, Context};
 use eframe::emath::Align;
-use egui::{Frame, Margin};
+use egui::{Color32, Frame, Margin, Ui};
 use egui_extras::{Column, TableBuilder};
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 pub struct MainScreen {
@@ -80,28 +87,97 @@ impl ScreenLike for MainScreen {
                                 });
                             })
                             .body(|mut body| {
-                                for identity in identities.iter() {
+                                for qualified_identity in identities.iter() {
+                                    let identity = &qualified_identity.identity;
+                                    let public_keys = identity.public_keys();
+                                    let voter_identity_public_keys = qualified_identity
+                                        .associated_voter_identity
+                                        .as_ref()
+                                        .map(|(identity, _)| identity.public_keys());
                                     body.row(25.0, |mut row| {
                                         row.col(|ui| {
-                                            let encoding = match identity.identity_type {
+                                            let encoding = match qualified_identity.identity_type {
                                                 IdentityType::User => Encoding::Base58,
                                                 IdentityType::Masternode
                                                 | IdentityType::Evonode => Encoding::Hex,
                                             };
                                             ui.label(format!(
                                                 "{}",
-                                                identity.identity.id().to_string(encoding)
+                                                identity.id().to_string(encoding)
                                             ));
                                         });
                                         row.col(|ui| {
-                                            ui.label(format!("{}", identity.identity.balance()));
+                                            ui.label(format!("{}", identity.balance()));
                                         });
                                         row.col(|ui| {
-                                            ui.label(format!("{}", identity.identity_type));
+                                            ui.label(format!(
+                                                "{}",
+                                                qualified_identity.identity_type
+                                            ));
                                         });
                                         row.col(|ui| {
-                                            if ui.button("Keys").clicked() {
-                                                // todo
+                                            fn show_public_key(
+                                                ui: &mut Ui,
+                                                key: &IdentityPublicKey,
+                                                holding_private_key: bool,
+                                            ) {
+                                                let button_color = if holding_private_key {
+                                                    Color32::from_rgb(167, 232, 232)
+                                                // Light green-blue color if private key exists
+                                                } else {
+                                                    Color32::from_rgb(169, 169, 169)
+                                                    // Gray if no private key
+                                                };
+
+                                                let name = match key.purpose() {
+                                                    Purpose::AUTHENTICATION => {
+                                                        format!("A{}", key.id())
+                                                    }
+                                                    Purpose::ENCRYPTION => {
+                                                        format!("En{}", key.id())
+                                                    }
+                                                    Purpose::DECRYPTION => {
+                                                        format!("De{}", key.id())
+                                                    }
+                                                    Purpose::TRANSFER => format!("W{}", key.id()),
+                                                    Purpose::SYSTEM => format!("S{}", key.id()),
+                                                    Purpose::VOTING => format!("V{}", key.id()),
+                                                };
+
+                                                let button = egui::Button::new(name)
+                                                    .fill(button_color)
+                                                    .frame(true)
+                                                    .rounding(3.0)
+                                                    .min_size(egui::vec2(80.0, 30.0));
+
+                                                if ui.add(button).clicked() {
+                                                    // Implement action when the key button is clicked
+                                                    // For example, navigate to a detailed key view or perform another action
+                                                }
+                                            }
+                                            for (key_id, key) in public_keys.iter() {
+                                                let holding_private_key = qualified_identity
+                                                    .encrypted_private_keys
+                                                    .contains_key(&(
+                                                        PrivateKeyOnMainIdentity,
+                                                        *key_id,
+                                                    ));
+                                                show_public_key(ui, key, holding_private_key);
+                                            }
+                                            if let Some(voting_identity_public_keys) =
+                                                voter_identity_public_keys
+                                            {
+                                                for (key_id, key) in
+                                                    voting_identity_public_keys.iter()
+                                                {
+                                                    let holding_private_key = qualified_identity
+                                                        .encrypted_private_keys
+                                                        .contains_key(&(
+                                                            PrivateKeyOnVoterIdentity,
+                                                            *key_id,
+                                                        ));
+                                                    show_public_key(ui, key, holding_private_key);
+                                                }
                                             }
                                         });
                                         row.col(|ui| {

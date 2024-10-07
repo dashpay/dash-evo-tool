@@ -1,5 +1,8 @@
 use crate::app::AppAction;
 use crate::context::AppContext;
+use crate::model::qualified_identity::EncryptedPrivateKeyTarget::{
+    PrivateKeyOnMainIdentity, PrivateKeyOnVoterIdentity,
+};
 use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::ScreenLike;
@@ -310,18 +313,19 @@ impl ScreenLike for AddIdentityScreen {
                             let voting_identity_with_key_id = if let Some(voting_key) =
                                 voting_private_key.as_ref()
                             {
-                                let identity_with_voter_key =
+                                let (identity_with_voter_key, target) =
                                     if let Some(mno_voter_identity) = voting_identity.as_ref() {
-                                        mno_voter_identity
+                                        (mno_voter_identity, PrivateKeyOnVoterIdentity)
                                     } else {
-                                        &identity
+                                        (&identity, PrivateKeyOnMainIdentity)
                                     };
                                 match self.verify_voting_key_exists_on_identity(
                                     identity_with_voter_key,
                                     voting_key,
                                 ) {
                                     Ok(id) => {
-                                        encrypted_private_keys.insert(id, voting_key.clone());
+                                        encrypted_private_keys
+                                            .insert((target, id), voting_key.clone());
                                         voting_identity.map(|v| (v, id))
                                     }
                                     Err(e) => {

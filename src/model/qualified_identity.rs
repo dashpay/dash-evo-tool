@@ -20,6 +20,13 @@ impl Display for IdentityType {
     }
 }
 
+#[derive(Debug, Encode, Decode, Clone, Hash, Ord, PartialOrd, Eq, PartialEq)]
+pub enum EncryptedPrivateKeyTarget {
+    PrivateKeyOnMainIdentity,
+    PrivateKeyOnVoterIdentity,
+    PrivateKeyOnOperatorIdentity,
+}
+
 #[derive(Debug, Encode, Decode, Clone)]
 pub struct QualifiedIdentity {
     pub identity: Identity,
@@ -28,7 +35,7 @@ pub struct QualifiedIdentity {
     pub associated_owner_key_id: Option<KeyID>,
     pub identity_type: IdentityType,
     pub alias: Option<String>,
-    pub encrypted_private_keys: BTreeMap<KeyID, Vec<u8>>,
+    pub encrypted_private_keys: BTreeMap<(EncryptedPrivateKeyTarget, KeyID), Vec<u8>>,
 }
 
 impl QualifiedIdentity {

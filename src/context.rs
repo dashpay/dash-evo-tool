@@ -39,6 +39,10 @@ impl AppContext {
         self.db.insert_identity(&identity.clone().into(), self)
     }
 
+    pub fn insert_qualified_identity(&self, qualified_identity: &QualifiedIdentity) -> Result<()> {
+        self.db.insert_identity(qualified_identity, self)
+    }
+
     pub fn load_identities(&self) -> Result<Vec<QualifiedIdentity>> {
         self.db.get_identities(self)
     }

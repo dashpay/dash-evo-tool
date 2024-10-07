@@ -1,9 +1,10 @@
 use crate::app::{AppAction, DesiredAppAction};
 use crate::context::AppContext;
-use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::{ScreenLike, ScreenType};
 use dpp::identity::accessors::IdentityGettersV0;
+use dpp::platform_value::string_encoding::Encoding;
 use eframe::egui::{self, Context};
 use eframe::emath::Align;
 use egui::{Frame, Margin};
@@ -82,13 +83,21 @@ impl ScreenLike for MainScreen {
                                 for identity in identities.iter() {
                                     body.row(25.0, |mut row| {
                                         row.col(|ui| {
-                                            ui.label(format!("{}", identity.identity.id()));
+                                            let encoding = match identity.identity_type {
+                                                IdentityType::User => Encoding::Base58,
+                                                IdentityType::Masternode
+                                                | IdentityType::Evonode => Encoding::Hex,
+                                            };
+                                            ui.label(format!(
+                                                "{}",
+                                                identity.identity.id().to_string(encoding)
+                                            ));
                                         });
                                         row.col(|ui| {
                                             ui.label(format!("{}", identity.identity.balance()));
                                         });
                                         row.col(|ui| {
-                                            ui.label("User");
+                                            ui.label(format!("{}", identity.identity_type));
                                         });
                                         row.col(|ui| {
                                             if ui.button("Keys").clicked() {

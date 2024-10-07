@@ -1,12 +1,34 @@
 use bincode::{Decode, Encode};
-use dpp::identity::Identity;
+use dpp::identity::{Identity, KeyID};
+use std::collections::BTreeMap;
+use std::fmt::{Display, Formatter};
 
-#[derive(Encode, Decode)]
+#[derive(Debug, Encode, Decode, PartialEq, Clone)]
+pub enum IdentityType {
+    User,
+    Masternode,
+    Evonode,
+}
+
+impl Display for IdentityType {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            IdentityType::User => write!(f, "User"),
+            IdentityType::Masternode => write!(f, "Masternode"),
+            IdentityType::Evonode => write!(f, "Evonode"),
+        }
+    }
+}
+
+#[derive(Debug, Encode, Decode, Clone)]
 pub struct QualifiedIdentity {
     pub identity: Identity,
+    pub associated_voter_identity: Option<(Identity, KeyID)>,
+    pub associated_operator_identity: Option<(Identity, KeyID)>,
+    pub associated_owner_key_id: Option<KeyID>,
+    pub identity_type: IdentityType,
     pub alias: Option<String>,
-    pub encrypted_voting_private_key: Option<Vec<u8>>,
-    pub encrypted_owner_private_key: Option<Vec<u8>>,
+    pub encrypted_private_keys: BTreeMap<KeyID, Vec<u8>>,
 }
 
 impl QualifiedIdentity {
@@ -28,9 +50,12 @@ impl From<Identity> for QualifiedIdentity {
     fn from(value: Identity) -> Self {
         QualifiedIdentity {
             identity: value,
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: IdentityType::User,
             alias: None,
-            encrypted_voting_private_key: None,
-            encrypted_owner_private_key: None,
+            encrypted_private_keys: Default::default(),
         }
     }
 }

@@ -13,25 +13,24 @@ eframe = { version = "0.29.1" }
 strum = { version = "0.26.1", features = ["derive"] }
 bs58 = "0.5.0"
 copypasta = "0.10.1"
-dpp = { git = "https://github.com/dashpay/platform", commit = "1d431ce3ef6d1df7f1dc4788643de156e9bdb147", features = [
+dpp = { git = "https://github.com/dashpay/platform", commit = "b584227f76332ccdd80aa0a078eba68a6c113af0", features = [
     "client",
 ] }
-platform-serialization-derive = { git = "https://github.com/dashpay/platform", commit = "1d431ce3ef6d1df7f1dc4788643de156e9bdb147" }
-dash-sdk = { git = "https://github.com/dashpay/platform", commit = "1d431ce3ef6d1df7f1dc4788643de156e9bdb147" }
-drive = { git = "https://github.com/dashpay/platform", commit = "1d431ce3ef6d1df7f1dc4788643de156e9bdb147" }
-drive-proof-verifier = { git = "https://github.com/dashpay/platform", commit = "1d431ce3ef6d1df7f1dc4788643de156e9bdb147" }
+platform-serialization-derive = { git = "https://github.com/dashpay/platform", commit = "b584227f76332ccdd80aa0a078eba68a6c113af0" }
+dash-sdk = { git = "https://github.com/dashpay/platform", commit = "b584227f76332ccdd80aa0a078eba68a6c113af0" }
+drive-proof-verifier = { git = "https://github.com/dashpay/platform", commit = "b584227f76332ccdd80aa0a078eba68a6c113af0" }
 thiserror = "1"
 serde = "1.0.197"
 serde_json = "1.0.120"
 toml = { version = "0.8.10", features = ["display"] }
-dapi-grpc = { git = "https://github.com/dashpay/platform", commit = "1d431ce3ef6d1df7f1dc4788643de156e9bdb147", features = [
+dapi-grpc = { git = "https://github.com/dashpay/platform", commit = "b584227f76332ccdd80aa0a078eba68a6c113af0", features = [
     "client",
 ] }
-rs-dapi-client = { git = "https://github.com/dashpay/platform", commit = "1d431ce3ef6d1df7f1dc4788643de156e9bdb147" }
+rs-dapi-client = { git = "https://github.com/dashpay/platform", commit = "b584227f76332ccdd80aa0a078eba68a6c113af0" }
 tokio = { version = "1.36.0", features = ["full"] }
 bincode = { version = "2.0.0-rc.3", features = ["serde"] }
-strategy-tests = { git = "https://github.com/dashpay/platform", commit = "1d431ce3ef6d1df7f1dc4788643de156e9bdb147" }
-simple-signer = { git = "https://github.com/dashpay/platform", commit = "1d431ce3ef6d1df7f1dc4788643de156e9bdb147" }
+strategy-tests = { git = "https://github.com/dashpay/platform", commit = "b584227f76332ccdd80aa0a078eba68a6c113af0" }
+simple-signer = { git = "https://github.com/dashpay/platform", commit = "b584227f76332ccdd80aa0a078eba68a6c113af0" }
 reqwest = { version = "0.12.3", features = ["json"] }
 hex = { version = "0.4.3" }
 itertools = "0.13.0"

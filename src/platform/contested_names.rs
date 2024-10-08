@@ -27,9 +27,9 @@ use dash_sdk::drive::query::{
 };
 use dash_sdk::{
     platform::{DocumentQuery, FetchMany},
+    query_types::ContestedResource,
     Sdk,
 };
-use drive_proof_verifier::types::ContestedResource;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum ContestedResourceTask {
@@ -68,9 +68,11 @@ impl AppContext {
                         order_ascending: true,
                     };
 
-                    let contested_resources = ContestedResource::fetch_many(&sdk, query).await;
+                    let contested_resources = ContestedResource::fetch_many(&sdk, query).await.map_err(|e| e.to_string())?;
 
-                    println!("{:?}", contested_resources);
+                    let contested_resources_as_strings : Vec<String> = contested_resources.0.into_iter().map(|contested_resource| contested_resource.0.as_str().expect("expected str").to_string()).collect();
+
+                    self.db.insert_name_contests_as_normalized_names(contested_resources_as_strings, &self).map_err(|e| e.to_string())?;
 
                     Ok(())
                 } else {

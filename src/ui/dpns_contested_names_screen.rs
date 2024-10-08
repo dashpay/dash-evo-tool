@@ -33,14 +33,18 @@ impl DPNSContestedNamesScreen {
     ) -> AppAction {
         let mut action = AppAction::None;
 
-        // Iterate over contestants and create clickable buttons for each
-        for contestant in &contested_name.contestants {
-            let button_text = format!("{} - {} votes", contestant.name, contestant.votes);
-            if ui.button(button_text).clicked() {
-                // Placeholder for action when a contestant is clicked
-                action = AppAction::None;
+        if let Some(contestants) = &contested_name.contestants {
+            // Iterate over contestants and create clickable buttons for each
+            for contestant in contestants {
+                let button_text = format!("{} - {} votes", contestant.name, contestant.votes);
+                if ui.button(button_text).clicked() {
+                    // Placeholder for action when a contestant is clicked
+                    action = AppAction::None;
+                }
             }
         }
+
+
 
         action
     }
@@ -120,10 +124,20 @@ impl ScreenLike for DPNSContestedNamesScreen {
                                             ui.label(&contested_name.normalized_contested_name);
                                         });
                                         row.col(|ui| {
-                                            ui.label(format!("{}", contested_name.locked_votes));
+                                            let label_text = if let Some(locked_votes) = contested_name.locked_votes {
+                                                format!("{}", locked_votes)
+                                            } else {
+                                                "Fetching".to_string()
+                                            };
+                                            ui.label(label_text);
                                         });
                                         row.col(|ui| {
-                                            ui.label(format!("{}", contested_name.abstain_votes));
+                                            let label_text = if let Some(abstain_votes) = contested_name.abstain_votes {
+                                                format!("{}", abstain_votes)
+                                            } else {
+                                                "Fetching".to_string()
+                                            };
+                                            ui.label(label_text);
                                         });
                                         row.col(|ui| {
                                             if let Some(ending_time) = contested_name.ending_time {

@@ -5,7 +5,7 @@ use crate::model::qualified_identity::EncryptedPrivateKeyTarget::{
 };
 use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::ScreenLike;
+use crate::ui::{MessageType, ScreenLike};
 use dash_sdk::dpp::dashcore::secp256k1::Secp256k1;
 use dash_sdk::dpp::dashcore::PrivateKey;
 use dash_sdk::dpp::identifier::{Identifier, MasternodeIdentifiers};

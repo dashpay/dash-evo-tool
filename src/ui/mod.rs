@@ -94,9 +94,19 @@ pub enum Screen {
     TransitionVisualizerScreen(TransitionVisualizerScreen),
 }
 
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum MessageType {
+    Info,
+    Error,
+}
+
 pub trait ScreenLike {
     fn refresh(&mut self);
     fn ui(&mut self, ctx: &Context) -> AppAction;
+
+    fn display_message(&mut self, message: String, message_type: MessageType) {
+
+    }
 }
 
 // Implement Debug for Screen using the ScreenType
@@ -132,6 +142,17 @@ impl ScreenLike for Screen {
             Screen::KeyInfoScreen(key_info_screen) => key_info_screen.ui(ctx),
             Screen::DPNSContestedNamesScreen(contests_screen) => contests_screen.ui(ctx),
             Screen::TransitionVisualizerScreen(screen) => screen.ui(ctx),
+        }
+    }
+
+    fn display_message(&mut self, message: String, message_type: MessageType) {
+        match self {
+            Screen::IdentitiesScreen(screen) => screen.display_message(message, message_type),
+            Screen::AddIdentityScreen(screen) => screen.display_message(message, message_type),
+            Screen::KeysScreen(screen) => screen.display_message(message, message_type),
+            Screen::KeyInfoScreen(screen) => screen.display_message(message, message_type),
+            Screen::DPNSContestedNamesScreen(screen) => screen.display_message(message, message_type),
+            Screen::TransitionVisualizerScreen(screen) => screen.display_message(message, message_type),
         }
     }
 }

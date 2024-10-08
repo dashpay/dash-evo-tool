@@ -2,8 +2,8 @@ use crate::context::AppContext;
 use crate::database::Database;
 use crate::model::contested_name::{Contestant, ContestedName};
 use dash_sdk::dpp::identifier::Identifier;
-use rusqlite::{params, Result};
-use std::collections::{BTreeMap, HashMap};
+use rusqlite::{params, params_from_iter, Result};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 impl Database {
     pub fn get_contested_names(&self, app_context: &AppContext) -> Result<Vec<ContestedName>> {
@@ -36,8 +36,8 @@ impl Database {
         // Iterate over the joined rows
         let rows = stmt.query_map(params![network], |row| {
             let normalized_contested_name: String = row.get(0)?;
-            let locked_votes: u64 = row.get(1)?;
-            let abstain_votes: u64 = row.get(2)?;
+            let locked_votes: Option<u64> = row.get(1)?;
+            let abstain_votes: Option<u64> = row.get(2)?;
             let awarded_to: Option<Vec<u8>> = row.get(3)?;
             let ending_time: Option<u64> = row.get(4)?;
             let identity_id: Option<Vec<u8>> = row.get(5)?;
@@ -45,6 +45,7 @@ impl Database {
             let votes: Option<u64> = row.get(7)?;
             let identity_info: Option<String> = row.get(8)?;
 
+            // Convert `awarded_to` to `Identifier` if it exists
             let awarded_to_id = awarded_to
                 .map(|id| Identifier::from_bytes(&id).expect("Expected 32 bytes for awarded_to"));
 
@@ -57,7 +58,7 @@ impl Database {
                     abstain_votes,
                     awarded_to: awarded_to_id,
                     ending_time,
-                    contestants: Vec::new(),
+                    contestants: Some(Vec::new()), // Initialize as an empty vector
                     my_votes: BTreeMap::new(), // Assuming this is filled elsewhere
                 });
 
@@ -72,18 +73,22 @@ impl Database {
                     info: identity_info.unwrap_or_default(),
                     votes,
                 };
-                contested_name.contestants.push(contestant);
+
+                // Add the contestant to the contestants list
+                if let Some(contestants) = &mut contested_name.contestants {
+                    contestants.push(contestant);
+                }
             }
 
             Ok(())
         })?;
 
-        // Iterate over rows to populate contested names and contestants
-        for row_result in rows {
-            row_result?;
+        // Ensure all rows are processed without error
+        for row in rows {
+            row?;
         }
 
-        // Collect the values from the hashmap into a vector and return it
+        // Collect the values from the hashmap and return as a vector
         Ok(contested_name_map.into_values().collect())
     }
 
@@ -105,8 +110,8 @@ impl Database {
             params![contested_name.normalized_contested_name, network],
             |row| {
                 Ok((
-                    row.get::<_, u64>(0)?,
-                    row.get::<_, u64>(1)?,
+                    row.get::<_, Option<u64>>(0)?,
+                    row.get::<_, Option<u64>>(1)?,
                     row.get::<_, Option<Vec<u8>>>(2)?,
                     row.get::<_, Option<u64>>(3)?,
                 ))
@@ -119,24 +124,24 @@ impl Database {
                 let should_update = locked_votes != contested_name.locked_votes
                     || abstain_votes != contested_name.abstain_votes
                     || awarded_to.as_ref().map(|id| {
-                        Identifier::from_bytes(id).expect("expected 32 bytes for awarded to")
-                    }) != contested_name.awarded_to
+                    Identifier::from_bytes(id).expect("expected 32 bytes for awarded to")
+                }) != contested_name.awarded_to
                     || ending_time != contested_name.ending_time;
 
                 if should_update {
                     // Update the entry if any field has changed
                     self.execute(
                         "UPDATE contested_name
-                         SET locked_votes = ?, abstain_votes = ?, awarded_to = ?, ending_time = ?
-                         WHERE normalized_contested_name = ? AND network = ?",
+                     SET locked_votes = ?, abstain_votes = ?, awarded_to = ?, ending_time = ?
+                     WHERE normalized_contested_name = ? AND network = ?",
                         params![
-                            contested_name.locked_votes,
-                            contested_name.abstain_votes,
-                            contested_name.awarded_to.as_ref().map(|id| id.to_vec()),
-                            contested_name.ending_time,
-                            contested_name.normalized_contested_name,
-                            network,
-                        ],
+                        contested_name.locked_votes,
+                        contested_name.abstain_votes,
+                        contested_name.awarded_to.as_ref().map(|id| id.to_vec()),
+                        contested_name.ending_time,
+                        contested_name.normalized_contested_name,
+                        network,
+                    ],
                     )?;
                 }
             }
@@ -144,27 +149,29 @@ impl Database {
                 // If the contested name doesn't exist, insert it
                 self.execute(
                     "INSERT INTO contested_name (normalized_contested_name, locked_votes, abstain_votes, awarded_to, ending_time, network)
-                     VALUES (?, ?, ?, ?, ?, ?)",
+                 VALUES (?, ?, ?, ?, ?, ?)",
                     params![
-                        contested_name.normalized_contested_name,
-                        contested_name.locked_votes,
-                        contested_name.abstain_votes,
-                        contested_name.awarded_to.as_ref().map(|id| id.to_vec()),
-                        contested_name.ending_time,
-                        network,
-                    ],
+                    contested_name.normalized_contested_name,
+                    contested_name.locked_votes,
+                    contested_name.abstain_votes,
+                    contested_name.awarded_to.as_ref().map(|id| id.to_vec()),
+                    contested_name.ending_time,
+                    network,
+                ],
                 )?;
             }
             Err(e) => return Err(e.into()),
         }
 
-        // Insert or update each contestant associated with the contested name
-        for contestant in &contested_name.contestants {
-            self.insert_or_update_contestant(
-                &contested_name.normalized_contested_name,
-                contestant,
-                &network,
-            )?;
+        // If there are contestants, insert or update each contestant associated with the contested name
+        if let Some(contestants) = &contested_name.contestants {
+            for contestant in contestants {
+                self.insert_or_update_contestant(
+                    &contested_name.normalized_contested_name,
+                    contestant,
+                    &network,
+                )?;
+            }
         }
 
         Ok(())
@@ -233,6 +240,67 @@ impl Database {
                 )?;
             }
             Err(e) => return Err(e.into()),
+        }
+
+        Ok(())
+    }
+
+    pub fn insert_name_contests_as_normalized_names(
+        &self,
+        name_contests: Vec<String>,
+        app_context: &AppContext,
+    ) -> Result<()> {
+        let network = app_context.network_string();
+        let conn = self.conn.lock().unwrap();
+
+        // Chunk the name_contests into smaller groups due to SQL parameter limits
+        let chunk_size = 900; // Use a safe limit to stay below SQLite's limit
+        let mut existing_names: HashSet<String> = HashSet::new();
+
+        for chunk in name_contests.chunks(chunk_size) {
+            // Prepare placeholders for the SQL IN clause
+            let placeholders: String = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+            let query = format!(
+                "SELECT normalized_contested_name
+             FROM contested_name
+             WHERE network = ? AND normalized_contested_name IN ({})",
+                placeholders
+            );
+
+            let mut stmt = conn.prepare(&query)?;
+
+            // Create params: network followed by each name in the chunk
+            let mut params: Vec<&dyn rusqlite::ToSql> = vec![&network];
+            for name in chunk {
+                params.push(name);
+            }
+
+            // Execute the query and collect existing names
+            let rows = stmt.query_map(params_from_iter(params.iter()), |row| row.get(0))?;
+            for row in rows {
+                if let Ok(name) = row {
+                    existing_names.insert(name);
+                }
+            }
+        }
+
+        // Filter out the names that already exist in the database
+        let new_names: Vec<&String> = name_contests
+            .iter()
+            .filter(|name| !existing_names.contains(*name))
+            .collect();
+
+        // If there are new names, prepare the insertion statement
+        if !new_names.is_empty() {
+            let mut insert_stmt = conn.prepare(
+                "INSERT INTO contested_name (normalized_contested_name, network)
+             VALUES (?, ?)",
+            )?;
+
+            // Insert each new name into the database
+            for name in new_names {
+                insert_stmt.execute(params![name, network])?;
+            }
         }
 
         Ok(())

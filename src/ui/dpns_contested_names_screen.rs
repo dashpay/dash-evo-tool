@@ -5,7 +5,7 @@ use crate::platform::contested_names::ContestedResourceTask;
 use crate::platform::BackendTask;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::{RootScreenType, ScreenLike};
+use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use egui::{Context, Frame, Margin, Ui};
 use egui_extras::{Column, TableBuilder};
 use std::sync::{Arc, Mutex};
@@ -13,6 +13,7 @@ use std::sync::{Arc, Mutex};
 pub struct DPNSContestedNamesScreen {
     contested_names: Arc<Mutex<Vec<ContestedName>>>,
     app_context: Arc<AppContext>,
+    error_message: Option<(String, MessageType)>,
 }
 
 impl DPNSContestedNamesScreen {
@@ -23,6 +24,7 @@ impl DPNSContestedNamesScreen {
         Self {
             contested_names,
             app_context: app_context.clone(),
+            error_message: None,
         }
     }
 
@@ -44,8 +46,6 @@ impl DPNSContestedNamesScreen {
             }
         }
 
-
-
         action
     }
 }
@@ -54,6 +54,10 @@ impl ScreenLike for DPNSContestedNamesScreen {
     fn refresh(&mut self) {
         let mut contested_names = self.contested_names.lock().unwrap();
         *contested_names = self.app_context.load_contested_names().unwrap_or_default();
+    }
+
+    fn display_message(&mut self, message: String, message_type: MessageType) {
+        self.error_message = Some((message, message_type));
     }
 
     fn ui(&mut self, ctx: &Context) -> AppAction {
@@ -77,6 +81,27 @@ impl ScreenLike for DPNSContestedNamesScreen {
 
         // Main content
         egui::CentralPanel::default().show(ctx, |ui| {
+            if let Some((message, message_type)) = &self.error_message {
+                let message_color = match message_type {
+                    MessageType::Error => egui::Color32::RED,
+                    MessageType::Info => egui::Color32::BLACK,
+                };
+
+                ui.add_space(10.0); // Add some space before the message view
+
+                ui.allocate_ui(
+                    egui::Vec2::new(ui.available_width(), 150.0), // Full width, 150 height
+                    |ui| {
+                        ui.group(|ui| {
+                            ui.set_min_height(150.0);
+                            ui.label(egui::RichText::new(message.clone()).color(message_color));
+                        });
+                    },
+                );
+
+                ui.add_space(10.0); // Add some space after the message view
+            }
+
             let contested_names = self.contested_names.lock().unwrap();
 
             egui::ScrollArea::vertical().show(ui, |ui| {
@@ -124,7 +149,9 @@ impl ScreenLike for DPNSContestedNamesScreen {
                                             ui.label(&contested_name.normalized_contested_name);
                                         });
                                         row.col(|ui| {
-                                            let label_text = if let Some(locked_votes) = contested_name.locked_votes {
+                                            let label_text = if let Some(locked_votes) =
+                                                contested_name.locked_votes
+                                            {
                                                 format!("{}", locked_votes)
                                             } else {
                                                 "Fetching".to_string()
@@ -132,7 +159,9 @@ impl ScreenLike for DPNSContestedNamesScreen {
                                             ui.label(label_text);
                                         });
                                         row.col(|ui| {
-                                            let label_text = if let Some(abstain_votes) = contested_name.abstain_votes {
+                                            let label_text = if let Some(abstain_votes) =
+                                                contested_name.abstain_votes
+                                            {
                                                 format!("{}", abstain_votes)
                                             } else {
                                                 "Fetching".to_string()

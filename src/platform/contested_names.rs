@@ -68,11 +68,30 @@ impl AppContext {
                         order_ascending: true,
                     };
 
-                    let contested_resources = ContestedResource::fetch_many(&sdk, query).await.map_err(|e| e.to_string())?;
+                    let contested_resources = ContestedResource::fetch_many(&sdk, query)
+                        .await
+                        .map_err(|e| {
+                            format!("error fetching contested resources: {}", e.to_string())
+                        })?;
 
-                    let contested_resources_as_strings : Vec<String> = contested_resources.0.into_iter().map(|contested_resource| contested_resource.0.as_str().expect("expected str").to_string()).collect();
+                    let contested_resources_as_strings: Vec<String> = contested_resources
+                        .0
+                        .into_iter()
+                        .map(|contested_resource| {
+                            contested_resource
+                                .0
+                                .as_str()
+                                .expect("expected str")
+                                .to_string()
+                        })
+                        .collect();
 
-                    self.db.insert_name_contests_as_normalized_names(contested_resources_as_strings, &self).map_err(|e| e.to_string())?;
+                    self.db
+                        .insert_name_contests_as_normalized_names(
+                            contested_resources_as_strings,
+                            &self,
+                        )
+                        .map_err(|e| e.to_string())?;
 
                     Ok(())
                 } else {

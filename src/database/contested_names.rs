@@ -59,7 +59,7 @@ impl Database {
                     awarded_to: awarded_to_id,
                     ending_time,
                     contestants: Some(Vec::new()), // Initialize as an empty vector
-                    my_votes: BTreeMap::new(), // Assuming this is filled elsewhere
+                    my_votes: BTreeMap::new(),     // Assuming this is filled elsewhere
                 });
 
             // If there are contestant details in the row, add them
@@ -124,8 +124,8 @@ impl Database {
                 let should_update = locked_votes != contested_name.locked_votes
                     || abstain_votes != contested_name.abstain_votes
                     || awarded_to.as_ref().map(|id| {
-                    Identifier::from_bytes(id).expect("expected 32 bytes for awarded to")
-                }) != contested_name.awarded_to
+                        Identifier::from_bytes(id).expect("expected 32 bytes for awarded to")
+                    }) != contested_name.awarded_to
                     || ending_time != contested_name.ending_time;
 
                 if should_update {
@@ -135,13 +135,13 @@ impl Database {
                      SET locked_votes = ?, abstain_votes = ?, awarded_to = ?, ending_time = ?
                      WHERE normalized_contested_name = ? AND network = ?",
                         params![
-                        contested_name.locked_votes,
-                        contested_name.abstain_votes,
-                        contested_name.awarded_to.as_ref().map(|id| id.to_vec()),
-                        contested_name.ending_time,
-                        contested_name.normalized_contested_name,
-                        network,
-                    ],
+                            contested_name.locked_votes,
+                            contested_name.abstain_votes,
+                            contested_name.awarded_to.as_ref().map(|id| id.to_vec()),
+                            contested_name.ending_time,
+                            contested_name.normalized_contested_name,
+                            network,
+                        ],
                     )?;
                 }
             }

@@ -6,7 +6,7 @@ pub fn initialize_logger() {
     // Initialize logger
     let log_file = std::fs::File::create("explorer.log").expect("Failed to create log file");
 
-    let filter = EnvFilter::try_new("info")
+    let filter = EnvFilter::try_new("trace")
         .unwrap()
         .add_directive("rs_dapi_client=off".parse().unwrap());
 

@@ -176,14 +176,16 @@ impl App for AppState {
             // Handle the result on the main thread
             match task_result {
                 TaskResult::Success(message) => {
-                    self.visible_screen_mut().display_message(message, MessageType::Info);
+                    self.visible_screen_mut()
+                        .display_message(message, MessageType::Info);
                 }
                 TaskResult::Error(message) => {
-                    self.visible_screen_mut().display_message(message, MessageType::Error);
+                    self.visible_screen_mut()
+                        .display_message(message, MessageType::Error);
                 }
             }
         }
-        
+
         let action = self.visible_screen_mut().ui(ctx);
 
         match action {

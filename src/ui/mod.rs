@@ -104,9 +104,7 @@ pub trait ScreenLike {
     fn refresh(&mut self);
     fn ui(&mut self, ctx: &Context) -> AppAction;
 
-    fn display_message(&mut self, message: String, message_type: MessageType) {
-
-    }
+    fn display_message(&mut self, message: String, message_type: MessageType) {}
 }
 
 // Implement Debug for Screen using the ScreenType
@@ -151,8 +149,12 @@ impl ScreenLike for Screen {
             Screen::AddIdentityScreen(screen) => screen.display_message(message, message_type),
             Screen::KeysScreen(screen) => screen.display_message(message, message_type),
             Screen::KeyInfoScreen(screen) => screen.display_message(message, message_type),
-            Screen::DPNSContestedNamesScreen(screen) => screen.display_message(message, message_type),
-            Screen::TransitionVisualizerScreen(screen) => screen.display_message(message, message_type),
+            Screen::DPNSContestedNamesScreen(screen) => {
+                screen.display_message(message, message_type)
+            }
+            Screen::TransitionVisualizerScreen(screen) => {
+                screen.display_message(message, message_type)
+            }
         }
     }
 }

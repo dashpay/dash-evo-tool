@@ -1,5 +1,3 @@
-use tokio::runtime::Runtime;
-
 mod app;
 mod config;
 mod database;
@@ -8,13 +6,19 @@ mod sdk_wrapper;
 mod ui;
 
 mod context;
+mod context_provider;
 mod model;
 mod platform;
 
 fn main() -> eframe::Result<()> {
     // Initialize the Tokio runtime
-    let runtime = Runtime::new().unwrap();
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(40)
+        .enable_all()
+        .build()
+        .expect("multi-threading runtime cannot be initialized");
 
+    // Run the native application
     runtime.block_on(async {
         let native_options = eframe::NativeOptions {
             persist_window: true, // Persist window size and position
@@ -24,7 +28,7 @@ fn main() -> eframe::Result<()> {
         eframe::run_native(
             "Identity Manager",
             native_options,
-            Box::new(|cc| Ok(Box::new(app::AppState::new()))),
+            Box::new(|_cc| Ok(Box::new(app::AppState::new()))),
         )
     })
 }

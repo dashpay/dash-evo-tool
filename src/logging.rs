@@ -6,9 +6,10 @@ pub fn initialize_logger() {
     // Initialize logger
     let log_file = std::fs::File::create("explorer.log").expect("Failed to create log file");
 
-    let filter = EnvFilter::try_new("trace")
-        .unwrap()
-        .add_directive("rs_dapi_client=off".parse().unwrap());
+    let filter = EnvFilter::try_new(
+        "debug,dash_sdk=trace,tenderdash_abci=trace,drive=trace,drive_proof_verifier=trace,rs_dapi_client=debug",
+    )
+    .unwrap();
 
     let subscriber = tracing_subscriber::fmt()
         .with_env_filter(filter)

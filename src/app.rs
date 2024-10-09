@@ -93,8 +93,8 @@ impl AppState {
     pub fn new() -> Self {
         initialize_logger();
         let mainnet_app_context =
-            Arc::new(AppContext::new(Network::Dash).expect("expected Dash config for mainnet"));
-        let testnet_app_context = AppContext::new(Network::Testnet).map(Arc::new);
+            AppContext::new(Network::Dash).expect("expected Dash config for mainnet");
+        let testnet_app_context = AppContext::new(Network::Testnet);
 
         let identities_screen = IdentitiesScreen::new(&mainnet_app_context);
         let dpns_contested_names_screen = DPNSContestedNamesScreen::new(&mainnet_app_context);

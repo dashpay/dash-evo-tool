@@ -1,35 +1,9 @@
-use dash_sdk::platform::transition::vote::PutVote;
-
 use crate::context::AppContext;
 use crate::platform::contract::ContractTask;
-use crate::platform::BackendTask;
+use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
-use dash_sdk::dpp::data_contract::DataContract;
-use dash_sdk::dpp::{
-    data_contract::{accessors::v0::DataContractV0Getters, document_type::DocumentType},
-    identifier::Identifier,
-    platform_value::{string_encoding::Encoding, Value},
-    voting::{
-        contender_structs::ContenderWithSerializedDocument,
-        vote_choices::resource_vote_choice::ResourceVoteChoice,
-        vote_polls::{
-            contested_document_resource_vote_poll::ContestedDocumentResourceVotePoll, VotePoll,
-        },
-        votes::{resource_vote::ResourceVote, Vote},
-    },
-};
-use dash_sdk::drive::query::{
-    vote_poll_vote_state_query::{
-        ContestedDocumentVotePollDriveQuery, ContestedDocumentVotePollDriveQueryResultType,
-    },
-    vote_polls_by_document_type_query::VotePollsByDocumentTypeQuery,
-    VotePollsByEndDateDriveQuery,
-};
-use dash_sdk::{
-    platform::{DocumentQuery, FetchMany},
-    query_types::ContestedResource,
-    Sdk,
-};
+use dash_sdk::drive::query::vote_polls_by_document_type_query::VotePollsByDocumentTypeQuery;
+use dash_sdk::{platform::FetchMany, query_types::ContestedResource, Sdk};
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum ContestedResourceTask {
@@ -44,10 +18,11 @@ impl AppContext {
         task: ContestedResourceTask,
         sdk: &Sdk,
     ) -> Result<(), String> {
+        let sdk = sdk.clone();
         match &task {
             ContestedResourceTask::QueryDPNSContestedResources => {
                 if self.dpns_contract.is_none() {
-                    self.run_contract_task(ContractTask::FetchDPNSContract, sdk)
+                    self.run_contract_task(ContractTask::FetchDPNSContract, &sdk)
                         .await?;
                 }
                 let Some(data_contract) = self.dpns_contract.as_ref() else {
@@ -71,6 +46,7 @@ impl AppContext {
                     let contested_resources = ContestedResource::fetch_many(&sdk, query)
                         .await
                         .map_err(|e| {
+                            tracing::error!("error fetching contested resources: {}", e);
                             format!("error fetching contested resources: {}", e.to_string())
                         })?;
 

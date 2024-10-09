@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 
 pub struct DPNSContestedNamesScreen {
     contested_names: Arc<Mutex<Vec<ContestedName>>>,
-    app_context: Arc<AppContext>,
+    pub app_context: Arc<AppContext>,
     error_message: Option<(String, MessageType)>,
 }
 

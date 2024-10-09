@@ -102,6 +102,20 @@ pub enum Screen {
     TransitionVisualizerScreen(TransitionVisualizerScreen),
 }
 
+impl Screen {
+    pub fn change_context(&mut self, app_context: Arc<AppContext>) {
+        match self {
+            Screen::IdentitiesScreen(screen) => screen.app_context = app_context,
+            Screen::DPNSContestedNamesScreen(screen) => screen.app_context = app_context,
+            Screen::AddIdentityScreen(screen) => screen.app_context = app_context,
+            Screen::KeyInfoScreen(screen) => screen.app_context = app_context,
+            Screen::KeysScreen(screen) => screen.app_context = app_context,
+            Screen::WithdrawalScreen(screen) => screen.app_context = app_context,
+            Screen::TransitionVisualizerScreen(screen) => screen.app_context = app_context,
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum MessageType {
     Info,

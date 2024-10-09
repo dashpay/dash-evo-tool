@@ -21,8 +21,8 @@ use egui_extras::{Column, TableBuilder};
 use std::sync::{Arc, Mutex};
 
 pub struct IdentitiesScreen {
-    identities: Arc<Mutex<Vec<QualifiedIdentity>>>,
-    app_context: Arc<AppContext>,
+    pub identities: Arc<Mutex<Vec<QualifiedIdentity>>>,
+    pub app_context: Arc<AppContext>,
 }
 
 impl IdentitiesScreen {

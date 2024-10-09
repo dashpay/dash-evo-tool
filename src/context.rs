@@ -1,4 +1,4 @@
-use crate::config::Config;
+use crate::config::{Config, NetworkConfig};
 use crate::database::Database;
 use crate::model::contested_name::ContestedName;
 use crate::model::qualified_identity::QualifiedIdentity;
@@ -17,27 +17,29 @@ pub struct AppContext {
     pub(crate) devnet_name: Option<String>,
     pub(crate) db: Arc<Database>,
     pub(crate) sdk: Arc<RwLock<Sdk>>,
-    pub(crate) config: Config,
+    pub(crate) config: NetworkConfig,
     pub(crate) dpns_contract: Arc<Option<DataContract>>,
     pub(crate) platform_version: &'static PlatformVersion,
 }
 
 impl AppContext {
-    pub fn new() -> Self {
+    pub fn new(network: Network) -> Option<Self> {
         let db = Arc::new(Database::new("identities.db").unwrap());
 
         let config = Config::load();
 
         db.initialize().unwrap();
 
-        let sdk = Arc::new(RwLock::new(initialize_sdk(&config)));
+        let network_config = config.config_for_network(network).clone()?;
+
+        let sdk = Arc::new(RwLock::new(initialize_sdk(&network_config, network)));
 
         let mut app_context = AppContext {
-            network: config.core_network(),
+            network,
             devnet_name: None,
             db,
             sdk,
-            config,
+            config: network_config,
             dpns_contract: Arc::new(None),
             platform_version: PlatformVersion::latest(),
         };
@@ -51,7 +53,7 @@ impl AppContext {
             app_context.dpns_contract = Arc::new(Some(contract));
         }
 
-        app_context
+        Some(app_context)
     }
 
     pub(crate) fn network_string(&self) -> String {

@@ -15,7 +15,7 @@ pub struct WithdrawalScreen {
     selected_key: Option<IdentityPublicKey>,
     withdrawal_amount: String,
     max_amount: u64,
-    app_context: Arc<AppContext>,
+    pub app_context: Arc<AppContext>,
     confirmation_popup: bool,
 }
 

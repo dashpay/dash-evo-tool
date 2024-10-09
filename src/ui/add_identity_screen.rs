@@ -25,7 +25,7 @@ pub struct AddIdentityScreen {
     owner_private_key_input: String,
     keys_input: Vec<String>,
     add_identity_status: AddIdentityStatus,
-    app_context: Arc<AppContext>,
+    pub app_context: Arc<AppContext>,
 }
 
 impl AddIdentityScreen {

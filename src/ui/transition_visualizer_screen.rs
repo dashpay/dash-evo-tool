@@ -10,7 +10,7 @@ use eframe::egui::{self, Context, ScrollArea, TextEdit, Ui};
 use std::sync::Arc;
 
 pub struct TransitionVisualizerScreen {
-    app_context: Arc<AppContext>,
+    pub app_context: Arc<AppContext>,
     input_data: String,
     parsed_json: Option<String>,
     error_message: Option<String>,

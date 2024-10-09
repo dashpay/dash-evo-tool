@@ -1,15 +1,16 @@
 use crate::context::AppContext;
+use crate::logging::initialize_logger;
 use crate::platform::BackendTask;
 use crate::ui::dpns_contested_names_screen::DPNSContestedNamesScreen;
 use crate::ui::identities_screen::IdentitiesScreen;
 use crate::ui::transition_visualizer_screen::TransitionVisualizerScreen;
-use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike, ScreenType};
+use crate::ui::{RootScreenType, Screen, ScreenLike, ScreenType};
+use dash_sdk::dpp::dashcore::Network;
 use eframe::{egui, App};
 use std::collections::BTreeMap;
 use std::ops::BitOrAssign;
 use std::sync::Arc;
 use std::vec;
-use tokio::sync::mpsc;
 
 #[derive(Debug)]
 pub enum TaskResult {
@@ -30,7 +31,9 @@ pub struct AppState {
     pub main_screens: BTreeMap<RootScreenType, Screen>,
     pub selected_main_screen: RootScreenType,
     pub screen_stack: Vec<Screen>,
-    pub app_context: Arc<AppContext>,
+    pub chosen_network: Network,
+    pub mainnet_app_context: Arc<AppContext>,
+    pub testnet_app_context: Option<Arc<AppContext>>,
     // pub task_result_sender: mpsc::Sender<TaskResult>, // Channel sender for sending task results
     // pub task_result_receiver: mpsc::Receiver<TaskResult>, // Channel receiver for receiving task results
 }
@@ -40,6 +43,7 @@ pub enum DesiredAppAction {
     None,
     PopScreen,
     GoToMainScreen,
+    SwitchNetwork(Network),
     AddScreenType(ScreenType),
     BackendTask(BackendTask),
 }
@@ -56,6 +60,7 @@ impl DesiredAppAction {
             DesiredAppAction::BackendTask(backend_task) => {
                 AppAction::BackendTask(backend_task.clone())
             }
+            DesiredAppAction::SwitchNetwork(network) => AppAction::SwitchNetwork(network.clone()),
         }
     }
 }
@@ -66,6 +71,7 @@ pub enum AppAction {
     PopScreen,
     PopScreenAndRefresh,
     GoToMainScreen,
+    SwitchNetwork(Network),
     SetMainScreen(RootScreenType),
     AddScreen(Screen),
     BackendTask(BackendTask),
@@ -84,11 +90,14 @@ impl BitOrAssign for AppAction {
 }
 impl AppState {
     pub fn new() -> Self {
-        let app_context = Arc::new(AppContext::new());
+        initialize_logger();
+        let mainnet_app_context =
+            Arc::new(AppContext::new(Network::Dash).expect("expected Dash config for mainnet"));
+        let testnet_app_context = AppContext::new(Network::Testnet).map(Arc::new);
 
-        let identities_screen = IdentitiesScreen::new(&app_context);
-        let dpns_contested_names_screen = DPNSContestedNamesScreen::new(&app_context);
-        let transition_visualizer_screen = TransitionVisualizerScreen::new(&app_context);
+        let identities_screen = IdentitiesScreen::new(&mainnet_app_context);
+        let dpns_contested_names_screen = DPNSContestedNamesScreen::new(&mainnet_app_context);
+        let transition_visualizer_screen = TransitionVisualizerScreen::new(&mainnet_app_context);
 
         // // Create a channel with a buffer size of 32 (adjust as needed)
         // let (task_result_sender, task_result_receiver) = mpsc::channel(256);
@@ -111,16 +120,28 @@ impl AppState {
             .into(),
             selected_main_screen: RootScreenType::RootScreenIdentities,
             screen_stack: vec![],
-            app_context,
+            chosen_network: Network::Dash,
+            mainnet_app_context,
+            testnet_app_context,
             // task_result_sender,
             // task_result_receiver,
+        }
+    }
+
+    pub fn current_app_context(&self) -> &Arc<AppContext> {
+        match self.chosen_network {
+            Network::Dash => &self.mainnet_app_context,
+            Network::Testnet => self.testnet_app_context.as_ref().expect("expected testnet"),
+            Network::Devnet => todo!(),
+            Network::Regtest => todo!(),
+            _ => todo!(),
         }
     }
 
     // Handle the backend task and send the result through the channel
     pub fn handle_backend_task(&self, task: BackendTask) {
         // let sender = self.task_result_sender.clone();
-        let app_context = self.app_context.clone();
+        let app_context = self.current_app_context().clone();
 
         tokio::spawn(async move {
             let result = app_context.run_backend_task(task).await;
@@ -142,6 +163,14 @@ impl AppState {
         self.main_screens
             .get_mut(&self.selected_main_screen)
             .expect("expected to get screen")
+    }
+
+    pub fn change_network(&mut self, network: Network) {
+        self.chosen_network = network;
+        let app_context = self.current_app_context().clone();
+        for screen in self.main_screens.values_mut() {
+            screen.change_context(app_context.clone())
+        }
     }
 
     pub fn visible_screen(&self) -> &Screen {
@@ -217,6 +246,7 @@ impl App for AppState {
                 self.selected_main_screen = root_screen_type;
                 self.active_root_screen_mut().refresh();
             }
+            AppAction::SwitchNetwork(network) => self.change_network(network),
         }
     }
 }

@@ -1,5 +1,7 @@
 use crate::context::AppContext;
-use crate::model::qualified_identity::EncryptedPrivateKeyTarget::PrivateKeyOnVoterIdentity;
+use crate::model::qualified_identity::EncryptedPrivateKeyTarget::{
+    PrivateKeyOnMainIdentity, PrivateKeyOnVoterIdentity,
+};
 use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
 use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
 use dash_sdk::dashcore_rpc::dashcore::{Address, PrivateKey};
@@ -110,6 +112,54 @@ impl AppContext {
         };
         Ok(key)
     }
+
+    fn verify_owner_key_exists_on_identity(
+        &self,
+        identity: &Identity,
+        private_voting_key: &[u8],
+    ) -> Result<IdentityPublicKey, String> {
+        // We start by getting all the voting keys
+        let owner_keys: Vec<IdentityPublicKey> = identity
+            .public_keys()
+            .values()
+            .filter_map(|key| {
+                if key.purpose() != Purpose::OWNER {
+                    return None;
+                }
+                Some(key.clone())
+            })
+            .collect();
+        if owner_keys.is_empty() {
+            return Err("This identity does not contain any owner keys".to_string());
+        }
+        // Then we get all the key types of the voting keys
+        let key_types: HashSet<KeyType> = owner_keys.iter().map(|key| key.key_type()).collect();
+        // For every key type get the associated public key data
+        let public_key_bytes_for_each_key_type = key_types
+            .into_iter()
+            .map(|key_type| {
+                Ok((
+                    key_type,
+                    key_type
+                        .public_key_data_from_private_key_data(private_voting_key, self.network)?,
+                ))
+            })
+            .collect::<Result<HashMap<KeyType, Vec<u8>>, ProtocolError>>()
+            .map_err(|e| e.to_string())?;
+        let Some(key) = owner_keys.into_iter().find(|key| {
+            let Some(public_key_bytes) = public_key_bytes_for_each_key_type.get(&key.key_type())
+            else {
+                return false;
+            };
+            key.data().as_slice() == public_key_bytes.as_slice()
+        }) else {
+            return Err(
+                "Identity does not have an owner public key matching this private key".to_string(),
+            );
+        };
+        Ok(key)
+    }
+
     pub async fn run_identity_task(&self, task: IdentityTask, sdk: &Sdk) -> Result<(), String> {
         match task {
             IdentityTask::LoadIdentity(input) => {
@@ -121,6 +171,9 @@ impl AppContext {
                     owner_private_key_input,
                     keys_input,
                 } = input;
+
+                // Verify the voting private key
+                let owner_private_key_bytes = verify_key_input(owner_private_key_input, "Owner")?;
 
                 // Verify the voting private key
                 let voting_private_key_bytes =
@@ -143,6 +196,18 @@ impl AppContext {
                 };
 
                 let mut encrypted_private_keys = BTreeMap::new();
+
+                if identity_type != IdentityType::User && owner_private_key_bytes.is_some() {
+                    let owner_private_key_bytes = owner_private_key_bytes.unwrap();
+                    let key = self.verify_owner_key_exists_on_identity(
+                        &identity,
+                        owner_private_key_bytes.as_slice(),
+                    )?;
+                    encrypted_private_keys.insert(
+                        (PrivateKeyOnMainIdentity, key.id()),
+                        (key.clone(), owner_private_key_bytes),
+                    );
+                }
 
                 // If the identity type is not a User, and we have a voting private key, verify it
                 let associated_voter_identity = if identity_type != IdentityType::User

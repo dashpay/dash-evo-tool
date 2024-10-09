@@ -1,15 +1,11 @@
 use crate::app::AppAction;
 use crate::context::AppContext;
-use crate::model::qualified_identity::{
-    EncryptedPrivateKeyTarget, IdentityType, QualifiedIdentity,
-};
+use crate::model::qualified_identity::QualifiedIdentity;
 use crate::platform::identity::IdentityTask;
 use crate::platform::BackendTask;
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::ScreenLike;
-use dash_sdk::dashcore_rpc::dashcore::address::{Error, NetworkUnchecked};
+use crate::ui::{MessageType, ScreenLike};
 use dash_sdk::dashcore_rpc::dashcore::Address;
-use dash_sdk::dpp::dash_to_credits;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::Purpose;
@@ -117,7 +113,7 @@ impl WithdrawalScreen {
                         IdentityTask::WithdrawFromIdentity(
                             self.identity.clone(),
                             address,
-                            dash_to_credits!(self.withdrawal_amount),
+                            10000000,
                         ),
                     ));
                 }
@@ -130,6 +126,10 @@ impl WithdrawalScreen {
 }
 
 impl ScreenLike for WithdrawalScreen {
+    fn display_message(&mut self, message: String, message_type: MessageType) {
+        self.error_message = Some(message);
+    }
+
     /// Renders the UI components for the withdrawal screen
     fn ui(&mut self, ctx: &Context) -> AppAction {
         let mut action = add_top_panel(

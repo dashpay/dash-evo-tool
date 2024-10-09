@@ -227,8 +227,12 @@ impl AddIdentityScreen {
 }
 
 impl ScreenLike for AddIdentityScreen {
-    fn display_message(&mut self, message: String, _message_type: MessageType) {
-        self.add_identity_status = AddIdentityStatus::ErrorMessage(message);
+    fn display_message(&mut self, message: String, message_type: MessageType) {
+        if message_type == MessageType::Info && message == "Success" {
+            self.add_identity_status = AddIdentityStatus::Complete;
+        } else {
+            self.add_identity_status = AddIdentityStatus::ErrorMessage(message);
+        }
     }
 
     fn ui(&mut self, ctx: &Context) -> AppAction {

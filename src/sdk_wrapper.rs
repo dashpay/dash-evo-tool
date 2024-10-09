@@ -22,7 +22,7 @@ pub fn initialize_sdk<P: ContextProvider + 'static>(
     };
 
     let sdk = SdkBuilder::new(address_list)
-        .with_version(PlatformVersion::get(1).unwrap())
+        .with_version(PlatformVersion::get(4).unwrap())
         .with_network(network)
         .with_context_provider(context_provider)
         .with_settings(request_settings)

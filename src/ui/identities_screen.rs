@@ -221,7 +221,7 @@ impl ScreenLike for IdentitiesScreen {
                                                 {
                                                     let holding_private_key = qualified_identity
                                                         .encrypted_private_keys
-                                                        .get(&(PrivateKeyOnMainIdentity, *key_id))
+                                                        .get(&(PrivateKeyOnVoterIdentity, *key_id))
                                                         .map(|(_, p)| p);
                                                     action |= self.show_public_key(
                                                         ui,

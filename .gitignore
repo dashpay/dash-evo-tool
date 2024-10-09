@@ -6,6 +6,7 @@ target/
 # Dot env file
 .env
 .env.backups
+.testnet_nodes.yml
 
 # Visual Studo Code configuration
 .vscode/

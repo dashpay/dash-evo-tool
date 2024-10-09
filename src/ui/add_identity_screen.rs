@@ -9,6 +9,7 @@ use dash_sdk::dpp::identity::TimestampMillis;
 use eframe::egui::Context;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
+use dash_sdk::dashcore_rpc::dashcore::Network;
 
 pub enum AddIdentityStatus {
     NotStarted,
@@ -136,6 +137,18 @@ impl ScreenLike for AddIdentityScreen {
 
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("Add Identity");
+
+            if self.app_context.network == Network::Testnet {
+                if ui.button("HPMN 4").clicked() {
+                    // Set the status to waiting and capture the current time
+                    let now = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .expect("Time went backwards")
+                        .as_secs();
+                    self.add_identity_status = AddIdentityStatus::WaitingForResult(now);
+                    action = self.load_identity_clicked(ui);
+                }
+            }
 
             ui.horizontal(|ui| {
                 ui.label("Identity ID (Hex or Base58):");

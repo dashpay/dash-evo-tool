@@ -11,6 +11,7 @@ use std::collections::BTreeMap;
 use std::ops::BitOrAssign;
 use std::sync::Arc;
 use std::vec;
+use crate::ui::network_chooser_screen::NetworkChooserScreen;
 
 #[derive(Debug)]
 pub enum TaskResult {
@@ -98,6 +99,7 @@ impl AppState {
         let identities_screen = IdentitiesScreen::new(&mainnet_app_context);
         let dpns_contested_names_screen = DPNSContestedNamesScreen::new(&mainnet_app_context);
         let transition_visualizer_screen = TransitionVisualizerScreen::new(&mainnet_app_context);
+        let network_chooser_screen = NetworkChooserScreen::new(&mainnet_app_context);
 
         // // Create a channel with a buffer size of 32 (adjust as needed)
         // let (task_result_sender, task_result_receiver) = mpsc::channel(256);
@@ -115,6 +117,10 @@ impl AppState {
                 (
                     RootScreenType::RootScreenTransitionVisualizerScreen,
                     Screen::TransitionVisualizerScreen(transition_visualizer_screen),
+                ),
+                (
+                    RootScreenType::RootScreenNetworkChooser,
+                    Screen::NetworkChooserScreen(network_chooser_screen),
                 ),
             ]
             .into(),

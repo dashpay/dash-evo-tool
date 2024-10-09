@@ -64,7 +64,7 @@ impl AppContext {
         &self,
         voting_identity: &Identity,
         private_voting_key: &[u8],
-    ) -> Result<KeyID, String> {
+    ) -> Result<IdentityPublicKey, String> {
         // We start by getting all the voting keys
         let voting_keys: Vec<IdentityPublicKey> = voting_identity
             .public_keys()
@@ -93,7 +93,7 @@ impl AppContext {
             })
             .collect::<Result<HashMap<KeyType, Vec<u8>>, ProtocolError>>()
             .map_err(|e| e.to_string())?;
-        let Some(key) = voting_keys.iter().find(|key| {
+        let Some(key) = voting_keys.into_iter().find(|key| {
             let Some(public_key_bytes) = public_key_bytes_for_each_key_type.get(&key.key_type())
             else {
                 return false;
@@ -104,7 +104,7 @@ impl AppContext {
                 "Identity does not have a voting public key matching this private key".to_string(),
             );
         };
-        Ok(key.id())
+        Ok(key)
     }
     pub async fn run_identity_task(&self, task: IdentityTask, sdk: &Sdk) -> Result<(), String> {
         match task {
@@ -165,13 +165,15 @@ impl AppContext {
                                 }
                             };
 
-                        let id = self.verify_voting_key_exists_on_identity(
+                        let key = self.verify_voting_key_exists_on_identity(
                             &voter_identity,
                             voting_private_key_bytes.as_slice(),
                         )?;
-                        encrypted_private_keys
-                            .insert((PrivateKeyOnVoterIdentity, id), voting_private_key_bytes);
-                        Some((voter_identity, id))
+                        encrypted_private_keys.insert(
+                            (PrivateKeyOnVoterIdentity, key.id()),
+                            (key.clone(), voting_private_key_bytes),
+                        );
+                        Some((voter_identity, key))
                     } else {
                         return Err("Voting private key is not valid".to_string());
                     }

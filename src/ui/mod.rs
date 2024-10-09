@@ -1,11 +1,13 @@
 use crate::app::AppAction;
 use crate::context::AppContext;
+use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::add_identity_screen::AddIdentityScreen;
 use crate::ui::dpns_contested_names_screen::DPNSContestedNamesScreen;
 use crate::ui::identities_screen::IdentitiesScreen;
 use crate::ui::key_info::KeyInfoScreen;
 use crate::ui::keys_screen::KeysScreen;
 use crate::ui::transition_visualizer_screen::TransitionVisualizerScreen;
+use crate::ui::withdrawals::WithdrawalScreen;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::Identity;
 use dash_sdk::dpp::prelude::IdentityPublicKey;
@@ -21,6 +23,7 @@ pub mod identities_screen;
 pub mod key_info;
 pub mod keys_screen;
 pub mod transition_visualizer_screen;
+mod withdrawals;
 
 #[derive(Debug, Clone, Copy, Ord, PartialOrd, Eq, PartialEq, Hash)]
 pub enum RootScreenType {
@@ -47,6 +50,7 @@ pub enum ScreenType {
     DPNSContestedNames,
     AddIdentity,
     TransitionVisualizerScreen,
+    WithdrawalScreen(QualifiedIdentity),
     KeyInfo(Identity, IdentityPublicKey, Option<Vec<u8>>),
     Keys(Identity),
 }
@@ -75,6 +79,9 @@ impl ScreenType {
             ScreenType::TransitionVisualizerScreen => {
                 Screen::TransitionVisualizerScreen(TransitionVisualizerScreen::new(app_context))
             }
+            ScreenType::WithdrawalScreen(identity) => {
+                Screen::WithdrawalScreen(WithdrawalScreen::new(identity.clone(), app_context))
+            }
         }
     }
 }
@@ -91,6 +98,7 @@ pub enum Screen {
     AddIdentityScreen(AddIdentityScreen),
     KeyInfoScreen(KeyInfoScreen),
     KeysScreen(KeysScreen),
+    WithdrawalScreen(WithdrawalScreen),
     TransitionVisualizerScreen(TransitionVisualizerScreen),
 }
 
@@ -101,7 +109,7 @@ pub enum MessageType {
 }
 
 pub trait ScreenLike {
-    fn refresh(&mut self);
+    fn refresh(&mut self) {}
     fn ui(&mut self, ctx: &Context) -> AppAction;
 
     fn display_message(&mut self, message: String, message_type: MessageType) {}
@@ -130,6 +138,7 @@ impl ScreenLike for Screen {
             Screen::KeyInfoScreen(key_info_screen) => key_info_screen.refresh(),
             Screen::DPNSContestedNamesScreen(contests) => contests.refresh(),
             Screen::TransitionVisualizerScreen(screen) => screen.refresh(),
+            Screen::WithdrawalScreen(screen) => screen.refresh(),
         }
     }
     fn ui(&mut self, ctx: &Context) -> AppAction {
@@ -140,6 +149,7 @@ impl ScreenLike for Screen {
             Screen::KeyInfoScreen(key_info_screen) => key_info_screen.ui(ctx),
             Screen::DPNSContestedNamesScreen(contests_screen) => contests_screen.ui(ctx),
             Screen::TransitionVisualizerScreen(screen) => screen.ui(ctx),
+            Screen::WithdrawalScreen(screen) => screen.ui(ctx),
         }
     }
 
@@ -155,6 +165,7 @@ impl ScreenLike for Screen {
             Screen::TransitionVisualizerScreen(screen) => {
                 screen.display_message(message, message_type)
             }
+            Screen::WithdrawalScreen(screen) => screen.display_message(message, message_type),
         }
     }
 }
@@ -172,6 +183,9 @@ impl Screen {
             Screen::IdentitiesScreen(_) => ScreenType::Identities,
             Screen::DPNSContestedNamesScreen(_) => ScreenType::DPNSContestedNames,
             Screen::TransitionVisualizerScreen(_) => ScreenType::TransitionVisualizerScreen,
+            Screen::WithdrawalScreen(screen) => {
+                ScreenType::WithdrawalScreen(screen.identity.clone())
+            }
         }
     }
 }

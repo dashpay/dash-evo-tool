@@ -6,6 +6,7 @@ use crate::ui::dpns_contested_names_screen::DPNSContestedNamesScreen;
 use crate::ui::identities_screen::IdentitiesScreen;
 use crate::ui::key_info::KeyInfoScreen;
 use crate::ui::keys_screen::KeysScreen;
+use crate::ui::network_chooser_screen::NetworkChooserScreen;
 use crate::ui::transition_visualizer_screen::TransitionVisualizerScreen;
 use crate::ui::withdrawals::WithdrawalScreen;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -15,7 +16,6 @@ use egui::Context;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
-use crate::ui::network_chooser_screen::NetworkChooserScreen;
 
 pub mod add_identity_screen;
 pub mod components;
@@ -23,9 +23,9 @@ pub mod dpns_contested_names_screen;
 pub mod identities_screen;
 pub mod key_info;
 pub mod keys_screen;
+pub mod network_chooser_screen;
 pub mod transition_visualizer_screen;
 pub mod withdrawals;
-pub mod network_chooser_screen;
 
 #[derive(Debug, Clone, Copy, Ord, PartialOrd, Eq, PartialEq, Hash)]
 pub enum RootScreenType {
@@ -43,9 +43,7 @@ impl From<RootScreenType> for ScreenType {
             RootScreenType::RootScreenTransitionVisualizerScreen => {
                 ScreenType::TransitionVisualizer
             }
-            RootScreenType::RootScreenNetworkChooser => {
-                ScreenType::NetworkChooser
-            }
+            RootScreenType::RootScreenNetworkChooser => ScreenType::NetworkChooser,
         }
     }
 }
@@ -110,7 +108,7 @@ pub enum Screen {
     KeysScreen(KeysScreen),
     WithdrawalScreen(WithdrawalScreen),
     TransitionVisualizerScreen(TransitionVisualizerScreen),
-    NetworkChooserScreen(NetworkChooserScreen)
+    NetworkChooserScreen(NetworkChooserScreen),
 }
 
 impl Screen {

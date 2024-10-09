@@ -5,11 +5,71 @@ use crate::platform::identity::{IdentityInputToLoad, IdentityTask};
 use crate::platform::BackendTask;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::ScreenLike;
+use dash_sdk::dashcore_rpc::dashcore::Network;
 use dash_sdk::dpp::identity::TimestampMillis;
 use eframe::egui::Context;
+use rand::prelude::IteratorRandom;
+use rand::thread_rng;
+use serde::Deserialize;
+use std::fs;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use dash_sdk::dashcore_rpc::dashcore::Network;
+
+#[derive(Debug, Clone, Deserialize)]
+struct MasternodeInfo {
+    #[serde(rename = "pro-tx-hash")]
+    pro_tx_hash: String,
+    owner: KeyInfo,
+    collateral: KeyInfo,
+    operator: OperatorInfo,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct HPMasternodeInfo {
+    #[serde(rename = "protx-tx-hash")]
+    protx_tx_hash: String,
+    owner: KeyInfo,
+    collateral: KeyInfo,
+    operator: OperatorInfo,
+    #[serde(rename = "node_key")]
+    node_key: Option<NodeKeyInfo>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct KeyInfo {
+    address: String,
+    #[serde(rename = "private_key")]
+    private_key: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct OperatorInfo {
+    #[serde(rename = "public_key")]
+    public_key: String,
+    #[serde(rename = "private_key")]
+    private_key: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct NodeKeyInfo {
+    id: String,
+    #[serde(rename = "private_key")]
+    private_key: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct TestnetNodes {
+    masternodes: std::collections::HashMap<String, MasternodeInfo>,
+    hp_masternodes: std::collections::HashMap<String, HPMasternodeInfo>,
+}
+
+fn load_testnet_nodes_from_yml(
+    file_path: &str,
+) -> Result<TestnetNodes, Box<dyn std::error::Error>> {
+    let file_content = fs::read_to_string(file_path)?;
+    let nodes: TestnetNodes = serde_yaml::from_str(&file_content)?;
+    Ok(nodes)
+}
 
 pub enum AddIdentityStatus {
     NotStarted,
@@ -26,11 +86,20 @@ pub struct AddIdentityScreen {
     owner_private_key_input: String,
     keys_input: Vec<String>,
     add_identity_status: AddIdentityStatus,
+    testnet_loaded_nodes: Option<TestnetNodes>,
     pub app_context: Arc<AppContext>,
 }
 
 impl AddIdentityScreen {
     pub fn new(app_context: &Arc<AppContext>) -> Self {
+        let testnet_loaded_nodes = if app_context.network == Network::Testnet {
+            Some(
+                load_testnet_nodes_from_yml(".testnet_nodes.yml")
+                    .expect("Failed to load testnet nodes"),
+            )
+        } else {
+            None
+        };
         Self {
             identity_id_input: String::new(),
             identity_type: IdentityType::User,
@@ -39,6 +108,7 @@ impl AddIdentityScreen {
             owner_private_key_input: String::new(),
             keys_input: vec![String::new()],
             add_identity_status: AddIdentityStatus::NotStarted,
+            testnet_loaded_nodes,
             app_context: app_context.clone(),
         }
     }
@@ -119,6 +189,39 @@ impl AddIdentityScreen {
             identity_input,
         )))
     }
+    fn fill_random_hpmn(&mut self) {
+        if let Some((name, hpmn)) = self
+            .testnet_loaded_nodes
+            .as_ref()
+            .unwrap()
+            .hp_masternodes
+            .iter()
+            .choose(&mut thread_rng())
+        {
+            self.identity_id_input = hpmn.protx_tx_hash.clone();
+            self.identity_type = IdentityType::Evonode;
+            self.alias_input = name.clone();
+            self.voting_private_key_input = hpmn.operator.private_key.clone();
+            self.owner_private_key_input = hpmn.owner.private_key.clone();
+        }
+    }
+
+    fn fill_random_masternode(&mut self) {
+        if let Some((name, masternode)) = self
+            .testnet_loaded_nodes
+            .as_ref()
+            .unwrap()
+            .masternodes
+            .iter()
+            .choose(&mut thread_rng())
+        {
+            self.identity_id_input = masternode.pro_tx_hash.clone();
+            self.identity_type = IdentityType::Masternode;
+            self.alias_input = name.clone();
+            self.voting_private_key_input = masternode.operator.private_key.clone();
+            self.owner_private_key_input = masternode.owner.private_key.clone();
+        }
+    }
 }
 
 impl ScreenLike for AddIdentityScreen {
@@ -138,15 +241,13 @@ impl ScreenLike for AddIdentityScreen {
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("Add Identity");
 
-            if self.app_context.network == Network::Testnet {
-                if ui.button("HPMN 4").clicked() {
-                    // Set the status to waiting and capture the current time
-                    let now = SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .expect("Time went backwards")
-                        .as_secs();
-                    self.add_identity_status = AddIdentityStatus::WaitingForResult(now);
-                    action = self.load_identity_clicked(ui);
+            if self.app_context.network == Network::Testnet && self.testnet_loaded_nodes.is_some() {
+                if ui.button("Fill Random HPMN").clicked() {
+                    self.fill_random_hpmn();
+                }
+
+                if ui.button("Fill Random Masternode").clicked() {
+                    self.fill_random_masternode();
                 }
             }
 

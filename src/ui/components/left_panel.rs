@@ -85,8 +85,7 @@ pub fn add_left_panel(
                 ui.add_space(10.0); // Add some space between buttons
 
                 // "N" button for Transition visualizer
-                let is_selected =
-                    selected_screen == RootScreenType::RootScreenNetworkChooser;
+                let is_selected = selected_screen == RootScreenType::RootScreenNetworkChooser;
                 let button_color = if is_selected {
                     Color32::from_rgb(100, 149, 237) // Highlighted blue color for selected
                 } else {
@@ -98,9 +97,7 @@ pub fn add_left_panel(
                     .min_size(egui::vec2(50.0, 50.0));
 
                 if ui.add(button).clicked() {
-                    action = AppAction::SetMainScreen(
-                        RootScreenType::RootScreenNetworkChooser,
-                    );
+                    action = AppAction::SetMainScreen(RootScreenType::RootScreenNetworkChooser);
                 }
             });
         });

@@ -3,6 +3,7 @@ use crate::logging::initialize_logger;
 use crate::platform::BackendTask;
 use crate::ui::dpns_contested_names_screen::DPNSContestedNamesScreen;
 use crate::ui::identities_screen::IdentitiesScreen;
+use crate::ui::network_chooser_screen::NetworkChooserScreen;
 use crate::ui::transition_visualizer_screen::TransitionVisualizerScreen;
 use crate::ui::{RootScreenType, Screen, ScreenLike, ScreenType};
 use dash_sdk::dpp::dashcore::Network;
@@ -11,7 +12,6 @@ use std::collections::BTreeMap;
 use std::ops::BitOrAssign;
 use std::sync::Arc;
 use std::vec;
-use crate::ui::network_chooser_screen::NetworkChooserScreen;
 
 #[derive(Debug)]
 pub enum TaskResult {

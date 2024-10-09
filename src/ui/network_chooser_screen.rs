@@ -1,11 +1,11 @@
 use crate::app::AppAction;
 use crate::context::AppContext;
+use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::{RootScreenType, ScreenLike};
 use dash_sdk::dpp::dashcore::Network;
 use eframe::egui::{self, Color32, Context, Ui};
 use std::sync::Arc;
-use crate::ui::components::left_panel::add_left_panel;
-use crate::ui::components::top_panel::add_top_panel;
 
 pub struct NetworkChooserScreen {
     pub app_context: Arc<AppContext>,
@@ -26,7 +26,7 @@ impl NetworkChooserScreen {
     }
 
     /// Render the network selection table
-    fn render_network_table(&mut self, ui: &mut Ui) -> AppAction  {
+    fn render_network_table(&mut self, ui: &mut Ui) -> AppAction {
         let mut app_action = AppAction::None;
         ui.heading("Choose Network");
 
@@ -96,8 +96,11 @@ impl ScreenLike for NetworkChooserScreen {
             None,
         );
 
-        action |= add_left_panel(ctx, &self.app_context, RootScreenType::RootScreenNetworkChooser);
-
+        action |= add_left_panel(
+            ctx,
+            &self.app_context,
+            RootScreenType::RootScreenNetworkChooser,
+        );
 
         egui::CentralPanel::default().show(ctx, |ui| {
             action |= self.render_network_table(ui);

@@ -5,7 +5,7 @@ use crate::model::qualified_identity::EncryptedPrivateKeyTarget::{
 };
 use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::{MessageType, ScreenLike};
+use crate::ui::ScreenLike;
 use dash_sdk::dpp::dashcore::secp256k1::Secp256k1;
 use dash_sdk::dpp::dashcore::PrivateKey;
 use dash_sdk::dpp::identifier::{Identifier, MasternodeIdentifiers};
@@ -202,21 +202,14 @@ impl ScreenLike for AddIdentityScreen {
                     };
 
                 if !error_out {
-                    let sdk_clone = Arc::clone(&self.app_context.sdk);
+                    let sdk = self.app_context.sdk.clone();
 
                     // Create the shared state
                     let identity_result = Arc::new(Mutex::new(None));
                     let identity_result_clone = Arc::clone(&identity_result);
-
-                    // Lock the mutex and clone the Sdk
-                    let sdk_instance = {
-                        let sdk = sdk_clone.read().unwrap();
-                        sdk.clone() // Assuming Sdk implements Clone
-                    };
                     // Now sdk_instance is owned and can be moved into the async block
 
                     let network = self.app_context.network;
-
                     // Spawn the async task
                     tokio::spawn(async move {
                         // Parse the identity ID
@@ -240,8 +233,7 @@ impl ScreenLike for AddIdentityScreen {
                             };
 
                         // Fetch the identity using the cloned sdk_instance
-                        let fetch_result =
-                            Identity::fetch_by_identifier(&sdk_instance, identity_id).await;
+                        let fetch_result = Identity::fetch_by_identifier(&sdk, identity_id).await;
 
                         let mut result = match fetch_result {
                             Ok(Some(identity)) => Ok(identity),
@@ -267,8 +259,7 @@ impl ScreenLike for AddIdentityScreen {
                                     address.as_ref(),
                                 );
                                 let fetch_voter_result =
-                                    Identity::fetch_by_identifier(&sdk_instance, voter_identifier)
-                                        .await;
+                                    Identity::fetch_by_identifier(&sdk, voter_identifier).await;
 
                                 let voter_result = match fetch_voter_result {
                                     Ok(Some(identity)) => Ok(identity),

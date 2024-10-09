@@ -8,9 +8,9 @@ rust-version = "1.81"
 
 [dependencies]
 accesskit = "=0.16.1"
-egui = { version = "0.29.1"}
+egui = { version = "0.29.1" }
 egui_extras = "0.29.1"
-eframe = { version = "0.29.1" , features = ["persistence"]}
+eframe = { version = "0.29.1", features = ["persistence"] }
 strum = { version = "0.26.1", features = ["derive"] }
 bs58 = "0.5.0"
 base64 = "0.22.1"
@@ -35,7 +35,7 @@ tracing = "0.1.40"
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 dotenvy = "0.15.7"
 envy = "0.4.2"
-clap = { version = "4.5.1", features = ["derive"] }
+clap = { version = "4.5.20", features = ["derive"] }
 governor = "0.6.3"
 tokio-util = "0.7.10"
 chrono = "0.4"
@@ -43,8 +43,9 @@ chrono-humanize = "0.2.3"
 dashmap = "5.5.3"
 grovedb-version = "2.0.3"
 sha2 = "0.10.8"
-arboard = { version = "3.4.0", default-features = false, features = ["windows-sys"] }
+arboard = { version = "3.4.0", default-features = false, features = [
+    "windows-sys",
+] }
 
 hdrhistogram = "7.5.4"
-rusqlite = { version = "0.32.1"}
-
+rusqlite = { version = "0.32.1" }

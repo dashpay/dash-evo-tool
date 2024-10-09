@@ -1,4 +1,5 @@
 use crate::config::Config;
+use crate::context_provider::Provider;
 use crate::database::Database;
 use crate::model::contested_name::ContestedName;
 use crate::model::qualified_identity::QualifiedIdentity;
@@ -9,28 +10,31 @@ use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::platform::DataContract;
 use dash_sdk::Sdk;
 use rusqlite::Result;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 #[derive(Debug)]
 pub struct AppContext {
     pub(crate) network: Network,
     pub(crate) devnet_name: Option<String>,
     pub(crate) db: Arc<Database>,
-    pub(crate) sdk: Arc<RwLock<Sdk>>,
+    pub(crate) sdk: Sdk,
     pub(crate) config: Config,
     pub(crate) dpns_contract: Arc<Option<DataContract>>,
     pub(crate) platform_version: &'static PlatformVersion,
 }
 
 impl AppContext {
-    pub fn new() -> Self {
+    pub fn new() -> Arc<Self> {
         let db = Arc::new(Database::new("identities.db").unwrap());
 
         let config = Config::load();
 
         db.initialize().unwrap();
 
-        let sdk = Arc::new(RwLock::new(initialize_sdk(&config)));
+        // we create provider, but we need to set app context to it later, as we have a circular dependency
+        let provider = Provider::new(db.clone(), &config).expect("Failed to initialize SDK");
+
+        let sdk = initialize_sdk(&config, provider.clone());
 
         let mut app_context = AppContext {
             network: config.core_network(),
@@ -50,6 +54,8 @@ impl AppContext {
         if let Some(contract) = contract {
             app_context.dpns_contract = Arc::new(Some(contract));
         }
+        let app_context = Arc::new(app_context);
+        provider.bind_app_context(app_context.clone());
 
         app_context
     }

@@ -20,7 +20,7 @@ impl AppContext {
     }
 
     pub async fn run_backend_task(&self, task: BackendTask) -> Result<(), String> {
-        let sdk = self.sdk.read().expect("expected to get sdk").clone();
+        let sdk = self.sdk.clone();
         match task {
             BackendTask::ContractTask(contract_task) => {
                 self.run_contract_task(contract_task, &sdk).await

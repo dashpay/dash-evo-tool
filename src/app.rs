@@ -84,7 +84,7 @@ impl BitOrAssign for AppAction {
 }
 impl AppState {
     pub fn new() -> Self {
-        let app_context = Arc::new(AppContext::new());
+        let app_context = AppContext::new();
 
         let identities_screen = IdentitiesScreen::new(&app_context);
         let dpns_contested_names_screen = DPNSContestedNamesScreen::new(&app_context);

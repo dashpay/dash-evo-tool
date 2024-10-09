@@ -1,7 +1,7 @@
 use crate::config::Config;
 use crate::context::AppContext;
 use crate::database::Database;
-use dash_sdk::core_client::CoreClient;
+use dash_sdk::core::LowLevelDashCoreClient as CoreClient;
 use dash_sdk::error::ContextProviderError;
 use dash_sdk::platform::ContextProvider;
 use dash_sdk::platform::DataContract;

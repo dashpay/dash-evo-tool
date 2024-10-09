@@ -1,4 +1,4 @@
-use crate::config::Config;
+use crate::config::{Config, NetworkConfig};
 use crate::context_provider::Provider;
 use crate::database::Database;
 use crate::model::contested_name::ContestedName;
@@ -18,30 +18,33 @@ pub struct AppContext {
     pub(crate) devnet_name: Option<String>,
     pub(crate) db: Arc<Database>,
     pub(crate) sdk: Sdk,
-    pub(crate) config: Config,
+    pub(crate) config: NetworkConfig,
     pub(crate) dpns_contract: Arc<Option<DataContract>>,
     pub(crate) platform_version: &'static PlatformVersion,
 }
 
 impl AppContext {
-    pub fn new() -> Arc<Self> {
+    pub fn new(network: Network) -> Option<Arc<Self>> {
         let db = Arc::new(Database::new("identities.db").unwrap());
 
         let config = Config::load();
 
         db.initialize().unwrap();
 
-        // we create provider, but we need to set app context to it later, as we have a circular dependency
-        let provider = Provider::new(db.clone(), &config).expect("Failed to initialize SDK");
+        let network_config = config.config_for_network(network).clone()?;
 
-        let sdk = initialize_sdk(&config, provider.clone());
+        // we create provider, but we need to set app context to it later, as we have a circular dependency
+        let provider =
+            Provider::new(db.clone(), &network_config).expect("Failed to initialize SDK");
+
+        let sdk = initialize_sdk(&network_config, network, provider.clone());
 
         let mut app_context = AppContext {
-            network: config.core_network(),
+            network,
             devnet_name: None,
             db,
             sdk,
-            config,
+            config: network_config,
             dpns_contract: Arc::new(None),
             platform_version: PlatformVersion::latest(),
         };
@@ -57,7 +60,7 @@ impl AppContext {
         let app_context = Arc::new(app_context);
         provider.bind_app_context(app_context.clone());
 
-        app_context
+        Some(app_context)
     }
 
     pub(crate) fn network_string(&self) -> String {

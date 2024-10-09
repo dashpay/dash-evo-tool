@@ -1,4 +1,4 @@
-use crate::config::Config;
+use crate::config::NetworkConfig;
 use crate::context::AppContext;
 use crate::database::Database;
 use dash_sdk::core::LowLevelDashCoreClient as CoreClient;
@@ -18,7 +18,7 @@ impl Provider {
     /// Create new ContextProvider.
     ///
     /// Note that you have to bind it to app context using [Provider::set_app_context()].
-    pub fn new(db: Arc<Database>, config: &Config) -> Result<Self, String> {
+    pub fn new(db: Arc<Database>, config: &NetworkConfig) -> Result<Self, String> {
         let core_client = CoreClient::new(
             &config.core_host,
             config.core_rpc_port,

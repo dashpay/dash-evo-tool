@@ -7,6 +7,7 @@ use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::key_info::KeyInfoScreen;
+use crate::ui::withdrawals::WithdrawalScreen;
 use crate::ui::{RootScreenType, Screen, ScreenLike, ScreenType};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
@@ -20,8 +21,8 @@ use egui_extras::{Column, TableBuilder};
 use std::sync::{Arc, Mutex};
 
 pub struct IdentitiesScreen {
-    identities: Arc<Mutex<Vec<QualifiedIdentity>>>,
-    app_context: Arc<AppContext>,
+    pub identities: Arc<Mutex<Vec<QualifiedIdentity>>>,
+    pub app_context: Arc<AppContext>,
 }
 
 impl IdentitiesScreen {
@@ -203,7 +204,8 @@ impl ScreenLike for IdentitiesScreen {
                                             for (key_id, key) in public_keys.iter() {
                                                 let holding_private_key = qualified_identity
                                                     .encrypted_private_keys
-                                                    .get(&(PrivateKeyOnMainIdentity, *key_id));
+                                                    .get(&(PrivateKeyOnMainIdentity, *key_id))
+                                                    .map(|(_, p)| p);
                                                 action |= self.show_public_key(
                                                     ui,
                                                     &qualified_identity.identity,
@@ -219,7 +221,8 @@ impl ScreenLike for IdentitiesScreen {
                                                 {
                                                     let holding_private_key = qualified_identity
                                                         .encrypted_private_keys
-                                                        .get(&(PrivateKeyOnVoterIdentity, *key_id));
+                                                        .get(&(PrivateKeyOnMainIdentity, *key_id))
+                                                        .map(|(_, p)| p);
                                                     action |= self.show_public_key(
                                                         ui,
                                                         &qualified_identity.identity,
@@ -231,7 +234,13 @@ impl ScreenLike for IdentitiesScreen {
                                         });
                                         row.col(|ui| {
                                             if ui.button("Withdraw").clicked() {
-                                                // Implement Withdraw functionality
+                                                action =
+                                                    AppAction::AddScreen(Screen::WithdrawalScreen(
+                                                        WithdrawalScreen::new(
+                                                            qualified_identity.clone(),
+                                                            &self.app_context,
+                                                        ),
+                                                    ));
                                             }
                                         });
                                         row.col(|ui| {

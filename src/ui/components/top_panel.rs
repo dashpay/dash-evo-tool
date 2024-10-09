@@ -1,5 +1,6 @@
 use crate::app::{AppAction, DesiredAppAction};
 use crate::context::AppContext;
+use dash_sdk::dashcore_rpc::dashcore::Network;
 use egui::{Align, Color32, Context, Frame, Layout, Margin, RichText, Stroke, TopBottomPanel, Ui};
 use std::sync::Arc;
 
@@ -35,10 +36,17 @@ pub fn add_top_panel(
     right_button: Option<(&str, DesiredAppAction)>,
 ) -> AppAction {
     let mut action = AppAction::None;
+    let color = match app_context.network {
+        Network::Dash => Color32::from_rgb(21, 101, 192), // A blue color for mainnet
+        Network::Testnet => Color32::from_rgb(255, 165, 0), // Orange for testnet
+        Network::Devnet => Color32::from_rgb(255, 0, 0),  // Red for devnet
+        Network::Regtest => Color32::from_rgb(139, 69, 19), // Orange-brown for regtest
+        _ => Color32::BLACK,
+    };
     TopBottomPanel::top("top_panel")
         .frame(
             Frame::none()
-                .fill(Color32::from_rgb(21, 101, 192)) // Dash blue color
+                .fill(color) // Dash blue color
                 .inner_margin(Margin::symmetric(10.0, 10.0)),
         ) // Customize inner margin (top/bottom padding)
         .exact_height(50.0) // Set exact height for the panel

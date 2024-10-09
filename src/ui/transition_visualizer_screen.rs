@@ -1,8 +1,8 @@
-use crate::app::{AppAction, DesiredAppAction};
+use crate::app::AppAction;
 use crate::context::AppContext;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::{RootScreenType, ScreenLike, ScreenType};
+use crate::ui::{RootScreenType, ScreenLike};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use dash_sdk::dpp::serialization::PlatformDeserializable;
 use dash_sdk::dpp::state_transition::StateTransition;
@@ -10,7 +10,7 @@ use eframe::egui::{self, Context, ScrollArea, TextEdit, Ui};
 use std::sync::Arc;
 
 pub struct TransitionVisualizerScreen {
-    app_context: Arc<AppContext>,
+    pub app_context: Arc<AppContext>,
     input_data: String,
     parsed_json: Option<String>,
     error_message: Option<String>,
@@ -110,13 +110,14 @@ impl ScreenLike for TransitionVisualizerScreen {
             ctx,
             &self.app_context,
             vec![("Home", AppAction::None)],
-            Some((
-                "Add Identity",
-                DesiredAppAction::AddScreenType(ScreenType::AddIdentity),
-            )),
+            None,
         );
 
-        action |= add_left_panel(ctx, &self.app_context, RootScreenType::RootScreenIdentities);
+        action |= add_left_panel(
+            ctx,
+            &self.app_context,
+            RootScreenType::RootScreenTransitionVisualizerScreen,
+        );
 
         egui::CentralPanel::default().show(ctx, |ui| {
             self.show_input_field(ui);

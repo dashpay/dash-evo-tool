@@ -4,7 +4,7 @@ use crate::model::qualified_identity::IdentityType;
 use crate::platform::identity::{IdentityInputToLoad, IdentityTask};
 use crate::platform::BackendTask;
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::ScreenLike;
+use crate::ui::{MessageType, ScreenLike};
 use dash_sdk::dashcore_rpc::dashcore::Network;
 use dash_sdk::dpp::identity::TimestampMillis;
 use eframe::egui::Context;
@@ -21,6 +21,7 @@ struct MasternodeInfo {
     pro_tx_hash: String,
     owner: KeyInfo,
     collateral: KeyInfo,
+    voter: KeyInfo,
     operator: OperatorInfo,
 }
 
@@ -30,6 +31,7 @@ struct HPMasternodeInfo {
     protx_tx_hash: String,
     owner: KeyInfo,
     collateral: KeyInfo,
+    voter: KeyInfo,
     operator: OperatorInfo,
     #[serde(rename = "node_key")]
     node_key: Option<NodeKeyInfo>,
@@ -201,7 +203,7 @@ impl AddIdentityScreen {
             self.identity_id_input = hpmn.protx_tx_hash.clone();
             self.identity_type = IdentityType::Evonode;
             self.alias_input = name.clone();
-            self.voting_private_key_input = hpmn.operator.private_key.clone();
+            self.voting_private_key_input = hpmn.voter.private_key.clone();
             self.owner_private_key_input = hpmn.owner.private_key.clone();
         }
     }
@@ -218,14 +220,16 @@ impl AddIdentityScreen {
             self.identity_id_input = masternode.pro_tx_hash.clone();
             self.identity_type = IdentityType::Masternode;
             self.alias_input = name.clone();
-            self.voting_private_key_input = masternode.operator.private_key.clone();
+            self.voting_private_key_input = masternode.voter.private_key.clone();
             self.owner_private_key_input = masternode.owner.private_key.clone();
         }
     }
 }
 
 impl ScreenLike for AddIdentityScreen {
-    fn refresh(&mut self) {}
+    fn display_message(&mut self, message: String, _message_type: MessageType) {
+        self.add_identity_status = AddIdentityStatus::ErrorMessage(message);
+    }
 
     fn ui(&mut self, ctx: &Context) -> AppAction {
         let mut action = add_top_panel(

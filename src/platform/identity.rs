@@ -2,15 +2,18 @@ use crate::context::AppContext;
 use crate::model::qualified_identity::EncryptedPrivateKeyTarget::PrivateKeyOnVoterIdentity;
 use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
 use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
-use dash_sdk::dashcore_rpc::dashcore::PrivateKey;
+use dash_sdk::dashcore_rpc::dashcore::{Address, PrivateKey};
+use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identifier::MasternodeIdentifiers;
-use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
-use dash_sdk::dpp::identity::{KeyID, KeyType, Purpose};
+use dash_sdk::dpp::identity::{KeyType, Purpose};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::ProtocolError;
+use dash_sdk::platform::transition::withdraw_from_identity::WithdrawFromIdentity;
 use dash_sdk::platform::{Fetch, Identifier, Identity, IdentityPublicKey};
 use dash_sdk::Sdk;
+use futures::TryFutureExt;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -26,6 +29,7 @@ pub struct IdentityInputToLoad {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum IdentityTask {
     LoadIdentity(IdentityInputToLoad),
+    WithdrawFromIdentity(QualifiedIdentity, Option<Address>, Credits),
 }
 
 fn verify_key_input(
@@ -200,6 +204,25 @@ impl AppContext {
                     .map_err(|e| format!("Database error: {}", e))?;
 
                 Ok(())
+            }
+            IdentityTask::WithdrawFromIdentity(mut qualified_identity, to_address, credits) => {
+                let remaining_balance = qualified_identity
+                    .identity
+                    .clone()
+                    .withdraw(
+                        &self.sdk,
+                        to_address,
+                        credits,
+                        Some(1),
+                        None,
+                        qualified_identity.clone(),
+                        None,
+                    )
+                    .await
+                    .map_err(|e| format!("Withdrawal error: {}", e))?;
+                qualified_identity.identity.set_balance(remaining_balance);
+                self.insert_local_qualified_identity(&qualified_identity)
+                    .map_err(|e| format!("Database error: {}", e))
             }
         }
     }

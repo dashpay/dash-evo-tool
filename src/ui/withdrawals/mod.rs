@@ -51,10 +51,18 @@ impl WithdrawalScreen {
                     None => "Select a key".to_string(),
                 })
                 .show_ui(ui, |ui| {
-                    for key in self.identity.available_withdrawal_keys() {
-                        let label = format!("Key ID: {} (Purpose: {:?})", key.id(), key.purpose());
-                        let selectable =
+                    if self.app_context.developer_mode {
+                        for key in self.identity.identity.public_keys().values() {
+                            let label =
+                                format!("Key ID: {} (Purpose: {:?})", key.id(), key.purpose());
                             ui.selectable_value(&mut self.selected_key, Some(key.clone()), label);
+                        }
+                    } else {
+                        for key in self.identity.available_withdrawal_keys() {
+                            let label =
+                                format!("Key ID: {} (Purpose: {:?})", key.id(), key.purpose());
+                            ui.selectable_value(&mut self.selected_key, Some(key.clone()), label);
+                        }
                     }
                 });
         });
@@ -89,8 +97,10 @@ impl WithdrawalScreen {
 
     fn show_confirmation_popup(&mut self, ui: &mut Ui) -> AppAction {
         let mut app_action = AppAction::None;
+        let mut is_open = true;
         egui::Window::new("Confirm Withdrawal")
             .collapsible(false)
+            .open(&mut is_open)
             .show(ui.ctx(), |ui| {
                 let address = if self.withdrawal_address.is_empty() {
                     None
@@ -111,9 +121,11 @@ impl WithdrawalScreen {
                     .masternode_payout_address(self.app_context.network)
                 {
                     format!("masternode payout address {}", payout_address.to_string())
-                } else {
+                } else if !self.app_context.developer_mode {
                     self.error_message = Some("No masternode payout address".to_string());
                     return;
+                } else {
+                    "to default address".to_string()
                 };
 
                 let Some(selected_key) = self.selected_key.as_ref() else {
@@ -159,6 +171,9 @@ impl WithdrawalScreen {
                     self.confirmation_popup = false;
                 }
             });
+        if !is_open {
+            self.confirmation_popup = false;
+        }
         app_action
     }
 }

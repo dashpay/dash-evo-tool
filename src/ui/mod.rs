@@ -2,9 +2,10 @@ use crate::app::AppAction;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::add_identity_screen::AddIdentityScreen;
+use crate::ui::add_key_screen::AddKeyScreen;
 use crate::ui::dpns_contested_names_screen::DPNSContestedNamesScreen;
 use crate::ui::identities_screen::IdentitiesScreen;
-use crate::ui::key_info::KeyInfoScreen;
+use crate::ui::key_info_screen::KeyInfoScreen;
 use crate::ui::keys_screen::KeysScreen;
 use crate::ui::network_chooser_screen::NetworkChooserScreen;
 use crate::ui::transition_visualizer_screen::TransitionVisualizerScreen;
@@ -18,10 +19,11 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 pub mod add_identity_screen;
+mod add_key_screen;
 pub mod components;
 pub mod dpns_contested_names_screen;
 pub mod identities_screen;
-pub mod key_info;
+pub mod key_info_screen;
 pub mod keys_screen;
 pub mod network_chooser_screen;
 pub mod transition_visualizer_screen;
@@ -78,6 +80,7 @@ pub enum ScreenType {
     AddIdentity,
     TransitionVisualizer,
     WithdrawalScreen(QualifiedIdentity),
+    AddKeyScreen(QualifiedIdentity),
     KeyInfo(QualifiedIdentity, IdentityPublicKey, Option<Vec<u8>>),
     Keys(Identity),
     NetworkChooser,
@@ -113,6 +116,9 @@ impl ScreenType {
             ScreenType::NetworkChooser => {
                 Screen::NetworkChooserScreen(NetworkChooserScreen::new(app_context))
             }
+            ScreenType::AddKeyScreen(identity) => {
+                Screen::AddKeyScreen(AddKeyScreen::new(identity.clone(), app_context))
+            }
         }
     }
 }
@@ -130,6 +136,7 @@ pub enum Screen {
     KeyInfoScreen(KeyInfoScreen),
     KeysScreen(KeysScreen),
     WithdrawalScreen(WithdrawalScreen),
+    AddKeyScreen(AddKeyScreen),
     TransitionVisualizerScreen(TransitionVisualizerScreen),
     NetworkChooserScreen(NetworkChooserScreen),
 }
@@ -145,6 +152,7 @@ impl Screen {
             Screen::WithdrawalScreen(screen) => screen.app_context = app_context,
             Screen::TransitionVisualizerScreen(screen) => screen.app_context = app_context,
             Screen::NetworkChooserScreen(screen) => screen.app_context = app_context,
+            Screen::AddKeyScreen(screen) => screen.app_context = app_context,
         }
     }
 }
@@ -187,6 +195,7 @@ impl ScreenLike for Screen {
             Screen::TransitionVisualizerScreen(screen) => screen.refresh(),
             Screen::WithdrawalScreen(screen) => screen.refresh(),
             Screen::NetworkChooserScreen(screen) => screen.refresh(),
+            Screen::AddKeyScreen(screen) => screen.refresh(),
         }
     }
     fn ui(&mut self, ctx: &Context) -> AppAction {
@@ -199,6 +208,7 @@ impl ScreenLike for Screen {
             Screen::TransitionVisualizerScreen(screen) => screen.ui(ctx),
             Screen::WithdrawalScreen(screen) => screen.ui(ctx),
             Screen::NetworkChooserScreen(screen) => screen.ui(ctx),
+            Screen::AddKeyScreen(screen) => screen.ui(ctx),
         }
     }
 
@@ -216,6 +226,7 @@ impl ScreenLike for Screen {
             }
             Screen::WithdrawalScreen(screen) => screen.display_message(message, message_type),
             Screen::NetworkChooserScreen(screen) => screen.display_message(message, message_type),
+            Screen::AddKeyScreen(screen) => screen.display_message(message, message_type),
         }
     }
 }
@@ -237,6 +248,7 @@ impl Screen {
                 ScreenType::WithdrawalScreen(screen.identity.clone())
             }
             Screen::NetworkChooserScreen(_) => ScreenType::NetworkChooser,
+            Screen::AddKeyScreen(screen) => ScreenType::AddKeyScreen(screen.identity.clone()),
         }
     }
 }

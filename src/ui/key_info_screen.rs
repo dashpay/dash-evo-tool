@@ -3,10 +3,15 @@ use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::ScreenLike;
+use dash_sdk::dpp::dashcore::address::Payload;
+use dash_sdk::dpp::dashcore::hashes::Hash;
+use dash_sdk::dpp::dashcore::{Address, PubkeyHash, ScriptHash};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::hash::IdentityPublicKeyHashMethodsV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
-use dash_sdk::dpp::identity::Identity;
+use dash_sdk::dpp::identity::KeyType::BIP13_SCRIPT_HASH;
+use dash_sdk::dpp::identity::{Identity, KeyType};
+use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::prelude::IdentityPublicKey;
 use eframe::egui::{self, Context};
 use egui::{RichText, TextEdit};
@@ -66,6 +71,70 @@ impl ScreenLike for KeyInfoScreen {
                     // Read Only
                     ui.label(RichText::new("Read Only:").strong());
                     ui.label(format!("{}", self.key.read_only()));
+                    ui.end_row();
+                });
+
+            ui.separator();
+
+            // Display the public key information
+            ui.heading("Public Key Information");
+
+            egui::Grid::new("public_key_info_grid")
+                .num_columns(2)
+                .spacing([10.0, 10.0])
+                .striped(true)
+                .show(ui, |ui| {
+                    match self.key.key_type() {
+                        KeyType::ECDSA_SECP256K1 | KeyType::BLS12_381 => {
+                            // Public Key Hex
+                            ui.label(RichText::new("Public Key (Hex):").strong());
+                            ui.label(self.key.data().to_string(Encoding::Hex));
+                            ui.end_row();
+
+                            // Public Key Hex
+                            ui.label(RichText::new("Public Key (Base64):").strong());
+                            ui.label(self.key.data().to_string(Encoding::Base64));
+                            ui.end_row();
+                        }
+                        _ => {}
+                    }
+
+                    // Public Key Hash
+                    ui.label(RichText::new("Public Key Hash:").strong());
+                    match self.key.public_key_hash() {
+                        Ok(hash) => {
+                            let hash_hex = hex::encode(hash);
+                            ui.label(hash_hex);
+                        }
+                        Err(e) => {
+                            ui.colored_label(egui::Color32::RED, format!("Error: {}", e));
+                        }
+                    }
+
+                    if self.key.key_type().is_core_address_key_type() {
+                        // Public Key Hash
+                        ui.label(RichText::new("Address:").strong());
+                        match self.key.public_key_hash() {
+                            Ok(hash) => {
+                                let address = if self.key.key_type() == BIP13_SCRIPT_HASH {
+                                    Address::new(
+                                        self.app_context.network,
+                                        Payload::ScriptHash(ScriptHash::from_byte_array(hash)),
+                                    )
+                                } else {
+                                    Address::new(
+                                        self.app_context.network,
+                                        Payload::PubkeyHash(PubkeyHash::from_byte_array(hash)),
+                                    )
+                                };
+                                ui.label(address.to_string());
+                            }
+                            Err(e) => {
+                                ui.colored_label(egui::Color32::RED, format!("Error: {}", e));
+                            }
+                        }
+                    }
+
                     ui.end_row();
                 });
 

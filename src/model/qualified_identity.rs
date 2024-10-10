@@ -159,6 +159,24 @@ impl QualifiedIdentity {
             .flatten()
     }
 
+    pub fn can_sign_with_master_key(&self) -> Option<&IdentityPublicKey> {
+        if self.identity_type != IdentityType::User {
+            return None;
+        }
+
+        // Iterate through the encrypted private keys to check for a valid master key
+        for ((target, _), (public_key, _)) in &self.encrypted_private_keys {
+            if *target == EncryptedPrivateKeyTarget::PrivateKeyOnMainIdentity
+                && public_key.purpose() == Purpose::AUTHENTICATION
+                && public_key.security_level() == SecurityLevel::MASTER
+            {
+                return Some(public_key);
+            }
+        }
+
+        None
+    }
+
     pub fn available_withdrawal_keys(&self) -> Vec<&IdentityPublicKey> {
         let mut keys = vec![];
 

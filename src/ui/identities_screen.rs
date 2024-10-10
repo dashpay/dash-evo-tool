@@ -4,9 +4,10 @@ use crate::model::qualified_identity::EncryptedPrivateKeyTarget::{
     PrivateKeyOnMainIdentity, PrivateKeyOnVoterIdentity,
 };
 use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
+use crate::ui::add_key_screen::AddKeyScreen;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::key_info::KeyInfoScreen;
+use crate::ui::key_info_screen::KeyInfoScreen;
 use crate::ui::withdrawals::WithdrawalScreen;
 use crate::ui::{RootScreenType, Screen, ScreenLike, ScreenType};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -228,6 +229,19 @@ impl ScreenLike for IdentitiesScreen {
                                                         &qualified_identity,
                                                         key,
                                                         holding_private_key,
+                                                    );
+                                                }
+                                            }
+                                            if qualified_identity
+                                                .can_sign_with_master_key()
+                                                .is_some()
+                                            {
+                                                if ui.button("Add Key").clicked() {
+                                                    action = AppAction::AddScreen(
+                                                        Screen::AddKeyScreen(AddKeyScreen::new(
+                                                            qualified_identity.clone(),
+                                                            &self.app_context,
+                                                        )),
                                                     );
                                                 }
                                             }

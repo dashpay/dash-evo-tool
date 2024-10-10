@@ -97,10 +97,31 @@ impl AppState {
             AppContext::new(Network::Dash).expect("expected Dash config for mainnet");
         let testnet_app_context = AppContext::new(Network::Testnet);
 
-        let identities_screen = IdentitiesScreen::new(&mainnet_app_context);
-        let dpns_contested_names_screen = DPNSContestedNamesScreen::new(&mainnet_app_context);
-        let transition_visualizer_screen = TransitionVisualizerScreen::new(&mainnet_app_context);
-        let network_chooser_screen = NetworkChooserScreen::new(&mainnet_app_context);
+        let mut identities_screen = IdentitiesScreen::new(&mainnet_app_context);
+        let mut dpns_contested_names_screen = DPNSContestedNamesScreen::new(&mainnet_app_context);
+        let mut transition_visualizer_screen =
+            TransitionVisualizerScreen::new(&mainnet_app_context);
+        let mut network_chooser_screen = NetworkChooserScreen::new(&mainnet_app_context);
+
+        let mut selected_main_screen = RootScreenType::RootScreenIdentities;
+
+        let settings = mainnet_app_context
+            .get_settings()
+            .expect("expected to get settings");
+
+        let mut chosen_network = Network::Dash;
+
+        if let Some((network, screen_type)) = settings {
+            selected_main_screen = screen_type;
+            chosen_network = network;
+            if network == Network::Testnet && testnet_app_context.is_some() {
+                let testnet_app_context = testnet_app_context.as_ref().unwrap();
+                identities_screen = IdentitiesScreen::new(testnet_app_context);
+                dpns_contested_names_screen = DPNSContestedNamesScreen::new(testnet_app_context);
+                transition_visualizer_screen = TransitionVisualizerScreen::new(testnet_app_context);
+                network_chooser_screen = NetworkChooserScreen::new(testnet_app_context);
+            }
+        }
 
         // // Create a channel with a buffer size of 32 (adjust as needed)
         let (task_result_sender, task_result_receiver) = mpsc::channel(256);
@@ -125,9 +146,9 @@ impl AppState {
                 ),
             ]
             .into(),
-            selected_main_screen: RootScreenType::RootScreenIdentities,
+            selected_main_screen,
             screen_stack: vec![],
-            chosen_network: Network::Dash,
+            chosen_network,
             mainnet_app_context,
             testnet_app_context,
             task_result_sender,
@@ -252,6 +273,9 @@ impl App for AppState {
             AppAction::SetMainScreen(root_screen_type) => {
                 self.selected_main_screen = root_screen_type;
                 self.active_root_screen_mut().refresh();
+                self.current_app_context()
+                    .update_settings(root_screen_type)
+                    .ok();
             }
             AppAction::SwitchNetwork(network) => self.change_network(network),
         }

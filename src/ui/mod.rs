@@ -35,6 +35,29 @@ pub enum RootScreenType {
     RootScreenNetworkChooser,
 }
 
+impl RootScreenType {
+    /// Convert `RootScreenType` to an integer
+    pub fn to_int(self) -> u32 {
+        match self {
+            RootScreenType::RootScreenIdentities => 0,
+            RootScreenType::RootScreenDPNSContestedNames => 1,
+            RootScreenType::RootScreenTransitionVisualizerScreen => 2,
+            RootScreenType::RootScreenNetworkChooser => 3,
+        }
+    }
+
+    /// Convert an integer to a `RootScreenType`
+    pub fn from_int(value: u32) -> Option<Self> {
+        match value {
+            0 => Some(RootScreenType::RootScreenIdentities),
+            1 => Some(RootScreenType::RootScreenDPNSContestedNames),
+            2 => Some(RootScreenType::RootScreenTransitionVisualizerScreen),
+            3 => Some(RootScreenType::RootScreenNetworkChooser),
+            _ => None,
+        }
+    }
+}
+
 impl From<RootScreenType> for ScreenType {
     fn from(value: RootScreenType) -> Self {
         match value {
@@ -55,7 +78,7 @@ pub enum ScreenType {
     AddIdentity,
     TransitionVisualizer,
     WithdrawalScreen(QualifiedIdentity),
-    KeyInfo(Identity, IdentityPublicKey, Option<Vec<u8>>),
+    KeyInfo(QualifiedIdentity, IdentityPublicKey, Option<Vec<u8>>),
     Keys(Identity),
     NetworkChooser,
 }

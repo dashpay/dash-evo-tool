@@ -1,7 +1,10 @@
 use crate::app::AppAction;
 use crate::context::AppContext;
+use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::ScreenLike;
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::dpp::identity::hash::IdentityPublicKeyHashMethodsV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::Identity;
 use dash_sdk::dpp::prelude::IdentityPublicKey;
@@ -10,10 +13,12 @@ use egui::{RichText, TextEdit};
 use std::sync::Arc;
 
 pub struct KeyInfoScreen {
-    pub identity: Identity,
+    pub identity: QualifiedIdentity,
     pub key: IdentityPublicKey,
     pub private_key_bytes: Option<Vec<u8>>,
     pub app_context: Arc<AppContext>,
+    private_key_input: String,
+    error_message: Option<String>,
 }
 
 impl ScreenLike for KeyInfoScreen {
@@ -75,7 +80,17 @@ impl ScreenLike for KeyInfoScreen {
                         .desired_width(f32::INFINITY),
                 );
             } else {
-                ui.label(RichText::new("No Private Key Available").color(egui::Color32::GRAY));
+                ui.label("Enter Private Key:");
+                ui.text_edit_singleline(&mut self.private_key_input);
+
+                if ui.button("Add Private Key").clicked() {
+                    self.validate_and_store_private_key();
+                }
+
+                // Display error message if validation fails
+                if let Some(error_message) = &self.error_message {
+                    ui.colored_label(egui::Color32::RED, error_message);
+                }
             }
         });
 
@@ -85,7 +100,7 @@ impl ScreenLike for KeyInfoScreen {
 
 impl KeyInfoScreen {
     pub fn new(
-        identity: Identity,
+        identity: QualifiedIdentity,
         key: IdentityPublicKey,
         private_key_bytes: Option<Vec<u8>>,
         app_context: &Arc<AppContext>,
@@ -95,6 +110,48 @@ impl KeyInfoScreen {
             key,
             private_key_bytes,
             app_context: app_context.clone(),
+            private_key_input: String::new(),
+            error_message: None,
+        }
+    }
+
+    fn validate_and_store_private_key(&mut self) {
+        // Convert the input string to bytes (hex decoding)
+        match hex::decode(&self.private_key_input) {
+            Ok(private_key_bytes) => {
+                let validation_result = self
+                    .key
+                    .validate_private_key_bytes(&private_key_bytes, self.app_context.network);
+                if let Err(err) = validation_result {
+                    self.error_message = Some(format!("Issue verifying private key {}", err));
+                } else {
+                    if validation_result.unwrap() {
+                        // If valid, store the private key in the context and reset the input field
+                        self.private_key_bytes = Some(private_key_bytes.clone());
+                        self.identity.encrypted_private_keys.insert(
+                            (self.key.purpose().into(), self.key.id()),
+                            (self.key.clone(), private_key_bytes),
+                        );
+                        match self
+                            .app_context
+                            .insert_local_qualified_identity(&self.identity)
+                        {
+                            Ok(_) => {
+                                self.error_message = None;
+                            }
+                            Err(e) => {
+                                self.error_message = Some(format!("Issue saving: {}", e));
+                            }
+                        }
+                    } else {
+                        self.error_message =
+                            Some("Private key does not match the public key.".to_string());
+                    }
+                }
+            }
+            Err(_) => {
+                self.error_message = Some("Invalid hex string for private key.".to_string());
+            }
         }
     }
 }

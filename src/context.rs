@@ -4,6 +4,7 @@ use crate::database::Database;
 use crate::model::contested_name::ContestedName;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::sdk_wrapper::initialize_sdk;
+use crate::ui::RootScreenType;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::Identity;
 use dash_sdk::dpp::version::PlatformVersion;
@@ -15,6 +16,7 @@ use std::sync::Arc;
 #[derive(Debug)]
 pub struct AppContext {
     pub(crate) network: Network,
+    pub(crate) developer_mode: bool,
     pub(crate) devnet_name: Option<String>,
     pub(crate) db: Arc<Database>,
     pub(crate) sdk: Sdk,
@@ -41,6 +43,7 @@ impl AppContext {
 
         let mut app_context = AppContext {
             network,
+            developer_mode: true,
             devnet_name: None,
             db,
             sdk,
@@ -92,5 +95,16 @@ impl AppContext {
 
     pub fn load_contested_names(&self) -> Result<Vec<ContestedName>> {
         self.db.get_contested_names(self)
+    }
+
+    /// Updates the `start_root_screen` in the settings table
+    pub fn update_settings(&self, root_screen_type: RootScreenType) -> Result<()> {
+        self.db
+            .insert_or_update_settings(self.network, root_screen_type)
+    }
+
+    /// Retrieves the current `RootScreenType` from the settings
+    pub fn get_settings(&self) -> Result<Option<(Network, RootScreenType)>> {
+        self.db.get_settings()
     }
 }

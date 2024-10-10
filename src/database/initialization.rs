@@ -2,6 +2,16 @@ use crate::database::Database;
 
 impl Database {
     pub fn initialize(&self) -> rusqlite::Result<()> {
+        // Create the settings table
+        self.execute(
+            "CREATE TABLE IF NOT EXISTS settings (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            network TEXT NOT NULL,
+            start_root_screen INTEGER NOT NULL
+        )",
+            [],
+        )?;
+
         // Create the identities table
         self.execute(
             "CREATE TABLE IF NOT EXISTS identity (

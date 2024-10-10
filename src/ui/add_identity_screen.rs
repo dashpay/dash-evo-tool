@@ -32,6 +32,7 @@ struct HPMasternodeInfo {
     owner: KeyInfo,
     collateral: KeyInfo,
     voter: KeyInfo,
+    payout: KeyInfo,
     operator: OperatorInfo,
     #[serde(rename = "node_key")]
     node_key: Option<NodeKeyInfo>,
@@ -86,6 +87,7 @@ pub struct AddIdentityScreen {
     alias_input: String,
     voting_private_key_input: String,
     owner_private_key_input: String,
+    payout_address_private_key_input: String,
     keys_input: Vec<String>,
     add_identity_status: AddIdentityStatus,
     testnet_loaded_nodes: Option<TestnetNodes>,
@@ -108,6 +110,7 @@ impl AddIdentityScreen {
             alias_input: String::new(),
             voting_private_key_input: String::new(),
             owner_private_key_input: String::new(),
+            payout_address_private_key_input: String::new(),
             keys_input: vec![String::new()],
             add_identity_status: AddIdentityStatus::NotStarted,
             testnet_loaded_nodes,
@@ -138,6 +141,7 @@ impl AddIdentityScreen {
                 // Store the voting and owner private key references before borrowing `self` mutably
                 let voting_private_key_input = &mut self.voting_private_key_input;
                 let owner_private_key_input = &mut self.owner_private_key_input;
+                let payout_address_private_key_input = &mut self.payout_address_private_key_input;
 
                 ui.horizontal(|ui| {
                     ui.label("Voting Private Key:");
@@ -147,6 +151,11 @@ impl AddIdentityScreen {
                 ui.horizontal(|ui| {
                     ui.label("Owner Private Key:");
                     ui.text_edit_singleline(owner_private_key_input);
+                });
+
+                ui.horizontal(|ui| {
+                    ui.label("Payout Address Private Key:");
+                    ui.text_edit_singleline(payout_address_private_key_input);
                 });
             }
             IdentityType::User => {
@@ -184,6 +193,7 @@ impl AddIdentityScreen {
             alias_input: self.alias_input.clone(),
             voting_private_key_input: self.voting_private_key_input.clone(),
             owner_private_key_input: self.owner_private_key_input.clone(),
+            payout_address_private_key_input: self.payout_address_private_key_input.clone(),
             keys_input: self.keys_input.clone(),
         };
 
@@ -205,6 +215,7 @@ impl AddIdentityScreen {
             self.alias_input = name.clone();
             self.voting_private_key_input = hpmn.voter.private_key.clone();
             self.owner_private_key_input = hpmn.owner.private_key.clone();
+            self.payout_address_private_key_input = hpmn.payout.private_key.clone();
         }
     }
 

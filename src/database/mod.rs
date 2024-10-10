@@ -2,6 +2,7 @@ mod contested_names;
 mod contracts;
 mod identities;
 mod initialization;
+mod settings;
 
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::serialization::PlatformSerializable;

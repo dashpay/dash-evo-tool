@@ -1,9 +1,15 @@
 use bincode::{Decode, Encode};
-use dash_sdk::dashcore_rpc::dashcore::signer;
+use dash_sdk::dashcore_rpc::dashcore::{signer, PubkeyHash};
+use dash_sdk::dpp::dashcore::address::Payload;
+use dash_sdk::dpp::dashcore::hashes::Hash;
+use dash_sdk::dpp::dashcore::{Address, Network, ScriptHash};
 use dash_sdk::dpp::ed25519_dalek::Signer as EDDSASigner;
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::dpp::identity::hash::IdentityPublicKeyHashMethodsV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::signer::Signer;
-use dash_sdk::dpp::identity::{Identity, KeyID, KeyType, Purpose};
+use dash_sdk::dpp::identity::KeyType::{BIP13_SCRIPT_HASH, ECDSA_HASH160};
+use dash_sdk::dpp::identity::{Identity, KeyID, KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::platform_value::BinaryData;
 use dash_sdk::dpp::state_transition::errors::InvalidIdentityPublicKeyTypeError;
 use dash_sdk::dpp::{bls_signatures, ed25519_dalek, ProtocolError};
@@ -128,6 +134,31 @@ impl QualifiedIdentity {
             .0
     }
 
+    pub fn masternode_payout_address(&self, network: Network) -> Option<Address> {
+        self.identity
+            .get_first_public_key_matching(
+                Purpose::TRANSFER,
+                [SecurityLevel::CRITICAL].into(),
+                [ECDSA_HASH160, BIP13_SCRIPT_HASH].into(),
+                false,
+            )
+            .map(|identity_public_key| {
+                let key = identity_public_key.public_key_hash().ok()?;
+                if identity_public_key.key_type() == BIP13_SCRIPT_HASH {
+                    Some(Address::new(
+                        network,
+                        Payload::ScriptHash(ScriptHash::from_byte_array(key)),
+                    ))
+                } else {
+                    Some(Address::new(
+                        network,
+                        Payload::PubkeyHash(PubkeyHash::from_byte_array(key)),
+                    ))
+                }
+            })
+            .flatten()
+    }
+
     pub fn available_withdrawal_keys(&self) -> Vec<&IdentityPublicKey> {
         let mut keys = vec![];
 
@@ -145,8 +176,6 @@ impl QualifiedIdentity {
                             if public_key.purpose() == Purpose::OWNER {
                                 keys.push(public_key);
                             }
-                        }
-                        EncryptedPrivateKeyTarget::PrivateKeyOnVoterIdentity => {
                             if public_key.purpose() == Purpose::TRANSFER {
                                 keys.push(public_key);
                             }

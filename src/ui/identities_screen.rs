@@ -57,7 +57,7 @@ impl IdentitiesScreen {
     fn show_public_key(
         &self,
         ui: &mut Ui,
-        identity: &Identity,
+        identity: &QualifiedIdentity,
         key: &IdentityPublicKey,
         encrypted_private_key: Option<&Vec<u8>>,
     ) -> AppAction {
@@ -208,7 +208,7 @@ impl ScreenLike for IdentitiesScreen {
                                                     .map(|(_, p)| p);
                                                 action |= self.show_public_key(
                                                     ui,
-                                                    &qualified_identity.identity,
+                                                    &qualified_identity,
                                                     key,
                                                     holding_private_key,
                                                 );
@@ -225,7 +225,7 @@ impl ScreenLike for IdentitiesScreen {
                                                         .map(|(_, p)| p);
                                                     action |= self.show_public_key(
                                                         ui,
-                                                        &qualified_identity.identity,
+                                                        &qualified_identity,
                                                         key,
                                                         holding_private_key,
                                                     );

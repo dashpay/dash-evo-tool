@@ -6,6 +6,7 @@ use crate::platform::BackendTask;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::{MessageType, ScreenLike};
 use dash_sdk::dashcore_rpc::dashcore::Address;
+use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::Purpose;
@@ -54,9 +55,6 @@ impl WithdrawalScreen {
                         let label = format!("Key ID: {} (Purpose: {:?})", key.id(), key.purpose());
                         let selectable =
                             ui.selectable_value(&mut self.selected_key, Some(key.clone()), label);
-                        if selectable.hovered() {
-                            // Add any additional hover info or color here if needed
-                        }
                     }
                 });
         });
@@ -80,7 +78,7 @@ impl WithdrawalScreen {
         } else {
             true
         };
-        if can_have_withdrawal_address {
+        if can_have_withdrawal_address || self.app_context.developer_mode {
             ui.horizontal(|ui| {
                 ui.label("Address:");
 
@@ -94,26 +92,66 @@ impl WithdrawalScreen {
         egui::Window::new("Confirm Withdrawal")
             .collapsible(false)
             .show(ui.ctx(), |ui| {
-                ui.label("Are you sure you want to withdraw the specified amount?");
+                let address = if self.withdrawal_address.is_empty() {
+                    None
+                } else {
+                    match Address::from_str(&self.withdrawal_address) {
+                        Ok(address) => Some(address.assume_checked()),
+                        Err(_) => {
+                            self.error_message = Some("Invalid withdrawal address".to_string());
+                            None
+                        }
+                    }
+                };
+
+                let message_address = if address.is_some() {
+                    self.withdrawal_address.clone()
+                } else if let Some(payout_address) = self
+                    .identity
+                    .masternode_payout_address(self.app_context.network)
+                {
+                    format!("masternode payout address {}", payout_address.to_string())
+                } else {
+                    self.error_message = Some("No masternode payout address".to_string());
+                    return;
+                };
+
+                let Some(selected_key) = self.selected_key.as_ref() else {
+                    self.error_message = Some("No selected key".to_string());
+                    return;
+                };
+
+                ui.label(format!(
+                    "Are you sure you want to withdraw {} Dash to {}",
+                    self.withdrawal_amount, message_address
+                ));
+                let parts: Vec<&str> = self.withdrawal_amount.split('.').collect();
+                let mut credits: u128 = 0;
+
+                // Process the whole number part if it exists.
+                if let Some(whole) = parts.get(0) {
+                    if let Ok(whole_number) = whole.parse::<u128>() {
+                        credits += whole_number * 100_000_000_000; // Whole Dash amount to credits
+                    }
+                }
+
+                // Process the fractional part if it exists.
+                if let Some(fraction) = parts.get(1) {
+                    let fraction_length = fraction.len();
+                    let fraction_number = fraction.parse::<u128>().unwrap_or(0);
+                    // Calculate the multiplier based on the number of digits in the fraction.
+                    let multiplier = 10u128.pow(11 - fraction_length as u32);
+                    credits += fraction_number * multiplier; // Fractional Dash to credits
+                }
+
                 if ui.button("Confirm").clicked() {
                     self.confirmation_popup = false;
-                    let address = if self.withdrawal_address.is_empty() {
-                        None
-                    } else {
-                        match Address::from_str(&self.withdrawal_address) {
-                            Ok(address) => Some(address.assume_checked()),
-                            Err(_) => {
-                                self.error_message = Some("Invalid withdrawal address".to_string());
-                                None
-                            }
-                        }
-                    };
-
                     app_action = AppAction::BackendTask(BackendTask::IdentityTask(
                         IdentityTask::WithdrawFromIdentity(
                             self.identity.clone(),
                             address,
-                            10000000,
+                            credits as Credits,
+                            Some(selected_key.id()),
                         ),
                     ));
                 }
@@ -147,6 +185,7 @@ impl ScreenLike for WithdrawalScreen {
 
             self.render_key_selection(ui);
             self.render_amount_input(ui);
+            self.render_address_input(ui);
 
             if ui.button("Withdraw").clicked() {
                 self.confirmation_popup = true;

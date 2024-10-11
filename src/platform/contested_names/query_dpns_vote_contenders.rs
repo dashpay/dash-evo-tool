@@ -17,13 +17,7 @@ impl AppContext {
         name: &String,
         sdk: Sdk,
     ) -> Result<(), String> {
-        if self.dpns_contract.is_none() {
-            self.run_contract_task(ContractTask::FetchDPNSContract, &sdk)
-                .await?;
-        }
-        let Some(data_contract) = self.dpns_contract.as_ref() else {
-            return Err("DPNS contract not found".to_string());
-        };
+        let data_contract = self.dpns_contract.as_ref();
         let document_type = data_contract
             .document_type_for_name("domain")
             .expect("expected document type");

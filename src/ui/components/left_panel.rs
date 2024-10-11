@@ -2,7 +2,7 @@ use crate::app::AppAction;
 use crate::context::AppContext;
 use crate::ui::RootScreenType;
 use eframe::epaint::{Color32, Margin};
-use egui::{Context, Frame, Image, ImageButton, SidePanel, TextureHandle, Vec2};
+use egui::{Context, Frame, ImageButton, SidePanel, TextureHandle, Vec2};
 use std::sync::Arc;
 
 // Function to load an icon as a texture
@@ -18,7 +18,7 @@ fn load_icon(ctx: &Context, path: &str) -> Option<TextureHandle> {
             Default::default(),
         ))
     } else {
-        // eprintln!("Failed to load icon at path: {}", path);
+        eprintln!("Failed to load icon at path: {}", path);
         None
     }
 }
@@ -34,22 +34,22 @@ pub fn add_left_panel(
         (
             "I",
             RootScreenType::RootScreenIdentities,
-            "icons/identities.png",
+            "icons/identity.png",
         ),
         (
             "C",
             RootScreenType::RootScreenDPNSContestedNames,
-            "icons/ballot.png",
+            "icons/voting.png",
         ),
         (
             "T",
             RootScreenType::RootScreenTransitionVisualizerScreen,
-            "icons/toolbox.png",
+            "icons/tools.png",
         ),
         (
             "N",
             RootScreenType::RootScreenNetworkChooser,
-            "icons/network.png",
+            "icons/config.png",
         ),
     ];
 

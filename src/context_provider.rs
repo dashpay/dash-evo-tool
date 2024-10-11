@@ -2,6 +2,7 @@ use crate::config::NetworkConfig;
 use crate::context::AppContext;
 use crate::database::Database;
 use dash_sdk::core::LowLevelDashCoreClient as CoreClient;
+use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::error::ContextProviderError;
 use dash_sdk::platform::ContextProvider;
 use dash_sdk::platform::DataContract;
@@ -55,14 +56,18 @@ impl ContextProvider for Provider {
             .as_ref()
             .ok_or(ContextProviderError::Config("no app context".to_string()))?;
 
-        let dc = self
-            .db
-            .get_contract_by_id(data_contract_id.clone(), app_ctx.as_ref())
-            .map_err(|e| dash_sdk::error::ContextProviderError::Generic(e.to_string()))?;
+        if data_contract_id == &app_ctx.dpns_contract.id() {
+            Ok(Some(app_ctx.dpns_contract.clone()))
+        } else {
+            let dc = self
+                .db
+                .get_contract_by_id(data_contract_id.clone(), app_ctx.as_ref())
+                .map_err(|e| dash_sdk::error::ContextProviderError::Generic(e.to_string()))?;
 
-        drop(app_ctx_guard);
+            drop(app_ctx_guard);
 
-        Ok(dc.map(Arc::new))
+            Ok(dc.map(Arc::new))
+        }
     }
 
     fn get_quorum_public_key(

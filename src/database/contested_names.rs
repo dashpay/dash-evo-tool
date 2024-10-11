@@ -206,13 +206,16 @@ impl Database {
         app_context: &AppContext,
     ) -> Result<()> {
         let network = app_context.network_string();
-        let conn = self.conn.lock().unwrap();
+        let mut conn = self.conn.lock().unwrap();
         let locked_votes = contenders.lock_vote_tally.unwrap_or(0) as i64;
         let abstain_votes = contenders.abstain_vote_tally.unwrap_or(0) as i64;
         let last_updated = chrono::Utc::now().timestamp(); // Get the current timestamp
 
+        // Start a transaction
+        let tx = conn.transaction()?;
+
         // Update the `contested_name` table with locked votes, abstain votes, and last updated
-        conn.execute(
+        tx.execute(
             "UPDATE contested_name
          SET locked_votes = ?, abstain_votes = ?, last_updated = ?
          WHERE normalized_contested_name = ? AND network = ?",
@@ -249,7 +252,7 @@ impl Database {
             let document_id = document.id();
 
             // Check if the contender already exists
-            let mut stmt = conn.prepare(
+            let mut stmt = tx.prepare(
                 "SELECT votes
              FROM contestant
              WHERE contest_id = ? AND identity_id = ? AND network = ?",
@@ -264,7 +267,7 @@ impl Database {
                 Ok(current_votes) => {
                     // Update the existing entry if votes or serialized document are different
                     if current_votes != contender.vote_tally().unwrap_or(0) as u64 {
-                        conn.execute(
+                        tx.execute(
                             "UPDATE contestant
                          SET votes = ?
                          WHERE contest_id = ? AND identity_id = ? AND network = ?",
@@ -279,25 +282,28 @@ impl Database {
                 }
                 Err(rusqlite::Error::QueryReturnedNoRows) => {
                     // If the contestant doesn't exist, insert it
-                    conn.execute(
+                    tx.execute(
                         "INSERT INTO contestant (contest_id, identity_id, name, votes, created_at, created_at_block_height, created_at_core_block_height, document_id, network)
                      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                         params![
-                            contest_id,
-                            identity_id_bytes,
-                            name,
-                            contender.vote_tally().unwrap_or(0),
-                            created_at,
-                            created_at_block_height,
-                            created_at_core_block_height,
-                            document_id.to_vec(),
-                            network,
-                        ],
+                        contest_id,
+                        identity_id_bytes,
+                        name,
+                        contender.vote_tally().unwrap_or(0),
+                        created_at,
+                        created_at_block_height,
+                        created_at_core_block_height,
+                        document_id.to_vec(),
+                        network,
+                    ],
                     )?;
                 }
                 Err(e) => return Err(e.into()),
             }
         }
+
+        // Commit the transaction
+        tx.commit()?;
 
         Ok(())
     }

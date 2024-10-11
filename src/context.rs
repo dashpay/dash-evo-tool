@@ -7,6 +7,7 @@ use crate::sdk_wrapper::initialize_sdk;
 use crate::ui::RootScreenType;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::Identity;
+use dash_sdk::dpp::system_data_contracts::{load_system_data_contract, SystemDataContract};
 use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::platform::DataContract;
 use dash_sdk::Sdk;
@@ -21,7 +22,7 @@ pub struct AppContext {
     pub(crate) db: Arc<Database>,
     pub(crate) sdk: Sdk,
     pub(crate) config: NetworkConfig,
-    pub(crate) dpns_contract: Arc<Option<DataContract>>,
+    pub(crate) dpns_contract: Arc<DataContract>,
     pub(crate) platform_version: &'static PlatformVersion,
 }
 
@@ -41,25 +42,21 @@ impl AppContext {
 
         let sdk = initialize_sdk(&network_config, network, provider.clone());
 
-        let mut app_context = AppContext {
+        let dpns_contract =
+            load_system_data_contract(SystemDataContract::DPNS, PlatformVersion::latest())
+                .expect("expected to load dpns contract");
+
+        let app_context = AppContext {
             network,
             developer_mode: false,
             devnet_name: None,
             db,
             sdk,
             config: network_config,
-            dpns_contract: Arc::new(None),
+            dpns_contract: Arc::new(dpns_contract),
             platform_version: PlatformVersion::latest(),
         };
 
-        let contract = app_context
-            .db
-            .get_contract_by_name("dpns", &app_context)
-            .expect("expected to be able to get contract");
-
-        if let Some(contract) = contract {
-            app_context.dpns_contract = Arc::new(Some(contract));
-        }
         let app_context = Arc::new(app_context);
         provider.bind_app_context(app_context.clone());
 

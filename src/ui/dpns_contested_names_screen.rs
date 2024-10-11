@@ -6,6 +6,7 @@ use crate::platform::BackendTask;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
+use chrono::{DateTime, Utc};
 use egui::{Context, Frame, Margin, Ui};
 use egui_extras::{Column, TableBuilder};
 use std::sync::{Arc, Mutex};
@@ -28,7 +29,7 @@ enum SortOrder {
 pub struct DPNSContestedNamesScreen {
     contested_names: Arc<Mutex<Vec<ContestedName>>>,
     pub app_context: Arc<AppContext>,
-    error_message: Option<(String, MessageType)>,
+    error_message: Option<(String, MessageType, DateTime<Utc>)>,
     sort_column: SortColumn,
     sort_order: SortOrder,
 }
@@ -98,6 +99,22 @@ impl DPNSContestedNamesScreen {
         });
     }
 
+    fn dismiss_error(&mut self) {
+        self.error_message = None;
+    }
+
+    fn check_error_expiration(&mut self) {
+        if let Some((_, _, timestamp)) = &self.error_message {
+            let now = Utc::now();
+            let elapsed = now.signed_duration_since(*timestamp);
+
+            // Automatically dismiss the error message after 5 seconds
+            if elapsed.num_seconds() > 5 {
+                self.dismiss_error();
+            }
+        }
+    }
+
     fn toggle_sort(&mut self, column: SortColumn) {
         if self.sort_column == column {
             self.sort_order = match self.sort_order {
@@ -117,10 +134,11 @@ impl ScreenLike for DPNSContestedNamesScreen {
     }
 
     fn display_message(&mut self, message: String, message_type: MessageType) {
-        self.error_message = Some((message, message_type));
+        self.error_message = Some((message, message_type, Utc::now()));
     }
 
     fn ui(&mut self, ctx: &Context) -> AppAction {
+        self.check_error_expiration();
         let mut action = add_top_panel(
             ctx,
             &self.app_context,
@@ -149,17 +167,24 @@ impl ScreenLike for DPNSContestedNamesScreen {
 
         // Render the UI with the cloned contested_names vector
         egui::CentralPanel::default().show(ctx, |ui| {
-            if let Some((message, message_type)) = &self.error_message {
+            let error_message = self.error_message.clone();
+            if let Some((message, message_type, _)) = error_message {
                 let message_color = match message_type {
                     MessageType::Error => egui::Color32::RED,
                     MessageType::Info => egui::Color32::BLACK,
                 };
 
                 ui.add_space(10.0);
-                ui.allocate_ui(egui::Vec2::new(ui.available_width(), 150.0), |ui| {
+                ui.allocate_ui(egui::Vec2::new(ui.available_width(), 50.0), |ui| {
                     ui.group(|ui| {
-                        ui.set_min_height(150.0);
-                        ui.label(egui::RichText::new(message.clone()).color(message_color));
+                        ui.set_min_height(50.0);
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new(message).color(message_color));
+                            if ui.button("Dismiss").clicked() {
+                                // Update the state outside the closure
+                                self.dismiss_error();
+                            }
+                        });
                     });
                 });
                 ui.add_space(10.0);

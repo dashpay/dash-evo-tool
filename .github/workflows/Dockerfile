@@ -11,7 +11,8 @@ RUN apt-get update && \
         pkg-config \
         unzip \
         curl \
-        build-essential
+        build-essential \
+        glibc-devel
 
 # Install protoc
 RUN curl -Lo /tmp/protoc.zip \
@@ -35,3 +36,5 @@ ENV LIBRARY_PATH=""
 
 # Set PROTOC environment variable
 ENV PROTOC=/usr/local/bin/protoc
+
+RUN aarch64-linux-gnu-g++ --sysroot=$SYSROOT -v -E - </dev/null

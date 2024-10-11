@@ -206,6 +206,9 @@ impl Database {
         dpns_domain_document_type: DocumentTypeRef,
         app_context: &AppContext,
     ) -> Result<()> {
+        if contenders.winner.is_some() {
+            return Ok(()); //todo
+        }
         let network = app_context.network_string();
         let mut conn = self.conn.lock().unwrap();
         let locked_votes = contenders.lock_vote_tally.unwrap_or(0) as i64;

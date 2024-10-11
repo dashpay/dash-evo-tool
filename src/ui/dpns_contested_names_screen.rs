@@ -8,6 +8,7 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use chrono::{DateTime, LocalResult, TimeZone, Utc};
 use chrono_humanize::HumanTime;
+use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
 use egui::{Context, Frame, Margin, Ui};
 use egui_extras::{Column, TableBuilder};
 use std::sync::{Arc, Mutex};
@@ -33,6 +34,7 @@ pub struct DPNSContestedNamesScreen {
     error_message: Option<(String, MessageType, DateTime<Utc>)>,
     sort_column: SortColumn,
     sort_order: SortOrder,
+    show_vote_popup: Option<(String, ContestedResourceTask)>,
 }
 
 impl DPNSContestedNamesScreen {
@@ -46,18 +48,17 @@ impl DPNSContestedNamesScreen {
             error_message: None,
             sort_column: SortColumn::ContestedName,
             sort_order: SortOrder::Ascending,
+            show_vote_popup: None,
         }
     }
 
     fn show_contested_name_details(
-        &self,
+        &mut self,
         ui: &mut Ui,
         contested_name: &ContestedName,
         is_locked_votes_bold: bool,
         max_contestant_votes: u32,
-    ) -> AppAction {
-        let mut action = AppAction::None;
-
+    ) {
         if let Some(contestants) = &contested_name.contestants {
             for contestant in contestants {
                 let button_text = format!("{} - {} votes", contestant.name, contestant.votes);
@@ -71,13 +72,20 @@ impl DPNSContestedNamesScreen {
                     egui::RichText::new(button_text)
                 };
 
-                if ui.add(egui::Label::new(text)).clicked() {
-                    action = AppAction::None; // Placeholder for further action
+                if ui.button(text).clicked() {
+                    self.show_vote_popup = Some((
+                        format!(
+                            "Confirm Voting for Contestant {} for name \"{}\"",
+                            contestant.id, contestant.name
+                        ),
+                        ContestedResourceTask::VoteOnDPNSName(
+                            contested_name.normalized_contested_name.clone(),
+                            ResourceVoteChoice::Abstain,
+                        ),
+                    ));
                 }
             }
         }
-
-        action
     }
 
     fn sort_contested_names(&self, contested_names: &mut Vec<ContestedName>) {
@@ -126,6 +134,26 @@ impl DPNSContestedNamesScreen {
             self.sort_column = column;
             self.sort_order = SortOrder::Ascending;
         }
+    }
+
+    fn show_vote_popup(&mut self, ui: &mut Ui) -> AppAction {
+        let mut app_action = AppAction::None;
+        if let Some((message, action)) = self.show_vote_popup.clone() {
+            ui.label(message);
+
+            ui.horizontal(|ui| {
+                if ui.button("Vote Immediate").clicked() {
+                    app_action = AppAction::BackendTask(BackendTask::ContestedResourceTask(action));
+                    self.show_vote_popup = None;
+                } else if ui.button("Vote Deferred").clicked() {
+                    app_action = AppAction::BackendTask(BackendTask::ContestedResourceTask(action));
+                    self.show_vote_popup = None;
+                } else if ui.button("Cancel").clicked() {
+                    self.show_vote_popup = None;
+                }
+            });
+        }
+        app_action
     }
 }
 impl ScreenLike for DPNSContestedNamesScreen {
@@ -192,6 +220,15 @@ impl ScreenLike for DPNSContestedNamesScreen {
                     });
                     ui.add_space(10.0);
                 }
+            }
+
+            // Show vote popup if active
+            if self.show_vote_popup.is_some() {
+                egui::Window::new("Vote Confirmation")
+                    .collapsible(false)
+                    .show(ui.ctx(), |ui| {
+                        action |= self.show_vote_popup(ui);
+                    });
             }
 
             egui::ScrollArea::vertical().show(ui, |ui| {
@@ -281,7 +318,10 @@ impl ScreenLike for DPNSContestedNamesScreen {
                                             } else {
                                                 egui::RichText::new("Fetching".to_string())
                                             };
-                                            ui.label(label_text);
+                                            // Vote button logic for locked votes
+                                            if ui.button(label_text).clicked() {
+                                                self.show_vote_popup = Some((format!("Confirm Voting to Lock the name \"{}\"", contested_name.normalized_contested_name.clone()), ContestedResourceTask::VoteOnDPNSName(contested_name.normalized_contested_name.clone(), ResourceVoteChoice::Lock)));
+                                            }
                                         });
                                         row.col(|ui| {
                                             let label_text = if let Some(abstain_votes) =
@@ -291,7 +331,9 @@ impl ScreenLike for DPNSContestedNamesScreen {
                                             } else {
                                                 "Fetching".to_string()
                                             };
-                                            ui.label(label_text);
+                                            if ui.button(label_text).clicked() {
+                                                self.show_vote_popup = Some((format!("Confirm Voting to Abstain on distribution of \"{}\"", contested_name.normalized_contested_name.clone()), ContestedResourceTask::VoteOnDPNSName(contested_name.normalized_contested_name.clone(), ResourceVoteChoice::Abstain)));
+                                            }
                                         });
                                         row.col(|ui| {
                                             if let Some(ending_time) = contested_name.ending_time {
@@ -342,7 +384,7 @@ impl ScreenLike for DPNSContestedNamesScreen {
                                             }
                                         });
                                         row.col(|ui| {
-                                            action |= self.show_contested_name_details(
+                                            self.show_contested_name_details(
                                                 ui,
                                                 contested_name,
                                                 is_locked_votes_bold,

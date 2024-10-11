@@ -55,6 +55,11 @@ jobs:
           echo "PROTOC=${HOME}/.local/bin/protoc" >> $GITHUB_ENV
           export PATH="${PATH}:${HOME}/.local/bin"
 
+      # Install cross-compilation toolchain for ARM on Linux
+      - name: Install cross-compilation toolchain (only for arm64)
+        if: matrix.arch == 'arm64' && matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
+
       - name: Check out code
         uses: actions/checkout@v4
 

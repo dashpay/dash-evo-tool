@@ -7,8 +7,9 @@ use dash_sdk::dpp::identifier::Identifier;
 use dash_sdk::dpp::identity::TimestampMillis;
 use dash_sdk::dpp::prelude::{BlockHeight, CoreBlockHeight};
 use dash_sdk::query_types::Contenders;
-use rusqlite::{params, params_from_iter, Result};
+use rusqlite::{params, params_from_iter, OptionalExtension, Result};
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::fmt::Debug;
 
 impl Database {
     pub fn get_contested_names(&self, app_context: &AppContext) -> Result<Vec<ContestedName>> {
@@ -460,5 +461,47 @@ impl Database {
             .collect::<Vec<_>>();
 
         Ok(result_names)
+    }
+
+    pub fn update_ending_time<I>(&self, name_contests: I, app_context: &AppContext) -> Result<()>
+    where
+        I: IntoIterator<Item = (String, TimestampMillis)>,
+    {
+        let network = app_context.network_string();
+        let conn = self.conn.lock().unwrap();
+
+        // Prepare statement for selecting existing entries
+        let select_query = "SELECT ending_time
+                    FROM contested_name
+                    WHERE network = ? AND normalized_contested_name = ?";
+
+        let mut select_stmt = conn.prepare(select_query)?;
+
+        // Prepare statement for updating existing entries
+        let update_query = "UPDATE contested_name
+                    SET ending_time = ?
+                    WHERE normalized_contested_name = ? AND network = ?";
+        let mut update_stmt = conn.prepare(update_query)?;
+
+        for (name, new_ending_time) in name_contests {
+            // Check if the name exists in the database and retrieve the current ending time
+            let existing_ending_time: Option<TimestampMillis> =
+                select_stmt.query_row(params![network, name], |row| {
+                    let ending_time: Result<Option<TimestampMillis>> = row.get(0);
+                    ending_time
+                })?;
+
+            if let Some(existing_ending_time) = existing_ending_time {
+                // Update only if the new ending time is greater than the existing one
+                if existing_ending_time < new_ending_time {
+                    update_stmt.execute(params![new_ending_time, name, network])?;
+                }
+            } else {
+                // If `ending_time` is `NULL`, update with the new ending time
+                update_stmt.execute(params![new_ending_time, name, network])?;
+            }
+        }
+
+        Ok(())
     }
 }

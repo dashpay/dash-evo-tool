@@ -1,10 +1,7 @@
 use crate::app::{AppAction, DesiredAppAction};
 use crate::context::AppContext;
 use dash_sdk::dashcore_rpc::dashcore::Network;
-use egui::{
-    Align, Color32, Context, Frame, Layout, Margin, RichText, Stroke, TopBottomPanel,
-    Ui,
-};
+use egui::{Align, Color32, Context, Frame, Layout, Margin, RichText, Stroke, TopBottomPanel, Ui};
 use std::sync::Arc;
 
 fn add_location_view(ui: &mut Ui, location: Vec<(&str, AppAction)>) -> AppAction {

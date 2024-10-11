@@ -16,11 +16,7 @@ impl AppContext {
                 match DataContract::fetch(sdk, identifier).await {
                     Ok(Some(data_contract)) => self
                         .db
-                        .insert_contract_if_not_exists(
-                            &data_contract,
-                            name.as_deref(),
-                            self,
-                        )
+                        .insert_contract_if_not_exists(&data_contract, name.as_deref(), self)
                         .map_err(|e| e.to_string()),
                     Ok(None) => Ok(()),
                     Err(e) => Err(e.to_string()),

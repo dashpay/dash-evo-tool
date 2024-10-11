@@ -72,8 +72,7 @@ impl From<RootScreenType> for ScreenType {
     }
 }
 
-#[derive(Debug, PartialEq, Clone)]
-#[derive(Default)]
+#[derive(Debug, PartialEq, Clone, Default)]
 pub enum ScreenType {
     #[default]
     Identities,
@@ -124,7 +123,6 @@ impl ScreenType {
     }
 }
 
-
 pub enum Screen {
     IdentitiesScreen(IdentitiesScreen),
     DPNSContestedNamesScreen(DPNSContestedNamesScreen),
@@ -155,6 +153,7 @@ impl Screen {
 
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum MessageType {
+    Success,
     Info,
     Error,
 }

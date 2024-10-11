@@ -1,8 +1,12 @@
 mod query_dpns_contested_resources;
 mod query_dpns_vote_contenders;
+mod query_ending_times;
 
+use crate::app::TaskResult;
 use crate::context::AppContext;
 use dash_sdk::Sdk;
+use std::sync::Arc;
+use tokio::sync::mpsc;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum ContestedResourceTask {
@@ -13,17 +17,18 @@ pub(crate) enum ContestedResourceTask {
 
 impl AppContext {
     pub async fn run_contested_resource_task(
-        &self,
+        self: &Arc<Self>,
         task: ContestedResourceTask,
         sdk: &Sdk,
+        sender: mpsc::Sender<TaskResult>,
     ) -> Result<(), String> {
         let sdk = sdk.clone();
         match &task {
             ContestedResourceTask::QueryDPNSContestedResources => {
-                self.query_dpns_contested_resources(sdk).await
+                self.query_dpns_contested_resources(sdk, sender).await
             }
             ContestedResourceTask::QueryDPNSVoteContenders(name) => {
-                self.query_dpns_vote_contenders(name, sdk).await
+                self.query_dpns_vote_contenders(name, sdk, sender).await
             } // ContestedResourceTask::VoteOnContestedResource(vote_poll, vote_choice) => {
               //     let mut vote = Vote::default();
               //     let identity_private_keys_lock = self.known_identities_private_keys.lock().await;

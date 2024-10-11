@@ -234,7 +234,9 @@ impl ScreenLike for IdentitiesScreen {
                                             }
                                             if qualified_identity
                                                 .can_sign_with_master_key()
-                                                .is_some() && ui.button("Add Key").clicked() {
+                                                .is_some()
+                                                && ui.button("Add Key").clicked()
+                                            {
                                                 action = AppAction::AddScreen(
                                                     Screen::AddKeyScreen(AddKeyScreen::new(
                                                         qualified_identity.clone(),

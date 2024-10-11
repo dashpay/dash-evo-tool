@@ -169,25 +169,28 @@ impl ScreenLike for DPNSContestedNamesScreen {
         egui::CentralPanel::default().show(ctx, |ui| {
             let error_message = self.error_message.clone();
             if let Some((message, message_type, _)) = error_message {
-                let message_color = match message_type {
-                    MessageType::Error => egui::Color32::RED,
-                    MessageType::Info => egui::Color32::BLACK,
-                };
+                if message_type != MessageType::Success {
+                    let message_color = match message_type {
+                        MessageType::Error => egui::Color32::RED,
+                        MessageType::Info => egui::Color32::BLACK,
+                        MessageType::Success => unreachable!(),
+                    };
 
-                ui.add_space(10.0);
-                ui.allocate_ui(egui::Vec2::new(ui.available_width(), 50.0), |ui| {
-                    ui.group(|ui| {
-                        ui.set_min_height(50.0);
-                        ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new(message).color(message_color));
-                            if ui.button("Dismiss").clicked() {
-                                // Update the state outside the closure
-                                self.dismiss_error();
-                            }
+                    ui.add_space(10.0);
+                    ui.allocate_ui(egui::Vec2::new(ui.available_width(), 50.0), |ui| {
+                        ui.group(|ui| {
+                            ui.set_min_height(50.0);
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new(message).color(message_color));
+                                if ui.button("Dismiss").clicked() {
+                                    // Update the state outside the closure
+                                    self.dismiss_error();
+                                }
+                            });
                         });
                     });
-                });
-                ui.add_space(10.0);
+                    ui.add_space(10.0);
+                }
             }
 
             egui::ScrollArea::vertical().show(ui, |ui| {

@@ -11,11 +11,13 @@ use eframe::{egui, App};
 use std::collections::BTreeMap;
 use std::ops::BitOrAssign;
 use std::sync::Arc;
+use std::time::Instant;
 use std::vec;
 use tokio::sync::mpsc;
 
 #[derive(Debug)]
 pub enum TaskResult {
+    Refresh,
     Success(String), // Represents a successful task with a message
     Error(String),   // Represents a task failure with an error message
 }
@@ -38,6 +40,7 @@ pub struct AppState {
     pub testnet_app_context: Option<Arc<AppContext>>,
     pub task_result_sender: mpsc::Sender<TaskResult>, // Channel sender for sending task results
     pub task_result_receiver: mpsc::Receiver<TaskResult>, // Channel receiver for receiving task results
+    last_repaint: Instant, // Track the last time we requested a repaint
 }
 
 #[derive(Debug, PartialEq)]
@@ -126,6 +129,9 @@ impl AppState {
         // // Create a channel with a buffer size of 32 (adjust as needed)
         let (task_result_sender, task_result_receiver) = mpsc::channel(256);
 
+        // Initialize the last repaint time to the current instant
+        let last_repaint = Instant::now();
+
         Self {
             main_screens: [
                 (
@@ -153,6 +159,7 @@ impl AppState {
             testnet_app_context,
             task_result_sender,
             task_result_receiver,
+            last_repaint,
         }
     }
 
@@ -172,7 +179,7 @@ impl AppState {
         let app_context = self.current_app_context().clone();
 
         tokio::spawn(async move {
-            let result = app_context.run_backend_task(task).await;
+            let result = app_context.run_backend_task(task, sender.clone()).await;
 
             // Send the result back to the main thread
             if let Err(e) = sender.send(result.into()).await {
@@ -226,6 +233,8 @@ impl AppState {
     }
 }
 
+impl AppState {}
+
 impl App for AppState {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Poll the receiver for any new task results
@@ -240,8 +249,14 @@ impl App for AppState {
                     self.visible_screen_mut()
                         .display_message(message, MessageType::Error);
                 }
+                TaskResult::Refresh => {
+                    self.visible_screen_mut().refresh();
+                }
             }
         }
+
+        // Use a timer to repaint the UI every 0.05 seconds
+        ctx.request_repaint_after(std::time::Duration::from_millis(50));
 
         let action = self.visible_screen_mut().ui(ctx);
 

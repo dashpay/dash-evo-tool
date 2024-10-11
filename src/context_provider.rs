@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 pub(crate) struct Provider {
     db: Arc<Database>,
     app_context: Mutex<Option<Arc<AppContext>>>,
-    core: CoreClient,
+    pub core: CoreClient,
 }
 
 impl Provider {

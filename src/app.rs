@@ -104,7 +104,11 @@ impl AppState {
         let mut dpns_contested_names_screen = DPNSContestedNamesScreen::new(&mainnet_app_context);
         let mut transition_visualizer_screen =
             TransitionVisualizerScreen::new(&mainnet_app_context);
-        let mut network_chooser_screen = NetworkChooserScreen::new(&mainnet_app_context);
+        let mut network_chooser_screen = NetworkChooserScreen::new(
+            &mainnet_app_context,
+            testnet_app_context.as_ref(),
+            Network::Dash,
+        );
 
         let mut selected_main_screen = RootScreenType::RootScreenIdentities;
 
@@ -122,8 +126,8 @@ impl AppState {
                 identities_screen = IdentitiesScreen::new(testnet_app_context);
                 dpns_contested_names_screen = DPNSContestedNamesScreen::new(testnet_app_context);
                 transition_visualizer_screen = TransitionVisualizerScreen::new(testnet_app_context);
-                network_chooser_screen = NetworkChooserScreen::new(testnet_app_context);
             }
+            network_chooser_screen.current_network = chosen_network;
         }
 
         // // Create a channel with a buffer size of 32 (adjust as needed)

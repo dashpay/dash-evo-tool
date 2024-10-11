@@ -114,7 +114,7 @@ impl ScreenType {
                 Screen::WithdrawalScreen(WithdrawalScreen::new(identity.clone(), app_context))
             }
             ScreenType::NetworkChooser => {
-                Screen::NetworkChooserScreen(NetworkChooserScreen::new(app_context))
+                unreachable!()
             }
             ScreenType::AddKeyScreen(identity) => {
                 Screen::AddKeyScreen(AddKeyScreen::new(identity.clone(), app_context))
@@ -145,7 +145,7 @@ impl Screen {
             Screen::KeysScreen(screen) => screen.app_context = app_context,
             Screen::WithdrawalScreen(screen) => screen.app_context = app_context,
             Screen::TransitionVisualizerScreen(screen) => screen.app_context = app_context,
-            Screen::NetworkChooserScreen(screen) => screen.app_context = app_context,
+            Screen::NetworkChooserScreen(screen) => screen.current_network = app_context.network,
             Screen::AddKeyScreen(screen) => screen.app_context = app_context,
         }
     }

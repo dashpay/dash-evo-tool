@@ -5,6 +5,7 @@ use crate::model::contested_name::ContestedName;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::sdk_wrapper::initialize_sdk;
 use crate::ui::RootScreenType;
+use dash_sdk::dashcore_rpc::{Auth, Client};
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::Identity;
 use dash_sdk::dpp::system_data_contracts::{load_system_data_contract, SystemDataContract};
@@ -23,6 +24,7 @@ pub struct AppContext {
     pub(crate) sdk: Sdk,
     pub(crate) config: NetworkConfig,
     pub(crate) dpns_contract: Arc<DataContract>,
+    pub(crate) core_client: Client,
     pub(crate) platform_version: &'static PlatformVersion,
 }
 
@@ -46,6 +48,19 @@ impl AppContext {
             load_system_data_contract(SystemDataContract::DPNS, PlatformVersion::latest())
                 .expect("expected to load dpns contract");
 
+        let addr = format!(
+            "http://{}:{}",
+            network_config.core_host, network_config.core_rpc_port
+        );
+        let core_client = Client::new(
+            &addr,
+            Auth::UserPass(
+                network_config.core_rpc_user.to_string(),
+                network_config.core_rpc_password.to_string(),
+            ),
+        )
+        .ok()?;
+
         let app_context = AppContext {
             network,
             developer_mode: false,
@@ -54,6 +69,7 @@ impl AppContext {
             sdk,
             config: network_config,
             dpns_contract: Arc::new(dpns_contract),
+            core_client,
             platform_version: PlatformVersion::latest(),
         };
 

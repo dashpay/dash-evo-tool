@@ -2,7 +2,7 @@ use crate::app::{AppAction, DesiredAppAction};
 use crate::context::AppContext;
 use dash_sdk::dashcore_rpc::dashcore::Network;
 use egui::{
-    Align, Color32, Context, Frame, Layout, Margin, RichText, Stroke, TextBuffer, TopBottomPanel,
+    Align, Color32, Context, Frame, Layout, Margin, RichText, Stroke, TopBottomPanel,
     Ui,
 };
 use std::sync::Arc;

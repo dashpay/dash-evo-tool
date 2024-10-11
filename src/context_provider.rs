@@ -61,7 +61,7 @@ impl ContextProvider for Provider {
         } else {
             let dc = self
                 .db
-                .get_contract_by_id(data_contract_id.clone(), app_ctx.as_ref())
+                .get_contract_by_id(*data_contract_id, app_ctx.as_ref())
                 .map_err(|e| dash_sdk::error::ContextProviderError::Generic(e.to_string()))?;
 
             drop(app_ctx_guard);

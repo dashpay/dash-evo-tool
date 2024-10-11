@@ -2,7 +2,7 @@ use crate::app::AppAction;
 use crate::context::AppContext;
 use crate::ui::RootScreenType;
 use eframe::epaint::{Color32, Margin};
-use egui::{Context, Frame, ImageButton, SidePanel, TextureHandle, Vec2};
+use egui::{Context, Frame, ImageButton, SidePanel, TextureHandle};
 use std::sync::Arc;
 
 // Function to load an icon as a texture

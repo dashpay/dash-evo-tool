@@ -66,11 +66,9 @@ impl NetworkChooserScreen {
 
         // Network selection
         let mut is_selected = self.current_network == Some(network);
-        if ui.checkbox(&mut is_selected, "Select").clicked() {
-            if is_selected {
-                self.current_network = Some(network);
-                app_action = AppAction::SwitchNetwork(network);
-            }
+        if ui.checkbox(&mut is_selected, "Select").clicked() && is_selected {
+            self.current_network = Some(network);
+            app_action = AppAction::SwitchNetwork(network);
         }
 
         ui.end_row();

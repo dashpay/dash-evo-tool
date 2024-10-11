@@ -410,13 +410,10 @@ impl AppContext {
                     .await
                     .map_err(|e| format!("Broadcasting error: {}", e))?;
 
-                match result {
-                    StateTransitionProofResult::VerifiedPartialIdentity(identity) => {
-                        for public_key in identity.loaded_public_keys.into_values() {
-                            qualified_identity.identity.add_public_key(public_key);
-                        }
+                if let StateTransitionProofResult::VerifiedPartialIdentity(identity) = result {
+                    for public_key in identity.loaded_public_keys.into_values() {
+                        qualified_identity.identity.add_public_key(public_key);
                     }
-                    _ => {}
                 }
 
                 self.insert_local_qualified_identity(&qualified_identity)

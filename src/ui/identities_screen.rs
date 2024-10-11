@@ -12,7 +12,7 @@ use crate::ui::withdrawals::WithdrawalScreen;
 use crate::ui::{RootScreenType, Screen, ScreenLike, ScreenType};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
-use dash_sdk::dpp::identity::{Identity, Purpose};
+use dash_sdk::dpp::identity::Purpose;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::prelude::IdentityPublicKey;
 use eframe::egui::{self, Context};
@@ -209,7 +209,7 @@ impl ScreenLike for IdentitiesScreen {
                                                     .map(|(_, p)| p);
                                                 action |= self.show_public_key(
                                                     ui,
-                                                    &qualified_identity,
+                                                    qualified_identity,
                                                     key,
                                                     holding_private_key,
                                                 );
@@ -226,7 +226,7 @@ impl ScreenLike for IdentitiesScreen {
                                                         .map(|(_, p)| p);
                                                     action |= self.show_public_key(
                                                         ui,
-                                                        &qualified_identity,
+                                                        qualified_identity,
                                                         key,
                                                         holding_private_key,
                                                     );
@@ -234,16 +234,13 @@ impl ScreenLike for IdentitiesScreen {
                                             }
                                             if qualified_identity
                                                 .can_sign_with_master_key()
-                                                .is_some()
-                                            {
-                                                if ui.button("Add Key").clicked() {
-                                                    action = AppAction::AddScreen(
-                                                        Screen::AddKeyScreen(AddKeyScreen::new(
-                                                            qualified_identity.clone(),
-                                                            &self.app_context,
-                                                        )),
-                                                    );
-                                                }
+                                                .is_some() && ui.button("Add Key").clicked() {
+                                                action = AppAction::AddScreen(
+                                                    Screen::AddKeyScreen(AddKeyScreen::new(
+                                                        qualified_identity.clone(),
+                                                        &self.app_context,
+                                                    )),
+                                                );
                                             }
                                         });
                                         row.col(|ui| {

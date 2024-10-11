@@ -17,7 +17,7 @@ impl Database {
     ) -> Result<()> {
         // Serialize the contract
         let contract_bytes = data_contract
-            .serialize_to_bytes_with_platform_version(&app_context.platform_version)
+            .serialize_to_bytes_with_platform_version(app_context.platform_version)
             .expect("expected to serialize contract");
         let contract_id = data_contract.id().to_vec();
         let network = app_context.network_string();
@@ -52,7 +52,7 @@ impl Database {
                 match DataContract::versioned_deserialize(
                     &bytes,
                     false,
-                    &app_context.platform_version,
+                    app_context.platform_version,
                 ) {
                     Ok(contract) => Ok(Some(contract)),
                     Err(e) => {
@@ -88,7 +88,7 @@ impl Database {
                 match DataContract::versioned_deserialize(
                     &bytes,
                     false,
-                    &app_context.platform_version,
+                    app_context.platform_version,
                 ) {
                     Ok(contract) => Ok(Some(contract)),
                     Err(e) => {

@@ -189,7 +189,7 @@ impl AddIdentityScreen {
     fn load_identity_clicked(&mut self, ui: &mut egui::Ui) -> AppAction {
         let identity_input = IdentityInputToLoad {
             identity_id_input: self.identity_id_input.trim().to_string(),
-            identity_type: self.identity_type.clone(),
+            identity_type: self.identity_type,
             alias_input: self.alias_input.clone(),
             voting_private_key_input: self.voting_private_key_input.clone(),
             owner_private_key_input: self.owner_private_key_input.clone(),

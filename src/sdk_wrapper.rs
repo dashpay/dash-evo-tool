@@ -1,5 +1,4 @@
-use crate::config::{Config, NetworkConfig};
-use crate::logging::initialize_logger;
+use crate::config::NetworkConfig;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::platform::ContextProvider;

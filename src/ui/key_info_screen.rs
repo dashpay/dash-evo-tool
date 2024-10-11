@@ -10,7 +10,7 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::hash::IdentityPublicKeyHashMethodsV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::KeyType::BIP13_SCRIPT_HASH;
-use dash_sdk::dpp::identity::{Identity, KeyType};
+use dash_sdk::dpp::identity::KeyType;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::prelude::IdentityPublicKey;
 use eframe::egui::{self, Context};
@@ -193,29 +193,27 @@ impl KeyInfoScreen {
                     .validate_private_key_bytes(&private_key_bytes, self.app_context.network);
                 if let Err(err) = validation_result {
                     self.error_message = Some(format!("Issue verifying private key {}", err));
-                } else {
-                    if validation_result.unwrap() {
-                        // If valid, store the private key in the context and reset the input field
-                        self.private_key_bytes = Some(private_key_bytes.clone());
-                        self.identity.encrypted_private_keys.insert(
-                            (self.key.purpose().into(), self.key.id()),
-                            (self.key.clone(), private_key_bytes),
-                        );
-                        match self
-                            .app_context
-                            .insert_local_qualified_identity(&self.identity)
-                        {
-                            Ok(_) => {
-                                self.error_message = None;
-                            }
-                            Err(e) => {
-                                self.error_message = Some(format!("Issue saving: {}", e));
-                            }
+                } else if validation_result.unwrap() {
+                    // If valid, store the private key in the context and reset the input field
+                    self.private_key_bytes = Some(private_key_bytes.clone());
+                    self.identity.encrypted_private_keys.insert(
+                        (self.key.purpose().into(), self.key.id()),
+                        (self.key.clone(), private_key_bytes),
+                    );
+                    match self
+                        .app_context
+                        .insert_local_qualified_identity(&self.identity)
+                    {
+                        Ok(_) => {
+                            self.error_message = None;
                         }
-                    } else {
-                        self.error_message =
-                            Some("Private key does not match the public key.".to_string());
+                        Err(e) => {
+                            self.error_message = Some(format!("Issue saving: {}", e));
+                        }
                     }
+                } else {
+                    self.error_message =
+                        Some("Private key does not match the public key.".to_string());
                 }
             }
             Err(_) => {

@@ -142,7 +142,7 @@ impl QualifiedIdentity {
                 [ECDSA_HASH160, BIP13_SCRIPT_HASH].into(),
                 false,
             )
-            .map(|identity_public_key| {
+            .and_then(|identity_public_key| {
                 let key = identity_public_key.public_key_hash().ok()?;
                 if identity_public_key.key_type() == BIP13_SCRIPT_HASH {
                     Some(Address::new(
@@ -156,7 +156,6 @@ impl QualifiedIdentity {
                     ))
                 }
             })
-            .flatten()
     }
 
     pub fn can_sign_with_master_key(&self) -> Option<&IdentityPublicKey> {
@@ -189,16 +188,13 @@ impl QualifiedIdentity {
                     }
                 }
                 (IdentityType::Masternode | IdentityType::Evonode, target_type) => {
-                    match target_type {
-                        EncryptedPrivateKeyTarget::PrivateKeyOnMainIdentity => {
-                            if public_key.purpose() == Purpose::OWNER {
-                                keys.push(public_key);
-                            }
-                            if public_key.purpose() == Purpose::TRANSFER {
-                                keys.push(public_key);
-                            }
+                    if target_type == &EncryptedPrivateKeyTarget::PrivateKeyOnMainIdentity {
+                        if public_key.purpose() == Purpose::OWNER {
+                            keys.push(public_key);
                         }
-                        _ => {}
+                        if public_key.purpose() == Purpose::TRANSFER {
+                            keys.push(public_key);
+                        }
                     }
                 }
                 _ => {}

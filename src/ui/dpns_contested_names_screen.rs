@@ -159,7 +159,7 @@ impl ScreenLike for DPNSContestedNamesScreen {
 
         // Clone the contested names vector to avoid holding the lock during UI rendering
         let contested_names = {
-            let mut contested_names_guard = self.contested_names.lock().unwrap();
+            let contested_names_guard = self.contested_names.lock().unwrap();
             let mut contested_names = contested_names_guard.clone();
             self.sort_contested_names(&mut contested_names);
             contested_names

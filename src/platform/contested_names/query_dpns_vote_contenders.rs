@@ -1,5 +1,4 @@
 use crate::context::AppContext;
-use crate::platform::contract::ContractTask;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
 use dash_sdk::dpp::platform_value::Value;
@@ -24,7 +23,7 @@ impl AppContext {
         let Some(contested_index) = document_type.find_contested_index() else {
             return Err("No contested index on dpns domains".to_string());
         };
-        let index_values = vec![Value::from("dash"), Value::Text(name.clone())]; // hardcoded for dpns
+        let index_values = [Value::from("dash"), Value::Text(name.clone())]; // hardcoded for dpns
 
         let vote_poll = ContestedDocumentResourceVotePoll {
             index_name: contested_index.name.clone(),
@@ -47,7 +46,7 @@ impl AppContext {
                 .await
                 .map_err(|e| {
                     tracing::error!("error fetching contested resources: {}", e);
-                    format!("error fetching contested resources: {}", e.to_string())
+                    format!("error fetching contested resources: {}", e)
                 })?;
         self.db
             .insert_or_update_contenders(name, &contenders, document_type, self)

@@ -2,9 +2,7 @@ mod query_dpns_contested_resources;
 mod query_dpns_vote_contenders;
 
 use crate::context::AppContext;
-use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
-use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
-use dash_sdk::{platform::FetchMany, Sdk};
+use dash_sdk::Sdk;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum ContestedResourceTask {

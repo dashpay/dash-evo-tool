@@ -10,7 +10,6 @@ use crate::ui::keys_screen::KeysScreen;
 use crate::ui::network_chooser_screen::NetworkChooserScreen;
 use crate::ui::transition_visualizer_screen::TransitionVisualizerScreen;
 use crate::ui::withdrawals::WithdrawalScreen;
-use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::Identity;
 use dash_sdk::dpp::prelude::IdentityPublicKey;
 use egui::Context;
@@ -74,7 +73,9 @@ impl From<RootScreenType> for ScreenType {
 }
 
 #[derive(Debug, PartialEq, Clone)]
+#[derive(Default)]
 pub enum ScreenType {
+    #[default]
     Identities,
     DPNSContestedNames,
     AddIdentity,
@@ -123,11 +124,6 @@ impl ScreenType {
     }
 }
 
-impl Default for ScreenType {
-    fn default() -> Self {
-        ScreenType::Identities
-    }
-}
 
 pub enum Screen {
     IdentitiesScreen(IdentitiesScreen),

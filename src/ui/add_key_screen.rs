@@ -194,19 +194,17 @@ impl AddKeyScreen {
                         .validate_private_key_bytes(&private_key_bytes, self.app_context.network);
                     if let Err(err) = validation_result {
                         self.error_message = Some(format!("Issue verifying private key: {}", err));
+                    } else if validation_result.unwrap() {
+                        app_action = AppAction::BackendTask(BackendTask::IdentityTask(
+                            IdentityTask::AddKeyToIdentity(
+                                self.identity.clone(),
+                                new_key.into(),
+                                private_key_bytes,
+                            ),
+                        ));
                     } else {
-                        if validation_result.unwrap() {
-                            app_action = AppAction::BackendTask(BackendTask::IdentityTask(
-                                IdentityTask::AddKeyToIdentity(
-                                    self.identity.clone(),
-                                    new_key.into(),
-                                    private_key_bytes,
-                                ),
-                            ));
-                        } else {
-                            self.error_message =
-                                Some("Private key does not match the public key.".to_string());
-                        }
+                        self.error_message =
+                            Some("Private key does not match the public key.".to_string());
                     }
                 }
             }
@@ -224,7 +222,7 @@ impl AddKeyScreen {
         // Generate a random private key based on the selected key type
         if let Ok((_, private_key_bytes)) = self
             .key_type
-            .random_public_and_private_key_data(&mut rng, &self.app_context.platform_version)
+            .random_public_and_private_key_data(&mut rng, self.app_context.platform_version)
         {
             self.private_key_input = hex::encode(private_key_bytes);
         } else {

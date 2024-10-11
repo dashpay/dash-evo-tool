@@ -62,7 +62,7 @@ impl DesiredAppAction {
             DesiredAppAction::BackendTask(backend_task) => {
                 AppAction::BackendTask(backend_task.clone())
             }
-            DesiredAppAction::SwitchNetwork(network) => AppAction::SwitchNetwork(network.clone()),
+            DesiredAppAction::SwitchNetwork(network) => AppAction::SwitchNetwork(*network),
         }
     }
 }

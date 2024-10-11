@@ -13,12 +13,12 @@ impl AppContext {
     pub async fn run_contract_task(&self, task: ContractTask, sdk: &Sdk) -> Result<(), String> {
         match task {
             ContractTask::FetchContract(identifier, name) => {
-                match DataContract::fetch(&sdk, identifier).await {
+                match DataContract::fetch(sdk, identifier).await {
                     Ok(Some(data_contract)) => self
                         .db
                         .insert_contract_if_not_exists(
                             &data_contract,
-                            name.as_ref().map(|a| a.as_str()),
+                            name.as_deref(),
                             self,
                         )
                         .map_err(|e| e.to_string()),
@@ -27,7 +27,7 @@ impl AppContext {
                 }
             }
             ContractTask::FetchDPNSContract => {
-                match DataContract::fetch(&sdk, Into::<Identifier>::into(dpns_contract::ID_BYTES))
+                match DataContract::fetch(sdk, Into::<Identifier>::into(dpns_contract::ID_BYTES))
                     .await
                 {
                     Ok(Some(data_contract)) => self

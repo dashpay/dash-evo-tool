@@ -1,5 +1,4 @@
 use crate::context::AppContext;
-use crate::platform::contract::ContractTask;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
 use dash_sdk::drive::query::vote_polls_by_document_type_query::VotePollsByDocumentTypeQuery;
@@ -32,7 +31,7 @@ impl AppContext {
                 .await
                 .map_err(|e| {
                     tracing::error!("error fetching contested resources: {}", e);
-                    format!("error fetching contested resources: {}", e.to_string())
+                    format!("error fetching contested resources: {}", e)
                 })?;
 
         let contested_resources_as_strings: Vec<String> = contested_resources
@@ -49,7 +48,7 @@ impl AppContext {
 
         let names_to_be_updated = self
             .db
-            .insert_name_contests_as_normalized_names(contested_resources_as_strings, &self)
+            .insert_name_contests_as_normalized_names(contested_resources_as_strings, self)
             .map_err(|e| e.to_string())?;
 
         for name in names_to_be_updated {

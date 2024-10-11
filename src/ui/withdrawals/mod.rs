@@ -120,7 +120,7 @@ impl WithdrawalScreen {
                     .identity
                     .masternode_payout_address(self.app_context.network)
                 {
-                    format!("masternode payout address {}", payout_address.to_string())
+                    format!("masternode payout address {}", payout_address)
                 } else if !self.app_context.developer_mode {
                     self.error_message = Some("No masternode payout address".to_string());
                     return;
@@ -141,7 +141,7 @@ impl WithdrawalScreen {
                 let mut credits: u128 = 0;
 
                 // Process the whole number part if it exists.
-                if let Some(whole) = parts.get(0) {
+                if let Some(whole) = parts.first() {
                     if let Ok(whole_number) = whole.parse::<u128>() {
                         credits += whole_number * 100_000_000_000; // Whole Dash amount to credits
                     }

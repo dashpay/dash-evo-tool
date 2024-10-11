@@ -1,4 +1,4 @@
-name: Release Dash Evo Tool
+name: Build and Release Dash Evo Tool
 
 on:
   push:
@@ -16,63 +16,47 @@ on:
 
 jobs:
   build-and-release:
-    name: Build and Release Dash Evo Tool
-    runs-on: ["self-hosted", "ubuntu-platform"]
-    strategy:
-      matrix:
-        os: [self-hosted]
-        arch: [amd64, arm64]
-        include:
-          - platform: linux/amd64
-            runner: ["self-hosted", "linux", "amd64", "ubuntu-platform"]
-            target: x86_64-unknown-linux-gnu
-          - platform: linux/arm64
-            runner: ["self-hosted", "linux", "arm64", "ubuntu-platform"]
-            target: aarch64-unknown-linux-gnu
-          - platform: macos/amd64
-            runner: ["self-hosted", "macOS", "amd64", "macos-platform"]
-            target: x86_64-apple-darwin
-          - platform: macos/arm64
-            runner: ["self-hosted", "macOS", "arm64", "macos-platform"]
-            target: aarch64-apple-darwin
+    name: Build and Release Dash Evo Tool (ARM64 Only)
+    runs-on: ubuntu-latest
+
     steps:
-      - name: Check out code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Install Rust toolchain
-        uses: actions-rs/toolchain@v1
+      # Set up QEMU to emulate ARM64 on the AMD64 host
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v2
         with:
-          toolchain: stable
-          target: ${{ matrix.target }}
-          override: true
+          platforms: arm64
 
-      - name: Build project
-        run: cargo build --release --target ${{ matrix.target }}
+      # Set up Docker Buildx for multi-platform builds
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
 
+      # ARM64 build in Docker with QEMU emulation
+      - name: Build in ARM64 Docker container
+        run: |
+          docker run --platform linux/arm64 --rm -v $(pwd):/build -w /build arm64v8/ubuntu:latest /bin/bash -c "
+            apt-get update &&
+            apt-get install -y build-essential gcc-aarch64-linux-gnu libssl-dev curl unzip &&
+            
+            # Install protoc for ARM64
+            curl -Lo /tmp/protoc.zip \
+              https://github.com/protocolbuffers/protobuf/releases/download/v25.2/protoc-25.2-linux-aarch64.zip &&
+            unzip /tmp/protoc.zip -d \$HOME/.local &&
+            export PATH=\$PATH:\$HOME/.local/bin &&
+
+            # Install Rust and cross-compilation toolchain
+            curl https://sh.rustup.rs -sSf | sh -s -- -y &&
+            source \$HOME/.cargo/env &&
+            rustup target add aarch64-unknown-linux-gnu &&
+
+            # Build the Rust project
+            cargo build --release --target aarch64-unknown-linux-gnu
+          "
+
+      # Upload artifacts
       - name: Upload build artifact
         uses: actions/upload-artifact@v3
         with:
-          name: dash-evo-tool-${{ matrix.platform }}
-          path: target/${{ matrix.target }}/release/dash-evo-tool
-
-    continue-on-error: true
-
-  release:
-    name: Create GitHub Release
-    needs: build-and-release
-    runs-on: ubuntu-latest
-    steps:
-      - name: Download build artifacts
-        uses: actions/download-artifact@v3
-        with:
-          name: dash-evo-tool-*
-          path: ./release
-
-      - name: Publish release
-        uses: softprops/action-gh-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          files: ./release/dash-evo-tool-*
-          draft: false
-          prerelease: false
+          name: dash-evo-tool-arm64
+          path: target/aarch64-unknown-linux-gnu/release/dash-evo-tool

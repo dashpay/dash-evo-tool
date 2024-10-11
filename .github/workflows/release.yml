@@ -40,6 +40,28 @@ jobs:
             arch: arm64
             target: aarch64-apple-darwin
     steps:
+      - uses: dtolnay/rust-toolchain@master
+        name: Install Rust toolchain
+        with:
+          toolchain: ${{ inputs.toolchain }}
+
+      - name: Install protoc
+        id: deps-protoc
+        shell: bash
+        run: |
+          curl -Lo /tmp/protoc.zip \
+            https://github.com/protocolbuffers/protobuf/releases/download/v25.2/protoc-25.2-linux-x86_64.zip
+          unzip /tmp/protoc.zip -d ${HOME}/.local
+          echo "PROTOC=${HOME}/.local/bin/protoc" >> $GITHUB_ENV
+          export PATH="${PATH}:${HOME}/.local/bin"
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: "Compile Protobuf definitions (needed by fmt, doc, etc.)"
+        shell: bash
+        run: cargo build -p tenderdash-proto
+        
       - name: Check out code
         uses: actions/checkout@v4
 

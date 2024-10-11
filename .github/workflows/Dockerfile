@@ -1,4 +1,4 @@
-FROM ghcr.io/cross-rs/aarch64-unknown-linux-gnu:latest
+FROM ghcr.io/cross-rs/aarch64-unknown-linux-gnu:main
 
 RUN apt-get update && \
     apt-get install -y \
@@ -11,14 +11,12 @@ RUN apt-get update && \
         pkg-config \
         unzip \
         curl \
-        build-essential \
-        libc6-dev-amd64 \
-        libc6-dev-i386
+        build-essential
 
 # Install protoc
 RUN curl -Lo /tmp/protoc.zip \
       https://github.com/protocolbuffers/protobuf/releases/download/v25.2/protoc-25.2-linux-aarch_64.zip && \
-    unzip /tmp/protoc.zip -d /usr/local && \
+    unzip /tmp/protoc.zip -d /usr/local/bin/ && \
     rm /tmp/protoc.zip
 
 ENV CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc

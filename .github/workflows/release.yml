@@ -66,7 +66,7 @@ jobs:
       - name: Build project
         run: |
           if [ "${{ matrix.os }}" == "ubuntu-latest" ]; then
-            cross build --release --target ${{ matrix.target }}
+            cross build --release --target ${{ matrix.target }} --verbose
           else
             cargo build --release --target ${{ matrix.target }}
           fi

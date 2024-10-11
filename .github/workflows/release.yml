@@ -39,6 +39,10 @@ jobs:
             pkg-config \
             g++-aarch64-linux-gnu
 
+      - name: debug
+        run: |
+          ls -lah /usr/aarch64-linux-gnu/include/c++/
+
       - name: Configure environment variables
         run: |
           echo "CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
@@ -48,6 +52,7 @@ jobs:
           echo "DEBIAN_FRONTEND=noninteractive" >> $GITHUB_ENV
           echo "OPENSSL_STATIC=1" >> $GITHUB_ENV
           echo "OPENSSL_NO_VENDOR=0" >> $GITHUB_ENV
+          echo 'CXXFLAGS_aarch64_unknown_linux_gnu=--sysroot=/usr/aarch64-linux-gnu -nostdinc++ -I/usr/aarch64-linux-gnu/include/c++/13 -I/usr/aarch64-linux-gnu/include/c++/13/aarch64-linux-gnu' >> $GITHUB_ENV
 
       - name: Build the project for ARM64
         run: cargo build --release --target=aarch64-unknown-linux-gnu

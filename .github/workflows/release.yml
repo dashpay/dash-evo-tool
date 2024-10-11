@@ -1,3 +1,20 @@
+name: Build and Release Dash Evo Tool
+
+# Define when the workflow should be triggered
+on:
+  push:
+    tags:
+      - 'v*'
+      - 'v*-dev.*'
+  release:
+    types:
+      - published
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Version (i.e. v0.1.0)"
+        required: true
+
 jobs:
   build-and-release:
     name: Build and Release Dash Evo Tool

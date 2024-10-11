@@ -43,7 +43,7 @@ impl AppContext {
 
         let mut app_context = AppContext {
             network,
-            developer_mode: true,
+            developer_mode: false,
             devnet_name: None,
             db,
             sdk,

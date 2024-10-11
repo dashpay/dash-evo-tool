@@ -31,10 +31,26 @@ pub fn add_left_panel(
 
     // Define the button details directly in this function
     let buttons = [
-        ("I", RootScreenType::RootScreenIdentities, "icons/identities.png"),
-        ("C", RootScreenType::RootScreenDPNSContestedNames, "icons/ballot.png"),
-        ("T", RootScreenType::RootScreenTransitionVisualizerScreen, "icons/toolbox.png"),
-        ("N", RootScreenType::RootScreenNetworkChooser, "icons/network.png"),
+        (
+            "I",
+            RootScreenType::RootScreenIdentities,
+            "icons/identities.png",
+        ),
+        (
+            "C",
+            RootScreenType::RootScreenDPNSContestedNames,
+            "icons/ballot.png",
+        ),
+        (
+            "T",
+            RootScreenType::RootScreenTransitionVisualizerScreen,
+            "icons/toolbox.png",
+        ),
+        (
+            "N",
+            RootScreenType::RootScreenNetworkChooser,
+            "icons/network.png",
+        ),
     ];
 
     let panel_width = 50.0 + 20.0; // Button width (50) + 10px margin on each side (20 total)

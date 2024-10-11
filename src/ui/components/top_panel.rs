@@ -1,7 +1,10 @@
 use crate::app::{AppAction, DesiredAppAction};
 use crate::context::AppContext;
 use dash_sdk::dashcore_rpc::dashcore::Network;
-use egui::{Align, Color32, Context, Frame, Layout, Margin, RichText, Stroke, TextBuffer, TopBottomPanel, Ui};
+use egui::{
+    Align, Color32, Context, Frame, Layout, Margin, RichText, Stroke, TextBuffer, TopBottomPanel,
+    Ui,
+};
 use std::sync::Arc;
 
 fn add_location_view(ui: &mut Ui, location: Vec<(&str, AppAction)>) -> AppAction {
@@ -13,7 +16,11 @@ fn add_location_view(ui: &mut Ui, location: Vec<(&str, AppAction)>) -> AppAction
             let len = location.len();
             for (index, (text, location_action)) in location.into_iter().enumerate() {
                 if ui
-                    .button(RichText::new(text).font(font_id.clone()).color(Color32::WHITE))
+                    .button(
+                        RichText::new(text)
+                            .font(font_id.clone())
+                            .color(Color32::WHITE),
+                    )
                     .clicked()
                 {
                     action = location_action;
@@ -21,7 +28,11 @@ fn add_location_view(ui: &mut Ui, location: Vec<(&str, AppAction)>) -> AppAction
 
                 // Add a separator (e.g., '>' symbol) between buttons, except for the last one
                 if index < len - 1 {
-                    ui.label(RichText::new(">").font(font_id.clone()).color(Color32::WHITE));
+                    ui.label(
+                        RichText::new(">")
+                            .font(font_id.clone())
+                            .color(Color32::WHITE),
+                    );
                 }
             }
         });
@@ -67,9 +78,11 @@ pub fn add_top_panel(
 
                         // Calculate the text size using the new layout method
                         let button_text = text.to_string();
-                        let text_size = ui.fonts(|fonts| {
-                            fonts.layout_no_wrap(button_text.clone(), font_id.clone(), color)
-                        }).size();
+                        let text_size = ui
+                            .fonts(|fonts| {
+                                fonts.layout_no_wrap(button_text.clone(), font_id.clone(), color)
+                            })
+                            .size();
 
                         let button_width = text_size.x + 16.0; // Add some padding for the button
 

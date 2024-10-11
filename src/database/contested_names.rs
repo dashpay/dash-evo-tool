@@ -4,6 +4,8 @@ use crate::model::contested_name::{Contestant, ContestedName};
 use dash_sdk::dpp::data_contract::document_type::DocumentTypeRef;
 use dash_sdk::dpp::document::DocumentV0Getters;
 use dash_sdk::dpp::identifier::Identifier;
+use dash_sdk::dpp::identity::TimestampMillis;
+use dash_sdk::dpp::prelude::{BlockHeight, CoreBlockHeight};
 use dash_sdk::query_types::Contenders;
 use rusqlite::{params, params_from_iter, Result};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -23,6 +25,10 @@ impl Database {
                 c.identity_id,
                 c.name,
                 c.votes,
+                c.created_at,
+                c.created_at_block_height,
+                c.created_at_core_block_height,
+                c.document_id,
                 i.info
              FROM contested_name cn
              LEFT JOIN contestant c
@@ -40,15 +46,19 @@ impl Database {
         // Iterate over the joined rows
         let rows = stmt.query_map(params![network], |row| {
             let normalized_contested_name: String = row.get(0)?;
-            let locked_votes: Option<u64> = row.get(1)?;
-            let abstain_votes: Option<u64> = row.get(2)?;
+            let locked_votes: Option<u32> = row.get(1)?;
+            let abstain_votes: Option<u32> = row.get(2)?;
             let awarded_to: Option<Vec<u8>> = row.get(3)?;
             let ending_time: Option<u64> = row.get(4)?;
             let last_updated: Option<u64> = row.get(5)?;
             let identity_id: Option<Vec<u8>> = row.get(6)?;
             let contestant_name: Option<String> = row.get(7)?;
-            let votes: Option<u64> = row.get(8)?;
-            let identity_info: Option<String> = row.get(9)?;
+            let votes: Option<u32> = row.get(8)?;
+            let created_at: Option<TimestampMillis> = row.get(9)?;
+            let created_at_block_height: Option<BlockHeight> = row.get(10)?;
+            let created_at_core_block_height: Option<CoreBlockHeight> = row.get(11)?;
+            let document_id: Option<Vec<u8>> = row.get(12)?;
+            let identity_info: Option<String> = row.get(13)?;
 
             // Convert `awarded_to` to `Identifier` if it exists
             let awarded_to_id = awarded_to
@@ -69,8 +79,8 @@ impl Database {
                 });
 
             // If there are contestant details in the row, add them
-            if let (Some(identity_id), Some(contestant_name), Some(votes)) =
-                (identity_id, contestant_name, votes)
+            if let (Some(identity_id), Some(contestant_name), Some(votes), Some(document_id)) =
+                (identity_id, contestant_name, votes, document_id)
             {
                 let contestant = Contestant {
                     id: Identifier::from_bytes(&identity_id)
@@ -78,6 +88,11 @@ impl Database {
                     name: contestant_name,
                     info: identity_info.unwrap_or_default(),
                     votes,
+                    created_at,
+                    created_at_block_height,
+                    created_at_core_block_height,
+                    document_id: Identifier::from_bytes(&document_id)
+                        .expect("Expected 32 bytes for document_id"),
                 };
 
                 // Add the contestant to the contestants list
@@ -116,8 +131,8 @@ impl Database {
             params![contested_name.normalized_contested_name, network],
             |row| {
                 Ok((
-                    row.get::<_, Option<u64>>(0)?,
-                    row.get::<_, Option<u64>>(1)?,
+                    row.get::<_, Option<u32>>(0)?,
+                    row.get::<_, Option<u32>>(1)?,
                     row.get::<_, Option<Vec<u8>>>(2)?,
                     row.get::<_, Option<u64>>(3)?,
                 ))
@@ -192,6 +207,23 @@ impl Database {
     ) -> Result<()> {
         let network = app_context.network_string();
         let conn = self.conn.lock().unwrap();
+        let locked_votes = contenders.lock_vote_tally.unwrap_or(0) as i64;
+        let abstain_votes = contenders.abstain_vote_tally.unwrap_or(0) as i64;
+        let last_updated = chrono::Utc::now().timestamp(); // Get the current timestamp
+
+        // Update the `contested_name` table with locked votes, abstain votes, and last updated
+        conn.execute(
+            "UPDATE contested_name
+         SET locked_votes = ?, abstain_votes = ?, last_updated = ?
+         WHERE normalized_contested_name = ? AND network = ?",
+            params![
+                locked_votes,
+                abstain_votes,
+                last_updated,
+                contest_id,
+                network
+            ],
+        )?;
 
         // Iterate over each contender in the Contenders struct
         for (identity_id, contender) in &contenders.contenders {
@@ -211,6 +243,11 @@ impl Database {
                 .as_str()
                 .unwrap();
 
+            let created_at = document.created_at();
+            let created_at_block_height = document.created_at_block_height();
+            let created_at_core_block_height = document.created_at_core_block_height();
+            let document_id = document.id();
+
             // Check if the contender already exists
             let mut stmt = conn.prepare(
                 "SELECT votes
@@ -227,7 +264,7 @@ impl Database {
                 Ok(current_votes) => {
                     // Update the existing entry if votes or serialized document are different
                     if current_votes != contender.vote_tally().unwrap_or(0) as u64 {
-                        self.execute(
+                        conn.execute(
                             "UPDATE contestant
                          SET votes = ?
                          WHERE contest_id = ? AND identity_id = ? AND network = ?",
@@ -242,14 +279,18 @@ impl Database {
                 }
                 Err(rusqlite::Error::QueryReturnedNoRows) => {
                     // If the contestant doesn't exist, insert it
-                    self.execute(
-                        "INSERT INTO contestant (contest_id, identity_id, name, votes, network)
-                     VALUES (?, ?, ?, ?, ?, ?)",
+                    conn.execute(
+                        "INSERT INTO contestant (contest_id, identity_id, name, votes, created_at, created_at_block_height, created_at_core_block_height, document_id, network)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                         params![
                             contest_id,
                             identity_id_bytes,
                             name,
                             contender.vote_tally().unwrap_or(0),
+                            created_at,
+                            created_at_block_height,
+                            created_at_core_block_height,
+                            document_id.to_vec(),
                             network,
                         ],
                     )?;
@@ -281,7 +322,7 @@ impl Database {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
-                    row.get::<_, u64>(2)?,
+                    row.get::<_, u32>(2)?,
                 ))
             },
         );

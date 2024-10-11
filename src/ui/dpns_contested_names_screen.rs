@@ -51,13 +51,25 @@ impl DPNSContestedNamesScreen {
         &self,
         ui: &mut Ui,
         contested_name: &ContestedName,
+        is_locked_votes_bold: bool,
+        max_contestant_votes: u32,
     ) -> AppAction {
         let mut action = AppAction::None;
 
         if let Some(contestants) = &contested_name.contestants {
             for contestant in contestants {
                 let button_text = format!("{} - {} votes", contestant.name, contestant.votes);
-                if ui.button(button_text).clicked() {
+
+                // Determine if this contestant's votes should be bold
+                let text = if contestant.votes == max_contestant_votes && !is_locked_votes_bold {
+                    egui::RichText::new(button_text)
+                        .strong()
+                        .color(egui::Color32::from_rgb(0, 100, 0))
+                } else {
+                    egui::RichText::new(button_text)
+                };
+
+                if ui.add(egui::Label::new(text)).clicked() {
                     action = AppAction::None; // Placeholder for further action
                 }
             }
@@ -205,6 +217,25 @@ impl ScreenLike for DPNSContestedNamesScreen {
                             .body(|mut body| {
                                 for contested_name in &contested_names {
                                     body.row(25.0, |mut row| {
+                                        let locked_votes = contested_name.locked_votes.unwrap_or(0);
+
+                                        // Find the highest contestant votes, if any
+                                        let max_contestant_votes = contested_name
+                                            .contestants
+                                            .as_ref()
+                                            .map(|contestants| {
+                                                contestants
+                                                    .iter()
+                                                    .map(|c| c.votes)
+                                                    .max()
+                                                    .unwrap_or(0)
+                                            })
+                                            .unwrap_or(0);
+
+                                        // Determine if locked votes have strict priority
+                                        let is_locked_votes_bold =
+                                            locked_votes > max_contestant_votes;
+
                                         row.col(|ui| {
                                             ui.label(&contested_name.normalized_contested_name);
                                         });
@@ -212,9 +243,14 @@ impl ScreenLike for DPNSContestedNamesScreen {
                                             let label_text = if let Some(locked_votes) =
                                                 contested_name.locked_votes
                                             {
-                                                format!("{}", locked_votes)
+                                                let label_text = format!("{}", locked_votes);
+                                                if is_locked_votes_bold {
+                                                    egui::RichText::new(label_text).strong()
+                                                } else {
+                                                    egui::RichText::new(label_text)
+                                                }
                                             } else {
-                                                "Fetching".to_string()
+                                                egui::RichText::new("Fetching".to_string())
                                             };
                                             ui.label(label_text);
                                         });
@@ -244,8 +280,12 @@ impl ScreenLike for DPNSContestedNamesScreen {
                                             }
                                         });
                                         row.col(|ui| {
-                                            action |= self
-                                                .show_contested_name_details(ui, contested_name);
+                                            action |= self.show_contested_name_details(
+                                                ui,
+                                                contested_name,
+                                                is_locked_votes_bold,
+                                                max_contestant_votes,
+                                            );
                                         });
                                     });
                                 }

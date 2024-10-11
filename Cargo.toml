@@ -49,3 +49,4 @@ hdrhistogram = "7.5.4"
 rusqlite = { version = "0.32.1" }
 serde_yaml = "0.9.34+deprecated"
 image = "0.25.2"
+openssl = { version = "0.10", features = ["vendored"] }

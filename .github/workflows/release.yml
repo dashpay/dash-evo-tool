@@ -17,7 +17,7 @@ on:
 jobs:
   build-and-release:
     name: Build and Release Dash Evo Tool
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest]
@@ -40,10 +40,16 @@ jobs:
             arch: arm64
             target: aarch64-apple-darwin
     steps:
-      - uses: dtolnay/rust-toolchain@master
-        name: Install Rust toolchain
+      - uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: actions-rs/toolchain@v1
         with:
           toolchain: stable
+          components: rust-src
+
+      - name: Install cross
+        run: cargo install cross
 
       - name: Install protoc
         id: deps-protoc
@@ -82,19 +88,8 @@ jobs:
           echo "PKG_CONFIG_PATH is set to: $PKG_CONFIG_PATH"
           which $CC
 
-
-      - name: Check out code
-        uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-          target: ${{ matrix.target }}
-          override: true
-
-      - name: Build project
-        run: cargo build --release --target ${{ matrix.target }}
+      - name: Build project with cross
+        run: cross build --release --target ${{ matrix.target }}
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v3

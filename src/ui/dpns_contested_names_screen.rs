@@ -6,7 +6,8 @@ use crate::platform::BackendTask;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, LocalResult, TimeZone, Utc};
+use chrono_humanize::HumanTime;
 use egui::{Context, Frame, Margin, Ui};
 use egui_extras::{Column, TableBuilder};
 use std::sync::{Arc, Mutex};
@@ -294,17 +295,50 @@ impl ScreenLike for DPNSContestedNamesScreen {
                                         });
                                         row.col(|ui| {
                                             if let Some(ending_time) = contested_name.ending_time {
-                                                ui.label(format!("{}", ending_time));
+                                                // Convert the timestamp to a DateTime object using timestamp_millis_opt
+                                                if let LocalResult::Single(datetime) =
+                                                    Utc.timestamp_millis_opt(ending_time as i64)
+                                                {
+                                                    // Format the ISO date up to seconds
+                                                    let iso_date = datetime
+                                                        .format("%Y-%m-%d %H:%M:%S")
+                                                        .to_string();
+
+                                                    // Use chrono-humanize to get the relative time
+                                                    let relative_time =
+                                                        HumanTime::from(datetime).to_string();
+
+                                                    // Combine both the ISO date and relative time
+                                                    let display_text =
+                                                        format!("{} ({})", iso_date, relative_time);
+
+                                                    ui.label(display_text);
+                                                } else {
+                                                    // Handle case where the timestamp is invalid
+                                                    ui.label("Invalid timestamp");
+                                                }
                                             } else {
-                                                ui.label("N/A");
+                                                ui.label("Fetching");
                                             }
                                         });
                                         row.col(|ui| {
                                             if let Some(last_updated) = contested_name.last_updated
                                             {
-                                                ui.label(format!("{}", last_updated));
+                                                // Convert the timestamp to a DateTime object using timestamp_millis_opt
+                                                if let LocalResult::Single(datetime) =
+                                                    Utc.timestamp_opt(last_updated as i64, 0)
+                                                {
+                                                    // Use chrono-humanize to get the relative time
+                                                    let relative_time =
+                                                        HumanTime::from(datetime).to_string();
+
+                                                    ui.label(relative_time);
+                                                } else {
+                                                    // Handle case where the timestamp is invalid
+                                                    ui.label("Invalid timestamp");
+                                                }
                                             } else {
-                                                ui.label("N/A");
+                                                ui.label("Fetching");
                                             }
                                         });
                                         row.col(|ui| {

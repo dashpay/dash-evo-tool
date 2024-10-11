@@ -5,7 +5,7 @@ RUN apt-get update && \
         clang \
         gcc-aarch64-linux-gnu \
         g++-aarch64-linux-gnu \
-        libstdc++-10-dev-arm64-cross \
+        libstdc++-9-dev-arm64-cross \
         libc6-dev-arm64-cross \
         libssl-dev \
         pkg-config \
@@ -23,6 +23,8 @@ ENV CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc
 ENV CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++
 ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
 ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_AR=aarch64-linux-gnu-ar
+ENV CXXFLAGS_aarch64_unknown_linux_gnu="--sysroot=$SYSROOT -nostdinc++ -isystem $SYSROOT/include/c++/9 -isystem $SYSROOT/include/c++/9/aarch64-linux-gnu"
+
 
 ENV SYSROOT=/usr/aarch64-linux-gnu
 ENV CFLAGS_aarch64_unknown_linux_gnu="--sysroot=$SYSROOT"

@@ -19,12 +19,11 @@ RUN curl -Lo /tmp/protoc.zip \
     unzip /tmp/protoc.zip -d /usr/local/bin/ && \
     rm /tmp/protoc.zip
 
+RUN which aarch64-linux-gnu-gcc-9
 
 ENV SYSROOT=/usr/aarch64-linux-gnu
 
-ENV CC_aarch64_unknown_linux_gnu="aarch64-linux-gnu-gcc-9 --sysroot=$SYSROOT"
-ENV CXX_aarch64_unknown_linux_gnu="aarch64-linux-gnu-g++-9 --sysroot=$SYSROOT"
-ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER="aarch64-linux-gnu-gcc-9 --sysroot=$SYSROOT"
+ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER="aarch64-linux-gnu-gcc-9"
 ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_AR=aarch64-linux-gnu-ar
 
 ENV CFLAGS_aarch64_unknown_linux_gnu="--sysroot=$SYSROOT"

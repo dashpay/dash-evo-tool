@@ -5,6 +5,7 @@ RUN apt-get update && \
         clang \
         gcc-aarch64-linux-gnu \
         g++-aarch64-linux-gnu \
+        libstdc++-dev-arm64-cross \
         libc6-dev-arm64-cross \
         libssl-dev \
         pkg-config \
@@ -27,6 +28,10 @@ ENV SYSROOT=/usr/aarch64-linux-gnu
 ENV CFLAGS_aarch64_unknown_linux_gnu="--sysroot=$SYSROOT"
 ENV CPPFLAGS_aarch64_unknown_linux_gnu="--sysroot=$SYSROOT"
 ENV LDFLAGS_aarch64_unknown_linux_gnu="--sysroot=$SYSROOT"
+
+ENV C_INCLUDE_PATH=""
+ENV CPLUS_INCLUDE_PATH=""
+ENV LIBRARY_PATH=""
 
 # Set PROTOC environment variable
 ENV PROTOC=/usr/local/bin/protoc

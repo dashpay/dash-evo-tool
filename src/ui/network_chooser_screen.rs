@@ -92,7 +92,7 @@ impl ScreenLike for NetworkChooserScreen {
         let mut action = add_top_panel(
             ctx,
             &self.app_context,
-            vec![("Home", AppAction::None)],
+            vec![("Dash Evo Tool", AppAction::None)],
             None,
         );
 

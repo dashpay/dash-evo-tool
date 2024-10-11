@@ -118,7 +118,7 @@ impl ScreenLike for IdentitiesScreen {
         let mut action = add_top_panel(
             ctx,
             &self.app_context,
-            vec![("Home", AppAction::None)],
+            vec![("Dash Evo Tool", AppAction::None)],
             Some((
                 "Add Identity",
                 DesiredAppAction::AddScreenType(ScreenType::AddIdentity),

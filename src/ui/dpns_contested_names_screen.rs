@@ -112,7 +112,7 @@ impl ScreenLike for DPNSContestedNamesScreen {
         let mut action = add_top_panel(
             ctx,
             &self.app_context,
-            vec![("Home", AppAction::None)],
+            vec![("Dash Evo Tool", AppAction::None)],
             Some((
                 "Refresh",
                 DesiredAppAction::BackendTask(BackendTask::ContestedResourceTask(
@@ -171,7 +171,7 @@ impl ScreenLike for DPNSContestedNamesScreen {
                             .column(Column::initial(100.0).resizable(true)) // Abstain Votes
                             .column(Column::initial(200.0).resizable(true)) // Ending Time
                             .column(Column::initial(200.0).resizable(true)) // Last Updated
-                            .column(Column::initial(200.0).resizable(true)) // Contestants
+                            .column(Column::remainder()) // Contestants
                             .header(30.0, |mut header| {
                                 header.col(|ui| {
                                     if ui.button("Contested Name").clicked() {

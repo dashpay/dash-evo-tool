@@ -69,9 +69,9 @@ jobs:
           echo "PKG_CONFIG_PATH=/usr/aarch64-linux-gnu/lib/pkgconfig:/usr/lib/aarch64-linux-gnu/pkgconfig" >> $GITHUB_ENV
           echo "PKG_CONFIG_SYSROOT_DIR=/usr/aarch64-linux-gnu" >> $GITHUB_ENV
 
-      - name: Install ARM64 development libraries (example: zlib)
+      - name: Install OpenSSL libraries for ARM64
         if: matrix.arch == 'arm64' && matrix.os == 'ubuntu-latest'
-        run: sudo apt-get install -y libz-dev:aarch64
+        run: sudo apt-get install -y libssl-dev:aarch64
 
       - name: Debug environment variables
         run: |

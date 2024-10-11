@@ -1,4 +1,4 @@
-name: Release Dash Evo Tool
+name: Build ARM64 Binary
 
 on:
   push:
@@ -15,88 +15,45 @@ on:
         required: true
 
 jobs:
-  build-and-release:
-    name: Build and Release Dash Evo Tool
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        include:
-          - platform: linux/amd64
-            os: ubuntu-latest
-            arch: amd64
-            target: x86_64-unknown-linux-gnu
-          - platform: linux/arm64
-            os: ubuntu-latest
-            arch: arm64
-            target: aarch64-unknown-linux-gnu
-          - platform: macos/amd64
-            os: macos-latest
-            arch: amd64
-            target: x86_64-apple-darwin
-          - platform: macos/arm64
-            os: macos-latest
-            arch: arm64
-            target: aarch64-apple-darwin
+  build-arm64:
+    runs-on: ubuntu-latest
+    name: Build for ARM64
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout source code
+        uses: actions/checkout@v3
 
-      - name: Set up Rust
+      - name: Set up Rust toolchain
         uses: actions-rs/toolchain@v1
         with:
           toolchain: stable
+          target: aarch64-unknown-linux-gnu
+          override: true
           components: rust-src
 
-      - name: Install cross
-        if: matrix.os == 'ubuntu-latest'
-        run: cargo install cross
-
-      # Build custom Docker image for ARM64 Linux
-      - name: Build custom cross Docker image
-        if: matrix.arch == 'arm64' && matrix.os == 'ubuntu-latest'
+      - name: Install cross-compilation dependencies
         run: |
-          docker build -t my-custom-cross:aarch64 -f ./.github/workflows/Dockerfile .
+          sudo apt-get update
+          sudo apt-get install -y \
+            gcc-aarch64-linux-gnu \
+            libc6-dev-arm64-cross \
+            pkg-config \
+            g++-aarch64-linux-gnu
 
-      # Install protoc on macOS
-      - name: Install protoc on macOS
-        if: matrix.os == 'macos-latest'
+      - name: Configure environment variables
         run: |
-          brew install protobuf
+          echo "CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
+          echo "PKG_CONFIG_ALLOW_CROSS=1" >> $GITHUB_ENV
+          echo "RUSTFLAGS=-C linker=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
+          echo "DEBIAN_FRONTEND=noninteractive" >> $GITHUB_ENV
+          echo "OPENSSL_STATIC=1" >> $GITHUB_ENV
+          echo "OPENSSL_NO_VENDOR=0" >> $GITHUB_ENV
 
-      # Build project
-      - name: Build project
-        run: |
-          if [ "${{ matrix.os }}" == "ubuntu-latest" ]; then
-            cross build --release --target ${{ matrix.target }} --verbose
-          else
-            cargo build --release --target ${{ matrix.target }}
-          fi
-        env:
-          CROSS_CONTAINER_ENGINE: docker
+      - name: Build the project for ARM64
+        run: cargo build --release --target=aarch64-unknown-linux-gnu
 
-      - name: Upload build artifact
+      - name: Upload ARM64 binary (optional)
         uses: actions/upload-artifact@v3
         with:
-          name: dash-evo-tool-${{ matrix.platform }}
-          path: target/${{ matrix.target }}/release/dash-evo-tool
-    
-    continue-on-error: true
-
-  release:
-    name: Create GitHub Release
-    needs: build-and-release
-    runs-on: ubuntu-latest
-    steps:
-      - name: Download build artifacts
-        uses: actions/download-artifact@v3
-        with:
-          name: dash-evo-tool-*
-          path: ./release
-
-      - name: Publish release
-        uses: softprops/action-gh-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          files: ./release/dash-evo-tool-*
-          draft: false
-          prerelease: false
+          name: my_project_arm64
+          path: target/aarch64-unknown-linux-gnu/release/my_executable

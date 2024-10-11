@@ -1,20 +1,3 @@
-name: Build and Release Dash Evo Tool
-
-# Define when the workflow should be triggered
-on:
-  push:
-    tags:
-      - 'v*'
-      - 'v*-dev.*'
-  release:
-    types:
-      - published
-  workflow_dispatch:
-    inputs:
-      tag:
-        description: "Version (i.e. v0.1.0)"
-        required: true
-
 jobs:
   build-and-release:
     name: Build and Release Dash Evo Tool
@@ -48,7 +31,7 @@ jobs:
       - name: Build in ARM64 Docker container (Linux)
         if: matrix.os == 'ubuntu-latest' && matrix.arch == 'arm64'
         run: |
-          docker run --rm -v $(pwd):/build -w /build arm64v8/ubuntu:latest /bin/bash -c "
+          docker run --platform linux/arm64 --rm -v $(pwd):/build -w /build arm64v8/ubuntu:latest /bin/bash -c "
             apt-get update &&
             apt-get install -y build-essential gcc-aarch64-linux-gnu libssl-dev curl unzip &&
             

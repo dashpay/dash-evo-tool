@@ -5,7 +5,7 @@ RUN apt-get update && \
         clang \
         gcc-aarch64-linux-gnu \
         g++-aarch64-linux-gnu \
-        libstdc++-dev-arm64-cross \
+        libstdc++-5-dev-arm64-cross \
         libc6-dev-arm64-cross \
         libssl-dev \
         pkg-config \

@@ -78,6 +78,8 @@ jobs:
         with:
           name: dash-evo-tool-${{ matrix.platform }}
           path: target/${{ matrix.target }}/release/dash-evo-tool
+    
+    continue-on-error: true
 
   release:
     name: Create GitHub Release

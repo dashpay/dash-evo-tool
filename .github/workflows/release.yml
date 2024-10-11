@@ -17,11 +17,9 @@ on:
 jobs:
   build-and-release:
     name: Build and Release Dash Evo Tool
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest]
-        arch: [amd64, arm64]
         include:
           - platform: linux/amd64
             os: ubuntu-latest
@@ -49,55 +47,29 @@ jobs:
           components: rust-src
 
       - name: Install cross
+        if: matrix.os == 'ubuntu-latest'
         run: cargo install cross
 
-      - name: Install protoc
-        id: deps-protoc
-        shell: bash
-        run: |
-          curl -Lo /tmp/protoc.zip \
-            https://github.com/protocolbuffers/protobuf/releases/download/v25.2/protoc-25.2-linux-x86_64.zip
-          unzip /tmp/protoc.zip -d ${HOME}/.local
-          echo "PROTOC=${HOME}/.local/bin/protoc" >> $GITHUB_ENV
-          export PATH="${PATH}:${HOME}/.local/bin"
-
-      # Install cross-compilation toolchain for ARM on Linux
-      - name: Install cross-compilation toolchain (only for arm64)
-        if: matrix.arch == 'arm64' && matrix.os == 'ubuntu-latest'
-        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
-
-      - name: Set environment variables for cross-compilation
+      - name: Build custom cross Docker image
         if: matrix.arch == 'arm64' && matrix.os == 'ubuntu-latest'
         run: |
-          echo "CC=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
-          echo "CXX=aarch64-linux-gnu-g++" >> $GITHUB_ENV
-          echo "AR=aarch64-linux-gnu-ar" >> $GITHUB_ENV
-          echo "PKG_CONFIG_PATH=/usr/aarch64-linux-gnu/lib/pkgconfig:/usr/lib/aarch64-linux-gnu/pkgconfig" >> $GITHUB_ENV
-          echo "PKG_CONFIG_SYSROOT_DIR=/usr/aarch64-linux-gnu" >> $GITHUB_ENV
+          docker build -t my-custom-cross:aarch64 -f ./.github/workflows/Dockerfile .
 
-      - name: Install OpenSSL libraries for ARM64
-        if: matrix.arch == 'arm64' && matrix.os == 'ubuntu-latest'
+      - name: Build project
         run: |
-          sudo apt-get install -y libssl-dev
-
-      - name: Debug environment variables
-        run: |
-          echo "CC is set to: $CC"
-          echo "CXX is set to: $CXX"
-          echo "PKG_CONFIG is set to: $PKG_CONFIG"
-          echo "PKG_CONFIG_PATH is set to: $PKG_CONFIG_PATH"
-          which $CC
-
-      - name: Build project with cross
-        run: cross build --release --target ${{ matrix.target }}
+          if [ "${{ matrix.os }}" == "ubuntu-latest" ]; then
+            cross build --release --target ${{ matrix.target }}
+          else
+            cargo build --release --target ${{ matrix.target }}
+          fi
+        env:
+          CROSS_CONTAINER_ENGINE: docker
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v3
         with:
           name: dash-evo-tool-${{ matrix.platform }}
           path: target/${{ matrix.target }}/release/dash-evo-tool
-
-    continue-on-error: true
 
   release:
     name: Create GitHub Release

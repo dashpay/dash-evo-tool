@@ -72,9 +72,7 @@ jobs:
       - name: Install OpenSSL libraries for ARM64
         if: matrix.arch == 'arm64' && matrix.os == 'ubuntu-latest'
         run: |
-          sudo dpkg --add-architecture arm64
-          sudo apt-get update
-          sudo apt-get install -y libssl-dev:aarch64
+          sudo apt-get install -y libssl-dev
 
       - name: Debug environment variables
         run: |

@@ -32,8 +32,10 @@ impl Database {
                 normalized_contested_name TEXT,
                 locked_votes INTEGER,
                 abstain_votes INTEGER,
+                winner_type INTEGER NOT NULL,
                 awarded_to BLOB,
                 ending_time INTEGER,
+                last_updated INTEGER,
                 network TEXT NOT NULL,
                 PRIMARY KEY (normalized_contested_name, network)
             )",

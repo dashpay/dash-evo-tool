@@ -10,10 +10,27 @@ use egui::{Context, Frame, Margin, Ui};
 use egui_extras::{Column, TableBuilder};
 use std::sync::{Arc, Mutex};
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SortColumn {
+    ContestedName,
+    LockedVotes,
+    AbstainVotes,
+    EndingTime,
+    LastUpdated,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SortOrder {
+    Ascending,
+    Descending,
+}
+
 pub struct DPNSContestedNamesScreen {
     contested_names: Arc<Mutex<Vec<ContestedName>>>,
     pub app_context: Arc<AppContext>,
     error_message: Option<(String, MessageType)>,
+    sort_column: SortColumn,
+    sort_order: SortOrder,
 }
 
 impl DPNSContestedNamesScreen {
@@ -25,6 +42,8 @@ impl DPNSContestedNamesScreen {
             contested_names,
             app_context: app_context.clone(),
             error_message: None,
+            sort_column: SortColumn::ContestedName,
+            sort_order: SortOrder::Ascending,
         }
     }
 
@@ -36,20 +55,49 @@ impl DPNSContestedNamesScreen {
         let mut action = AppAction::None;
 
         if let Some(contestants) = &contested_name.contestants {
-            // Iterate over contestants and create clickable buttons for each
             for contestant in contestants {
                 let button_text = format!("{} - {} votes", contestant.name, contestant.votes);
                 if ui.button(button_text).clicked() {
-                    // Placeholder for action when a contestant is clicked
-                    action = AppAction::None;
+                    action = AppAction::None; // Placeholder for further action
                 }
             }
         }
 
         action
     }
-}
 
+    fn sort_contested_names(&self, contested_names: &mut Vec<ContestedName>) {
+        contested_names.sort_by(|a, b| {
+            let order = match self.sort_column {
+                SortColumn::ContestedName => a
+                    .normalized_contested_name
+                    .cmp(&b.normalized_contested_name),
+                SortColumn::LockedVotes => a.locked_votes.cmp(&b.locked_votes),
+                SortColumn::AbstainVotes => a.abstain_votes.cmp(&b.abstain_votes),
+                SortColumn::EndingTime => a.ending_time.cmp(&b.ending_time),
+                SortColumn::LastUpdated => a.last_updated.cmp(&b.last_updated),
+            };
+
+            if self.sort_order == SortOrder::Descending {
+                order.reverse()
+            } else {
+                order
+            }
+        });
+    }
+
+    fn toggle_sort(&mut self, column: SortColumn) {
+        if self.sort_column == column {
+            self.sort_order = match self.sort_order {
+                SortOrder::Ascending => SortOrder::Descending,
+                SortOrder::Descending => SortOrder::Ascending,
+            };
+        } else {
+            self.sort_column = column;
+            self.sort_order = SortOrder::Ascending;
+        }
+    }
+}
 impl ScreenLike for DPNSContestedNamesScreen {
     fn refresh(&mut self) {
         let mut contested_names = self.contested_names.lock().unwrap();
@@ -79,7 +127,15 @@ impl ScreenLike for DPNSContestedNamesScreen {
             RootScreenType::RootScreenDPNSContestedNames,
         );
 
-        // Main content
+        // Clone the contested names vector to avoid holding the lock during UI rendering
+        let contested_names = {
+            let mut contested_names_guard = self.contested_names.lock().unwrap();
+            let mut contested_names = contested_names_guard.clone();
+            self.sort_contested_names(&mut contested_names);
+            contested_names
+        };
+
+        // Render the UI with the cloned contested_names vector
         egui::CentralPanel::default().show(ctx, |ui| {
             if let Some((message, message_type)) = &self.error_message {
                 let message_color = match message_type {
@@ -87,25 +143,17 @@ impl ScreenLike for DPNSContestedNamesScreen {
                     MessageType::Info => egui::Color32::BLACK,
                 };
 
-                ui.add_space(10.0); // Add some space before the message view
-
-                ui.allocate_ui(
-                    egui::Vec2::new(ui.available_width(), 150.0), // Full width, 150 height
-                    |ui| {
-                        ui.group(|ui| {
-                            ui.set_min_height(150.0);
-                            ui.label(egui::RichText::new(message.clone()).color(message_color));
-                        });
-                    },
-                );
-
-                ui.add_space(10.0); // Add some space after the message view
+                ui.add_space(10.0);
+                ui.allocate_ui(egui::Vec2::new(ui.available_width(), 150.0), |ui| {
+                    ui.group(|ui| {
+                        ui.set_min_height(150.0);
+                        ui.label(egui::RichText::new(message.clone()).color(message_color));
+                    });
+                });
+                ui.add_space(10.0);
             }
 
-            let contested_names = self.contested_names.lock().unwrap();
-
             egui::ScrollArea::vertical().show(ui, |ui| {
-                // Define a frame for the table
                 Frame::group(ui.style())
                     .fill(ui.visuals().panel_fill)
                     .stroke(egui::Stroke::new(
@@ -114,36 +162,48 @@ impl ScreenLike for DPNSContestedNamesScreen {
                     ))
                     .inner_margin(Margin::same(8.0))
                     .show(ui, |ui| {
-                        // Build the table
                         TableBuilder::new(ui)
                             .striped(true)
                             .resizable(true)
                             .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                            // Define columns with resizing and alignment
                             .column(Column::initial(200.0).resizable(true)) // Contested Name
                             .column(Column::initial(100.0).resizable(true)) // Locked Votes
                             .column(Column::initial(100.0).resizable(true)) // Abstain Votes
                             .column(Column::initial(200.0).resizable(true)) // Ending Time
+                            .column(Column::initial(200.0).resizable(true)) // Last Updated
                             .column(Column::initial(200.0).resizable(true)) // Contestants
                             .header(30.0, |mut header| {
                                 header.col(|ui| {
-                                    ui.heading("Contested Name");
+                                    if ui.button("Contested Name").clicked() {
+                                        self.toggle_sort(SortColumn::ContestedName);
+                                    }
                                 });
                                 header.col(|ui| {
-                                    ui.heading("Locked Votes");
+                                    if ui.button("Locked Votes").clicked() {
+                                        self.toggle_sort(SortColumn::LockedVotes);
+                                    }
                                 });
                                 header.col(|ui| {
-                                    ui.heading("Abstain Votes");
+                                    if ui.button("Abstain Votes").clicked() {
+                                        self.toggle_sort(SortColumn::AbstainVotes);
+                                    }
                                 });
                                 header.col(|ui| {
-                                    ui.heading("Ending Time");
+                                    if ui.button("Ending Time").clicked() {
+                                        self.toggle_sort(SortColumn::EndingTime);
+                                    }
+                                });
+                                header.col(|ui| {
+                                    if ui.button("Last Updated").clicked() {
+                                        self.toggle_sort(SortColumn::LastUpdated);
+                                    }
                                 });
                                 header.col(|ui| {
                                     ui.heading("Contestants");
                                 });
                             })
                             .body(|mut body| {
-                                for contested_name in contested_names.iter() {
+                                for contested_name in &contested_names {
                                     body.row(25.0, |mut row| {
                                         row.col(|ui| {
                                             ui.label(&contested_name.normalized_contested_name);
@@ -171,6 +231,14 @@ impl ScreenLike for DPNSContestedNamesScreen {
                                         row.col(|ui| {
                                             if let Some(ending_time) = contested_name.ending_time {
                                                 ui.label(format!("{}", ending_time));
+                                            } else {
+                                                ui.label("N/A");
+                                            }
+                                        });
+                                        row.col(|ui| {
+                                            if let Some(last_updated) = contested_name.last_updated
+                                            {
+                                                ui.label(format!("{}", last_updated));
                                             } else {
                                                 ui.label("N/A");
                                             }

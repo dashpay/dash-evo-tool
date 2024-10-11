@@ -1,7 +1,10 @@
 use crate::context::AppContext;
 use crate::database::Database;
 use crate::model::contested_name::{Contestant, ContestedName};
+use dash_sdk::dpp::data_contract::document_type::DocumentTypeRef;
+use dash_sdk::dpp::document::DocumentV0Getters;
 use dash_sdk::dpp::identifier::Identifier;
+use dash_sdk::query_types::Contenders;
 use rusqlite::{params, params_from_iter, Result};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -16,6 +19,7 @@ impl Database {
                 cn.abstain_votes,
                 cn.awarded_to,
                 cn.ending_time,
+                cn.last_updated,
                 c.identity_id,
                 c.name,
                 c.votes,
@@ -40,10 +44,11 @@ impl Database {
             let abstain_votes: Option<u64> = row.get(2)?;
             let awarded_to: Option<Vec<u8>> = row.get(3)?;
             let ending_time: Option<u64> = row.get(4)?;
-            let identity_id: Option<Vec<u8>> = row.get(5)?;
-            let contestant_name: Option<String> = row.get(6)?;
-            let votes: Option<u64> = row.get(7)?;
-            let identity_info: Option<String> = row.get(8)?;
+            let last_updated: Option<u64> = row.get(5)?;
+            let identity_id: Option<Vec<u8>> = row.get(6)?;
+            let contestant_name: Option<String> = row.get(7)?;
+            let votes: Option<u64> = row.get(8)?;
+            let identity_info: Option<String> = row.get(9)?;
 
             // Convert `awarded_to` to `Identifier` if it exists
             let awarded_to_id = awarded_to
@@ -59,7 +64,8 @@ impl Database {
                     awarded_to: awarded_to_id,
                     ending_time,
                     contestants: Some(Vec::new()), // Initialize as an empty vector
-                    my_votes: BTreeMap::new(),     // Assuming this is filled elsewhere
+                    last_updated,
+                    my_votes: BTreeMap::new(), // Assuming this is filled elsewhere
                 });
 
             // If there are contestant details in the row, add them
@@ -169,8 +175,86 @@ impl Database {
                 self.insert_or_update_contestant(
                     &contested_name.normalized_contested_name,
                     contestant,
-                    &network,
+                    app_context,
                 )?;
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn insert_or_update_contenders(
+        &self,
+        contest_id: &str,
+        contenders: &Contenders,
+        dpns_domain_document_type: DocumentTypeRef,
+        app_context: &AppContext,
+    ) -> Result<()> {
+        let network = app_context.network_string();
+        let conn = self.conn.lock().unwrap();
+
+        // Iterate over each contender in the Contenders struct
+        for (identity_id, contender) in &contenders.contenders {
+            // Convert the identity ID to bytes
+            let identity_id_bytes = identity_id.to_vec();
+
+            // Serialize the document if available
+            let deserialized_contender = contender
+                .try_to_contender(dpns_domain_document_type, &app_context.platform_version)
+                .expect("expect a contender document deserialization");
+
+            let document = deserialized_contender.document().as_ref().unwrap().clone();
+
+            let name = document
+                .get("label")
+                .expect("expected name")
+                .as_str()
+                .unwrap();
+
+            // Check if the contender already exists
+            let mut stmt = conn.prepare(
+                "SELECT votes
+             FROM contestant
+             WHERE contest_id = ? AND identity_id = ? AND network = ?",
+            )?;
+
+            let result = stmt.query_row(
+                params![contest_id, identity_id_bytes.clone(), network],
+                |row| row.get::<_, u64>(0),
+            );
+
+            match result {
+                Ok(current_votes) => {
+                    // Update the existing entry if votes or serialized document are different
+                    if current_votes != contender.vote_tally().unwrap_or(0) as u64 {
+                        self.execute(
+                            "UPDATE contestant
+                         SET votes = ?
+                         WHERE contest_id = ? AND identity_id = ? AND network = ?",
+                            params![
+                                contender.vote_tally().unwrap_or(0),
+                                contest_id,
+                                identity_id_bytes,
+                                network,
+                            ],
+                        )?;
+                    }
+                }
+                Err(rusqlite::Error::QueryReturnedNoRows) => {
+                    // If the contestant doesn't exist, insert it
+                    self.execute(
+                        "INSERT INTO contestant (contest_id, identity_id, name, votes, network)
+                     VALUES (?, ?, ?, ?, ?, ?)",
+                        params![
+                            contest_id,
+                            identity_id_bytes,
+                            name,
+                            contender.vote_tally().unwrap_or(0),
+                            network,
+                        ],
+                    )?;
+                }
+                Err(e) => return Err(e.into()),
             }
         }
 
@@ -181,8 +265,9 @@ impl Database {
         &self,
         contest_id: &str,
         contestant: &Contestant,
-        network: &str,
+        app_context: &AppContext,
     ) -> Result<()> {
+        let network = app_context.network_string();
         // Check if the contestant already exists and get the current values if it does
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
@@ -249,19 +334,23 @@ impl Database {
         &self,
         name_contests: Vec<String>,
         app_context: &AppContext,
-    ) -> Result<()> {
+    ) -> Result<Vec<String>> {
         let network = app_context.network_string();
         let conn = self.conn.lock().unwrap();
+        let mut outdated_names: Vec<(String, Option<i64>)> = Vec::new();
+        let mut new_names: Vec<String> = Vec::new();
+
+        // Define the time limit (one hour ago in Unix timestamp format)
+        let one_hour_ago = chrono::Utc::now().timestamp() - 3600;
 
         // Chunk the name_contests into smaller groups due to SQL parameter limits
         let chunk_size = 900; // Use a safe limit to stay below SQLite's limit
-        let mut existing_names: HashSet<String> = HashSet::new();
 
         for chunk in name_contests.chunks(chunk_size) {
             // Prepare placeholders for the SQL IN clause
             let placeholders: String = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
             let query = format!(
-                "SELECT normalized_contested_name
+                "SELECT normalized_contested_name, last_updated
              FROM contested_name
              WHERE network = ? AND normalized_contested_name IN ({})",
                 placeholders
@@ -275,34 +364,54 @@ impl Database {
                 params.push(name);
             }
 
-            // Execute the query and collect existing names
-            let rows = stmt.query_map(params_from_iter(params.iter()), |row| row.get(0))?;
+            // Execute the query and collect outdated or never updated names
+            let rows = stmt.query_map(params_from_iter(params.iter()), |row| {
+                let name: String = row.get(0)?;
+                let last_updated: Option<i64> = row.get(1)?;
+                Ok((name, last_updated))
+            })?;
+
+            // Track the existing and outdated names
+            let mut existing_names = HashSet::new();
             for row in rows {
-                if let Ok(name) = row {
-                    existing_names.insert(name);
+                if let Ok((name, last_updated)) = row {
+                    existing_names.insert(name.clone());
+                    if last_updated.is_none() || last_updated.unwrap() < one_hour_ago {
+                        outdated_names.push((name, last_updated));
+                    }
+                }
+            }
+
+            // Identify and collect new names (those not in existing_names)
+            for name in chunk {
+                if !existing_names.contains(name) {
+                    new_names.push(name.clone());
                 }
             }
         }
 
-        // Filter out the names that already exist in the database
-        let new_names: Vec<&String> = name_contests
-            .iter()
-            .filter(|name| !existing_names.contains(*name))
-            .collect();
-
-        // If there are new names, prepare the insertion statement
+        // Insert new names into the database
         if !new_names.is_empty() {
             let mut insert_stmt = conn.prepare(
-                "INSERT INTO contested_name (normalized_contested_name, network)
-             VALUES (?, ?)",
+                "INSERT INTO contested_name (normalized_contested_name, network, winner_type)
+             VALUES (?, ?, 0)",
             )?;
 
-            // Insert each new name into the database
-            for name in new_names {
+            for name in &new_names {
                 insert_stmt.execute(params![name, network])?;
             }
         }
 
-        Ok(())
+        // Combine the new names and outdated names, sorted by last_updated (oldest first)
+        outdated_names.extend(new_names.into_iter().map(|name| (name, None)));
+        outdated_names.sort_by(|a, b| a.1.unwrap_or(0).cmp(&b.1.unwrap_or(0)));
+
+        // Extract the names into a Vec<String>
+        let result_names = outdated_names
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect::<Vec<_>>();
+
+        Ok(result_names)
     }
 }

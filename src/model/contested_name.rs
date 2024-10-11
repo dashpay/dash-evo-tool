@@ -4,6 +4,7 @@ use dash_sdk::dpp::identity::{KeyID, TimestampMillis};
 use dash_sdk::dpp::prelude::Identifier;
 use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
 use std::collections::BTreeMap;
+use dash_sdk::platform::proto::get_contested_resource_vote_state_response::get_contested_resource_vote_state_response_v0::Contender;
 
 #[derive(Debug, Encode, Decode, Clone)]
 pub struct ContestedName {
@@ -13,6 +14,7 @@ pub struct ContestedName {
     pub abstain_votes: Option<u64>,
     pub awarded_to: Option<Identifier>,
     pub ending_time: Option<TimestampMillis>,
+    pub last_updated: Option<TimestampMillis>,
     pub my_votes: BTreeMap<(Identifier, EncryptedPrivateKeyTarget, KeyID), ResourceVoteChoice>,
 }
 

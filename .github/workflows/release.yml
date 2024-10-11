@@ -43,7 +43,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         name: Install Rust toolchain
         with:
-          toolchain: ${{ inputs.toolchain }}
+          toolchain: stable
 
       - name: Install protoc
         id: deps-protoc
@@ -61,7 +61,7 @@ jobs:
       - name: "Compile Protobuf definitions (needed by fmt, doc, etc.)"
         shell: bash
         run: cargo build -p tenderdash-proto
-        
+
       - name: Check out code
         uses: actions/checkout@v4
 

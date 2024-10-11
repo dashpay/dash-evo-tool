@@ -1,4 +1,4 @@
-name: Build and Release Dash Evo Tool
+name: Release Dash Evo Tool
 
 on:
   push:
@@ -11,52 +11,92 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Version (i.e. v0.1.0)"
+        description: "Version (e.g., v0.1.0)"
         required: true
 
 jobs:
   build-and-release:
-    name: Build and Release Dash Evo Tool (ARM64 Only)
-    runs-on: ubuntu-latest
-
+    name: Build and Release Dash Evo Tool
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - platform: linux/amd64
+            os: ubuntu-latest
+            arch: amd64
+            target: x86_64-unknown-linux-gnu
+          - platform: linux/arm64
+            os: ubuntu-latest
+            arch: arm64
+            target: aarch64-unknown-linux-gnu
+          - platform: macos/amd64
+            os: macos-latest
+            arch: amd64
+            target: x86_64-apple-darwin
+          - platform: macos/arm64
+            os: macos-latest
+            arch: arm64
+            target: aarch64-apple-darwin
     steps:
       - uses: actions/checkout@v4
 
-      # Set up QEMU to emulate ARM64 on the AMD64 host
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v2
+      - name: Set up Rust
+        uses: actions-rs/toolchain@v1
         with:
-          platforms: arm64
+          toolchain: stable
+          components: rust-src
 
-      # Set up Docker Buildx for multi-platform builds
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v2
+      - name: Install cross
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo install cross
 
-      # ARM64 build in Docker with QEMU emulation
-      - name: Build in ARM64 Docker container
+      # Build custom Docker image for ARM64 Linux
+      - name: Build custom cross Docker image
+        if: matrix.arch == 'arm64' && matrix.os == 'ubuntu-latest'
         run: |
-          docker run --platform linux/arm64 --rm -v $(pwd):/build -w /build arm64v8/ubuntu:latest /bin/bash -c "
-            apt-get update &&
-            apt-get install -y build-essential gcc-aarch64-linux-gnu libssl-dev curl unzip &&
-            
-            # Install protoc for ARM64
-            curl -Lo /tmp/protoc.zip \
-              https://github.com/protocolbuffers/protobuf/releases/download/v25.2/protoc-25.2-linux-aarch64.zip &&
-            unzip /tmp/protoc.zip -d \$HOME/.local &&
-            export PATH=\$PATH:\$HOME/.local/bin &&
+          docker build -t my-custom-cross:aarch64 -f ./.github/workflows/Dockerfile .
 
-            # Install Rust and cross-compilation toolchain
-            curl https://sh.rustup.rs -sSf | sh -s -- -y &&
-            source \$HOME/.cargo/env &&
-            rustup target add aarch64-unknown-linux-gnu &&
+      # Install protoc on macOS
+      - name: Install protoc on macOS
+        if: matrix.os == 'macos-latest'
+        run: |
+          brew install protobuf
 
-            # Build the Rust project
-            cargo build --release --target aarch64-unknown-linux-gnu
-          "
+      # Build project
+      - name: Build project
+        run: |
+          if [ "${{ matrix.os }}" == "ubuntu-latest" ]; then
+            cross build --release --target ${{ matrix.target }}
+          else
+            cargo build --release --target ${{ matrix.target }}
+          fi
+        env:
+          CROSS_CONTAINER_ENGINE: docker
 
-      # Upload artifacts
       - name: Upload build artifact
         uses: actions/upload-artifact@v3
         with:
-          name: dash-evo-tool-arm64
-          path: target/aarch64-unknown-linux-gnu/release/dash-evo-tool
+          name: dash-evo-tool-${{ matrix.platform }}
+          path: target/${{ matrix.target }}/release/dash-evo-tool
+    
+    continue-on-error: true
+
+  release:
+    name: Create GitHub Release
+    needs: build-and-release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v3
+        with:
+          name: dash-evo-tool-*
+          path: ./release
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          files: ./release/dash-evo-tool-*
+          draft: false
+          prerelease: false

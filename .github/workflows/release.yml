@@ -55,13 +55,6 @@ jobs:
           echo "PROTOC=${HOME}/.local/bin/protoc" >> $GITHUB_ENV
           export PATH="${PATH}:${HOME}/.local/bin"
 
-      - name: Rust cache
-        uses: Swatinem/rust-cache@v2
-
-      - name: "Compile Protobuf definitions (needed by fmt, doc, etc.)"
-        shell: bash
-        run: cargo build -p tenderdash-proto
-
       - name: Check out code
         uses: actions/checkout@v4
 

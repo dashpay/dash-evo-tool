@@ -13,7 +13,7 @@ RUN apt-get update && \
         curl \
         build-essential \
         libc6-dev-amd64 \
-        libc6-dev-i386 \
+        libc6-dev-i386
 
 # Install protoc
 RUN curl -Lo /tmp/protoc.zip \

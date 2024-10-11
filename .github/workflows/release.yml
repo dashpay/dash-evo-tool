@@ -5,33 +5,36 @@ on:
     tags:
       - 'v*'
       - 'v*-dev.*'
+  release:
+    types:
+      - published
   workflow_dispatch:
     inputs:
       tag:
-        description: "Version (i.e. v1.0.0)"
+        description: "Version (i.e. v0.1.0)"
         required: true
 
 jobs:
-  build:
-    name: Build and Release
-    runs-on: ${{ matrix.os }}
+  build-and-release:
+    name: Build and Release Dash Evo Tool
+    runs-on: ["self-hosted", "ubuntu-platform"]
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [self-hosted]
         arch: [amd64, arm64]
         include:
-          - os: ubuntu-latest
+          - platform: linux/amd64
+            runner: ["self-hosted", "linux", "amd64", "ubuntu-platform"]
             target: x86_64-unknown-linux-gnu
-            arch: amd64
-          - os: ubuntu-latest
+          - platform: linux/arm64
+            runner: ["self-hosted", "linux", "arm64", "ubuntu-platform"]
             target: aarch64-unknown-linux-gnu
-            arch: arm64
-          - os: macos-latest
+          - platform: macos/amd64
+            runner: ["self-hosted", "macOS", "amd64", "macos-platform"]
             target: x86_64-apple-darwin
-            arch: amd64
-          - os: macos-latest
+          - platform: macos/arm64
+            runner: ["self-hosted", "macOS", "arm64", "macos-platform"]
             target: aarch64-apple-darwin
-            arch: arm64
     steps:
       - name: Check out code
         uses: actions/checkout@v4
@@ -43,31 +46,29 @@ jobs:
           target: ${{ matrix.target }}
           override: true
 
-      - name: Install dependencies for cross-compilation (Linux only)
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
-
       - name: Build project
         run: cargo build --release --target ${{ matrix.target }}
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v3
         with:
-          name: dash-evo-tool-${{ matrix.os }}-${{ matrix.arch }}
+          name: dash-evo-tool-${{ matrix.platform }}
           path: target/${{ matrix.target }}/release/dash-evo-tool
 
+    continue-on-error: true
+
   release:
-    name: Create Release
-    needs: build
+    name: Create GitHub Release
+    needs: build-and-release
     runs-on: ubuntu-latest
     steps:
-      - name: Download artifacts
+      - name: Download build artifacts
         uses: actions/download-artifact@v3
         with:
           name: dash-evo-tool-*
           path: ./release
 
-      - name: Set up release
+      - name: Publish release
         uses: softprops/action-gh-release@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

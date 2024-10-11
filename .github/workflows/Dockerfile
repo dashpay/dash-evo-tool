@@ -1,7 +1,7 @@
 FROM ghcr.io/cross-rs/aarch64-unknown-linux-gnu:latest
 
 RUN apt-get update && \
-    apt-get install -y libssl-dev pkg-config unzip curl clang
+    apt-get install -y libssl-dev pkg-config unzip curl clang gcc
 
 # Install protoc
 RUN curl -Lo /tmp/protoc.zip \

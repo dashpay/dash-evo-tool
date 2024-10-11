@@ -3,12 +3,10 @@ FROM ghcr.io/cross-rs/aarch64-unknown-linux-gnu:latest
 RUN apt-get update && \
     apt-get install -y \
         clang \
-        gcc-9-aarch64-linux-gnu \
-        g++-9-aarch64-linux-gnu \
-        libc6-dev-arm64-cross \
-        libc6-arm64-cross \
-        linux-libc-dev-arm64-cross \
+        gcc-aarch64-linux-gnu \
+        g++-aarch64-linux-gnu \
         libstdc++-9-dev-arm64-cross \
+        libc6-dev-arm64-cross \
         libssl-dev \
         pkg-config \
         unzip \

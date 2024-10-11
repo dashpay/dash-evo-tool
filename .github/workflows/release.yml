@@ -17,23 +17,27 @@ on:
 jobs:
   build-and-release:
     name: Build and Release Dash Evo Tool
-    runs-on: ["self-hosted", "ubuntu-platform"]
+    runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [self-hosted]
+        os: [ubuntu-latest, macos-latest]
         arch: [amd64, arm64]
         include:
           - platform: linux/amd64
-            runner: ["self-hosted", "linux", "amd64", "ubuntu-platform"]
+            os: ubuntu-latest
+            arch: amd64
             target: x86_64-unknown-linux-gnu
           - platform: linux/arm64
-            runner: ["self-hosted", "linux", "arm64", "ubuntu-platform"]
+            os: ubuntu-latest
+            arch: arm64
             target: aarch64-unknown-linux-gnu
           - platform: macos/amd64
-            runner: ["self-hosted", "macOS", "amd64", "macos-platform"]
+            os: macos-latest
+            arch: amd64
             target: x86_64-apple-darwin
           - platform: macos/arm64
-            runner: ["self-hosted", "macOS", "arm64", "macos-platform"]
+            os: macos-latest
+            arch: arm64
             target: aarch64-apple-darwin
     steps:
       - name: Check out code

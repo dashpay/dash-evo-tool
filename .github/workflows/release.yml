@@ -60,6 +60,12 @@ jobs:
         if: matrix.arch == 'arm64' && matrix.os == 'ubuntu-latest'
         run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
 
+      - name: Set environment variables for cross-compilation
+        if: matrix.arch == 'arm64' && matrix.os == 'ubuntu-latest'
+        run: |
+        export CC=aarch64-linux-gnu-gcc
+        export CXX=aarch64-linux-gnu-g++
+
       - name: Check out code
         uses: actions/checkout@v4
 

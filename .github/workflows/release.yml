@@ -69,12 +69,19 @@ jobs:
           echo "PKG_CONFIG_PATH=/usr/aarch64-linux-gnu/lib/pkgconfig:/usr/lib/aarch64-linux-gnu/pkgconfig" >> $GITHUB_ENV
           echo "PKG_CONFIG_SYSROOT_DIR=/usr/aarch64-linux-gnu" >> $GITHUB_ENV
 
-      - name: Install OpenSSL libraries for ARM64
+      - name: Download and compile OpenSSL for ARM64
         if: matrix.arch == 'arm64' && matrix.os == 'ubuntu-latest'
         run: |
-          sudo dpkg --add-architecture arm64
-          sudo apt-get update
-          sudo apt-get install -y libssl-dev:aarch64
+          mkdir -p $HOME/openssl-arm64
+          cd $HOME/openssl-arm64
+          curl -O https://www.openssl.org/source/openssl-1.1.1v.tar.gz
+          tar -xzf openssl-1.1.1v.tar.gz
+          cd openssl-1.1.1v
+          ./Configure linux-aarch64 --prefix=$HOME/openssl-arm64 --openssldir=$HOME/openssl-arm64
+          make
+          make install
+          echo "PKG_CONFIG_PATH=$HOME/openssl-arm64/lib/pkgconfig" >> $GITHUB_ENV
+          echo "LD_LIBRARY_PATH=$HOME/openssl-arm64/lib" >> $GITHUB_ENV
 
       - name: Debug environment variables
         run: |

@@ -2,9 +2,17 @@ name: Build ARM64 Binary
 
 on:
   push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
+    tags:
+      - 'v*'
+      - 'v*-dev.*'
+  release:
+    types:
+      - published
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Version (e.g., v0.1.0)"
+        required: true
 
 jobs:
   build-arm64:

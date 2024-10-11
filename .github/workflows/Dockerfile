@@ -6,7 +6,6 @@ RUN apt-get update && \
         gcc-aarch64-linux-gnu \
         g++-aarch64-linux-gnu \
         libc6-dev-arm64-cross \
-        libssl-dev-arm64-cross \
         pkg-config \
         unzip \
         curl \

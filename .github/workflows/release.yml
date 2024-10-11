@@ -41,8 +41,7 @@ jobs:
             
             # Install protoc for ARM64
             curl -Lo /tmp/protoc.zip \
-              https://github.com/protocolbuffers/protobuf/releases/download/v25.2/protoc-25.2-linux-aarch64.zip &&
-            file /tmp/protoc.zip &&
+              https://github.com/protocolbuffers/protobuf/releases/download/v22.2/protoc-22.2-linux-aarch_64.zip &&
             unzip /tmp/protoc.zip -d \$HOME/.local &&
             export PATH=\$PATH:\$HOME/.local/bin &&
 

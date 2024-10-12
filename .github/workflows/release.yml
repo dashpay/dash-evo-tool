@@ -16,7 +16,7 @@ on:
 
 jobs:
   build-arm64:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, ARM64]
     name: Build for ARM64
     steps:
       - name: Checkout source code

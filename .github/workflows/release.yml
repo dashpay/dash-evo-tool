@@ -19,7 +19,7 @@ jobs:
     name: Build and Release Dash Evo Tool
     strategy:
       matrix:
-        platform:
+        include:
           - name: "linux-amd64"
             runs-on: ["self-hosted", "Linux", "x64"]  # Array of tags for AMD64
             target: "x86_64-unknown-linux-gnu"
@@ -33,7 +33,7 @@ jobs:
             runs-on: "macos-latest"
             target: "aarch64-apple-darwin"
 
-    runs-on: "${{ matrix.runs-on }}"
+    runs-on: ${{ matrix.runs-on }}
 
     steps:
       - name: Check out code

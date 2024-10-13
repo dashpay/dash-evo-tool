@@ -41,7 +41,7 @@ jobs:
           override: true
 
       - name: Install essentials
-        run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config
+        run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config && uname -a 
 
       - name: Install package (ARM64 only)
         if: matrix.arch == 'arm64'

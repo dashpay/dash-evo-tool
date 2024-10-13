@@ -26,9 +26,7 @@ jobs:
           - { name: "macos-arm64", runner: "macos-latest", target: "aarch64-apple-darwin" }
 
     runs-on: ${{ matrix.runner_tags || matrix.runner }}  # Use runner_tags for self-hosted or GitHub runner for macOS
-
-    runs-on: ${{ matrix.runner_tags }}  # Use the space-separated tag string
-
+    
     steps:
       - name: Check out code
         uses: actions/checkout@v4

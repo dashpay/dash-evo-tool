@@ -68,7 +68,7 @@ jobs:
       - name: Download build artifacts
         uses: actions/download-artifact@v3
         with:
-          name: dash-evo-tool-*
+          name: dash-evo-tool-${{ matrix.platform }}
           path: ./release
 
       - name: Publish release

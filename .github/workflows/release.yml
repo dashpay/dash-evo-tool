@@ -21,7 +21,7 @@ jobs:
     strategy:
       matrix:
         os: [self-hosted]
-        arch: [amd64, arm64]
+        arch: [arm64]
         include:
           - platform: linux/arm64
             runner: ["self-hosted", "linux", "arm64"]

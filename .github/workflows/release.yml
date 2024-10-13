@@ -37,7 +37,7 @@ jobs:
             runner: "macos-latest"
             target: "aarch64-apple-darwin"
 
-    runs-on: ${{ matrix.runner_tags != null ? matrix.runner_tags : matrix.runner }}
+    runs-on: "${{ matrix.runner_tags != null ? matrix.runner_tags : matrix.runner }}"
 
     steps:
       - name: Check out code

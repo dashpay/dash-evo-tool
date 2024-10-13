@@ -1,9 +1,9 @@
 [package]
-name = "pmt"
+name = "dash-evo-tool"
 version = "0.1.0"
 license = "MIT"
 edition = "2021"
-default-run = "pmt"
+default-run = "dash-evo-tool"
 rust-version = "1.81"
 
 [dependencies]

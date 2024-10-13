@@ -23,9 +23,6 @@ jobs:
         os: [self-hosted]
         arch: [amd64, arm64]
         include:
-          - platform: linux/amd64
-            runner: ["self-hosted", "linux", "X64"]
-            target: x86_64-unknown-linux-gnu
           - platform: linux/arm64
             runner: ["self-hosted", "linux", "arm64"]
             target: aarch64-unknown-linux-gnu
@@ -42,11 +39,6 @@ jobs:
 
       - name: Install essentials
         run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config clang && uname -a 
-
-      - name: Install package (ARM64 only)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y aarch64-linux-gnu-gcc
   
       - name: Build project
         run: cargo build --release --target ${{ matrix.target }}

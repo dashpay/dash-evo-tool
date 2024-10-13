@@ -5,14 +5,17 @@ use crate::platform::contract::ContractTask;
 use crate::platform::identity::IdentityTask;
 use std::sync::Arc;
 use tokio::sync::mpsc;
+use crate::platform::document::DocumentTask;
 
 pub mod contested_names;
 pub mod contract;
 pub mod identity;
+mod document;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum BackendTask {
     IdentityTask(IdentityTask),
+    DocumentTask(DocumentTask),
     ContractTask(ContractTask),
     ContestedResourceTask(ContestedResourceTask),
 }
@@ -45,6 +48,9 @@ impl AppContext {
             }
             BackendTask::IdentityTask(identity_task) => {
                 self.run_identity_task(identity_task, &sdk).await
+            }
+            BackendTask::DocumentTask(document_task) => {
+                self.run_document_task(document_task, &sdk).await
             }
         }
     }

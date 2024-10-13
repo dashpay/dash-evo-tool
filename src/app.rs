@@ -13,19 +13,20 @@ use std::ops::BitOrAssign;
 use std::sync::Arc;
 use std::time::Instant;
 use std::vec;
+use dash_sdk::dpp::platform_value::Value;
 use tokio::sync::mpsc;
 
 #[derive(Debug)]
 pub enum TaskResult {
     Refresh,
-    Success(String), // Represents a successful task with a message
-    Error(String),   // Represents a task failure with an error message
+    Success(Value),
+    Error(String),
 }
 
 impl From<Result<(), String>> for TaskResult {
     fn from(value: Result<(), String>) -> Self {
         match value {
-            Ok(_) => TaskResult::Success("Success".to_string()),
+            Ok(_) => TaskResult::Success("Success".to_string().into()),
             Err(e) => TaskResult::Error(e),
         }
     }
@@ -251,7 +252,7 @@ impl App for AppState {
                 }
                 TaskResult::Error(message) => {
                     self.visible_screen_mut()
-                        .display_message(message, MessageType::Error);
+                        .display_message(message.into(), MessageType::Error);
                 }
                 TaskResult::Refresh => {
                     self.visible_screen_mut().refresh();

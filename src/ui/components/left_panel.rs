@@ -42,6 +42,11 @@ pub fn add_left_panel(
             "icons/voting.png",
         ),
         (
+            "Q",
+            RootScreenType::RootScreenDocumentQuery,
+            "icons/tools.png",
+        ),
+        (
             "T",
             RootScreenType::RootScreenTransitionVisualizerScreen,
             "icons/tools.png",

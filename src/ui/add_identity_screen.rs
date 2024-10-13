@@ -14,6 +14,7 @@ use serde::Deserialize;
 use std::fs;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
+use dash_sdk::dpp::platform_value::Value;
 
 #[derive(Debug, Clone, Deserialize)]
 struct MasternodeInfo {
@@ -238,11 +239,13 @@ impl AddIdentityScreen {
 }
 
 impl ScreenLike for AddIdentityScreen {
-    fn display_message(&mut self, message: String, message_type: MessageType) {
-        if message_type == MessageType::Info && message == "Success" {
-            self.add_identity_status = AddIdentityStatus::Complete;
-        } else {
-            self.add_identity_status = AddIdentityStatus::ErrorMessage(message);
+    fn display_message(&mut self, message: Value, message_type: MessageType) {
+        if let Some(message) = message.as_str() {
+            if message_type == MessageType::Info && message == "Success" {
+                self.add_identity_status = AddIdentityStatus::Complete;
+            } else {
+                self.add_identity_status = AddIdentityStatus::ErrorMessage(message.to_string());
+            }
         }
     }
 

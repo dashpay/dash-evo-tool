@@ -29,7 +29,7 @@ enum SortOrder {
     Descending,
 }
 
-pub struct DPNSContestedNamesScreen {
+pub struct DocumentQueryScreen {
     contested_names: Arc<Mutex<Vec<ContestedName>>>,
     pub app_context: Arc<AppContext>,
     error_message: Option<(String, MessageType, DateTime<Utc>)>,
@@ -38,7 +38,7 @@ pub struct DPNSContestedNamesScreen {
     show_vote_popup: Option<(String, ContestedResourceTask)>,
 }
 
-impl DPNSContestedNamesScreen {
+impl DocumentQueryScreen {
     pub fn new(app_context: &Arc<AppContext>) -> Self {
         let contested_names = Arc::new(Mutex::new(
             app_context.load_contested_names().unwrap_or_default(),
@@ -157,7 +157,7 @@ impl DPNSContestedNamesScreen {
         app_action
     }
 }
-impl ScreenLike for DPNSContestedNamesScreen {
+impl ScreenLike for DocumentQueryScreen {
     fn refresh(&mut self) {
         let mut contested_names = self.contested_names.lock().unwrap();
         *contested_names = self.app_context.load_contested_names().unwrap_or_default();

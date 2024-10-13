@@ -14,6 +14,7 @@ use dash_sdk::platform::IdentityPublicKey;
 use eframe::egui::{self, Context, Ui};
 use std::str::FromStr;
 use std::sync::Arc;
+use dash_sdk::dpp::platform_value::Value;
 
 pub struct WithdrawalScreen {
     pub identity: QualifiedIdentity,
@@ -179,8 +180,10 @@ impl WithdrawalScreen {
 }
 
 impl ScreenLike for WithdrawalScreen {
-    fn display_message(&mut self, message: String, message_type: MessageType) {
-        self.error_message = Some(message);
+    fn display_message(&mut self, message: Value, message_type: MessageType) {
+        if let Some(message) = message.as_str() {
+            self.error_message = Some(message.to_string());
+        }
     }
 
     /// Renders the UI components for the withdrawal screen

@@ -13,6 +13,7 @@ use eframe::egui::{self, Context};
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 use std::sync::Arc;
+use dash_sdk::dpp::platform_value::Value;
 
 pub struct AddKeyScreen {
     pub identity: QualifiedIdentity,
@@ -27,8 +28,10 @@ pub struct AddKeyScreen {
 impl ScreenLike for AddKeyScreen {
     fn refresh(&mut self) {}
 
-    fn display_message(&mut self, message: String, message_type: MessageType) {
-        self.error_message = Some(message);
+    fn display_message(&mut self, message: Value, message_type: MessageType) {
+        if let Some(message) = message.as_str() {
+            self.error_message = Some(message.to_string());
+        }
     }
 
     fn ui(&mut self, ctx: &Context) -> AppAction {

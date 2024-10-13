@@ -17,7 +17,18 @@ on:
 jobs:
   build-and-release:
     name: Build and Release Dash Evo Tool
-    runs-on: ["self-hosted", "linux", "arm64"]
+    strategy:
+      matrix:
+        arch: [amd64, arm64]  # matrix for  amd64 and arm64
+        include:
+          - platform: linux/amd64
+            runner_tags: ["self-hosted", "Linux", "X64"]  # X64 runner tags
+            target: x86_64-unknown-linux-gnu
+          - platform: linux/arm64
+            runner_tags: ["self-hosted", "Linux", "ARM64"]  #  ARM64 runner tags
+            target: aarch64-unknown-linux-gnu
+
+    runs-on: ${{ matrix.runner_tags }}  # runs on  specific runner based on architecture and tags
 
     steps:
       - name: Check out code

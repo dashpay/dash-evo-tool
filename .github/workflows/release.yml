@@ -16,8 +16,6 @@ on:
 
 jobs:
   build-and-release:
-jobs:
-  build-and-release:
     name: Build and Release Dash Evo Tool
     strategy:
       matrix:

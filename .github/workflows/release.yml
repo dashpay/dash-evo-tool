@@ -33,7 +33,7 @@ jobs:
             runs-on: "macos-latest"
             target: "aarch64-apple-darwin"
 
-    runs-on: ${{ matrix.runs-on }}
+    runs-on: "${{ matrix.runs-on }}"
 
     steps:
       - name: Check out code

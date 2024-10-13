@@ -17,15 +17,8 @@ on:
 jobs:
   build-and-release:
     name: Build and Release Dash Evo Tool
-    runs-on: ["self-hosted"]
-    strategy:
-      matrix:
-        os: [self-hosted]
-        arch: [arm64]
-        include:
-          - platform: linux/arm64
-            runner: ["self-hosted", "linux", "arm64"]
-            target: aarch64-unknown-linux-gnu
+    runs-on: ["self-hosted", "linux", "arm64"]
+
     steps:
       - name: Check out code
         uses: actions/checkout@v4

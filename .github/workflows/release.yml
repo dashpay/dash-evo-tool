@@ -40,6 +40,9 @@ jobs:
           target: ${{ matrix.target }}
           override: true
 
+      - name: Install essentials
+        run: apt-get update && apt-get install -y build-essentials
+
       - name: Build project
         run: cargo build --release --target ${{ matrix.target }}
 

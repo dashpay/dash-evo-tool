@@ -23,15 +23,19 @@ jobs:
           - name: "linux-amd64"
             runs-on: ["self-hosted", "Linux", "x64"]  # Array of tags for AMD64
             target: "x86_64-unknown-linux-gnu"
+            platform: "amd64"
           - name: "linux-arm64"
             runs-on: ["self-hosted", "Linux", "ARM64"]  # Array of tags for ARM64
             target: "aarch64-unknown-linux-gnu"
+            platform: "arm64"
           - name: "macos-amd64"
             runs-on: "macos-latest"
             target: "x86_64-apple-darwin"
+            platform: "mac-x86"
           - name: "macos-arm64"
             runs-on: "macos-latest"
             target: "aarch64-apple-darwin"
+            platform: "mac-arm"
 
     runs-on: ${{ matrix.runs-on }}
 
@@ -55,13 +59,13 @@ jobs:
           PROTOC: /usr/local/bin/protoc
   
       - name: Build project
-        run: cargo build --release --target aarch64-unknown-linux-gnu
+        run: cargo build --release --target ${{ matrix.target }}
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v3
         with:
           name: dash-evo-tool-${{ matrix.platform }}
-          path: target/aarch64-unknown-linux-gnu/release/dash-evo-tool
+          path: target/${{ matrix.target }}/release/dash-evo-tool
 
     continue-on-error: true
 

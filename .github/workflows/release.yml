@@ -1,4 +1,4 @@
-name: Build ARM64 Binary
+name: Release Dash Evo Tool
 
 on:
   push:
@@ -11,58 +11,62 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Version (e.g., v0.1.0)"
+        description: "Version (i.e. v0.1.0)"
         required: true
 
 jobs:
-  build-arm64:
-    runs-on: [self-hosted, Linux, ARM64]
-    name: Build for ARM64
+  build-and-release:
+    name: Build and Release Dash Evo Tool
+    runs-on: ["self-hosted"]
+    strategy:
+      matrix:
+        os: [self-hosted]
+        arch: [amd64, arm64]
+        include:
+          - platform: linux/amd64
+            runner: ["self-hosted", "linux", "X64"]
+            target: x86_64-unknown-linux-gnu
+          - platform: linux/arm64
+            runner: ["self-hosted", "linux", "arm64"]
+            target: aarch64-unknown-linux-gnu
     steps:
-      - name: Checkout source code
-        uses: actions/checkout@v3
+      - name: Check out code
+        uses: actions/checkout@v4
 
-      - name: Set up Rust toolchain
+      - name: Install Rust toolchain
         uses: actions-rs/toolchain@v1
         with:
           toolchain: stable
-          target: aarch64-unknown-linux-gnu
+          target: ${{ matrix.target }}
           override: true
-          components: rust-src
 
-      - name: Install cross-compilation dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            gcc-aarch64-linux-gnu \
-            libc6-dev-arm64-cross \
-            pkg-config \
-            g++-aarch64-linux-gnu
+      - name: Build project
+        run: cargo build --release --target ${{ matrix.target }}
 
-      - name: debug
-        run: |
-          ls -lah /usr/aarch64-linux-gnu/include/c++/
-
-      - name: Configure environment variables
-        run: |
-          echo "CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
-          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
-          echo "PKG_CONFIG_ALLOW_CROSS=1" >> $GITHUB_ENV
-          echo "RUSTFLAGS=-C linker=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
-          echo "DEBIAN_FRONTEND=noninteractive" >> $GITHUB_ENV
-          echo "OPENSSL_STATIC=1" >> $GITHUB_ENV
-          echo "OPENSSL_NO_VENDOR=0" >> $GITHUB_ENV
-          echo 'CXXFLAGS=--sysroot=/usr/aarch64-linux-gnu -nostdinc++ -I/usr/aarch64-linux-gnu/include/c++/11 -I/usr/aarch64-linux-gnu/include/c++/11/aarch64-linux-gnu' >> $GITHUB_ENV
-          echo 'CFLAGS=--sysroot=/usr/aarch64-linux-gnu' >> $GITHUB_ENV
-          echo 'RUSTFLAGS=-C linker=aarch64-linux-gnu-gcc -C link-arg=--sysroot=/usr/aarch64-linux-gnu' >> $GITHUB_ENV
-          echo 'C_INCLUDE_PATH=' >> $GITHUB_ENV
-          echo 'CPLUS_INCLUDE_PATH=' >> $GITHUB_ENV
-
-      - name: Build the project for ARM64
-        run: cargo build --release --target=aarch64-unknown-linux-gnu
-
-      - name: Upload ARM64 binary (optional)
+      - name: Upload build artifact
         uses: actions/upload-artifact@v3
         with:
-          name: my_project_arm64
-          path: target/aarch64-unknown-linux-gnu/release/my_executable
+          name: dash-evo-tool-${{ matrix.platform }}
+          path: target/${{ matrix.target }}/release/dash-evo-tool
+
+    continue-on-error: true
+
+  release:
+    name: Create GitHub Release
+    needs: build-and-release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v3
+        with:
+          name: dash-evo-tool-*
+          path: ./release
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          files: ./release/dash-evo-tool-*
+          draft: false
+          prerelease: false

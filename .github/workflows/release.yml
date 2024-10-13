@@ -34,7 +34,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config clang cmake unzip libsqlite3-dev && uname -a 
 
       - name: Install protoc
-        run: curl -Lo /tmp/protoc.zip https://github.com/protocolbuffers/protobuf/releases/download/v25.2/protoc-25.2-linux-aarch_64.zip && sudo unzip /tmp/protoc.zip -d /usr/local && rm /tmp/protoc.zip
+        run: curl -Lo /tmp/protoc.zip https://github.com/protocolbuffers/protobuf/releases/download/v25.2/protoc-25.2-linux-aarch_64.zip && sudo unzip -f /tmp/protoc.zip -d /usr/local && rm /tmp/protoc.zip
         env:
           PROTOC: /usr/local/bin/protoc
   

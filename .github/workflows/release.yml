@@ -27,20 +27,20 @@ jobs:
         uses: actions-rs/toolchain@v1
         with:
           toolchain: stable
-          target: ${{ matrix.target }}
+          target: aarch64-unknown-linux-gnu
           override: true
 
       - name: Install essentials
         run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config clang cmake && uname -a 
   
       - name: Build project
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --release --target aarch64-unknown-linux-gnu
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v3
         with:
           name: dash-evo-tool-${{ matrix.platform }}
-          path: target/${{ matrix.target }}/release/dash-evo-tool
+          path: target/aarch64-unknown-linux-gnu/release/dash-evo-tool
 
     continue-on-error: true
 

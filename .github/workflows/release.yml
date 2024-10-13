@@ -38,7 +38,7 @@ jobs:
           override: true
 
       - name: Install essentials
-        run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config clang && uname -a 
+        run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config clang cmake && uname -a 
   
       - name: Build project
         run: cargo build --release --target ${{ matrix.target }}

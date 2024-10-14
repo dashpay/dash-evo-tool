@@ -37,6 +37,7 @@ pub struct DocumentQueryScreen {
     sort_column: SortColumn,
     sort_order: SortOrder,
     show_vote_popup: Option<(String, ContestedResourceTask)>,
+    contract_search_term: String,
 }
 
 impl DocumentQueryScreen {
@@ -51,6 +52,7 @@ impl DocumentQueryScreen {
             sort_column: SortColumn::ContestedName,
             sort_order: SortOrder::Ascending,
             show_vote_popup: None,
+            contract_search_term: String::new(),
         }
     }
 
@@ -183,7 +185,8 @@ impl ScreenLike for DocumentQueryScreen {
             RootScreenType::RootScreenDocumentQuery,
         );
 
-        action |= add_contract_chooser_panel(ctx, &self.app_context);
+        action |=
+            add_contract_chooser_panel(ctx, &mut self.contract_search_term, &self.app_context);
 
         action
     }

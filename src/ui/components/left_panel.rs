@@ -41,7 +41,7 @@ pub fn add_left_panel(
             RootScreenType::RootScreenDPNSContestedNames,
             "icons/voting.png",
         ),
-        ("Q", RootScreenType::RootScreenDocumentQuery, ""),
+        ("Q", RootScreenType::RootScreenDocumentQuery, "icons/doc.png"),
         (
             "T",
             RootScreenType::RootScreenTransitionVisualizerScreen,

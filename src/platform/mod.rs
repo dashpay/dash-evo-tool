@@ -2,15 +2,17 @@ use crate::app::TaskResult;
 use crate::context::AppContext;
 use crate::platform::contested_names::ContestedResourceTask;
 use crate::platform::contract::ContractTask;
+use crate::platform::document::DocumentTask;
 use crate::platform::identity::IdentityTask;
+use dash_sdk::dpp::platform_value::Value;
+use dash_sdk::query_types::Documents;
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use crate::platform::document::DocumentTask;
 
 pub mod contested_names;
 pub mod contract;
-pub mod identity;
 mod document;
+pub mod identity;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum BackendTask {
@@ -18,6 +20,13 @@ pub(crate) enum BackendTask {
     DocumentTask(DocumentTask),
     ContractTask(ContractTask),
     ContestedResourceTask(ContestedResourceTask),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum BackendTaskSuccessResult {
+    None,
+    Message(String),
+    Documents(Documents),
 }
 
 impl AppContext {
@@ -36,19 +45,21 @@ impl AppContext {
         self: &Arc<Self>,
         task: BackendTask,
         sender: mpsc::Sender<TaskResult>,
-    ) -> Result<(), String> {
+    ) -> Result<BackendTaskSuccessResult, String> {
         let sdk = self.sdk.clone();
         match task {
-            BackendTask::ContractTask(contract_task) => {
-                self.run_contract_task(contract_task, &sdk).await
-            }
-            BackendTask::ContestedResourceTask(contested_resource_task) => {
-                self.run_contested_resource_task(contested_resource_task, &sdk, sender)
-                    .await
-            }
-            BackendTask::IdentityTask(identity_task) => {
-                self.run_identity_task(identity_task, &sdk).await
-            }
+            BackendTask::ContractTask(contract_task) => self
+                .run_contract_task(contract_task, &sdk)
+                .await
+                .map(|_| BackendTaskSuccessResult::None),
+            BackendTask::ContestedResourceTask(contested_resource_task) => self
+                .run_contested_resource_task(contested_resource_task, &sdk, sender)
+                .await
+                .map(|_| BackendTaskSuccessResult::None),
+            BackendTask::IdentityTask(identity_task) => self
+                .run_identity_task(identity_task, &sdk)
+                .await
+                .map(|_| BackendTaskSuccessResult::None),
             BackendTask::DocumentTask(document_task) => {
                 self.run_document_task(document_task, &sdk).await
             }

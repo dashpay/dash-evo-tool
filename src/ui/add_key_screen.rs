@@ -9,11 +9,11 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::hash::IdentityPublicKeyHashMethodsV0;
 use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
+use dash_sdk::dpp::platform_value::Value;
 use eframe::egui::{self, Context};
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 use std::sync::Arc;
-use dash_sdk::dpp::platform_value::Value;
 
 pub struct AddKeyScreen {
     pub identity: QualifiedIdentity,

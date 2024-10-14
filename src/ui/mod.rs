@@ -3,6 +3,7 @@ use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::add_identity_screen::AddIdentityScreen;
 use crate::ui::add_key_screen::AddKeyScreen;
+use crate::ui::document_query_screen::DocumentQueryScreen;
 use crate::ui::dpns_contested_names_screen::DPNSContestedNamesScreen;
 use crate::ui::identities_screen::IdentitiesScreen;
 use crate::ui::key_info_screen::KeyInfoScreen;
@@ -11,17 +12,17 @@ use crate::ui::network_chooser_screen::NetworkChooserScreen;
 use crate::ui::transition_visualizer_screen::TransitionVisualizerScreen;
 use crate::ui::withdrawals::WithdrawalScreen;
 use dash_sdk::dpp::identity::Identity;
+use dash_sdk::dpp::platform_value::Value;
 use dash_sdk::dpp::prelude::IdentityPublicKey;
 use egui::{Context, Widget};
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
-use dash_sdk::dpp::platform_value::Value;
-use crate::ui::document_query_screen::DocumentQueryScreen;
 
 pub mod add_identity_screen;
 mod add_key_screen;
 pub mod components;
+pub mod document_query_screen;
 pub mod dpns_contested_names_screen;
 pub mod identities_screen;
 pub mod key_info_screen;
@@ -29,7 +30,6 @@ pub mod keys_screen;
 pub mod network_chooser_screen;
 pub mod transition_visualizer_screen;
 pub mod withdrawals;
-pub mod document_query_screen;
 
 #[derive(Debug, Clone, Copy, Ord, PartialOrd, Eq, PartialEq, Hash)]
 pub enum RootScreenType {

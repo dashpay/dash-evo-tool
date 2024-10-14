@@ -1,33 +1,33 @@
 use crate::context::AppContext;
 use crate::database::Database;
 use crate::logging::initialize_logger;
-use crate::platform::BackendTask;
+use crate::platform::{BackendTask, BackendTaskSuccessResult};
 use crate::ui::dpns_contested_names_screen::DPNSContestedNamesScreen;
 use crate::ui::identities_screen::IdentitiesScreen;
 use crate::ui::network_chooser_screen::NetworkChooserScreen;
 use crate::ui::transition_visualizer_screen::TransitionVisualizerScreen;
 use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike, ScreenType};
 use dash_sdk::dpp::dashcore::Network;
+use derive_more::From;
 use eframe::{egui, App};
 use std::collections::BTreeMap;
 use std::ops::BitOrAssign;
 use std::sync::Arc;
 use std::time::Instant;
 use std::vec;
-use dash_sdk::dpp::platform_value::Value;
 use tokio::sync::mpsc;
 
-#[derive(Debug)]
+#[derive(Debug, From)]
 pub enum TaskResult {
     Refresh,
-    Success(Value),
+    Success(BackendTaskSuccessResult),
     Error(String),
 }
 
-impl From<Result<(), String>> for TaskResult {
-    fn from(value: Result<(), String>) -> Self {
+impl From<Result<BackendTaskSuccessResult, String>> for TaskResult {
+    fn from(value: Result<BackendTaskSuccessResult, String>) -> Self {
         match value {
-            Ok(_) => TaskResult::Success("Success".to_string().into()),
+            Ok(value) => TaskResult::Success(value),
             Err(e) => TaskResult::Error(e),
         }
     }
@@ -248,10 +248,14 @@ impl App for AppState {
         while let Ok(task_result) = self.task_result_receiver.try_recv() {
             // Handle the result on the main thread
             match task_result {
-                TaskResult::Success(message) => {
-                    self.visible_screen_mut()
-                        .display_message(message, MessageType::Info);
-                }
+                TaskResult::Success(message) => match message {
+                    BackendTaskSuccessResult::None => {}
+                    BackendTaskSuccessResult::Message(message) => {
+                        self.visible_screen_mut()
+                            .display_message(message, MessageType::Info);
+                    }
+                    BackendTaskSuccessResult::Documents(_) => {}
+                },
                 TaskResult::Error(message) => {
                     self.visible_screen_mut()
                         .display_message(message.into(), MessageType::Error);

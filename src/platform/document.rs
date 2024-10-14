@@ -1,23 +1,25 @@
-use std::sync::Arc;
-use dash_sdk::dpp::platform_value::Value;
-use dash_sdk::platform::{DataContract, Document, DriveDocumentQuery, Identifier};
-use dash_sdk::Sdk;
 use crate::context::AppContext;
-use crate::platform::contract::ContractTask;
+use crate::platform::BackendTaskSuccessResult;
+use dash_sdk::platform::{Document, DocumentQuery, FetchMany};
+use dash_sdk::Sdk;
 
 pub type DocumentTypeName = String;
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum DocumentTask {
-    FetchDocument(Arc<DataContract>, DocumentTypeName, Identifier),
-    FetchDocuments(DriveDocumentQuery),
+    FetchDocuments(DocumentQuery),
 }
 
 impl AppContext {
-    pub async fn run_document_task(&self, task: ContractTask, sdk: &Sdk) -> Result<Value, String> {
+    pub async fn run_document_task(
+        &self,
+        task: DocumentTask,
+        sdk: &Sdk,
+    ) -> Result<BackendTaskSuccessResult, String> {
         match task {
-            DocumentTask::FetchDocument(identifier, name) => {
-
-            }
+            DocumentTask::FetchDocuments(drive_query) => Document::fetch_many(sdk, drive_query)
+                .await
+                .map(BackendTaskSuccessResult::Documents)
+                .map_err(|e| e.to_string()),
         }
     }
 }

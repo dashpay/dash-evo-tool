@@ -7,6 +7,7 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::{MessageType, ScreenLike};
 use dash_sdk::dashcore_rpc::dashcore::Network;
 use dash_sdk::dpp::identity::TimestampMillis;
+use dash_sdk::dpp::platform_value::Value;
 use eframe::egui::Context;
 use rand::prelude::IteratorRandom;
 use rand::thread_rng;
@@ -14,7 +15,6 @@ use serde::Deserialize;
 use std::fs;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use dash_sdk::dpp::platform_value::Value;
 
 #[derive(Debug, Clone, Deserialize)]
 struct MasternodeInfo {

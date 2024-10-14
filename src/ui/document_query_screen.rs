@@ -8,11 +8,11 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use chrono::{DateTime, LocalResult, TimeZone, Utc};
 use chrono_humanize::HumanTime;
+use dash_sdk::dpp::platform_value::Value;
 use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
 use egui::{Context, Frame, Margin, Ui};
 use egui_extras::{Column, TableBuilder};
 use std::sync::{Arc, Mutex};
-use dash_sdk::dpp::platform_value::Value;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SortColumn {

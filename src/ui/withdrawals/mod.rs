@@ -10,11 +10,11 @@ use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::Purpose;
+use dash_sdk::dpp::platform_value::Value;
 use dash_sdk::platform::IdentityPublicKey;
 use eframe::egui::{self, Context, Ui};
 use std::str::FromStr;
 use std::sync::Arc;
-use dash_sdk::dpp::platform_value::Value;
 
 pub struct WithdrawalScreen {
     pub identity: QualifiedIdentity,

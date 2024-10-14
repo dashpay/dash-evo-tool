@@ -1,15 +1,18 @@
 use std::panic;
-use tracing::error;
+use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
 pub fn initialize_logger() {
-    // Initialize logger
-    let log_file = std::fs::File::create("explorer.log").expect("Failed to create log file");
+    // Initialize log file, with improved error handling
+    let log_file = match std::fs::File::create("explorer.log") {
+        Ok(file) => file,
+        Err(e) => panic!("Failed to create log file: {:?}", e),
+    };
 
     let filter = EnvFilter::try_new(
         "debug,dash_sdk=trace,tenderdash_abci=trace,drive=trace,drive_proof_verifier=trace,rs_dapi_client=debug",
     )
-    .unwrap();
+        .unwrap_or_else(|e| panic!("Failed to create EnvFilter: {:?}", e));
 
     let subscriber = tracing_subscriber::fmt()
         .with_env_filter(filter)
@@ -17,17 +20,19 @@ pub fn initialize_logger() {
         .with_ansi(false)
         .finish();
 
-    tracing::subscriber::set_global_default(subscriber)
-        .expect("Unable to set global default subscriber");
+    // Set global subscriber with proper error handling
+    if let Err(e) = tracing::subscriber::set_global_default(subscriber) {
+        panic!("Unable to set global default subscriber: {:?}", e);
+    }
 
-    // Log panics
+    // Log panic events
     let default_panic_hook = panic::take_hook();
 
     panic::set_hook(Box::new(move |panic_info| {
         let message = panic_info
             .payload()
             .downcast_ref::<&str>()
-            .unwrap_or(&"unknown");
+            .unwrap_or(&"unknown panic");
 
         let location = panic_info
             .location()
@@ -41,5 +46,5 @@ pub fn initialize_logger() {
         default_panic_hook(panic_info);
     }));
 
-    tracing::info!("Logger initialized successfully");
+    info!("Logger initialized successfully");
 }

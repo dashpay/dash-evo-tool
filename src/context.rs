@@ -29,12 +29,8 @@ pub struct AppContext {
 }
 
 impl AppContext {
-    pub fn new(network: Network) -> Option<Arc<Self>> {
-        let db = Arc::new(Database::new("identities.db").unwrap());
-
+    pub fn new(network: Network, db: Arc<Database>) -> Option<Arc<Self>> {
         let config = Config::load();
-
-        db.initialize().unwrap();
 
         let network_config = config.config_for_network(network).clone()?;
 

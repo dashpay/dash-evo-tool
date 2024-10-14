@@ -1,4 +1,5 @@
 use crate::context::AppContext;
+use crate::database::Database;
 use crate::logging::initialize_logger;
 use crate::platform::BackendTask;
 use crate::ui::dpns_contested_names_screen::DPNSContestedNamesScreen;
@@ -96,9 +97,14 @@ impl BitOrAssign for AppAction {
 impl AppState {
     pub fn new() -> Self {
         initialize_logger();
+        let db = Arc::new(Database::new("identities.db").unwrap());
+        db.initialize().unwrap();
+
+        let settings = db.get_settings().expect("expected to get settings");
+
         let mainnet_app_context =
-            AppContext::new(Network::Dash).expect("expected Dash config for mainnet");
-        let testnet_app_context = AppContext::new(Network::Testnet);
+            AppContext::new(Network::Dash, db.clone()).expect("expected Dash config for mainnet");
+        let testnet_app_context = AppContext::new(Network::Testnet, db.clone());
 
         let mut identities_screen = IdentitiesScreen::new(&mainnet_app_context);
         let mut dpns_contested_names_screen = DPNSContestedNamesScreen::new(&mainnet_app_context);
@@ -111,10 +117,6 @@ impl AppState {
         );
 
         let mut selected_main_screen = RootScreenType::RootScreenIdentities;
-
-        let settings = mainnet_app_context
-            .get_settings()
-            .expect("expected to get settings");
 
         let mut chosen_network = Network::Dash;
 

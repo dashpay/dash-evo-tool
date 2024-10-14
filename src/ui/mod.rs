@@ -1,6 +1,7 @@
 use crate::app::AppAction;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::platform::BackendTaskSuccessResult;
 use crate::ui::add_identity_screen::AddIdentityScreen;
 use crate::ui::add_key_screen::AddKeyScreen;
 use crate::ui::document_query_screen::DocumentQueryScreen;
@@ -173,8 +174,8 @@ pub enum MessageType {
 pub trait ScreenLike {
     fn refresh(&mut self) {}
     fn ui(&mut self, ctx: &Context) -> AppAction;
-
-    fn display_message(&mut self, message: Value, message_type: MessageType) {}
+    fn display_message(&mut self, message: &str, message_type: MessageType) {}
+    fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {}
 }
 
 // Implement Debug for Screen using the ScreenType
@@ -221,7 +222,7 @@ impl ScreenLike for Screen {
         }
     }
 
-    fn display_message(&mut self, message: Value, message_type: MessageType) {
+    fn display_message(&mut self, message: &str, message_type: MessageType) {
         match self {
             Screen::IdentitiesScreen(screen) => screen.display_message(message, message_type),
             Screen::AddIdentityScreen(screen) => screen.display_message(message, message_type),

@@ -2,6 +2,7 @@ use crate::context::AppContext;
 use crate::database::Database;
 use crate::logging::initialize_logger;
 use crate::platform::{BackendTask, BackendTaskSuccessResult};
+use crate::ui::document_query_screen::DocumentQueryScreen;
 use crate::ui::dpns_contested_names_screen::DPNSContestedNamesScreen;
 use crate::ui::identities_screen::IdentitiesScreen;
 use crate::ui::network_chooser_screen::NetworkChooserScreen;
@@ -111,6 +112,7 @@ impl AppState {
         let mut dpns_contested_names_screen = DPNSContestedNamesScreen::new(&mainnet_app_context);
         let mut transition_visualizer_screen =
             TransitionVisualizerScreen::new(&mainnet_app_context);
+        let mut document_query_screen = DocumentQueryScreen::new(&mainnet_app_context);
         let mut network_chooser_screen = NetworkChooserScreen::new(
             &mainnet_app_context,
             testnet_app_context.as_ref(),
@@ -129,6 +131,7 @@ impl AppState {
                 identities_screen = IdentitiesScreen::new(testnet_app_context);
                 dpns_contested_names_screen = DPNSContestedNamesScreen::new(testnet_app_context);
                 transition_visualizer_screen = TransitionVisualizerScreen::new(testnet_app_context);
+                document_query_screen = DocumentQueryScreen::new(testnet_app_context);
             }
             network_chooser_screen.current_network = chosen_network;
         }
@@ -152,6 +155,10 @@ impl AppState {
                 (
                     RootScreenType::RootScreenTransitionVisualizerScreen,
                     Screen::TransitionVisualizerScreen(transition_visualizer_screen),
+                ),
+                (
+                    RootScreenType::RootScreenDocumentQuery,
+                    Screen::DocumentQueryScreen(document_query_screen),
                 ),
                 (
                     RootScreenType::RootScreenNetworkChooser,
@@ -252,13 +259,13 @@ impl App for AppState {
                     BackendTaskSuccessResult::None => {}
                     BackendTaskSuccessResult::Message(message) => {
                         self.visible_screen_mut()
-                            .display_message(message, MessageType::Info);
+                            .display_message(&message, MessageType::Info);
                     }
                     BackendTaskSuccessResult::Documents(_) => {}
                 },
                 TaskResult::Error(message) => {
                     self.visible_screen_mut()
-                        .display_message(message.into(), MessageType::Error);
+                        .display_message(&message, MessageType::Error);
                 }
                 TaskResult::Refresh => {
                     self.visible_screen_mut().refresh();

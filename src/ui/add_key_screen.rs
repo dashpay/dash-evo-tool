@@ -28,10 +28,8 @@ pub struct AddKeyScreen {
 impl ScreenLike for AddKeyScreen {
     fn refresh(&mut self) {}
 
-    fn display_message(&mut self, message: Value, message_type: MessageType) {
-        if let Some(message) = message.as_str() {
-            self.error_message = Some(message.to_string());
-        }
+    fn display_message(&mut self, message: &str, message_type: MessageType) {
+        self.error_message = Some(message.to_string());
     }
 
     fn ui(&mut self, ctx: &Context) -> AppAction {

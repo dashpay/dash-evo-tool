@@ -10,7 +10,6 @@ use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::Purpose;
-use dash_sdk::dpp::platform_value::Value;
 use dash_sdk::platform::IdentityPublicKey;
 use eframe::egui::{self, Context, Ui};
 use std::str::FromStr;
@@ -180,10 +179,8 @@ impl WithdrawalScreen {
 }
 
 impl ScreenLike for WithdrawalScreen {
-    fn display_message(&mut self, message: Value, message_type: MessageType) {
-        if let Some(message) = message.as_str() {
-            self.error_message = Some(message.to_string());
-        }
+    fn display_message(&mut self, message: &str, message_type: MessageType) {
+        self.error_message = Some(message.to_string());
     }
 
     /// Renders the UI components for the withdrawal screen

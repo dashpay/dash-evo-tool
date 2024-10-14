@@ -4,7 +4,6 @@ use crate::platform::contested_names::ContestedResourceTask;
 use crate::platform::contract::ContractTask;
 use crate::platform::document::DocumentTask;
 use crate::platform::identity::IdentityTask;
-use dash_sdk::dpp::platform_value::Value;
 use dash_sdk::query_types::Documents;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -28,6 +27,8 @@ pub(crate) enum BackendTaskSuccessResult {
     Message(String),
     Documents(Documents),
 }
+
+impl BackendTaskSuccessResult {}
 
 impl AppContext {
     pub async fn run_backend_tasks(

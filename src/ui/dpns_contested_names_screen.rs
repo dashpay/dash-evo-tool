@@ -163,10 +163,8 @@ impl ScreenLike for DPNSContestedNamesScreen {
         *contested_names = self.app_context.load_contested_names().unwrap_or_default();
     }
 
-    fn display_message(&mut self, message: Value, message_type: MessageType) {
-        if let Some(message) = message.as_str() {
-            self.error_message = Some((message.to_string(), message_type, Utc::now()));
-        }
+    fn display_message(&mut self, message: &str, message_type: MessageType) {
+        self.error_message = Some((message.to_string(), message_type, Utc::now()));
     }
 
     fn ui(&mut self, ctx: &Context) -> AppAction {

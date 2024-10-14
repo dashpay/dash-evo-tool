@@ -2,7 +2,7 @@ use crate::app::AppAction;
 use crate::context::AppContext;
 use crate::model::qualified_identity::IdentityType;
 use crate::platform::identity::{IdentityInputToLoad, IdentityTask};
-use crate::platform::BackendTask;
+use crate::platform::{BackendTask, BackendTaskSuccessResult};
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::{MessageType, ScreenLike};
 use dash_sdk::dashcore_rpc::dashcore::Network;
@@ -239,13 +239,11 @@ impl AddIdentityScreen {
 }
 
 impl ScreenLike for AddIdentityScreen {
-    fn display_message(&mut self, message: Value, message_type: MessageType) {
-        if let Some(message) = message.as_str() {
-            if message_type == MessageType::Info && message == "Success" {
-                self.add_identity_status = AddIdentityStatus::Complete;
-            } else {
-                self.add_identity_status = AddIdentityStatus::ErrorMessage(message.to_string());
-            }
+    fn display_message(&mut self, message: &str, message_type: MessageType) {
+        if message_type == MessageType::Info && message == "Success" {
+            self.add_identity_status = AddIdentityStatus::Complete;
+        } else {
+            self.add_identity_status = AddIdentityStatus::ErrorMessage(message.to_string());
         }
     }
 

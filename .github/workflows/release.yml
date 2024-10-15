@@ -43,11 +43,6 @@ jobs:
       - name: Check out code
         uses: actions/checkout@v4
 
-      - name: Create Git tag
-        run: |
-          git tag ${{ github.event.inputs.tag }}
-          git push origin ${{ github.event.inputs.tag }}
-
       - name: Install Rust toolchain
         uses: actions-rs/toolchain@v1
         with:
@@ -99,6 +94,12 @@ jobs:
     needs: build-and-release
     runs-on: ubuntu-latest
     steps:
+
+      - name: Create Git tag
+        run: |
+          git tag ${{ github.event.inputs.tag }}
+          git push origin ${{ github.event.inputs.tag }}
+      
       - name: Download Linux X64
         uses: actions/download-artifact@v3
         with:

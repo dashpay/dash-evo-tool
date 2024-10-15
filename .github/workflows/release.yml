@@ -43,6 +43,11 @@ jobs:
       - name: Check out code
         uses: actions/checkout@v4
 
+      - name: Create Git tag
+        run: |
+          git tag ${{ github.event.inputs.tag }}
+          git push origin ${{ github.event.inputs.tag }}
+
       - name: Install Rust toolchain
         uses: actions-rs/toolchain@v1
         with:
@@ -123,6 +128,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
+          tag_name: ${{ github.event.inputs.tag }}
           files: ./release/dash-evo-tool-*
           draft: false
-          prerelease: false
+          prerelease: true

@@ -1,19 +1,19 @@
 use crate::app::AppAction;
 use crate::context::AppContext;
+use crate::model::wallet::Wallet;
 use crate::platform::identity::{IdentityRegistrationInfo, IdentityTask};
 use crate::platform::BackendTask;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::ScreenLike;
-use dash_sdk::dpp::identity::{KeyType, TimestampMillis};
+use copypasta::{ClipboardContext, ClipboardProvider};
+use dash_sdk::dpp::balances::credits::Duffs;
+use dash_sdk::dpp::identity::KeyType;
 use eframe::egui::Context;
-
-use crate::ui::components::entropy_grid::U256EntropyGrid;
-use bip39::{Language, Mnemonic};
-use egui::{
-    Color32, ComboBox, Direction, FontId, Frame, Grid, Layout, Margin, RichText, ScrollArea,
-    Stroke, TextStyle, Ui, Vec2,
-};
+use egui::{Color32, ColorImage, ComboBox, TextureHandle};
+use image::Luma;
+use qrcode::QrCode;
 use serde::Deserialize;
+use std::fmt;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -24,50 +24,169 @@ struct KeyInfo {
     private_key: String,
 }
 
-pub enum AddIdentityStatus {
-    NotStarted,
-    WaitingForResult(TimestampMillis),
-    ErrorMessage(String),
-    Complete,
+#[derive(Debug, PartialEq, Eq)]
+pub enum FundingMethod {
+    UseWalletBalance,
+    AddressWithQRCode,
+    AttachedCoreWallet,
+}
+
+impl fmt::Display for FundingMethod {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let output = match self {
+            FundingMethod::AddressWithQRCode => "Address with QR Code",
+            FundingMethod::AttachedCoreWallet => "Attached Core Wallet",
+            FundingMethod::UseWalletBalance => "Use Wallet Balance",
+        };
+        write!(f, "{}", output)
+    }
 }
 
 pub struct AddNewIdentityScreen {
-    seed_phrase: Option<Mnemonic>,
-    entropy_grid: U256EntropyGrid,
-    selected_language: Language,
     identity_id_input: String,
+    selected_wallet: Option<Wallet>,
+    funding_method: FundingMethod,
     alias_input: String,
     master_private_key_input: String,
     master_private_key_type: KeyType,
     keys_input: Vec<(String, KeyType)>,
-    add_identity_status: AddIdentityStatus,
     pub app_context: Arc<AppContext>,
+}
+
+// Function to generate a QR code image from the address
+fn generate_qr_code_image(
+    address: &str,
+    amount: Duffs,
+) -> Result<ColorImage, qrcode::types::QrError> {
+    // Generate the QR code
+    let code = QrCode::new(address.as_bytes())?;
+
+    // Render the QR code into an image buffer
+    let image = code.render::<Luma<u8>>().build();
+
+    // Convert the image buffer to ColorImage
+    let size = [image.width() as usize, image.height() as usize];
+    let pixels = image.into_raw();
+    let pixels: Vec<Color32> = pixels
+        .into_iter()
+        .map(|p| {
+            let color = 255 - p; // Invert colors for better visibility
+            Color32::from_rgba_unmultiplied(color, color, color, 255)
+        })
+        .collect();
+
+    Ok(ColorImage { size, pixels })
+}
+
+// Function to copy text to the clipboard
+pub fn copy_to_clipboard(text: &str) -> Result<(), Box<dyn std::error::Error>> {
+    // // Use `dyn` to indicate dynamic dispatch for the trait object
+    // let mut ctx: ClipboardContext = ClipboardProvider::new()?.into();
+    // ClipboardProvider::.set_contents(text.to_owned())?;
+    Ok(())
 }
 
 impl AddNewIdentityScreen {
     pub fn new(app_context: &Arc<AppContext>) -> Self {
         Self {
-            seed_phrase: None,
-            entropy_grid: U256EntropyGrid::new(),
-            selected_language: Language::English,
             identity_id_input: String::new(),
+            selected_wallet: None,
+            funding_method: FundingMethod::AddressWithQRCode,
             alias_input: String::new(),
             master_private_key_input: String::new(),
             master_private_key_type: KeyType::ECDSA_HASH160,
             keys_input: vec![(String::new(), KeyType::ECDSA_HASH160)],
-            add_identity_status: AddIdentityStatus::NotStarted,
             app_context: app_context.clone(),
         }
     }
 
-    /// Generate a new seed phrase based on the selected language
-    fn generate_seed_phrase(&mut self) {
-        let mnemonic = Mnemonic::from_entropy_in(
-            self.selected_language,
-            &self.entropy_grid.random_number_with_user_input(),
-        )
-        .expect("Failed to generate mnemonic");
-        self.seed_phrase = Some(mnemonic);
+    fn render_qr_code(&mut self, ui: &mut egui::Ui) {
+        if let Some(wallet) = self.selected_wallet.as_ref() {
+            // Get the receive address
+            let address = wallet.receive_address(self.app_context.network);
+
+            // Generate the QR code image
+            if let Ok(qr_image) = generate_qr_code_image(&address.to_qr_uri(), 10) {
+                // // Convert the image to egui's TextureHandle
+                // let texture: TextureHandle =
+                //     ui.ctx()
+                //         .load_texture("qr_code", qr_image, egui::TextureFilter::Linear);
+                //
+                // // Display the QR code image
+                // ui.image(&texture);
+            } else {
+                ui.label("Failed to generate QR code.");
+            }
+
+            // Show the address underneath
+            ui.label(&address.to_qr_uri());
+
+            // Add a button to copy the address
+            if ui.button("Copy Address").clicked() {
+                if let Err(e) = copy_to_clipboard(&address.to_qr_uri()) {
+                    ui.label(format!("Failed to copy to clipboard: {}", e));
+                } else {
+                    ui.label("Address copied to clipboard.");
+                }
+            }
+        }
+    }
+
+    fn render_wallet_selection(&mut self, ui: &mut egui::Ui) {
+        let wallets = self.app_context.wallets.read().unwrap(); // Read lock
+
+        if wallets.len() > 1 {
+            ComboBox::from_label("Select Wallet")
+                .selected_text(
+                    self.selected_wallet
+                        .as_ref()
+                        .and_then(|wallet| wallet.alias.as_ref().map(|s| s.as_str()))
+                        .unwrap_or("Select"),
+                )
+                .show_ui(ui, |ui| {
+                    for wallet in wallets.iter() {
+                        if ui
+                            .selectable_value(
+                                &mut self.selected_wallet,
+                                Some(wallet.clone()),
+                                wallet.alias.as_deref().unwrap_or("Unnamed Wallet"),
+                            )
+                            .clicked()
+                        {
+                            self.selected_wallet = Some(wallet.clone());
+                        }
+                    }
+                });
+        } else {
+            // If there's only one wallet, automatically select it
+            self.selected_wallet = wallets.first().cloned();
+        }
+    }
+
+    fn render_funding_method(&mut self, ui: &mut egui::Ui) {
+        ComboBox::from_label("Funding Method")
+            .selected_text(format!("{}", self.funding_method))
+            .show_ui(ui, |ui| {
+                if let Some(wallet) = self.selected_wallet.as_ref() {
+                    if wallet.has_balance() {
+                        ui.selectable_value(
+                            &mut self.funding_method,
+                            FundingMethod::UseWalletBalance,
+                            "Use wallet balance",
+                        );
+                    }
+                }
+                ui.selectable_value(
+                    &mut self.funding_method,
+                    FundingMethod::AddressWithQRCode,
+                    "Address with QR Code",
+                );
+                ui.selectable_value(
+                    &mut self.funding_method,
+                    FundingMethod::AttachedCoreWallet,
+                    "Attached Core Wallet",
+                );
+            });
     }
 
     fn render_keys_input(&mut self, ui: &mut egui::Ui) {
@@ -126,141 +245,6 @@ impl AddNewIdentityScreen {
         )))
     }
 
-    fn render_seed_phrase_input(&mut self, ui: &mut Ui) {
-        ui.add_space(15.0); // Add spacing from the top
-        ui.vertical(|ui| {
-            // Allocate a full-width container to center align the elements
-            let available_width = ui.available_width();
-
-            ui.allocate_ui_with_layout(
-                Vec2::new(available_width, 0.0),
-                egui::Layout::top_down(egui::Align::Min),
-                |ui| {
-                    ui.horizontal(|ui| {
-                        // Add spacing to align the combo box to the left of the center
-                        let half_width = available_width / 2.0 - 400.0; // Adjust half-width with padding
-                        ui.add_space(half_width);
-
-                        let mut style = ui.style_mut();
-
-                        // Customize text size for the ComboBox
-                        style.text_styles.insert(
-                            TextStyle::Button,          // Apply style to buttons (used in ComboBox entries)
-                            FontId::proportional(24.0), // Set larger font size
-                        );
-
-                        ComboBox::from_label("")
-                            .selected_text(format!("{:?}", self.selected_language))
-                            .width(200.0)
-                            .height(40.0)
-                            .show_ui(ui, |ui| {
-                                ui.selectable_value(
-                                    &mut self.selected_language,
-                                    Language::English,
-                                    "English",
-                                );
-                                ui.selectable_value(
-                                    &mut self.selected_language,
-                                    Language::Spanish,
-                                    "Spanish",
-                                );
-                                ui.selectable_value(
-                                    &mut self.selected_language,
-                                    Language::French,
-                                    "French",
-                                );
-                                ui.selectable_value(
-                                    &mut self.selected_language,
-                                    Language::Italian,
-                                    "Italian",
-                                );
-                                ui.selectable_value(
-                                    &mut self.selected_language,
-                                    Language::Portuguese,
-                                    "Portuguese",
-                                );
-                            });
-
-                        // Add a spacer between the combo box and the generate button
-                        ui.add_space(20.0); // Adjust the space between elements
-
-                        let generate_button =
-                            egui::Button::new(RichText::new("Generate").strong().size(24.0))
-                                .min_size(Vec2::new(150.0, 30.0))
-                                .rounding(5.0)
-                                .stroke(Stroke::new(1.0, Color32::WHITE));
-
-                        if ui.add(generate_button).clicked() {
-                            self.generate_seed_phrase();
-                        }
-                    });
-                },
-            );
-
-            ui.add_space(10.0);
-
-            // Create a container with a fixed width (72% of the available width)
-            let frame_width = available_width * 0.72;
-            ui.allocate_ui_with_layout(
-                Vec2::new(frame_width, 300.0), // Set width and height of the container
-                egui::Layout::top_down(egui::Align::Min),
-                |ui| {
-                    Frame::none()
-                        .fill(Color32::WHITE)
-                        .stroke(Stroke::new(1.0, Color32::BLACK))
-                        .rounding(5.0)
-                        .inner_margin(Margin::same(10.0))
-                        .show(ui, |ui| {
-                            let columns = 6;
-                            let rows = 24 / columns;
-
-                            // Calculate the size of each grid cell
-                            let column_width = frame_width / columns as f32;
-                            let row_height = 300.0 / rows as f32;
-
-                            Grid::new("seed_phrase_grid")
-                                .num_columns(columns)
-                                .spacing((0.0, 0.0))
-                                .min_col_width(column_width)
-                                .min_row_height(row_height)
-                                .show(ui, |ui| {
-                                    if let Some(mnemonic) = &self.seed_phrase {
-                                        for (i, word) in mnemonic.words().enumerate() {
-                                            let word_text = RichText::new(word)
-                                                .size(row_height * 0.5)
-                                                .monospace();
-
-                                            ui.with_layout(
-                                                Layout::centered_and_justified(
-                                                    Direction::LeftToRight,
-                                                ),
-                                                |ui| {
-                                                    ui.label(word_text);
-                                                },
-                                            );
-
-                                            if (i + 1) % columns == 0 {
-                                                ui.end_row();
-                                            }
-                                        }
-                                    } else {
-                                        let word_text =
-                                            RichText::new("Seed Phrase").size(40.0).monospace();
-
-                                        ui.with_layout(
-                                            Layout::centered_and_justified(Direction::LeftToRight),
-                                            |ui| {
-                                                ui.label(word_text);
-                                            },
-                                        );
-                                    }
-                                });
-                        });
-                },
-            );
-        });
-    }
-
     fn render_master_key_input(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.label("Master Private Key:");
@@ -298,7 +282,6 @@ impl AddNewIdentityScreen {
         });
     }
 }
-
 impl ScreenLike for AddNewIdentityScreen {
     fn ui(&mut self, ctx: &Context) -> AppAction {
         let mut action = add_top_panel(
@@ -316,13 +299,12 @@ impl ScreenLike for AddNewIdentityScreen {
             ui.heading("Follow these steps to create your identity!");
             ui.add_space(5.0);
 
-            self.entropy_grid.ui(ui);
+            self.render_wallet_selection(ui);
 
-            ui.add_space(5.0);
+            ui.add_space(10.0);
+            self.render_funding_method(ui);
 
-            ui.heading("2. Select your desired seed phrase language and press \"Generate\"");
-
-            self.render_seed_phrase_input(ui);
+            ui.add_space(10.0);
             self.render_master_key_input(ui);
 
             ui.horizontal(|ui| {
@@ -342,41 +324,7 @@ impl ScreenLike for AddNewIdentityScreen {
                     .duration_since(UNIX_EPOCH)
                     .expect("Time went backwards")
                     .as_secs();
-                self.add_identity_status = AddIdentityStatus::WaitingForResult(now);
                 action = self.register_identity_clicked();
-            }
-
-            match &self.add_identity_status {
-                AddIdentityStatus::NotStarted => {}
-                AddIdentityStatus::WaitingForResult(start_time) => {
-                    let now = SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .expect("Time went backwards")
-                        .as_secs();
-                    let elapsed = now - start_time;
-
-                    let display = if elapsed < 60 {
-                        format!("{} second{}", elapsed, if elapsed == 1 { "" } else { "s" })
-                    } else {
-                        let minutes = elapsed / 60;
-                        let seconds = elapsed % 60;
-                        format!(
-                            "{} minute{} and {} second{}",
-                            minutes,
-                            if minutes == 1 { "" } else { "s" },
-                            seconds,
-                            if seconds == 1 { "" } else { "s" }
-                        )
-                    };
-
-                    ui.label(format!("Loading... Time taken so far: {}", display));
-                }
-                AddIdentityStatus::ErrorMessage(msg) => {
-                    ui.label(format!("Error: {}", msg));
-                }
-                AddIdentityStatus::Complete => {
-                    action = AppAction::PopScreenAndRefresh;
-                }
             }
         });
 

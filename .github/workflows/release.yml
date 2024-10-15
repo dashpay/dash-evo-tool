@@ -94,12 +94,6 @@ jobs:
     needs: build-and-release
     runs-on: ubuntu-latest
     steps:
-
-      - name: Create Git tag
-        run: |
-          git tag ${{ github.event.inputs.tag }}
-          git push origin ${{ github.event.inputs.tag }}
-      
       - name: Download Linux X64
         uses: actions/download-artifact@v3
         with:

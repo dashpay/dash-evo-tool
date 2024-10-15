@@ -36,6 +36,3 @@ explorer.log
 supporting_files/strategy_exports/
 supporting_files/new_identity_private_keys.log
 /identities.db
-
-# Dash core configs
-dash_core_configs/

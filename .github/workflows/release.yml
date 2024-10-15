@@ -98,25 +98,25 @@ jobs:
         uses: actions/download-artifact@v3
         with:
           name: dash-evo-tool-x86_64-unknown-linux-gnu
-          path: ./release/dash-evo-tool-x86_64-linux
+          path: ./release/
 
       - name: Download Linux ARM
         uses: actions/download-artifact@v3
         with:
           name: dash-evo-tool-aarch64-unknown-linux-gnu
-          path: ./release/dash-evo-tool-aarch64-linux
+          path: ./release/
 
       - name: Download Mac x64
         uses: actions/download-artifact@v3
         with:
           name: dash-evo-tool-x86_64-apple-darwin
-          path: ./release/dash-evo-tool-x86_64-mac
+          path: ./release/
 
       - name: Download Mac ARM
         uses: actions/download-artifact@v3
         with:
           name: dash-evo-tool-aarch64-apple-darwin
-          path: ./release/dash-evo-tool-aarch64-mac
+          path: ./release/
 
       - name: Check dir
         run: ls -lah ./release

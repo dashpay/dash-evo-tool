@@ -9,10 +9,8 @@ use dash_sdk::dashcore_rpc::dashcore::PrivateKey;
 use dash_sdk::dpp::identifier::MasternodeIdentifiers;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
-use dash_sdk::platform::transition::broadcast::BroadcastStateTransition;
 use dash_sdk::platform::{Fetch, Identifier, Identity};
 use dash_sdk::Sdk;
-use futures::TryFutureExt;
 use std::collections::BTreeMap;
 
 impl AppContext {
@@ -28,7 +26,7 @@ impl AppContext {
             alias_input,
             owner_private_key_input,
             payout_address_private_key_input,
-            keys_input,
+            keys_input: _,
         } = input;
 
         // Verify the voting private key

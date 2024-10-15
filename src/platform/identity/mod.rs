@@ -1,34 +1,20 @@
 mod add_key_to_identity;
 mod load_identity;
+mod register_dpns_name;
 mod register_identity;
 mod withdraw_from_identity;
 
 use crate::context::AppContext;
-use crate::model::qualified_identity::EncryptedPrivateKeyTarget::{
-    PrivateKeyOnMainIdentity, PrivateKeyOnVoterIdentity,
-};
 use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
-use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
 use dash_sdk::dashcore_rpc::dashcore::{Address, PrivateKey};
 use dash_sdk::dpp::fee::Credits;
-use dash_sdk::dpp::identifier::MasternodeIdentifiers;
-use dash_sdk::dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
-use dash_sdk::dpp::identity::identity_public_key::accessors::v0::{
-    IdentityPublicKeyGettersV0, IdentityPublicKeySettersV0,
-};
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::{KeyID, KeyType, Purpose};
-use dash_sdk::dpp::platform_value::string_encoding::Encoding;
-use dash_sdk::dpp::prelude::UserFeeIncrease;
-use dash_sdk::dpp::state_transition::identity_update_transition::methods::IdentityUpdateTransitionMethodsV0;
-use dash_sdk::dpp::state_transition::identity_update_transition::IdentityUpdateTransition;
-use dash_sdk::dpp::state_transition::proof_result::StateTransitionProofResult;
 use dash_sdk::dpp::ProtocolError;
-use dash_sdk::platform::transition::broadcast::BroadcastStateTransition;
-use dash_sdk::platform::transition::withdraw_from_identity::WithdrawFromIdentity;
-use dash_sdk::platform::{Fetch, Identifier, Identity, IdentityPublicKey};
+use dash_sdk::platform::{Identifier, Identity, IdentityPublicKey};
 use dash_sdk::Sdk;
-use futures::TryFutureExt;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct IdentityInputToLoad {
@@ -51,11 +37,18 @@ pub struct IdentityRegistrationInfo {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct DpnsNameInputToRegister {
+    pub identity_id_input: Identifier,
+    pub name_input: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) enum IdentityTask {
     LoadIdentity(IdentityInputToLoad),
     RegisterIdentity(IdentityRegistrationInfo),
     AddKeyToIdentity(QualifiedIdentity, IdentityPublicKey, Vec<u8>),
     WithdrawFromIdentity(QualifiedIdentity, Option<Address>, Credits, Option<KeyID>),
+    RegisterDpnsName(DpnsNameInputToRegister),
 }
 
 fn verify_key_input(
@@ -248,6 +241,7 @@ impl AppContext {
             IdentityTask::RegisterIdentity(registration_info) => {
                 self.register_identity(sdk, registration_info).await
             }
+            IdentityTask::RegisterDpnsName(input) => self.register_dpns_name(sdk, input).await,
         }
     }
 }

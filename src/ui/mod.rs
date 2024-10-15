@@ -12,13 +12,14 @@ use crate::ui::transition_visualizer_screen::TransitionVisualizerScreen;
 use crate::ui::withdrawals::WithdrawalScreen;
 use dash_sdk::dpp::identity::Identity;
 use dash_sdk::dpp::prelude::IdentityPublicKey;
-use egui::{Context, Widget};
+use egui::Context;
 use enum_dispatch::enum_dispatch;
 use identities::add_existing_identity_screen::AddExistingIdentityScreen;
 use identities::add_new_identity_screen::AddNewIdentityScreen;
 use identities::identities_screen::IdentitiesScreen;
+use identities::register_dpns_name_screen::RegisterDpnsNameScreen;
 use std::fmt;
-use std::hash::{Hash, Hasher};
+use std::hash::Hash;
 use std::sync::Arc;
 
 mod add_key_screen;
@@ -93,6 +94,7 @@ pub enum ScreenType {
     Keys(Identity),
     DocumentQueryScreen,
     NetworkChooser,
+    RegisterDpnsName,
 }
 
 impl ScreenType {
@@ -118,6 +120,9 @@ impl ScreenType {
                     private_key.clone(),
                     app_context,
                 ))
+            }
+            ScreenType::RegisterDpnsName => {
+                Screen::RegisterDpnsNameScreen(RegisterDpnsNameScreen::new(app_context))
             }
             ScreenType::TransitionVisualizer => {
                 Screen::TransitionVisualizerScreen(TransitionVisualizerScreen::new(app_context))
@@ -147,6 +152,7 @@ pub enum Screen {
     AddExistingIdentityScreen(AddExistingIdentityScreen),
     KeyInfoScreen(KeyInfoScreen),
     KeysScreen(KeysScreen),
+    RegisterDpnsNameScreen(RegisterDpnsNameScreen),
     WithdrawalScreen(WithdrawalScreen),
     AddKeyScreen(AddKeyScreen),
     TransitionVisualizerScreen(TransitionVisualizerScreen),
@@ -167,6 +173,7 @@ impl Screen {
             Screen::AddKeyScreen(screen) => screen.app_context = app_context,
             Screen::DocumentQueryScreen(screen) => screen.app_context = app_context,
             Screen::AddNewIdentityScreen(screen) => screen.app_context = app_context,
+            Screen::RegisterDpnsNameScreen(screen) => screen.app_context = app_context,
         }
     }
 }
@@ -182,8 +189,8 @@ pub enum MessageType {
 pub trait ScreenLike {
     fn refresh(&mut self) {}
     fn ui(&mut self, ctx: &Context) -> AppAction;
-    fn display_message(&mut self, message: &str, message_type: MessageType) {}
-    fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {}
+    fn display_message(&mut self, _message: &str, _message_type: MessageType) {}
+    fn display_task_result(&mut self, _backend_task_success_result: BackendTaskSuccessResult) {}
 }
 
 // Implement Debug for Screen using the ScreenType
@@ -220,6 +227,7 @@ impl Screen {
             Screen::AddKeyScreen(screen) => ScreenType::AddKeyScreen(screen.identity.clone()),
             Screen::DocumentQueryScreen(_) => ScreenType::DocumentQueryScreen,
             Screen::AddNewIdentityScreen(_) => ScreenType::AddExistingIdentity,
+            Screen::RegisterDpnsNameScreen(_) => ScreenType::RegisterDpnsName,
         }
     }
 }

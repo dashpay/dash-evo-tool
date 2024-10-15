@@ -80,7 +80,7 @@ impl IdentitiesScreen {
             Purpose::DECRYPTION => {
                 format!("De{}", key.id())
             }
-            Purpose::TRANSFER => format!("W{}", key.id()),
+            Purpose::TRANSFER => format!("T{}", key.id()),
             Purpose::SYSTEM => format!("S{}", key.id()),
             Purpose::VOTING => format!("V{}", key.id()),
             Purpose::OWNER => format!("O{}", key.id()),

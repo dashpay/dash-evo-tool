@@ -118,6 +118,18 @@ jobs:
           name: dash-evo-tool-aarch64-apple-darwin
           path: ./release/dash-evo-tool-aarch64-apple-darwin/
 
+      - name: Rename Linux X64 file
+        run: mv ./release/dash-evo-tool-x86_64-unknown-linux-gnu/dash-evo-tool ./release/dash-evo-tool-x86_64-linux
+
+      - name: Rename Linux ARM file
+        run: mv ./release/dash-evo-tool-aarch64-unknown-linux-gnu/dash-evo-tool ./release/dash-evo-tool-aarch64-linux
+
+      - name: Rename Mac x64 file
+        run: mv ./release/dash-evo-tool-x86_64-apple-darwin/dash-evo-tool ./release/dash-evo-tool-x86_64-mac
+
+      - name: Rename Mac ARM file
+        run: mv ./release/dash-evo-tool-aarch64-apple-darwin/dash-evo-tool ./release/dash-evo-tool-aarch64-mac
+
       - name: Check dir
         run: ls -lah ./release/dash-evo-tool-aarch64-apple-darwin
 
@@ -128,9 +140,9 @@ jobs:
         with:
           tag_name: ${{ github.event.inputs.tag }}
           files: |
-            ./release/dash-evo-tool-x86_64-unknown-linux-gnu/dash-evo-tool
-            ./release/dash-evo-tool-aarch64-unknown-linux-gnu/dash-evo-tool
-            ./release/dash-evo-tool-x86_64-apple-darwin/dash-evo-tool
-            ./release/dash-evo-tool-aarch64-apple-darwin/dash-evo-tool
+            ./release/dash-evo-tool-x86_64-linux
+            ./release/dash-evo-tool-aarch64-linux
+            ./release/dash-evo-tool-x86_64-mac
+            ./release/dash-evo-tool-aarch64-mac
           draft: false
           prerelease: true

@@ -12,7 +12,7 @@ use eframe::egui::Context;
 
 use crate::ui::components::entropy_grid::U256EntropyGrid;
 use bip39::{Language, Mnemonic};
-use egui::{Color32, ComboBox, Frame, Grid, Margin, ScrollArea, Stroke, Ui, Vec2};
+use egui::{Align, Color32, ComboBox, Direction, Frame, Grid, Layout, Margin, RichText, ScrollArea, Stroke, Ui, Vec2};
 use itertools::Itertools;
 use serde::Deserialize;
 use std::fs;
@@ -131,31 +131,39 @@ impl AddNewIdentityScreen {
     /// Render the seed phrase input as a styled grid of words
     fn render_seed_phrase_input(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
-            ui.label("Seed Phrase:");
-
-            // Ensure the frame for the grid has a fixed height of 300 pixels and takes 72% width.
+            // Scrollable frame with a fixed height of 300 pixels and white background
             Frame::none()
-                .fill(Color32::WHITE) // White background
-                .stroke(Stroke::new(1.0, Color32::BLACK)) // Black border
-                .rounding(5.0) // Rounded corners
-                .inner_margin(Margin::same(10.0)) // Inner margin for padding
+                .fill(Color32::WHITE)
+                .stroke(Stroke::new(1.0, Color32::BLACK))
+                .rounding(5.0)
+                .inner_margin(Margin::same(10.0))
                 .show(ui, |ui| {
                     let available_width = ui.available_width() * 0.72;
+                    let columns = 6;
 
-                    // Use a fixed size for the frame containing the grid.
-                    ui.set_min_size(Vec2::new(available_width, 150.0));
+                    // Ensure the grid takes up the available space evenly
+                    ui.set_min_size(Vec2::new(available_width, 300.0));
 
-                    // Create a grid with 4 rows and 6 columns (24 words total).
                     Grid::new("seed_phrase_grid")
-                        .num_columns(6) // 6 words per row
-                        .spacing((10.0, 5.0)) // Spacing between words
+                        .num_columns(columns) // 6 columns
+                        .spacing((0.0, 0.0)) // No spacing for even distribution
+                        .min_col_width(available_width * 0.8 / columns as f32)
+                        .min_row_height(75.0)
                         .show(ui, |ui| {
                             if let Some(mnemonic) = &self.seed_phrase {
-                                for (i, word) in mnemonic.words().enumerate() {
-                                    ui.label(word); // Display each word
+                                // Calculate font size based on available space
+                                let font_size = 18.0;
 
-                                    if (i + 1) % 6 == 0 {
-                                        ui.end_row(); // Move to the next row after 6 words
+                                for (i, word) in mnemonic.words().enumerate() {
+                                    // Render each word with the adjusted font size
+                                    let word_text = RichText::new(word).size(font_size).monospace();
+
+                                    ui.with_layout(Layout::centered_and_justified(Direction::LeftToRight), |ui| {
+                                        ui.label(word_text);
+                                    });
+
+                                    if (i + 1) % columns == 0 {
+                                        ui.end_row();
                                     }
                                 }
                             }
@@ -167,15 +175,11 @@ impl AddNewIdentityScreen {
                 .selected_text(format!("{:?}", self.selected_language))
                 .show_ui(ui, |ui| {
                     ui.selectable_value(&mut self.selected_language, Language::English, "English");
-                    ui.selectable_value(
-                        &mut self.selected_language,
-                        Language::Japanese,
-                        "Japanese",
-                    );
+                    ui.selectable_value(&mut self.selected_language, Language::Japanese, "Japanese");
                     ui.selectable_value(&mut self.selected_language, Language::Spanish, "Spanish");
                 });
 
-            // Generate button to create a new seed phrase
+            // Generate button
             if ui.button("Generate").clicked() {
                 self.generate_seed_phrase();
             }

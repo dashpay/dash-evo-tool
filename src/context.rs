@@ -60,6 +60,8 @@ impl AppContext {
         )
         .ok()?;
 
+        let wallets = db.get_wallets(&network).expect("expected to get wallets");
+
         let app_context = AppContext {
             network,
             developer_mode: false,
@@ -69,7 +71,7 @@ impl AppContext {
             config: network_config,
             dpns_contract: Arc::new(dpns_contract),
             core_client,
-            wallets: RwLock::new(vec![]),
+            wallets: RwLock::new(wallets),
             platform_version: PlatformVersion::latest(),
         };
 

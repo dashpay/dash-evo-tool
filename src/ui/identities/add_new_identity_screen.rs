@@ -1,24 +1,19 @@
 use crate::app::AppAction;
 use crate::context::AppContext;
-use crate::model::qualified_identity::IdentityType;
-use crate::platform::identity::{IdentityInputToLoad, IdentityRegistrationInfo, IdentityTask};
-use crate::platform::{BackendTask, BackendTaskSuccessResult};
+use crate::platform::identity::{IdentityRegistrationInfo, IdentityTask};
+use crate::platform::BackendTask;
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::{MessageType, ScreenLike};
-use dash_sdk::dashcore_rpc::dashcore::Network;
+use crate::ui::ScreenLike;
 use dash_sdk::dpp::identity::{KeyType, TimestampMillis};
-use dash_sdk::dpp::platform_value::Value;
 use eframe::egui::Context;
 
 use crate::ui::components::entropy_grid::U256EntropyGrid;
 use bip39::{Language, Mnemonic};
 use egui::{
-    Align, Color32, ComboBox, Direction, FontId, Frame, Grid, Layout, Margin, RichText, ScrollArea,
+    Color32, ComboBox, Direction, FontId, Frame, Grid, Layout, Margin, RichText, ScrollArea,
     Stroke, TextStyle, Ui, Vec2,
 };
-use itertools::Itertools;
 use serde::Deserialize;
-use std::fs;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 

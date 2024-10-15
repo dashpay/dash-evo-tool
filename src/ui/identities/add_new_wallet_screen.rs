@@ -19,6 +19,7 @@ pub struct AddNewWalletScreen {
     entropy_grid: U256EntropyGrid,
     selected_language: Language,
     alias_input: String,
+    wrote_it_down: bool,
     pub app_context: Arc<AppContext>,
 }
 
@@ -30,6 +31,7 @@ impl AddNewWalletScreen {
             entropy_grid: U256EntropyGrid::new(),
             selected_language: Language::English,
             alias_input: String::new(),
+            wrote_it_down: false,
             app_context: app_context.clone(),
         }
     }
@@ -233,7 +235,33 @@ impl ScreenLike for AddNewWalletScreen {
 
             self.render_seed_phrase_input(ui);
 
-            ui.add_space(20.0); // Add space before the button
+            ui.add_space(10.0);
+
+            ui.heading(
+                "3. Write down the passphrase on a piece of paper and put it somewhere secure",
+            );
+
+            ui.add_space(10.0);
+
+            // Add "I wrote it down" checkbox
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut self.wrote_it_down, "I wrote it down");
+            });
+
+            ui.add_space(20.0);
+
+            ui.heading("4. Add an optional password that must be used to unlock the wallet");
+
+            ui.horizontal(|ui| {
+                ui.label("Optional Password:");
+                ui.text_edit_singleline(&mut self.passphrase);
+            });
+
+            ui.add_space(20.0);
+
+            ui.heading("5. Save the wallet");
+
+            ui.add_space(5.0);
 
             // Centered "Save Wallet" button at the bottom
             ui.with_layout(Layout::centered_and_justified(Direction::TopDown), |ui| {
@@ -242,7 +270,12 @@ impl ScreenLike for AddNewWalletScreen {
                 )
                 .min_size(Vec2::new(300.0, 60.0)) // Large button size
                 .rounding(10.0) // Rounded corners
-                .stroke(Stroke::new(1.5, Color32::WHITE)); // White border
+                .stroke(Stroke::new(1.5, Color32::WHITE))
+                .sense(if self.wrote_it_down {
+                    egui::Sense::click()
+                } else {
+                    egui::Sense::hover()
+                });
 
                 if ui.add(save_button).clicked() {
                     action = self.save_wallet(); // Trigger the save action

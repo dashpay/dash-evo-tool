@@ -59,8 +59,9 @@ impl RootScreenType {
         match value {
             0 => Some(RootScreenType::RootScreenIdentities),
             1 => Some(RootScreenType::RootScreenDPNSContestedNames),
-            2 => Some(RootScreenType::RootScreenTransitionVisualizerScreen),
-            3 => Some(RootScreenType::RootScreenNetworkChooser),
+            2 => Some(RootScreenType::RootScreenDocumentQuery),
+            3 => Some(RootScreenType::RootScreenTransitionVisualizerScreen),
+            4 => Some(RootScreenType::RootScreenNetworkChooser),
             _ => None,
         }
     }

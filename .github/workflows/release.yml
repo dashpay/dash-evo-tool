@@ -118,6 +118,9 @@ jobs:
           name: dash-evo-tool-aarch64-apple-darwin
           path: ./release/dash-evo-tool-aarch64-mac
 
+      - name: Check dir
+        run: ls -lah ./release
+
       - name: Publish release
         uses: softprops/action-gh-release@v1
         env:

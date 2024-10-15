@@ -20,9 +20,9 @@ struct MasternodeInfo {
     #[serde(rename = "pro-tx-hash")]
     pro_tx_hash: String,
     owner: KeyInfo,
-    _collateral: KeyInfo,
+    collateral: KeyInfo,
     voter: KeyInfo,
-    _operator: OperatorInfo,
+    operator: OperatorInfo,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -30,17 +30,17 @@ struct HPMasternodeInfo {
     #[serde(rename = "protx-tx-hash")]
     protx_tx_hash: String,
     owner: KeyInfo,
-    _collateral: KeyInfo,
+    collateral: KeyInfo,
     voter: KeyInfo,
     payout: KeyInfo,
-    _operator: OperatorInfo,
+    operator: OperatorInfo,
     #[serde(rename = "node_key")]
-    _node_key: Option<NodeKeyInfo>,
+    node_key: Option<NodeKeyInfo>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 struct KeyInfo {
-    _address: String,
+    address: String,
     #[serde(rename = "private_key")]
     private_key: String,
 }
@@ -48,16 +48,16 @@ struct KeyInfo {
 #[derive(Debug, Clone, Deserialize)]
 struct OperatorInfo {
     #[serde(rename = "public_key")]
-    _public_key: String,
+    public_key: String,
     #[serde(rename = "private_key")]
-    _private_key: String,
+    private_key: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 struct NodeKeyInfo {
-    _id: String,
+    id: String,
     #[serde(rename = "private_key")]
-    _private_key: String,
+    private_key: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -68,7 +68,7 @@ struct TestnetNodes {
 
 fn load_testnet_nodes_from_yml(file_path: &str) -> Option<TestnetNodes> {
     let file_content = fs::read_to_string(file_path).ok()?;
-    serde_yaml::from_str(&file_content).ok()
+    serde_yaml::from_str(&file_content).expect("expected proper yaml")
 }
 
 pub enum AddIdentityStatus {

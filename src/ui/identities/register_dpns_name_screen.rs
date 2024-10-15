@@ -1,5 +1,6 @@
 use crate::app::AppAction;
 use crate::context::AppContext;
+use crate::model::qualified_identity::QualifiedIdentity;
 use crate::platform::identity::{IdentityTask, RegisterDpnsNameInput};
 use crate::platform::BackendTask;
 use crate::ui::components::top_panel::add_top_panel;
@@ -7,9 +8,7 @@ use crate::ui::{MessageType, ScreenLike};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::TimestampMillis;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
-use dash_sdk::platform::Identifier;
 use eframe::egui::Context;
-use itertools::Itertools;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -21,8 +20,8 @@ pub enum RegisterDpnsNameStatus {
 }
 
 pub struct RegisterDpnsNameScreen {
-    qualified_identity_ids: Vec<Identifier>,
-    identity_id_input: Identifier,
+    qualified_identities: Vec<QualifiedIdentity>,
+    selected_qualified_identity: Option<QualifiedIdentity>,
     name_input: String,
     register_dpns_name_status: RegisterDpnsNameStatus,
     pub app_context: Arc<AppContext>,
@@ -30,15 +29,13 @@ pub struct RegisterDpnsNameScreen {
 
 impl RegisterDpnsNameScreen {
     pub fn new(app_context: &Arc<AppContext>) -> Self {
-        let qualified_identity_ids = app_context
+        let qualified_identities = app_context
             .load_local_qualified_identities()
-            .unwrap_or_default()
-            .iter()
-            .map(|identity| identity.identity.id())
-            .collect_vec();
+            .unwrap_or_default();
+        let selected_qualified_identity = qualified_identities.first().cloned();
         Self {
-            qualified_identity_ids,
-            identity_id_input: Identifier::random(),
+            qualified_identities,
+            selected_qualified_identity,
             name_input: String::new(),
             register_dpns_name_status: RegisterDpnsNameStatus::NotStarted,
             app_context: app_context.clone(),
@@ -49,32 +46,46 @@ impl RegisterDpnsNameScreen {
         ui.horizontal(|ui| {
             ui.label("Identity ID:");
 
-            // Create a ComboBox for selecting Identity IDs
+            // Create a ComboBox for selecting a Qualified Identity
             egui::ComboBox::from_label("")
-                .selected_text(format!(
-                    "{:?}",
-                    self.qualified_identity_ids
-                        .first()
-                        .expect("Expected to have at least one qualified identity")
-                        .to_string(Encoding::Base58)
-                ))
+                .selected_text(
+                    self.selected_qualified_identity
+                        .as_ref()
+                        .map(|qi| {
+                            qi.alias
+                                .as_ref()
+                                .unwrap_or(&qi.identity.id().to_string(Encoding::Base58))
+                                .clone()
+                        })
+                        .unwrap_or_else(|| "Select an identity".to_string()),
+                )
                 .show_ui(ui, |ui| {
-                    // Loop through the qualified_identity_ids and display each as selectable
-                    for id in &self.qualified_identity_ids {
-                        // Display each Identifier as a selectable item
-                        ui.selectable_value(
-                            &mut self.identity_id_input,
-                            *id,
-                            id.to_string(Encoding::Base58),
-                        );
+                    // Loop through the qualified identities and display each as selectable
+                    for qualified_identity in &self.qualified_identities {
+                        let id = qualified_identity.identity.id(); // Extract the Identifier
+
+                        // Display each QualifiedIdentity as a selectable item
+                        if ui
+                            .selectable_value(
+                                &mut self.selected_qualified_identity,
+                                Some(qualified_identity.clone()),
+                                id.to_string(Encoding::Base58),
+                            )
+                            .clicked()
+                        {
+                            self.selected_qualified_identity = Some(qualified_identity.clone());
+                        }
                     }
                 });
         });
     }
 
     fn register_dpns_name_clicked(&mut self) -> AppAction {
+        let Some(qualified_identity) = self.selected_qualified_identity.as_ref() else {
+            return AppAction::None;
+        };
         let dpns_name_input = RegisterDpnsNameInput {
-            identity_id_input: self.identity_id_input,
+            qualified_identity: qualified_identity.clone(),
             name_input: self.name_input.trim().to_string(),
         };
 
@@ -108,7 +119,7 @@ impl ScreenLike for RegisterDpnsNameScreen {
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("Register DPNS Name");
 
-            if self.qualified_identity_ids.is_empty() {
+            if self.qualified_identities.is_empty() {
                 ui.label("No qualified identities available to register a DPNS name.");
                 return;
             }

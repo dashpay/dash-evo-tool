@@ -21,54 +21,67 @@ impl U256EntropyGrid {
 
     /// Render the UI and allow users to modify bits
     pub fn ui(&mut self, ui: &mut Ui) -> [u8; 32] {
-        ui.heading("Select Bits for 256-bit Number");
+        ui.heading("Hover over this view to create extra randomness for the seed phrase");
 
-        // Get the available width to calculate dynamic button sizes
-        let available_width = ui.available_width();
-        let button_width = available_width / 32.0; // Divide the total width into 32 equal parts
-        let button_size = Vec2::new(button_width, button_width); // Square buttons
+        // Add padding around the grid
+        ui.add_space(10.0); // Top padding
 
-        // Create a grid with 8 rows and 32 columns (256 bits total)
-        Grid::new("entropy_grid")
-            .num_columns(32) // Explicitly set 32 columns
-            .spacing(Vec2::new(0.0, 0.0)) // Remove spacing between buttons
-            .show(ui, |ui| {
-                for row in 0..8 {
-                    for col in 0..32 {
-                        let bit_position = (row * 32 + col) as u8;
-                        let byte_index = (bit_position / 8) as usize;
-                        let bit_in_byte = (bit_position % 8) as usize;
+        // Calculate button size based on available width and enforce max height of 120px.
+        let available_width = ui.available_width() - 20.0; // Account for 10px left and right buffers
+        let max_height = 120;
+        let button_size = Vec2::new(
+            available_width / 64.0, // Divide the width into 64 columns.
+            (max_height / 4).min(available_width as i32 / 64) as f32, // Ensure height stays within limit.
+        );
 
-                        // Determine the bit value in the current number
-                        let bit_value = (self.random_number[byte_index] >> bit_in_byte) & 1 == 1;
+        // Create a grid with 4 rows and 64 columns (256 bits total).
+        ui.horizontal(|ui| {
+            ui.add_space(10.0); // Left padding
 
-                        // Set the button color based on the bit value (1 = Black, 0 = White)
-                        let color = if bit_value {
-                            Color32::BLACK
-                        } else {
-                            Color32::WHITE
-                        };
+            Grid::new("entropy_grid")
+                .num_columns(64) // 64 columns, each representing a bit.
+                .spacing(Vec2::new(0.0, 0.0)) // No spacing for compact layout.
+                .min_col_width(0.0) // Allow columns to shrink without restriction.
+                .show(ui, |ui| {
+                    for row in 0..4 {
+                        for col in 0..64 {
+                            let bit_position = (row * 64 + col) as u8;
+                            let byte_index = (bit_position / 8) as usize;
+                            let bit_in_byte = (bit_position % 8) as usize;
 
-                        // Create the button with dynamic size and color
-                        let button = Button::new("").fill(color).min_size(button_size);
+                            // Determine the bit value (1 = Black, 0 = White).
+                            let bit_value =
+                                (self.random_number[byte_index] >> bit_in_byte) & 1 == 1;
+                            let color = if bit_value {
+                                Color32::BLACK
+                            } else {
+                                Color32::WHITE
+                            };
 
-                        // Render the button and handle interactions
-                        let response = ui.add(button);
+                            // Create a button with the appropriate size and color.
+                            let button = Button::new("").fill(color).min_size(button_size); // Adjust size dynamically.
 
-                        // Toggle the bit if clicked or hovered
-                        if response.hovered() && self.was_bit_different(bit_position)
-                            || response.clicked()
-                        {
-                            self.toggle_bit(byte_index, bit_in_byte);
+                            // Render the button and handle interactions.
+                            let response = ui.add(button);
+
+                            if response.hovered() && self.was_bit_different(bit_position)
+                                || response.clicked()
+                            {
+                                self.toggle_bit(byte_index, bit_in_byte); // Toggle the bit.
+                            }
                         }
+                        ui.end_row(); // Move to the next row after 64 bits.
                     }
-                    ui.end_row();
-                }
-            });
+                });
 
-        // Display the current random number in hex
+            ui.add_space(10.0); // Right padding
+        });
+
+        ui.add_space(10.0); // Bottom padding
+
+        // Display the current random number in hex.
         ui.label(format!(
-            "Current 256-bit Number: {}",
+            "User number is [{}], this will be added to a random number to add extra entropy and ensure security.",
             hex::encode(self.random_number)
         ));
 

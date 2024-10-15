@@ -12,7 +12,7 @@ use eframe::egui::Context;
 
 use crate::ui::components::entropy_grid::U256EntropyGrid;
 use bip39::{Language, Mnemonic};
-use egui::ComboBox;
+use egui::{Color32, ComboBox, Frame, Grid, Margin, ScrollArea, Stroke, Ui, Vec2};
 use itertools::Itertools;
 use serde::Deserialize;
 use std::fs;
@@ -34,7 +34,7 @@ pub enum AddIdentityStatus {
 }
 
 pub struct AddNewIdentityScreen {
-    seed_phrase: String,
+    seed_phrase: Option<Mnemonic>,
     entropy_grid: U256EntropyGrid,
     selected_language: Language,
     identity_id_input: String,
@@ -49,7 +49,7 @@ pub struct AddNewIdentityScreen {
 impl AddNewIdentityScreen {
     pub fn new(app_context: &Arc<AppContext>) -> Self {
         Self {
-            seed_phrase: String::new(),
+            seed_phrase: None,
             entropy_grid: U256EntropyGrid::new(),
             selected_language: Language::English,
             identity_id_input: String::new(),
@@ -69,7 +69,7 @@ impl AddNewIdentityScreen {
             &self.entropy_grid.random_number_with_user_input(),
         )
         .expect("Failed to generate mnemonic");
-        self.seed_phrase = mnemonic.words().join(" ");
+        self.seed_phrase = Some(mnemonic);
     }
 
     fn render_keys_input(&mut self, ui: &mut egui::Ui) {
@@ -128,11 +128,41 @@ impl AddNewIdentityScreen {
         )))
     }
 
-    fn render_seed_phrase_input(&mut self, ui: &mut egui::Ui) {
+    /// Render the seed phrase input as a styled grid of words
+    fn render_seed_phrase_input(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
             ui.label("Seed Phrase:");
-            ui.text_edit_singleline(&mut self.seed_phrase);
 
+            // Ensure the frame for the grid has a fixed height of 300 pixels and takes 72% width.
+            Frame::none()
+                .fill(Color32::WHITE) // White background
+                .stroke(Stroke::new(1.0, Color32::BLACK)) // Black border
+                .rounding(5.0) // Rounded corners
+                .inner_margin(Margin::same(10.0)) // Inner margin for padding
+                .show(ui, |ui| {
+                    let available_width = ui.available_width() * 0.72;
+
+                    // Use a fixed size for the frame containing the grid.
+                    ui.set_min_size(Vec2::new(available_width, 150.0));
+
+                    // Create a grid with 4 rows and 6 columns (24 words total).
+                    Grid::new("seed_phrase_grid")
+                        .num_columns(6) // 6 words per row
+                        .spacing((10.0, 5.0)) // Spacing between words
+                        .show(ui, |ui| {
+                            if let Some(mnemonic) = &self.seed_phrase {
+                                for (i, word) in mnemonic.words().enumerate() {
+                                    ui.label(word); // Display each word
+
+                                    if (i + 1) % 6 == 0 {
+                                        ui.end_row(); // Move to the next row after 6 words
+                                    }
+                                }
+                            }
+                        });
+                });
+
+            // Language selection dropdown
             ComboBox::from_label("Language")
                 .selected_text(format!("{:?}", self.selected_language))
                 .show_ui(ui, |ui| {
@@ -145,6 +175,7 @@ impl AddNewIdentityScreen {
                     ui.selectable_value(&mut self.selected_language, Language::Spanish, "Spanish");
                 });
 
+            // Generate button to create a new seed phrase
             if ui.button("Generate").clicked() {
                 self.generate_seed_phrase();
             }

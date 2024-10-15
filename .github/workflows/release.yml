@@ -58,6 +58,10 @@ jobs:
         if: ${{ runner.os == 'Linux' }}
         run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config clang cmake unzip libsqlite3-dev && uname -a && cargo clean
 
+      - name: Enable long paths (Windows)
+        if: ${{ runner.os == 'Windows' }}
+        run: git config --system core.longpaths true
+
       - name: Install protoc (ARM)
         if: ${{ matrix.platform == 'arm64' }}
         run: curl -Lo /tmp/protoc.zip https://github.com/protocolbuffers/protobuf/releases/download/v25.2/protoc-25.2-linux-aarch_64.zip && sudo unzip -o /tmp/protoc.zip -d /usr/local && rm /tmp/protoc.zip

@@ -4,6 +4,7 @@ use crate::database::Database;
 use crate::model::contested_name::ContestedName;
 use crate::model::qualified_contract::QualifiedContract;
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::wallet::Wallet;
 use crate::sdk_wrapper::initialize_sdk;
 use crate::ui::RootScreenType;
 use dash_sdk::dashcore_rpc::{Auth, Client};
@@ -14,7 +15,7 @@ use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::platform::DataContract;
 use dash_sdk::Sdk;
 use rusqlite::Result;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 #[derive(Debug)]
 pub struct AppContext {
@@ -26,6 +27,7 @@ pub struct AppContext {
     pub(crate) config: NetworkConfig,
     pub(crate) dpns_contract: Arc<DataContract>,
     pub(crate) core_client: Client,
+    pub(crate) wallets: RwLock<Vec<Wallet>>,
     pub(crate) platform_version: &'static PlatformVersion,
 }
 
@@ -58,6 +60,8 @@ impl AppContext {
         )
         .ok()?;
 
+        let wallets = db.get_wallets(&network).expect("expected to get wallets");
+
         let app_context = AppContext {
             network,
             developer_mode: false,
@@ -67,6 +71,7 @@ impl AppContext {
             config: network_config,
             dpns_contract: Arc::new(dpns_contract),
             core_client,
+            wallets: RwLock::new(wallets),
             platform_version: PlatformVersion::latest(),
         };
 

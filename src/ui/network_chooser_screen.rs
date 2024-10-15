@@ -4,7 +4,8 @@ use crate::platform::core::{CoreItem, CoreTask};
 use crate::platform::{BackendTask, BackendTaskSuccessResult};
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::{RootScreenType, ScreenLike};
+use crate::ui::identities::add_new_wallet_screen::AddNewWalletScreen;
+use crate::ui::{RootScreenType, Screen, ScreenLike};
 use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::TimestampMillis;
@@ -42,14 +43,18 @@ impl NetworkChooserScreen {
         }
     }
 
-    pub fn current_app_context(&self) -> &Arc<AppContext> {
-        match self.current_network {
+    pub fn context_for_network(&self, network: Network) -> &Arc<AppContext> {
+        match network {
             Network::Dash => &self.mainnet_app_context,
             Network::Testnet if self.testnet_app_context.is_some() => {
                 self.testnet_app_context.as_ref().unwrap()
             }
             _ => &self.mainnet_app_context,
         }
+    }
+
+    pub fn current_app_context(&self) -> &Arc<AppContext> {
+        self.context_for_network(self.current_network)
     }
 
     /// Function to check the status of Dash Core for a given network
@@ -68,6 +73,8 @@ impl NetworkChooserScreen {
                 // Header row
                 ui.label("Network");
                 ui.label("Status");
+                ui.label("Wallet Count");
+                ui.label("Add New Wallet");
                 ui.label("Select");
                 ui.label("Start");
                 ui.end_row();
@@ -108,6 +115,26 @@ impl NetworkChooserScreen {
 
         // Display status indicator
         ui.colored_label(status_color, if is_working { "Online" } else { "Offline" });
+
+        // Display wallet count
+        let wallet_count = self
+            .context_for_network(network)
+            .wallets
+            .read()
+            .map(|wallets| format!("{}", wallets.len()))
+            .unwrap_or("?".to_string());
+        ui.label(wallet_count);
+
+        // Add a button to start the network
+        if ui.button("+").clicked() {
+            let context = if network == Network::Dash || self.testnet_app_context.is_none() {
+                &self.mainnet_app_context
+            } else {
+                &self.testnet_app_context.as_ref().unwrap()
+            };
+            app_action |=
+                AppAction::AddScreen(Screen::AddNewWalletScreen(AddNewWalletScreen::new(context)));
+        }
 
         // Network selection
         let mut is_selected = self.current_network == network;

@@ -1,61 +1,37 @@
 use crate::app::AppAction;
 use crate::context::AppContext;
-use crate::platform::identity::{IdentityRegistrationInfo, IdentityTask};
-use crate::platform::BackendTask;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::ScreenLike;
-use dash_sdk::dpp::identity::{KeyType, TimestampMillis};
 use eframe::egui::Context;
 
+use crate::model::wallet::Wallet;
 use crate::ui::components::entropy_grid::U256EntropyGrid;
 use bip39::{Language, Mnemonic};
 use egui::{
-    Color32, ComboBox, Direction, FontId, Frame, Grid, Layout, Margin, RichText, ScrollArea,
-    Stroke, TextStyle, Ui, Vec2,
+    Color32, ComboBox, Direction, FontId, Frame, Grid, Layout, Margin, RichText, Stroke, TextStyle,
+    Ui, Vec2,
 };
-use serde::Deserialize;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
-#[derive(Debug, Clone, Deserialize)]
-struct KeyInfo {
-    address: String,
-    #[serde(rename = "private_key")]
-    private_key: String,
-}
-
-pub enum AddIdentityStatus {
-    NotStarted,
-    WaitingForResult(TimestampMillis),
-    ErrorMessage(String),
-    Complete,
-}
-
-pub struct AddNewIdentityScreen {
+pub struct AddNewWalletScreen {
     seed_phrase: Option<Mnemonic>,
+    passphrase: String,
     entropy_grid: U256EntropyGrid,
     selected_language: Language,
-    identity_id_input: String,
     alias_input: String,
-    master_private_key_input: String,
-    master_private_key_type: KeyType,
-    keys_input: Vec<(String, KeyType)>,
-    add_identity_status: AddIdentityStatus,
+    wrote_it_down: bool,
     pub app_context: Arc<AppContext>,
 }
 
-impl AddNewIdentityScreen {
+impl AddNewWalletScreen {
     pub fn new(app_context: &Arc<AppContext>) -> Self {
         Self {
             seed_phrase: None,
+            passphrase: String::new(),
             entropy_grid: U256EntropyGrid::new(),
             selected_language: Language::English,
-            identity_id_input: String::new(),
             alias_input: String::new(),
-            master_private_key_input: String::new(),
-            master_private_key_type: KeyType::ECDSA_HASH160,
-            keys_input: vec![(String::new(), KeyType::ECDSA_HASH160)],
-            add_identity_status: AddIdentityStatus::NotStarted,
+            wrote_it_down: false,
             app_context: app_context.clone(),
         }
     }
@@ -70,60 +46,32 @@ impl AddNewIdentityScreen {
         self.seed_phrase = Some(mnemonic);
     }
 
-    fn render_keys_input(&mut self, ui: &mut egui::Ui) {
-        let mut keys_to_remove = vec![];
+    fn save_wallet(&mut self) -> AppAction {
+        if let Some(mnemonic) = &self.seed_phrase {
+            let seed = mnemonic.to_seed(self.passphrase.as_str());
+            let wallet = Wallet {
+                seed,
+                alias: None,
+                is_main: true,
+                password_hint: None,
+            };
 
-        for (i, (key, key_type)) in self.keys_input.iter_mut().enumerate() {
-            ui.horizontal(|ui| {
-                ui.label(format!("Key {}:", i + 1));
-                ui.text_edit_singleline(key);
+            self.app_context
+                .db
+                .insert_wallet(&wallet, &self.app_context.network)
+                .ok();
 
-                ComboBox::from_label("Key Type")
-                    .selected_text(format!("{:?}", key_type))
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(key_type, KeyType::ECDSA_SECP256K1, "ECDSA_SECP256K1");
-                        ui.selectable_value(key_type, KeyType::BLS12_381, "BLS12_381");
-                        ui.selectable_value(key_type, KeyType::ECDSA_HASH160, "ECDSA_HASH160");
-                        ui.selectable_value(
-                            key_type,
-                            KeyType::BIP13_SCRIPT_HASH,
-                            "BIP13_SCRIPT_HASH",
-                        );
-                        ui.selectable_value(
-                            key_type,
-                            KeyType::EDDSA_25519_HASH160,
-                            "EDDSA_25519_HASH160",
-                        );
-                    });
+            // Acquire a write lock and add the new wallet
+            if let Ok(mut wallets) = self.app_context.wallets.write() {
+                wallets.push(wallet);
+            } else {
+                eprintln!("Failed to acquire write lock on wallets");
+            }
 
-                if ui.button("-").clicked() {
-                    keys_to_remove.push(i);
-                }
-            });
+            AppAction::GoToMainScreen // Navigate back to the main screen after saving
+        } else {
+            AppAction::None // No action if no seed phrase exists
         }
-
-        for i in keys_to_remove.iter().rev() {
-            self.keys_input.remove(*i);
-        }
-
-        if ui.button("+ Add Key").clicked() {
-            self.keys_input
-                .push((String::new(), KeyType::ECDSA_HASH160));
-        }
-    }
-
-    fn register_identity_clicked(&mut self) -> AppAction {
-        let identity_input = IdentityRegistrationInfo {
-            identity_id_input: self.identity_id_input.trim().to_string(),
-            alias_input: self.alias_input.clone(),
-            master_private_key_input: self.master_private_key_input.clone(),
-            master_private_key_type: self.master_private_key_type,
-            keys_input: self.keys_input.clone(),
-        };
-
-        AppAction::BackendTask(BackendTask::IdentityTask(IdentityTask::RegisterIdentity(
-            identity_input,
-        )))
     }
 
     fn render_seed_phrase_input(&mut self, ui: &mut Ui) {
@@ -260,60 +208,23 @@ impl AddNewIdentityScreen {
             );
         });
     }
-
-    fn render_master_key_input(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            ui.label("Master Private Key:");
-            ui.text_edit_singleline(&mut self.master_private_key_input);
-
-            ComboBox::from_label("Master Key Type")
-                .selected_text(format!("{:?}", self.master_private_key_type))
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(
-                        &mut self.master_private_key_type,
-                        KeyType::ECDSA_SECP256K1,
-                        "ECDSA_SECP256K1",
-                    );
-                    ui.selectable_value(
-                        &mut self.master_private_key_type,
-                        KeyType::BLS12_381,
-                        "BLS12_381",
-                    );
-                    ui.selectable_value(
-                        &mut self.master_private_key_type,
-                        KeyType::ECDSA_HASH160,
-                        "ECDSA_HASH160",
-                    );
-                    ui.selectable_value(
-                        &mut self.master_private_key_type,
-                        KeyType::BIP13_SCRIPT_HASH,
-                        "BIP13_SCRIPT_HASH",
-                    );
-                    ui.selectable_value(
-                        &mut self.master_private_key_type,
-                        KeyType::EDDSA_25519_HASH160,
-                        "EDDSA_25519_HASH160",
-                    );
-                });
-        });
-    }
 }
 
-impl ScreenLike for AddNewIdentityScreen {
+impl ScreenLike for AddNewWalletScreen {
     fn ui(&mut self, ctx: &Context) -> AppAction {
         let mut action = add_top_panel(
             ctx,
             &self.app_context,
             vec![
                 ("Identities", AppAction::GoToMainScreen),
-                ("Create Identity", AppAction::None),
+                ("Create Wallet", AppAction::None),
             ],
             vec![],
         );
 
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.add_space(10.0);
-            ui.heading("Follow these steps to create your identity!");
+            ui.heading("Follow these steps to create your wallet!");
             ui.add_space(5.0);
 
             self.entropy_grid.ui(ui);
@@ -323,61 +234,53 @@ impl ScreenLike for AddNewIdentityScreen {
             ui.heading("2. Select your desired seed phrase language and press \"Generate\"");
 
             self.render_seed_phrase_input(ui);
-            self.render_master_key_input(ui);
 
+            ui.add_space(10.0);
+
+            ui.heading(
+                "3. Write down the passphrase on a piece of paper and put it somewhere secure",
+            );
+
+            ui.add_space(10.0);
+
+            // Add "I wrote it down" checkbox
             ui.horizontal(|ui| {
-                ui.label("Identity ID (Hex or Base58):");
-                ui.text_edit_singleline(&mut self.identity_id_input);
+                ui.checkbox(&mut self.wrote_it_down, "I wrote it down");
             });
 
+            ui.add_space(20.0);
+
+            ui.heading("4. Add an optional password that must be used to unlock the wallet");
+
             ui.horizontal(|ui| {
-                ui.label("Alias:");
-                ui.text_edit_singleline(&mut self.alias_input);
+                ui.label("Optional Password:");
+                ui.text_edit_singleline(&mut self.passphrase);
             });
 
-            self.render_keys_input(ui);
+            ui.add_space(20.0);
 
-            if ui.button("Create Identity").clicked() {
-                let now = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .expect("Time went backwards")
-                    .as_secs();
-                self.add_identity_status = AddIdentityStatus::WaitingForResult(now);
-                action = self.register_identity_clicked();
-            }
+            ui.heading("5. Save the wallet");
 
-            match &self.add_identity_status {
-                AddIdentityStatus::NotStarted => {}
-                AddIdentityStatus::WaitingForResult(start_time) => {
-                    let now = SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .expect("Time went backwards")
-                        .as_secs();
-                    let elapsed = now - start_time;
+            ui.add_space(5.0);
 
-                    let display = if elapsed < 60 {
-                        format!("{} second{}", elapsed, if elapsed == 1 { "" } else { "s" })
-                    } else {
-                        let minutes = elapsed / 60;
-                        let seconds = elapsed % 60;
-                        format!(
-                            "{} minute{} and {} second{}",
-                            minutes,
-                            if minutes == 1 { "" } else { "s" },
-                            seconds,
-                            if seconds == 1 { "" } else { "s" }
-                        )
-                    };
+            // Centered "Save Wallet" button at the bottom
+            ui.with_layout(Layout::centered_and_justified(Direction::TopDown), |ui| {
+                let save_button = egui::Button::new(
+                    RichText::new("Save Wallet").strong().size(30.0), // Bold, large text
+                )
+                .min_size(Vec2::new(300.0, 60.0)) // Large button size
+                .rounding(10.0) // Rounded corners
+                .stroke(Stroke::new(1.5, Color32::WHITE))
+                .sense(if self.wrote_it_down {
+                    egui::Sense::click()
+                } else {
+                    egui::Sense::hover()
+                });
 
-                    ui.label(format!("Loading... Time taken so far: {}", display));
+                if ui.add(save_button).clicked() {
+                    action = self.save_wallet(); // Trigger the save action
                 }
-                AddIdentityStatus::ErrorMessage(msg) => {
-                    ui.label(format!("Error: {}", msg));
-                }
-                AddIdentityStatus::Complete => {
-                    action = AppAction::PopScreenAndRefresh;
-                }
-            }
+            });
         });
 
         action

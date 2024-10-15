@@ -115,20 +115,39 @@ impl ScreenLike for IdentitiesScreen {
     }
 
     fn ui(&mut self, ctx: &Context) -> AppAction {
+        let right_buttons = {
+            // Acquire a read lock on wallets
+            if let Ok(wallets) = self.app_context.wallets.read() {
+                let create_wallet_or_identity = if wallets.is_empty() {
+                    (
+                        "Create Wallet",
+                        DesiredAppAction::AddScreenType(ScreenType::AddNewWallet),
+                    )
+                } else {
+                    (
+                        "Create Identity",
+                        DesiredAppAction::AddScreenType(ScreenType::AddNewIdentity),
+                    )
+                };
+                vec![
+                    create_wallet_or_identity,
+                    (
+                        "Load Identity",
+                        DesiredAppAction::AddScreenType(ScreenType::AddExistingIdentity),
+                    ),
+                ]
+            } else {
+                vec![(
+                    "Load Identity",
+                    DesiredAppAction::AddScreenType(ScreenType::AddExistingIdentity),
+                )]
+            }
+        };
         let mut action = add_top_panel(
             ctx,
             &self.app_context,
             vec![("Dash Evo Tool", AppAction::None)],
-            vec![
-                (
-                    "Create Identity",
-                    DesiredAppAction::AddScreenType(ScreenType::AddNewIdentity),
-                ),
-                (
-                    "Load Identity",
-                    DesiredAppAction::AddScreenType(ScreenType::AddExistingIdentity),
-                ),
-            ],
+            right_buttons,
         );
 
         action |= add_left_panel(ctx, &self.app_context, RootScreenType::RootScreenIdentities);

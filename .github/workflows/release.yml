@@ -84,7 +84,7 @@ jobs:
       - name: Upload build artifact
         uses: actions/upload-artifact@v3
         with:
-          name: dash-evo-tool-${{ matrix.platform }}
+          name: dash-evo-tool-${{ matrix.target }}
           path: target/${{ matrix.target }}/release/dash-evo-tool
 
     continue-on-error: true
@@ -94,17 +94,43 @@ jobs:
     needs: build-and-release
     runs-on: ubuntu-latest
     steps:
-      - name: Download build artifacts
+      - name: Download Linux X64
         uses: actions/download-artifact@v3
         with:
-          name: dash-evo-tool-${{ matrix.platform }}
-          path: ./release
+          name: dash-evo-tool-x86_64-unknown-linux-gnu
+          path: ./release/dash-evo-tool-x86_64-unknown-linux-gnu/
+
+      - name: Download Linux ARM
+        uses: actions/download-artifact@v3
+        with:
+          name: dash-evo-tool-aarch64-unknown-linux-gnu
+          path: ./release/dash-evo-tool-aarch64-unknown-linux-gnu/
+
+      - name: Download Mac x64
+        uses: actions/download-artifact@v3
+        with:
+          name: dash-evo-tool-x86_64-apple-darwin
+          path: ./release/dash-evo-tool-x86_64-apple-darwin/
+
+      - name: Download Mac ARM
+        uses: actions/download-artifact@v3
+        with:
+          name: dash-evo-tool-aarch64-apple-darwin
+          path: ./release/dash-evo-tool-aarch64-apple-darwin/
+
+      - name: Check dir
+        run: ls -lah ./release/dash-evo-tool-aarch64-apple-darwin
 
       - name: Publish release
         uses: softprops/action-gh-release@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          files: ./release/dash-evo-tool-*
+          tag_name: ${{ github.event.inputs.tag }}
+          files: |
+            ./release/dash-evo-tool-x86_64-linux/dash-evo-tool
+            ./release/dash-evo-tool-aarch64-linux/dash-evo-tool
+            ./release/dash-evo-tool-x86_64-mac/dash-evo-tool
+            ./release/dash-evo-tool-aarch64-mac/dash-evo-tool
           draft: false
-          prerelease: false
+          prerelease: true

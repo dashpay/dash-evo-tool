@@ -40,7 +40,7 @@ impl ScreenLike for AddKeyScreen {
                 ("Identities", AppAction::GoToMainScreen),
                 ("Add Key", AppAction::None),
             ],
-            None,
+            vec![],
         );
 
         egui::CentralPanel::default().show(ctx, |ui| {

@@ -192,7 +192,7 @@ impl ScreenLike for WithdrawalScreen {
                 ("Identities", AppAction::GoToMainScreen),
                 ("Withdraw", AppAction::None),
             ],
-            None,
+            vec![],
         );
 
         egui::CentralPanel::default().show(ctx, |ui| {

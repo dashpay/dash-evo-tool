@@ -173,12 +173,12 @@ impl ScreenLike for DPNSContestedNamesScreen {
             ctx,
             &self.app_context,
             vec![("Dash Evo Tool", AppAction::None)],
-            Some((
+            vec![(
                 "Refresh",
                 DesiredAppAction::BackendTask(BackendTask::ContestedResourceTask(
                     ContestedResourceTask::QueryDPNSContestedResources,
                 )),
-            )),
+            )],
         );
 
         action |= add_left_panel(

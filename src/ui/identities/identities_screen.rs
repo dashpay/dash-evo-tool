@@ -119,10 +119,16 @@ impl ScreenLike for IdentitiesScreen {
             ctx,
             &self.app_context,
             vec![("Dash Evo Tool", AppAction::None)],
-            Some((
-                "Add Identity",
-                DesiredAppAction::AddScreenType(ScreenType::AddIdentity),
-            )),
+            vec![
+                (
+                    "Create Identity",
+                    DesiredAppAction::AddScreenType(ScreenType::AddNewIdentity),
+                ),
+                (
+                    "Load Identity",
+                    DesiredAppAction::AddScreenType(ScreenType::AddExistingIdentity),
+                ),
+            ],
         );
 
         action |= add_left_panel(ctx, &self.app_context, RootScreenType::RootScreenIdentities);

@@ -2,30 +2,30 @@ use crate::app::AppAction;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::platform::BackendTaskSuccessResult;
-use crate::ui::add_identity_screen::AddIdentityScreen;
 use crate::ui::add_key_screen::AddKeyScreen;
 use crate::ui::document_query_screen::DocumentQueryScreen;
 use crate::ui::dpns_contested_names_screen::DPNSContestedNamesScreen;
-use crate::ui::identities_screen::IdentitiesScreen;
 use crate::ui::key_info_screen::KeyInfoScreen;
 use crate::ui::keys_screen::KeysScreen;
 use crate::ui::network_chooser_screen::NetworkChooserScreen;
 use crate::ui::transition_visualizer_screen::TransitionVisualizerScreen;
 use crate::ui::withdrawals::WithdrawalScreen;
 use dash_sdk::dpp::identity::Identity;
-use dash_sdk::dpp::platform_value::Value;
 use dash_sdk::dpp::prelude::IdentityPublicKey;
 use egui::{Context, Widget};
+use enum_dispatch::enum_dispatch;
+use identities::add_existing_identity_screen::AddExistingIdentityScreen;
+use identities::add_new_identity_screen::AddNewIdentityScreen;
+use identities::identities_screen::IdentitiesScreen;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
-pub mod add_identity_screen;
 mod add_key_screen;
 pub mod components;
 pub mod document_query_screen;
 pub mod dpns_contested_names_screen;
-pub mod identities_screen;
+pub(crate) mod identities;
 pub mod key_info_screen;
 pub mod keys_screen;
 pub mod network_chooser_screen;
@@ -84,7 +84,8 @@ pub enum ScreenType {
     #[default]
     Identities,
     DPNSContestedNames,
-    AddIdentity,
+    AddNewIdentity,
+    AddExistingIdentity,
     TransitionVisualizer,
     WithdrawalScreen(QualifiedIdentity),
     AddKeyScreen(QualifiedIdentity),
@@ -101,8 +102,11 @@ impl ScreenType {
             ScreenType::DPNSContestedNames => {
                 Screen::DPNSContestedNamesScreen(DPNSContestedNamesScreen::new(app_context))
             }
-            ScreenType::AddIdentity => {
-                Screen::AddIdentityScreen(AddIdentityScreen::new(app_context))
+            ScreenType::AddNewIdentity => {
+                Screen::AddNewIdentityScreen(AddNewIdentityScreen::new(app_context))
+            }
+            ScreenType::AddExistingIdentity => {
+                Screen::AddExistingIdentityScreen(AddExistingIdentityScreen::new(app_context))
             }
             ScreenType::Keys(identity) => {
                 Screen::KeysScreen(KeysScreen::new(identity.clone(), app_context))
@@ -134,11 +138,13 @@ impl ScreenType {
     }
 }
 
+#[enum_dispatch(ScreenLike)]
 pub enum Screen {
     IdentitiesScreen(IdentitiesScreen),
     DPNSContestedNamesScreen(DPNSContestedNamesScreen),
     DocumentQueryScreen(DocumentQueryScreen),
-    AddIdentityScreen(AddIdentityScreen),
+    AddNewIdentityScreen(AddNewIdentityScreen),
+    AddExistingIdentityScreen(AddExistingIdentityScreen),
     KeyInfoScreen(KeyInfoScreen),
     KeysScreen(KeysScreen),
     WithdrawalScreen(WithdrawalScreen),
@@ -152,7 +158,7 @@ impl Screen {
         match self {
             Screen::IdentitiesScreen(screen) => screen.app_context = app_context,
             Screen::DPNSContestedNamesScreen(screen) => screen.app_context = app_context,
-            Screen::AddIdentityScreen(screen) => screen.app_context = app_context,
+            Screen::AddExistingIdentityScreen(screen) => screen.app_context = app_context,
             Screen::KeyInfoScreen(screen) => screen.app_context = app_context,
             Screen::KeysScreen(screen) => screen.app_context = app_context,
             Screen::WithdrawalScreen(screen) => screen.app_context = app_context,
@@ -160,6 +166,7 @@ impl Screen {
             Screen::NetworkChooserScreen(screen) => screen.current_network = app_context.network,
             Screen::AddKeyScreen(screen) => screen.app_context = app_context,
             Screen::DocumentQueryScreen(screen) => screen.app_context = app_context,
+            Screen::AddNewIdentityScreen(screen) => screen.app_context = app_context,
         }
     }
 }
@@ -171,6 +178,7 @@ pub enum MessageType {
     Error,
 }
 
+#[enum_dispatch]
 pub trait ScreenLike {
     fn refresh(&mut self) {}
     fn ui(&mut self, ctx: &Context) -> AppAction;
@@ -192,60 +200,10 @@ impl PartialEq for Screen {
     }
 }
 
-impl ScreenLike for Screen {
-    fn refresh(&mut self) {
-        match self {
-            Screen::IdentitiesScreen(main_screen) => main_screen.refresh(),
-            Screen::AddIdentityScreen(add_identity_screen) => add_identity_screen.refresh(),
-            Screen::KeysScreen(keys_screen) => keys_screen.refresh(),
-            Screen::KeyInfoScreen(key_info_screen) => key_info_screen.refresh(),
-            Screen::DPNSContestedNamesScreen(contests) => contests.refresh(),
-            Screen::TransitionVisualizerScreen(screen) => screen.refresh(),
-            Screen::WithdrawalScreen(screen) => screen.refresh(),
-            Screen::NetworkChooserScreen(screen) => screen.refresh(),
-            Screen::AddKeyScreen(screen) => screen.refresh(),
-            Screen::DocumentQueryScreen(screen) => screen.refresh(),
-        }
-    }
-    fn ui(&mut self, ctx: &Context) -> AppAction {
-        match self {
-            Screen::IdentitiesScreen(main_screen) => main_screen.ui(ctx),
-            Screen::AddIdentityScreen(add_identity_screen) => add_identity_screen.ui(ctx),
-            Screen::KeysScreen(keys_screen) => keys_screen.ui(ctx),
-            Screen::KeyInfoScreen(key_info_screen) => key_info_screen.ui(ctx),
-            Screen::DPNSContestedNamesScreen(contests_screen) => contests_screen.ui(ctx),
-            Screen::TransitionVisualizerScreen(screen) => screen.ui(ctx),
-            Screen::WithdrawalScreen(screen) => screen.ui(ctx),
-            Screen::NetworkChooserScreen(screen) => screen.ui(ctx),
-            Screen::AddKeyScreen(screen) => screen.ui(ctx),
-            Screen::DocumentQueryScreen(screen) => screen.ui(ctx),
-        }
-    }
-
-    fn display_message(&mut self, message: &str, message_type: MessageType) {
-        match self {
-            Screen::IdentitiesScreen(screen) => screen.display_message(message, message_type),
-            Screen::AddIdentityScreen(screen) => screen.display_message(message, message_type),
-            Screen::KeysScreen(screen) => screen.display_message(message, message_type),
-            Screen::KeyInfoScreen(screen) => screen.display_message(message, message_type),
-            Screen::DPNSContestedNamesScreen(screen) => {
-                screen.display_message(message, message_type)
-            }
-            Screen::TransitionVisualizerScreen(screen) => {
-                screen.display_message(message, message_type)
-            }
-            Screen::WithdrawalScreen(screen) => screen.display_message(message, message_type),
-            Screen::NetworkChooserScreen(screen) => screen.display_message(message, message_type),
-            Screen::AddKeyScreen(screen) => screen.display_message(message, message_type),
-            Screen::DocumentQueryScreen(screen) => screen.display_message(message, message_type),
-        }
-    }
-}
-
 impl Screen {
     pub fn screen_type(&self) -> ScreenType {
         match self {
-            Screen::AddIdentityScreen(_) => ScreenType::AddIdentity,
+            Screen::AddExistingIdentityScreen(_) => ScreenType::AddExistingIdentity,
             Screen::KeysScreen(screen) => ScreenType::Keys(screen.identity.clone()),
             Screen::KeyInfoScreen(screen) => ScreenType::KeyInfo(
                 screen.identity.clone(),
@@ -261,6 +219,7 @@ impl Screen {
             Screen::NetworkChooserScreen(_) => ScreenType::NetworkChooser,
             Screen::AddKeyScreen(screen) => ScreenType::AddKeyScreen(screen.identity.clone()),
             Screen::DocumentQueryScreen(_) => ScreenType::DocumentQueryScreen,
+            Screen::AddNewIdentityScreen(_) => ScreenType::AddExistingIdentity,
         }
     }
 }

@@ -1,14 +1,18 @@
 use crate::app::AppAction;
 use crate::context::AppContext;
+use crate::platform::core::{CoreItem, CoreTask};
+use crate::platform::{BackendTask, BackendTaskSuccessResult};
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::{RootScreenType, ScreenLike};
 use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dpp::dashcore::Network;
+use dash_sdk::dpp::identity::TimestampMillis;
 use eframe::egui::{self, Color32, Context, Ui};
 use std::env;
 use std::process::Command;
 use std::sync::Arc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::runtime::Runtime;
 
 pub struct NetworkChooserScreen {
@@ -18,6 +22,7 @@ pub struct NetworkChooserScreen {
     pub mainnet_core_status_online: bool,
     pub testnet_core_status_online: bool,
     status_checked: bool,
+    pub recheck_time: Option<TimestampMillis>,
 }
 
 impl NetworkChooserScreen {
@@ -33,6 +38,7 @@ impl NetworkChooserScreen {
             mainnet_core_status_online: false,
             testnet_core_status_online: false,
             status_checked: false,
+            recheck_time: None,
         }
     }
 
@@ -44,21 +50,6 @@ impl NetworkChooserScreen {
             }
             _ => &self.mainnet_app_context,
         }
-    }
-
-    /// Asynchronously trigger the status update
-    async fn update_network_status(&mut self) {
-        let mainnet_status = Self::check_core_status(&self.mainnet_app_context).await;
-        let testnet_status = if let Some(testnet_app_context) = self.testnet_app_context.as_ref() {
-            Self::check_core_status(testnet_app_context).await
-        } else {
-            false
-        };
-
-        self.mainnet_core_status_online = mainnet_status;
-        self.testnet_core_status_online = testnet_status;
-
-        self.status_checked = true; // Mark the status as checked
     }
 
     /// Function to check the status of Dash Core for a given network
@@ -100,6 +91,18 @@ impl NetworkChooserScreen {
         let status_color = if is_working {
             Color32::from_rgb(0, 255, 0) // Green if working
         } else {
+            if let Some(recheck_time) = self.recheck_time {
+                let current_time = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .expect("Time went backwards");
+                let current_time_ms = current_time.as_millis() as u64;
+                if current_time_ms >= recheck_time {
+                    app_action |=
+                        AppAction::BackendTask(BackendTask::CoreTask(CoreTask::GetBestChainLock));
+                    self.recheck_time =
+                        Some((current_time + Duration::from_secs(5)).as_millis() as u64);
+                }
+            }
             Color32::from_rgb(255, 0, 0) // Red if not working
         };
 
@@ -119,6 +122,14 @@ impl NetworkChooserScreen {
                 Ok(_) => println!("Dash QT started successfully!"),
                 Err(e) => eprintln!("Failed to start Dash QT: {}", e),
             }
+            // in 5 seconds
+            self.recheck_time = Some(
+                (SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .expect("Time went backwards")
+                    + Duration::from_secs(5))
+                .as_millis() as u64,
+            );
         }
 
         ui.end_row();
@@ -170,32 +181,44 @@ impl NetworkChooserScreen {
 }
 
 impl ScreenLike for NetworkChooserScreen {
-    fn ui(&mut self, ctx: &Context) -> AppAction {
+    fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
+        if let BackendTaskSuccessResult::CoreItem(CoreItem::ChainLock(_, network)) =
+            backend_task_success_result
         {
-            if !self.status_checked {
-                // We end the immutable borrow scope before this mutable borrow
-                self.update_network_status();
-                self.status_checked = true;
+            match network {
+                Network::Dash => {
+                    self.mainnet_core_status_online = true;
+                }
+                Network::Testnet => {
+                    self.testnet_core_status_online = true;
+                }
+                _ => {}
             }
-
-            let mut action = add_top_panel(
-                ctx,
-                self.current_app_context(),
-                vec![("Dash Evo Tool", AppAction::None)],
-                None,
-            );
-
-            action |= add_left_panel(
-                ctx,
-                self.current_app_context(),
-                RootScreenType::RootScreenNetworkChooser,
-            );
-
-            egui::CentralPanel::default().show(ctx, |ui| {
-                action |= self.render_network_table(ui);
-            });
-
-            action
         }
+    }
+    fn ui(&mut self, ctx: &Context) -> AppAction {
+        let mut action = add_top_panel(
+            ctx,
+            self.current_app_context(),
+            vec![("Dash Evo Tool", AppAction::None)],
+            vec![],
+        );
+
+        if !self.status_checked {
+            self.status_checked = true;
+            action |= AppAction::BackendTask(BackendTask::CoreTask(CoreTask::GetBestChainLock));
+        }
+
+        action |= add_left_panel(
+            ctx,
+            self.current_app_context(),
+            RootScreenType::RootScreenNetworkChooser,
+        );
+
+        egui::CentralPanel::default().show(ctx, |ui| {
+            action |= self.render_network_table(ui);
+        });
+
+        action
     }
 }

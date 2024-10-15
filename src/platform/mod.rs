@@ -2,6 +2,7 @@ use crate::app::TaskResult;
 use crate::context::AppContext;
 use crate::platform::contested_names::ContestedResourceTask;
 use crate::platform::contract::ContractTask;
+use crate::platform::core::{CoreItem, CoreTask};
 use crate::platform::document::DocumentTask;
 use crate::platform::identity::IdentityTask;
 use dash_sdk::query_types::Documents;
@@ -10,6 +11,7 @@ use tokio::sync::mpsc;
 
 pub mod contested_names;
 pub mod contract;
+pub mod core;
 mod document;
 pub mod identity;
 
@@ -19,6 +21,7 @@ pub(crate) enum BackendTask {
     DocumentTask(DocumentTask),
     ContractTask(ContractTask),
     ContestedResourceTask(ContestedResourceTask),
+    CoreTask(CoreTask),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -26,6 +29,7 @@ pub(crate) enum BackendTaskSuccessResult {
     None,
     Message(String),
     Documents(Documents),
+    CoreItem(CoreItem),
 }
 
 impl BackendTaskSuccessResult {}
@@ -64,6 +68,7 @@ impl AppContext {
             BackendTask::DocumentTask(document_task) => {
                 self.run_document_task(document_task, &sdk).await
             }
+            BackendTask::CoreTask(core_task) => self.run_core_task(core_task).await,
         }
     }
 }

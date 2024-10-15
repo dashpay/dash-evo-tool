@@ -176,7 +176,7 @@ impl ScreenLike for DocumentQueryScreen {
             ctx,
             &self.app_context,
             vec![("Dash Evo Tool", AppAction::None)],
-            None,
+            vec![],
         );
 
         action |= add_left_panel(

@@ -4,7 +4,7 @@ use crate::logging::initialize_logger;
 use crate::platform::{BackendTask, BackendTaskSuccessResult};
 use crate::ui::document_query_screen::DocumentQueryScreen;
 use crate::ui::dpns_contested_names_screen::DPNSContestedNamesScreen;
-use crate::ui::identities_screen::IdentitiesScreen;
+use crate::ui::identities::identities_screen::IdentitiesScreen;
 use crate::ui::network_chooser_screen::NetworkChooserScreen;
 use crate::ui::transition_visualizer_screen::TransitionVisualizerScreen;
 use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike, ScreenType};
@@ -261,7 +261,12 @@ impl App for AppState {
                         self.visible_screen_mut()
                             .display_message(&message, MessageType::Info);
                     }
-                    BackendTaskSuccessResult::Documents(_) => {}
+                    BackendTaskSuccessResult::Documents(_) => {
+                        self.visible_screen_mut().display_task_result(message);
+                    }
+                    BackendTaskSuccessResult::CoreItem(_) => {
+                        self.visible_screen_mut().display_task_result(message);
+                    }
                 },
                 TaskResult::Error(message) => {
                     self.visible_screen_mut()

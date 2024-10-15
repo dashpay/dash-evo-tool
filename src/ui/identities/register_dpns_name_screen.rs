@@ -109,6 +109,11 @@ impl ScreenLike for RegisterDpnsNameScreen {
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("Register DPNS Name");
 
+            if self.qualified_identity_ids.is_empty() {
+                ui.label("No qualified identities available to register a DPNS name.");
+                return;
+            }
+
             // Select the identity to register the name for
             self.render_identity_id_selection(ui);
 

@@ -84,7 +84,7 @@ jobs:
       - name: Upload build artifact
         uses: actions/upload-artifact@v3
         with:
-          name: dash-evo-tool-${{ matrix.platform }}
+          name: dash-evo-tool-${{ matrix.target }}
           path: target/${{ matrix.target }}/release/dash-evo-tool
 
     continue-on-error: true
@@ -94,11 +94,29 @@ jobs:
     needs: build-and-release
     runs-on: ubuntu-latest
     steps:
-      - name: Download build artifacts
+      - name: Download Linux X64
         uses: actions/download-artifact@v3
         with:
-          name: dash-evo-tool-${{ matrix.platform }}
-          path: ./release
+          name: dash-evo-tool-x86_64-unknown-linux-gnu
+          path: ./release/dash-evo-tool-x86_64-linux
+
+      - name: Download Linux ARM
+        uses: actions/download-artifact@v3
+        with:
+          name: dash-evo-tool-aarch64-unknown-linux-gnu
+          path: ./release/dash-evo-tool-aarch64-linux
+
+      - name: Download Mac x64
+        uses: actions/download-artifact@v3
+        with:
+          name: dash-evo-tool-x86_64-apple-darwin
+          path: ./release/dash-evo-tool-x86_64-mac
+
+      - name: Download Mac ARM
+        uses: actions/download-artifact@v3
+        with:
+          name: dash-evo-tool-aarch64-apple-darwin
+          path: ./release/dash-evo-tool-aarch64-mac
 
       - name: Publish release
         uses: softprops/action-gh-release@v1

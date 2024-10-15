@@ -86,6 +86,12 @@ jobs:
         env:
           PROTOC: /usr/local/bin/protoc
 
+      - name: Install CMake (Windows)
+        if: ${{ matrix.target == 'x86_64-pc-windows-gnu' }}
+        run: |
+          choco install cmake --installargs 'ADD_CMAKE_TO_PATH=System'
+        shell: cmd
+
       - name: Install protoc (Windows x64)
         if: ${{ matrix.target == 'x86_64-pc-windows-gnu' }}
         run: |

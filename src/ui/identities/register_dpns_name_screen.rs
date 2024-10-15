@@ -20,7 +20,6 @@ pub enum RegisterDpnsNameStatus {
     Complete,
 }
 
-// TO DO: If there are no qualified identities, just display "No qualified identities" with no input options
 pub struct RegisterDpnsNameScreen {
     qualified_identity_ids: Vec<Identifier>,
     identity_id_input: Identifier,

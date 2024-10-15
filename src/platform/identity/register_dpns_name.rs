@@ -27,12 +27,12 @@ use dash_sdk::{
 use rand::{rngs::StdRng, Rng, SeedableRng};
 use simple_signer::signer::SimpleSigner;
 
-use super::DpnsNameInputToRegister;
+use super::RegisterDpnsNameInput;
 impl AppContext {
     pub(super) async fn register_dpns_name(
         &self,
         sdk: &Sdk,
-        input: DpnsNameInputToRegister,
+        input: RegisterDpnsNameInput,
     ) -> Result<(), String> {
         let mut rng = StdRng::from_entropy();
         let platform_version = PlatformVersion::latest();

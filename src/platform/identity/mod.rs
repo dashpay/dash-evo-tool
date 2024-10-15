@@ -37,7 +37,7 @@ pub struct IdentityRegistrationInfo {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct DpnsNameInputToRegister {
+pub struct RegisterDpnsNameInput {
     pub identity_id_input: Identifier,
     pub name_input: String,
 }
@@ -48,7 +48,7 @@ pub(crate) enum IdentityTask {
     RegisterIdentity(IdentityRegistrationInfo),
     AddKeyToIdentity(QualifiedIdentity, IdentityPublicKey, Vec<u8>),
     WithdrawFromIdentity(QualifiedIdentity, Option<Address>, Credits, Option<KeyID>),
-    RegisterDpnsName(DpnsNameInputToRegister),
+    RegisterDpnsName(RegisterDpnsNameInput),
 }
 
 fn verify_key_input(

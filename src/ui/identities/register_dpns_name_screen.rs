@@ -1,6 +1,6 @@
 use crate::app::AppAction;
 use crate::context::AppContext;
-use crate::platform::identity::{DpnsNameInputToRegister, IdentityTask};
+use crate::platform::identity::{IdentityTask, RegisterDpnsNameInput};
 use crate::platform::BackendTask;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::{MessageType, ScreenLike};
@@ -74,7 +74,7 @@ impl RegisterDpnsNameScreen {
     }
 
     fn register_dpns_name_clicked(&mut self) -> AppAction {
-        let dpns_name_input = DpnsNameInputToRegister {
+        let dpns_name_input = RegisterDpnsNameInput {
             identity_id_input: self.identity_id_input,
             name_input: self.name_input.trim().to_string(),
         };

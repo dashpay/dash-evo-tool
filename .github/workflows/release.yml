@@ -115,7 +115,7 @@ jobs:
       - name: Download Mac ARM
         uses: actions/download-artifact@v3
         with:
-          name: aarch64-apple-darwin
+          name: dash-evo-tool-aarch64-apple-darwin
           path: ./release/dash-evo-tool-aarch64-mac
 
       - name: Publish release

@@ -5,9 +5,13 @@ use crate::platform::identity::{IdentityRegistrationInfo, IdentityTask};
 use crate::platform::BackendTask;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::ScreenLike;
+use copypasta::{ClipboardContext, ClipboardProvider};
+use dash_sdk::dpp::balances::credits::Duffs;
 use dash_sdk::dpp::identity::KeyType;
 use eframe::egui::Context;
-use egui::ComboBox;
+use egui::{Color32, ColorImage, ComboBox, TextureHandle};
+use image::Luma;
+use qrcode::QrCode;
 use serde::Deserialize;
 use std::fmt;
 use std::sync::Arc;
@@ -49,6 +53,39 @@ pub struct AddNewIdentityScreen {
     pub app_context: Arc<AppContext>,
 }
 
+// Function to generate a QR code image from the address
+fn generate_qr_code_image(
+    address: &str,
+    amount: Duffs,
+) -> Result<ColorImage, qrcode::types::QrError> {
+    // Generate the QR code
+    let code = QrCode::new(address.as_bytes())?;
+
+    // Render the QR code into an image buffer
+    let image = code.render::<Luma<u8>>().build();
+
+    // Convert the image buffer to ColorImage
+    let size = [image.width() as usize, image.height() as usize];
+    let pixels = image.into_raw();
+    let pixels: Vec<Color32> = pixels
+        .into_iter()
+        .map(|p| {
+            let color = 255 - p; // Invert colors for better visibility
+            Color32::from_rgba_unmultiplied(color, color, color, 255)
+        })
+        .collect();
+
+    Ok(ColorImage { size, pixels })
+}
+
+// Function to copy text to the clipboard
+pub fn copy_to_clipboard(text: &str) -> Result<(), Box<dyn std::error::Error>> {
+    // // Use `dyn` to indicate dynamic dispatch for the trait object
+    // let mut ctx: ClipboardContext = ClipboardProvider::new()?.into();
+    // ClipboardProvider::.set_contents(text.to_owned())?;
+    Ok(())
+}
+
 impl AddNewIdentityScreen {
     pub fn new(app_context: &Arc<AppContext>) -> Self {
         Self {
@@ -60,6 +97,38 @@ impl AddNewIdentityScreen {
             master_private_key_type: KeyType::ECDSA_HASH160,
             keys_input: vec![(String::new(), KeyType::ECDSA_HASH160)],
             app_context: app_context.clone(),
+        }
+    }
+
+    fn render_qr_code(&mut self, ui: &mut egui::Ui) {
+        if let Some(wallet) = self.selected_wallet.as_ref() {
+            // Get the receive address
+            let address = wallet.receive_address(self.app_context.network);
+
+            // Generate the QR code image
+            if let Ok(qr_image) = generate_qr_code_image(&address.to_qr_uri(), 10) {
+                // // Convert the image to egui's TextureHandle
+                // let texture: TextureHandle =
+                //     ui.ctx()
+                //         .load_texture("qr_code", qr_image, egui::TextureFilter::Linear);
+                //
+                // // Display the QR code image
+                // ui.image(&texture);
+            } else {
+                ui.label("Failed to generate QR code.");
+            }
+
+            // Show the address underneath
+            ui.label(&address.to_qr_uri());
+
+            // Add a button to copy the address
+            if ui.button("Copy Address").clicked() {
+                if let Err(e) = copy_to_clipboard(&address.to_qr_uri()) {
+                    ui.label(format!("Failed to copy to clipboard: {}", e));
+                } else {
+                    ui.label("Address copied to clipboard.");
+                }
+            }
         }
     }
 

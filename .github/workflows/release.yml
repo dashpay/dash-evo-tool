@@ -128,9 +128,9 @@ jobs:
         with:
           tag_name: ${{ github.event.inputs.tag }}
           files: |
-            ./release/dash-evo-tool-x86_64-linux/dash-evo-tool
-            ./release/dash-evo-tool-aarch64-linux/dash-evo-tool
-            ./release/dash-evo-tool-x86_64-mac/dash-evo-tool
-            ./release/dash-evo-tool-aarch64-mac/dash-evo-tool
+            ./release/dash-evo-tool-x86_64-unknown-linux-gnu/dash-evo-tool
+            ./release/dash-evo-tool-aarch64-unknown-linux-gnu/dash-evo-tool
+            ./release/dash-evo-tool-x86_64-apple-darwin/dash-evo-tool
+            ./release/dash-evo-tool-aarch64-apple-darwin/dash-evo-tool
           draft: false
           prerelease: true

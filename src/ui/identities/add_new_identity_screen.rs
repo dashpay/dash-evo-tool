@@ -12,10 +12,7 @@ use eframe::egui::Context;
 
 use crate::ui::components::entropy_grid::U256EntropyGrid;
 use bip39::{Language, Mnemonic};
-use egui::{
-    Align, Color32, ComboBox, Direction, Frame, Grid, Layout, Margin, RichText, ScrollArea, Stroke,
-    Ui, Vec2,
-};
+use egui::{Align, Color32, ComboBox, Direction, FontId, Frame, Grid, Layout, Margin, RichText, ScrollArea, Stroke, TextStyle, Ui, Vec2};
 use itertools::Itertools;
 use serde::Deserialize;
 use std::fs;
@@ -133,8 +130,47 @@ impl AddNewIdentityScreen {
 
     /// Render the seed phrase input as a styled grid of words
     fn render_seed_phrase_input(&mut self, ui: &mut Ui) {
-        ui.add_space(15.0); // Spacing between contracts
-        ui.horizontal(|ui| {
+        ui.add_space(15.0);
+        ui.vertical(|ui| {
+            // Move language selector and generate button above the seed phrase view
+            ui.horizontal(|ui| {
+
+                ui.with_layout(
+                    egui::Layout::centered_and_justified(Direction::RightToLeft),
+                    |ui| {
+                        let mut style = ui.style_mut();
+
+                        // Customize text size for the ComboBox
+                        style.text_styles.insert(
+                            TextStyle::Button,  // Apply style to buttons (used in ComboBox entries)
+                            FontId::proportional(20.0), // Set larger font size
+                        );
+
+                        ComboBox::from_label("")
+                            .selected_text(format!("{:?}", self.selected_language))
+                            .width(200.0)
+                            .height(40.0)
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(&mut self.selected_language, Language::English, "English");
+                                ui.selectable_value(&mut self.selected_language, Language::Spanish, "Spanish");
+                                ui.selectable_value(&mut self.selected_language, Language::French, "French");
+                                ui.selectable_value(&mut self.selected_language, Language::Italian, "Italian");
+                                ui.selectable_value(&mut self.selected_language, Language::Portuguese, "Portuguese");
+                            });
+                    });
+
+                let generate_button = egui::Button::new(
+                    RichText::new("Generate").strong().size(24.0) // Use .strong() for bold text
+                )
+                    .min_size(Vec2::new(150.0, 50.0))
+                    .rounding(5.0)
+                    .stroke(Stroke::new(1.0, Color32::WHITE));
+
+                if ui.add(generate_button).clicked() {
+                    self.generate_seed_phrase();
+                }
+            });
+
             // Create a container with a fixed width (72% of the available width)
             let frame_width = ui.available_width() * 0.72;
             ui.allocate_ui_with_layout(
@@ -167,9 +203,7 @@ impl AddNewIdentityScreen {
                                                 .monospace();
 
                                             ui.with_layout(
-                                                Layout::centered_and_justified(
-                                                    Direction::LeftToRight,
-                                                ),
+                                                Layout::centered_and_justified(Direction::LeftToRight),
                                                 |ui| {
                                                     ui.label(word_text);
                                                 },
@@ -180,8 +214,9 @@ impl AddNewIdentityScreen {
                                             }
                                         }
                                     } else {
-                                        let word_text =
-                                            RichText::new("Seed Phrase").size(40.0).monospace();
+                                        let word_text = RichText::new("Seed Phrase")
+                                            .size(40.0)
+                                            .monospace();
 
                                         ui.with_layout(
                                             Layout::centered_and_justified(Direction::LeftToRight),
@@ -194,24 +229,6 @@ impl AddNewIdentityScreen {
                         });
                 },
             );
-
-            // Language selection dropdown
-            ComboBox::from_label("Language")
-                .selected_text(format!("{:?}", self.selected_language))
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut self.selected_language, Language::English, "English");
-                    ui.selectable_value(
-                        &mut self.selected_language,
-                        Language::Japanese,
-                        "Japanese",
-                    );
-                    ui.selectable_value(&mut self.selected_language, Language::Spanish, "Spanish");
-                });
-
-            // Generate button
-            if ui.button("Generate").clicked() {
-                self.generate_seed_phrase();
-            }
         });
     }
 
@@ -271,6 +288,8 @@ impl ScreenLike for AddNewIdentityScreen {
             ui.add_space(5.0);
 
             self.entropy_grid.ui(ui);
+
+            ui.add_space(5.0);
 
             ui.heading("2. Select your desired seed phrase language and press \"Generate\"");
 

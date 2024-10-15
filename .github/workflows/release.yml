@@ -29,7 +29,7 @@ jobs:
             target: "aarch64-unknown-linux-gnu"
             platform: "arm64"
           - name: "macos-amd64"
-            runs-on: "macos-latest"
+            runs-on: "macos-13"
             target: "x86_64-apple-darwin"
             platform: "mac-x86"
           - name: "macos-arm64"

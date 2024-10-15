@@ -12,7 +12,10 @@ use eframe::egui::Context;
 
 use crate::ui::components::entropy_grid::U256EntropyGrid;
 use bip39::{Language, Mnemonic};
-use egui::{Align, Color32, ComboBox, Direction, Frame, Grid, Layout, Margin, RichText, ScrollArea, Stroke, Ui, Vec2};
+use egui::{
+    Align, Color32, ComboBox, Direction, Frame, Grid, Layout, Margin, RichText, ScrollArea, Stroke,
+    Ui, Vec2,
+};
 use itertools::Itertools;
 use serde::Deserialize;
 use std::fs;
@@ -130,52 +133,78 @@ impl AddNewIdentityScreen {
 
     /// Render the seed phrase input as a styled grid of words
     fn render_seed_phrase_input(&mut self, ui: &mut Ui) {
+        ui.add_space(15.0); // Spacing between contracts
         ui.horizontal(|ui| {
-            // Scrollable frame with a fixed height of 300 pixels and white background
-            Frame::none()
-                .fill(Color32::WHITE)
-                .stroke(Stroke::new(1.0, Color32::BLACK))
-                .rounding(5.0)
-                .inner_margin(Margin::same(10.0))
-                .show(ui, |ui| {
-                    let available_width = ui.available_width() * 0.72;
-                    let columns = 6;
-
-                    // Ensure the grid takes up the available space evenly
-                    ui.set_min_size(Vec2::new(available_width, 300.0));
-
-                    Grid::new("seed_phrase_grid")
-                        .num_columns(columns) // 6 columns
-                        .spacing((0.0, 0.0)) // No spacing for even distribution
-                        .min_col_width(available_width * 0.8 / columns as f32)
-                        .min_row_height(75.0)
+            // Create a container with a fixed width (72% of the available width)
+            let frame_width = ui.available_width() * 0.72;
+            ui.allocate_ui_with_layout(
+                Vec2::new(frame_width, 300.0), // Set width and height of the container
+                egui::Layout::top_down(egui::Align::Min),
+                |ui| {
+                    Frame::none()
+                        .fill(Color32::WHITE)
+                        .stroke(Stroke::new(1.0, Color32::BLACK))
+                        .rounding(5.0)
+                        .inner_margin(Margin::same(10.0))
                         .show(ui, |ui| {
-                            if let Some(mnemonic) = &self.seed_phrase {
-                                // Calculate font size based on available space
-                                let font_size = 18.0;
+                            let columns = 6;
+                            let rows = 24 / columns;
 
-                                for (i, word) in mnemonic.words().enumerate() {
-                                    // Render each word with the adjusted font size
-                                    let word_text = RichText::new(word).size(font_size).monospace();
+                            // Calculate the size of each grid cell
+                            let column_width = frame_width / columns as f32;
+                            let row_height = 300.0 / rows as f32;
 
-                                    ui.with_layout(Layout::centered_and_justified(Direction::LeftToRight), |ui| {
-                                        ui.label(word_text);
-                                    });
+                            Grid::new("seed_phrase_grid")
+                                .num_columns(columns)
+                                .spacing((0.0, 0.0)) // No spacing between elements
+                                .min_col_width(column_width)
+                                .min_row_height(row_height)
+                                .show(ui, |ui| {
+                                    if let Some(mnemonic) = &self.seed_phrase {
+                                        for (i, word) in mnemonic.words().enumerate() {
+                                            let word_text = RichText::new(word)
+                                                .size(row_height * 0.5) // Adjust font size dynamically
+                                                .monospace();
 
-                                    if (i + 1) % columns == 0 {
-                                        ui.end_row();
+                                            ui.with_layout(
+                                                Layout::centered_and_justified(
+                                                    Direction::LeftToRight,
+                                                ),
+                                                |ui| {
+                                                    ui.label(word_text);
+                                                },
+                                            );
+
+                                            if (i + 1) % columns == 0 {
+                                                ui.end_row();
+                                            }
+                                        }
+                                    } else {
+                                        let word_text =
+                                            RichText::new("Seed Phrase").size(40.0).monospace();
+
+                                        ui.with_layout(
+                                            Layout::centered_and_justified(Direction::LeftToRight),
+                                            |ui| {
+                                                ui.label(word_text);
+                                            },
+                                        );
                                     }
-                                }
-                            }
+                                });
                         });
-                });
+                },
+            );
 
             // Language selection dropdown
             ComboBox::from_label("Language")
                 .selected_text(format!("{:?}", self.selected_language))
                 .show_ui(ui, |ui| {
                     ui.selectable_value(&mut self.selected_language, Language::English, "English");
-                    ui.selectable_value(&mut self.selected_language, Language::Japanese, "Japanese");
+                    ui.selectable_value(
+                        &mut self.selected_language,
+                        Language::Japanese,
+                        "Japanese",
+                    );
                     ui.selectable_value(&mut self.selected_language, Language::Spanish, "Spanish");
                 });
 
@@ -237,9 +266,13 @@ impl ScreenLike for AddNewIdentityScreen {
         );
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("Create Identity");
+            ui.add_space(10.0);
+            ui.heading("Follow these steps to create your identity!");
+            ui.add_space(5.0);
 
             self.entropy_grid.ui(ui);
+
+            ui.heading("2. Select your desired seed phrase language and press \"Generate\"");
 
             self.render_seed_phrase_input(ui);
             self.render_master_key_input(ui);

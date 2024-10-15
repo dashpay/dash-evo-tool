@@ -36,6 +36,10 @@ jobs:
             runs-on: "macos-latest"
             target: "aarch64-apple-darwin"
             platform: "mac-arm"
+          - name: "Windows"
+            runs-on: "windows-latest"
+            target: "x86_64-pc-windows-gnu"
+            platform: "windows"
 
     runs-on: ${{ matrix.runs-on }}
 
@@ -87,7 +91,7 @@ jobs:
           name: dash-evo-tool-${{ matrix.target }}
           path: target/${{ matrix.target }}/release/dash-evo-tool
 
-    continue-on-error: true
+    #continue-on-error: true
 
   release:
     name: Create GitHub Release

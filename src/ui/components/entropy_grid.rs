@@ -1,9 +1,9 @@
-use egui::{Color32, Grid, Ui, Vec2};
+use egui::{Button, Color32, Grid, Ui, Vec2};
 use rand::Rng;
 
 pub struct U256EntropyGrid {
-    random_number: [u8; 32],   // Current 256-bit number (32 bytes)
-    previous_number: [u8; 32], // Previous frame's state of the 256-bit number
+    random_number: [u8; 32], // Current 256-bit number (32 bytes)
+    last_bit_changed: u8,    // Store the last bit position changed
 }
 
 impl U256EntropyGrid {
@@ -15,7 +15,7 @@ impl U256EntropyGrid {
 
         Self {
             random_number,
-            previous_number: random_number, // Initialize previous_number to the same value
+            last_bit_changed: 0, // Initialize to 0
         }
     }
 
@@ -23,75 +23,70 @@ impl U256EntropyGrid {
     pub fn ui(&mut self, ui: &mut Ui) -> [u8; 32] {
         ui.heading("Select Bits for 256-bit Number");
 
+        // Get the available width to calculate dynamic button sizes
+        let available_width = ui.available_width();
+        let button_width = available_width / 32.0; // Divide the total width into 32 equal parts
+        let button_size = Vec2::new(button_width, button_width); // Square buttons
+
         // Create a grid with 8 rows and 32 columns (256 bits total)
-        Grid::new("entropy_grid").show(ui, |ui| {
-            for row in 0..8 {
-                for col in 0..32 {
-                    let bit_position = row * 32 + col;
-                    let byte_index = bit_position / 8;
-                    let bit_in_byte = bit_position % 8;
+        Grid::new("entropy_grid")
+            .num_columns(32) // Explicitly set 32 columns
+            .spacing(Vec2::new(0.0, 0.0)) // Remove spacing between buttons
+            .show(ui, |ui| {
+                for row in 0..8 {
+                    for col in 0..32 {
+                        let bit_position = (row * 32 + col) as u8;
+                        let byte_index = (bit_position / 8) as usize;
+                        let bit_in_byte = (bit_position % 8) as usize;
 
-                    // Determine the bit value in the current number
-                    let bit_value = (self.random_number[byte_index] >> bit_in_byte) & 1 == 1;
+                        // Determine the bit value in the current number
+                        let bit_value = (self.random_number[byte_index] >> bit_in_byte) & 1 == 1;
 
-                    // Set the button color based on the bit value (1 = Black, 0 = White)
-                    let color = if bit_value {
-                        Color32::BLACK
-                    } else {
-                        Color32::WHITE
-                    };
+                        // Set the button color based on the bit value (1 = Black, 0 = White)
+                        let color = if bit_value {
+                            Color32::BLACK
+                        } else {
+                            Color32::WHITE
+                        };
 
-                    // Define the button size and allocate the rect
-                    let button_size = Vec2::new(8.0, 8.0);
-                    let button_rect = ui.allocate_space(button_size).1;
+                        // Create the button with dynamic size and color
+                        let button = Button::new("").fill(color).min_size(button_size);
 
-                    // Interact with the button to detect hover or click
-                    let response = ui.interact(
-                        button_rect,
-                        ui.id().with(bit_position),
-                        egui::Sense::hover(),
-                    );
+                        // Render the button and handle interactions
+                        let response = ui.add(button);
 
-                    // If the bit was different in the previous state, toggle it
-                    let was_different = self.was_bit_different(byte_index, bit_in_byte);
-                    if response.hovered() && was_different {
-                        self.toggle_bit(byte_index, bit_in_byte);
+                        // Toggle the bit if clicked or hovered
+                        if response.hovered() && self.was_bit_different(bit_position)
+                            || response.clicked()
+                        {
+                            self.toggle_bit(byte_index, bit_in_byte);
+                        }
                     }
-
-                    // Render the button with the appropriate color
-                    ui.painter().rect_filled(button_rect, 0.0, color);
+                    ui.end_row();
                 }
-                ui.end_row();
-            }
-        });
+            });
 
-        // Display the current and previous random numbers in hex
+        // Display the current random number in hex
         ui.label(format!(
             "Current 256-bit Number: {}",
             hex::encode(self.random_number)
         ));
-        ui.label(format!(
-            "Previous 256-bit Number: {}",
-            hex::encode(self.previous_number)
-        ));
-
-        // Update the previous_number for the next frame
-        self.previous_number = self.random_number;
 
         self.random_number
     }
 
-    /// Check if a bit differs between the previous and current numbers
-    fn was_bit_different(&self, byte_index: usize, bit_in_byte: usize) -> bool {
-        let current_bit = (self.random_number[byte_index] >> bit_in_byte) & 1;
-        let previous_bit = (self.previous_number[byte_index] >> bit_in_byte) & 1;
-        current_bit != previous_bit
+    /// Check if the bit at the given position is the same as the last changed bit
+    fn was_bit_different(&self, bit_position: u8) -> bool {
+        self.last_bit_changed != bit_position
     }
 
     /// Toggle the bit at the given byte and bit position
     fn toggle_bit(&mut self, byte_index: usize, bit_in_byte: usize) {
-        self.previous_number = self.random_number;
+        // Toggle the bit using XOR
         self.random_number[byte_index] ^= 1 << bit_in_byte;
+
+        // Update the last changed bit position
+        self.last_bit_changed = (byte_index * 8 + bit_in_byte) as u8;
     }
 
     /// Generate a new random number and XOR it with the current number

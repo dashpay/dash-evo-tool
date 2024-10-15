@@ -87,7 +87,7 @@ jobs:
           PROTOC: /usr/local/bin/protoc
 
       - name: Install protoc (Windows x64)
-        if: ${{ matrix.target == 'x86_64-pc-windows-msvc' }}
+        if: ${{ matrix.target == 'x86_64-pc-windows-gnu' }}
         run: |
           curl -OL https://github.com/protocolbuffers/protobuf/releases/download/v25.2/protoc-25.2-win64.zip
           mkdir protoc

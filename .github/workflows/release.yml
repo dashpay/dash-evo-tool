@@ -91,7 +91,7 @@ jobs:
         run: |
           curl -OL https://github.com/protocolbuffers/protobuf/releases/download/v25.2/protoc-25.2-win64.zip
           mkdir protoc
-          tar -xf protoc-25.2-win64.zip -C protoc
+          powershell -Command "Expand-Archive -Path protoc-25.2-win64.zip -DestinationPath protoc"
           setx PROTOC "%cd%\protoc\bin\protoc.exe"
         shell: bash
   

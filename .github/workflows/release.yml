@@ -127,6 +127,10 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tag_name: ${{ github.event.inputs.tag }}
-          files: ./release/dash-evo-tool-*
+          files: |
+            ./release/dash-evo-tool-x86_64-linux
+            ./release/dash-evo-tool-aarch64-linux
+            ./release/dash-evo-tool-x86_64-mac
+            ./release/dash-evo-tool-aarch64-mac
           draft: false
           prerelease: true

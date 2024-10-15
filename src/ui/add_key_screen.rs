@@ -9,6 +9,7 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::hash::IdentityPublicKeyHashMethodsV0;
 use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
+use dash_sdk::dpp::platform_value::Value;
 use eframe::egui::{self, Context};
 use rand::rngs::StdRng;
 use rand::SeedableRng;
@@ -27,8 +28,8 @@ pub struct AddKeyScreen {
 impl ScreenLike for AddKeyScreen {
     fn refresh(&mut self) {}
 
-    fn display_message(&mut self, message: String, message_type: MessageType) {
-        self.error_message = Some(message);
+    fn display_message(&mut self, message: &str, message_type: MessageType) {
+        self.error_message = Some(message.to_string());
     }
 
     fn ui(&mut self, ctx: &Context) -> AppAction {
@@ -39,7 +40,7 @@ impl ScreenLike for AddKeyScreen {
                 ("Identities", AppAction::GoToMainScreen),
                 ("Add Key", AppAction::None),
             ],
-            None,
+            vec![],
         );
 
         egui::CentralPanel::default().show(ctx, |ui| {

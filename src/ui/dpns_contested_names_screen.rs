@@ -8,6 +8,7 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use chrono::{DateTime, LocalResult, TimeZone, Utc};
 use chrono_humanize::HumanTime;
+use dash_sdk::dpp::platform_value::Value;
 use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
 use egui::{Context, Frame, Margin, Ui};
 use egui_extras::{Column, TableBuilder};
@@ -162,8 +163,8 @@ impl ScreenLike for DPNSContestedNamesScreen {
         *contested_names = self.app_context.load_contested_names().unwrap_or_default();
     }
 
-    fn display_message(&mut self, message: String, message_type: MessageType) {
-        self.error_message = Some((message, message_type, Utc::now()));
+    fn display_message(&mut self, message: &str, message_type: MessageType) {
+        self.error_message = Some((message.to_string(), message_type, Utc::now()));
     }
 
     fn ui(&mut self, ctx: &Context) -> AppAction {
@@ -172,12 +173,12 @@ impl ScreenLike for DPNSContestedNamesScreen {
             ctx,
             &self.app_context,
             vec![("Dash Evo Tool", AppAction::None)],
-            Some((
+            vec![(
                 "Refresh",
                 DesiredAppAction::BackendTask(BackendTask::ContestedResourceTask(
                     ContestedResourceTask::QueryDPNSContestedResources,
                 )),
-            )),
+            )],
         );
 
         action |= add_left_panel(

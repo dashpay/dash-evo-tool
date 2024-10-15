@@ -29,7 +29,7 @@ jobs:
             target: "aarch64-unknown-linux-gnu"
             platform: "arm64"
           - name: "macos-amd64"
-            runs-on: "macos-latest"
+            runs-on: "macos-13"
             target: "x86_64-apple-darwin"
             platform: "mac-x86"
           - name: "macos-arm64"
@@ -47,11 +47,12 @@ jobs:
         uses: actions-rs/toolchain@v1
         with:
           toolchain: stable
-          target: aarch64-unknown-linux-gnu
+          target: ${{ matrix.target }}
           override: true
 
       - name: Install essentials
-        run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config clang cmake unzip libsqlite3-dev && uname -a && pwd
+        if: ${{ runner.os == 'Linux' }}
+        run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config clang cmake unzip libsqlite3-dev && uname -a && cargo clean
 
       - name: Install protoc (ARM)
         if: ${{ matrix.platform == 'arm64' }}
@@ -62,6 +63,18 @@ jobs:
       - name: Install protoc (AMD)
         if: ${{ matrix.platform == 'amd64' }}
         run: curl -Lo /tmp/protoc.zip https://github.com/protocolbuffers/protobuf/releases/download/v22.2/protoc-22.2-linux-x86_64.zip && sudo unzip -f /tmp/protoc.zip -d /usr/local && rm /tmp/protoc.zip
+        env:
+          PROTOC: /usr/local/bin/protoc
+
+      - name: Install protoc (Mac x64)
+        if: ${{ matrix.target == 'x86_64-apple-darwin' }}
+        run: curl -OL https://github.com/protocolbuffers/protobuf/releases/download/v25.2/protoc-25.2-osx-x86_64.zip && sudo unzip -o protoc-25.2-osx-x86_64.zip -d /usr/local bin/protoc && sudo unzip -o protoc-25.2-osx-x86_64.zip -d /usr/local 'include/*' && rm -f protoc-25.2-osx-x86_64.zip && uname -a 
+        env:
+          PROTOC: /usr/local/bin/protoc
+
+      - name: Install protoc (Mac ARM)
+        if: ${{ matrix.target == 'aarch64-apple-darwin' }}
+        run: curl -OL https://github.com/protocolbuffers/protobuf/releases/download/v25.2/protoc-25.2-osx-aarch_64.zip && sudo unzip -o protoc-25.2-osx-aarch_64.zip -d /usr/local bin/protoc && sudo unzip -o protoc-25.2-osx-aarch_64.zip -d /usr/local 'include/*' && rm -f protoc-25.2-osx-aarch_64.zip
         env:
           PROTOC: /usr/local/bin/protoc
   

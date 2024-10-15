@@ -66,7 +66,7 @@ impl ContextProvider for Provider {
 
             drop(app_ctx_guard);
 
-            Ok(dc.map(Arc::new))
+            Ok(dc.map(|qc| Arc::new(qc.contract)))
         }
     }
 

@@ -179,8 +179,8 @@ impl WithdrawalScreen {
 }
 
 impl ScreenLike for WithdrawalScreen {
-    fn display_message(&mut self, message: String, message_type: MessageType) {
-        self.error_message = Some(message);
+    fn display_message(&mut self, message: &str, message_type: MessageType) {
+        self.error_message = Some(message.to_string());
     }
 
     /// Renders the UI components for the withdrawal screen
@@ -192,7 +192,7 @@ impl ScreenLike for WithdrawalScreen {
                 ("Identities", AppAction::GoToMainScreen),
                 ("Withdraw", AppAction::None),
             ],
-            None,
+            vec![],
         );
 
         egui::CentralPanel::default().show(ctx, |ui| {

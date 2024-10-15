@@ -2,6 +2,7 @@ use crate::config::{Config, NetworkConfig};
 use crate::context_provider::Provider;
 use crate::database::Database;
 use crate::model::contested_name::ContestedName;
+use crate::model::qualified_contract::QualifiedContract;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::sdk_wrapper::initialize_sdk;
 use crate::ui::RootScreenType;
@@ -115,5 +116,26 @@ impl AppContext {
     /// Retrieves the current `RootScreenType` from the settings
     pub fn get_settings(&self) -> Result<Option<(Network, RootScreenType)>> {
         self.db.get_settings()
+    }
+
+    /// Retrieves the DPNS contract along with other contracts from the database.
+    pub fn get_contracts(
+        &self,
+        limit: Option<u32>,
+        offset: Option<u32>,
+    ) -> Result<Vec<QualifiedContract>> {
+        // Get contracts from the database
+        let mut contracts = self.db.get_contracts(self, limit, offset)?;
+
+        // Add the DPNS contract to the list
+        let dpns_contract = QualifiedContract {
+            contract: Arc::clone(&self.dpns_contract).as_ref().clone(),
+            alias: Some("dpns".to_string()), // You can adjust the alias as needed
+        };
+
+        // Insert the DPNS contract at the beginning
+        contracts.insert(0, dpns_contract);
+
+        Ok(contracts)
     }
 }

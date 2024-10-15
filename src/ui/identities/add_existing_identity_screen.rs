@@ -2,11 +2,12 @@ use crate::app::AppAction;
 use crate::context::AppContext;
 use crate::model::qualified_identity::IdentityType;
 use crate::platform::identity::{IdentityInputToLoad, IdentityTask};
-use crate::platform::BackendTask;
+use crate::platform::{BackendTask, BackendTaskSuccessResult};
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::{MessageType, ScreenLike};
 use dash_sdk::dashcore_rpc::dashcore::Network;
 use dash_sdk::dpp::identity::TimestampMillis;
+use dash_sdk::dpp::platform_value::Value;
 use eframe::egui::Context;
 use rand::prelude::IteratorRandom;
 use rand::thread_rng;
@@ -66,12 +67,9 @@ struct TestnetNodes {
     hp_masternodes: std::collections::HashMap<String, HPMasternodeInfo>,
 }
 
-fn load_testnet_nodes_from_yml(
-    file_path: &str,
-) -> Result<TestnetNodes, Box<dyn std::error::Error>> {
-    let file_content = fs::read_to_string(file_path)?;
-    let nodes: TestnetNodes = serde_yaml::from_str(&file_content)?;
-    Ok(nodes)
+fn load_testnet_nodes_from_yml(file_path: &str) -> Option<TestnetNodes> {
+    let file_content = fs::read_to_string(file_path).ok()?;
+    serde_yaml::from_str(&file_content).ok()
 }
 
 pub enum AddIdentityStatus {
@@ -81,7 +79,7 @@ pub enum AddIdentityStatus {
     Complete,
 }
 
-pub struct AddIdentityScreen {
+pub struct AddExistingIdentityScreen {
     identity_id_input: String,
     identity_type: IdentityType,
     alias_input: String,
@@ -94,13 +92,10 @@ pub struct AddIdentityScreen {
     pub app_context: Arc<AppContext>,
 }
 
-impl AddIdentityScreen {
+impl AddExistingIdentityScreen {
     pub fn new(app_context: &Arc<AppContext>) -> Self {
         let testnet_loaded_nodes = if app_context.network == Network::Testnet {
-            Some(
-                load_testnet_nodes_from_yml(".testnet_nodes.yml")
-                    .expect("Failed to load testnet nodes"),
-            )
+            load_testnet_nodes_from_yml(".testnet_nodes.yml")
         } else {
             None
         };
@@ -237,12 +232,12 @@ impl AddIdentityScreen {
     }
 }
 
-impl ScreenLike for AddIdentityScreen {
-    fn display_message(&mut self, message: String, message_type: MessageType) {
+impl ScreenLike for AddExistingIdentityScreen {
+    fn display_message(&mut self, message: &str, message_type: MessageType) {
         if message_type == MessageType::Info && message == "Success" {
             self.add_identity_status = AddIdentityStatus::Complete;
         } else {
-            self.add_identity_status = AddIdentityStatus::ErrorMessage(message);
+            self.add_identity_status = AddIdentityStatus::ErrorMessage(message.to_string());
         }
     }
 
@@ -252,9 +247,9 @@ impl ScreenLike for AddIdentityScreen {
             &self.app_context,
             vec![
                 ("Identities", AppAction::GoToMainScreen),
-                ("Add Identity", AppAction::None),
+                ("Load Identity", AppAction::None),
             ],
-            None,
+            vec![],
         );
 
         egui::CentralPanel::default().show(ctx, |ui| {

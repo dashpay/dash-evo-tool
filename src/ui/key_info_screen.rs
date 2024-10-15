@@ -37,7 +37,7 @@ impl ScreenLike for KeyInfoScreen {
                 ("Identities", AppAction::GoToMainScreen),
                 ("Key Info", AppAction::None),
             ],
-            None,
+            vec![],
         );
 
         egui::CentralPanel::default().show(ctx, |ui| {

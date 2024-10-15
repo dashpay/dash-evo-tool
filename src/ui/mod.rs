@@ -5,6 +5,7 @@ use crate::platform::BackendTaskSuccessResult;
 use crate::ui::add_key_screen::AddKeyScreen;
 use crate::ui::document_query_screen::DocumentQueryScreen;
 use crate::ui::dpns_contested_names_screen::DPNSContestedNamesScreen;
+use crate::ui::identities::add_new_wallet_screen::AddNewWalletScreen;
 use crate::ui::key_info_screen::KeyInfoScreen;
 use crate::ui::keys_screen::KeysScreen;
 use crate::ui::network_chooser_screen::NetworkChooserScreen;
@@ -85,6 +86,7 @@ pub enum ScreenType {
     Identities,
     DPNSContestedNames,
     AddNewIdentity,
+    AddNewWallet,
     AddExistingIdentity,
     TransitionVisualizer,
     WithdrawalScreen(QualifiedIdentity),
@@ -134,6 +136,9 @@ impl ScreenType {
             ScreenType::DocumentQueryScreen => {
                 Screen::DocumentQueryScreen(DocumentQueryScreen::new(app_context))
             }
+            ScreenType::AddNewWallet => {
+                Screen::AddNewWalletScreen(AddNewWalletScreen::new(app_context))
+            }
         }
     }
 }
@@ -143,6 +148,7 @@ pub enum Screen {
     IdentitiesScreen(IdentitiesScreen),
     DPNSContestedNamesScreen(DPNSContestedNamesScreen),
     DocumentQueryScreen(DocumentQueryScreen),
+    AddNewWalletScreen(AddNewWalletScreen),
     AddNewIdentityScreen(AddNewIdentityScreen),
     AddExistingIdentityScreen(AddExistingIdentityScreen),
     KeyInfoScreen(KeyInfoScreen),
@@ -167,6 +173,7 @@ impl Screen {
             Screen::AddKeyScreen(screen) => screen.app_context = app_context,
             Screen::DocumentQueryScreen(screen) => screen.app_context = app_context,
             Screen::AddNewIdentityScreen(screen) => screen.app_context = app_context,
+            Screen::AddNewWalletScreen(screen) => screen.app_context = app_context,
         }
     }
 }
@@ -220,6 +227,7 @@ impl Screen {
             Screen::AddKeyScreen(screen) => ScreenType::AddKeyScreen(screen.identity.clone()),
             Screen::DocumentQueryScreen(_) => ScreenType::DocumentQueryScreen,
             Screen::AddNewIdentityScreen(_) => ScreenType::AddExistingIdentity,
+            Screen::AddNewWalletScreen(_) => ScreenType::AddNewWallet,
         }
     }
 }

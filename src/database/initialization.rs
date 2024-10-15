@@ -12,6 +12,18 @@ impl Database {
             [],
         )?;
 
+        // Create the wallet table
+        self.execute(
+            "CREATE TABLE IF NOT EXISTS wallet (
+        seed BLOB NOT NULL PRIMARY KEY,
+        alias TEXT,
+        is_main INTEGER,
+        password_hint TEXT,
+        network TEXT NOT NULL
+    )",
+            [],
+        )?;
+
         // Create the identities table
         self.execute(
             "CREATE TABLE IF NOT EXISTS identity (

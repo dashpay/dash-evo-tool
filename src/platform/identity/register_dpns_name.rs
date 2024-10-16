@@ -1,26 +1,25 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 
-use crate::{context::AppContext, model::qualified_identity::EncryptedPrivateKeyTarget};
+use crate::{context::AppContext, model::qualified_identity::QualifiedIdentity};
 use dash_sdk::{
     dpp::{
         data_contract::{
             accessors::v0::DataContractV0Getters, document_type::accessors::DocumentTypeV0Getters,
         },
-        document::{DocumentV0, DocumentV0Getters, DocumentV0Setters},
-        identity::{accessors::IdentityGettersV0, KeyType, Purpose, SecurityLevel},
+        document::DocumentV0,
+        identity::accessors::IdentityGettersV0,
         platform_value::Bytes32,
         state_transition::documents_batch_transition::{
             methods::v0::DocumentsBatchTransitionMethodsV0, DocumentsBatchTransition,
         },
         util::{hash::hash_double, strings::convert_to_homograph_safe_chars},
-        version::PlatformVersion,
     },
     platform::{
         transition::{
             broadcast::BroadcastStateTransition, put_document::PutDocument,
             put_settings::PutSettings,
         },
-        Document, Identity,
+        Document,
     },
     RequestSettings, Sdk,
 };
@@ -66,7 +65,7 @@ impl AppContext {
             .extend((convert_to_homograph_safe_chars(&input.name_input) + ".dash").as_bytes());
         let salted_domain_hash = hash_double(salted_domain_buffer);
 
-        let mut preorder_document = Document::V0(DocumentV0 {
+        let preorder_document = Document::V0(DocumentV0 {
             id: preorder_id,
             owner_id: qualified_identity.identity.id(),
             properties: BTreeMap::from([(
@@ -84,7 +83,7 @@ impl AppContext {
             updated_at_core_block_height: None,
             transferred_at_core_block_height: None,
         });
-        let mut domain_document = Document::V0(DocumentV0 {
+        let domain_document = Document::V0(DocumentV0 {
             id: domain_id,
             owner_id: qualified_identity.identity.id(),
             properties: BTreeMap::from([
@@ -95,12 +94,25 @@ impl AppContext {
                     "normalizedLabel".to_string(),
                     convert_to_homograph_safe_chars(&input.name_input).into(),
                 ),
-                (
-                    "records.identity".to_string(),
-                    qualified_identity.identity.id().into(),
-                ),
-                ("subdomainRules.allowSubdomains".to_string(), false.into()),
                 ("preorderSalt".to_string(), salt.into()),
+                (
+                    "records".to_string(),
+                    BTreeMap::from([(
+                        "identity".to_string(),
+                        Into::<dash_sdk::dpp::platform_value::Value>::into(
+                            qualified_identity.identity.id(),
+                        ),
+                    )])
+                    .into(),
+                ),
+                (
+                    "subdomainRules".to_string(),
+                    BTreeMap::from([(
+                        "allowSubdomains".to_string(),
+                        Into::<dash_sdk::dpp::platform_value::Value>::into(false),
+                    )])
+                    .into(),
+                ),
             ]),
             revision: None,
             created_at: None,
@@ -121,29 +133,96 @@ impl AppContext {
                     .to_string(),
             )?;
 
-        preorder_document
-            .put_to_platform_and_wait_for_response(
-                sdk,
-                preorder_document_type.to_owned_document_type(),
-                entropy.0,
-                public_key.clone(),
-                dpns_contract.clone(),
-                &qualified_identity,
+        let identity_contract_nonce = match sdk
+            .get_identity_contract_nonce(
+                qualified_identity.identity.id(),
+                dpns_contract.id(),
+                true,
+                Some(PutSettings {
+                    request_settings: RequestSettings::default(),
+                    identity_nonce_stale_time_s: Some(0),
+                    user_fee_increase: None,
+                }),
             )
+            .await
+        {
+            Ok(nonce) => nonce,
+            Err(e) => return Err(e.to_string()),
+        };
+
+        let preorder_transition =
+            DocumentsBatchTransition::new_document_creation_transition_from_document(
+                preorder_document.clone(),
+                preorder_document_type,
+                entropy.0,
+                public_key,
+                identity_contract_nonce,
+                0,
+                &qualified_identity,
+                &sdk.version(),
+                None,
+                None,
+                None,
+            )
+            .map_err(|e| e.to_string())?;
+
+        let domain_transition =
+            DocumentsBatchTransition::new_document_creation_transition_from_document(
+                domain_document.clone(),
+                domain_document_type,
+                entropy.0,
+                public_key,
+                identity_contract_nonce + 1,
+                0,
+                &qualified_identity,
+                &sdk.version(),
+                None,
+                None,
+                None,
+            )
+            .map_err(|e| e.to_string())?;
+
+        preorder_transition
+            .broadcast(sdk)
             .await
             .map_err(|e| e.to_string())?;
 
-        domain_document
-            .put_to_platform_and_wait_for_response(
-                sdk,
-                preorder_document_type.to_owned_document_type(),
-                entropy.0,
-                public_key.clone(),
-                dpns_contract.clone(),
-                &qualified_identity,
-            )
+        let _preorder_document = match <dash_sdk::platform::Document as PutDocument<
+            QualifiedIdentity,
+        >>::wait_for_response::<'_, '_, '_>(
+            &preorder_document,
+            sdk,
+            preorder_transition,
+            dpns_contract.clone().into(),
+        )
+        .await
+        {
+            Ok(document) => document,
+            Err(e) => {
+                return Err(format!("Preorder document failed to process: {e}"));
+            }
+        };
+
+        domain_transition
+            .broadcast(sdk)
             .await
             .map_err(|e| e.to_string())?;
+
+        let _domain_document = match <dash_sdk::platform::Document as PutDocument<
+            QualifiedIdentity,
+        >>::wait_for_response::<'_, '_, '_>(
+            &domain_document,
+            sdk,
+            domain_transition,
+            dpns_contract.into(),
+        )
+        .await
+        {
+            Ok(document) => document,
+            Err(e) => {
+                return Err(format!("Domain document failed to process: {e}"));
+            }
+        };
 
         Ok(())
     }

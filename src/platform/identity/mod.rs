@@ -38,7 +38,7 @@ pub struct IdentityRegistrationInfo {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct RegisterDpnsNameInput {
-    pub identity_id_input: Identifier,
+    pub qualified_identity: QualifiedIdentity,
     pub name_input: String,
 }
 

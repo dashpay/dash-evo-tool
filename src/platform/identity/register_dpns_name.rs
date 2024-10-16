@@ -133,7 +133,8 @@ impl AppContext {
                 self.dpns_contract.clone(),
                 &qualified_identity,
             )
-            .await;
+            .await
+            .map_err(|e| e.to_string())?;
 
         let _ = domain_document
             .put_to_platform_and_wait_for_response(
@@ -144,7 +145,8 @@ impl AppContext {
                 self.dpns_contract.clone(),
                 &qualified_identity,
             )
-            .await;
+            .await
+            .map_err(|e| e.to_string())?;
 
         Ok(())
     }

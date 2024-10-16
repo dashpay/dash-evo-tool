@@ -150,79 +150,27 @@ impl AppContext {
             Err(e) => return Err(e.to_string()),
         };
 
-        let preorder_transition =
-            DocumentsBatchTransition::new_document_creation_transition_from_document(
-                preorder_document.clone(),
-                preorder_document_type,
+        let _ = preorder_document
+            .put_to_platform_and_wait_for_response(
+                sdk,
+                preorder_document_type.to_owned_document_type(),
                 entropy.0,
-                public_key,
-                identity_contract_nonce,
-                0,
+                public_key.clone(),
+                self.dpns_contract.clone(),
                 &qualified_identity,
-                &sdk.version(),
-                None,
-                None,
-                None,
             )
-            .map_err(|e| e.to_string())?;
+            .await;
 
-        let domain_transition =
-            DocumentsBatchTransition::new_document_creation_transition_from_document(
-                domain_document.clone(),
-                domain_document_type,
+        let _ = domain_document
+            .put_to_platform_and_wait_for_response(
+                sdk,
+                domain_document_type.to_owned_document_type(),
                 entropy.0,
-                public_key,
-                identity_contract_nonce + 1,
-                0,
+                public_key.clone(),
+                self.dpns_contract.clone(),
                 &qualified_identity,
-                &sdk.version(),
-                None,
-                None,
-                None,
             )
-            .map_err(|e| e.to_string())?;
-
-        preorder_transition
-            .broadcast(sdk)
-            .await
-            .map_err(|e| e.to_string())?;
-
-        let _preorder_document = match <dash_sdk::platform::Document as PutDocument<
-            QualifiedIdentity,
-        >>::wait_for_response::<'_, '_, '_>(
-            &preorder_document,
-            sdk,
-            preorder_transition,
-            dpns_contract.clone().into(),
-        )
-        .await
-        {
-            Ok(document) => document,
-            Err(e) => {
-                return Err(format!("Preorder document failed to process: {e}"));
-            }
-        };
-
-        domain_transition
-            .broadcast(sdk)
-            .await
-            .map_err(|e| e.to_string())?;
-
-        let _domain_document = match <dash_sdk::platform::Document as PutDocument<
-            QualifiedIdentity,
-        >>::wait_for_response::<'_, '_, '_>(
-            &domain_document,
-            sdk,
-            domain_transition,
-            dpns_contract.into(),
-        )
-        .await
-        {
-            Ok(document) => document,
-            Err(e) => {
-                return Err(format!("Domain document failed to process: {e}"));
-            }
-        };
+            .await;
 
         Ok(())
     }

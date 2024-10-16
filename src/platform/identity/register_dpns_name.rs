@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use crate::{context::AppContext, model::qualified_identity::QualifiedIdentity};
+use crate::context::AppContext;
 use dash_sdk::{
     dpp::{
         data_contract::{
@@ -9,19 +9,10 @@ use dash_sdk::{
         document::DocumentV0,
         identity::accessors::IdentityGettersV0,
         platform_value::Bytes32,
-        state_transition::documents_batch_transition::{
-            methods::v0::DocumentsBatchTransitionMethodsV0, DocumentsBatchTransition,
-        },
         util::{hash::hash_double, strings::convert_to_homograph_safe_chars},
     },
-    platform::{
-        transition::{
-            broadcast::BroadcastStateTransition, put_document::PutDocument,
-            put_settings::PutSettings,
-        },
-        Document,
-    },
-    RequestSettings, Sdk,
+    platform::{transition::put_document::PutDocument, Document},
+    Sdk,
 };
 use rand::{rngs::StdRng, Rng, SeedableRng};
 
@@ -132,23 +123,6 @@ impl AppContext {
                 "Identity doesn't have an authentication key for signing document transitions"
                     .to_string(),
             )?;
-
-        let identity_contract_nonce = match sdk
-            .get_identity_contract_nonce(
-                qualified_identity.identity.id(),
-                dpns_contract.id(),
-                true,
-                Some(PutSettings {
-                    request_settings: RequestSettings::default(),
-                    identity_nonce_stale_time_s: Some(0),
-                    user_fee_increase: None,
-                }),
-            )
-            .await
-        {
-            Ok(nonce) => nonce,
-            Err(e) => return Err(e.to_string()),
-        };
 
         let _ = preorder_document
             .put_to_platform_and_wait_for_response(

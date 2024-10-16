@@ -37,7 +37,7 @@ jobs:
             target: "aarch64-apple-darwin"
             platform: "mac-arm"
           - name: "Windows"
-            runs-on: "windows-latest"
+            runs-on: "ubuntu-latest"
             target: "x86_64-pc-windows-gnu"
             platform: "windows"
 
@@ -57,10 +57,6 @@ jobs:
       - name: Install essentials
         if: ${{ runner.os == 'Linux' }}
         run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config clang cmake unzip libsqlite3-dev && uname -a && cargo clean
-
-      - name: Enable long paths (Windows)
-        if: ${{ runner.os == 'Windows' }}
-        run: git config --system core.longpaths true
 
       - name: Install protoc (ARM)
         if: ${{ matrix.platform == 'arm64' }}

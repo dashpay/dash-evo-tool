@@ -37,7 +37,7 @@ jobs:
             target: "aarch64-apple-darwin"
             platform: "mac-arm"
           - name: "Windows"
-            runs-on: "ubuntu-22.04"
+            runs-on: "ubuntu-20.04"
             target: "x86_64-pc-windows-gnu"
             platform: "windows"
 

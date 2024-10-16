@@ -56,7 +56,7 @@ jobs:
 
       - name: Install essentials
         if: ${{ runner.os == 'Linux' }}
-        run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config clang cmake unzip libsqlite3-dev && uname -a && cargo clean
+        run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config clang cmake unzip libsqlite3-dev gcc-mingw-w64 && uname -a && cargo clean
 
       - name: Install protoc (ARM)
         if: ${{ matrix.platform == 'arm64' }}

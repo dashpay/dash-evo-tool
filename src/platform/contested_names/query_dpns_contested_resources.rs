@@ -55,7 +55,7 @@ impl AppContext {
 
         let names_to_be_updated = self
             .db
-            .insert_name_contests_as_normalized_names(contested_resources_as_strings, &self)
+            .insert_name_contests_as_normalized_names(contested_resources_as_strings.clone(), &self)
             .map_err(|e| e.to_string())?;
 
         sender
@@ -63,7 +63,7 @@ impl AppContext {
             .await
             .expect("expected to send refresh");
 
-        // Create a semaphore with 15 permits
+        // Create a semaphore with 24 permits
         let semaphore = Arc::new(Semaphore::new(24));
 
         let mut handles = Vec::new();
@@ -99,7 +99,7 @@ impl AppContext {
 
         handles.push(handle);
 
-        for name in names_to_be_updated {
+        for name in contested_resources_as_strings {
             // Clone the semaphore, sdk, and sender for each task
             let semaphore = semaphore.clone();
             let sdk = sdk.clone();

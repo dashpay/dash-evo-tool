@@ -1,7 +1,3 @@
-mod derivation_path;
-mod index_path;
-mod index_path_types;
-
 use bincode::{Decode, Encode};
 use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
 use dash_sdk::dpp::dashcore::secp256k1::SecretKey;

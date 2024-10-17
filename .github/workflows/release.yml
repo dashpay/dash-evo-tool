@@ -36,6 +36,10 @@ jobs:
             runs-on: "macos-latest"
             target: "aarch64-apple-darwin"
             platform: "mac-arm"
+          - name: "Windows"
+            runs-on: "ubuntu-20.04"
+            target: "x86_64-pc-windows-gnu"
+            platform: "windows"
 
     runs-on: ${{ matrix.runs-on }}
 
@@ -52,7 +56,7 @@ jobs:
 
       - name: Install essentials
         if: ${{ runner.os == 'Linux' }}
-        run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config clang cmake unzip libsqlite3-dev && uname -a && cargo clean
+        run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config clang cmake unzip libsqlite3-dev gcc-mingw-w64 mingw-w64 && uname -a && cargo clean
 
       - name: Install protoc (ARM)
         if: ${{ matrix.platform == 'arm64' }}
@@ -63,6 +67,12 @@ jobs:
       - name: Install protoc (AMD)
         if: ${{ matrix.platform == 'amd64' }}
         run: curl -Lo /tmp/protoc.zip https://github.com/protocolbuffers/protobuf/releases/download/v22.2/protoc-22.2-linux-x86_64.zip && sudo unzip -f /tmp/protoc.zip -d /usr/local && rm /tmp/protoc.zip
+        env:
+          PROTOC: /usr/local/bin/protoc
+
+      - name: Install protoc (Windows)
+        if: ${{ matrix.target == 'x86_64-pc-windows-gnu' }}
+        run: curl -OL https://github.com/protocolbuffers/protobuf/releases/download/v25.2/protoc-25.2-linux-x86_64.zip && sudo unzip -o protoc-25.2-linux-x86_64.zip -d /usr/local bin/protoc && sudo unzip -o protoc-25.2-linux-x86_64.zip -d /usr/local 'include/*' && rm -f protoc-25.2-linux-x86_64.zip 
         env:
           PROTOC: /usr/local/bin/protoc
 
@@ -87,7 +97,7 @@ jobs:
           name: dash-evo-tool-${{ matrix.target }}
           path: target/${{ matrix.target }}/release/dash-evo-tool
 
-    continue-on-error: true
+    #continue-on-error: true
 
   release:
     name: Create GitHub Release

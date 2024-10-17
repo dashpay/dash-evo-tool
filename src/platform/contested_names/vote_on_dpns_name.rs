@@ -9,13 +9,10 @@ use dash_sdk::dpp::voting::vote_polls::contested_document_resource_vote_poll::Co
 use dash_sdk::dpp::voting::votes::resource_vote::v0::ResourceVoteV0;
 use dash_sdk::dpp::voting::votes::resource_vote::ResourceVote;
 use dash_sdk::dpp::voting::votes::Vote;
-use dash_sdk::drive::query::vote_polls_by_document_type_query::VotePollsByDocumentTypeQuery;
 use dash_sdk::platform::transition::vote::PutVote;
-use dash_sdk::platform::FetchMany;
-use dash_sdk::query_types::ContestedResource;
 use dash_sdk::Sdk;
 use std::sync::Arc;
-use tokio::sync::{mpsc, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::mpsc;
 
 impl AppContext {
     pub(super) async fn vote_on_dpns_name(
@@ -44,16 +41,14 @@ impl AppContext {
         };
 
         for qualified_identity in qualified_identities.iter().take(1) {
-            if let Some((associated_voter_identity, public_key)) =
-                &qualified_identity.associated_voter_identity
-            {
+            if let Some((_, public_key)) = &qualified_identity.associated_voter_identity {
                 let resource_vote = ResourceVoteV0 {
                     vote_poll: vote_poll.clone().into(),
                     resource_vote_choice: vote_choice,
                 };
                 let vote = Vote::ResourceVote(ResourceVote::V0(resource_vote));
                 vote.put_to_platform_and_wait_for_response(
-                    associated_voter_identity.id(),
+                    qualified_identity.identity.id(),
                     public_key,
                     &sdk,
                     qualified_identity,

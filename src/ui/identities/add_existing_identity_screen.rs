@@ -2,12 +2,11 @@ use crate::app::AppAction;
 use crate::context::AppContext;
 use crate::model::qualified_identity::IdentityType;
 use crate::platform::identity::{IdentityInputToLoad, IdentityTask};
-use crate::platform::{BackendTask, BackendTaskSuccessResult};
+use crate::platform::BackendTask;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::{MessageType, ScreenLike};
 use dash_sdk::dashcore_rpc::dashcore::Network;
 use dash_sdk::dpp::identity::TimestampMillis;
-use dash_sdk::dpp::platform_value::Value;
 use eframe::egui::Context;
 use rand::prelude::IteratorRandom;
 use rand::thread_rng;
@@ -69,7 +68,7 @@ struct TestnetNodes {
 
 fn load_testnet_nodes_from_yml(file_path: &str) -> Option<TestnetNodes> {
     let file_content = fs::read_to_string(file_path).ok()?;
-    serde_yaml::from_str(&file_content).ok()
+    serde_yaml::from_str(&file_content).expect("expected proper yaml")
 }
 
 pub enum AddIdentityStatus {
@@ -181,7 +180,7 @@ impl AddExistingIdentityScreen {
         }
     }
 
-    fn load_identity_clicked(&mut self, ui: &mut egui::Ui) -> AppAction {
+    fn load_identity_clicked(&mut self) -> AppAction {
         let identity_input = IdentityInputToLoad {
             identity_id_input: self.identity_id_input.trim().to_string(),
             identity_type: self.identity_type,
@@ -288,7 +287,7 @@ impl ScreenLike for AddExistingIdentityScreen {
                     .expect("Time went backwards")
                     .as_secs();
                 self.add_identity_status = AddIdentityStatus::WaitingForResult(now);
-                action = self.load_identity_clicked(ui);
+                action = self.load_identity_clicked();
             }
 
             match &self.add_identity_status {

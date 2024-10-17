@@ -3,6 +3,8 @@ use dash_sdk::dashcore_rpc::dashcore::{signer, PubkeyHash};
 use dash_sdk::dpp::dashcore::address::Payload;
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::{Address, Network, ScriptHash};
+use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
+use dash_sdk::dpp::data_contract::document_type::DocumentTypeRef;
 use dash_sdk::dpp::ed25519_dalek::Signer as EDDSASigner;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::hash::IdentityPublicKeyHashMethodsV0;
@@ -14,7 +16,7 @@ use dash_sdk::dpp::platform_value::BinaryData;
 use dash_sdk::dpp::state_transition::errors::InvalidIdentityPublicKeyTypeError;
 use dash_sdk::dpp::{bls_signatures, ed25519_dalek, ProtocolError};
 use dash_sdk::platform::IdentityPublicKey;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fmt::{Display, Formatter};
 
 #[derive(Debug, Encode, Decode, PartialEq, Clone, Copy)]
@@ -174,6 +176,18 @@ impl QualifiedIdentity {
         }
 
         None
+    }
+
+    pub fn document_signing_key(
+        &self,
+        document_type: &DocumentTypeRef,
+    ) -> Option<&IdentityPublicKey> {
+        self.identity.get_first_public_key_matching(
+            Purpose::AUTHENTICATION,
+            HashSet::from([document_type.security_level_requirement()]),
+            HashSet::from(KeyType::all_key_types()),
+            false,
+        )
     }
 
     pub fn available_withdrawal_keys(&self) -> Vec<&IdentityPublicKey> {

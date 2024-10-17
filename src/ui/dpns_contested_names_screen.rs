@@ -8,11 +8,12 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use chrono::{DateTime, LocalResult, TimeZone, Utc};
 use chrono_humanize::HumanTime;
-use dash_sdk::dpp::platform_value::Value;
 use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
 use egui::{Context, Frame, Margin, Ui};
 use egui_extras::{Column, TableBuilder};
 use std::sync::{Arc, Mutex};
+
+use super::ScreenType;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SortColumn {
@@ -173,12 +174,18 @@ impl ScreenLike for DPNSContestedNamesScreen {
             ctx,
             &self.app_context,
             vec![("Dash Evo Tool", AppAction::None)],
-            vec![(
-                "Refresh",
-                DesiredAppAction::BackendTask(BackendTask::ContestedResourceTask(
-                    ContestedResourceTask::QueryDPNSContestedResources,
-                )),
-            )],
+            vec![
+                (
+                    "Register Name",
+                    DesiredAppAction::AddScreenType(ScreenType::RegisterDpnsName),
+                ),
+                (
+                    "Refresh",
+                    DesiredAppAction::BackendTask(BackendTask::ContestedResourceTask(
+                        ContestedResourceTask::QueryDPNSContestedResources,
+                    )),
+                ),
+            ],
         );
 
         action |= add_left_panel(

@@ -58,6 +58,8 @@ impl AppContext {
             .insert_name_contests_as_normalized_names(contested_resources_as_strings.clone(), &self)
             .map_err(|e| e.to_string())?;
 
+        tracing::info!("N: {}", names_to_be_updated.len());
+
         sender
             .send(TaskResult::Refresh)
             .await
@@ -99,7 +101,7 @@ impl AppContext {
 
         handles.push(handle);
 
-        for name in contested_resources_as_strings {
+        for name in names_to_be_updated {
             // Clone the semaphore, sdk, and sender for each task
             let semaphore = semaphore.clone();
             let sdk = sdk.clone();

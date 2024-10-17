@@ -1,15 +1,15 @@
 use crate::context::AppContext;
 use crate::database::Database;
 use crate::model::contested_name::{Contestant, ContestedName};
+use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::data_contract::document_type::DocumentTypeRef;
 use dash_sdk::dpp::document::DocumentV0Getters;
 use dash_sdk::dpp::identifier::Identifier;
 use dash_sdk::dpp::identity::TimestampMillis;
 use dash_sdk::dpp::prelude::{BlockHeight, CoreBlockHeight};
 use dash_sdk::query_types::Contenders;
-use rusqlite::{params, params_from_iter, OptionalExtension, Result};
+use rusqlite::{params, params_from_iter, Result};
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::fmt::Debug;
 
 impl Database {
     pub fn get_contested_names(&self, app_context: &AppContext) -> Result<Vec<ContestedName>> {
@@ -388,11 +388,12 @@ impl Database {
     ) -> Result<Vec<String>> {
         let network = app_context.network_string();
         let conn = self.conn.lock().unwrap();
-        let mut outdated_names: Vec<(String, Option<i64>)> = Vec::new();
+        let mut names_to_be_updated: Vec<(String, Option<i64>)> = Vec::new();
         let mut new_names: Vec<String> = Vec::new();
 
         // Define the time limit (one hour ago in Unix timestamp format)
         let one_hour_ago = chrono::Utc::now().timestamp() - 3600;
+        let two_weeks_ago = chrono::Utc::now().timestamp() - 1_209_600;
 
         // Chunk the name_contests into smaller groups due to SQL parameter limits
         let chunk_size = 900; // Use a safe limit to stay below SQLite's limit
@@ -427,8 +428,13 @@ impl Database {
             for row in rows {
                 if let Ok((name, last_updated)) = row {
                     existing_names.insert(name.clone());
-                    if last_updated.is_none() || last_updated.unwrap() < one_hour_ago {
-                        outdated_names.push((name, last_updated));
+                    if last_updated.is_none()
+                        || (app_context.network == Network::Testnet
+                            && last_updated.unwrap() > one_hour_ago)
+                        || (app_context.network == Network::Dash
+                            && last_updated.unwrap() > two_weeks_ago)
+                    {
+                        names_to_be_updated.push((name, last_updated));
                     }
                 }
             }
@@ -454,11 +460,11 @@ impl Database {
         }
 
         // Combine the new names and outdated names, sorted by last_updated (oldest first)
-        outdated_names.extend(new_names.into_iter().map(|name| (name, None)));
-        outdated_names.sort_by(|a, b| a.1.unwrap_or(0).cmp(&b.1.unwrap_or(0)));
+        names_to_be_updated.extend(new_names.into_iter().map(|name| (name, None)));
+        names_to_be_updated.sort_by(|a, b| a.1.unwrap_or(0).cmp(&b.1.unwrap_or(0)));
 
         // Extract the names into a Vec<String>
-        let result_names = outdated_names
+        let result_names = names_to_be_updated
             .into_iter()
             .map(|(name, _)| name)
             .collect::<Vec<_>>();

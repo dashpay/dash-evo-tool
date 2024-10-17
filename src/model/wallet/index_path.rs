@@ -1,113 +1,79 @@
 use std::fmt;
+use std::slice::Iter;
+use dash_sdk::dpp::dashcore::{PrivateKey, PublicKey, secp256k1};
+use dash_sdk::dpp::dashcore::bip32::{ChildNumber, ExtendedPrivKey};
+use dash_sdk::dpp::dashcore::key::Secp256k1;
+use crate::model::wallet::derivation_path::{DerivationPathReference, DerivationPathType};
 
 pub type Hardened = bool;
 
 // Define the IndexValue enum to represent either u64 or [u8; 32]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Ord, PartialOrd)]
-enum IndexValue {
+pub enum IndexValue {
     U64(u64, Hardened),
     U256([u8; 32], Hardened),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Ord, PartialOrd)]
-struct IndexConstPath<const N: usize> {
-    indexes: [IndexValue; N],
+pub struct IndexConstPath<const N: usize> {
+    pub indexes: [IndexValue; N],
+    pub reference: DerivationPathReference,
+    pub path_type: DerivationPathType,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Ord, PartialOrd)]
-struct IndexPath {
-    indexes: Vec<IndexValue>,
+pub struct IndexPath {
+    pub indexes: Vec<IndexValue>,
 }
 
-// Constants for feature purposes and sub-features
-pub const FEATURE_PURPOSE: u64 = 9;
-pub const DASH_COIN_TYPE: u64 = 5;
-pub const DASH_TESTNET_COIN_TYPE: u64 = 1;
-pub const FEATURE_PURPOSE_IDENTITIES: u64 = 5;
-pub const FEATURE_PURPOSE_IDENTITIES_SUBFEATURE_AUTHENTICATION: u64 = 0;
-pub const FEATURE_PURPOSE_IDENTITIES_SUBFEATURE_REGISTRATION: u64 = 1;
-pub const FEATURE_PURPOSE_IDENTITIES_SUBFEATURE_TOPUP: u64 = 2;
-pub const FEATURE_PURPOSE_IDENTITIES_SUBFEATURE_INVITATIONS: u64 = 3;
-pub const FEATURE_PURPOSE_DASHPAY: u64 = 15;
-pub const IDENTITY_REGISTRATION_PATH: IndexConstPath<4> = IndexConstPath {
-    indexes: [
-        IndexValue::U64(FEATURE_PURPOSE, true),
-        IndexValue::U64(DASH_COIN_TYPE, true),
-        IndexValue::U64(FEATURE_PURPOSE_IDENTITIES, true),
-        IndexValue::U64(FEATURE_PURPOSE_IDENTITIES_SUBFEATURE_REGISTRATION, true),
-    ],
-};
+pub trait Derive {
+    fn indexes(&self) -> Iter<IndexValue>;
 
-pub const IDENTITY_REGISTRATION_PATH_TESTNET: IndexConstPath<4> = IndexConstPath {
-    indexes: [
-        IndexValue::U64(FEATURE_PURPOSE, true),
-        IndexValue::U64(DASH_TESTNET_COIN_TYPE, true),
-        IndexValue::U64(FEATURE_PURPOSE_IDENTITIES, true),
-        IndexValue::U64(FEATURE_PURPOSE_IDENTITIES_SUBFEATURE_REGISTRATION, true),
-    ],
-};
+    fn derive_ecdsa_private<C: secp256k1::Signing>(
+        &self,
+        secp: &Secp256k1<C>,
+        root_private_key: &ExtendedPrivKey,
+    ) -> Result<ExtendedPrivKey, String> {
+        let mut ext_priv_key = root_private_key.clone();
 
-// Identity Top-Up Paths
-pub const IDENTITY_TOPUP_PATH: IndexConstPath<4> = IndexConstPath {
-    indexes: [
-        IndexValue::U64(FEATURE_PURPOSE, true),
-        IndexValue::U64(DASH_COIN_TYPE, true),
-        IndexValue::U64(FEATURE_PURPOSE_IDENTITIES, true),
-        IndexValue::U64(FEATURE_PURPOSE_IDENTITIES_SUBFEATURE_TOPUP, true),
-    ],
-};
+        for index_value in self.indexes() {
+            match index_value {
+                IndexValue::U64(index, hardened) => {
+                    let child_number = if *hardened {
+                        ChildNumber::from_hardened_idx(*index as u32)?
+                    } else {
+                        ChildNumber::from_normal_idx(*index as u32)?
+                    };
+                    ext_priv_key = ext_priv_key.ckd_priv(secp, child_number)?;
+                }
+                IndexValue::U256(_index_bytes, _hardened) => {
+                    // Handle U256 indices appropriately
+                    // For now, return an error
+                    return Err(Bip32Error::CannotDeriveFromHardenedChild);
+                }
+            }
+        }
 
-pub const IDENTITY_TOPUP_PATH_TESTNET: IndexConstPath<4> = IndexConstPath {
-    indexes: [
-        IndexValue::U64(FEATURE_PURPOSE, true),
-        IndexValue::U64(DASH_TESTNET_COIN_TYPE, true),
-        IndexValue::U64(FEATURE_PURPOSE_IDENTITIES, true),
-        IndexValue::U64(FEATURE_PURPOSE_IDENTITIES_SUBFEATURE_TOPUP, true),
-    ],
-};
+        Ok(ext_priv_key)
+    }
+}
 
-// Identity Invitation Paths
-pub const IDENTITY_INVITATION_PATH: IndexConstPath<4> = IndexConstPath {
-    indexes: [
-        IndexValue::U64(FEATURE_PURPOSE, true),
-        IndexValue::U64(DASH_COIN_TYPE, true),
-        IndexValue::U64(FEATURE_PURPOSE_IDENTITIES, true),
-        IndexValue::U64(FEATURE_PURPOSE_IDENTITIES_SUBFEATURE_INVITATIONS, true),
-    ],
-};
+impl Derive for IndexPath {
+    fn indexes(&self) -> Iter<IndexValue> {
+        self.indexes.iter()
+    }
+}
 
-pub const IDENTITY_INVITATION_PATH_TESTNET: IndexConstPath<4> = IndexConstPath {
-    indexes: [
-        IndexValue::U64(FEATURE_PURPOSE, true),
-        IndexValue::U64(DASH_TESTNET_COIN_TYPE, true),
-        IndexValue::U64(FEATURE_PURPOSE_IDENTITIES, true),
-        IndexValue::U64(FEATURE_PURPOSE_IDENTITIES_SUBFEATURE_INVITATIONS, true),
-    ],
-};
-
-// Authentication Keys Paths
-pub const IDENTITY_AUTHENTICATION_PATH: IndexConstPath<4> = IndexConstPath {
-    indexes: [
-        IndexValue::U64(FEATURE_PURPOSE, true),
-        IndexValue::U64(DASH_COIN_TYPE, true),
-        IndexValue::U64(FEATURE_PURPOSE_IDENTITIES, true),
-        IndexValue::U64(FEATURE_PURPOSE_IDENTITIES_SUBFEATURE_AUTHENTICATION, true),
-    ],
-};
-
-pub const IDENTITY_AUTHENTICATION_PATH_TESTNET: IndexConstPath<4> = IndexConstPath {
-    indexes: [
-        IndexValue::U64(FEATURE_PURPOSE, true),
-        IndexValue::U64(DASH_TESTNET_COIN_TYPE, true),
-        IndexValue::U64(FEATURE_PURPOSE_IDENTITIES, true),
-        IndexValue::U64(FEATURE_PURPOSE_IDENTITIES_SUBFEATURE_AUTHENTICATION, true),
-    ],
-};
+impl<const N: usize> Derive for IndexConstPath<N> {
+    fn indexes(&self) -> Iter<IndexValue> {
+        self.indexes.iter()
+    }
+}
 
 impl<const N: usize> IndexConstPath<N> {
     // Create a new IndexPath with multiple indexes
-    fn with_indexes(indexes: [IndexValue; N]) -> Self {
-        IndexConstPath { indexes }
+    fn with_indexes(indexes: [IndexValue; N], reference: DerivationPathReference, path_type: DerivationPathType) -> Self {
+        IndexConstPath { indexes , reference, path_type }
     }
 }
 

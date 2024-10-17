@@ -1,10 +1,12 @@
 mod derivation_path;
 mod index_path;
+mod index_path_types;
 
 use bincode::{Decode, Encode};
 use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
 use dash_sdk::dpp::dashcore::secp256k1::SecretKey;
 use dash_sdk::dpp::dashcore::{Address, Network, PrivateKey, PublicKey};
+use dash_sdk::dpp::identity::KeyType;
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 
@@ -22,6 +24,7 @@ impl Wallet {
     }
 
     pub fn unused_bip_44_public_key(&self, network: Network) -> PublicKey {
+        KeyType::
         // Create a new Secp256k1 context
         let secp = Secp256k1::new();
 

@@ -1,4 +1,4 @@
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
 pub enum DerivationPathReference {
     Unknown = 0,
     BIP32 = 1,
@@ -21,6 +21,7 @@ pub enum DerivationPathReference {
 use bitflags::bitflags;
 
 bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
     pub struct DerivationPathType: u32 {
         const UNKNOWN = 0;
         const CLEAR_FUNDS = 1;

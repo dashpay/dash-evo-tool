@@ -62,14 +62,14 @@ impl RegisterDpnsNameScreen {
                 .show_ui(ui, |ui| {
                     // Loop through the qualified identities and display each as selectable
                     for qualified_identity in &self.qualified_identities {
-                        let id = qualified_identity.identity.id(); // Extract the Identifier
-
                         // Display each QualifiedIdentity as a selectable item
                         if ui
                             .selectable_value(
                                 &mut self.selected_qualified_identity,
                                 Some(qualified_identity.clone()),
-                                id.to_string(Encoding::Base58),
+                                qualified_identity.alias.as_ref().unwrap_or(
+                                    &qualified_identity.identity.id().to_string(Encoding::Base58),
+                                ),
                             )
                             .clicked()
                         {

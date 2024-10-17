@@ -82,7 +82,7 @@ impl DPNSContestedNamesScreen {
                         ),
                         ContestedResourceTask::VoteOnDPNSName(
                             contested_name.normalized_contested_name.clone(),
-                            ResourceVoteChoice::Abstain,
+                            ResourceVoteChoice::TowardsIdentity(contestant.id),
                         ),
                     ));
                 }

@@ -20,7 +20,7 @@ impl AppContext {
         self: &Arc<Self>,
         name: &String,
         vote_choice: ResourceVoteChoice,
-        voters: Vec<QualifiedIdentity>, // Use the voters argument provided
+        voters: Vec<QualifiedIdentity>,
         sdk: Sdk,
         _sender: mpsc::Sender<TaskResult>,
     ) -> Result<(), String> {

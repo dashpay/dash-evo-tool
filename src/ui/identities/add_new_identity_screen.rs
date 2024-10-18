@@ -7,9 +7,6 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::identities::add_new_identity_screen::AddNewIdentityScreenStep::{
     ChooseFundingMethod, FundsReceived, ReadyToCreate,
 };
-use crate::ui::identities::add_new_identity_screen::FundingMethod::{
-    AddressWithQRCode, NoSelection,
-};
 use crate::ui::ScreenLike;
 use arboard::Clipboard;
 use dash_sdk::dashcore_rpc::dashcore::Address;
@@ -18,7 +15,6 @@ use dash_sdk::dpp::balances::credits::Duffs;
 use dash_sdk::dpp::dashcore::{PrivateKey, PublicKey};
 use dash_sdk::dpp::identity::KeyType;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
-use dash_sdk::dpp::platform_value::Bytes32;
 use dash_sdk::platform::Identifier;
 use eframe::egui::Context;
 use egui::{Color32, ColorImage, ComboBox, TextureHandle};
@@ -38,7 +34,7 @@ struct KeyInfo {
     private_key: String,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub enum FundingMethod {
     NoSelection,
     UseWalletBalance,
@@ -58,7 +54,7 @@ impl fmt::Display for FundingMethod {
     }
 }
 
-#[derive(Eq, PartialEq, Ord, PartialOrd)]
+#[derive(Eq, PartialEq, Ord, PartialOrd, Copy, Clone)]
 pub enum AddNewIdentityScreenStep {
     ChooseFundingMethod,
     FundsReceived,
@@ -67,13 +63,13 @@ pub enum AddNewIdentityScreenStep {
 
 pub struct AddNewIdentityScreen {
     identity_id_number: u32,
-    step: AddNewIdentityScreenStep,
-    selected_wallet: Option<Wallet>,
+    step: Arc<RwLock<AddNewIdentityScreenStep>>,
+    selected_wallet: Arc<RwLock<Option<Wallet>>>,
     identity_id: Option<Identifier>,
     core_has_funding_address: Option<bool>,
     funding_address: Option<Address>,
     funding_address_balance: Arc<RwLock<Option<Duffs>>>,
-    funding_method: FundingMethod,
+    funding_method: Arc<RwLock<FundingMethod>>,
     funding_amount: String,
     alias_input: String,
     copied_to_clipboard: Option<Option<String>>,
@@ -117,13 +113,13 @@ impl AddNewIdentityScreen {
     pub fn new(app_context: &Arc<AppContext>) -> Self {
         Self {
             identity_id_number: 0,
-            step: ChooseFundingMethod,
-            selected_wallet: None,
+            step: Arc::new(RwLock::new(AddNewIdentityScreenStep::ChooseFundingMethod)),
+            selected_wallet: Arc::new(RwLock::new(None)),
             identity_id: None,
             core_has_funding_address: None,
             funding_address: None,
             funding_address_balance: Arc::new(RwLock::new(None)),
-            funding_method: FundingMethod::NoSelection,
+            funding_method: Arc::new(RwLock::new(FundingMethod::NoSelection)),
             funding_amount: "0.2".to_string(),
             alias_input: String::new(),
             copied_to_clipboard: None,
@@ -136,46 +132,69 @@ impl AddNewIdentityScreen {
     }
 
     // Start the balance checking process
-    fn start_balance_check(&mut self, address: Address, ui_context: &eframe::egui::Context) {
+    pub fn start_balance_check(&mut self, check_address: &Address, ui_context: &Context) {
         let app_context = self.app_context.clone();
         let balance_state = Arc::clone(&self.funding_address_balance);
         let stop_flag = Arc::new(AtomicBool::new(false));
         let stop_flag_clone = Arc::clone(&stop_flag);
         let ctx = ui_context.clone();
 
-        let starting_balance = { balance_state.read().unwrap().unwrap_or_default() };
+        let selected_wallet = Arc::clone(&self.selected_wallet);
+        let funding_method = Arc::clone(&self.funding_method);
+        let step = Arc::clone(&self.step);
+
+        let starting_balance = balance_state.read().unwrap().unwrap_or_default();
         let expected_balance = starting_balance + self.funding_amount.parse::<Duffs>().unwrap_or(1);
 
-        // Spawn a new thread to monitor the balance
+        let address = check_address.clone();
+
+        // Spawn a new thread to monitor the balance.
         let handle = thread::spawn(move || {
             while !stop_flag_clone.load(Ordering::Relaxed) {
-                // Call RPC to get the latest balance
                 match app_context
                     .core_client
                     .get_received_by_address(&address, Some(1))
                 {
                     Ok(new_balance) => {
-                        // Write the new balance into the RwLock
+                        // Update wallet balance if it has changed.
+                        if let Some(mut wallet) = selected_wallet.write().unwrap().as_mut() {
+                            wallet
+                                .update_address_balance(
+                                    &address,
+                                    new_balance.to_sat(),
+                                    &app_context,
+                                )
+                                .ok();
+                        }
+
+                        // Write the new balance into the RwLock.
                         if let Ok(mut balance) = balance_state.write() {
                             *balance = Some(new_balance.to_sat());
                         }
-                        // Trigger UI redraw
+
+                        // Trigger UI redraw.
                         ctx.request_repaint();
-                        if new_balance.to_sat() > expected_balance {
+
+                        // Check if expected balance is reached and update funding method and step.
+                        if new_balance.to_sat() >= expected_balance {
+                            *funding_method.write().unwrap() = FundingMethod::UseWalletBalance;
+                            *step.write().unwrap() = AddNewIdentityScreenStep::FundsReceived;
                             break;
                         }
                     }
                     Err(e) => {
-                        eprintln!("Error fetching balance: {:?}", e);
+                        // Get the current time
+                        let now = SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .expect("Time went backwards");
+                        eprintln!("[{:?}] Error fetching balance: {:?}", now, e);
                     }
                 }
-
-                // Sleep to avoid spamming RPC calls
                 thread::sleep(Duration::from_secs(1));
             }
         });
 
-        // Save the handle and stop flag to allow stopping the thread later
+        // Save the handle and stop flag to allow stopping the thread later.
         self.balance_check_handle = Some((stop_flag, handle));
     }
 
@@ -192,142 +211,160 @@ impl AddNewIdentityScreen {
     }
 
     fn render_qr_code(&mut self, ui: &mut egui::Ui, amount: f64) -> Result<(), String> {
-        if let Some(wallet) = self.selected_wallet.as_ref() {
-            // Get the receive address
-            if self.funding_address.is_none() {
-                self.funding_address = Some(wallet.receive_address(self.app_context.network));
+        let (address, should_check_balance) = {
+            // Scope the write lock to ensure it's dropped before calling `start_balance_check`.
+            let mut wallet = self.selected_wallet.write().unwrap();
 
-                if let Some(has_address) = self.core_has_funding_address {
-                    if has_address == false {
-                        self.app_context
+            if let Some(wallet) = wallet.as_mut() {
+                // Get the receive address
+                if self.funding_address.is_none() {
+                    let receive_address = wallet
+                        .receive_address(self.app_context.network, Some(&self.app_context))?;
+
+                    if let Some(has_address) = self.core_has_funding_address {
+                        if !has_address {
+                            self.app_context
+                                .core_client
+                                .import_address(
+                                    &receive_address,
+                                    Some("Managed by Dash Evo Tool"),
+                                    Some(false),
+                                )
+                                .map_err(|e| e.to_string())?;
+                        }
+                        self.funding_address = Some(receive_address);
+                    } else {
+                        let info = self
+                            .app_context
                             .core_client
-                            .import_address(
-                                self.funding_address.as_ref().unwrap(),
-                                Some("Managed by Dash Evo Tool"),
-                                Some(false),
-                            )
+                            .get_address_info(&receive_address)
                             .map_err(|e| e.to_string())?;
+
+                        if !(info.is_watchonly || info.is_mine) {
+                            self.app_context
+                                .core_client
+                                .import_address(
+                                    &receive_address,
+                                    Some("Managed by Dash Evo Tool"),
+                                    Some(false),
+                                )
+                                .map_err(|e| e.to_string())?;
+                        }
+                        self.funding_address = Some(receive_address);
+                        self.core_has_funding_address = Some(true);
                     }
+
+                    // Extract the address to return it outside this scope
+                    (self.funding_address.as_ref().unwrap().clone(), true)
                 } else {
-                    let info = self
-                        .app_context
-                        .core_client
-                        .get_address_info(self.funding_address.as_ref().unwrap())
-                        .map_err(|e| e.to_string())?;
-
-                    if !(info.is_watchonly || info.is_mine) {
-                        self.app_context
-                            .core_client
-                            .import_address(
-                                self.funding_address.as_ref().unwrap(),
-                                Some("Managed by Dash Evo Tool"),
-                                Some(false),
-                            )
-                            .map_err(|e| e.to_string())?;
-                    }
-                    self.core_has_funding_address = Some(true);
+                    (self.funding_address.as_ref().unwrap().clone(), false)
                 }
-                self.start_balance_check(self.funding_address.as_ref().unwrap().clone(), ui.ctx());
-            };
-
-            let address = self.funding_address.as_ref().unwrap();
-
-            let pay_uri = format!("{}?amount={:.4}", address.to_qr_uri(), amount);
-
-            // Generate the QR code image
-            if let Ok(qr_image) = generate_qr_code_image(&pay_uri) {
-                // Convert the image to egui's TextureHandle
-                let texture: TextureHandle =
-                    ui.ctx()
-                        .load_texture("qr_code", qr_image, egui::TextureOptions::LINEAR);
-
-                // Display the QR code image
-                ui.image(&texture);
             } else {
-                ui.label("Failed to generate QR code.");
+                return Err("No wallet selected".to_string());
             }
+        };
 
-            ui.add_space(10.0);
+        if should_check_balance {
+            // Now `address` is available, and all previous borrows are dropped.
+            self.start_balance_check(&address, ui.ctx());
+        }
 
-            // Show the address underneath
-            ui.label(pay_uri);
+        let pay_uri = format!("{}?amount={:.4}", address.to_qr_uri(), amount);
 
-            // Add a button to copy the address
-            if ui.button("Copy Address").clicked() {
-                if let Err(e) = copy_to_clipboard(&address.to_qr_uri()) {
-                    self.copied_to_clipboard = Some(Some(e));
-                } else {
-                    self.copied_to_clipboard = Some(None);
-                }
-            }
+        // Generate the QR code image
+        if let Ok(qr_image) = generate_qr_code_image(&pay_uri) {
+            let texture: TextureHandle =
+                ui.ctx()
+                    .load_texture("qr_code", qr_image, egui::TextureOptions::LINEAR);
+            ui.image(&texture);
+        } else {
+            ui.label("Failed to generate QR code.");
+        }
 
-            if let Some(error) = self.copied_to_clipboard.as_ref() {
-                if let Some(error) = error {
-                    ui.label(format!("Failed to copy to clipboard: {}", error));
-                } else {
-                    ui.label("Address copied to clipboard.");
-                }
+        ui.add_space(10.0);
+        ui.label(pay_uri);
+
+        if ui.button("Copy Address").clicked() {
+            if let Err(e) = copy_to_clipboard(&address.to_qr_uri()) {
+                self.copied_to_clipboard = Some(Some(e));
+            } else {
+                self.copied_to_clipboard = Some(None);
             }
         }
+
+        if let Some(error) = self.copied_to_clipboard.as_ref() {
+            if let Some(error) = error {
+                ui.label(format!("Failed to copy to clipboard: {}", error));
+            } else {
+                ui.label("Address copied to clipboard.");
+            }
+        }
+
         Ok(())
     }
 
     fn render_wallet_selection(&mut self, ui: &mut egui::Ui) {
-        let wallets = self.app_context.wallets.read().unwrap(); // Read lock
+        let wallets = self.app_context.wallets.read().unwrap(); // Read lock on wallets
 
         if wallets.len() > 1 {
             ComboBox::from_label("Select Wallet")
                 .selected_text(
                     self.selected_wallet
+                        .read()
+                        .unwrap() // Read lock on selected_wallet
                         .as_ref()
                         .and_then(|wallet| wallet.alias.as_ref().map(|s| s.as_str()))
                         .unwrap_or("Select"),
                 )
                 .show_ui(ui, |ui| {
                     for wallet in wallets.iter() {
+                        let mut selected_wallet = self.selected_wallet.write().unwrap(); // Write lock on selected_wallet
                         if ui
                             .selectable_value(
-                                &mut self.selected_wallet,
+                                &mut *selected_wallet,
                                 Some(wallet.clone()),
                                 wallet.alias.as_deref().unwrap_or("Unnamed Wallet"),
                             )
                             .clicked()
                         {
-                            self.selected_wallet = Some(wallet.clone());
+                            *selected_wallet = Some(wallet.clone());
                         }
                     }
                 });
-        } else {
-            // If there's only one wallet, automatically select it
-            self.selected_wallet = wallets.first().cloned();
+        } else if let Some(wallet) = wallets.first() {
+            // Automatically select the only available wallet
+            *self.selected_wallet.write().unwrap() = Some(wallet.clone());
         }
     }
 
     fn render_funding_method(&mut self, ui: &mut egui::Ui) {
+        let selected_wallet = self.selected_wallet.read().unwrap(); // Read lock on selected_wallet
+        let mut funding_method = self.funding_method.write().unwrap(); // Write lock on funding_method
+
         ComboBox::from_label("Funding Method")
-            .selected_text(format!("{}", self.funding_method))
+            .selected_text(format!("{}", *funding_method))
             .show_ui(ui, |ui| {
-                if let Some(wallet) = self.selected_wallet.as_ref() {
+                if let Some(wallet) = selected_wallet.as_ref() {
                     if wallet.has_balance() {
                         ui.selectable_value(
-                            &mut self.funding_method,
+                            &mut *funding_method,
                             FundingMethod::UseWalletBalance,
                             "Use wallet balance",
                         );
                     }
                 }
                 ui.selectable_value(
-                    &mut self.funding_method,
+                    &mut *funding_method,
                     FundingMethod::NoSelection,
                     "Please select funding method",
                 );
                 ui.selectable_value(
-                    &mut self.funding_method,
+                    &mut *funding_method,
                     FundingMethod::AddressWithQRCode,
                     "Address with QR Code",
                 );
                 ui.selectable_value(
-                    &mut self.funding_method,
+                    &mut *funding_method,
                     FundingMethod::AttachedCoreWallet,
                     "Attached Core Wallet",
                 );
@@ -398,6 +435,9 @@ impl AddNewIdentityScreen {
     }
 
     fn render_funding_amount_input(&mut self, ui: &mut egui::Ui) {
+        let funding_method = self.funding_method.read().unwrap(); // Read lock on funding_method
+        let selected_wallet = self.selected_wallet.read().unwrap(); // Read lock on selected_wallet
+
         ui.horizontal(|ui| {
             ui.label("Funding Amount (DASH):");
 
@@ -419,9 +459,10 @@ impl AddNewIdentityScreen {
                 }
             }
 
-            if self.funding_method == FundingMethod::UseWalletBalance {
-                // Add a button to quickly set the amount to the wallet's max balance (optional)
-                if let Some(wallet) = self.selected_wallet.as_ref() {
+            // Check if the funding method is `UseWalletBalance`
+            if *funding_method == FundingMethod::UseWalletBalance {
+                // Add a button to quickly set the amount to the wallet's max balance (if applicable)
+                if let Some(wallet) = selected_wallet.as_ref() {
                     if ui.button("Max").clicked() {
                         let max_amount = wallet.max_balance(self.app_context.network);
                         self.funding_amount = format!("{:.4}", max_amount);
@@ -478,13 +519,16 @@ impl ScreenLike for AddNewIdentityScreen {
             ui.add_space(10.0);
             self.render_funding_method(ui);
 
-            if self.funding_method == NoSelection {
+            // Extract the funding method from the RwLock to minimize borrow scope
+            let funding_method = self.funding_method.read().unwrap().clone();
+
+            if funding_method == FundingMethod::NoSelection {
                 return;
             }
 
             ui.add_space(20.0);
 
-            ui.heading("2. Choose much would you like to transfer to your new identity?");
+            ui.heading("2. Choose how much you would like to transfer to your new identity?");
 
             self.render_funding_amount_input(ui);
 
@@ -492,33 +536,43 @@ impl ScreenLike for AddNewIdentityScreen {
                 return;
             };
 
-            if self.step == ChooseFundingMethod && self.funding_method == AddressWithQRCode {
-                self.render_qr_code(ui, amount_dash);
+            // Extract the step from the RwLock to minimize borrow scope
+            let step = self.step.read().unwrap().clone();
+
+            if step == ChooseFundingMethod && funding_method == FundingMethod::AddressWithQRCode {
+                if let Err(e) = self.render_qr_code(ui, amount_dash) {
+                    eprintln!("Error: {:?}", e);
+                }
             }
 
-            if self.step < FundsReceived {
+            if step < FundsReceived {
                 ui.add_space(20.0);
                 ui.heading("...Waiting for funds to continue...");
                 return;
             }
 
-            ui.heading("2. Leave 0 if this is the first identity for your wallet. If you have made an identity already bump this number");
-
-            // todo add a selector for the identity id number, it should have up to 30 entries
+            ui.heading(
+                "2. Leave 0 if this is the first identity for your wallet. If you have made an identity already, bump this number"
+            );
 
             ui.add_space(10.0);
+
             if let Some(key) = self.master_private_key {
                 self.render_master_key(ui, key);
             }
 
             ui.horizontal(|ui| {
                 ui.label("Identity ID (Hex or Base58):");
-                ui.label(self.identity_id.map(|id| id.to_string(Encoding::Base58)).unwrap_or("None".to_string()));
+                ui.label(
+                    self.identity_id
+                        .map(|id| id.to_string(Encoding::Base58))
+                        .unwrap_or_else(|| "None".to_string()),
+                );
             });
 
             self.render_keys_input(ui);
 
-            if self.step == ReadyToCreate {
+            if step == ReadyToCreate {
                 if ui.button("Create Identity").clicked() {
                     let now = SystemTime::now()
                         .duration_since(UNIX_EPOCH)

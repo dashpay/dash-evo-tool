@@ -52,6 +52,7 @@ impl TryFrom<u32> for DerivationPathReference {
     }
 }
 
+use crate::context::AppContext;
 use bitflags::bitflags;
 use dash_sdk::dpp::balances::credits::Duffs;
 
@@ -102,12 +103,55 @@ impl Wallet {
         0
     }
 
-    pub fn unused_bip_44_public_key(&self, network: Network) -> PublicKey {
-        let derivation_path = DerivationPath::bip_44_payment_path(network, 0, false, 0);
-        let extended_public_key = derivation_path
+    pub fn unused_bip_44_public_key(
+        &mut self,
+        network: Network,
+        register: Option<&AppContext>,
+    ) -> Result<PublicKey, String> {
+        let mut address_index = 0;
+        let mut found_unused_derivation_path = None;
+        while found_unused_derivation_path.is_none() {
+            let derivation_path =
+                DerivationPath::bip_44_payment_path(network, 0, false, address_index);
+            if self.watched_addresses.get(&derivation_path).is_none() {
+                let public_key = derivation_path
+                    .derive_pub_ecdsa_for_master_seed(&self.seed, network)
+                    .expect("derivation should not be able to fail")
+                    .to_pub();
+                if let Some(app_context) = register {
+                    let address = Address::p2pkh(&public_key, network);
+                    app_context
+                        .db
+                        .add_address(
+                            &self.seed,
+                            &address,
+                            &derivation_path,
+                            DerivationPathReference::BIP44,
+                            DerivationPathType::CLEAR_FUNDS,
+                            None,
+                        )
+                        .map_err(|e| e.to_string())?;
+                    self.watched_addresses.insert(
+                        derivation_path.clone(),
+                        AddressInfo {
+                            address,
+                            path_type: DerivationPathType::CLEAR_FUNDS,
+                            path_reference: DerivationPathReference::BIP44,
+                        },
+                    );
+                }
+                found_unused_derivation_path = Some(derivation_path);
+                break;
+            } else {
+                address_index += 1;
+            }
+        }
+
+        let extended_public_key = found_unused_derivation_path
+            .unwrap()
             .derive_pub_ecdsa_for_master_seed(&self.seed, network)
             .expect("derivation should not be able to fail");
-        extended_public_key.to_pub()
+        Ok(extended_public_key.to_pub())
     }
 
     pub fn identity_authentication_ecdsa_public_key(
@@ -146,7 +190,38 @@ impl Wallet {
         extended_public_key.to_priv()
     }
 
-    pub fn receive_address(&self, network: Network) -> Address {
-        Address::p2pkh(&self.unused_bip_44_public_key(network), network)
+    pub fn receive_address(
+        &mut self,
+        network: Network,
+        register: Option<&AppContext>,
+    ) -> Result<Address, String> {
+        Ok(Address::p2pkh(
+            &self.unused_bip_44_public_key(network, register)?,
+            network,
+        ))
+    }
+
+    pub fn update_address_balance(
+        &mut self,
+        address: &Address,
+        new_balance: Duffs,
+        context: &AppContext,
+    ) -> Result<(), String> {
+        // Check if the new balance differs from the current one.
+        if let Some(current_balance) = self.address_balances.get(address) {
+            if *current_balance == new_balance {
+                // If the balance hasn't changed, skip the update.
+                return Ok(());
+            }
+        }
+
+        // If there's no current balance or it has changed, update it.
+        self.address_balances.insert(address.clone(), new_balance);
+
+        // Update the database with the new balance.
+        context
+            .db
+            .update_address_balance(&self.seed, address, new_balance)
+            .map_err(|e| e.to_string())
     }
 }

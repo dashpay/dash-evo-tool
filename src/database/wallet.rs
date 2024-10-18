@@ -39,6 +39,66 @@ impl Database {
         Ok(())
     }
 
+    /// Add a new address to a wallet with optional balance.
+    /// If the address already exists, it does nothing.
+    pub fn add_address(
+        &self,
+        seed: &[u8; 64],
+        address: &Address,
+        derivation_path: &DerivationPath,
+        path_reference: DerivationPathReference,
+        path_type: DerivationPathType,
+        balance: Option<u64>,
+    ) -> rusqlite::Result<()> {
+        let conn = self.conn.lock().unwrap();
+
+        // Step 1: Check if the address already exists for the given seed.
+        let mut stmt = conn.prepare(
+            "SELECT COUNT(1) FROM wallet_addresses
+         WHERE seed = ? AND address = ?",
+        )?;
+        let count: u32 = stmt.query_row(params![seed, address.to_string()], |row| row.get(0))?;
+
+        // Step 2: If the address doesn't exist, insert it.
+        if count == 0 {
+            conn.execute(
+                "INSERT INTO wallet_addresses
+             (seed, address, derivation_path, path_reference, path_type, balance)
+             VALUES (?, ?, ?, ?, ?, ?)",
+                params![
+                    seed,
+                    address.to_string(),
+                    derivation_path.to_string(),
+                    path_reference as u32,
+                    path_type.bits(),
+                    balance,
+                ],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Update the balance of an existing address.
+    pub fn update_address_balance(
+        &self,
+        seed: &[u8; 64],
+        address: &Address,
+        new_balance: u64,
+    ) -> rusqlite::Result<()> {
+        let rows_affected = self.execute(
+            "UPDATE wallet_addresses
+         SET balance = ?
+         WHERE seed = ? AND address = ?",
+            params![new_balance, seed, address.to_string()],
+        )?;
+
+        if rows_affected == 0 {
+            Err(rusqlite::Error::QueryReturnedNoRows)
+        } else {
+            Ok(())
+        }
+    }
+
     /// Retrieve all wallets for a specific network, including their addresses and balances.
     pub fn get_wallets(&self, network: &Network) -> rusqlite::Result<Vec<Wallet>> {
         let network_str = network.to_string();

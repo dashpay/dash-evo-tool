@@ -5,6 +5,7 @@ mod vote_on_dpns_name;
 
 use crate::app::TaskResult;
 use crate::context::AppContext;
+use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
 use dash_sdk::Sdk;
 use std::sync::Arc;
@@ -14,7 +15,7 @@ use tokio::sync::mpsc;
 pub(crate) enum ContestedResourceTask {
     QueryDPNSContestedResources,
     QueryDPNSVoteContenders(String),
-    VoteOnDPNSName(String, ResourceVoteChoice),
+    VoteOnDPNSName(String, ResourceVoteChoice, Vec<QualifiedIdentity>),
 }
 
 impl AppContext {
@@ -32,8 +33,8 @@ impl AppContext {
             ContestedResourceTask::QueryDPNSVoteContenders(name) => {
                 self.query_dpns_vote_contenders(name, sdk, sender).await
             }
-            ContestedResourceTask::VoteOnDPNSName(name, vote_choice) => {
-                self.vote_on_dpns_name(name, *vote_choice, sdk, sender)
+            ContestedResourceTask::VoteOnDPNSName(name, vote_choice, voters) => {
+                self.vote_on_dpns_name(name, *vote_choice, voters.to_vec(), sdk, sender)
                     .await
             } // ContestedResourceTask::VoteOnContestedResource(vote_poll, vote_choice) => {
               //     let mut vote = Vote::default();

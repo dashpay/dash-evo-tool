@@ -11,6 +11,7 @@ use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::{KeyID, KeyType, Purpose};
+use dash_sdk::dpp::platform_value::Bytes32;
 use dash_sdk::dpp::ProtocolError;
 use dash_sdk::platform::{Identifier, Identity, IdentityPublicKey};
 use dash_sdk::Sdk;
@@ -29,9 +30,9 @@ pub struct IdentityInputToLoad {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct IdentityRegistrationInfo {
-    pub identity_id_input: String,
+    pub identity_id: Identifier,
     pub alias_input: String,
-    pub master_private_key_input: String,
+    pub master_private_key: Bytes32,
     pub master_private_key_type: KeyType,
     pub keys_input: Vec<(String, KeyType)>,
 }

@@ -8,9 +8,12 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use chrono::{DateTime, LocalResult, TimeZone, Utc};
 use chrono_humanize::HumanTime;
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
 use egui::{Context, Frame, Margin, Ui};
 use egui_extras::{Column, TableBuilder};
+use itertools::Itertools;
 use std::sync::{Arc, Mutex};
 
 use super::ScreenType;
@@ -36,7 +39,7 @@ pub struct DPNSContestedNamesScreen {
     error_message: Option<(String, MessageType, DateTime<Utc>)>,
     sort_column: SortColumn,
     sort_order: SortOrder,
-    show_vote_popup: Option<(String, ContestedResourceTask)>,
+    show_vote_popup_info: Option<(String, ContestedResourceTask)>,
 }
 
 impl DPNSContestedNamesScreen {
@@ -50,7 +53,7 @@ impl DPNSContestedNamesScreen {
             error_message: None,
             sort_column: SortColumn::ContestedName,
             sort_order: SortOrder::Ascending,
-            show_vote_popup: None,
+            show_vote_popup_info: None,
         }
     }
 
@@ -75,14 +78,14 @@ impl DPNSContestedNamesScreen {
                 };
 
                 if ui.button(text).clicked() {
-                    self.show_vote_popup = Some((
+                    self.show_vote_popup_info = Some((
                         format!(
-                            "Confirm Voting for Contestant {} for name \"{}\"",
+                            "Confirm Voting for Contestant {} for name \"{}\".\n\nSelect the identity to vote with:",
                             contestant.id, contestant.name
                         ),
                         ContestedResourceTask::VoteOnDPNSName(
                             contested_name.normalized_contested_name.clone(),
-                            ResourceVoteChoice::TowardsIdentity(contestant.id),
+                            ResourceVoteChoice::TowardsIdentity(contestant.id),vec![]
                         ),
                     ));
                 }
@@ -140,24 +143,95 @@ impl DPNSContestedNamesScreen {
 
     fn show_vote_popup(&mut self, ui: &mut Ui) -> AppAction {
         let mut app_action = AppAction::None;
-        if let Some((message, action)) = self.show_vote_popup.clone() {
+
+        if let Some((message, action)) = self.show_vote_popup_info.clone() {
             ui.label(message);
 
+            let local_qualified_identities = self
+                .app_context
+                .db
+                .get_local_qualified_identities(&self.app_context)
+                .unwrap_or_default();
+
+            let voting_identities = local_qualified_identities
+                .iter()
+                .filter_map(|id| {
+                    if id.associated_voter_identity.is_some() {
+                        Some(id)
+                    } else {
+                        None
+                    }
+                })
+                .collect_vec();
+
             ui.horizontal(|ui| {
-                if ui.button("Vote Immediate").clicked() {
-                    app_action = AppAction::BackendTask(BackendTask::ContestedResourceTask(action));
-                    self.show_vote_popup = None;
-                } else if ui.button("Vote Deferred").clicked() {
-                    app_action = AppAction::BackendTask(BackendTask::ContestedResourceTask(action));
-                    self.show_vote_popup = None;
-                } else if ui.button("Cancel").clicked() {
-                    self.show_vote_popup = None;
+                // Only modify `voters` if `action` is `VoteOnDPNSName`
+                if let ContestedResourceTask::VoteOnDPNSName(
+                    contested_name,
+                    vote_choice,
+                    mut voters,
+                ) = action
+                {
+                    // Iterate over the voting identities and create a button for each one
+                    for identity in voting_identities.iter() {
+                        let button_label = format!(
+                            "{}",
+                            identity
+                                .alias
+                                .clone()
+                                .unwrap_or(identity.identity.id().to_string(Encoding::Base58))
+                        );
+                        if ui.button(button_label).clicked() {
+                            // Add the selected identity to the `voters` field
+                            voters.push(identity.clone().clone());
+
+                            // Create a new `VoteOnDPNSName` task with updated voters
+                            let updated_action = ContestedResourceTask::VoteOnDPNSName(
+                                contested_name.clone(),
+                                vote_choice.clone(),
+                                voters.clone(), // Updated voters
+                            );
+
+                            // Pass updated action to BackendTask
+                            app_action = AppAction::BackendTask(
+                                BackendTask::ContestedResourceTask(updated_action),
+                            );
+                            self.show_vote_popup_info = None;
+                        }
+                    }
+
+                    // Vote with all identities
+                    if ui.button("All").clicked() {
+                        for identity in voting_identities.iter() {
+                            voters.push(identity.clone().clone());
+                        }
+
+                        // Create a new `VoteOnDPNSName` task with all voters
+                        let updated_action = ContestedResourceTask::VoteOnDPNSName(
+                            contested_name.clone(),
+                            vote_choice.clone(),
+                            voters.clone(), // Updated voters
+                        );
+
+                        // Pass updated action to BackendTask
+                        app_action = AppAction::BackendTask(BackendTask::ContestedResourceTask(
+                            updated_action,
+                        ));
+                        self.show_vote_popup_info = None;
+                    }
+                }
+
+                // Add the "Cancel" button
+                if ui.button("Cancel").clicked() {
+                    self.show_vote_popup_info = None;
                 }
             });
         }
+
         app_action
     }
 }
+
 impl ScreenLike for DPNSContestedNamesScreen {
     fn refresh(&mut self) {
         let mut contested_names = self.contested_names.lock().unwrap();
@@ -231,7 +305,7 @@ impl ScreenLike for DPNSContestedNamesScreen {
             }
 
             // Show vote popup if active
-            if self.show_vote_popup.is_some() {
+            if self.show_vote_popup_info.is_some() {
                 egui::Window::new("Vote Confirmation")
                     .collapsible(false)
                     .show(ui.ctx(), |ui| {
@@ -328,7 +402,7 @@ impl ScreenLike for DPNSContestedNamesScreen {
                                             };
                                             // Vote button logic for locked votes
                                             if ui.button(label_text).clicked() {
-                                                self.show_vote_popup = Some((format!("Confirm Voting to Lock the name \"{}\"", contested_name.normalized_contested_name.clone()), ContestedResourceTask::VoteOnDPNSName(contested_name.normalized_contested_name.clone(), ResourceVoteChoice::Lock)));
+                                                self.show_vote_popup_info = Some((format!("Confirm Voting to Lock the name \"{}\".\n\nSelect the identity to vote with:", contested_name.normalized_contested_name.clone()), ContestedResourceTask::VoteOnDPNSName(contested_name.normalized_contested_name.clone(), ResourceVoteChoice::Lock, vec![])));
                                             }
                                         });
                                         row.col(|ui| {
@@ -340,7 +414,7 @@ impl ScreenLike for DPNSContestedNamesScreen {
                                                 "Fetching".to_string()
                                             };
                                             if ui.button(label_text).clicked() {
-                                                self.show_vote_popup = Some((format!("Confirm Voting to Abstain on distribution of \"{}\"", contested_name.normalized_contested_name.clone()), ContestedResourceTask::VoteOnDPNSName(contested_name.normalized_contested_name.clone(), ResourceVoteChoice::Abstain)));
+                                                self.show_vote_popup_info = Some((format!("Confirm Voting to Abstain on distribution of \"{}\".\n\nSelect the identity to vote with:", contested_name.normalized_contested_name.clone()), ContestedResourceTask::VoteOnDPNSName(contested_name.normalized_contested_name.clone(), ResourceVoteChoice::Abstain, vec![])));
                                             }
                                         });
                                         row.col(|ui| {

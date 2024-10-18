@@ -85,6 +85,7 @@ impl DocumentQueryScreen {
                         ContestedResourceTask::VoteOnDPNSName(
                             contested_name.normalized_contested_name.clone(),
                             ResourceVoteChoice::Abstain,
+                            vec![],
                         ),
                     ));
                 }

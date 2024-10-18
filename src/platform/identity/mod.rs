@@ -32,7 +32,7 @@ pub struct IdentityInputToLoad {
 pub struct IdentityRegistrationInfo {
     pub identity_id: Identifier,
     pub alias_input: String,
-    pub master_private_key: Bytes32,
+    pub master_private_key: PrivateKey,
     pub master_private_key_type: KeyType,
     pub keys_input: Vec<(String, KeyType)>,
 }

@@ -24,6 +24,24 @@ impl Database {
             [],
         )?;
 
+        // Create wallet addresses
+        self.execute(
+            "CREATE TABLE IF NOT EXISTS wallet_addresses (
+        seed BLOB NOT NULL,
+        address TEXT NOT NULL,
+        derivation_path TEXT NOT NULL,
+        balance INTEGER,
+        path_reference INTEGER NOT NULL,
+        path_type INTEGER NOT NULL,
+        PRIMARY KEY (seed, address),
+        FOREIGN KEY (seed) REFERENCES wallet(seed) ON DELETE CASCADE
+    )",
+            [],
+        )?;
+
+        self.execute("CREATE INDEX IF NOT EXISTS idx_wallet_addresses_path_reference ON wallet_addresses (path_reference)", [])?;
+        self.execute("CREATE INDEX IF NOT EXISTS idx_wallet_addresses_path_type ON wallet_addresses (path_type)", [])?;
+
         // Create the identities table
         self.execute(
             "CREATE TABLE IF NOT EXISTS identity (

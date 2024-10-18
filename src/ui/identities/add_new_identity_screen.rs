@@ -12,6 +12,10 @@ use crate::ui::identities::add_new_identity_screen::FundingMethod::{
 };
 use crate::ui::ScreenLike;
 use arboard::Clipboard;
+use dash_sdk::dashcore_rpc::dashcore::Address;
+use dash_sdk::dashcore_rpc::RpcApi;
+use dash_sdk::dpp::balances::credits::Duffs;
+use dash_sdk::dpp::dashcore::{PrivateKey, PublicKey};
 use dash_sdk::dpp::identity::KeyType;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::platform_value::Bytes32;
@@ -22,9 +26,10 @@ use image::Luma;
 use qrcode::QrCode;
 use serde::Deserialize;
 use std::cmp::PartialEq;
-use std::fmt;
-use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, RwLock};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::{fmt, thread};
 
 #[derive(Debug, Clone, Deserialize)]
 struct KeyInfo {
@@ -65,13 +70,17 @@ pub struct AddNewIdentityScreen {
     step: AddNewIdentityScreenStep,
     selected_wallet: Option<Wallet>,
     identity_id: Option<Identifier>,
+    core_has_funding_address: Option<bool>,
+    funding_address: Option<Address>,
+    funding_address_balance: Arc<RwLock<Option<Duffs>>>,
     funding_method: FundingMethod,
     funding_amount: String,
     alias_input: String,
     copied_to_clipboard: Option<Option<String>>,
-    master_private_key: Option<Bytes32>,
+    master_private_key: Option<PrivateKey>,
     master_private_key_type: KeyType,
     keys_input: Vec<(String, KeyType)>,
+    balance_check_handle: Option<(Arc<AtomicBool>, thread::JoinHandle<()>)>,
     pub app_context: Arc<AppContext>,
 }
 
@@ -108,9 +117,12 @@ impl AddNewIdentityScreen {
     pub fn new(app_context: &Arc<AppContext>) -> Self {
         Self {
             identity_id_number: 0,
-            step: AddNewIdentityScreenStep::ChooseFundingMethod,
+            step: ChooseFundingMethod,
             selected_wallet: None,
             identity_id: None,
+            core_has_funding_address: None,
+            funding_address: None,
+            funding_address_balance: Arc::new(RwLock::new(None)),
             funding_method: FundingMethod::NoSelection,
             funding_amount: "0.2".to_string(),
             alias_input: String::new(),
@@ -118,14 +130,107 @@ impl AddNewIdentityScreen {
             master_private_key: None,
             master_private_key_type: KeyType::ECDSA_HASH160,
             keys_input: vec![(String::new(), KeyType::ECDSA_HASH160)],
+            balance_check_handle: None,
             app_context: app_context.clone(),
         }
     }
 
-    fn render_qr_code(&mut self, ui: &mut egui::Ui, amount: f64) {
+    // Start the balance checking process
+    fn start_balance_check(&mut self, address: Address, ui_context: &eframe::egui::Context) {
+        let app_context = self.app_context.clone();
+        let balance_state = Arc::clone(&self.funding_address_balance);
+        let stop_flag = Arc::new(AtomicBool::new(false));
+        let stop_flag_clone = Arc::clone(&stop_flag);
+        let ctx = ui_context.clone();
+
+        let starting_balance = { balance_state.read().unwrap().unwrap_or_default() };
+        let expected_balance = starting_balance + self.funding_amount.parse::<Duffs>().unwrap_or(1);
+
+        // Spawn a new thread to monitor the balance
+        let handle = thread::spawn(move || {
+            while !stop_flag_clone.load(Ordering::Relaxed) {
+                // Call RPC to get the latest balance
+                match app_context
+                    .core_client
+                    .get_received_by_address(&address, Some(1))
+                {
+                    Ok(new_balance) => {
+                        // Write the new balance into the RwLock
+                        if let Ok(mut balance) = balance_state.write() {
+                            *balance = Some(new_balance.to_sat());
+                        }
+                        // Trigger UI redraw
+                        ctx.request_repaint();
+                        if new_balance.to_sat() > expected_balance {
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Error fetching balance: {:?}", e);
+                    }
+                }
+
+                // Sleep to avoid spamming RPC calls
+                thread::sleep(Duration::from_secs(1));
+            }
+        });
+
+        // Save the handle and stop flag to allow stopping the thread later
+        self.balance_check_handle = Some((stop_flag, handle));
+    }
+
+    // Stop the balance checking process
+    fn stop_balance_check(&mut self) {
+        if let Some((stop_flag, handle)) = self.balance_check_handle.take() {
+            // Set the atomic flag to stop the thread
+            stop_flag.store(true, Ordering::Relaxed);
+            // Wait for the thread to finish
+            if let Err(e) = handle.join() {
+                eprintln!("Failed to join balance check thread: {:?}", e);
+            }
+        }
+    }
+
+    fn render_qr_code(&mut self, ui: &mut egui::Ui, amount: f64) -> Result<(), String> {
         if let Some(wallet) = self.selected_wallet.as_ref() {
             // Get the receive address
-            let address = wallet.receive_address(self.app_context.network);
+            if self.funding_address.is_none() {
+                self.funding_address = Some(wallet.receive_address(self.app_context.network));
+
+                if let Some(has_address) = self.core_has_funding_address {
+                    if has_address == false {
+                        self.app_context
+                            .core_client
+                            .import_address(
+                                self.funding_address.as_ref().unwrap(),
+                                Some("Managed by Dash Evo Tool"),
+                                Some(false),
+                            )
+                            .map_err(|e| e.to_string())?;
+                    }
+                } else {
+                    let info = self
+                        .app_context
+                        .core_client
+                        .get_address_info(self.funding_address.as_ref().unwrap())
+                        .map_err(|e| e.to_string())?;
+
+                    if !(info.is_watchonly || info.is_mine) {
+                        self.app_context
+                            .core_client
+                            .import_address(
+                                self.funding_address.as_ref().unwrap(),
+                                Some("Managed by Dash Evo Tool"),
+                                Some(false),
+                            )
+                            .map_err(|e| e.to_string())?;
+                    }
+                    self.core_has_funding_address = Some(true);
+                }
+                self.start_balance_check(self.funding_address.as_ref().unwrap().clone(), ui.ctx());
+            };
+
+            let address = self.funding_address.as_ref().unwrap();
 
             let pay_uri = format!("{}?amount={:.4}", address.to_qr_uri(), amount);
 
@@ -164,6 +269,7 @@ impl AddNewIdentityScreen {
                 }
             }
         }
+        Ok(())
     }
 
     fn render_wallet_selection(&mut self, ui: &mut egui::Ui) {
@@ -325,10 +431,10 @@ impl AddNewIdentityScreen {
         });
     }
 
-    fn render_master_key(&mut self, ui: &mut egui::Ui, key: Bytes32) {
+    fn render_master_key(&mut self, ui: &mut egui::Ui, key: PrivateKey) {
         ui.horizontal(|ui| {
             ui.label("Master Private Key:");
-            ui.label(key.to_string(Encoding::Hex));
+            ui.label(key.to_wif());
 
             ComboBox::from_label("Master Key Type")
                 .selected_text(format!("{:?}", self.master_private_key_type))

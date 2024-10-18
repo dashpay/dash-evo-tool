@@ -51,6 +51,8 @@ impl AddNewWalletScreen {
             let seed = mnemonic.to_seed(self.passphrase.as_str());
             let wallet = Wallet {
                 seed,
+                address_balances: Default::default(),
+                watched_addresses: Default::default(),
                 alias: None,
                 is_main: true,
                 password_hint: None,

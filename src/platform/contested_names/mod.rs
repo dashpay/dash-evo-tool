@@ -34,7 +34,7 @@ impl AppContext {
                 self.query_dpns_vote_contenders(name, sdk, sender).await
             }
             ContestedResourceTask::VoteOnDPNSName(name, vote_choice, voters) => {
-                self.vote_on_dpns_name(name, *vote_choice, voters.to_vec(), sdk, sender)
+                self.vote_on_dpns_name(name, *vote_choice, voters, sdk, sender)
                     .await
             } // ContestedResourceTask::VoteOnContestedResource(vote_poll, vote_choice) => {
               //     let mut vote = Vote::default();

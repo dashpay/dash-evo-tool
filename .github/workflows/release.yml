@@ -56,7 +56,7 @@ jobs:
 
       - name: Install essentials
         if: ${{ runner.os == 'Linux' }}
-        run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config clang cmake unzip libsqlite3-dev gcc-mingw-w64 mingw-w64 && uname -a && cargo clean
+        run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config clang cmake unzip libsqlite3-dev gcc-mingw-w64 mingw-w64 libsqlite3-dev mingw-w64-x86-64-dev && uname -a && cargo clean
 
       - name: Install protoc (ARM)
         if: ${{ matrix.platform == 'arm64' }}
@@ -87,9 +87,17 @@ jobs:
         run: curl -OL https://github.com/protocolbuffers/protobuf/releases/download/v25.2/protoc-25.2-osx-aarch_64.zip && sudo unzip -o protoc-25.2-osx-aarch_64.zip -d /usr/local bin/protoc && sudo unzip -o protoc-25.2-osx-aarch_64.zip -d /usr/local 'include/*' && rm -f protoc-25.2-osx-aarch_64.zip
         env:
           PROTOC: /usr/local/bin/protoc
+
+      - name: Windows libsql
+        if: ${{ matrix.target == 'x86_64-pc-windows-gnu' }}
+        run: curl -OL https://www.sqlite.org/2024/sqlite-dll-win-x64-3460100.zip && sudo unzip -o sqlite-dll-win-x64-3460100.zip -d winlibs && sudo chown -R runner:docker winlibs/ && pwd && ls -lah && cd winlibs && x86_64-w64-mingw32-dlltool -d sqlite3.def -l libsqlite3.a && ls -lah && cd ..
   
       - name: Build project
         run: cargo build --release --target ${{ matrix.target }}
+        env:
+          CC_x86_64_pc_windows_gnu: x86_64-w64-mingw32-gcc
+          AR_x86_64_pc_windows_gnu: x86_64-w64-mingw32-ar
+          CFLAGS_x86_64_pc_windows_gnu: "-O2"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v3

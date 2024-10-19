@@ -430,9 +430,9 @@ impl Database {
                     existing_names.insert(name.clone());
                     if last_updated.is_none()
                         || (app_context.network == Network::Testnet
-                            && last_updated.unwrap() > one_hour_ago)
+                            && last_updated.unwrap() < one_hour_ago)
                         || (app_context.network == Network::Dash
-                            && last_updated.unwrap() > two_weeks_ago)
+                            && last_updated.unwrap() < two_weeks_ago)
                     {
                         names_to_be_updated.push((name, last_updated));
                     }

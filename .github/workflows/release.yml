@@ -94,6 +94,10 @@ jobs:
   
       - name: Build project
         run: cargo build --release --target ${{ matrix.target }}
+        env:
+          CC_x86_64_pc_windows_gnu: x86_64-w64-mingw32-gcc
+          AR_x86_64_pc_windows_gnu: x86_64-w64-mingw32-ar
+          CFLAGS_x86_64_pc_windows_gnu: "-O2"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v3

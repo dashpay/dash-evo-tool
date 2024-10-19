@@ -87,6 +87,10 @@ jobs:
         run: curl -OL https://github.com/protocolbuffers/protobuf/releases/download/v25.2/protoc-25.2-osx-aarch_64.zip && sudo unzip -o protoc-25.2-osx-aarch_64.zip -d /usr/local bin/protoc && sudo unzip -o protoc-25.2-osx-aarch_64.zip -d /usr/local 'include/*' && rm -f protoc-25.2-osx-aarch_64.zip
         env:
           PROTOC: /usr/local/bin/protoc
+
+      - name: Windows libsql
+        if: ${{ matrix.target == 'x86_64-pc-windows-gnu' }}
+        run: curl -OL https://www.sqlite.org/2024/sqlite-dll-win-x64-3460100.zip && sudo unzip -o sqlite-dll-win-x64-3460100.zip && ls -lah
   
       - name: Build project
         run: cargo build --release --target ${{ matrix.target }}

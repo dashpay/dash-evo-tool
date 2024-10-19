@@ -1,8 +1,10 @@
-use bincode::{Decode, Encode};
+mod utxos;
+mod asset_lock_transaction;
+
 use dash_sdk::dashcore_rpc::dashcore::bip32::KeyDerivationType;
 use dash_sdk::dpp::dashcore::bip32::DerivationPath;
-use dash_sdk::dpp::dashcore::{Address, Network, PrivateKey, PublicKey};
-use std::collections::BTreeMap;
+use dash_sdk::dpp::dashcore::{Address, Network, OutPoint, PrivateKey, PublicKey, TxOut};
+use std::collections::{BTreeMap, HashMap};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
 pub enum DerivationPathReference {
     Unknown = 0,
@@ -90,29 +92,31 @@ pub struct Wallet {
     pub address_balances: BTreeMap<Address, u64>,
     pub watched_addresses: BTreeMap<DerivationPath, AddressInfo>,
     pub alias: Option<String>,
+    pub utxos: Option<HashMap<Address, HashMap<OutPoint, TxOut>>>,
     pub is_main: bool,
     pub password_hint: Option<String>,
 }
 
 impl Wallet {
     pub fn has_balance(&self) -> bool {
-        self.address_balances.values().sum::<Duffs>() > 0
+        self.max_balance() > 0
     }
 
-    pub fn max_balance(&self, network: Network) -> u64 {
-        0
+    pub fn max_balance(&self) -> u64 {
+        self.address_balances.values().sum::<Duffs>()
     }
 
     pub fn unused_bip_44_public_key(
         &mut self,
         network: Network,
+        change: bool,
         register: Option<&AppContext>,
     ) -> Result<PublicKey, String> {
         let mut address_index = 0;
         let mut found_unused_derivation_path = None;
         while found_unused_derivation_path.is_none() {
             let derivation_path =
-                DerivationPath::bip_44_payment_path(network, 0, false, address_index);
+                DerivationPath::bip_44_payment_path(network, 0, change, address_index);
             if self.watched_addresses.get(&derivation_path).is_none() {
                 let public_key = derivation_path
                     .derive_pub_ecdsa_for_master_seed(&self.seed, network)
@@ -190,13 +194,54 @@ impl Wallet {
         extended_public_key.to_priv()
     }
 
+    pub fn identity_registration_ecdsa_public_key(
+        &self,
+        network: Network,
+        index: u32,
+    ) -> PublicKey {
+        let derivation_path = DerivationPath::identity_registration_path(
+            network,
+            index,
+        );
+        let extended_public_key = derivation_path
+            .derive_pub_ecdsa_for_master_seed(&self.seed, network)
+            .expect("derivation should not be able to fail");
+        extended_public_key.to_pub()
+    }
+
+    pub fn identity_registration_ecdsa_private_key(
+        &self,
+        network: Network,
+        index: u32,
+    ) -> PrivateKey {
+        let derivation_path = DerivationPath::identity_registration_path(
+            network,
+            index,
+        );
+        let extended_public_key = derivation_path
+            .derive_priv_ecdsa_for_master_seed(&self.seed, network)
+            .expect("derivation should not be able to fail");
+        extended_public_key.to_priv()
+    }
+
     pub fn receive_address(
         &mut self,
         network: Network,
         register: Option<&AppContext>,
     ) -> Result<Address, String> {
         Ok(Address::p2pkh(
-            &self.unused_bip_44_public_key(network, register)?,
+            &self.unused_bip_44_public_key(network, false, register)?,
+            network,
+        ))
+    }
+
+    pub fn change_address(
+        &mut self,
+        network: Network,
+        register: Option<&AppContext>,
+    ) -> Result<Address, String> {
+        Ok(Address::p2pkh(
+            &self.unused_bip_44_public_key(network, true, register)?,
             network,
         ))
     }

@@ -14,7 +14,6 @@ use std::env;
 use std::process::Command;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tokio::runtime::Runtime;
 
 pub struct NetworkChooserScreen {
     pub mainnet_app_context: Arc<AppContext>,
@@ -117,12 +116,9 @@ impl NetworkChooserScreen {
         ui.colored_label(status_color, if is_working { "Online" } else { "Offline" });
 
         // Display wallet count
-        let wallet_count = self
+        let wallet_count = format!("{}", self
             .context_for_network(network)
-            .wallets
-            .read()
-            .map(|wallets| format!("{}", wallets.len()))
-            .unwrap_or("?".to_string());
+            .wallets.len());
         ui.label(wallet_count);
 
         // Add a button to start the network

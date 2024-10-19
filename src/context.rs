@@ -27,7 +27,7 @@ pub struct AppContext {
     pub(crate) config: NetworkConfig,
     pub(crate) dpns_contract: Arc<DataContract>,
     pub(crate) core_client: Client,
-    pub(crate) wallets: RwLock<Vec<Wallet>>,
+    pub(crate) wallets: Vec<Arc<RwLock<Wallet>>>,
     pub(crate) platform_version: &'static PlatformVersion,
 }
 
@@ -71,7 +71,7 @@ impl AppContext {
             config: network_config,
             dpns_contract: Arc::new(dpns_contract),
             core_client,
-            wallets: RwLock::new(wallets),
+            wallets: vec![],
             platform_version: PlatformVersion::latest(),
         };
 

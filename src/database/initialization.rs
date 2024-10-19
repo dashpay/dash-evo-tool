@@ -39,8 +39,30 @@ impl Database {
             [],
         )?;
 
+        // Create the utxos table
+        self.execute(
+            "CREATE TABLE IF NOT EXISTS utxos (
+                txid BLOB NOT NULL,
+                vout INTEGER NOT NULL,
+                address TEXT NOT NULL,
+                value INTEGER NOT NULL,
+                script_pubkey BLOB NOT NULL,
+                network TEXT NOT NULL,
+                PRIMARY KEY (txid, vout, network)
+            );",
+            [],
+        )?;
+
         self.execute("CREATE INDEX IF NOT EXISTS idx_wallet_addresses_path_reference ON wallet_addresses (path_reference)", [])?;
         self.execute("CREATE INDEX IF NOT EXISTS idx_wallet_addresses_path_type ON wallet_addresses (path_type)", [])?;
+        self.execute(
+            "CREATE INDEX IF NOT EXISTS idx_utxos_address ON utxos (address)",
+            [],
+        )?;
+        self.execute(
+            "CREATE INDEX IF NOT EXISTS idx_utxos_network ON utxos (network)",
+            [],
+        )?;
 
         // Create the identities table
         self.execute(

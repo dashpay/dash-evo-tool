@@ -2,10 +2,11 @@ use crate::database::Database;
 use crate::model::wallet::{AddressInfo, DerivationPathReference, DerivationPathType, Wallet};
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dpp::dashcore::bip32::DerivationPath;
-use dash_sdk::dpp::dashcore::Network;
+use dash_sdk::dpp::dashcore::{consensus, Network, OutPoint, Script, ScriptBuf, Txid, TxOut};
 use rusqlite::params;
 use std::collections::BTreeMap;
 use std::str::FromStr;
+use dash_sdk::dpp::dashcore::hashes::Hash;
 
 impl Database {
     /// Insert a new wallet into the wallet table
@@ -126,6 +127,7 @@ impl Database {
                     address_balances: BTreeMap::new(),
                     watched_addresses: BTreeMap::new(),
                     alias,
+                    utxos: None,
                     is_main,
                     password_hint,
                 },
@@ -202,5 +204,57 @@ impl Database {
 
         // Convert the BTreeMap into a Vec of Wallets
         Ok(wallets_map.into_values().collect())
+    }
+
+    fn insert_utxo(
+        &self,
+        txid: &[u8],
+        vout: i64,
+        address: &str,
+        value: i64,
+        script_pubkey: &[u8],
+        network: &str,
+    ) -> rusqlite::Result<()> {
+        self.execute(
+            "INSERT INTO utxos (txid, vout, address, value, script_pubkey, network)
+         VALUES (?, ?, ?, ?, ?, ?)",
+            params![txid, vout, address, value, script_pubkey, network],
+        )?;
+        Ok(())
+    }
+
+    fn get_utxos_by_address(
+        &self,
+        address: &str,
+        network: &str,
+    ) -> rusqlite::Result<Vec<(OutPoint, TxOut)>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT txid, vout, value, script_pubkey FROM utxos
+         WHERE address = ? AND network = ?",
+        )?;
+        let tx_out_iter = stmt.query_map(params![address, network], |row| {
+            let txid_bytes: Vec<u8> = row.get(0)?;
+            let vout: u32 = row.get(1)?;
+            let value: u64 = row.get(2)?;
+            let script_pubkey_bytes: Vec<u8> = row.get(3)?;
+
+            let txid = Txid::from_slice(&txid_bytes)?;
+            let outpoint = OutPoint {
+                txid,
+                vout,
+            };
+            let script_pubkey: ScriptBuf = ScriptBuf::from_bytes(script_pubkey_bytes)?;
+            let tx_out = TxOut {
+                value: value as u64,
+                script_pubkey,
+            };
+            Ok((outpoint, tx_out))
+        })?;
+        let mut utxos = Vec::new();
+        for utxo in tx_out_iter {
+            utxos.push(utxo?);
+        }
+        Ok(utxos)
     }
 }

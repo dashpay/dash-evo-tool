@@ -1,7 +1,7 @@
 use crate::app::AppAction;
 use crate::context::AppContext;
 use crate::model::wallet::Wallet;
-use crate::platform::identity::{IdentityRegistrationInfo, IdentityTask};
+use crate::platform::identity::{IdentityKeys, IdentityRegistrationInfo, IdentityTask};
 use crate::platform::BackendTask;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::identities::add_new_identity_screen::AddNewIdentityScreenStep::{
@@ -12,10 +12,9 @@ use arboard::Clipboard;
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dpp::balances::credits::Duffs;
-use dash_sdk::dpp::dashcore::{PrivateKey, PublicKey};
+use dash_sdk::dpp::dashcore::PrivateKey;
 use dash_sdk::dpp::identity::KeyType;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
-use dash_sdk::platform::Identifier;
 use eframe::egui::Context;
 use egui::{Color32, ColorImage, ComboBox, TextureHandle};
 use image::Luma;
@@ -23,7 +22,7 @@ use qrcode::QrCode;
 use serde::Deserialize;
 use std::cmp::PartialEq;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{fmt, thread};
 
@@ -64,18 +63,16 @@ pub enum AddNewIdentityScreenStep {
 pub struct AddNewIdentityScreen {
     identity_id_number: u32,
     step: Arc<RwLock<AddNewIdentityScreenStep>>,
-    selected_wallet: Arc<RwLock<Option<Wallet>>>,
-    identity_id: Option<Identifier>,
+    selected_wallet: Option<Arc<RwLock<Wallet>>>,
     core_has_funding_address: Option<bool>,
     funding_address: Option<Address>,
     funding_address_balance: Arc<RwLock<Option<Duffs>>>,
     funding_method: Arc<RwLock<FundingMethod>>,
     funding_amount: String,
+    funding_amount_exact: Option<Duffs>,
     alias_input: String,
     copied_to_clipboard: Option<Option<String>>,
-    master_private_key: Option<PrivateKey>,
-    master_private_key_type: KeyType,
-    keys_input: Vec<(String, KeyType)>,
+    identity_keys: IdentityKeys,
     balance_check_handle: Option<(Arc<AtomicBool>, thread::JoinHandle<()>)>,
     pub app_context: Arc<AppContext>,
 }
@@ -114,18 +111,20 @@ impl AddNewIdentityScreen {
         Self {
             identity_id_number: 0,
             step: Arc::new(RwLock::new(AddNewIdentityScreenStep::ChooseFundingMethod)),
-            selected_wallet: Arc::new(RwLock::new(None)),
-            identity_id: None,
+            selected_wallet: None,
             core_has_funding_address: None,
             funding_address: None,
             funding_address_balance: Arc::new(RwLock::new(None)),
             funding_method: Arc::new(RwLock::new(FundingMethod::NoSelection)),
             funding_amount: "0.2".to_string(),
+            funding_amount_exact: None,
             alias_input: String::new(),
             copied_to_clipboard: None,
-            master_private_key: None,
-            master_private_key_type: KeyType::ECDSA_HASH160,
-            keys_input: vec![(String::new(), KeyType::ECDSA_HASH160)],
+            identity_keys: IdentityKeys {
+                master_private_key: None,
+                master_private_key_type: KeyType::ECDSA_HASH160,
+                keys_input: vec![],
+            },
             balance_check_handle: None,
             app_context: app_context.clone(),
         }
@@ -139,7 +138,7 @@ impl AddNewIdentityScreen {
         let stop_flag_clone = Arc::clone(&stop_flag);
         let ctx = ui_context.clone();
 
-        let selected_wallet = Arc::clone(&self.selected_wallet);
+        let selected_wallet = self.selected_wallet.clone();
         let funding_method = Arc::clone(&self.funding_method);
         let step = Arc::clone(&self.step);
 
@@ -157,7 +156,8 @@ impl AddNewIdentityScreen {
                 {
                     Ok(new_balance) => {
                         // Update wallet balance if it has changed.
-                        if let Some(mut wallet) = selected_wallet.write().unwrap().as_mut() {
+                        if let Some(mut wallet_guard) = selected_wallet.as_ref() {
+                            let mut wallet = wallet_guard.write().unwrap();
                             wallet
                                 .update_address_balance(
                                     &address,
@@ -213,11 +213,11 @@ impl AddNewIdentityScreen {
     fn render_qr_code(&mut self, ui: &mut egui::Ui, amount: f64) -> Result<(), String> {
         let (address, should_check_balance) = {
             // Scope the write lock to ensure it's dropped before calling `start_balance_check`.
-            let mut wallet = self.selected_wallet.write().unwrap();
 
-            if let Some(wallet) = wallet.as_mut() {
+            if let Some(wallet_guard) = self.selected_wallet.as_ref() {
                 // Get the receive address
                 if self.funding_address.is_none() {
+                    let mut wallet = wallet_guard.write().unwrap();
                     let receive_address = wallet
                         .receive_address(self.app_context.network, Some(&self.app_context))?;
 
@@ -303,21 +303,47 @@ impl AddNewIdentityScreen {
         Ok(())
     }
 
-    fn render_wallet_selection(&mut self, ui: &mut egui::Ui) {
-        let wallets = self.app_context.wallets.read().unwrap(); // Read lock on wallets
+    fn render_identity_index_input(&mut self, ui: &mut egui::Ui) {
+        let mut index_changed = false; // Track if the index has changed
 
-        if wallets.len() > 1 {
+        ui.horizontal(|ui| {
+            ui.label("Identity Index:");
+
+            // Render a ComboBox to select the identity index
+            ComboBox::from_id_salt("identity_index")
+                .selected_text(format!("{}", self.identity_id_number))
+                .show_ui(ui, |ui| {
+                    // Provide up to 30 entries for selection (0 to 29)
+                    for i in 0..30 {
+                        if ui.selectable_value(&mut self.identity_id_number, i, format!("{}", i)).clicked() {
+                            self.identity_id_number = i;
+                            index_changed = true;
+                        }
+                    }
+                });
+        });
+
+        // If the index has changed, call update_identity_key
+        if index_changed {
+
+                self.update_identity_key();
+        }
+    }
+
+    fn render_wallet_selection(&mut self, ui: &mut egui::Ui) {
+
+        if self.app_context.wallets.len() > 1 {
             ComboBox::from_label("Select Wallet")
                 .selected_text(
-                    self.selected_wallet
-                        .read()
-                        .unwrap() // Read lock on selected_wallet
+                    self.selected_wallet // Read lock on selected_wallet
                         .as_ref()
-                        .and_then(|wallet| wallet.alias.as_ref().map(|s| s.as_str()))
+                        .and_then(|wallet| wallet.read().unwrap().alias.as_ref().map(|s| s.as_str()))
                         .unwrap_or("Select"),
                 )
                 .show_ui(ui, |ui| {
-                    for wallet in wallets.iter() {
+                    for wallet in self.app_context.wallets.iter() {
+                        let a = self.selected_wallet
+                            .as_ref();
                         let mut selected_wallet = self.selected_wallet.write().unwrap(); // Write lock on selected_wallet
                         if ui
                             .selectable_value(
@@ -338,26 +364,26 @@ impl AddNewIdentityScreen {
     }
 
     fn render_funding_method(&mut self, ui: &mut egui::Ui) {
-        let selected_wallet = self.selected_wallet.read().unwrap(); // Read lock on selected_wallet
+        let Some(selected_wallet) = self.selected_wallet.as_ref() else {
+            return;
+        };
         let mut funding_method = self.funding_method.write().unwrap(); // Write lock on funding_method
 
         ComboBox::from_label("Funding Method")
             .selected_text(format!("{}", *funding_method))
             .show_ui(ui, |ui| {
-                if let Some(wallet) = selected_wallet.as_ref() {
-                    if wallet.has_balance() {
-                        ui.selectable_value(
-                            &mut *funding_method,
-                            FundingMethod::UseWalletBalance,
-                            "Use wallet balance",
-                        );
-                    }
-                }
                 ui.selectable_value(
                     &mut *funding_method,
                     FundingMethod::NoSelection,
                     "Please select funding method",
                 );
+                if selected_wallet.read().unwrap().has_balance() {
+                    ui.selectable_value(
+                        &mut *funding_method,
+                        FundingMethod::UseWalletBalance,
+                        "Use Wallet Balance",
+                    );
+                }
                 ui.selectable_value(
                     &mut *funding_method,
                     FundingMethod::AddressWithQRCode,
@@ -374,10 +400,10 @@ impl AddNewIdentityScreen {
     fn render_keys_input(&mut self, ui: &mut egui::Ui) {
         let mut keys_to_remove = vec![];
 
-        for (i, (key, key_type)) in self.keys_input.iter_mut().enumerate() {
+        for (i, (key, key_type)) in self.identity_keys.keys_input.iter_mut().enumerate() {
             ui.horizontal(|ui| {
                 ui.label(format!("Key {}:", i + 1));
-                ui.text_edit_singleline(key);
+                ui.label(key.to_wif());
 
                 ComboBox::from_label("Key Type")
                     .selected_text(format!("{:?}", key_type))
@@ -404,26 +430,26 @@ impl AddNewIdentityScreen {
         }
 
         for i in keys_to_remove.iter().rev() {
-            self.keys_input.remove(*i);
+            self.identity_keys.keys_input.remove(*i);
         }
 
         if ui.button("+ Add Key").clicked() {
-            self.keys_input
-                .push((String::new(), KeyType::ECDSA_HASH160));
+            self.add_identity_key();
         }
     }
 
     fn register_identity_clicked(&mut self) -> AppAction {
-        if let Some((identifier, master_private_key)) = self
-            .identity_id
-            .and_then(|s| self.master_private_key.map(|k| (s, k)))
+        if self.identity_keys.master_private_key.is_some()
         {
+            let amount = self.funding_amount_exact.unwrap_or_else(|| {
+                self.funding_amount.parse().unwrap_or_default()
+            });
             let identity_input = IdentityRegistrationInfo {
-                identity_id: identifier,
                 alias_input: self.alias_input.clone(),
-                master_private_key,
-                master_private_key_type: self.master_private_key_type,
-                keys_input: self.keys_input.clone(),
+                amount,
+                keys: self.identity_keys.clone(),
+                identity_index: 0,
+                wallet: self.selected_wallet,
             };
 
             AppAction::BackendTask(BackendTask::IdentityTask(IdentityTask::RegisterIdentity(
@@ -464,12 +490,33 @@ impl AddNewIdentityScreen {
                 // Add a button to quickly set the amount to the wallet's max balance (if applicable)
                 if let Some(wallet) = selected_wallet.as_ref() {
                     if ui.button("Max").clicked() {
-                        let max_amount = wallet.max_balance(self.app_context.network);
-                        self.funding_amount = format!("{:.4}", max_amount);
+                        let max_amount = wallet.max_balance();
+                        self.funding_amount = format!("{:.4}", max_amount as f64 * 1e-8);
+                        self.funding_amount_exact = Some(max_amount);
                     }
                 }
             }
         });
+    }
+    fn update_identity_key(&mut self) {
+        if let Some(wallet_guard) = self.selected_wallet.as_ref() {
+            let wallet = wallet_guard.read().unwrap();
+            let identity_index = self.identity_id_number;
+            self.identity_keys = IdentityKeys {
+                master_private_key: Some(wallet.identity_authentication_ecdsa_private_key(self.app_context.network, identity_index, 0)),
+                master_private_key_type: self.identity_keys.master_private_key_type,
+                keys_input: self.identity_keys.keys_input.iter().enumerate().map(|(key_index, (_, key_type))|
+                (wallet.identity_authentication_ecdsa_private_key(self.app_context.network, identity_index, key_index as u32 + 1), *key_type)
+                ).collect(),
+            }
+        }
+    }
+
+    fn add_identity_key(&mut self) {
+        if let Some(wallet_guard) = self.selected_wallet.as_ref() {
+            let wallet = wallet_guard.read().unwrap();
+            self.identity_keys.keys_input.push(( wallet.identity_authentication_ecdsa_private_key(self.app_context.network, self.identity_id_number, self.identity_keys.keys_input.len() as u32 + 1), KeyType::ECDSA_HASH160))
+        }
     }
 
     fn render_master_key(&mut self, ui: &mut egui::Ui, key: PrivateKey) {
@@ -478,15 +525,15 @@ impl AddNewIdentityScreen {
             ui.label(key.to_wif());
 
             ComboBox::from_label("Master Key Type")
-                .selected_text(format!("{:?}", self.master_private_key_type))
+                .selected_text(format!("{:?}", self.identity_keys.master_private_key_type))
                 .show_ui(ui, |ui| {
                     ui.selectable_value(
-                        &mut self.master_private_key_type,
+                        &mut self.identity_keys.master_private_key_type,
                         KeyType::ECDSA_SECP256K1,
                         "ECDSA_SECP256K1",
                     );
                     ui.selectable_value(
-                        &mut self.master_private_key_type,
+                        &mut self.identity_keys.master_private_key_type,
                         KeyType::ECDSA_HASH160,
                         "ECDSA_HASH160",
                     );
@@ -528,9 +575,11 @@ impl ScreenLike for AddNewIdentityScreen {
 
             ui.add_space(20.0);
 
-            ui.heading("2. Choose how much you would like to transfer to your new identity?");
+            if funding_method == FundingMethod::AddressWithQRCode {
+                ui.heading("2. Choose how much you would like to transfer to your new identity?");
 
-            self.render_funding_amount_input(ui);
+                self.render_funding_amount_input(ui);
+            }
 
             let Ok(amount_dash) = self.funding_amount.parse::<f64>() else {
                 return;
@@ -545,34 +594,27 @@ impl ScreenLike for AddNewIdentityScreen {
                 }
             }
 
-            if step < FundsReceived {
+            if step < FundsReceived && funding_method != FundingMethod::UseWalletBalance {
                 ui.add_space(20.0);
                 ui.heading("...Waiting for funds to continue...");
                 return;
             }
 
             ui.heading(
-                "2. Leave 0 if this is the first identity for your wallet. If you have made an identity already, bump this number"
+                "3. Choose an identity index. Leave this 0 if this is your first identity for this wallet."
             );
+
+            self.render_identity_index_input(ui);
 
             ui.add_space(10.0);
 
-            if let Some(key) = self.master_private_key {
+            if let Some(key) = self.identity_keys.master_private_key {
                 self.render_master_key(ui, key);
             }
 
-            ui.horizontal(|ui| {
-                ui.label("Identity ID (Hex or Base58):");
-                ui.label(
-                    self.identity_id
-                        .map(|id| id.to_string(Encoding::Base58))
-                        .unwrap_or_else(|| "None".to_string()),
-                );
-            });
-
             self.render_keys_input(ui);
 
-            if step == ReadyToCreate {
+            if step == ReadyToCreate || funding_method == FundingMethod::UseWalletBalance {
                 if ui.button("Create Identity").clicked() {
                     let now = SystemTime::now()
                         .duration_since(UNIX_EPOCH)

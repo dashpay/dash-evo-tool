@@ -11,11 +11,13 @@ use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::{KeyID, KeyType, Purpose};
-use dash_sdk::dpp::platform_value::Bytes32;
 use dash_sdk::dpp::ProtocolError;
-use dash_sdk::platform::{Identifier, Identity, IdentityPublicKey};
+use dash_sdk::platform::{Identity, IdentityPublicKey};
 use dash_sdk::Sdk;
 use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, RwLock};
+use dash_sdk::dpp::balances::credits::Duffs;
+use crate::model::wallet::Wallet;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct IdentityInputToLoad {
@@ -29,12 +31,28 @@ pub struct IdentityInputToLoad {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct IdentityKeys {
+    pub(crate) master_private_key: Option<PrivateKey>,
+    pub(crate) master_private_key_type: KeyType,
+    pub(crate) keys_input: Vec<(PrivateKey, KeyType)>,
+}
+
+#[derive(Debug, Clone)]
 pub struct IdentityRegistrationInfo {
-    pub identity_id: Identifier,
     pub alias_input: String,
-    pub master_private_key: PrivateKey,
-    pub master_private_key_type: KeyType,
-    pub keys_input: Vec<(String, KeyType)>,
+    pub amount: Duffs,
+    pub keys: IdentityKeys,
+    pub identity_index: u32,
+    pub wallet: Arc<RwLock<Wallet>>
+}
+
+impl PartialEq for IdentityRegistrationInfo {
+    fn eq(&self, other: &Self) -> bool {
+        self.alias_input == other.alias_input
+            && self.amount == other.amount
+            && self.keys == other.keys
+            && self.identity_index == other.identity_index
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -232,7 +250,7 @@ impl AppContext {
         match task {
             IdentityTask::LoadIdentity(input) => self.load_identity(sdk, input).await,
             IdentityTask::WithdrawFromIdentity(qualified_identity, to_address, credits, id) => {
-                self.withdraw_from_identity(sdk, qualified_identity, to_address, credits, id)
+                self.withdraw_from_identity(qualified_identity, to_address, credits, id)
                     .await
             }
             IdentityTask::AddKeyToIdentity(qualified_identity, public_key_to_add, private_key) => {

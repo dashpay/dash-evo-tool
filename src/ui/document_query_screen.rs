@@ -1,4 +1,4 @@
-use crate::app::{AppAction, DesiredAppAction};
+use crate::app::AppAction;
 use crate::context::AppContext;
 use crate::model::contested_name::ContestedName;
 use crate::platform::contested_names::ContestedResourceTask;
@@ -7,12 +7,9 @@ use crate::ui::components::contract_chooser_panel::add_contract_chooser_panel;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
-use chrono::{DateTime, LocalResult, TimeZone, Utc};
-use chrono_humanize::HumanTime;
-use dash_sdk::dpp::platform_value::Value;
+use chrono::{DateTime, Utc};
 use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
-use egui::{Context, Frame, Margin, Ui};
-use egui_extras::{Column, TableBuilder};
+use egui::{Context, Ui};
 use std::sync::{Arc, Mutex};
 
 #[derive(Clone, Copy, PartialEq, Eq)]

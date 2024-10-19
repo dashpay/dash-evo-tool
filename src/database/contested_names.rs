@@ -7,9 +7,8 @@ use dash_sdk::dpp::identifier::Identifier;
 use dash_sdk::dpp::identity::TimestampMillis;
 use dash_sdk::dpp::prelude::{BlockHeight, CoreBlockHeight};
 use dash_sdk::query_types::Contenders;
-use rusqlite::{params, params_from_iter, OptionalExtension, Result};
+use rusqlite::{params, params_from_iter, Result};
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::fmt::Debug;
 
 impl Database {
     pub fn get_contested_names(&self, app_context: &AppContext) -> Result<Vec<ContestedName>> {

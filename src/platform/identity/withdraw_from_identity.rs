@@ -5,11 +5,10 @@ use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
 use dash_sdk::dpp::identity::KeyID;
 use dash_sdk::platform::transition::withdraw_from_identity::WithdrawFromIdentity;
-use dash_sdk::Sdk;
+
 impl AppContext {
     pub(super) async fn withdraw_from_identity(
         &self,
-        sdk: &Sdk,
         mut qualified_identity: QualifiedIdentity,
         to_address: Option<Address>,
         credits: Credits,

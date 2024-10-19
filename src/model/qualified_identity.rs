@@ -1,5 +1,6 @@
 use bincode::{Decode, Encode};
 use dash_sdk::dashcore_rpc::dashcore::{signer, PubkeyHash};
+use dash_sdk::dpp::bls_signatures::{Bls12381G2Impl, SignatureSchemes};
 use dash_sdk::dpp::dashcore::address::Payload;
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::{Address, Network, ScriptHash};
@@ -61,7 +62,7 @@ pub struct QualifiedIdentity {
     pub identity_type: IdentityType,
     pub alias: Option<String>,
     pub encrypted_private_keys:
-        BTreeMap<(EncryptedPrivateKeyTarget, KeyID), (IdentityPublicKey, Vec<u8>)>,
+        BTreeMap<(EncryptedPrivateKeyTarget, KeyID), (IdentityPublicKey, [u8; 32])>,
 }
 
 impl Signer for QualifiedIdentity {
@@ -86,13 +87,17 @@ impl Signer for QualifiedIdentity {
                 Ok(signature.to_vec().into())
             }
             KeyType::BLS12_381 => {
-                let pk =
-                    bls_signatures::PrivateKey::from_bytes(private_key, false).map_err(|_e| {
-                        ProtocolError::Generic(
-                            "bls private key from bytes isn't correct".to_string(),
-                        )
-                    })?;
-                Ok(pk.sign(data).to_bytes().to_vec().into())
+                let pk = bls_signatures::SecretKey::<Bls12381G2Impl>::from_be_bytes(&private_key)
+                    .into_option()
+                    .ok_or(ProtocolError::Generic(
+                        "bls private key from bytes isn't correct".to_string(),
+                    ))?;
+                Ok(pk
+                    .sign(SignatureSchemes::Basic, data)?
+                    .as_raw_value()
+                    .to_compressed()
+                    .to_vec()
+                    .into())
             }
             KeyType::EDDSA_25519_HASH160 => {
                 let key: [u8; 32] = private_key.clone().try_into().expect("expected 32 bytes");

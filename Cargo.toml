@@ -13,36 +13,28 @@ accesskit = "=0.16.1"
 egui = { version = "0.29.1" }
 egui_extras = "0.29.1"
 qrcode = "0.14.1"
-#dash-spv-masternode-processor = { git = "https://github.com/dashpay/dash-shared-core", branch = "main" }
 eframe = { version = "0.29.1", features = ["persistence"] }
 strum = { version = "0.26.1", features = ["derive"] }
 bs58 = "0.5.0"
 base64 = "0.22.1"
 copypasta = "0.10.1"
-dash-sdk = { git = "https://github.com/dashpay/platform", branch = "chore/DocumentQueryPartialEq" }
+dash-sdk = { git = "https://github.com/dashpay/platform", branch = "refactor/replaceBLSLibrary" }
 thiserror = "1"
 serde = "1.0.197"
 serde_json = "1.0.120"
-toml = { version = "0.8.10", features = ["display"] }
 tokio = { version = "1.36.0", features = ["full"] }
-reqwest = { version = "0.12.3", features = ["json"] }
 bincode = { version = "2.0.0-rc.3", features = ["serde"] }
 hex = { version = "0.4.3" }
 itertools = "0.13.0"
 futures = "0.3.30"
-walkdir = "2"
 rand = "0.8"
-memoize = "0.4.2"
 tracing = "0.1.40"
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 dotenvy = "0.15.7"
 envy = "0.4.2"
-clap = { version = "4.5.20", features = ["derive"] }
-governor = "0.6.3"
 tokio-util = "0.7.10"
 chrono = "0.4"
 chrono-humanize = "0.2.3"
-dashmap = "5.5.3"
 grovedb-version = "2.0.3"
 sha2 = "0.10.8"
 arboard = { version = "3.4.0", default-features = false, features = [
@@ -50,9 +42,8 @@ arboard = { version = "3.4.0", default-features = false, features = [
 ] }
 enum_dispatch = "0.3.13"
 
-hdrhistogram = "7.5.4"
 rusqlite = { version = "0.32.1" }
 serde_yaml = "0.9.34+deprecated"
-image = "0.25.2"
-openssl = { version = "0.10", features = ["vendored"] }
+image = { version = "0.25.2", default-features = false, features = ["png"] }
 bitflags = "2.6.0"
+libsqlite3-sys = { version = "0.30.1", features = ["bundled"] }

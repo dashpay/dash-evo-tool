@@ -93,7 +93,7 @@ pub enum ScreenType {
     TransitionVisualizer,
     WithdrawalScreen(QualifiedIdentity),
     AddKeyScreen(QualifiedIdentity),
-    KeyInfo(QualifiedIdentity, IdentityPublicKey, Option<Vec<u8>>),
+    KeyInfo(QualifiedIdentity, IdentityPublicKey, Option<[u8; 32]>),
     Keys(Identity),
     DocumentQueryScreen,
     NetworkChooser,

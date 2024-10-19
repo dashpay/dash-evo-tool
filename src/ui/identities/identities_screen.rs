@@ -60,7 +60,7 @@ impl IdentitiesScreen {
         ui: &mut Ui,
         identity: &QualifiedIdentity,
         key: &IdentityPublicKey,
-        encrypted_private_key: Option<&Vec<u8>>,
+        encrypted_private_key: Option<&[u8; 32]>,
     ) -> AppAction {
         let button_color = if encrypted_private_key.is_some() {
             Color32::from_rgb(167, 232, 232)

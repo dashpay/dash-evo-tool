@@ -57,10 +57,8 @@ impl AppContext {
 
         if identity_type != IdentityType::User && owner_private_key_bytes.is_some() {
             let owner_private_key_bytes = owner_private_key_bytes.unwrap();
-            let key = self.verify_owner_key_exists_on_identity(
-                &identity,
-                owner_private_key_bytes.as_slice(),
-            )?;
+            let key =
+                self.verify_owner_key_exists_on_identity(&identity, &owner_private_key_bytes)?;
             encrypted_private_keys.insert(
                 (PrivateKeyOnMainIdentity, key.id()),
                 (key.clone(), owner_private_key_bytes),
@@ -71,7 +69,7 @@ impl AppContext {
             let payout_address_private_key_bytes = payout_address_private_key_bytes.unwrap();
             let key = self.verify_payout_address_key_exists_on_identity(
                 &identity,
-                payout_address_private_key_bytes.as_slice(),
+                &payout_address_private_key_bytes,
             )?;
             encrypted_private_keys.insert(
                 (PrivateKeyOnMainIdentity, key.id()),
@@ -102,7 +100,7 @@ impl AppContext {
 
                 let key = self.verify_voting_key_exists_on_identity(
                     &voter_identity,
-                    voting_private_key_bytes.as_slice(),
+                    &voting_private_key_bytes,
                 )?;
                 encrypted_private_keys.insert(
                     (PrivateKeyOnVoterIdentity, key.id()),

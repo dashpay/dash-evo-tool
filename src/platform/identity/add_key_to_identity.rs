@@ -19,7 +19,7 @@ impl AppContext {
         sdk: &Sdk,
         mut qualified_identity: QualifiedIdentity,
         mut public_key_to_add: IdentityPublicKey,
-        private_key: Vec<u8>,
+        private_key: [u8; 32],
     ) -> Result<(), String> {
         let new_identity_nonce = sdk
             .get_identity_nonce(qualified_identity.identity.id(), true, None)

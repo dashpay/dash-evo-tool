@@ -171,7 +171,8 @@ impl AddKeyScreen {
         let mut app_action = AppAction::None;
         // Convert the input string to bytes (hex decoding)
         match hex::decode(&self.private_key_input) {
-            Ok(private_key_bytes) => {
+            Ok(private_key_bytes_vec) if private_key_bytes_vec.len() == 32 => {
+                let private_key_bytes = private_key_bytes_vec.try_into().unwrap();
                 let public_key_data_result = self.key_type.public_key_data_from_private_key_data(
                     &private_key_bytes,
                     self.app_context.network,
@@ -209,6 +210,7 @@ impl AddKeyScreen {
                     }
                 }
             }
+            Ok(_) => self.error_message = Some("Private key not 32 bytes".to_string()),
             Err(_) => {
                 self.error_message = Some("Invalid hex string for private key.".to_string());
             }

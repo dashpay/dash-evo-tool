@@ -19,7 +19,7 @@ strum = { version = "0.26.1", features = ["derive"] }
 bs58 = "0.5.0"
 base64 = "0.22.1"
 copypasta = "0.10.1"
-dash-sdk = { git = "https://github.com/dashpay/platform", branch = "chore/DocumentQueryPartialEq" }
+dash-sdk = { git = "https://github.com/dashpay/platform", branch = "refactor/replaceBLSLibrary" }
 thiserror = "1"
 serde = "1.0.197"
 serde_json = "1.0.120"

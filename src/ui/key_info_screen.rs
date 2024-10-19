@@ -20,7 +20,7 @@ use std::sync::Arc;
 pub struct KeyInfoScreen {
     pub identity: QualifiedIdentity,
     pub key: IdentityPublicKey,
-    pub private_key_bytes: Option<Vec<u8>>,
+    pub private_key_bytes: Option<[u8; 32]>,
     pub app_context: Arc<AppContext>,
     private_key_input: String,
     error_message: Option<String>,
@@ -171,7 +171,7 @@ impl KeyInfoScreen {
     pub fn new(
         identity: QualifiedIdentity,
         key: IdentityPublicKey,
-        private_key_bytes: Option<Vec<u8>>,
+        private_key_bytes: Option<[u8; 32]>,
         app_context: &Arc<AppContext>,
     ) -> Self {
         Self {
@@ -187,7 +187,8 @@ impl KeyInfoScreen {
     fn validate_and_store_private_key(&mut self) {
         // Convert the input string to bytes (hex decoding)
         match hex::decode(&self.private_key_input) {
-            Ok(private_key_bytes) => {
+            Ok(private_key_bytes_vec) if private_key_bytes_vec.len() == 32 => {
+                let private_key_bytes = private_key_bytes_vec.try_into().unwrap();
                 let validation_result = self
                     .key
                     .validate_private_key_bytes(&private_key_bytes, self.app_context.network);
@@ -215,6 +216,9 @@ impl KeyInfoScreen {
                     self.error_message =
                         Some("Private key does not match the public key.".to_string());
                 }
+            }
+            Ok(_) => {
+                self.error_message = Some("Private key not 32 bytes".to_string());
             }
             Err(_) => {
                 self.error_message = Some("Invalid hex string for private key.".to_string());

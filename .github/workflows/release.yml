@@ -101,7 +101,7 @@ jobs:
 
       - name: Windows debug (find release file..)
         if: ${{ matrix.target == 'x86_64-pc-windows-gnu' }}
-        run: tree -d target/
+        run: tree target/
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v3

@@ -11,6 +11,8 @@ use dash_sdk::query_types::Contenders;
 use rusqlite::{params, params_from_iter, Result};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::Duration;
+use dash_sdk::dpp::voting::vote_info_storage::contested_document_vote_poll_winner_info::ContestedDocumentVotePollWinnerInfo;
+use tracing::{error, info};
 
 impl Database {
     pub fn get_contested_names(&self, app_context: &AppContext) -> Result<Vec<ContestedName>> {
@@ -182,7 +184,7 @@ impl Database {
                     // Update the entry if any field has changed
                     self.execute(
                         "UPDATE contested_name
-                     SET locked_votes = ?, abstain_votes = ?, awarded_to = ?, ending_time = ?
+                     SET locked_votes = ?, abstain_votes = ?, awarded_to = ?, end_time = ?
                      WHERE normalized_contested_name = ? AND network = ?",
                         params![
                             contested_name.locked_votes,
@@ -198,7 +200,7 @@ impl Database {
             Err(rusqlite::Error::QueryReturnedNoRows) => {
                 // If the contested name doesn't exist, insert it
                 self.execute(
-                    "INSERT INTO contested_name (normalized_contested_name, locked_votes, abstain_votes, awarded_to, ending_time, network)
+                    "INSERT INTO contested_name (normalized_contested_name, locked_votes, abstain_votes, awarded_to, end_time, network)
                  VALUES (?, ?, ?, ?, ?, ?)",
                     params![
                     contested_name.normalized_contested_name,
@@ -229,19 +231,57 @@ impl Database {
 
     pub fn insert_or_update_contenders(
         &self,
-        contest_id: &str,
+        normalized_contested_name: &str,
         contenders: &Contenders,
         dpns_domain_document_type: DocumentTypeRef,
         app_context: &AppContext,
     ) -> Result<()> {
-        if let Some(winner) = contenders.winner {
-            return Ok(()); //todo
-        }
         let network = app_context.network_string();
+        let last_updated = chrono::Utc::now().timestamp(); // Get the current timestamp
+        if let Some((winner, block_info)) = contenders.winner {
+            match winner {
+                ContestedDocumentVotePollWinnerInfo::NoWinner => {}
+                ContestedDocumentVotePollWinnerInfo::WonByIdentity(won_by) => {
+                    let mut conn = self.conn.lock().unwrap();
+                    // Start a transaction
+                    let tx = conn.transaction()?;
+                    tx.execute(
+                        "UPDATE contested_name
+         SET awarded_to = ?, last_updated = ?, end_time = ?
+         WHERE normalized_contested_name = ? AND network = ?",
+                        params![
+                won_by.to_vec(),
+                                            last_updated,
+                            block_info.time_ms,
+                normalized_contested_name,
+                network,
+            ],
+                    )?;
+                    tx.commit()?;
+                }
+                ContestedDocumentVotePollWinnerInfo::Locked => {
+                    let mut conn = self.conn.lock().unwrap();
+                    // Start a transaction
+                    let tx = conn.transaction()?;
+                    tx.execute(
+                        "UPDATE contested_name
+         SET locked = 1, last_updated = ?, end_time = ?
+         WHERE normalized_contested_name = ? AND network = ?",
+                        params![
+                                            last_updated,
+                            block_info.time_ms,
+                normalized_contested_name,
+                network,
+            ],
+                    )?;
+                    tx.commit()?;
+                }
+            }
+            return Ok(())
+        }
         let mut conn = self.conn.lock().unwrap();
         let locked_votes = contenders.lock_vote_tally.unwrap_or(0) as i64;
         let abstain_votes = contenders.abstain_vote_tally.unwrap_or(0) as i64;
-        let last_updated = chrono::Utc::now().timestamp(); // Get the current timestamp
 
         // Start a transaction
         let tx = conn.transaction()?;
@@ -255,7 +295,7 @@ impl Database {
                 locked_votes,
                 abstain_votes,
                 last_updated,
-                contest_id,
+                normalized_contested_name,
                 network
             ],
         )?;
@@ -287,11 +327,11 @@ impl Database {
             let mut stmt = tx.prepare(
                 "SELECT votes
              FROM contestant
-             WHERE contest_id = ? AND identity_id = ? AND network = ?",
+             WHERE normalized_contested_name = ? AND identity_id = ? AND network = ?",
             )?;
 
             let result = stmt.query_row(
-                params![contest_id, identity_id_bytes.clone(), network],
+                params![normalized_contested_name, identity_id_bytes.clone(), network],
                 |row| row.get::<_, u64>(0),
             );
 
@@ -302,10 +342,10 @@ impl Database {
                         tx.execute(
                             "UPDATE contestant
                          SET votes = ?
-                         WHERE contest_id = ? AND identity_id = ? AND network = ?",
+                         WHERE normalized_contested_name = ? AND identity_id = ? AND network = ?",
                             params![
                                 contender.vote_tally().unwrap_or(0),
-                                contest_id,
+                                normalized_contested_name,
                                 identity_id_bytes,
                                 network,
                             ],
@@ -315,10 +355,10 @@ impl Database {
                 Err(rusqlite::Error::QueryReturnedNoRows) => {
                     // If the contestant doesn't exist, insert it
                     tx.execute(
-                        "INSERT INTO contestant (contest_id, identity_id, name, votes, created_at, created_at_block_height, created_at_core_block_height, document_id, network)
+                        "INSERT INTO contestant (normalized_contested_name, identity_id, name, votes, created_at, created_at_block_height, created_at_core_block_height, document_id, network)
                      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                         params![
-                        contest_id,
+                        normalized_contested_name,
                         identity_id_bytes,
                         name,
                         contender.vote_tally().unwrap_or(0),
@@ -335,7 +375,10 @@ impl Database {
         }
 
         // Commit the transaction
-        tx.commit()?;
+        if let Err(e) = tx.commit() {
+            error!("Transaction failed to commit: {:?}", e);
+            return Err(e);
+        }
 
         Ok(())
     }

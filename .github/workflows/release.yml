@@ -20,8 +20,8 @@ jobs:
     strategy:
       matrix:
         include:
-          - name: "linux-amd64"
-            runs-on: ["self-hosted", "Linux", "x64"]  # Array of tags for AMD64
+          - name: "Windows"
+            runs-on: "ubuntu-20.04"
             target: "x86_64-unknown-linux-gnu"
             platform: "amd64"
           - name: "linux-arm64"
@@ -98,6 +98,10 @@ jobs:
           CC_x86_64_pc_windows_gnu: x86_64-w64-mingw32-gcc
           AR_x86_64_pc_windows_gnu: x86_64-w64-mingw32-ar
           CFLAGS_x86_64_pc_windows_gnu: "-O2"
+
+      - name: Windows debug (find release file..)
+        if: ${{ matrix.target == 'x86_64-pc-windows-gnu' }}
+        run: tree -d target/
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v3

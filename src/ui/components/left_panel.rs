@@ -62,7 +62,7 @@ pub fn add_left_panel(
         (
             "T",
             RootScreenType::RootScreenTransitionVisualizerScreen,
-            "icons/tools.png",
+            "tools.png",
         ),
         (
             "N",

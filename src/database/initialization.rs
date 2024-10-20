@@ -38,15 +38,22 @@ impl Database {
             [],
         )?;
 
+        // Create the composite index for faster querying
+        self.execute(
+            "CREATE INDEX IF NOT EXISTS idx_identity_local_network_type
+     ON identity (is_local, network, identity_type)",
+            [],
+        )?;
+
         // Create the contested names table
         self.execute(
             "CREATE TABLE IF NOT EXISTS contested_name (
                 normalized_contested_name TEXT,
                 locked_votes INTEGER,
                 abstain_votes INTEGER,
-                winner_type INTEGER NOT NULL,
                 awarded_to BLOB,
-                ending_time INTEGER,
+                end_time INTEGER,
+                locked INTEGER NOT NULL DEFAULT 0,
                 last_updated INTEGER,
                 network TEXT NOT NULL,
                 PRIMARY KEY (normalized_contested_name, network)

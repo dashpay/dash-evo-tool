@@ -66,10 +66,52 @@ impl Database {
 
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, data, alias, identity_type FROM identity WHERE is_local = 1 AND network = ? AND data IS NOT NULL",
+            "SELECT data FROM identity WHERE is_local = 1 AND network = ? AND data IS NOT NULL",
         )?;
         let identity_iter = stmt.query_map(params![network], |row| {
-            let data: Vec<u8> = row.get(1)?;
+            let data: Vec<u8> = row.get(0)?;
+            let identity: QualifiedIdentity = QualifiedIdentity::from_bytes(&data);
+
+            Ok(identity)
+        })?;
+
+        let identities: rusqlite::Result<Vec<QualifiedIdentity>> = identity_iter.collect();
+        identities
+    }
+
+    pub fn get_local_voting_identities(
+        &self,
+        app_context: &AppContext,
+    ) -> rusqlite::Result<Vec<QualifiedIdentity>> {
+        let network = app_context.network_string();
+
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT data FROM identity WHERE is_local = 1 AND network = ? AND identity_type != 'User' AND data IS NOT NULL",
+        )?;
+        let identity_iter = stmt.query_map(params![network], |row| {
+            let data: Vec<u8> = row.get(0)?;
+            let identity: QualifiedIdentity = QualifiedIdentity::from_bytes(&data);
+
+            Ok(identity)
+        })?;
+
+        let identities: rusqlite::Result<Vec<QualifiedIdentity>> = identity_iter.collect();
+        identities
+    }
+
+    pub fn get_local_user_identities(
+        &self,
+        app_context: &AppContext,
+    ) -> rusqlite::Result<Vec<QualifiedIdentity>> {
+        let network = app_context.network_string();
+
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT data FROM identity WHERE is_local = 1 AND network = ? AND identity_type = 'User' AND data IS NOT NULL",
+        )?;
+        let identity_iter = stmt.query_map(params![network], |row| {
+            let data: Vec<u8> = row.get(0)?;
             let identity: QualifiedIdentity = QualifiedIdentity::from_bytes(&data);
 
             Ok(identity)

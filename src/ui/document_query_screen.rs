@@ -101,7 +101,7 @@ impl DocumentQueryScreen {
                     .cmp(&b.normalized_contested_name),
                 SortColumn::LockedVotes => a.locked_votes.cmp(&b.locked_votes),
                 SortColumn::AbstainVotes => a.abstain_votes.cmp(&b.abstain_votes),
-                SortColumn::EndingTime => a.ending_time.cmp(&b.ending_time),
+                SortColumn::EndingTime => a.end_time.cmp(&b.end_time),
                 SortColumn::LastUpdated => a.last_updated.cmp(&b.last_updated),
             };
 

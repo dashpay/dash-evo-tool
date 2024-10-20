@@ -1,6 +1,6 @@
 use crate::context::AppContext;
 use crate::database::Database;
-use crate::model::contested_name::{Contestant, ContestedName};
+use crate::model::contested_name::{ContestState, Contestant, ContestedName};
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::data_contract::document_type::DocumentTypeRef;
 use dash_sdk::dpp::document::DocumentV0Getters;
@@ -10,10 +10,16 @@ use dash_sdk::dpp::prelude::{BlockHeight, CoreBlockHeight};
 use dash_sdk::query_types::Contenders;
 use rusqlite::{params, params_from_iter, Result};
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::time::Duration;
 
 impl Database {
     pub fn get_contested_names(&self, app_context: &AppContext) -> Result<Vec<ContestedName>> {
         let network = app_context.network_string();
+        let contest_duration = if app_context.network == Network::Dash {
+            Duration::from_secs(60 * 60 * 24 * 14)
+        } else {
+            Duration::from_secs(60 * 90)
+        };
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT
@@ -21,7 +27,8 @@ impl Database {
                 cn.locked_votes,
                 cn.abstain_votes,
                 cn.awarded_to,
-                cn.ending_time,
+                cn.end_time,
+                cn.locked,
                 cn.last_updated,
                 c.identity_id,
                 c.name,
@@ -51,19 +58,39 @@ impl Database {
             let abstain_votes: Option<u32> = row.get(2)?;
             let awarded_to: Option<Vec<u8>> = row.get(3)?;
             let ending_time: Option<u64> = row.get(4)?;
-            let last_updated: Option<u64> = row.get(5)?;
-            let identity_id: Option<Vec<u8>> = row.get(6)?;
-            let contestant_name: Option<String> = row.get(7)?;
-            let votes: Option<u32> = row.get(8)?;
-            let created_at: Option<TimestampMillis> = row.get(9)?;
-            let created_at_block_height: Option<BlockHeight> = row.get(10)?;
-            let created_at_core_block_height: Option<CoreBlockHeight> = row.get(11)?;
-            let document_id: Option<Vec<u8>> = row.get(12)?;
-            let identity_info: Option<String> = row.get(13)?;
+            let locked: bool = row.get(5)?;
+            let last_updated: Option<u64> = row.get(6)?;
+            let identity_id: Option<Vec<u8>> = row.get(7)?;
+            let contestant_name: Option<String> = row.get(8)?;
+            let votes: Option<u32> = row.get(9)?;
+            let created_at: Option<TimestampMillis> = row.get(10)?;
+            let created_at_block_height: Option<BlockHeight> = row.get(11)?;
+            let created_at_core_block_height: Option<CoreBlockHeight> = row.get(12)?;
+            let document_id: Option<Vec<u8>> = row.get(13)?;
+            let identity_info: Option<String> = row.get(14)?;
 
             // Convert `awarded_to` to `Identifier` if it exists
             let awarded_to_id = awarded_to
                 .map(|id| Identifier::from_bytes(&id).expect("Expected 32 bytes for awarded_to"));
+
+            let state = if locked {
+                ContestState::Locked
+            } else if let Some(awarded_to_id) = awarded_to_id {
+                ContestState::WonBy(awarded_to_id)
+            } else if let Some(created_at) = created_at {
+                let elapsed_time = Duration::from_millis(
+                    (std::time::UNIX_EPOCH.elapsed().unwrap().as_millis() as u64)
+                        .saturating_sub(created_at),
+                );
+
+                if elapsed_time <= contest_duration / 2 {
+                    ContestState::Joinable
+                } else {
+                    ContestState::Ongoing
+                }
+            } else {
+                ContestState::Unknown
+            };
 
             // Create or get the contested name from the hashmap
             let contested_name = contested_name_map
@@ -73,10 +100,11 @@ impl Database {
                     locked_votes,
                     abstain_votes,
                     awarded_to: awarded_to_id,
-                    ending_time,
+                    end_time: ending_time,
                     contestants: Some(Vec::new()), // Initialize as an empty vector
                     last_updated,
                     my_votes: BTreeMap::new(), // Assuming this is filled elsewhere
+                    state,
                 });
 
             // If there are contestant details in the row, add them
@@ -148,7 +176,7 @@ impl Database {
                     || awarded_to.as_ref().map(|id| {
                         Identifier::from_bytes(id).expect("expected 32 bytes for awarded to")
                     }) != contested_name.awarded_to
-                    || ending_time != contested_name.ending_time;
+                    || ending_time != contested_name.end_time;
 
                 if should_update {
                     // Update the entry if any field has changed
@@ -160,7 +188,7 @@ impl Database {
                             contested_name.locked_votes,
                             contested_name.abstain_votes,
                             contested_name.awarded_to.as_ref().map(|id| id.to_vec()),
-                            contested_name.ending_time,
+                            contested_name.end_time,
                             contested_name.normalized_contested_name,
                             network,
                         ],
@@ -177,7 +205,7 @@ impl Database {
                     contested_name.locked_votes,
                     contested_name.abstain_votes,
                     contested_name.awarded_to.as_ref().map(|id| id.to_vec()),
-                    contested_name.ending_time,
+                    contested_name.end_time,
                     network,
                 ],
                 )?;
@@ -206,7 +234,7 @@ impl Database {
         dpns_domain_document_type: DocumentTypeRef,
         app_context: &AppContext,
     ) -> Result<()> {
-        if contenders.winner.is_some() {
+        if let Some(winner) = contenders.winner {
             return Ok(()); //todo
         }
         let network = app_context.network_string();
@@ -450,8 +478,8 @@ impl Database {
         // Insert new names into the database
         if !new_names.is_empty() {
             let mut insert_stmt = conn.prepare(
-                "INSERT INTO contested_name (normalized_contested_name, network, winner_type)
-             VALUES (?, ?, 0)",
+                "INSERT INTO contested_name (normalized_contested_name, network)
+             VALUES (?, ?)",
             )?;
 
             for name in &new_names {
@@ -480,7 +508,7 @@ impl Database {
         let conn = self.conn.lock().unwrap();
 
         // Prepare statement for selecting existing entries
-        let select_query = "SELECT ending_time
+        let select_query = "SELECT end_time
                     FROM contested_name
                     WHERE network = ? AND normalized_contested_name = ?";
 
@@ -488,7 +516,7 @@ impl Database {
 
         // Prepare statement for updating existing entries
         let update_query = "UPDATE contested_name
-                    SET ending_time = ?
+                    SET end_time = ?
                     WHERE normalized_contested_name = ? AND network = ?";
         let mut update_stmt = conn.prepare(update_query)?;
 

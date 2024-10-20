@@ -196,9 +196,14 @@ pub enum MessageType {
 #[enum_dispatch]
 pub trait ScreenLike {
     fn refresh(&mut self) {}
+    fn refresh_on_arrival(&mut self) {}
     fn ui(&mut self, ctx: &Context) -> AppAction;
     fn display_message(&mut self, _message: &str, _message_type: MessageType) {}
-    fn display_task_result(&mut self, _backend_task_success_result: BackendTaskSuccessResult) {}
+    fn display_task_result(&mut self, _backend_task_success_result: BackendTaskSuccessResult) {
+        self.display_message("Success", MessageType::Success)
+    }
+
+    fn pop_on_success(&mut self) {}
 }
 
 // Implement Debug for Screen using the ScreenType

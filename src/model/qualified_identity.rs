@@ -13,6 +13,7 @@ use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicK
 use dash_sdk::dpp::identity::signer::Signer;
 use dash_sdk::dpp::identity::KeyType::{BIP13_SCRIPT_HASH, ECDSA_HASH160};
 use dash_sdk::dpp::identity::{Identity, KeyID, KeyType, Purpose, SecurityLevel};
+use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::platform_value::BinaryData;
 use dash_sdk::dpp::state_transition::errors::InvalidIdentityPublicKeyTypeError;
 use dash_sdk::dpp::{bls_signatures, ed25519_dalek, ProtocolError};
@@ -139,6 +140,19 @@ impl QualifiedIdentity {
         bincode::decode_from_slice(bytes, bincode::config::standard())
             .expect("Failed to decode QualifiedIdentity")
             .0
+    }
+
+    pub fn display_string(&self) -> String {
+        self.alias
+            .clone()
+            .unwrap_or(self.identity.id().to_string(Encoding::Base58))
+    }
+
+    pub fn display_short_string(&self) -> String {
+        self.alias.clone().unwrap_or_else(|| {
+            let id_str = self.identity.id().to_string(Encoding::Base58);
+            id_str.chars().take(5).collect()
+        })
     }
 
     pub fn masternode_payout_address(&self, network: Network) -> Option<Address> {

@@ -1,6 +1,8 @@
+use super::ScreenType;
 use crate::app::{AppAction, DesiredAppAction};
 use crate::context::AppContext;
 use crate::model::contested_name::ContestedName;
+use crate::model::qualified_identity::QualifiedIdentity;
 use crate::platform::contested_names::ContestedResourceTask;
 use crate::platform::BackendTask;
 use crate::ui::components::left_panel::add_left_panel;
@@ -15,8 +17,6 @@ use egui::{Context, Frame, Margin, Ui};
 use egui_extras::{Column, TableBuilder};
 use itertools::Itertools;
 use std::sync::{Arc, Mutex};
-
-use super::ScreenType;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SortColumn {
@@ -34,6 +34,9 @@ enum SortOrder {
 }
 
 pub struct DPNSContestedNamesScreen {
+    // No need for Mutex as this can only refresh when entering screen
+    voting_identities: Arc<Vec<QualifiedIdentity>>,
+    user_identities: Arc<Vec<QualifiedIdentity>>,
     contested_names: Arc<Mutex<Vec<ContestedName>>>,
     pub app_context: Arc<AppContext>,
     error_message: Option<(String, MessageType, DateTime<Utc>)>,
@@ -47,7 +50,17 @@ impl DPNSContestedNamesScreen {
         let contested_names = Arc::new(Mutex::new(
             app_context.load_contested_names().unwrap_or_default(),
         ));
+        let voting_identities = app_context
+            .db
+            .get_local_voting_identities(&app_context)
+            .unwrap_or_default();
+        let user_identities = app_context
+            .db
+            .get_local_user_identities(&app_context)
+            .unwrap_or_default();
         Self {
+            voting_identities: Arc::new(voting_identities),
+            user_identities: Arc::new(user_identities),
             contested_names,
             app_context: app_context.clone(),
             error_message: None,
@@ -101,7 +114,7 @@ impl DPNSContestedNamesScreen {
                     .cmp(&b.normalized_contested_name),
                 SortColumn::LockedVotes => a.locked_votes.cmp(&b.locked_votes),
                 SortColumn::AbstainVotes => a.abstain_votes.cmp(&b.abstain_votes),
-                SortColumn::EndingTime => a.ending_time.cmp(&b.ending_time),
+                SortColumn::EndingTime => a.end_time.cmp(&b.end_time),
                 SortColumn::LastUpdated => a.last_updated.cmp(&b.last_updated),
             };
 
@@ -147,23 +160,6 @@ impl DPNSContestedNamesScreen {
         if let Some((message, action)) = self.show_vote_popup_info.clone() {
             ui.label(message);
 
-            let local_qualified_identities = self
-                .app_context
-                .db
-                .get_local_qualified_identities(&self.app_context)
-                .unwrap_or_default();
-
-            let voting_identities = local_qualified_identities
-                .iter()
-                .filter_map(|id| {
-                    if id.associated_voter_identity.is_some() {
-                        Some(id)
-                    } else {
-                        None
-                    }
-                })
-                .collect_vec();
-
             ui.horizontal(|ui| {
                 // Only modify `voters` if `action` is `VoteOnDPNSName`
                 if let ContestedResourceTask::VoteOnDPNSName(
@@ -173,17 +169,10 @@ impl DPNSContestedNamesScreen {
                 ) = action
                 {
                     // Iterate over the voting identities and create a button for each one
-                    for identity in voting_identities.iter() {
-                        let button_label = format!(
-                            "{}",
-                            identity
-                                .alias
-                                .clone()
-                                .unwrap_or(identity.identity.id().to_string(Encoding::Base58))
-                        );
-                        if ui.button(button_label).clicked() {
+                    for identity in self.voting_identities.iter() {
+                        if ui.button(identity.display_short_string()).clicked() {
                             // Add the selected identity to the `voters` field
-                            voters.push(identity.clone().clone());
+                            voters.push(identity.clone());
 
                             // Create a new `VoteOnDPNSName` task with updated voters
                             let updated_action = ContestedResourceTask::VoteOnDPNSName(
@@ -202,8 +191,8 @@ impl DPNSContestedNamesScreen {
 
                     // Vote with all identities
                     if ui.button("All").clicked() {
-                        for identity in voting_identities.iter() {
-                            voters.push(identity.clone().clone());
+                        for identity in self.voting_identities.iter() {
+                            voters.push(identity.clone());
                         }
 
                         // Create a new `VoteOnDPNSName` task with all voters
@@ -238,28 +227,51 @@ impl ScreenLike for DPNSContestedNamesScreen {
         *contested_names = self.app_context.load_contested_names().unwrap_or_default();
     }
 
+    fn refresh_on_arrival(&mut self) {
+        self.voting_identities = self
+            .app_context
+            .db
+            .get_local_voting_identities(&self.app_context)
+            .unwrap_or_default()
+            .into();
+
+        self.user_identities = self
+            .app_context
+            .db
+            .get_local_user_identities(&self.app_context)
+            .unwrap_or_default()
+            .into();
+    }
+
     fn display_message(&mut self, message: &str, message_type: MessageType) {
         self.error_message = Some((message.to_string(), message_type, Utc::now()));
     }
 
     fn ui(&mut self, ctx: &Context) -> AppAction {
         self.check_error_expiration();
-        let mut action = add_top_panel(
-            ctx,
-            &self.app_context,
-            vec![("Dash Evo Tool", AppAction::None)],
+        let has_identity_that_can_register = !self.user_identities.is_empty();
+        let query = (
+            "Refresh",
+            DesiredAppAction::BackendTask(BackendTask::ContestedResourceTask(
+                ContestedResourceTask::QueryDPNSContestedResources,
+            )),
+        );
+        let right_buttons = if has_identity_that_can_register {
             vec![
                 (
                     "Register Name",
                     DesiredAppAction::AddScreenType(ScreenType::RegisterDpnsName),
                 ),
-                (
-                    "Refresh",
-                    DesiredAppAction::BackendTask(BackendTask::ContestedResourceTask(
-                        ContestedResourceTask::QueryDPNSContestedResources,
-                    )),
-                ),
-            ],
+                query,
+            ]
+        } else {
+            vec![query]
+        };
+        let mut action = add_top_panel(
+            ctx,
+            &self.app_context,
+            vec![("Dash Evo Tool", AppAction::None)],
+            right_buttons,
         );
 
         action |= add_left_panel(
@@ -418,7 +430,7 @@ impl ScreenLike for DPNSContestedNamesScreen {
                                             }
                                         });
                                         row.col(|ui| {
-                                            if let Some(ending_time) = contested_name.ending_time {
+                                            if let Some(ending_time) = contested_name.end_time {
                                                 // Convert the timestamp to a DateTime object using timestamp_millis_opt
                                                 if let LocalResult::Single(datetime) =
                                                     Utc.timestamp_millis_opt(ending_time as i64)

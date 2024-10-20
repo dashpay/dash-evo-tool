@@ -6,13 +6,32 @@ use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoic
 use std::collections::BTreeMap;
 
 #[derive(Debug, Encode, Decode, Clone)]
+pub enum ContestState {
+    Unknown,
+    Joinable,
+    Ongoing,
+    WonBy(Identifier),
+    Locked,
+}
+
+impl ContestState {
+    pub fn state_is_votable(&self) -> bool {
+        match self {
+            ContestState::Joinable | ContestState::Ongoing => true,
+            _ => false,
+        }
+    }
+}
+
+#[derive(Debug, Encode, Decode, Clone)]
 pub struct ContestedName {
     pub normalized_contested_name: String,
     pub contestants: Option<Vec<Contestant>>,
     pub locked_votes: Option<u32>,
     pub abstain_votes: Option<u32>,
     pub awarded_to: Option<Identifier>,
-    pub ending_time: Option<TimestampMillis>,
+    pub end_time: Option<TimestampMillis>,
+    pub state: ContestState,
     pub last_updated: Option<TimestampMillis>,
     pub my_votes: BTreeMap<(Identifier, EncryptedPrivateKeyTarget, KeyID), ResourceVoteChoice>,
 }

@@ -232,12 +232,12 @@ impl AddExistingIdentityScreen {
 }
 
 impl ScreenLike for AddExistingIdentityScreen {
-    fn display_message(&mut self, message: &str, message_type: MessageType) {
-        if message_type == MessageType::Info && message == "Success" {
-            self.add_identity_status = AddIdentityStatus::Complete;
-        } else {
-            self.add_identity_status = AddIdentityStatus::ErrorMessage(message.to_string());
-        }
+    fn display_message(&mut self, message: &str, _message_type: MessageType) {
+        self.add_identity_status = AddIdentityStatus::ErrorMessage(message.to_string());
+    }
+
+    fn pop_on_success(&mut self) {
+        self.add_identity_status = AddIdentityStatus::Complete;
     }
 
     fn ui(&mut self, ctx: &Context) -> AppAction {

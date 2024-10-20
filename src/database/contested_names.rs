@@ -611,9 +611,9 @@ impl Database {
             // Prepare placeholders for the SQL IN clause
             let placeholders: String = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
             let query = format!(
-                "SELECT normalized_contested_name, last_updated
+                "SELECT normalized_contested_name, last_updated, awarded_to
              FROM contested_name
-             WHERE network = ? AND normalized_contested_name IN ({}) and awarded_to IS NULL",
+             WHERE network = ? AND normalized_contested_name IN ({})",
                 placeholders
             );
 

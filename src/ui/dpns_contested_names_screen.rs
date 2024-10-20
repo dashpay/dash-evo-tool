@@ -159,6 +159,24 @@ impl DPNSContestedNamesScreen {
         }
     }
 
+    fn render_no_active_contests(&mut self, ui: &mut Ui) {
+        ui.vertical_centered(|ui| {
+            ui.add_space(20.0); // Add some space to separate from the top
+            ui.label(
+                egui::RichText::new("No active contests at the moment.")
+                    .heading()
+                    .strong()
+                    .color(egui::Color32::GRAY),
+            );
+            ui.add_space(10.0);
+            ui.label("Please check back later or try refreshing the list.");
+            ui.add_space(20.0);
+            if ui.button("Refresh").clicked() {
+                self.refresh(); // Call refresh logic when the user clicks "Refresh"
+            }
+        });
+    }
+
     fn render_table(&mut self, ui: &mut Ui) {
         // Clone the contested names vector to avoid holding the lock during UI rendering
         let contested_names = {
@@ -511,7 +529,19 @@ impl ScreenLike for DPNSContestedNamesScreen {
                     });
             }
 
-            self.render_table(ui);
+            // Check if there are any contested names to display
+            let has_contested_names = {
+                let contested_names = self.contested_names.lock().unwrap();
+                !contested_names.is_empty()
+            };
+
+            if has_contested_names {
+                // Render the table if there are contested names
+                self.render_table(ui);
+            } else {
+                // Render the "no active contests" message if none exist
+                self.render_no_active_contests(ui);
+            }
         });
 
         action

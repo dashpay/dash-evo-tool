@@ -3,8 +3,8 @@ use crate::context::AppContext;
 use crate::ui::RootScreenType;
 use eframe::epaint::{Color32, Margin};
 use egui::{Context, Frame, ImageButton, SidePanel, TextureHandle};
-use std::sync::Arc;
 use rust_embed::RustEmbed;
+use std::sync::Arc;
 
 #[derive(RustEmbed)]
 #[folder = "icons/"] // Adjust the folder path if necessary
@@ -44,31 +44,19 @@ pub fn add_left_panel(
 
     // Define the button details directly in this function
     let buttons = [
-        (
-            "I",
-            RootScreenType::RootScreenIdentities,
-            "identity.png",
-        ),
+        ("I", RootScreenType::RootScreenIdentities, "identity.png"),
         (
             "C",
             RootScreenType::RootScreenDPNSContestedNames,
             "voting.png",
         ),
-        (
-            "Q",
-            RootScreenType::RootScreenDocumentQuery,
-            "doc.png",
-        ),
+        ("Q", RootScreenType::RootScreenDocumentQuery, "doc.png"),
         (
             "T",
             RootScreenType::RootScreenTransitionVisualizerScreen,
             "tools.png",
         ),
-        (
-            "N",
-            RootScreenType::RootScreenNetworkChooser,
-            "config.png",
-        ),
+        ("N", RootScreenType::RootScreenNetworkChooser, "config.png"),
     ];
 
     let panel_width = 50.0 + 20.0; // Button width (50) + 10px margin on each side (20 total)

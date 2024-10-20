@@ -223,64 +223,67 @@ impl ScreenLike for AddNewWalletScreen {
         );
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.add_space(10.0);
-            ui.heading("Follow these steps to create your wallet!");
-            ui.add_space(5.0);
+            // Add the scroll area to make the content scrollable
+            egui::ScrollArea::vertical()
+                .auto_shrink([false; 2]) // Prevent shrinking when content is less than the available area
+                .show(ui, |ui| {
+                    ui.add_space(10.0);
+                    ui.heading("Follow these steps to create your wallet!");
+                    ui.add_space(5.0);
 
-            self.entropy_grid.ui(ui);
+                    self.entropy_grid.ui(ui);
 
-            ui.add_space(5.0);
+                    ui.add_space(5.0);
 
-            ui.heading("2. Select your desired seed phrase language and press \"Generate\"");
+                    ui.heading("2. Select your desired seed phrase language and press \"Generate\"");
+                    self.render_seed_phrase_input(ui);
 
-            self.render_seed_phrase_input(ui);
+                    ui.add_space(10.0);
 
-            ui.add_space(10.0);
+                    ui.heading(
+                        "3. Write down the passphrase on a piece of paper and put it somewhere secure",
+                    );
 
-            ui.heading(
-                "3. Write down the passphrase on a piece of paper and put it somewhere secure",
-            );
+                    ui.add_space(10.0);
 
-            ui.add_space(10.0);
+                    // Add "I wrote it down" checkbox
+                    ui.horizontal(|ui| {
+                        ui.checkbox(&mut self.wrote_it_down, "I wrote it down");
+                    });
 
-            // Add "I wrote it down" checkbox
-            ui.horizontal(|ui| {
-                ui.checkbox(&mut self.wrote_it_down, "I wrote it down");
-            });
+                    ui.add_space(20.0);
 
-            ui.add_space(20.0);
+                    ui.heading("4. Add an optional password that must be used to unlock the wallet");
 
-            ui.heading("4. Add an optional password that must be used to unlock the wallet");
+                    ui.horizontal(|ui| {
+                        ui.label("Optional Password:");
+                        ui.text_edit_singleline(&mut self.passphrase);
+                    });
 
-            ui.horizontal(|ui| {
-                ui.label("Optional Password:");
-                ui.text_edit_singleline(&mut self.passphrase);
-            });
+                    ui.add_space(20.0);
 
-            ui.add_space(20.0);
+                    ui.heading("5. Save the wallet");
+                    ui.add_space(5.0);
 
-            ui.heading("5. Save the wallet");
+                    // Centered "Save Wallet" button at the bottom
+                    ui.with_layout(Layout::centered_and_justified(Direction::TopDown), |ui| {
+                        let save_button = egui::Button::new(
+                            RichText::new("Save Wallet").strong().size(30.0),
+                        )
+                            .min_size(Vec2::new(300.0, 60.0))
+                            .rounding(10.0)
+                            .stroke(Stroke::new(1.5, Color32::WHITE))
+                            .sense(if self.wrote_it_down {
+                                egui::Sense::click()
+                            } else {
+                                egui::Sense::hover()
+                            });
 
-            ui.add_space(5.0);
-
-            // Centered "Save Wallet" button at the bottom
-            ui.with_layout(Layout::centered_and_justified(Direction::TopDown), |ui| {
-                let save_button = egui::Button::new(
-                    RichText::new("Save Wallet").strong().size(30.0), // Bold, large text
-                )
-                .min_size(Vec2::new(300.0, 60.0)) // Large button size
-                .rounding(10.0) // Rounded corners
-                .stroke(Stroke::new(1.5, Color32::WHITE))
-                .sense(if self.wrote_it_down {
-                    egui::Sense::click()
-                } else {
-                    egui::Sense::hover()
+                        if ui.add(save_button).clicked() {
+                            action = self.save_wallet(); // Trigger the save action
+                        }
+                    });
                 });
-
-                if ui.add(save_button).clicked() {
-                    action = self.save_wallet(); // Trigger the save action
-                }
-            });
         });
 
         action

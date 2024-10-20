@@ -1,6 +1,7 @@
+use std::convert::identity;
 use crate::app::AppAction;
 use crate::context::AppContext;
-use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
+use crate::model::qualified_identity::QualifiedIdentity;
 use crate::platform::identity::IdentityTask;
 use crate::platform::BackendTask;
 use crate::ui::components::top_panel::add_top_panel;
@@ -16,7 +17,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use crate::ui::key_info_screen::KeyInfoScreen;
 
-pub struct WithdrawalScreen {
+pub struct TransferScreen {
     pub identity: QualifiedIdentity,
     selected_key: Option<IdentityPublicKey>,
     withdrawal_address: String,
@@ -27,7 +28,7 @@ pub struct WithdrawalScreen {
     confirmation_popup: bool,
 }
 
-impl WithdrawalScreen {
+impl TransferScreen {
     pub fn new(identity: QualifiedIdentity, app_context: &Arc<AppContext>) -> Self {
         let max_amount = identity.identity.balance();
         Self {
@@ -43,30 +44,31 @@ impl WithdrawalScreen {
     }
 
     fn render_key_selection(&mut self, ui: &mut Ui) {
-        ui.horizontal(|ui| {
-            ui.label("Select Key:");
 
-            egui::ComboBox::from_id_salt("key_selector")
-                .selected_text(match &self.selected_key {
-                    Some(key) => format!("Key ID: {}", key.id()),
-                    None => "Select a key".to_string(),
-                })
-                .show_ui(ui, |ui| {
-                    if self.app_context.developer_mode {
-                        for key in self.identity.identity.public_keys().values() {
-                            let label =
-                                format!("Key ID: {} (Purpose: {:?})", key.id(), key.purpose());
-                            ui.selectable_value(&mut self.selected_key, Some(key.clone()), label);
+            ui.horizontal(|ui| {
+                ui.label("Select Key:");
+
+                egui::ComboBox::from_id_salt("key_selector")
+                    .selected_text(match &self.selected_key {
+                        Some(key) => format!("Key ID: {}", key.id()),
+                        None => "Select a key".to_string(),
+                    })
+                    .show_ui(ui, |ui| {
+                        if self.app_context.developer_mode {
+                            for key in self.identity.identity.public_keys().values() {
+                                let label =
+                                    format!("Key ID: {} (Purpose: {:?})", key.id(), key.purpose());
+                                ui.selectable_value(&mut self.selected_key, Some(key.clone()), label);
+                            }
+                        } else {
+                            for key in self.identity.available_transfer_keys() {
+                                let label =
+                                    format!("Key ID: {} (Purpose: {:?})", key.id(), key.purpose());
+                                ui.selectable_value(&mut self.selected_key, Some(key.clone()), label);
+                            }
                         }
-                    } else {
-                        for key in self.identity.available_withdrawal_keys() {
-                            let label =
-                                format!("Key ID: {} (Purpose: {:?})", key.id(), key.purpose());
-                            ui.selectable_value(&mut self.selected_key, Some(key.clone()), label);
-                        }
-                    }
-                });
-        });
+                    });
+            });
     }
 
     fn render_amount_input(&mut self, ui: &mut Ui) {
@@ -179,7 +181,7 @@ impl WithdrawalScreen {
     }
 }
 
-impl ScreenLike for WithdrawalScreen {
+impl ScreenLike for TransferScreen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
         self.error_message = Some(message.to_string());
     }
@@ -191,7 +193,7 @@ impl ScreenLike for WithdrawalScreen {
             &self.app_context,
             vec![
                 ("Identities", AppAction::GoToMainScreen),
-                ("Withdraw", AppAction::None),
+                ("Transfer", AppAction::None),
             ],
             vec![],
         );
@@ -200,50 +202,32 @@ impl ScreenLike for WithdrawalScreen {
             let has_keys = if self.app_context.developer_mode {
                 !self.identity.identity.public_keys().is_empty()
             } else {
-                !self.identity.available_withdrawal_keys().is_empty()
+                !self.identity.available_transfer_keys().is_empty()
             };
 
             if !has_keys {
-                ui.heading(format!("You do not have any withdrawal keys loaded for this {}.", self.identity.identity_type));
+                ui.heading(format!("You do not have any transfer keys loaded for this {}.", self.identity.identity_type));
 
-                if self.identity.identity_type != IdentityType::User {
-                    ui.heading("An evonode can withdraw with the payout address private key or the owner key.".to_string());
-                    ui.heading("If the owner key is used you can only withdraw to the Dash Core payout address (where you get your Core rewards).".to_string());
-                }
+                let key = self.identity.identity.get_first_public_key_matching(Purpose::TRANSFER, SecurityLevel::full_range().into(), KeyType::all_key_types().into(), false);
 
-                let owner_key = self.identity.identity.get_first_public_key_matching(Purpose::OWNER, SecurityLevel::full_range().into(), KeyType::all_key_types().into(), false);
-
-                let transfer_key = self.identity.identity.get_first_public_key_matching(Purpose::TRANSFER, SecurityLevel::full_range().into(), KeyType::all_key_types().into(), false);
-
-                if let Some(owner_key) = owner_key {
-                    if ui.button("Check Owner Key").clicked() {
+                if let Some(key) = key {
+                    if ui.button("Check Transfer Key").clicked() {
                         action |= AppAction::AddScreen(Screen::KeyInfoScreen(KeyInfoScreen::new(
                             self.identity.clone(),
-                            owner_key.clone(),
-                            None,
-                            &self.app_context,
-                        )));
-                    }
-                }
-
-                if let Some(transfer_key) = transfer_key {
-                    if ui.button("Check Payout Address Key").clicked() {
-                        action |= AppAction::AddScreen(Screen::KeyInfoScreen(KeyInfoScreen::new(
-                            self.identity.clone(),
-                            transfer_key.clone(),
+                            key.clone(),
                             None,
                             &self.app_context,
                         )));
                     }
                 }
             } else {
-                ui.heading("Withdraw Funds");
+                ui.heading("Transfer Funds");
 
                 self.render_key_selection(ui);
                 self.render_amount_input(ui);
                 self.render_address_input(ui);
 
-                if ui.button("Withdraw").clicked() {
+                if ui.button("Transfer").clicked() {
                     self.confirmation_popup = true;
                 }
 

@@ -20,6 +20,7 @@ use eframe::emath::Align;
 use egui::{Color32, Frame, Margin, RichText, Ui};
 use egui_extras::{Column, TableBuilder};
 use std::sync::{Arc, Mutex};
+use crate::ui::transfers::TransferScreen;
 
 pub struct IdentitiesScreen {
     pub identities: Arc<Mutex<Vec<QualifiedIdentity>>>,
@@ -281,7 +282,12 @@ impl IdentitiesScreen {
                                     });
                                     row.col(|ui| {
                                         if ui.button("Transfer").clicked() {
-                                            // Implement Transfer functionality
+                                            action = AppAction::AddScreen(
+                                                Screen::TransferScreen(TransferScreen::new(
+                                                    qualified_identity.clone(),
+                                                    &self.app_context,
+                                                )),
+                                            );
                                         }
                                     });
                                 });

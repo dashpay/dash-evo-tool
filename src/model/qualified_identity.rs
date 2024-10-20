@@ -246,6 +246,19 @@ impl QualifiedIdentity {
 
         keys
     }
+
+    pub fn available_transfer_keys(&self) -> Vec<&IdentityPublicKey> {
+        let mut keys = vec![];
+
+        // Check the main identity's public keys
+        for ((public_key, _)) in self.encrypted_private_keys.values() {
+            if public_key.purpose() == Purpose::TRANSFER {
+                keys.push(public_key);
+            }
+        }
+
+        keys
+    }
 }
 
 impl From<Identity> for QualifiedIdentity {

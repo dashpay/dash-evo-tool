@@ -47,17 +47,17 @@ pub fn add_left_panel(
         (
             "I",
             RootScreenType::RootScreenIdentities,
-            "icons/identity.png",
+            "identity.png",
         ),
         (
             "C",
             RootScreenType::RootScreenDPNSContestedNames,
-            "icons/voting.png",
+            "voting.png",
         ),
         (
             "Q",
             RootScreenType::RootScreenDocumentQuery,
-            "icons/doc.png",
+            "doc.png",
         ),
         (
             "T",
@@ -67,7 +67,7 @@ pub fn add_left_panel(
         (
             "N",
             RootScreenType::RootScreenNetworkChooser,
-            "icons/config.png",
+            "config.png",
         ),
     ];
 

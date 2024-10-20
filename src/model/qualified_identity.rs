@@ -28,6 +28,16 @@ pub enum IdentityType {
     Evonode,
 }
 
+impl IdentityType {
+    pub fn vote_strength(&self) -> u64 {
+        match self {
+            IdentityType::User => 1,
+            IdentityType::Masternode => 1,
+            IdentityType::Evonode => 4,
+        }
+    }
+}
+
 impl Display for IdentityType {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {

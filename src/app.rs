@@ -269,6 +269,9 @@ impl App for AppState {
                     BackendTaskSuccessResult::CoreItem(_) => {
                         self.visible_screen_mut().display_task_result(message);
                     }
+                    BackendTaskSuccessResult::SuccessfulVotes(_) => {
+                        self.visible_screen_mut().refresh();
+                    }
                 },
                 TaskResult::Error(message) => {
                     self.visible_screen_mut()

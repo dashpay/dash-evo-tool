@@ -6,6 +6,7 @@ mod vote_on_dpns_name;
 use crate::app::TaskResult;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::platform::BackendTaskSuccessResult;
 use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
 use dash_sdk::Sdk;
 use std::sync::Arc;
@@ -24,15 +25,17 @@ impl AppContext {
         task: ContestedResourceTask,
         sdk: &Sdk,
         sender: mpsc::Sender<TaskResult>,
-    ) -> Result<(), String> {
+    ) -> Result<BackendTaskSuccessResult, String> {
         let sdk = sdk.clone();
         match &task {
-            ContestedResourceTask::QueryDPNSContestedResources => {
-                self.query_dpns_contested_resources(sdk, sender).await
-            }
-            ContestedResourceTask::QueryDPNSVoteContenders(name) => {
-                self.query_dpns_vote_contenders(name, sdk, sender).await
-            }
+            ContestedResourceTask::QueryDPNSContestedResources => self
+                .query_dpns_contested_resources(sdk, sender)
+                .await
+                .map(|_| BackendTaskSuccessResult::None),
+            ContestedResourceTask::QueryDPNSVoteContenders(name) => self
+                .query_dpns_vote_contenders(name, sdk, sender)
+                .await
+                .map(|_| BackendTaskSuccessResult::None),
             ContestedResourceTask::VoteOnDPNSName(name, vote_choice, voters) => {
                 self.vote_on_dpns_name(name, *vote_choice, voters, sdk, sender)
                     .await

@@ -7,15 +7,16 @@ use dash_sdk::dpp::document::DocumentV0Getters;
 use dash_sdk::dpp::identifier::Identifier;
 use dash_sdk::dpp::identity::TimestampMillis;
 use dash_sdk::dpp::prelude::{BlockHeight, CoreBlockHeight};
+use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
+use dash_sdk::dpp::voting::vote_info_storage::contested_document_vote_poll_winner_info::ContestedDocumentVotePollWinnerInfo;
 use dash_sdk::query_types::Contenders;
 use rusqlite::{params, params_from_iter, Result};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::Duration;
-use dash_sdk::dpp::voting::vote_info_storage::contested_document_vote_poll_winner_info::ContestedDocumentVotePollWinnerInfo;
 use tracing::{error, info};
 
 impl Database {
-    pub fn get_contested_names(&self, app_context: &AppContext) -> Result<Vec<ContestedName>> {
+    pub fn get_all_contested_names(&self, app_context: &AppContext) -> Result<Vec<ContestedName>> {
         let network = app_context.network_string();
         let contest_duration = if app_context.network == Network::Dash {
             Duration::from_secs(60 * 60 * 24 * 14)
@@ -42,7 +43,7 @@ impl Database {
                 i.info
              FROM contested_name cn
              LEFT JOIN contestant c
-             ON cn.normalized_contested_name = c.contest_id
+             ON cn.normalized_contested_name = c.normalized_contested_name
              AND cn.network = c.network
              LEFT JOIN identity i
              ON c.identity_id = i.id
@@ -55,6 +56,140 @@ impl Database {
 
         // Iterate over the joined rows
         let rows = stmt.query_map(params![network], |row| {
+            let normalized_contested_name: String = row.get(0)?;
+            let locked_votes: Option<u32> = row.get(1)?;
+            let abstain_votes: Option<u32> = row.get(2)?;
+            let awarded_to: Option<Vec<u8>> = row.get(3)?;
+            let ending_time: Option<u64> = row.get(4)?;
+            let locked: bool = row.get(5)?;
+            let last_updated: Option<u64> = row.get(6)?;
+            let identity_id: Option<Vec<u8>> = row.get(7)?;
+            let contestant_name: Option<String> = row.get(8)?;
+            let votes: Option<u32> = row.get(9)?;
+            let created_at: Option<TimestampMillis> = row.get(10)?;
+            let created_at_block_height: Option<BlockHeight> = row.get(11)?;
+            let created_at_core_block_height: Option<CoreBlockHeight> = row.get(12)?;
+            let document_id: Option<Vec<u8>> = row.get(13)?;
+            let identity_info: Option<String> = row.get(14)?;
+
+            // Convert `awarded_to` to `Identifier` if it exists
+            let awarded_to_id = awarded_to
+                .map(|id| Identifier::from_bytes(&id).expect("Expected 32 bytes for awarded_to"));
+
+            let state = if locked {
+                ContestState::Locked
+            } else if let Some(awarded_to_id) = awarded_to_id {
+                ContestState::WonBy(awarded_to_id)
+            } else if let Some(created_at) = created_at {
+                let elapsed_time = Duration::from_millis(
+                    (std::time::UNIX_EPOCH.elapsed().unwrap().as_millis() as u64)
+                        .saturating_sub(created_at),
+                );
+
+                if elapsed_time <= contest_duration / 2 {
+                    ContestState::Joinable
+                } else {
+                    ContestState::Ongoing
+                }
+            } else {
+                ContestState::Unknown
+            };
+
+            // Create or get the contested name from the hashmap
+            let contested_name = contested_name_map
+                .entry(normalized_contested_name.clone())
+                .or_insert(ContestedName {
+                    normalized_contested_name: normalized_contested_name.clone(),
+                    locked_votes,
+                    abstain_votes,
+                    awarded_to: awarded_to_id,
+                    end_time: ending_time,
+                    contestants: Some(Vec::new()), // Initialize as an empty vector
+                    last_updated,
+                    my_votes: BTreeMap::new(), // Assuming this is filled elsewhere
+                    state,
+                });
+
+            // If there are contestant details in the row, add them
+            if let (Some(identity_id), Some(contestant_name), Some(votes), Some(document_id)) =
+                (identity_id, contestant_name, votes, document_id)
+            {
+                let contestant = Contestant {
+                    id: Identifier::from_bytes(&identity_id)
+                        .expect("Expected 32 bytes for identity_id"),
+                    name: contestant_name,
+                    info: identity_info.unwrap_or_default(),
+                    votes,
+                    created_at,
+                    created_at_block_height,
+                    created_at_core_block_height,
+                    document_id: Identifier::from_bytes(&document_id)
+                        .expect("Expected 32 bytes for document_id"),
+                };
+
+                // Add the contestant to the contestants list
+                if let Some(contestants) = &mut contested_name.contestants {
+                    contestants.push(contestant);
+                }
+            }
+
+            Ok(())
+        })?;
+
+        // Ensure all rows are processed without error
+        for row in rows {
+            row?;
+        }
+
+        // Collect the values from the hashmap and return as a vector
+        Ok(contested_name_map.into_values().collect())
+    }
+
+    pub fn get_ongoing_contested_names(
+        &self,
+        app_context: &AppContext,
+    ) -> Result<Vec<ContestedName>> {
+        let network = app_context.network_string();
+        let contest_duration = if app_context.network == Network::Dash {
+            Duration::from_secs(60 * 60 * 24 * 14)
+        } else {
+            Duration::from_secs(60 * 90)
+        };
+        let current_timestamp = std::time::UNIX_EPOCH.elapsed().unwrap().as_millis() as u64;
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT
+                cn.normalized_contested_name,
+                cn.locked_votes,
+                cn.abstain_votes,
+                cn.awarded_to,
+                cn.end_time,
+                cn.locked,
+                cn.last_updated,
+                c.identity_id,
+                c.name,
+                c.votes,
+                c.created_at,
+                c.created_at_block_height,
+                c.created_at_core_block_height,
+                c.document_id,
+                i.info
+             FROM contested_name cn
+             LEFT JOIN contestant c
+             ON cn.normalized_contested_name = c.normalized_contested_name
+             AND cn.network = c.network
+             LEFT JOIN identity i
+             ON c.identity_id = i.id
+             AND c.network = i.network
+             WHERE cn.network = ?
+             AND (cn.end_time IS NULL OR cn.end_time > ?)",
+        )?;
+
+        // A hashmap to collect contested names, keyed by their normalized name
+        let mut contested_name_map: HashMap<String, ContestedName> = HashMap::new();
+
+        // Iterate over the joined rows
+        let rows = stmt.query_map(params![network, current_timestamp], |row| {
             let normalized_contested_name: String = row.get(0)?;
             let locked_votes: Option<u32> = row.get(1)?;
             let abstain_votes: Option<u32> = row.get(2)?;
@@ -250,12 +385,12 @@ impl Database {
          SET awarded_to = ?, last_updated = ?, end_time = ?
          WHERE normalized_contested_name = ? AND network = ?",
                         params![
-                won_by.to_vec(),
-                                            last_updated,
+                            won_by.to_vec(),
+                            last_updated,
                             block_info.time_ms,
-                normalized_contested_name,
-                network,
-            ],
+                            normalized_contested_name,
+                            network,
+                        ],
                     )?;
                     tx.commit()?;
                 }
@@ -268,16 +403,16 @@ impl Database {
          SET locked = 1, last_updated = ?, end_time = ?
          WHERE normalized_contested_name = ? AND network = ?",
                         params![
-                                            last_updated,
+                            last_updated,
                             block_info.time_ms,
-                normalized_contested_name,
-                network,
-            ],
+                            normalized_contested_name,
+                            network,
+                        ],
                     )?;
                     tx.commit()?;
                 }
             }
-            return Ok(())
+            return Ok(());
         }
         let mut conn = self.conn.lock().unwrap();
         let locked_votes = contenders.lock_vote_tally.unwrap_or(0) as i64;
@@ -331,7 +466,11 @@ impl Database {
             )?;
 
             let result = stmt.query_row(
-                params![normalized_contested_name, identity_id_bytes.clone(), network],
+                params![
+                    normalized_contested_name,
+                    identity_id_bytes.clone(),
+                    network
+                ],
                 |row| row.get::<_, u64>(0),
             );
 
@@ -463,8 +602,7 @@ impl Database {
         let mut new_names: Vec<String> = Vec::new();
 
         // Define the time limit (one hour ago in Unix timestamp format)
-        let one_hour_ago = chrono::Utc::now().timestamp() - 3600;
-        let two_weeks_ago = chrono::Utc::now().timestamp() - 1_209_600;
+        let half_a_minute_ago = chrono::Utc::now().timestamp() - 30;
 
         // Chunk the name_contests into smaller groups due to SQL parameter limits
         let chunk_size = 900; // Use a safe limit to stay below SQLite's limit
@@ -475,7 +613,7 @@ impl Database {
             let query = format!(
                 "SELECT normalized_contested_name, last_updated
              FROM contested_name
-             WHERE network = ? AND normalized_contested_name IN ({})",
+             WHERE network = ? AND normalized_contested_name IN ({}) and awarded_to IS NULL",
                 placeholders
             );
 
@@ -499,12 +637,7 @@ impl Database {
             for row in rows {
                 if let Ok((name, last_updated)) = row {
                     existing_names.insert(name.clone());
-                    if last_updated.is_none()
-                        || (app_context.network == Network::Testnet
-                            && last_updated.unwrap() < one_hour_ago)
-                        || (app_context.network == Network::Dash
-                            && last_updated.unwrap() < two_weeks_ago)
-                    {
+                    if last_updated.is_none() || last_updated.unwrap() < half_a_minute_ago {
                         names_to_be_updated.push((name, last_updated));
                     }
                 }
@@ -582,6 +715,57 @@ impl Database {
             }
         }
 
+        Ok(())
+    }
+    pub fn update_vote_count(
+        &self,
+        contested_name: &str,
+        network: &str,
+        vote_strength: u64,
+        vote_choice: ResourceVoteChoice,
+    ) -> Result<()> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+
+        match vote_choice {
+            ResourceVoteChoice::TowardsIdentity(identity) => {
+                // Increment the contestant's vote count
+                tx.execute(
+                    "UPDATE contestant
+                     SET votes = votes + ?
+                     WHERE normalized_contested_name = ?
+                     AND identity_id = ?
+                     AND network = ?",
+                    params![vote_strength, contested_name, identity.to_vec(), network],
+                )?;
+            }
+            ResourceVoteChoice::Abstain => {
+                // Increment the abstain vote count in the contested_name table
+                tx.execute(
+                    "UPDATE contested_name
+                     SET abstain_votes = abstain_votes + ?
+                     WHERE normalized_contested_name = ? AND network = ?",
+                    params![vote_strength, contested_name, network],
+                )?;
+            }
+            ResourceVoteChoice::Lock => {
+                // Increment the locked vote count in the contested_name table
+                tx.execute(
+                    "UPDATE contested_name
+                     SET locked_votes = locked_votes + ?
+                     WHERE normalized_contested_name = ? AND network = ?",
+                    params![vote_strength, contested_name, network],
+                )?;
+            }
+        }
+
+        // Commit the transaction
+        if let Err(e) = tx.commit() {
+            error!("Failed to commit transaction: {:?}", e);
+            return Err(e);
+        }
+
+        info!("Vote tally updated successfully for '{}'", contested_name);
         Ok(())
     }
 }

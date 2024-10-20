@@ -43,7 +43,7 @@ pub struct DocumentQueryScreen {
 impl DocumentQueryScreen {
     pub fn new(app_context: &Arc<AppContext>) -> Self {
         let contested_names = Arc::new(Mutex::new(
-            app_context.load_contested_names().unwrap_or_default(),
+            app_context.all_contested_names().unwrap_or_default(),
         ));
         Self {
             contested_names,
@@ -164,7 +164,7 @@ impl DocumentQueryScreen {
 impl ScreenLike for DocumentQueryScreen {
     fn refresh(&mut self) {
         let mut contested_names = self.contested_names.lock().unwrap();
-        *contested_names = self.app_context.load_contested_names().unwrap_or_default();
+        *contested_names = self.app_context.all_contested_names().unwrap_or_default();
     }
 
     fn display_message(&mut self, message: &str, message_type: MessageType) {

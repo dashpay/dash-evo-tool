@@ -80,7 +80,7 @@ pub enum AddIdentityStatus {
 
 pub struct AddExistingIdentityScreen {
     identity_id_input: String,
-    identity_type: IdentityType,
+    pub identity_type: IdentityType,
     alias_input: String,
     voting_private_key_input: String,
     owner_private_key_input: String,

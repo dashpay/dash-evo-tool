@@ -1,6 +1,7 @@
 use crate::app::TaskResult;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::platform::BackendTaskSuccessResult;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -23,7 +24,7 @@ impl AppContext {
         voters: &Vec<QualifiedIdentity>,
         sdk: Sdk,
         _sender: mpsc::Sender<TaskResult>,
-    ) -> Result<(), String> {
+    ) -> Result<BackendTaskSuccessResult, String> {
         // Fetch DPNS contract and document type information
         let data_contract = self.dpns_contract.as_ref();
         let document_type = data_contract
@@ -45,6 +46,9 @@ impl AppContext {
             contract_id: data_contract.id(),
         };
 
+        let mut vote_results = vec![];
+        let mut strength = 0;
+
         // Iterate over the provided voters (QualifiedIdentity)
         for qualified_identity in voters.iter() {
             if let Some((_, public_key)) = &qualified_identity.associated_voter_identity {
@@ -56,15 +60,19 @@ impl AppContext {
                 let vote = Vote::ResourceVote(ResourceVote::V0(resource_vote));
 
                 // Submit the vote to the platform and await a response
-                vote.put_to_platform_and_wait_for_response(
-                    qualified_identity.identity.id(),
-                    public_key,
-                    &sdk,
-                    qualified_identity,
-                    None,
-                )
-                .await
-                .map_err(|e| format!("Error voting: {}", e))?;
+                let result = vote
+                    .put_to_platform_and_wait_for_response(
+                        qualified_identity.identity.id(),
+                        public_key,
+                        &sdk,
+                        qualified_identity,
+                        None,
+                    )
+                    .await
+                    .map_err(|e| format!("Error voting: {}", e))?;
+
+                strength += qualified_identity.identity_type.vote_strength();
+                vote_results.push(result);
             } else {
                 return Err(format!(
                     "No associated voter identity for qualified identity: {:?}",
@@ -73,6 +81,15 @@ impl AppContext {
             }
         }
 
-        Ok(())
+        self.db
+            .update_vote_count(
+                name,
+                self.network.to_string().as_str(),
+                strength,
+                vote_choice,
+            )
+            .map_err(|e| format!("error updating ending time: {}", e))?;
+
+        Ok(BackendTaskSuccessResult::SuccessfulVotes(vote_results))
     }
 }

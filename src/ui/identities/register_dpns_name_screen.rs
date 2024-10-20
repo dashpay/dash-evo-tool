@@ -5,10 +5,16 @@ use crate::platform::identity::{IdentityTask, RegisterDpnsNameInput};
 use crate::platform::BackendTask;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::{MessageType, ScreenLike};
+use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-use dash_sdk::dpp::identity::TimestampMillis;
+use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+use dash_sdk::dpp::identity::{Purpose, SecurityLevel, TimestampMillis};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+use dash_sdk::platform::IdentityPublicKey;
 use eframe::egui::Context;
+use egui::ahash::HashMap;
+use futures::StreamExt;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -20,8 +26,8 @@ pub enum RegisterDpnsNameStatus {
 }
 
 pub struct RegisterDpnsNameScreen {
-    qualified_identities: Vec<QualifiedIdentity>,
-    selected_qualified_identity: Option<QualifiedIdentity>,
+    qualified_identities: Vec<(QualifiedIdentity, Vec<IdentityPublicKey>)>,
+    selected_qualified_identity: Option<(QualifiedIdentity, Vec<IdentityPublicKey>)>,
     name_input: String,
     register_dpns_name_status: RegisterDpnsNameStatus,
     pub app_context: Arc<AppContext>,
@@ -29,9 +35,36 @@ pub struct RegisterDpnsNameScreen {
 
 impl RegisterDpnsNameScreen {
     pub fn new(app_context: &Arc<AppContext>) -> Self {
-        let qualified_identities = app_context
+        let security_level_of_contract = app_context
+            .dpns_contract
+            .document_type_for_name("domain")
+            .unwrap()
+            .security_level_requirement();
+        let security_level_requirements = SecurityLevel::CRITICAL..=security_level_of_contract;
+
+        let qualified_identities: Vec<_> = app_context
             .load_local_qualified_identities()
-            .unwrap_or_default();
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|e| {
+                let keys = e
+                    .identity
+                    .public_keys()
+                    .values()
+                    .filter(|key| {
+                        key.purpose() == Purpose::AUTHENTICATION
+                            && security_level_requirements.contains(&key.security_level())
+                            && !key.is_disabled()
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>();
+                if keys.is_empty() {
+                    None
+                } else {
+                    Some((e, keys))
+                }
+            })
+            .collect();
         let selected_qualified_identity = qualified_identities.first().cloned();
         Self {
             qualified_identities,
@@ -52,9 +85,9 @@ impl RegisterDpnsNameScreen {
                     self.selected_qualified_identity
                         .as_ref()
                         .map(|qi| {
-                            qi.alias
+                            qi.0.alias
                                 .as_ref()
-                                .unwrap_or(&qi.identity.id().to_string(Encoding::Base58))
+                                .unwrap_or(&qi.0.identity.id().to_string(Encoding::Base58))
                                 .clone()
                         })
                         .unwrap_or_else(|| "Select an identity".to_string()),
@@ -62,14 +95,18 @@ impl RegisterDpnsNameScreen {
                 .show_ui(ui, |ui| {
                     // Loop through the qualified identities and display each as selectable
                     for qualified_identity in &self.qualified_identities {
-                        let id = qualified_identity.identity.id(); // Extract the Identifier
-
                         // Display each QualifiedIdentity as a selectable item
                         if ui
                             .selectable_value(
                                 &mut self.selected_qualified_identity,
                                 Some(qualified_identity.clone()),
-                                id.to_string(Encoding::Base58),
+                                qualified_identity.0.alias.as_ref().unwrap_or(
+                                    &qualified_identity
+                                        .0
+                                        .identity
+                                        .id()
+                                        .to_string(Encoding::Base58),
+                                ),
                             )
                             .clicked()
                         {
@@ -85,7 +122,7 @@ impl RegisterDpnsNameScreen {
             return AppAction::None;
         };
         let dpns_name_input = RegisterDpnsNameInput {
-            qualified_identity: qualified_identity.clone(),
+            qualified_identity: qualified_identity.0.clone(),
             name_input: self.name_input.trim().to_string(),
         };
 

@@ -78,15 +78,22 @@ impl Database {
             [],
         )?;
 
+        // Create the composite index for faster querying
+        self.execute(
+            "CREATE INDEX IF NOT EXISTS idx_identity_local_network_type
+     ON identity (is_local, network, identity_type)",
+            [],
+        )?;
+
         // Create the contested names table
         self.execute(
             "CREATE TABLE IF NOT EXISTS contested_name (
-                normalized_contested_name TEXT,
+                normalized_contested_name TEXT NOT NULL,
                 locked_votes INTEGER,
                 abstain_votes INTEGER,
-                winner_type INTEGER NOT NULL,
                 awarded_to BLOB,
-                ending_time INTEGER,
+                end_time INTEGER,
+                locked INTEGER NOT NULL DEFAULT 0,
                 last_updated INTEGER,
                 network TEXT NOT NULL,
                 PRIMARY KEY (normalized_contested_name, network)
@@ -97,8 +104,8 @@ impl Database {
         // Create the contestants table
         self.execute(
             "CREATE TABLE IF NOT EXISTS contestant (
-                contest_id TEXT,
-                identity_id BLOB,
+                normalized_contested_name TEXT NOT NULL,
+                identity_id BLOB NOT NULL,
                 name TEXT,
                 votes INTEGER,
                 created_at INTEGER,
@@ -106,9 +113,8 @@ impl Database {
                 created_at_core_block_height INTEGER,
                 document_id BLOB,
                 network TEXT NOT NULL,
-                PRIMARY KEY (contest_id, identity_id, network),
-                FOREIGN KEY (contest_id) REFERENCES contested_names(contest_id),
-                FOREIGN KEY (identity_id) REFERENCES identities(id)
+                PRIMARY KEY (normalized_contested_name, identity_id, network),
+                FOREIGN KEY (normalized_contested_name, network) REFERENCES contested_name(normalized_contested_name, network) ON DELETE CASCADE
             )",
             [],
         )?;

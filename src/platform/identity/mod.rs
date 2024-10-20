@@ -65,7 +65,7 @@ pub struct RegisterDpnsNameInput {
 pub(crate) enum IdentityTask {
     LoadIdentity(IdentityInputToLoad),
     RegisterIdentity(IdentityRegistrationInfo),
-    AddKeyToIdentity(QualifiedIdentity, IdentityPublicKey, Vec<u8>),
+    AddKeyToIdentity(QualifiedIdentity, IdentityPublicKey, [u8; 32]),
     WithdrawFromIdentity(QualifiedIdentity, Option<Address>, Credits, Option<KeyID>),
     RegisterDpnsName(RegisterDpnsNameInput),
 }
@@ -73,13 +73,13 @@ pub(crate) enum IdentityTask {
 fn verify_key_input(
     untrimmed_private_key: String,
     type_key: &str,
-) -> Result<Option<Vec<u8>>, String> {
+) -> Result<Option<[u8; 32]>, String> {
     let private_key = untrimmed_private_key.trim().to_string();
     match private_key.len() {
         64 => {
             // hex
             match hex::decode(private_key.as_str()) {
-                Ok(decoded) => Ok(Some(decoded)),
+                Ok(decoded) => Ok(Some(decoded.try_into().unwrap())),
                 Err(_) => Err(format!(
                     "{} key is the size of a hex key but isn't hex",
                     type_key
@@ -89,7 +89,7 @@ fn verify_key_input(
         51 | 52 => {
             // wif
             match PrivateKey::from_wif(private_key.as_str()) {
-                Ok(key) => Ok(Some(key.to_bytes())),
+                Ok(key) => Ok(Some(key.inner.secret_bytes())),
                 Err(_) => Err(format!(
                     "{} key is the length of a WIF key but is invalid",
                     type_key
@@ -105,7 +105,7 @@ impl AppContext {
     fn verify_voting_key_exists_on_identity(
         &self,
         voting_identity: &Identity,
-        private_voting_key: &[u8],
+        private_voting_key: &[u8; 32],
     ) -> Result<IdentityPublicKey, String> {
         // We start by getting all the voting keys
         let voting_keys: Vec<IdentityPublicKey> = voting_identity
@@ -152,7 +152,7 @@ impl AppContext {
     fn verify_owner_key_exists_on_identity(
         &self,
         identity: &Identity,
-        private_voting_key: &[u8],
+        private_voting_key: &[u8; 32],
     ) -> Result<IdentityPublicKey, String> {
         // We start by getting all the voting keys
         let owner_keys: Vec<IdentityPublicKey> = identity
@@ -199,7 +199,7 @@ impl AppContext {
     fn verify_payout_address_key_exists_on_identity(
         &self,
         identity: &Identity,
-        private_voting_key: &[u8],
+        private_voting_key: &[u8; 32],
     ) -> Result<IdentityPublicKey, String> {
         // We start by getting all the voting keys
         let owner_keys: Vec<IdentityPublicKey> = identity

@@ -22,6 +22,7 @@ use identities::register_dpns_name_screen::RegisterDpnsNameScreen;
 use std::fmt;
 use std::hash::Hash;
 use std::sync::Arc;
+use crate::ui::transfers::TransferScreen;
 
 mod add_key_screen;
 pub mod components;
@@ -33,6 +34,7 @@ pub mod keys_screen;
 pub mod network_chooser_screen;
 pub mod transition_visualizer_screen;
 pub mod withdrawals;
+pub mod transfers;
 
 #[derive(Debug, Clone, Copy, Ord, PartialOrd, Eq, PartialEq, Hash)]
 pub enum RootScreenType {
@@ -92,8 +94,9 @@ pub enum ScreenType {
     AddExistingIdentity,
     TransitionVisualizer,
     WithdrawalScreen(QualifiedIdentity),
+    TransferScreen(QualifiedIdentity),
     AddKeyScreen(QualifiedIdentity),
-    KeyInfo(QualifiedIdentity, IdentityPublicKey, Option<Vec<u8>>),
+    KeyInfo(QualifiedIdentity, IdentityPublicKey, Option<[u8; 32]>),
     Keys(Identity),
     DocumentQueryScreen,
     NetworkChooser,
@@ -133,6 +136,9 @@ impl ScreenType {
             ScreenType::WithdrawalScreen(identity) => {
                 Screen::WithdrawalScreen(WithdrawalScreen::new(identity.clone(), app_context))
             }
+            ScreenType::TransferScreen(identity) => {
+                Screen::TransferScreen(TransferScreen::new(identity.clone(), app_context))
+            }
             ScreenType::NetworkChooser => {
                 unreachable!()
             }
@@ -161,6 +167,7 @@ pub enum Screen {
     KeysScreen(KeysScreen),
     RegisterDpnsNameScreen(RegisterDpnsNameScreen),
     WithdrawalScreen(WithdrawalScreen),
+    TransferScreen(TransferScreen),
     AddKeyScreen(AddKeyScreen),
     TransitionVisualizerScreen(TransitionVisualizerScreen),
     NetworkChooserScreen(NetworkChooserScreen),
@@ -182,6 +189,7 @@ impl Screen {
             Screen::AddNewIdentityScreen(screen) => screen.app_context = app_context,
             Screen::RegisterDpnsNameScreen(screen) => screen.app_context = app_context,
             Screen::AddNewWalletScreen(screen) => screen.app_context = app_context,
+            Screen::TransferScreen(screen) => screen.app_context = app_context,
         }
     }
 }
@@ -196,9 +204,14 @@ pub enum MessageType {
 #[enum_dispatch]
 pub trait ScreenLike {
     fn refresh(&mut self) {}
+    fn refresh_on_arrival(&mut self) {}
     fn ui(&mut self, ctx: &Context) -> AppAction;
     fn display_message(&mut self, _message: &str, _message_type: MessageType) {}
-    fn display_task_result(&mut self, _backend_task_success_result: BackendTaskSuccessResult) {}
+    fn display_task_result(&mut self, _backend_task_success_result: BackendTaskSuccessResult) {
+        self.display_message("Success", MessageType::Success)
+    }
+
+    fn pop_on_success(&mut self) {}
 }
 
 // Implement Debug for Screen using the ScreenType
@@ -237,6 +250,9 @@ impl Screen {
             Screen::AddNewIdentityScreen(_) => ScreenType::AddExistingIdentity,
             Screen::RegisterDpnsNameScreen(_) => ScreenType::RegisterDpnsName,
             Screen::AddNewWalletScreen(_) => ScreenType::AddNewWallet,
+            Screen::TransferScreen(screen) => {
+                ScreenType::TransferScreen(screen.identity.clone())
+            }
         }
     }
 }

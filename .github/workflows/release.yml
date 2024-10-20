@@ -21,7 +21,7 @@ jobs:
       matrix:
         include:
           - name: "linux-amd64"
-            runs-on: ["self-hosted", "Linux", "x64"]  # Array of tags for AMD64
+            runs-on: "ubuntu-20.04"
             target: "x86_64-unknown-linux-gnu"
             platform: "amd64"
           - name: "linux-arm64"
@@ -40,6 +40,7 @@ jobs:
             runs-on: "ubuntu-20.04"
             target: "x86_64-pc-windows-gnu"
             platform: "windows"
+            ext: ".exe"
 
     runs-on: ${{ matrix.runs-on }}
 
@@ -56,17 +57,17 @@ jobs:
 
       - name: Install essentials
         if: ${{ runner.os == 'Linux' }}
-        run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config clang cmake unzip libsqlite3-dev gcc-mingw-w64 mingw-w64 && uname -a && cargo clean
+        run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config clang cmake unzip libsqlite3-dev gcc-mingw-w64 mingw-w64 libsqlite3-dev mingw-w64-x86-64-dev gcc-aarch64-linux-gnu && uname -a && cargo clean
 
       - name: Install protoc (ARM)
         if: ${{ matrix.platform == 'arm64' }}
-        run: curl -Lo /tmp/protoc.zip https://github.com/protocolbuffers/protobuf/releases/download/v25.2/protoc-25.2-linux-aarch_64.zip && sudo unzip -o /tmp/protoc.zip -d /usr/local && rm /tmp/protoc.zip
+        run: curl -OL https://github.com/protocolbuffers/protobuf/releases/download/v25.2/protoc-25.2-linux-x86_64.zip && sudo unzip -o protoc-25.2-linux-x86_64.zip -d /usr/local bin/protoc && sudo unzip -o protoc-25.2-linux-x86_64.zip -d /usr/local 'include/*' && rm -f protoc-25.2-linux-x86_64.zip 
         env:
           PROTOC: /usr/local/bin/protoc
 
       - name: Install protoc (AMD)
-        if: ${{ matrix.platform == 'amd64' }}
-        run: curl -Lo /tmp/protoc.zip https://github.com/protocolbuffers/protobuf/releases/download/v22.2/protoc-22.2-linux-x86_64.zip && sudo unzip -f /tmp/protoc.zip -d /usr/local && rm /tmp/protoc.zip
+        if: ${{ matrix.target == 'x86_64-unknown-linux-gnu' }}
+        run: curl -OL https://github.com/protocolbuffers/protobuf/releases/download/v25.2/protoc-25.2-linux-x86_64.zip && sudo unzip -o protoc-25.2-linux-x86_64.zip -d /usr/local bin/protoc && sudo unzip -o protoc-25.2-linux-x86_64.zip -d /usr/local 'include/*' && rm -f protoc-25.2-linux-x86_64.zip 
         env:
           PROTOC: /usr/local/bin/protoc
 
@@ -87,15 +88,27 @@ jobs:
         run: curl -OL https://github.com/protocolbuffers/protobuf/releases/download/v25.2/protoc-25.2-osx-aarch_64.zip && sudo unzip -o protoc-25.2-osx-aarch_64.zip -d /usr/local bin/protoc && sudo unzip -o protoc-25.2-osx-aarch_64.zip -d /usr/local 'include/*' && rm -f protoc-25.2-osx-aarch_64.zip
         env:
           PROTOC: /usr/local/bin/protoc
+
+      - name: Windows libsql
+        if: ${{ matrix.target == 'x86_64-pc-windows-gnu' }}
+        run: curl -OL https://www.sqlite.org/2024/sqlite-dll-win-x64-3460100.zip && sudo unzip -o sqlite-dll-win-x64-3460100.zip -d winlibs && sudo chown -R runner:docker winlibs/ && pwd && ls -lah && cd winlibs && x86_64-w64-mingw32-dlltool -d sqlite3.def -l libsqlite3.a && ls -lah && cd ..
   
       - name: Build project
         run: cargo build --release --target ${{ matrix.target }}
+        env:
+          CC_x86_64_pc_windows_gnu: x86_64-w64-mingw32-gcc
+          AR_x86_64_pc_windows_gnu: x86_64-w64-mingw32-ar
+          CFLAGS_x86_64_pc_windows_gnu: "-O2"
+
+      - name: Windows debug (find release file..)
+        if: ${{ matrix.target == 'x86_64-pc-windows-gnu' }}
+        run: tree target/
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v3
         with:
           name: dash-evo-tool-${{ matrix.target }}
-          path: target/${{ matrix.target }}/release/dash-evo-tool
+          path: target/${{ matrix.target }}/release/dash-evo-tool${{ matrix.ext }}
 
     #continue-on-error: true
 
@@ -128,6 +141,12 @@ jobs:
           name: dash-evo-tool-aarch64-apple-darwin
           path: ./release/dash-evo-tool-aarch64-apple-darwin/
 
+      - name: Download Windows
+        uses: actions/download-artifact@v3
+        with:
+          name: dash-evo-tool-x86_64-pc-windows-gnu
+          path: ./release/dash-evo-tool-x86_64-pc-windows-gnu/
+
       - name: Rename Linux X64 file
         run: mv ./release/dash-evo-tool-x86_64-unknown-linux-gnu/dash-evo-tool ./release/dash-evo-tool-x86_64-linux
 
@@ -139,6 +158,9 @@ jobs:
 
       - name: Rename Mac ARM file
         run: mv ./release/dash-evo-tool-aarch64-apple-darwin/dash-evo-tool ./release/dash-evo-tool-aarch64-mac
+
+      - name: Rename Windows file
+        run: mv ./release/dash-evo-tool-x86_64-pc-windows-gnu/dash-evo-tool.exe ./release/dash-evo-tool.exe
 
       - name: Check dir
         run: ls -lah ./release/dash-evo-tool-aarch64-apple-darwin
@@ -154,5 +176,6 @@ jobs:
             ./release/dash-evo-tool-aarch64-linux
             ./release/dash-evo-tool-x86_64-mac
             ./release/dash-evo-tool-aarch64-mac
+            ./release/dash-evo-tool.exe
           draft: false
           prerelease: true

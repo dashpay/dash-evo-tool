@@ -1,5 +1,6 @@
 use bincode::{Decode, Encode};
 use dash_sdk::dashcore_rpc::dashcore::{signer, PubkeyHash};
+use dash_sdk::dpp::bls_signatures::{Bls12381G2Impl, SignatureSchemes};
 use dash_sdk::dpp::dashcore::address::Payload;
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::{Address, Network, ScriptHash};
@@ -12,6 +13,7 @@ use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicK
 use dash_sdk::dpp::identity::signer::Signer;
 use dash_sdk::dpp::identity::KeyType::{BIP13_SCRIPT_HASH, ECDSA_HASH160};
 use dash_sdk::dpp::identity::{Identity, KeyID, KeyType, Purpose, SecurityLevel};
+use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::platform_value::BinaryData;
 use dash_sdk::dpp::state_transition::errors::InvalidIdentityPublicKeyTypeError;
 use dash_sdk::dpp::{bls_signatures, ed25519_dalek, ProtocolError};
@@ -24,6 +26,16 @@ pub enum IdentityType {
     User,
     Masternode,
     Evonode,
+}
+
+impl IdentityType {
+    pub fn vote_strength(&self) -> u64 {
+        match self {
+            IdentityType::User => 1,
+            IdentityType::Masternode => 1,
+            IdentityType::Evonode => 4,
+        }
+    }
 }
 
 impl Display for IdentityType {
@@ -61,7 +73,7 @@ pub struct QualifiedIdentity {
     pub identity_type: IdentityType,
     pub alias: Option<String>,
     pub encrypted_private_keys:
-        BTreeMap<(EncryptedPrivateKeyTarget, KeyID), (IdentityPublicKey, Vec<u8>)>,
+        BTreeMap<(EncryptedPrivateKeyTarget, KeyID), (IdentityPublicKey, [u8; 32])>,
 }
 
 impl Signer for QualifiedIdentity {
@@ -86,13 +98,17 @@ impl Signer for QualifiedIdentity {
                 Ok(signature.to_vec().into())
             }
             KeyType::BLS12_381 => {
-                let pk =
-                    bls_signatures::PrivateKey::from_bytes(private_key, false).map_err(|_e| {
-                        ProtocolError::Generic(
-                            "bls private key from bytes isn't correct".to_string(),
-                        )
-                    })?;
-                Ok(pk.sign(data).to_bytes().to_vec().into())
+                let pk = bls_signatures::SecretKey::<Bls12381G2Impl>::from_be_bytes(&private_key)
+                    .into_option()
+                    .ok_or(ProtocolError::Generic(
+                        "bls private key from bytes isn't correct".to_string(),
+                    ))?;
+                Ok(pk
+                    .sign(SignatureSchemes::Basic, data)?
+                    .as_raw_value()
+                    .to_compressed()
+                    .to_vec()
+                    .into())
             }
             KeyType::EDDSA_25519_HASH160 => {
                 let key: [u8; 32] = private_key.clone().try_into().expect("expected 32 bytes");
@@ -134,6 +150,19 @@ impl QualifiedIdentity {
         bincode::decode_from_slice(bytes, bincode::config::standard())
             .expect("Failed to decode QualifiedIdentity")
             .0
+    }
+
+    pub fn display_string(&self) -> String {
+        self.alias
+            .clone()
+            .unwrap_or(self.identity.id().to_string(Encoding::Base58))
+    }
+
+    pub fn display_short_string(&self) -> String {
+        self.alias.clone().unwrap_or_else(|| {
+            let id_str = self.identity.id().to_string(Encoding::Base58);
+            id_str.chars().take(5).collect()
+        })
     }
 
     pub fn masternode_payout_address(&self, network: Network) -> Option<Address> {
@@ -212,6 +241,19 @@ impl QualifiedIdentity {
                     }
                 }
                 _ => {}
+            }
+        }
+
+        keys
+    }
+
+    pub fn available_transfer_keys(&self) -> Vec<&IdentityPublicKey> {
+        let mut keys = vec![];
+
+        // Check the main identity's public keys
+        for ((public_key, _)) in self.encrypted_private_keys.values() {
+            if public_key.purpose() == Purpose::TRANSFER {
+                keys.push(public_key);
             }
         }
 

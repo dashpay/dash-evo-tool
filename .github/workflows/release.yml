@@ -20,7 +20,7 @@ jobs:
     strategy:
       matrix:
         include:
-          - name: "Windows"
+          - name: "linux-amd64"
             runs-on: "ubuntu-20.04"
             target: "x86_64-unknown-linux-gnu"
             platform: "amd64"
@@ -40,6 +40,7 @@ jobs:
             runs-on: "ubuntu-20.04"
             target: "x86_64-pc-windows-gnu"
             platform: "windows"
+            ext: ".exe"
 
     runs-on: ${{ matrix.runs-on }}
 
@@ -107,7 +108,7 @@ jobs:
         uses: actions/upload-artifact@v3
         with:
           name: dash-evo-tool-${{ matrix.target }}
-          path: target/${{ matrix.target }}/release/dash-evo-tool
+          path: target/${{ matrix.target }}/release/dash-evo-tool${{ matrix.ext }}
 
     #continue-on-error: true
 
@@ -140,6 +141,12 @@ jobs:
           name: dash-evo-tool-aarch64-apple-darwin
           path: ./release/dash-evo-tool-aarch64-apple-darwin/
 
+      - name: Download Windows
+        uses: actions/download-artifact@v3
+        with:
+          name: dash-evo-tool-x86_64-pc-windows-gnu
+          path: ./release/dash-evo-tool-x86_64-pc-windows-gnu/
+
       - name: Rename Linux X64 file
         run: mv ./release/dash-evo-tool-x86_64-unknown-linux-gnu/dash-evo-tool ./release/dash-evo-tool-x86_64-linux
 
@@ -151,6 +158,9 @@ jobs:
 
       - name: Rename Mac ARM file
         run: mv ./release/dash-evo-tool-aarch64-apple-darwin/dash-evo-tool ./release/dash-evo-tool-aarch64-mac
+
+      - name: Rename Windows file
+        run: mv ./release/dash-evo-tool-x86_64-pc-windows-gnu/dash-evo-tool.exe ./release/dash-evo-tool.exe
 
       - name: Check dir
         run: ls -lah ./release/dash-evo-tool-aarch64-apple-darwin
@@ -166,5 +176,6 @@ jobs:
             ./release/dash-evo-tool-aarch64-linux
             ./release/dash-evo-tool-x86_64-mac
             ./release/dash-evo-tool-aarch64-mac
+            ./release/dash-evo-tool.exe
           draft: false
           prerelease: true

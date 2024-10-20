@@ -4,24 +4,37 @@ use crate::ui::RootScreenType;
 use eframe::epaint::{Color32, Margin};
 use egui::{Context, Frame, ImageButton, SidePanel, TextureHandle};
 use std::sync::Arc;
+use rust_embed::RustEmbed;
 
-// Function to load an icon as a texture
+#[derive(RustEmbed)]
+#[folder = "icons/"] // Adjust the folder path if necessary
+struct Assets;
+
+// Function to load an icon as a texture using embedded assets
 fn load_icon(ctx: &Context, path: &str) -> Option<TextureHandle> {
-    if let Ok(image) = image::open(path) {
-        let size = [image.width() as usize, image.height() as usize];
-        let rgba_image = image.into_rgba8();
-        let pixels = rgba_image.into_raw();
+    // Attempt to retrieve the embedded file
+    if let Some(content) = Assets::get(path) {
+        // Load the image from the embedded bytes
+        if let Ok(image) = image::load_from_memory(&content.data) {
+            let size = [image.width() as usize, image.height() as usize];
+            let rgba_image = image.into_rgba8();
+            let pixels = rgba_image.into_raw();
 
-        Some(ctx.load_texture(
-            path,
-            egui::ColorImage::from_rgba_unmultiplied(size, &pixels),
-            Default::default(),
-        ))
+            Some(ctx.load_texture(
+                path,
+                egui::ColorImage::from_rgba_unmultiplied(size, &pixels),
+                Default::default(),
+            ))
+        } else {
+            eprintln!("Failed to load image from embedded data at path: {}", path);
+            None
+        }
     } else {
-        eprintln!("Failed to load icon at path: {}", path);
+        eprintln!("Image not found in embedded assets at path: {}", path);
         None
     }
 }
+
 pub fn add_left_panel(
     ctx: &Context,
     app_context: &Arc<AppContext>,

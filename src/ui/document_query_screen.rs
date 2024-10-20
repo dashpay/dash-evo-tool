@@ -43,7 +43,7 @@ pub struct DocumentQueryScreen {
 impl DocumentQueryScreen {
     pub fn new(app_context: &Arc<AppContext>) -> Self {
         let contested_names = Arc::new(Mutex::new(
-            app_context.load_contested_names().unwrap_or_default(),
+            app_context.all_contested_names().unwrap_or_default(),
         ));
         Self {
             contested_names,
@@ -85,6 +85,7 @@ impl DocumentQueryScreen {
                         ContestedResourceTask::VoteOnDPNSName(
                             contested_name.normalized_contested_name.clone(),
                             ResourceVoteChoice::Abstain,
+                            vec![],
                         ),
                     ));
                 }
@@ -100,7 +101,7 @@ impl DocumentQueryScreen {
                     .cmp(&b.normalized_contested_name),
                 SortColumn::LockedVotes => a.locked_votes.cmp(&b.locked_votes),
                 SortColumn::AbstainVotes => a.abstain_votes.cmp(&b.abstain_votes),
-                SortColumn::EndingTime => a.ending_time.cmp(&b.ending_time),
+                SortColumn::EndingTime => a.end_time.cmp(&b.end_time),
                 SortColumn::LastUpdated => a.last_updated.cmp(&b.last_updated),
             };
 
@@ -163,7 +164,7 @@ impl DocumentQueryScreen {
 impl ScreenLike for DocumentQueryScreen {
     fn refresh(&mut self) {
         let mut contested_names = self.contested_names.lock().unwrap();
-        *contested_names = self.app_context.load_contested_names().unwrap_or_default();
+        *contested_names = self.app_context.all_contested_names().unwrap_or_default();
     }
 
     fn display_message(&mut self, message: &str, message_type: MessageType) {

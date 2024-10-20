@@ -108,8 +108,12 @@ impl AppContext {
         self.db.get_local_qualified_identities(self)
     }
 
-    pub fn load_contested_names(&self) -> Result<Vec<ContestedName>> {
-        self.db.get_contested_names(self)
+    pub fn all_contested_names(&self) -> Result<Vec<ContestedName>> {
+        self.db.get_all_contested_names(self)
+    }
+
+    pub fn ongoing_contested_names(&self) -> Result<Vec<ContestedName>> {
+        self.db.get_ongoing_contested_names(self)
     }
 
     /// Updates the `start_root_screen` in the settings table

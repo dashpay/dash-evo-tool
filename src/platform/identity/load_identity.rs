@@ -1,12 +1,13 @@
 use crate::context::AppContext;
 use crate::model::qualified_identity::EncryptedPrivateKeyTarget::{
-    PrivateKeyOnMainIdentity, PrivateKeyOnVoterIdentity,
+    self, PrivateKeyOnMainIdentity, PrivateKeyOnVoterIdentity,
 };
 use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
 use crate::platform::identity::{verify_key_input, IdentityInputToLoad};
 use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
 use dash_sdk::dashcore_rpc::dashcore::PrivateKey;
 use dash_sdk::dpp::identifier::MasternodeIdentifiers;
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::{Fetch, Identifier, Identity};
@@ -26,7 +27,7 @@ impl AppContext {
             alias_input,
             owner_private_key_input,
             payout_address_private_key_input,
-            keys_input: _,
+            keys_input,
         } = input;
 
         // Verify the voting private key
@@ -113,6 +114,29 @@ impl AppContext {
         } else {
             None
         };
+
+        if identity_type == IdentityType::User {
+            for (i, private_key_input) in keys_input.into_iter().enumerate() {
+                let key_id = i as u32;
+                let public_key = match identity.public_keys().get(&key_id) {
+                    Some(key) => key,
+                    None => return Err("No public key matching key id {key_id}".to_string()),
+                };
+                let private_key_bytes = match verify_key_input(
+                    private_key_input,
+                    &public_key.key_type().to_string(),
+                )? {
+                    Some(bytes) => bytes,
+                    None => {
+                        return Err("Private key input length is 0 for key id {key_id}".to_string())
+                    }
+                };
+                encrypted_private_keys.insert(
+                    (EncryptedPrivateKeyTarget::PrivateKeyOnMainIdentity, key_id),
+                    (public_key.clone(), private_key_bytes),
+                );
+            }
+        }
 
         let qualified_identity = QualifiedIdentity {
             identity,

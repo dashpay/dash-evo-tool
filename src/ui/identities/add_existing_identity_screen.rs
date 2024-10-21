@@ -159,7 +159,7 @@ impl AddExistingIdentityScreen {
                 // For User, show multiple key inputs
                 for (i, key) in self.keys_input.iter_mut().enumerate() {
                     ui.horizontal(|ui| {
-                        ui.label(format!("Key {}:", i + 1));
+                        ui.label(format!("Private Key {} (Hex or WIF):", i + 1));
                         ui.text_edit_singleline(key);
                         if ui.button("-").clicked() {
                             keys_to_remove.push(i);

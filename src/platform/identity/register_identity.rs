@@ -6,6 +6,7 @@ use dash_sdk::dapi_grpc::core::v0::{
     BroadcastTransactionRequest, GetBlockchainStatusRequest, GetTransactionRequest,
     GetTransactionResponse,
 };
+use dash_sdk::dashcore_rpc::dashcore::PrivateKey;
 use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dpp::dashcore::psbt::serialize::Serialize;
 use dash_sdk::dpp::dashcore::{Address, Transaction};
@@ -25,13 +26,13 @@ impl AppContext {
         address: &Address,
     ) -> Result<AssetLockProof, dash_sdk::Error> {
         // Use the span only for synchronous logging before the first await.
-        tracing::debug_span!(
-            "broadcast_and_retrieve_asset_lock",
-            transaction_id = asset_lock_transaction.txid().to_string(),
-        )
-        .in_scope(|| {
-            tracing::debug!("Starting asset lock broadcast.");
-        });
+        // tracing::debug_span!(
+        //     "broadcast_and_retrieve_asset_lock",
+        //     transaction_id = asset_lock_transaction.txid().to_string(),
+        // )
+        // .in_scope(|| {
+        //     tracing::debug!("Starting asset lock broadcast.");
+        // });
 
         let sdk = &self.sdk;
 
@@ -42,16 +43,16 @@ impl AppContext {
             .map(|chain| chain.best_block_hash)
             .ok_or_else(|| dash_sdk::Error::DapiClientError("Missing `chain` field".to_owned()))?;
 
-        tracing::debug!(
-            "Starting the stream from the tip block hash {}",
-            hex::encode(&block_hash)
-        );
+        // tracing::debug!(
+        //     "Starting the stream from the tip block hash {}",
+        //     hex::encode(&block_hash)
+        // );
 
         let mut asset_lock_stream = sdk
             .start_instant_send_lock_stream(block_hash, address)
             .await?;
 
-        tracing::debug!("Stream is started.");
+        // tracing::debug!("Stream is started.");
 
         let request = BroadcastTransactionRequest {
             transaction: asset_lock_transaction.serialize(),
@@ -59,12 +60,12 @@ impl AppContext {
             bypass_limits: false,
         };
 
-        tracing::debug!("Broadcasting the transaction.");
+        // tracing::debug!("Broadcasting the transaction.");
 
         match sdk.execute(request, RequestSettings::default()).await {
-            Ok(_) => tracing::debug!("Transaction successfully broadcasted."),
+            Ok(_) => {}
             Err(error) if error.to_string().contains("AlreadyExists") => {
-                tracing::warn!("Transaction already broadcasted.");
+                // tracing::warn!("Transaction already broadcasted.");
 
                 let GetTransactionResponse { block_hash, .. } = sdk
                     .execute(
@@ -75,24 +76,24 @@ impl AppContext {
                     )
                     .await?;
 
-                tracing::debug!(
-                    "Restarting the stream from the transaction mined block hash {}",
-                    hex::encode(&block_hash)
-                );
+                // tracing::debug!(
+                //     "Restarting the stream from the transaction mined block hash {}",
+                //     hex::encode(&block_hash)
+                // );
 
                 asset_lock_stream = sdk
                     .start_instant_send_lock_stream(block_hash, address)
                     .await?;
 
-                tracing::debug!("Stream restarted.");
+                // tracing::debug!("Stream restarted.");
             }
             Err(error) => {
-                tracing::error!("Transaction broadcast failed: {error}");
+                // tracing::error!("Transaction broadcast failed: {error}");
                 return Err(error.into());
             }
         }
 
-        tracing::debug!("Waiting for asset lock proof.");
+        // tracing::debug!("Waiting for asset lock proof.");
 
         sdk.wait_for_asset_lock_proof_for_transaction(
             asset_lock_stream,
@@ -119,7 +120,20 @@ impl AppContext {
         // Scope the write lock to avoid holding it across an await.
         let (asset_lock_transaction, asset_lock_proof_private_key, change_address) = {
             let mut wallet = wallet.write().unwrap();
-            wallet.asset_lock_transaction(sdk.network, amount, identity_index, Some(self))?
+            match wallet.asset_lock_transaction(sdk.network, amount, identity_index, Some(self)) {
+                Ok(transaction) => transaction,
+                Err(_) => {
+                    wallet
+                        .reload_utxos(&self.core_client)
+                        .map_err(|e| e.to_string())?;
+                    wallet.asset_lock_transaction(
+                        sdk.network,
+                        amount,
+                        identity_index,
+                        Some(self),
+                    )?
+                }
+            }
         };
 
         let asset_lock_proof = self

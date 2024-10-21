@@ -2,7 +2,7 @@ use crate::app::AppAction;
 use crate::context::AppContext;
 use crate::model::wallet::Wallet;
 use crate::platform::identity::{IdentityKeys, IdentityRegistrationInfo, IdentityTask};
-use crate::platform::BackendTask;
+use crate::platform::{BackendTask, BackendTaskSuccessResult};
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::identities::add_new_identity_screen::AddNewIdentityScreenStep::{
     ChooseFundingMethod, FundsReceived, ReadyToCreate,
@@ -57,6 +57,8 @@ pub enum AddNewIdentityScreenStep {
     ChooseFundingMethod,
     FundsReceived,
     ReadyToCreate,
+    WaitingForAssetLock,
+    WaitingForPlatformAcceptance,
 }
 
 pub struct AddNewIdentityScreen {
@@ -331,6 +333,21 @@ impl AddNewIdentityScreen {
         }
     }
 
+    fn show_wallet_balance(&self, ui: &mut egui::Ui) {
+        if let Some(selected_wallet) = &self.selected_wallet {
+            let wallet = selected_wallet.read().unwrap(); // Read lock on the wallet
+
+            let total_balance: u64 = wallet.max_balance(); // Sum up all the balances
+
+            let dash_balance = total_balance as f64 * 1e-8; // Convert to DASH units
+
+            ui.horizontal(|ui| {
+                ui.label(format!("Wallet Balance: {:.8} DASH", dash_balance));
+            });
+        } else {
+            ui.label("No wallet selected");
+        }
+    }
     fn render_wallet_selection(&mut self, ui: &mut Ui) {
         if self.app_context.has_wallet.load(Ordering::Relaxed) {
             let wallets = &self.app_context.wallets.read().unwrap();
@@ -477,10 +494,13 @@ impl AddNewIdentityScreen {
     fn register_identity_clicked(&mut self) -> AppAction {
         if self.identity_keys.master_private_key.is_some() {
             // Parse the funding amount or fall back to the default value
-            let amount = self
-                .funding_amount_exact
-                .unwrap_or_else(|| self.funding_amount.parse::<Duffs>().unwrap_or_else(|_| 0));
+            let amount = self.funding_amount_exact.unwrap_or_else(|| {
+                (self.funding_amount.parse::<f64>().unwrap_or_else(|_| 0.0) * 1e8) as u64
+            });
 
+            if amount == 0 {
+                return AppAction::None;
+            }
             // Ensure the selected wallet exists
             if let Some(selected_wallet) = &self.selected_wallet {
                 let identity_input = IdentityRegistrationInfo {
@@ -490,6 +510,9 @@ impl AddNewIdentityScreen {
                     identity_index: 0, // Default index, modify if needed
                     wallet: Arc::clone(selected_wallet), // Clone the Arc reference
                 };
+
+                let mut step = self.step.write().unwrap();
+                *step = AddNewIdentityScreenStep::WaitingForAssetLock;
 
                 // Create the backend task to register the identity
                 AppAction::BackendTask(BackendTask::IdentityTask(IdentityTask::RegisterIdentity(
@@ -621,6 +644,10 @@ impl AddNewIdentityScreen {
 }
 
 impl ScreenLike for AddNewIdentityScreen {
+    fn display_task_result(&mut self, _backend_task_success_result: BackendTaskSuccessResult) {
+        let mut step = self.step.write().unwrap();
+        *step = AddNewIdentityScreenStep::WaitingForPlatformAcceptance;
+    }
     fn ui(&mut self, ctx: &Context) -> AppAction {
         let mut action = add_top_panel(
             ctx,
@@ -655,6 +682,14 @@ impl ScreenLike for AddNewIdentityScreen {
 
             if funding_method == FundingMethod::AddressWithQRCode {
                 ui.heading("2. Choose how much you would like to transfer to your new identity?");
+
+                self.render_funding_amount_input(ui);
+            }
+
+            if funding_method == FundingMethod::UseWalletBalance {
+                self.show_wallet_balance(ui);
+
+                ui.heading("2. How much of your wallet balance would you like to transfer?");
 
                 self.render_funding_amount_input(ui);
             }
@@ -694,12 +729,16 @@ impl ScreenLike for AddNewIdentityScreen {
 
             if step == ReadyToCreate || funding_method == FundingMethod::UseWalletBalance {
                 if ui.button("Create Identity").clicked() {
-                    let now = SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .expect("Time went backwards")
-                        .as_secs();
                     action = self.register_identity_clicked();
                 }
+            }
+
+            if step == AddNewIdentityScreenStep::WaitingForAssetLock {
+                ui.heading("Waiting for Asset Lock");
+            }
+
+            if step == AddNewIdentityScreenStep::WaitingForPlatformAcceptance {
+                ui.heading("Waiting for Platform Acknowledgement");
             }
         });
 

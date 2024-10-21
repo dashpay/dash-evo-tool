@@ -93,7 +93,7 @@ impl AddNewWalletScreen {
                         let half_width = available_width / 2.0 - 400.0; // Adjust half-width with padding
                         ui.add_space(half_width);
 
-                        let mut style = ui.style_mut();
+                        let style = ui.style_mut();
 
                         // Customize text size for the ComboBox
                         style.text_styles.insert(

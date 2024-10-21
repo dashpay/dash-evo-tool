@@ -180,7 +180,7 @@ impl WithdrawalScreen {
 }
 
 impl ScreenLike for WithdrawalScreen {
-    fn display_message(&mut self, message: &str, message_type: MessageType) {
+    fn display_message(&mut self, message: &str, _message_type: MessageType) {
         self.error_message = Some(message.to_string());
     }
 

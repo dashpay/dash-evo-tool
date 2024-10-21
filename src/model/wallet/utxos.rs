@@ -52,7 +52,7 @@ impl Wallet {
         Some((taken_utxos, required.abs() as u64))
     }
 
-    pub async fn reload_utxos(
+    pub fn reload_utxos(
         &mut self,
         core_client: &Client,
     ) -> Result<HashMap<OutPoint, TxOut>, String> {
@@ -63,7 +63,7 @@ impl Wallet {
         match core_client.list_unspent(Some(1), None, Some(&addresses), None, None) {
             Ok(utxos) => {
                 // Log the number of UTXOs retrieved for debugging purposes.
-                info!("Retrieved {} UTXOs", utxos.len());
+                // info!("Retrieved {} UTXOs", utxos.len());
 
                 // Initialize the HashMap to store the UTXOs.
                 let mut utxo_map = HashMap::new();

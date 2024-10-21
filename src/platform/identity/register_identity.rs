@@ -24,11 +24,14 @@ impl AppContext {
         asset_lock_transaction: &Transaction,
         address: &Address,
     ) -> Result<AssetLockProof, dash_sdk::Error> {
-        let _span = tracing::debug_span!(
+        // Use the span only for synchronous logging before the first await.
+        tracing::debug_span!(
             "broadcast_and_retrieve_asset_lock",
             transaction_id = asset_lock_transaction.txid().to_string(),
         )
-        .entered();
+        .in_scope(|| {
+            tracing::debug!("Starting asset lock broadcast.");
+        });
 
         let sdk = &self.sdk;
 
@@ -37,10 +40,10 @@ impl AppContext {
             .await?
             .chain
             .map(|chain| chain.best_block_hash)
-            .ok_or_else(|| dash_sdk::Error::DapiClientError("missing `chain` field".to_owned()))?;
+            .ok_or_else(|| dash_sdk::Error::DapiClientError("Missing `chain` field".to_owned()))?;
 
         tracing::debug!(
-            "starting the stream from the tip block hash {}",
+            "Starting the stream from the tip block hash {}",
             hex::encode(&block_hash)
         );
 
@@ -48,25 +51,20 @@ impl AppContext {
             .start_instant_send_lock_stream(block_hash, address)
             .await?;
 
-        tracing::debug!("stream is started");
+        tracing::debug!("Stream is started.");
 
-        // we need to broadcast the transaction to core
         let request = BroadcastTransactionRequest {
-            transaction: asset_lock_transaction.serialize(), /* transaction but how to encode it
-                                                              * as bytes?, */
+            transaction: asset_lock_transaction.serialize(),
             allow_high_fees: false,
             bypass_limits: false,
         };
 
-        tracing::debug!("broadcast the transaction");
+        tracing::debug!("Broadcasting the transaction.");
 
         match sdk.execute(request, RequestSettings::default()).await {
-            Ok(_) => tracing::debug!("transaction is successfully broadcasted"),
+            Ok(_) => tracing::debug!("Transaction successfully broadcasted."),
             Err(error) if error.to_string().contains("AlreadyExists") => {
-                // Transaction is already broadcasted. We need to restart the stream from a
-                // block when it was mined
-
-                tracing::warn!("transaction is already broadcasted");
+                tracing::warn!("Transaction already broadcasted.");
 
                 let GetTransactionResponse { block_hash, .. } = sdk
                     .execute(
@@ -78,7 +76,7 @@ impl AppContext {
                     .await?;
 
                 tracing::debug!(
-                    "restarting the stream from the transaction minded block hash {}",
+                    "Restarting the stream from the transaction mined block hash {}",
                     hex::encode(&block_hash)
                 );
 
@@ -86,16 +84,15 @@ impl AppContext {
                     .start_instant_send_lock_stream(block_hash, address)
                     .await?;
 
-                tracing::debug!("stream is started");
+                tracing::debug!("Stream restarted.");
             }
             Err(error) => {
-                tracing::error!("transaction broadcast failed: {error}");
-
+                tracing::error!("Transaction broadcast failed: {error}");
                 return Err(error.into());
             }
-        };
+        }
 
-        tracing::debug!("waiting for asset lock proof");
+        tracing::debug!("Waiting for asset lock proof.");
 
         sdk.wait_for_asset_lock_proof_for_transaction(
             asset_lock_stream,
@@ -116,10 +113,14 @@ impl AppContext {
             identity_index,
             wallet,
         } = input;
+
         let sdk = self.sdk.clone();
-        let mut wallet = wallet.write().unwrap();
-        let (asset_lock_transaction, asset_lock_proof_private_key, change_address) =
-            wallet.asset_lock_transaction(sdk.network, amount, identity_index, Some(self))?;
+
+        // Scope the write lock to avoid holding it across an await.
+        let (asset_lock_transaction, asset_lock_proof_private_key, change_address) = {
+            let mut wallet = wallet.write().unwrap();
+            wallet.asset_lock_transaction(sdk.network, amount, identity_index, Some(self))?
+        };
 
         let asset_lock_proof = self
             .broadcast_and_retrieve_asset_lock(&asset_lock_transaction, &change_address)
@@ -129,9 +130,11 @@ impl AppContext {
         let identity_id = asset_lock_proof
             .create_identifier()
             .expect("expected to create an identifier");
+
         let public_keys = keys.to_public_keys_map();
         let identity = Identity::new_with_id_and_keys(identity_id, public_keys, sdk.version())
             .expect("expected to make identity");
+
         let mut qualified_identity = QualifiedIdentity {
             identity: identity.clone(),
             associated_voter_identity: None,
@@ -149,11 +152,13 @@ impl AppContext {
                 &asset_lock_proof_private_key,
                 &qualified_identity,
             )
-            .await?;
+            .await
+            .map_err(|e| e.to_string())?;
 
         qualified_identity.identity = updated_identity;
 
-        self.insert_local_qualified_identity(&qualified_identity)?;
+        self.insert_local_qualified_identity(&qualified_identity)
+            .map_err(|e| e.to_string())?;
 
         Ok(())
     }

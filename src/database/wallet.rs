@@ -100,7 +100,7 @@ impl Database {
         }
     }
 
-    /// Retrieve all wallets for a specific network, including their addresses and balances.
+    /// Retrieve all wallets for a specific network, including their addresses, balances, and known addresses.
     pub fn get_wallets(&self, network: &Network) -> rusqlite::Result<Vec<Wallet>> {
         let network_str = network.to_string();
         let conn = self.conn.lock().unwrap();
@@ -125,6 +125,7 @@ impl Database {
                 Wallet {
                     seed: seed_array,
                     address_balances: BTreeMap::new(),
+                    known_addresses: BTreeMap::new(),
                     watched_addresses: BTreeMap::new(),
                     alias,
                     utxos: None,
@@ -140,7 +141,7 @@ impl Database {
             wallet?;
         }
 
-        // Step 2: Retrieve all addresses and balances associated with the wallets.
+        // Step 2: Retrieve all addresses, balances, and derivation paths associated with the wallets.
         let mut address_stmt = conn.prepare(
             "SELECT seed, address, derivation_path, balance, path_reference, path_type FROM wallet_addresses",
         )?;
@@ -158,7 +159,8 @@ impl Database {
                 .expect("Invalid address format")
                 .assume_checked();
             let derivation_path = DerivationPath::from_str(&derivation_path)
-                .expect("expected to convert to derivation path");
+                .expect("Expected to convert to derivation path");
+
             // Convert u32 to DerivationPathReference safely
             let path_reference =
                 DerivationPathReference::try_from(path_reference).map_err(|_| {
@@ -168,6 +170,7 @@ impl Database {
                         Box::new(std::fmt::Error),
                     )
                 })?;
+
             let path_type = DerivationPathType::from_bits_truncate(path_type as u32);
 
             Ok((
@@ -180,17 +183,22 @@ impl Database {
             ))
         })?;
 
-        // Step 3: Add addresses and balances to the corresponding wallets.
+        // Step 3: Add addresses, balances, and known addresses to the corresponding wallets.
         for row in address_rows {
             let (seed_array, address, derivation_path, balance, path_reference, path_type) = row?;
 
             if let Some(wallet) = wallets_map.get_mut(&seed_array) {
-                // Update the address balance if available
+                // Update the address balance if available.
                 if let Some(balance) = balance {
                     wallet.address_balances.insert(address.clone(), balance);
                 }
 
-                // Add the address to the watched_addresses map with AddressInfo
+                // Add the address to the `known_addresses` map.
+                wallet
+                    .known_addresses
+                    .insert(address.clone(), derivation_path.clone());
+
+                // Add the address to the `watched_addresses` map with AddressInfo.
                 let address_info = AddressInfo {
                     address: address.clone(),
                     path_reference,
@@ -202,7 +210,7 @@ impl Database {
             }
         }
 
-        // Convert the BTreeMap into a Vec of Wallets
+        // Convert the BTreeMap into a Vec of Wallets.
         Ok(wallets_map.into_values().collect())
     }
 
@@ -227,31 +235,43 @@ impl Database {
         &self,
         address: &str,
         network: &str,
-    ) -> rusqlite::Result<Vec<(OutPoint, TxOut)>> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT txid, vout, value, script_pubkey FROM utxos
-         WHERE address = ? AND network = ?",
-        )?;
-        let tx_out_iter = stmt.query_map(params![address, network], |row| {
-            let txid_bytes: Vec<u8> = row.get(0)?;
-            let vout: u32 = row.get(1)?;
-            let value: u64 = row.get(2)?;
-            let script_pubkey_bytes: Vec<u8> = row.get(3)?;
+    ) -> Result<Vec<(OutPoint, TxOut)>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
 
-            let txid = Txid::from_slice(&txid_bytes)?;
-            let outpoint = OutPoint { txid, vout };
-            let script_pubkey: ScriptBuf = ScriptBuf::from_bytes(script_pubkey_bytes)?;
-            let tx_out = TxOut {
-                value: value as u64,
-                script_pubkey,
-            };
-            Ok((outpoint, tx_out))
-        })?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT txid, vout, value, script_pubkey FROM utxos
+         WHERE address = ? AND network = ?",
+            )
+            .map_err(|e| e.to_string())?;
+
+        let tx_out_iter = stmt
+            .query_map(params![address, network], |row| {
+                let txid_bytes: Vec<u8> = row.get(0)?;
+                let vout: u32 = row.get(1)?;
+                let value: u64 = row.get(2)?;
+                let script_pubkey_bytes: Vec<u8> = row.get(3)?;
+
+                let txid = Txid::from_slice(&txid_bytes)
+                    .map_err(|e| rusqlite::Error::UserFunctionError(Box::new(e)))?;
+                let outpoint = OutPoint { txid, vout };
+
+                let script_pubkey = ScriptBuf::from_bytes(script_pubkey_bytes);
+
+                let tx_out = TxOut {
+                    value,
+                    script_pubkey,
+                };
+
+                Ok((outpoint, tx_out))
+            })
+            .map_err(|e| e.to_string())?;
+
         let mut utxos = Vec::new();
         for utxo in tx_out_iter {
-            utxos.push(utxo?);
+            utxos.push(utxo.map_err(|e| e.to_string())?);
         }
+
         Ok(utxos)
     }
 }

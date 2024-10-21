@@ -332,41 +332,42 @@ impl AddNewIdentityScreen {
     }
 
     fn render_wallet_selection(&mut self, ui: &mut Ui) {
-        let wallets = &self.app_context.wallets;
+        if self.app_context.has_wallet.load(Ordering::Relaxed) {
+            let wallets = &self.app_context.wallets.read().unwrap();
+            if wallets.len() > 1 {
+                // Retrieve the alias of the currently selected wallet, if any
+                let selected_wallet_alias = self
+                    .selected_wallet
+                    .as_ref()
+                    .and_then(|wallet| wallet.read().ok()?.alias.clone())
+                    .unwrap_or_else(|| "Select".to_string());
 
-        if wallets.len() > 1 {
-            // Retrieve the alias of the currently selected wallet, if any
-            let selected_wallet_alias = self
-                .selected_wallet
-                .as_ref()
-                .and_then(|wallet| wallet.read().ok()?.alias.clone())
-                .unwrap_or_else(|| "Select".to_string());
+                // Display the ComboBox for wallet selection
+                ComboBox::from_label("Select Wallet")
+                    .selected_text(selected_wallet_alias)
+                    .show_ui(ui, |ui| {
+                        for wallet in wallets.iter() {
+                            let wallet_alias = wallet
+                                .read()
+                                .ok()
+                                .and_then(|w| w.alias.clone())
+                                .unwrap_or_else(|| "Unnamed Wallet".to_string());
 
-            // Display the ComboBox for wallet selection
-            ComboBox::from_label("Select Wallet")
-                .selected_text(selected_wallet_alias)
-                .show_ui(ui, |ui| {
-                    for wallet in wallets.iter() {
-                        let wallet_alias = wallet
-                            .read()
-                            .ok()
-                            .and_then(|w| w.alias.clone())
-                            .unwrap_or_else(|| "Unnamed Wallet".to_string());
+                            let is_selected = self
+                                .selected_wallet
+                                .as_ref()
+                                .map_or(false, |selected| Arc::ptr_eq(selected, wallet));
 
-                        let is_selected = self
-                            .selected_wallet
-                            .as_ref()
-                            .map_or(false, |selected| Arc::ptr_eq(selected, wallet));
-
-                        if ui.selectable_label(is_selected, wallet_alias).clicked() {
-                            // Update the selected wallet
-                            self.selected_wallet = Some(wallet.clone());
+                            if ui.selectable_label(is_selected, wallet_alias).clicked() {
+                                // Update the selected wallet
+                                self.selected_wallet = Some(wallet.clone());
+                            }
                         }
-                    }
-                });
-        } else if let Some(wallet) = wallets.first() {
-            // Automatically select the only available wallet
-            self.selected_wallet = Some(wallet.clone());
+                    });
+            } else if let Some(wallet) = wallets.first() {
+                // Automatically select the only available wallet
+                self.selected_wallet = Some(wallet.clone());
+            }
         }
     }
 
@@ -548,12 +549,12 @@ impl AddNewIdentityScreen {
             let identity_index = self.identity_id_number;
 
             // Update the master private key and keys input from the wallet
-            self.identity_keys.master_private_key = Some((wallet
-                .identity_authentication_ecdsa_private_key(
+            self.identity_keys.master_private_key =
+                Some(wallet.identity_authentication_ecdsa_private_key(
                     self.app_context.network,
                     identity_index,
                     0,
-                ),));
+                ));
 
             // Update the additional keys input
             self.identity_keys.keys_input = self

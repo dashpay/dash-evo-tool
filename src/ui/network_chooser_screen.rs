@@ -116,7 +116,14 @@ impl NetworkChooserScreen {
         ui.colored_label(status_color, if is_working { "Online" } else { "Offline" });
 
         // Display wallet count
-        let wallet_count = format!("{}", self.context_for_network(network).wallets.len());
+        let wallet_count = format!(
+            "{}",
+            self.context_for_network(network)
+                .wallets
+                .read()
+                .unwrap()
+                .len()
+        );
         ui.label(wallet_count);
 
         // Add a button to start the network

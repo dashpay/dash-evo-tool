@@ -20,6 +20,7 @@ use eframe::egui::{self, Context};
 use eframe::emath::Align;
 use egui::{Color32, Frame, Margin, RichText, Ui};
 use egui_extras::{Column, TableBuilder};
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
 pub struct IdentitiesScreen {
@@ -312,31 +313,25 @@ impl ScreenLike for IdentitiesScreen {
     fn ui(&mut self, ctx: &Context) -> AppAction {
         let right_buttons = {
             // Acquire a read lock on wallets
-            if let Ok(wallets) = self.app_context.wallets.read() {
-                let create_wallet_or_identity = if wallets.is_empty() {
-                    (
-                        "Create Wallet",
-                        DesiredAppAction::AddScreenType(ScreenType::AddNewWallet),
-                    )
-                } else {
-                    (
-                        "Create Identity",
-                        DesiredAppAction::AddScreenType(ScreenType::AddNewIdentity),
-                    )
-                };
-                vec![
-                    create_wallet_or_identity,
-                    (
-                        "Load Identity",
-                        DesiredAppAction::AddScreenType(ScreenType::AddExistingIdentity),
-                    ),
-                ]
+            let create_wallet_or_identity = if !self.app_context.has_wallet.load(Ordering::Relaxed)
+            {
+                (
+                    "Create Wallet",
+                    DesiredAppAction::AddScreenType(ScreenType::AddNewWallet),
+                )
             } else {
-                vec![(
+                (
+                    "Create Identity",
+                    DesiredAppAction::AddScreenType(ScreenType::AddNewIdentity),
+                )
+            };
+            vec![
+                create_wallet_or_identity,
+                (
                     "Load Identity",
                     DesiredAppAction::AddScreenType(ScreenType::AddExistingIdentity),
-                )]
-            }
+                ),
+            ]
         };
         let mut action = add_top_panel(
             ctx,

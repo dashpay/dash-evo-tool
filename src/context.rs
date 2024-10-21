@@ -15,6 +15,7 @@ use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::platform::DataContract;
 use dash_sdk::Sdk;
 use rusqlite::Result;
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, RwLock};
 
 #[derive(Debug)]
@@ -27,7 +28,8 @@ pub struct AppContext {
     pub(crate) config: NetworkConfig,
     pub(crate) dpns_contract: Arc<DataContract>,
     pub(crate) core_client: Client,
-    pub(crate) wallets: Vec<Arc<RwLock<Wallet>>>,
+    pub(crate) has_wallet: AtomicBool,
+    pub(crate) wallets: RwLock<Vec<Arc<RwLock<Wallet>>>>,
     pub(crate) platform_version: &'static PlatformVersion,
 }
 
@@ -60,7 +62,12 @@ impl AppContext {
         )
         .ok()?;
 
-        let wallets = db.get_wallets(&network).expect("expected to get wallets");
+        let wallets: Vec<_> = db
+            .get_wallets(&network)
+            .expect("expected to get wallets")
+            .into_iter()
+            .map(|w| Arc::new(RwLock::new(w)))
+            .collect();
 
         let app_context = AppContext {
             network,
@@ -71,7 +78,8 @@ impl AppContext {
             config: network_config,
             dpns_contract: Arc::new(dpns_contract),
             core_client,
-            wallets: vec![],
+            has_wallet: (!wallets.is_empty()).into(),
+            wallets: RwLock::new(wallets),
             platform_version: PlatformVersion::latest(),
         };
 

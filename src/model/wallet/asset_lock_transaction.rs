@@ -96,14 +96,16 @@ impl Wallet {
         tx.input
             .iter_mut()
             .zip(sighashes.into_iter())
-            .for_each(|(input, sighash)| {
+            .try_for_each(|(input, sighash)| {
                 // You need to provide the actual script_pubkey of the UTXO being spent
-                let (_, public_key, input_address) = utxos
+                let (_, input_address) = utxos
                     .remove(&input.previous_output)
                     .expect("expected a txout");
-                let message = Message::from_digest(sighash.into()).expect("Error creating message");
+                let message = Message::from_digest(sighash.into());
 
-                let private_key = self.private_key_for_address(&input_address);
+                let private_key = self
+                    .private_key_for_address(&input_address, network)?
+                    .ok_or("Expected address to be in wallet")?;
 
                 // Sign the message with the private key
                 let sig = secp.sign_ecdsa(&message, &private_key.inner);
@@ -117,13 +119,14 @@ impl Wallet {
 
                 sig_script.push(1);
 
-                let mut serialized_pub_key = public_key.serialize();
+                let mut serialized_pub_key = private_key.public_key(&secp).serialize();
 
                 sig_script.push(serialized_pub_key.len() as u8);
                 sig_script.append(&mut serialized_pub_key);
                 // Create script_sig
                 input.script_sig = ScriptBuf::from_bytes(sig_script);
-            });
+                Ok::<(), String>(())
+            })?;
 
         Ok((tx, private_key, change_address))
     }

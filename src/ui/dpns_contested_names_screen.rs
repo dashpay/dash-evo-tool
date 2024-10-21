@@ -11,12 +11,9 @@ use crate::ui::identities::add_existing_identity_screen::AddExistingIdentityScre
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use chrono::{DateTime, LocalResult, TimeZone, Utc};
 use chrono_humanize::HumanTime;
-use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
 use egui::{Context, Frame, Margin, Ui};
 use egui_extras::{Column, TableBuilder};
-use itertools::Itertools;
 use std::sync::{Arc, Mutex};
 use tracing::error;
 

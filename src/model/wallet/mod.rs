@@ -90,6 +90,7 @@ pub struct AddressInfo {
 pub struct Wallet {
     pub(crate) seed: [u8; 64],
     pub address_balances: BTreeMap<Address, u64>,
+    pub known_addresses: BTreeMap<Address, DerivationPath>,
     pub watched_addresses: BTreeMap<DerivationPath, AddressInfo>,
     pub alias: Option<String>,
     pub utxos: Option<HashMap<Address, HashMap<OutPoint, TxOut>>>,
@@ -104,6 +105,22 @@ impl Wallet {
 
     pub fn max_balance(&self) -> u64 {
         self.address_balances.values().sum::<Duffs>()
+    }
+
+    pub fn private_key_for_address(
+        &self,
+        address: &Address,
+        network: Network,
+    ) -> Result<Option<PrivateKey>, String> {
+        self.known_addresses
+            .get(address)
+            .map(|derivation_path| {
+                derivation_path
+                    .derive_priv_ecdsa_for_master_seed(&self.seed, network)
+                    .map(|extended_private_key| extended_private_key.to_priv())
+            })
+            .transpose()
+            .map_err(|e| e.to_string())
     }
 
     pub fn unused_bip_44_public_key(

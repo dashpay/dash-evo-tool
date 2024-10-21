@@ -11,7 +11,7 @@ use egui::{
     Color32, ComboBox, Direction, FontId, Frame, Grid, Layout, Margin, RichText, Stroke, TextStyle,
     Ui, Vec2,
 };
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 pub struct AddNewWalletScreen {
     seed_phrase: Option<Mnemonic>,
@@ -52,8 +52,10 @@ impl AddNewWalletScreen {
             let wallet = Wallet {
                 seed,
                 address_balances: Default::default(),
+                known_addresses: Default::default(),
                 watched_addresses: Default::default(),
                 alias: None,
+                utxos: None,
                 is_main: true,
                 password_hint: None,
             };
@@ -65,7 +67,7 @@ impl AddNewWalletScreen {
 
             // Acquire a write lock and add the new wallet
             if let Ok(mut wallets) = self.app_context.wallets.write() {
-                wallets.push(wallet);
+                wallets.push(Arc::new(RwLock::new(wallet)));
             } else {
                 eprintln!("Failed to acquire write lock on wallets");
             }

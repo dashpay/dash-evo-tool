@@ -185,7 +185,7 @@ impl IdentitiesScreen {
                         .column(Column::initial(100.0).resizable(true)) // Type
                         .column(Column::initial(80.0).resizable(true)) // Keys
                         .column(Column::initial(80.0).resizable(true)) // Withdraw
-                        .column(Column::initial(80.0).resizable(true)) // Transfer
+                        // .column(Column::initial(80.0).resizable(true)) // Transfer
                         .header(30.0, |mut header| {
                             header.col(|ui| {
                                 ui.heading("Name");
@@ -205,9 +205,9 @@ impl IdentitiesScreen {
                             header.col(|ui| {
                                 ui.heading("Withdraw");
                             });
-                            header.col(|ui| {
-                                ui.heading("Transfer");
-                            });
+                            // header.col(|ui| {
+                            //     ui.heading("Transfer");
+                            // });
                         })
                         .body(|mut body| {
                             for qualified_identity in identities.iter() {
@@ -281,16 +281,16 @@ impl IdentitiesScreen {
                                             );
                                         }
                                     });
-                                    row.col(|ui| {
-                                        if ui.button("Transfer").clicked() {
-                                            action = AppAction::AddScreen(Screen::TransferScreen(
-                                                TransferScreen::new(
-                                                    qualified_identity.clone(),
-                                                    &self.app_context,
-                                                ),
-                                            ));
-                                        }
-                                    });
+                                    // row.col(|ui| {
+                                    //     if ui.button("Transfer").clicked() {
+                                    //         action = AppAction::AddScreen(Screen::TransferScreen(
+                                    //             TransferScreen::new(
+                                    //                 qualified_identity.clone(),
+                                    //                 &self.app_context,
+                                    //             ),
+                                    //         ));
+                                    //     }
+                                    // });
                                 });
                             }
                         });
@@ -313,20 +313,20 @@ impl ScreenLike for IdentitiesScreen {
     fn ui(&mut self, ctx: &Context) -> AppAction {
         let right_buttons = {
             // Acquire a read lock on wallets
-            let create_wallet_or_identity = if !self.app_context.has_wallet.load(Ordering::Relaxed)
-            {
-                (
-                    "Create Wallet",
-                    DesiredAppAction::AddScreenType(ScreenType::AddNewWallet),
-                )
-            } else {
-                (
-                    "Create Identity",
-                    DesiredAppAction::AddScreenType(ScreenType::AddNewIdentity),
-                )
-            };
+            // let create_wallet_or_identity = if !self.app_context.has_wallet.load(Ordering::Relaxed)
+            // {
+            //     (
+            //         "Create Wallet",
+            //         DesiredAppAction::AddScreenType(ScreenType::AddNewWallet),
+            //     )
+            // } else {
+            //     (
+            //         "Create Identity",
+            //         DesiredAppAction::AddScreenType(ScreenType::AddNewIdentity),
+            //     )
+            // };
             vec![
-                create_wallet_or_identity,
+                // create_wallet_or_identity,
                 (
                     "Load Identity",
                     DesiredAppAction::AddScreenType(ScreenType::AddExistingIdentity),

@@ -204,7 +204,9 @@ pub enum MessageType {
 #[enum_dispatch]
 pub trait ScreenLike {
     fn refresh(&mut self) {}
-    fn refresh_on_arrival(&mut self) {}
+    fn refresh_on_arrival(&mut self) {
+        self.refresh()
+    }
     fn ui(&mut self, ctx: &Context) -> AppAction;
     fn display_message(&mut self, _message: &str, _message_type: MessageType) {}
     fn display_task_result(&mut self, _backend_task_success_result: BackendTaskSuccessResult) {

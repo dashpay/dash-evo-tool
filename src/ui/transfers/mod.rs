@@ -13,6 +13,7 @@ use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicK
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::platform::IdentityPublicKey;
 use eframe::egui::{self, Context, Ui};
+use std::convert::identity;
 use std::str::FromStr;
 use std::sync::Arc;
 

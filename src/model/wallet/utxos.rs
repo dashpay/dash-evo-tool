@@ -1,7 +1,7 @@
-use std::collections::{BTreeMap, HashMap};
+use crate::model::wallet::Wallet;
 use dash_sdk::dashcore_rpc::{Client, RpcApi};
 use dash_sdk::dpp::dashcore::{Address, OutPoint, PublicKey, TxOut};
-use crate::model::wallet::Wallet;
+use std::collections::{BTreeMap, HashMap};
 
 impl Wallet {
     pub fn take_unspent_utxos_for(
@@ -62,9 +62,7 @@ impl Wallet {
                 self.utxos = Some(utxo_map.clone());
                 Ok(utxo_map)
             }
-            Err(first_error) => {
-                Err(first_error.to_string())
-            }
+            Err(first_error) => Err(first_error.to_string()),
         }
     }
 }

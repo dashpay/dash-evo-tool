@@ -1,11 +1,12 @@
-use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
-use dash_sdk::dpp::dashcore::secp256k1::Message;
-use dash_sdk::dpp::dashcore::sighash::SighashCache;
-use dash_sdk::dpp::dashcore::{Network, PrivateKey, ScriptBuf, Transaction, TxIn, TxOut};
-use dash_sdk::dpp::dashcore::transaction::special_transaction::asset_lock::AssetLockPayload;
-use dash_sdk::dpp::dashcore::transaction::special_transaction::TransactionPayload;
 use crate::context::AppContext;
 use crate::model::wallet::Wallet;
+use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
+use dash_sdk::dpp::dashcore::psbt::serialize::Serialize;
+use dash_sdk::dpp::dashcore::secp256k1::Message;
+use dash_sdk::dpp::dashcore::sighash::SighashCache;
+use dash_sdk::dpp::dashcore::transaction::special_transaction::asset_lock::AssetLockPayload;
+use dash_sdk::dpp::dashcore::transaction::special_transaction::TransactionPayload;
+use dash_sdk::dpp::dashcore::{Address, Network, PrivateKey, ScriptBuf, Transaction, TxIn, TxOut};
 
 impl Wallet {
     pub fn asset_lock_transaction(
@@ -14,18 +15,16 @@ impl Wallet {
         amount: u64,
         identity_index: u32,
         register_addresses: Option<&AppContext>,
-    ) -> Result<(Transaction, PrivateKey), String> {
+    ) -> Result<(Transaction, PrivateKey, Address), String> {
         let secp = Secp256k1::new();
         let private_key = self.identity_registration_ecdsa_private_key(network, identity_index);
         let asset_lock_public_key = private_key.public_key(&secp);
 
         let one_time_key_hash = asset_lock_public_key.pubkey_hash();
         let fee = 3_000;
-        let (mut utxos, change) =
-            self.take_unspent_utxos_for(amount + fee)
-                .ok_or(
-                    "take_unspent_utxos_for() returned None".to_string(),
-                )?;
+        let (mut utxos, change) = self
+            .take_unspent_utxos_for(amount + fee)
+            .ok_or("take_unspent_utxos_for() returned None".to_string())?;
 
         let change_address = self.change_address(network, register_addresses)?;
 
@@ -102,8 +101,7 @@ impl Wallet {
                 let (_, public_key, input_address) = utxos
                     .remove(&input.previous_output)
                     .expect("expected a txout");
-                let message =
-                    Message::from_digest(sighash.as_ref()).expect("Error creating message");
+                let message = Message::from_digest(sighash.into()).expect("Error creating message");
 
                 let private_key = self.private_key_for_address(&input_address);
 
@@ -127,6 +125,6 @@ impl Wallet {
                 input.script_sig = ScriptBuf::from_bytes(sig_script);
             });
 
-        Ok((tx, private_key))
+        Ok((tx, private_key, change_address))
     }
 }

@@ -5,19 +5,23 @@ mod register_identity;
 mod withdraw_from_identity;
 
 use crate::context::AppContext;
-use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
+use crate::model::qualified_identity::{
+    EncryptedPrivateKeyTarget, IdentityType, QualifiedIdentity,
+};
+use crate::model::wallet::Wallet;
+use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
 use dash_sdk::dashcore_rpc::dashcore::{Address, PrivateKey};
+use dash_sdk::dpp::balances::credits::Duffs;
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
-use dash_sdk::dpp::identity::{KeyID, KeyType, Purpose};
+use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
+use dash_sdk::dpp::identity::{KeyID, KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::ProtocolError;
 use dash_sdk::platform::{Identity, IdentityPublicKey};
 use dash_sdk::Sdk;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, RwLock};
-use dash_sdk::dpp::balances::credits::Duffs;
-use crate::model::wallet::Wallet;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct IdentityInputToLoad {
@@ -34,7 +38,100 @@ pub struct IdentityInputToLoad {
 pub struct IdentityKeys {
     pub(crate) master_private_key: Option<PrivateKey>,
     pub(crate) master_private_key_type: KeyType,
-    pub(crate) keys_input: Vec<(PrivateKey, KeyType)>,
+    pub(crate) keys_input: Vec<(PrivateKey, KeyType, Purpose, SecurityLevel)>,
+}
+
+impl IdentityKeys {
+    pub fn to_encrypted_private_keys(
+        &self,
+    ) -> BTreeMap<(EncryptedPrivateKeyTarget, KeyID), (IdentityPublicKey, [u8; 32])> {
+        let Self {
+            master_private_key,
+            master_private_key_type,
+            keys_input,
+        } = self;
+        let secp = Secp256k1::new();
+        let mut key_map = BTreeMap::new();
+        if let Some(master_private_key) = master_private_key {
+            let key = IdentityPublicKey::V0(IdentityPublicKeyV0 {
+                id: 0,
+                purpose: Purpose::AUTHENTICATION,
+                security_level: SecurityLevel::MASTER,
+                contract_bounds: None,
+                key_type: *master_private_key_type,
+                read_only: false,
+                data: master_private_key.public_key(&secp).to_bytes().into(),
+                disabled_at: None,
+            });
+
+            key_map.insert(
+                (EncryptedPrivateKeyTarget::PrivateKeyOnMainIdentity, 0),
+                (key, master_private_key.inner.secret_bytes()),
+            );
+        }
+        key_map.extend(keys_input.iter().enumerate().map(
+            |(i, (private_key, key_type, purpose, security_level))| {
+                let id = (i + 1) as KeyID;
+                let identity_public_key = IdentityPublicKey::V0(IdentityPublicKeyV0 {
+                    id,
+                    purpose: *purpose,
+                    security_level: *security_level,
+                    contract_bounds: None,
+                    key_type: *key_type,
+                    read_only: false,
+                    data: private_key.public_key(&secp).to_bytes().into(),
+                    disabled_at: None,
+                });
+                (
+                    (EncryptedPrivateKeyTarget::PrivateKeyOnMainIdentity, id),
+                    (identity_public_key, private_key.inner.secret_bytes()),
+                )
+            },
+        ));
+
+        key_map
+    }
+    pub fn to_public_keys_map(&self) -> BTreeMap<KeyID, IdentityPublicKey> {
+        let Self {
+            master_private_key,
+            master_private_key_type,
+            keys_input,
+        } = self;
+        let secp = Secp256k1::new();
+        let mut key_map = BTreeMap::new();
+        if let Some(master_private_key) = master_private_key {
+            let key = IdentityPublicKey::V0(IdentityPublicKeyV0 {
+                id: 0,
+                purpose: Purpose::AUTHENTICATION,
+                security_level: SecurityLevel::MASTER,
+                contract_bounds: None,
+                key_type: *master_private_key_type,
+                read_only: false,
+                data: master_private_key.public_key(&secp).to_bytes().into(),
+                disabled_at: None,
+            });
+
+            key_map.insert(0, key);
+        }
+        key_map.extend(keys_input.iter().enumerate().map(
+            |(i, (private_key, key_type, purpose, security_level))| {
+                let id = (i + 1) as KeyID;
+                let identity_public_key = IdentityPublicKey::V0(IdentityPublicKeyV0 {
+                    id,
+                    purpose: *purpose,
+                    security_level: *security_level,
+                    contract_bounds: None,
+                    key_type: *key_type,
+                    read_only: false,
+                    data: private_key.public_key(&secp).to_bytes().into(),
+                    disabled_at: None,
+                });
+                (id, identity_public_key)
+            },
+        ));
+
+        key_map
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -43,7 +140,7 @@ pub struct IdentityRegistrationInfo {
     pub amount: Duffs,
     pub keys: IdentityKeys,
     pub identity_index: u32,
-    pub wallet: Arc<RwLock<Wallet>>
+    pub wallet: Arc<RwLock<Wallet>>,
 }
 
 impl PartialEq for IdentityRegistrationInfo {
@@ -258,7 +355,7 @@ impl AppContext {
                     .await
             }
             IdentityTask::RegisterIdentity(registration_info) => {
-                self.register_identity(sdk, registration_info).await
+                self.register_identity(registration_info).await
             }
             IdentityTask::RegisterDpnsName(input) => self.register_dpns_name(sdk, input).await,
         }

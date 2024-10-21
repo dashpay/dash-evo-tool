@@ -1,10 +1,10 @@
-use std::convert::identity;
 use crate::app::AppAction;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::platform::identity::IdentityTask;
 use crate::platform::BackendTask;
 use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::key_info_screen::KeyInfoScreen;
 use crate::ui::{MessageType, Screen, ScreenLike};
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dpp::fee::Credits;
@@ -15,7 +15,6 @@ use dash_sdk::platform::IdentityPublicKey;
 use eframe::egui::{self, Context, Ui};
 use std::str::FromStr;
 use std::sync::Arc;
-use crate::ui::key_info_screen::KeyInfoScreen;
 
 pub struct TransferScreen {
     pub identity: QualifiedIdentity,
@@ -44,31 +43,30 @@ impl TransferScreen {
     }
 
     fn render_key_selection(&mut self, ui: &mut Ui) {
+        ui.horizontal(|ui| {
+            ui.label("Select Key:");
 
-            ui.horizontal(|ui| {
-                ui.label("Select Key:");
-
-                egui::ComboBox::from_id_salt("key_selector")
-                    .selected_text(match &self.selected_key {
-                        Some(key) => format!("Key ID: {}", key.id()),
-                        None => "Select a key".to_string(),
-                    })
-                    .show_ui(ui, |ui| {
-                        if self.app_context.developer_mode {
-                            for key in self.identity.identity.public_keys().values() {
-                                let label =
-                                    format!("Key ID: {} (Purpose: {:?})", key.id(), key.purpose());
-                                ui.selectable_value(&mut self.selected_key, Some(key.clone()), label);
-                            }
-                        } else {
-                            for key in self.identity.available_transfer_keys() {
-                                let label =
-                                    format!("Key ID: {} (Purpose: {:?})", key.id(), key.purpose());
-                                ui.selectable_value(&mut self.selected_key, Some(key.clone()), label);
-                            }
+            egui::ComboBox::from_id_salt("key_selector")
+                .selected_text(match &self.selected_key {
+                    Some(key) => format!("Key ID: {}", key.id()),
+                    None => "Select a key".to_string(),
+                })
+                .show_ui(ui, |ui| {
+                    if self.app_context.developer_mode {
+                        for key in self.identity.identity.public_keys().values() {
+                            let label =
+                                format!("Key ID: {} (Purpose: {:?})", key.id(), key.purpose());
+                            ui.selectable_value(&mut self.selected_key, Some(key.clone()), label);
                         }
-                    });
-            });
+                    } else {
+                        for key in self.identity.available_transfer_keys() {
+                            let label =
+                                format!("Key ID: {} (Purpose: {:?})", key.id(), key.purpose());
+                            ui.selectable_value(&mut self.selected_key, Some(key.clone()), label);
+                        }
+                    }
+                });
+        });
     }
 
     fn render_amount_input(&mut self, ui: &mut Ui) {
@@ -206,9 +204,17 @@ impl ScreenLike for TransferScreen {
             };
 
             if !has_keys {
-                ui.heading(format!("You do not have any transfer keys loaded for this {}.", self.identity.identity_type));
+                ui.heading(format!(
+                    "You do not have any transfer keys loaded for this {}.",
+                    self.identity.identity_type
+                ));
 
-                let key = self.identity.identity.get_first_public_key_matching(Purpose::TRANSFER, SecurityLevel::full_range().into(), KeyType::all_key_types().into(), false);
+                let key = self.identity.identity.get_first_public_key_matching(
+                    Purpose::TRANSFER,
+                    SecurityLevel::full_range().into(),
+                    KeyType::all_key_types().into(),
+                    false,
+                );
 
                 if let Some(key) = key {
                     if ui.button("Check Transfer Key").clicked() {

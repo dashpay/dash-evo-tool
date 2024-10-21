@@ -1,5 +1,5 @@
-mod utxos;
 mod asset_lock_transaction;
+mod utxos;
 
 use dash_sdk::dashcore_rpc::dashcore::bip32::KeyDerivationType;
 use dash_sdk::dpp::dashcore::bip32::DerivationPath;
@@ -199,10 +199,7 @@ impl Wallet {
         network: Network,
         index: u32,
     ) -> PublicKey {
-        let derivation_path = DerivationPath::identity_registration_path(
-            network,
-            index,
-        );
+        let derivation_path = DerivationPath::identity_registration_path(network, index);
         let extended_public_key = derivation_path
             .derive_pub_ecdsa_for_master_seed(&self.seed, network)
             .expect("derivation should not be able to fail");
@@ -214,10 +211,7 @@ impl Wallet {
         network: Network,
         index: u32,
     ) -> PrivateKey {
-        let derivation_path = DerivationPath::identity_registration_path(
-            network,
-            index,
-        );
+        let derivation_path = DerivationPath::identity_registration_path(network, index);
         let extended_public_key = derivation_path
             .derive_priv_ecdsa_for_master_seed(&self.seed, network)
             .expect("derivation should not be able to fail");

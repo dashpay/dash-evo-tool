@@ -2,11 +2,11 @@ use crate::database::Database;
 use crate::model::wallet::{AddressInfo, DerivationPathReference, DerivationPathType, Wallet};
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dpp::dashcore::bip32::DerivationPath;
-use dash_sdk::dpp::dashcore::{consensus, Network, OutPoint, Script, ScriptBuf, Txid, TxOut};
+use dash_sdk::dpp::dashcore::hashes::Hash;
+use dash_sdk::dpp::dashcore::{consensus, Network, OutPoint, Script, ScriptBuf, TxOut, Txid};
 use rusqlite::params;
 use std::collections::BTreeMap;
 use std::str::FromStr;
-use dash_sdk::dpp::dashcore::hashes::Hash;
 
 impl Database {
     /// Insert a new wallet into the wallet table
@@ -240,10 +240,7 @@ impl Database {
             let script_pubkey_bytes: Vec<u8> = row.get(3)?;
 
             let txid = Txid::from_slice(&txid_bytes)?;
-            let outpoint = OutPoint {
-                txid,
-                vout,
-            };
+            let outpoint = OutPoint { txid, vout };
             let script_pubkey: ScriptBuf = ScriptBuf::from_bytes(script_pubkey_bytes)?;
             let tx_out = TxOut {
                 value: value as u64,

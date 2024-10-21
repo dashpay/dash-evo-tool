@@ -61,7 +61,7 @@ jobs:
 
       - name: Install protoc (ARM)
         if: ${{ matrix.platform == 'arm64' }}
-        run: curl -OL https://github.com/protocolbuffers/protobuf/releases/download/v25.2/protoc-25.2-linux-x86_64.zip && sudo unzip -o protoc-25.2-linux-x86_64.zip -d /usr/local bin/protoc && sudo unzip -o protoc-25.2-linux-x86_64.zip -d /usr/local 'include/*' && rm -f protoc-25.2-linux-x86_64.zip 
+        run: curl -OL https://github.com/protocolbuffers/protobuf/releases/download/v25.2/protoc-25.2-linux-aarch_64.zip && sudo unzip -o protoc-25.2-linux-aarch_64.zip -d /usr/local bin/protoc && sudo unzip -o protoc-25.2-linux-aarch_64.zip -d /usr/local 'include/*' && rm -f protoc-25.2-linux-aarch_64.zip
         env:
           PROTOC: /usr/local/bin/protoc
 

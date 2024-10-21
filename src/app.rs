@@ -303,19 +303,19 @@ impl App for AppState {
                 if let Some(screen) = self.screen_stack.last_mut() {
                     screen.refresh();
                 } else {
-                    self.active_root_screen_mut().refresh();
+                    self.active_root_screen_mut().refresh_on_arrival();
                 }
             }
             AppAction::GoToMainScreen => {
                 self.screen_stack = vec![];
-                self.active_root_screen_mut().refresh();
+                self.active_root_screen_mut().refresh_on_arrival();
             }
             AppAction::BackendTask(task) => {
                 self.handle_backend_task(task);
             }
             AppAction::SetMainScreen(root_screen_type) => {
                 self.selected_main_screen = root_screen_type;
-                self.active_root_screen_mut().refresh();
+                self.active_root_screen_mut().refresh_on_arrival();
                 self.current_app_context()
                     .update_settings(root_screen_type)
                     .ok();

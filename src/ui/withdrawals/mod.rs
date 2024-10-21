@@ -4,6 +4,7 @@ use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
 use crate::platform::identity::IdentityTask;
 use crate::platform::BackendTask;
 use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::key_info_screen::KeyInfoScreen;
 use crate::ui::{MessageType, Screen, ScreenLike};
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dpp::fee::Credits;
@@ -14,7 +15,6 @@ use dash_sdk::platform::IdentityPublicKey;
 use eframe::egui::{self, Context, Ui};
 use std::str::FromStr;
 use std::sync::Arc;
-use crate::ui::key_info_screen::KeyInfoScreen;
 
 pub struct WithdrawalScreen {
     pub identity: QualifiedIdentity,

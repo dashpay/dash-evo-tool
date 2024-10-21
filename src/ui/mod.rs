@@ -9,6 +9,7 @@ use crate::ui::identities::add_new_wallet_screen::AddNewWalletScreen;
 use crate::ui::key_info_screen::KeyInfoScreen;
 use crate::ui::keys_screen::KeysScreen;
 use crate::ui::network_chooser_screen::NetworkChooserScreen;
+use crate::ui::transfers::TransferScreen;
 use crate::ui::transition_visualizer_screen::TransitionVisualizerScreen;
 use crate::ui::withdrawals::WithdrawalScreen;
 use dash_sdk::dpp::identity::Identity;
@@ -22,7 +23,6 @@ use identities::register_dpns_name_screen::RegisterDpnsNameScreen;
 use std::fmt;
 use std::hash::Hash;
 use std::sync::Arc;
-use crate::ui::transfers::TransferScreen;
 
 mod add_key_screen;
 pub mod components;
@@ -32,9 +32,9 @@ pub(crate) mod identities;
 pub mod key_info_screen;
 pub mod keys_screen;
 pub mod network_chooser_screen;
+pub mod transfers;
 pub mod transition_visualizer_screen;
 pub mod withdrawals;
-pub mod transfers;
 
 #[derive(Debug, Clone, Copy, Ord, PartialOrd, Eq, PartialEq, Hash)]
 pub enum RootScreenType {
@@ -204,7 +204,9 @@ pub enum MessageType {
 #[enum_dispatch]
 pub trait ScreenLike {
     fn refresh(&mut self) {}
-    fn refresh_on_arrival(&mut self) {}
+    fn refresh_on_arrival(&mut self) {
+        self.refresh()
+    }
     fn ui(&mut self, ctx: &Context) -> AppAction;
     fn display_message(&mut self, _message: &str, _message_type: MessageType) {}
     fn display_task_result(&mut self, _backend_task_success_result: BackendTaskSuccessResult) {
@@ -250,9 +252,7 @@ impl Screen {
             Screen::AddNewIdentityScreen(_) => ScreenType::AddExistingIdentity,
             Screen::RegisterDpnsNameScreen(_) => ScreenType::RegisterDpnsName,
             Screen::AddNewWalletScreen(_) => ScreenType::AddNewWallet,
-            Screen::TransferScreen(screen) => {
-                ScreenType::TransferScreen(screen.identity.clone())
-            }
+            Screen::TransferScreen(screen) => ScreenType::TransferScreen(screen.identity.clone()),
         }
     }
 }

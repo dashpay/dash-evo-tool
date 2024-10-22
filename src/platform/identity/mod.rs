@@ -168,7 +168,7 @@ pub(crate) enum IdentityTask {
     AddKeyToIdentity(QualifiedIdentity, IdentityPublicKey, [u8; 32]),
     WithdrawFromIdentity(QualifiedIdentity, Option<Address>, Credits, Option<KeyID>),
     RegisterDpnsName(RegisterDpnsNameInput),
-    RefreshIdentity(QualifiedIdentity), // can we take a reference here instead of owned?
+    RefreshIdentity(QualifiedIdentity),
 }
 
 fn verify_key_input(

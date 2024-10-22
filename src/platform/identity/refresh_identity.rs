@@ -60,6 +60,7 @@ impl AppContext {
         self.insert_local_qualified_identity(&qualified_identity_to_update)
             .map_err(|e| e.to_string())?;
 
+        // Send refresh message to refresh the Identities Screen
         sender
             .send(TaskResult::Refresh)
             .await

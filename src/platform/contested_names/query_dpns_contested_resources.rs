@@ -61,7 +61,7 @@ impl AppContext {
         sender
             .send(TaskResult::Refresh)
             .await
-            .expect("expected to send refresh");
+            .map_err(|e| e.to_string())?;
 
         // Create a semaphore with 15 permits
         let semaphore = Arc::new(Semaphore::new(24));

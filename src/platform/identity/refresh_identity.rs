@@ -16,42 +16,35 @@ impl AppContext {
     ) -> Result<(), String> {
         // Fetch the latest state of the identity from Platform
         let refreshed_identity =
-            match Identity::fetch_by_identifier(sdk, qualified_identity.identity.id()).await {
-                Ok(identity_option) => match identity_option {
-                    Some(identity) => identity,
-                    None => {
-                        return Err(format!(
-                            "Identity with id {} not found in Platform state",
-                            qualified_identity.identity.id().to_string(Encoding::Base58)
-                        ))
-                    }
-                },
-                Err(e) => return Err(e.to_string()),
-            };
+            Identity::fetch_by_identifier(sdk, qualified_identity.identity.id())
+                .await
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| {
+                    format!(
+                        "Identity with id {} not found in Platform state",
+                        qualified_identity.identity.id().to_string(Encoding::Base58)
+                    )
+                })?;
 
         // Get local identities
-        let mut local_qualified_identities = match self.load_local_qualified_identities() {
-            Ok(identities) => identities,
-            Err(e) => return Err(e.to_string()),
-        };
+        let mut local_qualified_identities = self
+            .load_local_qualified_identities()
+            .map_err(|e| e.to_string())?;
 
         // Find the local identity to update
-        let old_identity_index = match local_qualified_identities
+        let outdated_identity_index = local_qualified_identities
             .iter()
             .position(|qi| qi.identity.id() == refreshed_identity.id())
-        {
-            Some(index) => index,
-            None => {
-                return Err(format!(
+            .ok_or_else(|| {
+                format!(
                     "Identity with id {} not found in local identities",
                     refreshed_identity.id().to_string(Encoding::Base58)
-                ))
-            }
-        };
+                )
+            })?;
 
         // Remove the outdated identity from local state
         let mut qualified_identity_to_update =
-            local_qualified_identities.remove(old_identity_index);
+            local_qualified_identities.remove(outdated_identity_index);
 
         // Update the identity
         qualified_identity_to_update.identity = refreshed_identity;
@@ -64,7 +57,7 @@ impl AppContext {
         sender
             .send(TaskResult::Refresh)
             .await
-            .expect("expected to send refresh");
+            .map_err(|e| e.to_string())?;
 
         Ok(())
     }

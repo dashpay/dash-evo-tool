@@ -1,7 +1,6 @@
 use crate::context::AppContext;
 use crate::database::Database;
 use crate::logging::initialize_logger;
-use crate::main;
 use crate::platform::{BackendTask, BackendTaskSuccessResult};
 use crate::ui::document_query_screen::DocumentQueryScreen;
 use crate::ui::dpns_contested_names_screen::DPNSContestedNamesScreen;
@@ -103,8 +102,6 @@ impl AppState {
         let db = Arc::new(Database::new("identities.db").unwrap());
         db.initialize().unwrap();
 
-        let settings = db.get_settings().expect("expected to get settings");
-
         let mainnet_app_context = AppContext::new(Network::Dash, db.clone());
         let testnet_app_context = AppContext::new(Network::Testnet, db.clone());
 
@@ -114,31 +111,17 @@ impl AppState {
             mainnet_app_context.clone().unwrap()
         };
 
-        let mut identities_screen = IdentitiesScreen::new(&app_context);
-        let mut dpns_contested_names_screen = DPNSContestedNamesScreen::new(&app_context);
-        let mut transition_visualizer_screen = TransitionVisualizerScreen::new(&app_context);
-        let mut document_query_screen = DocumentQueryScreen::new(&app_context);
-        let mut network_chooser_screen = NetworkChooserScreen::new(
+        let identities_screen = IdentitiesScreen::new(&app_context);
+        let dpns_contested_names_screen = DPNSContestedNamesScreen::new(&app_context);
+        let transition_visualizer_screen = TransitionVisualizerScreen::new(&app_context);
+        let document_query_screen = DocumentQueryScreen::new(&app_context);
+        let network_chooser_screen = NetworkChooserScreen::new(
             mainnet_app_context.as_ref(),
             testnet_app_context.as_ref(),
             app_context.network,
         );
 
-        let mut selected_main_screen = RootScreenType::RootScreenIdentities;
-
-        let chosen_network = app_context.network;
-
-        if let Some((_, screen_type)) = settings {
-            selected_main_screen = screen_type;
-            if chosen_network == Network::Testnet && testnet_app_context.is_some() {
-                let testnet_app_context = testnet_app_context.as_ref().unwrap();
-                identities_screen = IdentitiesScreen::new(testnet_app_context);
-                dpns_contested_names_screen = DPNSContestedNamesScreen::new(testnet_app_context);
-                transition_visualizer_screen = TransitionVisualizerScreen::new(testnet_app_context);
-                document_query_screen = DocumentQueryScreen::new(testnet_app_context);
-            }
-            network_chooser_screen.current_network = chosen_network;
-        }
+        let selected_main_screen = RootScreenType::RootScreenIdentities;
 
         // // Create a channel with a buffer size of 32 (adjust as needed)
         let (task_result_sender, task_result_receiver) = mpsc::channel(256);
@@ -172,7 +155,7 @@ impl AppState {
             .into(),
             selected_main_screen,
             screen_stack: vec![],
-            chosen_network,
+            chosen_network: app_context.network,
             mainnet_app_context,
             testnet_app_context,
             task_result_sender,

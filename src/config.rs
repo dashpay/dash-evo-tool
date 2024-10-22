@@ -97,6 +97,10 @@ impl Config {
             return Err(ConfigError::LoadError(
                 "Failed to load mainnet configuration".into(),
             ));
+        } else if testnet_config.is_none() {
+            tracing::warn!(
+                "Failed to load testnet configuration, but successfully loaded mainnet config"
+            );
         }
 
         Ok(Config {

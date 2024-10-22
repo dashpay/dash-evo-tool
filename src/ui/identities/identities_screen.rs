@@ -4,11 +4,12 @@ use crate::model::qualified_identity::EncryptedPrivateKeyTarget::{
     PrivateKeyOnMainIdentity, PrivateKeyOnVoterIdentity,
 };
 use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
+use crate::platform::identity::IdentityTask;
+use crate::platform::BackendTask;
 use crate::ui::add_key_screen::AddKeyScreen;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::key_info_screen::KeyInfoScreen;
-use crate::ui::transfers::TransferScreen;
 use crate::ui::withdrawals::WithdrawalScreen;
 use crate::ui::{RootScreenType, Screen, ScreenLike, ScreenType};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -20,7 +21,6 @@ use eframe::egui::{self, Context};
 use eframe::emath::Align;
 use egui::{Color32, Frame, Margin, RichText, Ui};
 use egui_extras::{Column, TableBuilder};
-use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
 pub struct IdentitiesScreen {
@@ -183,6 +183,7 @@ impl IdentitiesScreen {
                         .column(Column::initial(200.0).resizable(true)) // Identity ID
                         .column(Column::initial(100.0).resizable(true)) // Balance
                         .column(Column::initial(100.0).resizable(true)) // Type
+                        .column(Column::initial(80.0).resizable(true)) // Refresh
                         .column(Column::initial(80.0).resizable(true)) // Keys
                         .column(Column::initial(80.0).resizable(true)) // Withdraw
                         // .column(Column::initial(80.0).resizable(true)) // Transfer
@@ -198,6 +199,9 @@ impl IdentitiesScreen {
                             });
                             header.col(|ui| {
                                 ui.heading("Type");
+                            });
+                            header.col(|ui| {
+                                ui.heading("Refresh");
                             });
                             header.col(|ui| {
                                 ui.heading("Keys");
@@ -229,6 +233,16 @@ impl IdentitiesScreen {
                                     });
                                     row.col(|ui| {
                                         ui.label(format!("{}", qualified_identity.identity_type));
+                                    });
+                                    row.col(|ui| {
+                                        if ui.button("Refresh").clicked() {
+                                            action =
+                                                AppAction::BackendTask(BackendTask::IdentityTask(
+                                                    IdentityTask::RefreshIdentity(
+                                                        qualified_identity.clone(),
+                                                    ),
+                                                ));
+                                        }
                                     });
                                     row.col(|ui| {
                                         for (key_id, key) in public_keys.iter() {

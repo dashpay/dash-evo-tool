@@ -1,9 +1,11 @@
 mod add_key_to_identity;
 mod load_identity;
+mod refresh_identity;
 mod register_dpns_name;
 mod register_identity;
 mod withdraw_from_identity;
 
+use crate::app::TaskResult;
 use crate::context::AppContext;
 use crate::model::qualified_identity::{
     EncryptedPrivateKeyTarget, IdentityType, QualifiedIdentity,
@@ -22,6 +24,7 @@ use dash_sdk::platform::{Identity, IdentityPublicKey};
 use dash_sdk::Sdk;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, RwLock};
+use tokio::sync::mpsc;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct IdentityInputToLoad {
@@ -165,6 +168,7 @@ pub(crate) enum IdentityTask {
     AddKeyToIdentity(QualifiedIdentity, IdentityPublicKey, [u8; 32]),
     WithdrawFromIdentity(QualifiedIdentity, Option<Address>, Credits, Option<KeyID>),
     RegisterDpnsName(RegisterDpnsNameInput),
+    RefreshIdentity(QualifiedIdentity),
 }
 
 fn verify_key_input(
@@ -343,7 +347,12 @@ impl AppContext {
         Ok(key)
     }
 
-    pub async fn run_identity_task(&self, task: IdentityTask, sdk: &Sdk) -> Result<(), String> {
+    pub async fn run_identity_task(
+        &self,
+        task: IdentityTask,
+        sdk: &Sdk,
+        sender: mpsc::Sender<TaskResult>,
+    ) -> Result<(), String> {
         match task {
             IdentityTask::LoadIdentity(input) => self.load_identity(sdk, input).await,
             IdentityTask::WithdrawFromIdentity(qualified_identity, to_address, credits, id) => {
@@ -358,6 +367,9 @@ impl AppContext {
                 self.register_identity(registration_info).await
             }
             IdentityTask::RegisterDpnsName(input) => self.register_dpns_name(sdk, input).await,
+            IdentityTask::RefreshIdentity(qualified_identity) => {
+                self.refresh_identity(sdk, qualified_identity, sender).await
+            }
         }
     }
 }

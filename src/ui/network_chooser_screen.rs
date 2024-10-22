@@ -17,7 +17,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{env, io};
 
 pub struct NetworkChooserScreen {
-    pub mainnet_app_context: Arc<AppContext>,
+    pub mainnet_app_context: Option<Arc<AppContext>>,
     pub testnet_app_context: Option<Arc<AppContext>>,
     pub current_network: Network,
     pub mainnet_core_status_online: bool,
@@ -28,12 +28,12 @@ pub struct NetworkChooserScreen {
 
 impl NetworkChooserScreen {
     pub fn new(
-        mainnet_app_context: &Arc<AppContext>,
+        mainnet_app_context: Option<&Arc<AppContext>>,
         testnet_app_context: Option<&Arc<AppContext>>,
         current_network: Network,
     ) -> Self {
         Self {
-            mainnet_app_context: mainnet_app_context.clone(),
+            mainnet_app_context: mainnet_app_context.cloned(),
             testnet_app_context: testnet_app_context.cloned(),
             current_network,
             mainnet_core_status_online: false,
@@ -45,11 +45,13 @@ impl NetworkChooserScreen {
 
     pub fn context_for_network(&self, network: Network) -> &Arc<AppContext> {
         match network {
-            Network::Dash => &self.mainnet_app_context,
+            Network::Dash if self.mainnet_app_context.is_some() => {
+                self.mainnet_app_context.as_ref().unwrap()
+            }
             Network::Testnet if self.testnet_app_context.is_some() => {
                 self.testnet_app_context.as_ref().unwrap()
             }
-            _ => &self.mainnet_app_context,
+            _ => unreachable!(),
         }
     }
 
@@ -118,6 +120,11 @@ impl NetworkChooserScreen {
 
         if network == Network::Testnet && self.testnet_app_context.is_none() {
             ui.label("(No configs for testnet loaded)");
+            ui.end_row();
+            return AppAction::None;
+        } else if network == Network::Dash && self.mainnet_app_context.is_none() {
+            ui.label("(No configs for mainnet loaded)");
+            ui.end_row();
             return AppAction::None;
         }
 
@@ -135,7 +142,7 @@ impl NetworkChooserScreen {
         // Add a button to start the network
         if ui.button("+").clicked() {
             let context = if network == Network::Dash || self.testnet_app_context.is_none() {
-                &self.mainnet_app_context
+                &self.mainnet_app_context.as_ref().unwrap()
             } else {
                 &self.testnet_app_context.as_ref().unwrap()
             };

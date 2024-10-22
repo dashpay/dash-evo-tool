@@ -60,7 +60,7 @@ impl Config {
     pub fn load() -> Result<Self, ConfigError> {
         // Load the .env file if available
         if let Err(err) = dotenvy::from_path(".env") {
-            tracing::warn!(
+            tracing::error!(
                 ?err,
                 "Failed to load .env file. Continuing with environment variables."
             );
@@ -94,9 +94,7 @@ impl Config {
         if mainnet_config.is_none() && testnet_config.is_none() {
             return Err(ConfigError::NoValidConfigs);
         } else if mainnet_config.is_none() {
-            return Err(ConfigError::LoadError(
-                "Failed to load mainnet configuration".into(),
-            ));
+            tracing::warn!("Failed to load mainnet configuration");
         } else if testnet_config.is_none() {
             tracing::warn!(
                 "Failed to load testnet configuration, but successfully loaded mainnet config"

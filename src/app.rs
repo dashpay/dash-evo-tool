@@ -39,7 +39,7 @@ pub struct AppState {
     pub selected_main_screen: RootScreenType,
     pub screen_stack: Vec<Screen>,
     pub chosen_network: Network,
-    pub mainnet_app_context: Arc<AppContext>,
+    pub mainnet_app_context: Option<Arc<AppContext>>,
     pub testnet_app_context: Option<Arc<AppContext>>,
     pub task_result_sender: mpsc::Sender<TaskResult>, // Channel sender for sending task results
     pub task_result_receiver: mpsc::Receiver<TaskResult>, // Channel receiver for receiving task results
@@ -102,46 +102,26 @@ impl AppState {
         let db = Arc::new(Database::new("identities.db").unwrap());
         db.initialize().unwrap();
 
-        let settings = db.get_settings().expect("expected to get settings");
-
-        let mainnet_app_context = match AppContext::new(Network::Dash, db.clone()) {
-            Some(context) => context,
-            None => {
-                eprintln!(
-                    "Error: Failed to create the AppContext. Expected Dash config for mainnet."
-                );
-                std::process::exit(1);
-            }
-        };
+        let mainnet_app_context = AppContext::new(Network::Dash, db.clone());
         let testnet_app_context = AppContext::new(Network::Testnet, db.clone());
 
-        let mut identities_screen = IdentitiesScreen::new(&mainnet_app_context);
-        let mut dpns_contested_names_screen = DPNSContestedNamesScreen::new(&mainnet_app_context);
-        let mut transition_visualizer_screen =
-            TransitionVisualizerScreen::new(&mainnet_app_context);
-        let mut document_query_screen = DocumentQueryScreen::new(&mainnet_app_context);
-        let mut network_chooser_screen = NetworkChooserScreen::new(
-            &mainnet_app_context,
+        let app_context = if testnet_app_context.is_some() && mainnet_app_context.is_none() {
+            testnet_app_context.clone().unwrap()
+        } else {
+            mainnet_app_context.clone().unwrap()
+        };
+
+        let identities_screen = IdentitiesScreen::new(&app_context);
+        let dpns_contested_names_screen = DPNSContestedNamesScreen::new(&app_context);
+        let transition_visualizer_screen = TransitionVisualizerScreen::new(&app_context);
+        let document_query_screen = DocumentQueryScreen::new(&app_context);
+        let network_chooser_screen = NetworkChooserScreen::new(
+            mainnet_app_context.as_ref(),
             testnet_app_context.as_ref(),
-            Network::Dash,
+            app_context.network,
         );
 
-        let mut selected_main_screen = RootScreenType::RootScreenIdentities;
-
-        let mut chosen_network = Network::Dash;
-
-        if let Some((network, screen_type)) = settings {
-            selected_main_screen = screen_type;
-            chosen_network = network;
-            if network == Network::Testnet && testnet_app_context.is_some() {
-                let testnet_app_context = testnet_app_context.as_ref().unwrap();
-                identities_screen = IdentitiesScreen::new(testnet_app_context);
-                dpns_contested_names_screen = DPNSContestedNamesScreen::new(testnet_app_context);
-                transition_visualizer_screen = TransitionVisualizerScreen::new(testnet_app_context);
-                document_query_screen = DocumentQueryScreen::new(testnet_app_context);
-            }
-            network_chooser_screen.current_network = chosen_network;
-        }
+        let selected_main_screen = RootScreenType::RootScreenIdentities;
 
         // // Create a channel with a buffer size of 32 (adjust as needed)
         let (task_result_sender, task_result_receiver) = mpsc::channel(256);
@@ -175,7 +155,7 @@ impl AppState {
             .into(),
             selected_main_screen,
             screen_stack: vec![],
-            chosen_network,
+            chosen_network: app_context.network,
             mainnet_app_context,
             testnet_app_context,
             task_result_sender,
@@ -186,7 +166,7 @@ impl AppState {
 
     pub fn current_app_context(&self) -> &Arc<AppContext> {
         match self.chosen_network {
-            Network::Dash => &self.mainnet_app_context,
+            Network::Dash => self.mainnet_app_context.as_ref().expect("expected mainnet"),
             Network::Testnet => self.testnet_app_context.as_ref().expect("expected testnet"),
             Network::Devnet => todo!(),
             Network::Regtest => todo!(),

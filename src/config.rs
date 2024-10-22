@@ -83,6 +83,10 @@ impl Config {
             }
         };
 
+        if mainnet_config.is_none() || testnet_config.is_none() {
+            panic!("Configs could not be properly loaded from .env file or environment variables")
+        }
+
         Config {
             mainnet_config,
             testnet_config,

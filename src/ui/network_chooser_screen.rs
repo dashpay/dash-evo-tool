@@ -116,6 +116,11 @@ impl NetworkChooserScreen {
         // Display status indicator
         ui.colored_label(status_color, if is_working { "Online" } else { "Offline" });
 
+        if network == Network::Testnet && self.testnet_app_context.is_none() {
+            ui.label("(No configs for testnet loaded)");
+            return AppAction::None;
+        }
+
         // Display wallet count
         let wallet_count = format!(
             "{}",

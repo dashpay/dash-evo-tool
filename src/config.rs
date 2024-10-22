@@ -27,7 +27,7 @@ impl Config {
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
-    #[error("Failed to load configurations: {0}")]
+    #[error("{0}")]
     LoadError(String),
     #[error("No valid network configurations found in .env file or environment variables")]
     NoValidConfigs,
@@ -96,10 +96,6 @@ impl Config {
         } else if mainnet_config.is_none() {
             return Err(ConfigError::LoadError(
                 "Failed to load mainnet configuration".into(),
-            ));
-        } else if testnet_config.is_none() {
-            return Err(ConfigError::LoadError(
-                "Failed to load testnet configuration".into(),
             ));
         }
 

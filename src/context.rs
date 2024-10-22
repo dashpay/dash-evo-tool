@@ -35,7 +35,13 @@ pub struct AppContext {
 
 impl AppContext {
     pub fn new(network: Network, db: Arc<Database>) -> Option<Arc<Self>> {
-        let config = Config::load();
+        let config = match Config::load() {
+            Ok(config) => config,
+            Err(e) => {
+                println!("Failed to load config: {e}");
+                return None;
+            }
+        };
 
         let network_config = config.config_for_network(network).clone()?;
 

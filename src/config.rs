@@ -25,6 +25,14 @@ impl Config {
     }
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum ConfigError {
+    #[error("Failed to load configurations: {0}")]
+    LoadError(String),
+    #[error("No valid network configurations found in .env file or environment variables")]
+    NoValidConfigs,
+}
+
 #[derive(Debug, Deserialize, Clone)]
 pub struct NetworkConfig {
     /// Hostname of the Dash Platform node to connect to
@@ -49,7 +57,7 @@ pub struct NetworkConfig {
 
 impl Config {
     /// Loads the configuration for all networks from environment variables and `.env` file.
-    pub fn load() -> Self {
+    pub fn load() -> Result<Self, ConfigError> {
         // Load the .env file if available
         if let Err(err) = dotenvy::from_path(".env") {
             tracing::warn!(
@@ -83,14 +91,22 @@ impl Config {
             }
         };
 
-        if mainnet_config.is_none() || testnet_config.is_none() {
-            panic!("Configs could not be properly loaded from .env file or environment variables")
+        if mainnet_config.is_none() && testnet_config.is_none() {
+            return Err(ConfigError::NoValidConfigs);
+        } else if mainnet_config.is_none() {
+            return Err(ConfigError::LoadError(
+                "Failed to load mainnet configuration".into(),
+            ));
+        } else if testnet_config.is_none() {
+            return Err(ConfigError::LoadError(
+                "Failed to load testnet configuration".into(),
+            ));
         }
 
-        Config {
+        Ok(Config {
             mainnet_config,
             testnet_config,
-        }
+        })
     }
 }
 

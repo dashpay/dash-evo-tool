@@ -104,8 +104,15 @@ impl AppState {
 
         let settings = db.get_settings().expect("expected to get settings");
 
-        let mainnet_app_context =
-            AppContext::new(Network::Dash, db.clone()).expect("expected Dash config for mainnet");
+        let mainnet_app_context = match AppContext::new(Network::Dash, db.clone()) {
+            Some(context) => context,
+            None => {
+                eprintln!(
+                    "Error: Failed to create the AppContext. Expected Dash config for mainnet."
+                );
+                std::process::exit(1);
+            }
+        };
         let testnet_app_context = AppContext::new(Network::Testnet, db.clone());
 
         let mut identities_screen = IdentitiesScreen::new(&mainnet_app_context);

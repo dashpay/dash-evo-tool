@@ -39,7 +39,7 @@ impl AppContext {
             Ok(config) => config,
             Err(e) => {
                 println!("Failed to load config: {e}");
-                return None;
+                std::process::exit(1);
             }
         };
 

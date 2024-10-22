@@ -1,6 +1,7 @@
 use crate::context::AppContext;
 use crate::database::Database;
 use crate::logging::initialize_logger;
+use crate::main;
 use crate::platform::{BackendTask, BackendTaskSuccessResult};
 use crate::ui::document_query_screen::DocumentQueryScreen;
 use crate::ui::dpns_contested_names_screen::DPNSContestedNamesScreen;
@@ -39,7 +40,7 @@ pub struct AppState {
     pub selected_main_screen: RootScreenType,
     pub screen_stack: Vec<Screen>,
     pub chosen_network: Network,
-    pub mainnet_app_context: Arc<AppContext>,
+    pub mainnet_app_context: Option<Arc<AppContext>>,
     pub testnet_app_context: Option<Arc<AppContext>>,
     pub task_result_sender: mpsc::Sender<TaskResult>, // Channel sender for sending task results
     pub task_result_receiver: mpsc::Receiver<TaskResult>, // Channel receiver for receiving task results
@@ -104,36 +105,32 @@ impl AppState {
 
         let settings = db.get_settings().expect("expected to get settings");
 
-        let mainnet_app_context = match AppContext::new(Network::Dash, db.clone()) {
-            Some(context) => context,
-            None => {
-                eprintln!(
-                    "Error: Failed to create the AppContext. Expected Dash config for mainnet."
-                );
-                std::process::exit(1);
-            }
-        };
+        let mainnet_app_context = AppContext::new(Network::Dash, db.clone());
         let testnet_app_context = AppContext::new(Network::Testnet, db.clone());
 
-        let mut identities_screen = IdentitiesScreen::new(&mainnet_app_context);
-        let mut dpns_contested_names_screen = DPNSContestedNamesScreen::new(&mainnet_app_context);
-        let mut transition_visualizer_screen =
-            TransitionVisualizerScreen::new(&mainnet_app_context);
-        let mut document_query_screen = DocumentQueryScreen::new(&mainnet_app_context);
+        let app_context = if testnet_app_context.is_some() && mainnet_app_context.is_none() {
+            testnet_app_context.clone().unwrap()
+        } else {
+            mainnet_app_context.clone().unwrap()
+        };
+
+        let mut identities_screen = IdentitiesScreen::new(&app_context);
+        let mut dpns_contested_names_screen = DPNSContestedNamesScreen::new(&app_context);
+        let mut transition_visualizer_screen = TransitionVisualizerScreen::new(&app_context);
+        let mut document_query_screen = DocumentQueryScreen::new(&app_context);
         let mut network_chooser_screen = NetworkChooserScreen::new(
-            &mainnet_app_context,
+            mainnet_app_context.as_ref(),
             testnet_app_context.as_ref(),
-            Network::Dash,
+            app_context.network,
         );
 
         let mut selected_main_screen = RootScreenType::RootScreenIdentities;
 
-        let mut chosen_network = Network::Dash;
+        let chosen_network = app_context.network;
 
-        if let Some((network, screen_type)) = settings {
+        if let Some((_, screen_type)) = settings {
             selected_main_screen = screen_type;
-            chosen_network = network;
-            if network == Network::Testnet && testnet_app_context.is_some() {
+            if chosen_network == Network::Testnet && testnet_app_context.is_some() {
                 let testnet_app_context = testnet_app_context.as_ref().unwrap();
                 identities_screen = IdentitiesScreen::new(testnet_app_context);
                 dpns_contested_names_screen = DPNSContestedNamesScreen::new(testnet_app_context);
@@ -186,7 +183,7 @@ impl AppState {
 
     pub fn current_app_context(&self) -> &Arc<AppContext> {
         match self.chosen_network {
-            Network::Dash => &self.mainnet_app_context,
+            Network::Dash => self.mainnet_app_context.as_ref().expect("expected mainnet"),
             Network::Testnet => self.testnet_app_context.as_ref().expect("expected testnet"),
             Network::Devnet => todo!(),
             Network::Regtest => todo!(),

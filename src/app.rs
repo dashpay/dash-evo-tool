@@ -4,6 +4,7 @@ use crate::logging::initialize_logger;
 use crate::platform::{BackendTask, BackendTaskSuccessResult};
 use crate::ui::document_query_screen::DocumentQueryScreen;
 use crate::ui::dpns_contested_names_screen::DPNSContestedNamesScreen;
+use crate::ui::dpns_my_usernames_screen::DPNSMyUsernamesScreen;
 use crate::ui::identities::identities_screen::IdentitiesScreen;
 use crate::ui::network_chooser_screen::NetworkChooserScreen;
 use crate::ui::transition_visualizer_screen::TransitionVisualizerScreen;
@@ -116,7 +117,11 @@ impl AppState {
         let testnet_app_context = AppContext::new(Network::Testnet, db.clone());
 
         let mut identities_screen = IdentitiesScreen::new(&mainnet_app_context);
-        let mut dpns_contested_names_screen = DPNSContestedNamesScreen::new(&mainnet_app_context);
+        let mut dpns_active_contests_screen =
+            DPNSContestedNamesScreen::new(&mainnet_app_context, true);
+        let mut dpns_past_contests_screen =
+            DPNSContestedNamesScreen::new(&mainnet_app_context, false);
+        let mut dpns_my_usernames_screen = DPNSMyUsernamesScreen::new(&mainnet_app_context);
         let mut transition_visualizer_screen =
             TransitionVisualizerScreen::new(&mainnet_app_context);
         let mut document_query_screen = DocumentQueryScreen::new(&mainnet_app_context);
@@ -136,7 +141,11 @@ impl AppState {
             if network == Network::Testnet && testnet_app_context.is_some() {
                 let testnet_app_context = testnet_app_context.as_ref().unwrap();
                 identities_screen = IdentitiesScreen::new(testnet_app_context);
-                dpns_contested_names_screen = DPNSContestedNamesScreen::new(testnet_app_context);
+                dpns_active_contests_screen =
+                    DPNSContestedNamesScreen::new(&testnet_app_context, true);
+                dpns_past_contests_screen =
+                    DPNSContestedNamesScreen::new(&testnet_app_context, false);
+                dpns_my_usernames_screen = DPNSMyUsernamesScreen::new(&testnet_app_context);
                 transition_visualizer_screen = TransitionVisualizerScreen::new(testnet_app_context);
                 document_query_screen = DocumentQueryScreen::new(testnet_app_context);
             }
@@ -156,8 +165,16 @@ impl AppState {
                     Screen::IdentitiesScreen(identities_screen),
                 ),
                 (
-                    RootScreenType::RootScreenDPNSContestedNames,
-                    Screen::DPNSContestedNamesScreen(dpns_contested_names_screen),
+                    RootScreenType::RootScreenDPNSActiveContests,
+                    Screen::DPNSContestedNamesScreen(dpns_active_contests_screen),
+                ),
+                (
+                    RootScreenType::RootScreenDPNSPastContests,
+                    Screen::DPNSContestedNamesScreen(dpns_past_contests_screen),
+                ),
+                (
+                    RootScreenType::RootScreenDPNSMyUsernames,
+                    Screen::DPNSMyUsernamesScreen(dpns_my_usernames_screen),
                 ),
                 (
                     RootScreenType::RootScreenTransitionVisualizerScreen,

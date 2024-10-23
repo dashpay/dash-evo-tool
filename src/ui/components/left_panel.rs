@@ -47,7 +47,7 @@ pub fn add_left_panel(
         ("I", RootScreenType::RootScreenIdentities, "identity.png"),
         (
             "C",
-            RootScreenType::RootScreenDPNSContestedNames,
+            RootScreenType::RootScreenDPNSActiveContests,
             "voting.png",
         ),
         ("Q", RootScreenType::RootScreenDocumentQuery, "doc.png"),

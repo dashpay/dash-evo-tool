@@ -12,7 +12,7 @@ use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::Identity;
 use dash_sdk::dpp::system_data_contracts::{load_system_data_contract, SystemDataContract};
 use dash_sdk::dpp::version::PlatformVersion;
-use dash_sdk::platform::DataContract;
+use dash_sdk::platform::{DataContract, Document};
 use dash_sdk::Sdk;
 use rusqlite::Result;
 use std::sync::atomic::AtomicBool;
@@ -160,5 +160,9 @@ impl AppContext {
         contracts.insert(0, dpns_contract);
 
         Ok(contracts)
+    }
+
+    pub fn owned_names(&self) -> Result<Vec<Document>> {
+        Ok(vec![])
     }
 }

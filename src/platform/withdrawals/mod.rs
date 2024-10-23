@@ -17,19 +17,12 @@ use dash_sdk::platform::{Document, DocumentQuery, FetchMany, Identifier};
 use dash_sdk::platform::fetch_current_no_parameters::FetchCurrent;
 use dash_sdk::query_types::{KeysInPath, TotalCreditsInPlatform};
 use dash_sdk::Sdk;
-use tokio::sync::mpsc;
-use crate::app::TaskResult;
 use crate::context::AppContext;
 use crate::platform::BackendTaskSuccessResult;
 
-/// constant key for transaction counter
-pub const WITHDRAWAL_TRANSACTIONS_NEXT_INDEX_KEY: [u8; 1] = [0];
-/// constant id for subtree containing transactions queue
-pub const WITHDRAWAL_TRANSACTIONS_QUEUE_KEY: [u8; 1] = [1];
 /// constant id for subtree containing the sum of withdrawals
 pub const WITHDRAWAL_TRANSACTIONS_SUM_AMOUNT_TREE_KEY: [u8; 1] = [2];
-/// constant id for subtree containing the untied withdrawal transactions after they were broadcasted
-pub const WITHDRAWAL_TRANSACTIONS_BROADCASTED_KEY: [u8; 1] = [3];
+
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum WithdrawalsTask {
@@ -59,18 +52,16 @@ impl AppContext {
         self: &Arc<Self>,
         task: WithdrawalsTask,
         sdk: &Sdk,
-        sender: mpsc::Sender<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, String> {
         let sdk = sdk.clone();
         match &task {
-            WithdrawalsTask::QueryWithdrawals => self.query_withdrawals(sdk, sender).await,
+            WithdrawalsTask::QueryWithdrawals => self.query_withdrawals(sdk).await,
         }
     }
 
     pub(super) async fn query_withdrawals(
         self: &Arc<Self>,
         sdk: Sdk,
-        sender: mpsc::Sender<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, String> {
         let queued_document_query = DocumentQuery {
             data_contract: self.withdraws_contract.clone(),
@@ -98,42 +89,49 @@ impl AppContext {
             start: None,
         };
 
-        match Document::fetch_many(&sdk, queued_document_query.clone()).await {
-            Ok(documents) => {
-                let keys_in_path = KeysInPath {
-                    path: vec![vec![RootTree::WithdrawalTransactions as u8]],
-                    keys: vec![WITHDRAWAL_TRANSACTIONS_SUM_AMOUNT_TREE_KEY.to_vec()],
-                };
-                match Element::fetch_many(&sdk, keys_in_path).await {
-                    Ok(elements) => {
-                        if let Some(Some(Element::SumTree(_, value, _))) =
-                            elements.get(&WITHDRAWAL_TRANSACTIONS_SUM_AMOUNT_TREE_KEY.to_vec())
-                        {
-                            match TotalCreditsInPlatform::fetch_current(&sdk).await {
-                                Ok(total_credits) => {
-                                    Ok(BackendTaskSuccessResult::WithdrawalStatus(
-                                        util_transform_withdrawal_documents_to_bare_info(
-                                            *value,
-                                            total_credits.0,
-                                            &documents.values().filter_map(|a| a.clone()).collect(),
-                                            sdk.network,
-                                        ),
-                                    ))
-                                }
-                                Err(e) => Err(e.to_string()),
-                            }
-                        } else {
-                            Err(
-                                "could not get sum tree value for current withdrawal maximum"
-                                    .to_string(),
-                            )
-                        }
-                    }
-                    Err(e) => Err(e.to_string()),
-                }
-            }
-            Err(e) => Err(e.to_string()),
-        }
+        let documents = Document::fetch_many(&sdk, queued_document_query.clone())
+            .await
+            .map_err(|e| e.to_string())?;
+
+        let keys_in_path = KeysInPath {
+            path: vec![vec![RootTree::WithdrawalTransactions as u8]],
+            keys: vec![WITHDRAWAL_TRANSACTIONS_SUM_AMOUNT_TREE_KEY.to_vec()],
+        };
+
+        let elements = Element::fetch_many(&sdk, keys_in_path)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        let sum_tree_element_option = elements
+            .get(&WITHDRAWAL_TRANSACTIONS_SUM_AMOUNT_TREE_KEY.to_vec())
+            .ok_or_else(|| {
+                "could not get sum tree value for current withdrawal maximum".to_string()
+            })?;
+
+        let sum_tree_element = sum_tree_element_option.as_ref().ok_or_else(|| {
+            "could not get sum tree value for current withdrawal maximum".to_string()
+        })?;
+
+        let value = if let Element::SumTree(_, value, _) = sum_tree_element {
+            value
+        } else {
+            return Err(
+                "could not get sum tree value for current withdrawal maximum".to_string(),
+            );
+        };
+
+        let total_credits = TotalCreditsInPlatform::fetch_current(&sdk)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        Ok(BackendTaskSuccessResult::WithdrawalStatus(
+            util_transform_withdrawal_documents_to_bare_info(
+                *value,
+                total_credits.0,
+                &documents.values().filter_map(|a| a.clone()).collect(),
+                sdk.network,
+            )?,
+        ))
     }
 }
 
@@ -142,22 +140,24 @@ fn util_transform_withdrawal_documents_to_bare_info(
     total_credits_on_platform: Credits,
     withdrawal_documents: &Vec<Document>,
     network: Network,
-) -> WithdrawStatusData {
-    let total_amount: Credits = withdrawal_documents
-        .iter()
-        .map(|document| {
-            document
-                .properties()
-                .get_integer::<Credits>(AMOUNT)
-                .expect("expected amount on withdrawal")
-        })
-        .sum();
+) -> Result<WithdrawStatusData, String> {
+    let total_amount = withdrawal_documents.iter().try_fold(0, |acc, document| {
+        document
+            .properties()
+            .get_integer::<Credits>(AMOUNT)
+            .map_err(|_| "expected amount on withdrawal".to_string())
+            .map(|amount| acc + amount)
+    })?;
+
     let mut vec_withdraws = vec![];
     for document in withdrawal_documents.iter() {
-        let index = document.created_at().expect("expected created at");
+        let index = document
+            .created_at()
+            .ok_or_else(|| "expected created at".to_string())?;
+
         // Convert the timestamp to a DateTime in UTC
-        let utc_datetime =
-            DateTime::<Utc>::from_timestamp_millis(index as i64).expect("expected date time");
+        let utc_datetime = DateTime::<Utc>::from_timestamp_millis(index as i64)
+            .ok_or_else(|| "expected date time".to_string())?;
 
         // Convert the UTC time to the local time zone
         let local_datetime: DateTime<Local> = utc_datetime.with_timezone(&Local);
@@ -165,20 +165,29 @@ fn util_transform_withdrawal_documents_to_bare_info(
         let amount = document
             .properties()
             .get_integer::<Credits>(AMOUNT)
-            .expect("expected amount on withdrawal");
-        let status: WithdrawalStatus = document
+            .map_err(|_| "expected amount on withdrawal".to_string())?;
+
+        let status_int = document
             .properties()
             .get_integer::<u8>(STATUS)
-            .expect("expected amount on withdrawal")
+            .map_err(|_| "expected status on withdrawal".to_string())?;
+
+        let status: WithdrawalStatus = status_int
             .try_into()
-            .expect("expected a withdrawal status");
+            .map_err(|_| "invalid withdrawal status".to_string())?;
+
         let owner_id = document.owner_id();
+
         let address_bytes = document
             .properties()
             .get_bytes(OUTPUT_SCRIPT)
-            .expect("expected output script");
+            .map_err(|_| "expected output script".to_string())?;
+
         let output_script = ScriptBuf::from_bytes(address_bytes);
-        let address = Address::from_script(&output_script, network).expect("expected an address");
+
+        let address = Address::from_script(&output_script, network)
+            .map_err(|_| "expected a valid address".to_string())?;
+
         let withdraw_record = WithdrawRecord {
             date_time: local_datetime,
             status,
@@ -188,15 +197,16 @@ fn util_transform_withdrawal_documents_to_bare_info(
         };
         vec_withdraws.push(withdraw_record);
     }
+
     let daily_withdrawal_limit =
         daily_withdrawal_limit(total_credits_on_platform, PlatformVersion::latest())
-            .expect("expected to get daily withdrawal limit");
+            .map_err(|_| "expected to get daily withdrawal limit".to_string())?;
 
-    WithdrawStatusData {
+    Ok(WithdrawStatusData {
         withdrawals: vec_withdraws,
         total_amount,
         recent_withdrawal_amounts,
         daily_withdrawal_limit,
         total_credits_on_platform,
-    }
+    })
 }

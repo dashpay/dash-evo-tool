@@ -76,7 +76,7 @@ impl AppContext {
             }
             BackendTask::CoreTask(core_task) => self.run_core_task(core_task).await,
             BackendTask::WithdrawalTask(withdrawal_task) => {
-                self.run_withdraws_task(withdrawal_task, &sdk, sender).await
+                self.run_withdraws_task(withdrawal_task, &sdk).await
             }
         }
     }

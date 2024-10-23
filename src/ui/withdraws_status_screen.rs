@@ -4,17 +4,19 @@ use crate::platform::withdrawals::{WithdrawStatusData, WithdrawalsTask};
 use crate::platform::{BackendTask, BackendTaskSuccessResult};
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::{RootScreenType, ScreenLike};
+use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::dpp::dash_to_credits;
 use dash_sdk::dpp::document::DocumentV0Getters;
 use egui::{Context, Ui};
 use egui_extras::{Column, TableBuilder};
 use itertools::Itertools;
 use std::sync::{Arc, Mutex};
+use chrono::Utc;
 
 pub struct WithdrawsStatusScreen {
     pub app_context: Arc<AppContext>,
     data: Arc<Mutex<Option<WithdrawStatusData>>>,
+    error_message: Option<String>,
 }
 
 impl WithdrawsStatusScreen {
@@ -22,17 +24,27 @@ impl WithdrawsStatusScreen {
         Self {
             app_context: app_context.clone(),
             data: Arc::new(Mutex::new(None)),
+            error_message: None,
         }
     }
 
     fn show_input_field(&mut self, ui: &mut Ui) {}
 
     fn show_output(&mut self, ui: &mut egui::Ui) {
-        let mut lock_data = self.data.lock().unwrap();
-        if lock_data.is_some() {
-            let data = lock_data.as_ref().unwrap();
-            self.show_withdraws_data(ui, data);
-            //*lock_data = None;
+        if self.error_message.is_some() {
+            ui.centered_and_justified(|ui| {
+                ui.heading(self.error_message.as_ref().unwrap());
+            });
+        }
+        else {
+            let lock_data = self.data.lock().unwrap_or_else(|poisoned| {
+                // Mutex is poisoned, trying to recover the inner data
+                poisoned.into_inner()
+            });
+
+            if let Some(ref data) = *lock_data {
+                self.show_withdraws_data(ui, data);
+            }
         }
     }
 
@@ -62,8 +74,8 @@ impl WithdrawsStatusScreen {
             .striped(true)
             .resizable(true)
             .column(Column::initial(150.0).resizable(true)) // Date / Time
-            .column(Column::initial(60.0).resizable(true)) // Status
-            .column(Column::initial(100.0).resizable(true)) // Amount
+            .column(Column::initial(80.0).resizable(true)) // Status
+            .column(Column::initial(140.0).resizable(true)) // Amount
             .column(Column::initial(350.0).resizable(true)) // Origin
             .column(Column::initial(320.0).resizable(true)) // Destination
             .header(20.0, |mut header| {
@@ -112,14 +124,25 @@ impl WithdrawsStatusScreen {
 
 impl ScreenLike for WithdrawsStatusScreen {
     fn refresh(&mut self) {
-        let mut data_lock = self.data.lock().unwrap();
-        *data_lock = None;
+        let mut lock_data = self.data.lock().unwrap_or_else(|poisoned| {
+            // Mutex is poisoned, trying to recover the inner data
+            poisoned.into_inner()
+        });
+        *lock_data = None;
+        self.error_message = None;
     }
 
+    fn display_message(&mut self, message: &str, message_type: MessageType) {
+        self.error_message = Some(message.to_string());
+    }
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         if let BackendTaskSuccessResult::WithdrawalStatus(data) = backend_task_success_result {
-            let mut data_lock = self.data.lock().unwrap();
-            *data_lock = Some(data);
+            let mut lock_data = self.data.lock().unwrap_or_else(|poisoned| {
+                // Mutex is poisoned, trying to recover the inner data
+                poisoned.into_inner()
+            });
+            *lock_data = Some(data);
+            self.error_message = None;
         }
     }
 

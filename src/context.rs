@@ -9,10 +9,11 @@ use crate::sdk_wrapper::initialize_sdk;
 use crate::ui::RootScreenType;
 use dash_sdk::dashcore_rpc::{Auth, Client};
 use dash_sdk::dpp::dashcore::Network;
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::Identity;
 use dash_sdk::dpp::system_data_contracts::{load_system_data_contract, SystemDataContract};
 use dash_sdk::dpp::version::PlatformVersion;
-use dash_sdk::platform::{DataContract, Document};
+use dash_sdk::platform::DataContract;
 use dash_sdk::Sdk;
 use rusqlite::Result;
 use std::sync::atomic::AtomicBool;
@@ -130,6 +131,38 @@ impl AppContext {
         self.db.get_ongoing_contested_names(self)
     }
 
+    pub fn owned_contested_names(&self) -> Result<Vec<ContestedName>> {
+        let all_contested_names = self.all_contested_names().unwrap_or_else(|e| {
+            tracing::error!("Failed to load contested names: {:?}", e);
+            Vec::new() // Use default value if loading fails
+        });
+        let local_qualified_identities =
+            self.load_local_qualified_identities().unwrap_or_else(|e| {
+                tracing::error!("Failed to load local qualified identities: {:?}", e);
+                Vec::new() // Use default value if loading fails
+            });
+
+        // Collect the identifiers from local qualified identities
+        let local_identifiers: Vec<_> = local_qualified_identities
+            .iter()
+            .map(|identity| identity.identity.id())
+            .collect();
+
+        // Filter the contested names by checking if they were awarded to any local identifier
+        let owned_contested_names: Vec<ContestedName> = all_contested_names
+            .into_iter()
+            .filter(|contested_name| {
+                if let Some(awarded_to) = &contested_name.awarded_to {
+                    local_identifiers.contains(awarded_to)
+                } else {
+                    false
+                }
+            })
+            .collect();
+
+        Ok(owned_contested_names)
+    }
+
     /// Updates the `start_root_screen` in the settings table
     pub fn update_settings(&self, root_screen_type: RootScreenType) -> Result<()> {
         self.db
@@ -160,9 +193,5 @@ impl AppContext {
         contracts.insert(0, dpns_contract);
 
         Ok(contracts)
-    }
-
-    pub fn owned_names(&self) -> Result<Vec<Document>> {
-        Ok(vec![])
     }
 }

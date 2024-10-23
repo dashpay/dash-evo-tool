@@ -14,7 +14,7 @@ use crate::ui::transition_visualizer_screen::TransitionVisualizerScreen;
 use crate::ui::withdrawals::WithdrawalScreen;
 use dash_sdk::dpp::identity::Identity;
 use dash_sdk::dpp::prelude::IdentityPublicKey;
-use dpns_my_usernames_screen::DPNSMyUsernamesScreen;
+use dpns_contested_names_screen::DPNSSubscreen;
 use egui::Context;
 use enum_dispatch::enum_dispatch;
 use identities::add_existing_identity_screen::AddExistingIdentityScreen;
@@ -29,7 +29,6 @@ mod add_key_screen;
 pub mod components;
 pub mod document_query_screen;
 pub mod dpns_contested_names_screen;
-pub mod dpns_my_usernames_screen;
 pub(crate) mod identities;
 pub mod key_info_screen;
 pub mod keys_screen;
@@ -43,7 +42,7 @@ pub enum RootScreenType {
     RootScreenIdentities,
     RootScreenDPNSActiveContests,
     RootScreenDPNSPastContests,
-    RootScreenDPNSMyUsernames,
+    RootScreenDPNSOwnedNames,
     RootScreenDocumentQuery,
     RootScreenTransitionVisualizerScreen,
     RootScreenNetworkChooser,
@@ -59,7 +58,7 @@ impl RootScreenType {
             RootScreenType::RootScreenTransitionVisualizerScreen => 3,
             RootScreenType::RootScreenNetworkChooser => 4,
             RootScreenType::RootScreenDPNSPastContests => 5,
-            RootScreenType::RootScreenDPNSMyUsernames => 6,
+            RootScreenType::RootScreenDPNSOwnedNames => 6,
         }
     }
 
@@ -72,7 +71,7 @@ impl RootScreenType {
             3 => Some(RootScreenType::RootScreenTransitionVisualizerScreen),
             4 => Some(RootScreenType::RootScreenNetworkChooser),
             5 => Some(RootScreenType::RootScreenDPNSPastContests),
-            6 => Some(RootScreenType::RootScreenDPNSMyUsernames),
+            6 => Some(RootScreenType::RootScreenDPNSOwnedNames),
             _ => None,
         }
     }
@@ -84,7 +83,7 @@ impl From<RootScreenType> for ScreenType {
             RootScreenType::RootScreenIdentities => ScreenType::Identities,
             RootScreenType::RootScreenDPNSActiveContests => ScreenType::DPNSActiveContests,
             RootScreenType::RootScreenDPNSPastContests => ScreenType::DPNSPastContests,
-            RootScreenType::RootScreenDPNSMyUsernames => ScreenType::DPNSMyUsernames,
+            RootScreenType::RootScreenDPNSOwnedNames => ScreenType::DPNSMyUsernames,
             RootScreenType::RootScreenTransitionVisualizerScreen => {
                 ScreenType::TransitionVisualizer
             }
@@ -119,15 +118,15 @@ impl ScreenType {
     pub fn create_screen(&self, app_context: &Arc<AppContext>) -> Screen {
         match self {
             ScreenType::Identities => Screen::IdentitiesScreen(IdentitiesScreen::new(app_context)),
-            ScreenType::DPNSActiveContests => {
-                Screen::DPNSContestedNamesScreen(DPNSContestedNamesScreen::new(app_context, true))
-            }
-            ScreenType::DPNSPastContests => {
-                Screen::DPNSContestedNamesScreen(DPNSContestedNamesScreen::new(app_context, false))
-            }
-            ScreenType::DPNSMyUsernames => {
-                Screen::DPNSMyUsernamesScreen(DPNSMyUsernamesScreen::new(app_context))
-            }
+            ScreenType::DPNSActiveContests => Screen::DPNSContestedNamesScreen(
+                DPNSContestedNamesScreen::new(app_context, DPNSSubscreen::Active),
+            ),
+            ScreenType::DPNSPastContests => Screen::DPNSContestedNamesScreen(
+                DPNSContestedNamesScreen::new(app_context, DPNSSubscreen::Past),
+            ),
+            ScreenType::DPNSMyUsernames => Screen::DPNSContestedNamesScreen(
+                DPNSContestedNamesScreen::new(app_context, DPNSSubscreen::Owned),
+            ),
             ScreenType::AddNewIdentity => {
                 Screen::AddNewIdentityScreen(AddNewIdentityScreen::new(app_context))
             }
@@ -177,7 +176,6 @@ impl ScreenType {
 pub enum Screen {
     IdentitiesScreen(IdentitiesScreen),
     DPNSContestedNamesScreen(DPNSContestedNamesScreen),
-    DPNSMyUsernamesScreen(DPNSMyUsernamesScreen),
     DocumentQueryScreen(DocumentQueryScreen),
     AddNewWalletScreen(AddNewWalletScreen),
     AddNewIdentityScreen(AddNewIdentityScreen),
@@ -197,7 +195,6 @@ impl Screen {
         match self {
             Screen::IdentitiesScreen(screen) => screen.app_context = app_context,
             Screen::DPNSContestedNamesScreen(screen) => screen.app_context = app_context,
-            Screen::DPNSMyUsernamesScreen(screen) => screen.app_context = app_context,
             Screen::AddExistingIdentityScreen(screen) => screen.app_context = app_context,
             Screen::KeyInfoScreen(screen) => screen.app_context = app_context,
             Screen::KeysScreen(screen) => screen.app_context = app_context,
@@ -262,14 +259,17 @@ impl Screen {
             ),
             Screen::IdentitiesScreen(_) => ScreenType::Identities,
             Screen::DPNSContestedNamesScreen(DPNSContestedNamesScreen {
-                active_contests_only: true,
+                dpns_subscreen: DPNSSubscreen::Active,
                 ..
             }) => ScreenType::DPNSActiveContests,
             Screen::DPNSContestedNamesScreen(DPNSContestedNamesScreen {
-                active_contests_only: false,
+                dpns_subscreen: DPNSSubscreen::Past,
                 ..
             }) => ScreenType::DPNSPastContests,
-            Screen::DPNSMyUsernamesScreen(_) => ScreenType::DPNSMyUsernames,
+            Screen::DPNSContestedNamesScreen(DPNSContestedNamesScreen {
+                dpns_subscreen: DPNSSubscreen::Owned,
+                ..
+            }) => ScreenType::DPNSMyUsernames,
             Screen::TransitionVisualizerScreen(_) => ScreenType::TransitionVisualizer,
             Screen::WithdrawalScreen(screen) => {
                 ScreenType::WithdrawalScreen(screen.identity.clone())

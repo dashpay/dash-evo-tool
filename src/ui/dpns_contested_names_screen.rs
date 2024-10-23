@@ -16,7 +16,6 @@ use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
 use egui::{Context, Frame, Margin, Ui};
 use egui_extras::{Column, TableBuilder};
-use std::process::id;
 use std::sync::{Arc, Mutex};
 use tracing::error;
 
@@ -36,6 +35,12 @@ enum SortOrder {
     Descending,
 }
 
+pub enum DPNSSubscreen {
+    Active,
+    Past,
+    Owned,
+}
+
 pub struct DPNSContestedNamesScreen {
     // No need for Mutex as this can only refresh when entering screen
     voting_identities: Arc<Vec<QualifiedIdentity>>,
@@ -46,22 +51,32 @@ pub struct DPNSContestedNamesScreen {
     sort_column: SortColumn,
     sort_order: SortOrder,
     show_vote_popup_info: Option<(String, ContestedResourceTask)>,
-    pub active_contests_only: bool,
+    pub dpns_subscreen: DPNSSubscreen,
 }
 
 impl DPNSContestedNamesScreen {
-    pub fn new(app_context: &Arc<AppContext>, active_contests_only: bool) -> Self {
-        let contested_names = Arc::new(Mutex::new(if active_contests_only {
-            app_context.ongoing_contested_names().unwrap_or_else(|e| {
-                error!("Failed to load contested names: {:?}", e);
-                Vec::new() // Use default value if loading fails
-            })
-        } else {
-            app_context.all_contested_names().unwrap_or_else(|e| {
-                error!("Failed to load contested names: {:?}", e);
-                Vec::new() // Use default value if loading fails
-            })
+    pub fn new(app_context: &Arc<AppContext>, dpns_subscreen: DPNSSubscreen) -> Self {
+        let contested_names = Arc::new(Mutex::new(match dpns_subscreen {
+            DPNSSubscreen::Active => {
+                app_context.ongoing_contested_names().unwrap_or_else(|e| {
+                    error!("Failed to load contested names: {:?}", e);
+                    Vec::new() // Use default value if loading fails
+                })
+            }
+            DPNSSubscreen::Past => {
+                app_context.all_contested_names().unwrap_or_else(|e| {
+                    error!("Failed to load contested names: {:?}", e);
+                    Vec::new() // Use default value if loading fails
+                })
+            }
+            DPNSSubscreen::Owned => {
+                app_context.owned_contested_names().unwrap_or_else(|e| {
+                    error!("Failed to load contested names: {:?}", e);
+                    Vec::new() // Use default value if loading fails
+                })
+            }
         }));
+
         let voting_identities = app_context
             .db
             .get_local_voting_identities(&app_context)
@@ -79,7 +94,7 @@ impl DPNSContestedNamesScreen {
             sort_column: SortColumn::ContestedName,
             sort_order: SortOrder::Ascending,
             show_vote_popup_info: None,
-            active_contests_only,
+            dpns_subscreen,
         }
     }
 
@@ -178,20 +193,31 @@ impl DPNSContestedNamesScreen {
     fn render_no_active_contests(&mut self, ui: &mut Ui) {
         ui.vertical_centered(|ui| {
             ui.add_space(20.0); // Add some space to separate from the top
-            if self.active_contests_only {
-                ui.label(
-                    egui::RichText::new("No active contests at the moment.")
-                        .heading()
-                        .strong()
-                        .color(egui::Color32::GRAY),
-                );
-            } else {
-                ui.label(
-                    egui::RichText::new("No active or past contests at the moment.")
-                        .heading()
-                        .strong()
-                        .color(egui::Color32::GRAY),
-                );
+            match self.dpns_subscreen {
+                DPNSSubscreen::Active => {
+                    ui.label(
+                        egui::RichText::new("No active contests at the moment.")
+                            .heading()
+                            .strong()
+                            .color(egui::Color32::GRAY),
+                    );
+                }
+                DPNSSubscreen::Past => {
+                    ui.label(
+                        egui::RichText::new("No active or past contests at the moment.")
+                            .heading()
+                            .strong()
+                            .color(egui::Color32::GRAY),
+                    );
+                }
+                DPNSSubscreen::Owned => {
+                    ui.label(
+                        egui::RichText::new("No owned usernames.")
+                            .heading()
+                            .strong()
+                            .color(egui::Color32::GRAY),
+                    );
+                }
             }
             ui.add_space(10.0);
             ui.label("Please check back later or try refreshing the list.");
@@ -586,13 +612,19 @@ impl DPNSContestedNamesScreen {
 impl ScreenLike for DPNSContestedNamesScreen {
     fn refresh(&mut self) {
         let mut contested_names = self.contested_names.lock().unwrap();
-        if self.active_contests_only {
-            *contested_names = self
-                .app_context
-                .ongoing_contested_names()
-                .unwrap_or_default();
-        } else {
-            *contested_names = self.app_context.all_contested_names().unwrap_or_default();
+        match self.dpns_subscreen {
+            DPNSSubscreen::Active => {
+                *contested_names = self
+                    .app_context
+                    .ongoing_contested_names()
+                    .unwrap_or_default();
+            }
+            DPNSSubscreen::Past => {
+                *contested_names = self.app_context.all_contested_names().unwrap_or_default();
+            }
+            DPNSSubscreen::Owned => {
+                *contested_names = self.app_context.owned_contested_names().unwrap_or_default();
+            }
         }
     }
 
@@ -643,20 +675,29 @@ impl ScreenLike for DPNSContestedNamesScreen {
             right_buttons,
         );
 
-        if self.active_contests_only {
-            action |= add_left_panel(
-                ctx,
-                &self.app_context,
-                RootScreenType::RootScreenDPNSActiveContests,
-            );
-        } else {
-            action |= add_left_panel(
-                ctx,
-                &self.app_context,
-                RootScreenType::RootScreenDPNSPastContests,
-            );
+        match self.dpns_subscreen {
+            DPNSSubscreen::Active => {
+                action |= add_left_panel(
+                    ctx,
+                    &self.app_context,
+                    RootScreenType::RootScreenDPNSActiveContests,
+                );
+            }
+            DPNSSubscreen::Past => {
+                action |= add_left_panel(
+                    ctx,
+                    &self.app_context,
+                    RootScreenType::RootScreenDPNSPastContests,
+                );
+            }
+            DPNSSubscreen::Owned => {
+                action |= add_left_panel(
+                    ctx,
+                    &self.app_context,
+                    RootScreenType::RootScreenDPNSOwnedNames,
+                );
+            }
         }
-
         action |= add_dpns_subscreen_chooser_panel(ctx, &self.app_context);
 
         // Render the UI with the cloned contested_names vector
@@ -704,10 +745,16 @@ impl ScreenLike for DPNSContestedNamesScreen {
 
             if has_contested_names {
                 // Render the table if there are contested names
-                if self.active_contests_only {
-                    self.render_table_active_contests(ui);
-                } else {
-                    self.render_table_past_contests(ui);
+                match self.dpns_subscreen {
+                    DPNSSubscreen::Active => {
+                        self.render_table_active_contests(ui);
+                    }
+                    DPNSSubscreen::Past => {
+                        self.render_table_past_contests(ui);
+                    }
+                    DPNSSubscreen::Owned => {
+                        self.render_table_past_contests(ui);
+                    }
                 }
             } else {
                 // Render the "no active contests" message if none exist

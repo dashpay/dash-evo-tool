@@ -41,6 +41,16 @@ pub enum DPNSSubscreen {
     Owned,
 }
 
+impl DPNSSubscreen {
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            Self::Active => "Active contests",
+            Self::Past => "Past contests",
+            Self::Owned => "My usernames",
+        }
+    }
+}
+
 pub struct DPNSContestedNamesScreen {
     // No need for Mutex as this can only refresh when entering screen
     voting_identities: Arc<Vec<QualifiedIdentity>>,
@@ -698,7 +708,7 @@ impl ScreenLike for DPNSContestedNamesScreen {
                 );
             }
         }
-        action |= add_dpns_subscreen_chooser_panel(ctx, &self.app_context);
+        action |= add_dpns_subscreen_chooser_panel(ctx);
 
         // Render the UI with the cloned contested_names vector
         egui::CentralPanel::default().show(ctx, |ui| {

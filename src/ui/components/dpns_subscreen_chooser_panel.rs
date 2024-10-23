@@ -1,12 +1,15 @@
-use crate::context::AppContext;
+use crate::ui::dpns_contested_names_screen::DPNSSubscreen;
 use crate::{app::AppAction, ui::RootScreenType};
 use egui::{Context, Frame, Margin, SidePanel};
-use std::sync::Arc;
 
-pub fn add_dpns_subscreen_chooser_panel(ctx: &Context, app_context: &Arc<AppContext>) -> AppAction {
+pub fn add_dpns_subscreen_chooser_panel(ctx: &Context) -> AppAction {
     let mut action = AppAction::None;
 
-    let subscreens = vec!["Active contests", "Past contests", "My usernames"];
+    let subscreens = vec![
+        DPNSSubscreen::Active,
+        DPNSSubscreen::Past,
+        DPNSSubscreen::Owned,
+    ];
 
     SidePanel::left("dpns_subscreen_chooser_panel")
         .default_width(250.0)
@@ -23,20 +26,20 @@ pub fn add_dpns_subscreen_chooser_panel(ctx: &Context, app_context: &Arc<AppCont
 
                 for subscreen in subscreens {
                     // Show the subscreen name as a clickable option
-                    if ui.button(subscreen).clicked() {
+                    if ui.button(subscreen.display_name()).clicked() {
                         // Handle navigation based on which subscreen is selected
                         match subscreen {
-                            "Active contests" => {
+                            DPNSSubscreen::Active => {
                                 action = AppAction::SetMainScreen(
                                     RootScreenType::RootScreenDPNSActiveContests,
                                 )
                             }
-                            "Past contests" => {
+                            DPNSSubscreen::Past => {
                                 action = AppAction::SetMainScreen(
                                     RootScreenType::RootScreenDPNSPastContests,
                                 )
                             }
-                            "My usernames" => {
+                            DPNSSubscreen::Owned => {
                                 action = AppAction::SetMainScreen(
                                     RootScreenType::RootScreenDPNSOwnedNames,
                                 )

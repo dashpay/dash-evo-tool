@@ -51,7 +51,6 @@ pub fn add_left_panel(
             "voting.png",
         ),
         ("Q", RootScreenType::RootScreenDocumentQuery, "doc.png"),
-        ("W", RootScreenType::RootScreenWalletsBalances, "wallet.png"),
         (
             "T",
             RootScreenType::RootScreenTransitionVisualizerScreen,

@@ -1,11 +1,25 @@
+mod refresh_wallet_info;
+
+use std::sync::{Arc, RwLock};
 use crate::context::AppContext;
 use crate::platform::BackendTaskSuccessResult;
 use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dpp::dashcore::{ChainLock, Network};
+use crate::model::wallet::Wallet;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub(crate) enum CoreTask {
     GetBestChainLock,
+    RefreshWalletInfo(Arc<RwLock<Wallet>>),
+}
+impl PartialEq for CoreTask {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (CoreTask::GetBestChainLock, CoreTask::GetBestChainLock) => true,
+            (CoreTask::RefreshWalletInfo(_), CoreTask::RefreshWalletInfo(_)) => true,
+            _ => false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -26,6 +40,9 @@ impl AppContext {
                     ))
                 })
                 .map_err(|e| e.to_string()),
+            CoreTask::RefreshWalletInfo(wallet) => {
+                self.refresh_wallet_info(wallet)
+            }
         }
     }
 }

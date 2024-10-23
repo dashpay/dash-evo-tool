@@ -3,6 +3,7 @@ use crate::database::Database;
 use crate::logging::initialize_logger;
 use crate::platform::{BackendTask, BackendTaskSuccessResult};
 use crate::ui::document_query_screen::DocumentQueryScreen;
+use crate::ui::wallet::wallets_screen::WalletsBalancesScreen;
 use crate::ui::dpns_contested_names_screen::DPNSContestedNamesScreen;
 use crate::ui::identities::identities_screen::IdentitiesScreen;
 use crate::ui::network_chooser_screen::NetworkChooserScreen;
@@ -16,6 +17,7 @@ use std::ops::BitOrAssign;
 use std::sync::Arc;
 use std::time::Instant;
 use std::vec;
+use egui::Widget;
 use tokio::sync::mpsc;
 
 #[derive(Debug, From)]
@@ -126,6 +128,8 @@ impl AppState {
             Network::Dash,
         );
 
+        let mut wallets_balances_screen = WalletsBalancesScreen::new(&mainnet_app_context);
+
         let mut selected_main_screen = RootScreenType::RootScreenIdentities;
 
         let mut chosen_network = Network::Dash;
@@ -139,6 +143,7 @@ impl AppState {
                 dpns_contested_names_screen = DPNSContestedNamesScreen::new(testnet_app_context);
                 transition_visualizer_screen = TransitionVisualizerScreen::new(testnet_app_context);
                 document_query_screen = DocumentQueryScreen::new(testnet_app_context);
+                wallets_balances_screen = WalletsBalancesScreen::new(testnet_app_context);
             }
             network_chooser_screen.current_network = chosen_network;
         }
@@ -158,6 +163,10 @@ impl AppState {
                 (
                     RootScreenType::RootScreenDPNSContestedNames,
                     Screen::DPNSContestedNamesScreen(dpns_contested_names_screen),
+                ),
+                (
+                    RootScreenType::RootScreenWalletsBalances,
+                    Screen::WalletsBalancesScreen(wallets_balances_screen),
                 ),
                 (
                     RootScreenType::RootScreenTransitionVisualizerScreen,

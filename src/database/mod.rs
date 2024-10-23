@@ -4,6 +4,7 @@ mod identities;
 mod initialization;
 mod settings;
 mod wallet;
+mod utxo;
 
 use rusqlite::{Connection, Params};
 use std::sync::Mutex;

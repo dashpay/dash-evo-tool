@@ -2,7 +2,6 @@ use crate::model::wallet::Wallet;
 use dash_sdk::dashcore_rpc::{Client, RpcApi};
 use dash_sdk::dpp::dashcore::{Address, OutPoint, PublicKey, TxOut};
 use std::collections::{BTreeMap, HashMap};
-use tracing::info;
 
 impl Wallet {
     pub fn take_unspent_utxos_for(

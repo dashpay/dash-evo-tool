@@ -12,6 +12,7 @@ use egui::{
     Ui, Vec2,
 };
 use std::sync::{Arc, RwLock};
+use std::sync::atomic::Ordering;
 
 pub struct AddNewWalletScreen {
     seed_phrase: Option<Mnemonic>,
@@ -68,6 +69,7 @@ impl AddNewWalletScreen {
             // Acquire a write lock and add the new wallet
             if let Ok(mut wallets) = self.app_context.wallets.write() {
                 wallets.push(Arc::new(RwLock::new(wallet)));
+                self.app_context.has_wallet.store(true, Ordering::Relaxed);
             } else {
                 eprintln!("Failed to acquire write lock on wallets");
             }

@@ -155,11 +155,14 @@ impl Wallet {
                     self.watched_addresses.insert(
                         derivation_path.clone(),
                         AddressInfo {
-                            address,
+                            address: address.clone(),
                             path_type: DerivationPathType::CLEAR_FUNDS,
                             path_reference: DerivationPathReference::BIP44,
                         },
                     );
+
+                    // Add the address and its derivation path to `known_addresses`
+                    self.known_addresses.insert(address, derivation_path.clone());
                 }
                 found_unused_derivation_path = Some(derivation_path);
                 break;

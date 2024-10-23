@@ -23,7 +23,6 @@ use crate::platform::BackendTaskSuccessResult;
 /// constant id for subtree containing the sum of withdrawals
 pub const WITHDRAWAL_TRANSACTIONS_SUM_AMOUNT_TREE_KEY: [u8; 1] = [2];
 
-
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum WithdrawalsTask {
     QueryWithdrawals,
@@ -115,9 +114,7 @@ impl AppContext {
         let value = if let Element::SumTree(_, value, _) = sum_tree_element {
             value
         } else {
-            return Err(
-                "could not get sum tree value for current withdrawal maximum".to_string(),
-            );
+            return Err("could not get sum tree value for current withdrawal maximum".to_string());
         };
 
         let total_credits = TotalCreditsInPlatform::fetch_current(&sdk)

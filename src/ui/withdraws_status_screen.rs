@@ -5,13 +5,13 @@ use crate::platform::{BackendTask, BackendTaskSuccessResult};
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
+use chrono::Utc;
 use dash_sdk::dpp::dash_to_credits;
 use dash_sdk::dpp::document::DocumentV0Getters;
 use egui::{Context, Ui};
 use egui_extras::{Column, TableBuilder};
 use itertools::Itertools;
 use std::sync::{Arc, Mutex};
-use chrono::Utc;
 
 pub struct WithdrawsStatusScreen {
     pub app_context: Arc<AppContext>,
@@ -35,8 +35,7 @@ impl WithdrawsStatusScreen {
             ui.centered_and_justified(|ui| {
                 ui.heading(self.error_message.as_ref().unwrap());
             });
-        }
-        else {
+        } else {
             let lock_data = self.data.lock().unwrap_or_else(|poisoned| {
                 // Mutex is poisoned, trying to recover the inner data
                 poisoned.into_inner()

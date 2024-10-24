@@ -72,6 +72,8 @@ impl AppContext {
                     Value::U8(WithdrawalStatus::QUEUED as u8),
                     Value::U8(WithdrawalStatus::POOLED as u8),
                     Value::U8(WithdrawalStatus::BROADCASTED as u8),
+                    Value::U8(WithdrawalStatus::COMPLETE as u8),
+                    Value::U8(WithdrawalStatus::EXPIRED as u8),
                 ]),
             }],
             order_by_clauses: vec![
@@ -122,7 +124,7 @@ impl AppContext {
             .map_err(|e| e.to_string())?;
 
         Ok(BackendTaskSuccessResult::WithdrawalStatus(
-            util_transform_withdrawal_documents_to_bare_info(
+            util_transform_documents_to_withdrawal_status(
                 *value,
                 total_credits.0,
                 &documents.values().filter_map(|a| a.clone()).collect(),
@@ -132,7 +134,7 @@ impl AppContext {
     }
 }
 
-fn util_transform_withdrawal_documents_to_bare_info(
+fn util_transform_documents_to_withdrawal_status(
     recent_withdrawal_amounts: SumValue,
     total_credits_on_platform: Credits,
     withdrawal_documents: &Vec<Document>,
@@ -172,12 +174,9 @@ fn util_convert_document_to_record(
         .created_at()
         .ok_or_else(|| "expected created at".to_string())?;
 
-    // Convert the timestamp to a DateTime in UTC
-    let utc_datetime = DateTime::<Utc>::from_timestamp_millis(index as i64)
-        .ok_or_else(|| "expected date time".to_string())?;
-
-    // Convert the UTC time to the local time zone
-    let local_datetime: DateTime<Local> = utc_datetime.with_timezone(&Local);
+    let local_datetime: DateTime<Local> = DateTime::<Utc>::from_timestamp_millis(index as i64)
+        .ok_or_else(|| "expected date time".to_string())?
+        .into();
 
     let amount = document
         .properties()

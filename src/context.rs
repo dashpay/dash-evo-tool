@@ -9,6 +9,7 @@ use crate::sdk_wrapper::initialize_sdk;
 use crate::ui::RootScreenType;
 use dash_sdk::dashcore_rpc::{Auth, Client};
 use dash_sdk::dpp::dashcore::Network;
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::Identity;
 use dash_sdk::dpp::system_data_contracts::{load_system_data_contract, SystemDataContract};
 use dash_sdk::dpp::version::PlatformVersion;
@@ -128,6 +129,34 @@ impl AppContext {
 
     pub fn ongoing_contested_names(&self) -> Result<Vec<ContestedName>> {
         self.db.get_ongoing_contested_names(self)
+    }
+
+    pub fn owned_contested_names(&self) -> Result<Vec<ContestedName>> {
+        let all_contested_names = self.all_contested_names().unwrap_or_else(|e| {
+            tracing::error!("Failed to load contested names: {:?}", e);
+            Vec::new() // Use default value if loading fails
+        });
+        let local_qualified_identities =
+            self.load_local_qualified_identities().unwrap_or_else(|e| {
+                tracing::error!("Failed to load local qualified identities: {:?}", e);
+                Vec::new() // Use default value if loading fails
+            });
+
+        let owned_contested_names = all_contested_names
+            .into_iter()
+            .filter(|contested_name| {
+                contested_name
+                    .awarded_to
+                    .as_ref()
+                    .map_or(false, |awarded_to| {
+                        local_qualified_identities
+                            .iter()
+                            .any(|identity| identity.identity.id() == awarded_to)
+                    })
+            })
+            .collect();
+
+        Ok(owned_contested_names)
     }
 
     /// Updates the `start_root_screen` in the settings table

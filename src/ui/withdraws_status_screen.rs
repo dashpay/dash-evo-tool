@@ -1,11 +1,11 @@
+use std::cell::Cell;
 use crate::app::{AppAction, DesiredAppAction};
 use crate::context::AppContext;
-use crate::platform::withdrawals::{WithdrawStatusData, WithdrawalsTask};
+use crate::platform::withdrawals::{WithdrawRecord, WithdrawStatusData, WithdrawalsTask};
 use crate::platform::{BackendTask, BackendTaskSuccessResult};
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
-use chrono::Utc;
 use dash_sdk::dpp::dash_to_credits;
 use dash_sdk::dpp::document::DocumentV0Getters;
 use egui::{Context, Ui};
@@ -16,7 +16,18 @@ use std::sync::{Arc, Mutex};
 pub struct WithdrawsStatusScreen {
     pub app_context: Arc<AppContext>,
     data: Arc<Mutex<Option<WithdrawStatusData>>>,
+    sort_column: Cell<Option<SortColumn>>,
+    sort_ascending: Cell<bool>,
     error_message: Option<String>,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum SortColumn {
+    DateTime,
+    Status,
+    Amount,
+    OwnerId,
+    Destination,
 }
 
 impl WithdrawsStatusScreen {
@@ -24,6 +35,9 @@ impl WithdrawsStatusScreen {
         Self {
             app_context: app_context.clone(),
             data: Arc::new(Mutex::new(None)),
+            sort_ascending: Cell::from(true),
+            sort_column: Cell::from(Some(SortColumn::DateTime)),
+
             error_message: None,
         }
     }
@@ -36,34 +50,78 @@ impl WithdrawsStatusScreen {
                 ui.heading(self.error_message.as_ref().unwrap());
             });
         } else {
-            let lock_data = self.data.lock().unwrap_or_else(|poisoned| {
+            let mut lock_data = self.data.lock().unwrap_or_else(|poisoned| {
                 // Mutex is poisoned, trying to recover the inner data
                 poisoned.into_inner()
             });
 
-            if let Some(ref data) = *lock_data {
+            if let Some(ref mut data) = *lock_data {
+                self.sort_withdraws_data(&mut data.withdrawals);
                 self.show_withdraws_data(ui, data);
             }
         }
+    }
+
+    fn sort_withdraws_data(&self, data: &mut Vec<WithdrawRecord>) {
+        data.sort_by(|a, b| {
+            match self.sort_column.get() {
+                Some(SortColumn::DateTime) => {
+                    if self.sort_ascending.get() {
+                        a.date_time.cmp(&b.date_time)
+                    } else {
+                        b.date_time.cmp(&a.date_time)
+                    }
+                },
+                Some(SortColumn::Status) => {
+                    if self.sort_ascending.get() {
+                        (a.status as u8).cmp(&(b.status as u8))
+                    } else {
+                        (b.status as u8).cmp(&(a.status as u8))
+                    }
+                },
+                Some(SortColumn::Amount) => {
+                    if self.sort_ascending.get() {
+                        a.amount.cmp(&b.amount)
+                    } else {
+                        b.amount.cmp(&a.amount)
+                    }
+                },
+                Some(SortColumn::OwnerId) => {
+                    if self.sort_ascending.get() {
+                        a.owner_id.cmp(&b.owner_id)
+                    } else {
+                        b.owner_id.cmp(&a.owner_id)
+                    }
+                },
+                Some(SortColumn::Destination) => {
+                    if self.sort_ascending.get() {
+                        a.address.cmp(&b.address)
+                    } else {
+                        b.address.cmp(&a.address)
+                    }
+                },
+                None => std::cmp::Ordering::Equal,
+            }
+        });
     }
 
     fn show_withdraws_data(&self, ui: &mut egui::Ui, data: &WithdrawStatusData) {
         ui.heading("General Information");
         ui.separator();
         ui.label(format!(
-            "Total withdrawals amount: {} DASH",
+            "Total withdrawals amount: {:.2} DASH",
             data.total_amount as f64 / (dash_to_credits!(1) as f64)
         ));
         ui.label(format!(
-            "Recent withdrawals amount: {} DASH",
+            "Recent withdrawals amount: {:.2} DASH",
             data.recent_withdrawal_amounts as f64 / (dash_to_credits!(1) as f64)
         ));
         ui.label(format!(
-            "Daily withdrawals limit: {} DASH",
+            "Daily withdrawals limit: {:.2} DASH",
             data.daily_withdrawal_limit as f64 / (dash_to_credits!(1) as f64)
         ));
         ui.label(format!(
-            "Total credits on Platform: {} DASH",
+            "Total credits on Platform: {:.2} DASH",
             data.total_credits_on_platform as f64 / (dash_to_credits!(1) as f64)
         ));
         ui.add_space(30.0);
@@ -75,23 +133,58 @@ impl WithdrawsStatusScreen {
             .column(Column::initial(150.0).resizable(true)) // Date / Time
             .column(Column::initial(80.0).resizable(true)) // Status
             .column(Column::initial(140.0).resizable(true)) // Amount
-            .column(Column::initial(350.0).resizable(true)) // Origin
+            .column(Column::initial(350.0).resizable(true)) // OwnerID
             .column(Column::initial(320.0).resizable(true)) // Destination
             .header(20.0, |mut header| {
                 header.col(|ui| {
-                    ui.heading("Date / Time");
+                    if ui.selectable_label(false, "Date / Time").clicked() {
+                        if self.sort_column.get() == Some(SortColumn::DateTime) {
+                            self.sort_ascending.set(!self.sort_ascending.get());
+                        } else {
+                            self.sort_column.set(Some(SortColumn::DateTime));
+                            self.sort_ascending.set(true);
+                        }
+                    }
                 });
                 header.col(|ui| {
-                    ui.heading("Status");
+                    if ui.selectable_label(false, "Status").clicked() {
+                        if self.sort_column.get() == Some(SortColumn::Status) {
+                            self.sort_ascending.set(!self.sort_ascending.get());
+                        } else {
+                            self.sort_column.set(Some(SortColumn::Status));
+                            self.sort_ascending.set(true);
+                        }
+                    }
                 });
                 header.col(|ui| {
-                    ui.heading("Amount");
+                    if ui.selectable_label(false, "Amount").clicked() {
+                        if self.sort_column.get() == Some(SortColumn::Amount) {
+                            self.sort_ascending.set(!self.sort_ascending.get());
+                        } else {
+                            self.sort_column.set(Some(SortColumn::Amount));
+                            self.sort_ascending.set(true);
+                        }
+                    }
                 });
                 header.col(|ui| {
-                    ui.heading("Owner ID");
+                    if ui.selectable_label(false, "Owner ID").clicked() {
+                        if self.sort_column.get() == Some(SortColumn::OwnerId) {
+                            self.sort_ascending.set(!self.sort_ascending.get());
+                        } else {
+                            self.sort_column.set(Some(SortColumn::OwnerId));
+                            self.sort_ascending.set(true);
+                        }
+                    }
                 });
                 header.col(|ui| {
-                    ui.heading("Destination");
+                    if ui.selectable_label(false, "Destination").clicked() {
+                        if self.sort_column.get() == Some(SortColumn::Destination) {
+                            self.sort_ascending.set(!self.sort_ascending.get());
+                        } else {
+                            self.sort_column.set(Some(SortColumn::Destination));
+                            self.sort_ascending.set(true);
+                        }
+                    }
                 });
             })
             .body(|mut body| {
@@ -105,7 +198,7 @@ impl WithdrawsStatusScreen {
                         });
                         row.col(|ui| {
                             ui.label(format!(
-                                "{} DASH",
+                                "{:.2} DASH",
                                 record.amount as f64 / (dash_to_credits!(1) as f64)
                             ));
                         });

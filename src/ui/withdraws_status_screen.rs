@@ -46,7 +46,7 @@ impl WithdrawsStatusScreen {
         Self {
             app_context: app_context.clone(),
             data: Arc::new(Mutex::new(None)),
-            sort_ascending: Cell::from(true),
+            sort_ascending: Cell::from(false),
             sort_column: Cell::from(Some(SortColumn::DateTime)),
             error_message: None,
             filter_status_queued: Cell::new(true),
@@ -86,44 +86,32 @@ impl WithdrawsStatusScreen {
     }
 
     fn sort_withdraws_data(&self, data: &mut Vec<WithdrawRecord>) {
-        data.sort_by(|a, b| match self.sort_column.get() {
-            Some(SortColumn::DateTime) => {
+        if let Some(column) = self.sort_column.get() {
+            let compare = |a: &WithdrawRecord, b: &WithdrawRecord| -> std::cmp::Ordering {
+                let ord = match column {
+                    SortColumn::DateTime => a.date_time.cmp(&b.date_time),
+                    SortColumn::Status => (a.status as u8).cmp(&(b.status as u8)),
+                    SortColumn::Amount => a.amount.cmp(&b.amount),
+                    SortColumn::OwnerId => a.owner_id.cmp(&b.owner_id),
+                    SortColumn::Destination => a.address.cmp(&b.address),
+                };
                 if self.sort_ascending.get() {
-                    a.date_time.cmp(&b.date_time)
+                    ord
                 } else {
-                    b.date_time.cmp(&a.date_time)
+                    ord.reverse()
                 }
-            }
-            Some(SortColumn::Status) => {
-                if self.sort_ascending.get() {
-                    (a.status as u8).cmp(&(b.status as u8))
-                } else {
-                    (b.status as u8).cmp(&(a.status as u8))
-                }
-            }
-            Some(SortColumn::Amount) => {
-                if self.sort_ascending.get() {
-                    a.amount.cmp(&b.amount)
-                } else {
-                    b.amount.cmp(&a.amount)
-                }
-            }
-            Some(SortColumn::OwnerId) => {
-                if self.sort_ascending.get() {
-                    a.owner_id.cmp(&b.owner_id)
-                } else {
-                    b.owner_id.cmp(&a.owner_id)
-                }
-            }
-            Some(SortColumn::Destination) => {
-                if self.sort_ascending.get() {
-                    a.address.cmp(&b.address)
-                } else {
-                    b.address.cmp(&a.address)
-                }
-            }
-            None => std::cmp::Ordering::Equal,
-        });
+            };
+            data.sort_by(compare);
+        }
+    }
+
+    fn handle_column_click(&self, current_sort: SortColumn) {
+        if self.sort_column.get() == Some(current_sort) {
+            self.sort_ascending.set(!self.sort_ascending.get());
+        } else {
+            self.sort_column.set(Some(current_sort));
+            self.sort_ascending.set(true);
+        }
     }
 
     fn show_withdraws_data(&self, ui: &mut egui::Ui, data: &WithdrawStatusData) {
@@ -224,52 +212,27 @@ impl WithdrawsStatusScreen {
             .header(20.0, |mut header| {
                 header.col(|ui| {
                     if ui.selectable_label(false, "Date / Time").clicked() {
-                        if self.sort_column.get() == Some(SortColumn::DateTime) {
-                            self.sort_ascending.set(!self.sort_ascending.get());
-                        } else {
-                            self.sort_column.set(Some(SortColumn::DateTime));
-                            self.sort_ascending.set(true);
-                        }
+                        self.handle_column_click(SortColumn::DateTime);
                     }
                 });
                 header.col(|ui| {
                     if ui.selectable_label(false, "Status").clicked() {
-                        if self.sort_column.get() == Some(SortColumn::Status) {
-                            self.sort_ascending.set(!self.sort_ascending.get());
-                        } else {
-                            self.sort_column.set(Some(SortColumn::Status));
-                            self.sort_ascending.set(true);
-                        }
+                        self.handle_column_click(SortColumn::Status);
                     }
                 });
                 header.col(|ui| {
                     if ui.selectable_label(false, "Amount").clicked() {
-                        if self.sort_column.get() == Some(SortColumn::Amount) {
-                            self.sort_ascending.set(!self.sort_ascending.get());
-                        } else {
-                            self.sort_column.set(Some(SortColumn::Amount));
-                            self.sort_ascending.set(true);
-                        }
+                        self.handle_column_click(SortColumn::Amount);
                     }
                 });
                 header.col(|ui| {
                     if ui.selectable_label(false, "Owner ID").clicked() {
-                        if self.sort_column.get() == Some(SortColumn::OwnerId) {
-                            self.sort_ascending.set(!self.sort_ascending.get());
-                        } else {
-                            self.sort_column.set(Some(SortColumn::OwnerId));
-                            self.sort_ascending.set(true);
-                        }
+                        self.handle_column_click(SortColumn::OwnerId);
                     }
                 });
                 header.col(|ui| {
                     if ui.selectable_label(false, "Destination").clicked() {
-                        if self.sort_column.get() == Some(SortColumn::Destination) {
-                            self.sort_ascending.set(!self.sort_ascending.get());
-                        } else {
-                            self.sort_column.set(Some(SortColumn::Destination));
-                            self.sort_ascending.set(true);
-                        }
+                        self.handle_column_click(SortColumn::Destination);
                     }
                 });
             })

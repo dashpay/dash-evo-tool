@@ -12,6 +12,7 @@ use crate::ui::network_chooser_screen::NetworkChooserScreen;
 use crate::ui::transfers::TransferScreen;
 use crate::ui::transition_visualizer_screen::TransitionVisualizerScreen;
 use crate::ui::withdrawals::WithdrawalScreen;
+use crate::ui::withdraws_status_screen::WithdrawsStatusScreen;
 use dash_sdk::dpp::identity::Identity;
 use dash_sdk::dpp::prelude::IdentityPublicKey;
 use egui::Context;
@@ -35,6 +36,7 @@ pub mod network_chooser_screen;
 pub mod transfers;
 pub mod transition_visualizer_screen;
 pub mod withdrawals;
+pub mod withdraws_status_screen;
 
 #[derive(Debug, Clone, Copy, Ord, PartialOrd, Eq, PartialEq, Hash)]
 pub enum RootScreenType {
@@ -42,6 +44,7 @@ pub enum RootScreenType {
     RootScreenDPNSContestedNames,
     RootScreenDocumentQuery,
     RootScreenTransitionVisualizerScreen,
+    RootScreenWithdrawsStatus,
     RootScreenNetworkChooser,
 }
 
@@ -54,6 +57,7 @@ impl RootScreenType {
             RootScreenType::RootScreenDocumentQuery => 2,
             RootScreenType::RootScreenTransitionVisualizerScreen => 3,
             RootScreenType::RootScreenNetworkChooser => 4,
+            RootScreenType::RootScreenWithdrawsStatus => 5,
         }
     }
 
@@ -65,6 +69,7 @@ impl RootScreenType {
             2 => Some(RootScreenType::RootScreenDocumentQuery),
             3 => Some(RootScreenType::RootScreenTransitionVisualizerScreen),
             4 => Some(RootScreenType::RootScreenNetworkChooser),
+            5 => Some(RootScreenType::RootScreenWithdrawsStatus),
             _ => None,
         }
     }
@@ -79,6 +84,7 @@ impl From<RootScreenType> for ScreenType {
                 ScreenType::TransitionVisualizer
             }
             RootScreenType::RootScreenDocumentQuery => ScreenType::DocumentQueryScreen,
+            RootScreenType::RootScreenWithdrawsStatus => ScreenType::WithdrawsStatus,
             RootScreenType::RootScreenNetworkChooser => ScreenType::NetworkChooser,
         }
     }
@@ -99,6 +105,7 @@ pub enum ScreenType {
     KeyInfo(QualifiedIdentity, IdentityPublicKey, Option<[u8; 32]>),
     Keys(Identity),
     DocumentQueryScreen,
+    WithdrawsStatus,
     NetworkChooser,
     RegisterDpnsName,
 }
@@ -148,6 +155,9 @@ impl ScreenType {
             ScreenType::DocumentQueryScreen => {
                 Screen::DocumentQueryScreen(DocumentQueryScreen::new(app_context))
             }
+            ScreenType::WithdrawsStatus => {
+                Screen::WithdrawsStatusScreen(WithdrawsStatusScreen::new(app_context))
+            }
             ScreenType::AddNewWallet => {
                 Screen::AddNewWalletScreen(AddNewWalletScreen::new(app_context))
             }
@@ -170,6 +180,7 @@ pub enum Screen {
     TransferScreen(TransferScreen),
     AddKeyScreen(AddKeyScreen),
     TransitionVisualizerScreen(TransitionVisualizerScreen),
+    WithdrawsStatusScreen(WithdrawsStatusScreen),
     NetworkChooserScreen(NetworkChooserScreen),
 }
 
@@ -190,6 +201,7 @@ impl Screen {
             Screen::RegisterDpnsNameScreen(screen) => screen.app_context = app_context,
             Screen::AddNewWalletScreen(screen) => screen.app_context = app_context,
             Screen::TransferScreen(screen) => screen.app_context = app_context,
+            Screen::WithdrawsStatusScreen(screen) => screen.app_context = app_context,
         }
     }
 }
@@ -253,6 +265,7 @@ impl Screen {
             Screen::RegisterDpnsNameScreen(_) => ScreenType::RegisterDpnsName,
             Screen::AddNewWalletScreen(_) => ScreenType::AddNewWallet,
             Screen::TransferScreen(screen) => ScreenType::TransferScreen(screen.identity.clone()),
+            Screen::WithdrawsStatusScreen(_) => ScreenType::WithdrawsStatus,
         }
     }
 }

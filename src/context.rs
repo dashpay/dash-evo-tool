@@ -27,6 +27,7 @@ pub struct AppContext {
     pub(crate) sdk: Sdk,
     pub(crate) config: NetworkConfig,
     pub(crate) dpns_contract: Arc<DataContract>,
+    pub(crate) withdraws_contract: Arc<DataContract>,
     pub(crate) core_client: Client,
     pub(crate) has_wallet: AtomicBool,
     pub(crate) wallets: RwLock<Vec<Arc<RwLock<Wallet>>>>,
@@ -54,6 +55,10 @@ impl AppContext {
         let dpns_contract =
             load_system_data_contract(SystemDataContract::DPNS, PlatformVersion::latest())
                 .expect("expected to load dpns contract");
+
+        let withdrawal_contract =
+            load_system_data_contract(SystemDataContract::Withdrawals, PlatformVersion::latest())
+                .expect("expected to get withdrawal contract");
 
         let addr = format!(
             "http://{}:{}",
@@ -83,6 +88,7 @@ impl AppContext {
             sdk,
             config: network_config,
             dpns_contract: Arc::new(dpns_contract),
+            withdraws_contract: Arc::new(withdrawal_contract),
             core_client,
             has_wallet: (!wallets.is_empty()).into(),
             wallets: RwLock::new(wallets),

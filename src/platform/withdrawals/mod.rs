@@ -146,58 +146,14 @@ fn util_transform_withdrawal_documents_to_bare_info(
             .map(|amount| acc + amount)
     })?;
 
-    let mut vec_withdraws = vec![];
-    for document in withdrawal_documents.iter() {
-        let index = document
-            .created_at()
-            .ok_or_else(|| "expected created at".to_string())?;
-
-        // Convert the timestamp to a DateTime in UTC
-        let utc_datetime = DateTime::<Utc>::from_timestamp_millis(index as i64)
-            .ok_or_else(|| "expected date time".to_string())?;
-
-        // Convert the UTC time to the local time zone
-        let local_datetime: DateTime<Local> = utc_datetime.with_timezone(&Local);
-
-        let amount = document
-            .properties()
-            .get_integer::<Credits>(AMOUNT)
-            .map_err(|_| "expected amount on withdrawal".to_string())?;
-
-        let status_int = document
-            .properties()
-            .get_integer::<u8>(STATUS)
-            .map_err(|_| "expected status on withdrawal".to_string())?;
-
-        let status: WithdrawalStatus = status_int
-            .try_into()
-            .map_err(|_| "invalid withdrawal status".to_string())?;
-
-        let owner_id = document.owner_id();
-
-        let address_bytes = document
-            .properties()
-            .get_bytes(OUTPUT_SCRIPT)
-            .map_err(|_| "expected output script".to_string())?;
-
-        let output_script = ScriptBuf::from_bytes(address_bytes);
-
-        let address = Address::from_script(&output_script, network)
-            .map_err(|_| "expected a valid address".to_string())?;
-
-        let withdraw_record = WithdrawRecord {
-            date_time: local_datetime,
-            status,
-            amount,
-            owner_id,
-            address,
-        };
-        vec_withdraws.push(withdraw_record);
-    }
-
     let daily_withdrawal_limit =
         daily_withdrawal_limit(total_credits_on_platform, PlatformVersion::latest())
             .map_err(|_| "expected to get daily withdrawal limit".to_string())?;
+
+    let mut vec_withdraws = vec![];
+    for document in withdrawal_documents {
+        vec_withdraws.push(util_convert_document_to_record(document, network)?);
+    }
 
     Ok(WithdrawStatusData {
         withdrawals: vec_withdraws,
@@ -205,5 +161,55 @@ fn util_transform_withdrawal_documents_to_bare_info(
         recent_withdrawal_amounts,
         daily_withdrawal_limit,
         total_credits_on_platform,
+    })
+}
+
+fn util_convert_document_to_record(
+    document: &Document,
+    network: Network,
+) -> Result<WithdrawRecord, String> {
+    let index = document
+        .created_at()
+        .ok_or_else(|| "expected created at".to_string())?;
+
+    // Convert the timestamp to a DateTime in UTC
+    let utc_datetime = DateTime::<Utc>::from_timestamp_millis(index as i64)
+        .ok_or_else(|| "expected date time".to_string())?;
+
+    // Convert the UTC time to the local time zone
+    let local_datetime: DateTime<Local> = utc_datetime.with_timezone(&Local);
+
+    let amount = document
+        .properties()
+        .get_integer::<Credits>(AMOUNT)
+        .map_err(|_| "expected amount on withdrawal".to_string())?;
+
+    let status_int = document
+        .properties()
+        .get_integer::<u8>(STATUS)
+        .map_err(|_| "expected status on withdrawal".to_string())?;
+
+    let status: WithdrawalStatus = status_int
+        .try_into()
+        .map_err(|_| "invalid withdrawal status".to_string())?;
+
+    let owner_id = document.owner_id();
+
+    let address_bytes = document
+        .properties()
+        .get_bytes(OUTPUT_SCRIPT)
+        .map_err(|_| "expected output script".to_string())?;
+
+    let output_script = ScriptBuf::from_bytes(address_bytes);
+
+    let address = Address::from_script(&output_script, network)
+        .map_err(|_| "expected a valid address".to_string())?;
+
+    Ok(WithdrawRecord {
+        date_time: local_datetime,
+        status,
+        amount,
+        owner_id,
+        address,
     })
 }

@@ -54,7 +54,9 @@ impl AppContext {
     ) -> Result<BackendTaskSuccessResult, String> {
         let sdk = sdk.clone();
         match &task {
-            WithdrawalsTask::QueryWithdrawals(status_filter) => self.query_withdrawals(sdk, status_filter).await,
+            WithdrawalsTask::QueryWithdrawals(status_filter) => {
+                self.query_withdrawals(sdk, status_filter).await
+            }
         }
     }
 

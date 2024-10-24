@@ -1,4 +1,3 @@
-use std::cell::{Cell, RefCell};
 use crate::app::{AppAction, DesiredAppAction};
 use crate::context::AppContext;
 use crate::platform::withdrawals::{WithdrawRecord, WithdrawStatusData, WithdrawalsTask};
@@ -7,13 +6,14 @@ use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::dpp::dash_to_credits;
+use dash_sdk::dpp::data_contracts::withdrawals_contract::WithdrawalStatus;
 use dash_sdk::dpp::document::DocumentV0Getters;
+use dash_sdk::dpp::platform_value::Value;
 use egui::{Context, Ui};
 use egui_extras::{Column, TableBuilder};
 use itertools::Itertools;
+use std::cell::{Cell, RefCell};
 use std::sync::{Arc, Mutex};
-use dash_sdk::dpp::data_contracts::withdrawals_contract::WithdrawalStatus;
-use dash_sdk::dpp::platform_value::Value;
 
 const ITEMS_PER_PAGE: usize = 20;
 
@@ -54,11 +54,13 @@ impl WithdrawsStatusScreen {
             filter_status_broadcasted: Cell::new(true),
             filter_status_complete: Cell::new(true),
             filter_status_expired: Cell::new(false),
-            filter_status_mix: RefCell::new(vec![Value::U8(WithdrawalStatus::QUEUED as u8),
-                                              Value::U8(WithdrawalStatus::POOLED as u8),
-                                              Value::U8(WithdrawalStatus::BROADCASTED as u8),
-                                              Value::U8(WithdrawalStatus::COMPLETE as u8),
-                                              Value::U8(WithdrawalStatus::EXPIRED as u8)]),
+            filter_status_mix: RefCell::new(vec![
+                Value::U8(WithdrawalStatus::QUEUED as u8),
+                Value::U8(WithdrawalStatus::POOLED as u8),
+                Value::U8(WithdrawalStatus::BROADCASTED as u8),
+                Value::U8(WithdrawalStatus::COMPLETE as u8),
+                Value::U8(WithdrawalStatus::EXPIRED as u8),
+            ]),
             pagination_current_page: Cell::new(0),
         }
     }
@@ -84,45 +86,43 @@ impl WithdrawsStatusScreen {
     }
 
     fn sort_withdraws_data(&self, data: &mut Vec<WithdrawRecord>) {
-        data.sort_by(|a, b| {
-            match self.sort_column.get() {
-                Some(SortColumn::DateTime) => {
-                    if self.sort_ascending.get() {
-                        a.date_time.cmp(&b.date_time)
-                    } else {
-                        b.date_time.cmp(&a.date_time)
-                    }
-                },
-                Some(SortColumn::Status) => {
-                    if self.sort_ascending.get() {
-                        (a.status as u8).cmp(&(b.status as u8))
-                    } else {
-                        (b.status as u8).cmp(&(a.status as u8))
-                    }
-                },
-                Some(SortColumn::Amount) => {
-                    if self.sort_ascending.get() {
-                        a.amount.cmp(&b.amount)
-                    } else {
-                        b.amount.cmp(&a.amount)
-                    }
-                },
-                Some(SortColumn::OwnerId) => {
-                    if self.sort_ascending.get() {
-                        a.owner_id.cmp(&b.owner_id)
-                    } else {
-                        b.owner_id.cmp(&a.owner_id)
-                    }
-                },
-                Some(SortColumn::Destination) => {
-                    if self.sort_ascending.get() {
-                        a.address.cmp(&b.address)
-                    } else {
-                        b.address.cmp(&a.address)
-                    }
-                },
-                None => std::cmp::Ordering::Equal,
+        data.sort_by(|a, b| match self.sort_column.get() {
+            Some(SortColumn::DateTime) => {
+                if self.sort_ascending.get() {
+                    a.date_time.cmp(&b.date_time)
+                } else {
+                    b.date_time.cmp(&a.date_time)
+                }
             }
+            Some(SortColumn::Status) => {
+                if self.sort_ascending.get() {
+                    (a.status as u8).cmp(&(b.status as u8))
+                } else {
+                    (b.status as u8).cmp(&(a.status as u8))
+                }
+            }
+            Some(SortColumn::Amount) => {
+                if self.sort_ascending.get() {
+                    a.amount.cmp(&b.amount)
+                } else {
+                    b.amount.cmp(&a.amount)
+                }
+            }
+            Some(SortColumn::OwnerId) => {
+                if self.sort_ascending.get() {
+                    a.owner_id.cmp(&b.owner_id)
+                } else {
+                    b.owner_id.cmp(&a.owner_id)
+                }
+            }
+            Some(SortColumn::Destination) => {
+                if self.sort_ascending.get() {
+                    a.address.cmp(&b.address)
+                } else {
+                    b.address.cmp(&a.address)
+                }
+            }
+            None => std::cmp::Ordering::Equal,
         });
     }
 
@@ -165,44 +165,43 @@ impl WithdrawsStatusScreen {
 
         ui.add_space(30.0); // Optional spacing between the grids
 
-        egui::Grid::new("filters_grid")
-            .show(ui, |ui| {
-                ui.heading("Filters");
-                ui.end_row();
-                ui.horizontal(|ui| {
-                    ui.label("Filter by status:");
-                    ui.add_space(8.0); // Space after label
-                    let mut value = self.filter_status_queued.get();
-                    if ui.checkbox(&mut value, "Queued").changed() {
-                        self.filter_status_queued.set(value);
-                        self.util_build_combined_filter_status_mix();
-                    }
-                    ui.add_space(8.0);
-                    let mut value = self.filter_status_pooled.get();
-                    if ui.checkbox(&mut value, "Pooled").changed() {
-                        self.filter_status_pooled.set(value);
-                        self.util_build_combined_filter_status_mix();
-                    }
-                    ui.add_space(8.0);
-                    let mut value = self.filter_status_broadcasted.get();
-                    if ui.checkbox(&mut value, "Broadcasted").changed() {
-                        self.filter_status_broadcasted.set(value);
-                        self.util_build_combined_filter_status_mix();
-                    }
-                    ui.add_space(8.0);
-                    let mut value = self.filter_status_complete.get();
-                    if ui.checkbox(&mut value, "Complete").changed() {
-                        self.filter_status_complete.set(value);
-                        self.util_build_combined_filter_status_mix();
-                    }
-                    ui.add_space(8.0);
-                    let mut value = self.filter_status_expired.get();
-                    if ui.checkbox(&mut value, "Expired").changed() {
-                        self.filter_status_expired.set(value);
-                        self.util_build_combined_filter_status_mix();
-                    }
-                });
+        egui::Grid::new("filters_grid").show(ui, |ui| {
+            ui.heading("Filters");
+            ui.end_row();
+            ui.horizontal(|ui| {
+                ui.label("Filter by status:");
+                ui.add_space(8.0); // Space after label
+                let mut value = self.filter_status_queued.get();
+                if ui.checkbox(&mut value, "Queued").changed() {
+                    self.filter_status_queued.set(value);
+                    self.util_build_combined_filter_status_mix();
+                }
+                ui.add_space(8.0);
+                let mut value = self.filter_status_pooled.get();
+                if ui.checkbox(&mut value, "Pooled").changed() {
+                    self.filter_status_pooled.set(value);
+                    self.util_build_combined_filter_status_mix();
+                }
+                ui.add_space(8.0);
+                let mut value = self.filter_status_broadcasted.get();
+                if ui.checkbox(&mut value, "Broadcasted").changed() {
+                    self.filter_status_broadcasted.set(value);
+                    self.util_build_combined_filter_status_mix();
+                }
+                ui.add_space(8.0);
+                let mut value = self.filter_status_complete.get();
+                if ui.checkbox(&mut value, "Complete").changed() {
+                    self.filter_status_complete.set(value);
+                    self.util_build_combined_filter_status_mix();
+                }
+                ui.add_space(8.0);
+                let mut value = self.filter_status_expired.get();
+                if ui.checkbox(&mut value, "Expired").changed() {
+                    self.filter_status_expired.set(value);
+                    self.util_build_combined_filter_status_mix();
+                }
             });
+        });
         ui.add_space(30.0);
 
         let total_pages = (data.withdrawals.len() + ITEMS_PER_PAGE - 1) / ITEMS_PER_PAGE;

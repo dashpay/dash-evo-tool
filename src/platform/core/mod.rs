@@ -1,11 +1,11 @@
 mod refresh_wallet_info;
 
-use std::sync::{Arc, RwLock};
 use crate::context::AppContext;
+use crate::model::wallet::Wallet;
 use crate::platform::BackendTaskSuccessResult;
 use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dpp::dashcore::{ChainLock, Network};
-use crate::model::wallet::Wallet;
+use std::sync::{Arc, RwLock};
 
 #[derive(Debug, Clone)]
 pub(crate) enum CoreTask {
@@ -40,9 +40,7 @@ impl AppContext {
                     ))
                 })
                 .map_err(|e| e.to_string()),
-            CoreTask::RefreshWalletInfo(wallet) => {
-                self.refresh_wallet_info(wallet)
-            }
+            CoreTask::RefreshWalletInfo(wallet) => self.refresh_wallet_info(wallet),
         }
     }
 }

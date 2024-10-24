@@ -3,8 +3,8 @@ mod contracts;
 mod identities;
 mod initialization;
 mod settings;
-mod wallet;
 mod utxo;
+mod wallet;
 
 use rusqlite::{Connection, Params};
 use std::sync::Mutex;

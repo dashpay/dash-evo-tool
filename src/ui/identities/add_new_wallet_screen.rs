@@ -11,8 +11,8 @@ use egui::{
     Color32, ComboBox, Direction, FontId, Frame, Grid, Layout, Margin, RichText, Stroke, TextStyle,
     Ui, Vec2,
 };
-use std::sync::{Arc, RwLock};
 use std::sync::atomic::Ordering;
+use std::sync::{Arc, RwLock};
 
 pub struct AddNewWalletScreen {
     seed_phrase: Option<Mnemonic>,

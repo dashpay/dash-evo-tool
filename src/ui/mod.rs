@@ -11,6 +11,7 @@ use crate::ui::keys_screen::KeysScreen;
 use crate::ui::network_chooser_screen::NetworkChooserScreen;
 use crate::ui::transfers::TransferScreen;
 use crate::ui::transition_visualizer_screen::TransitionVisualizerScreen;
+use crate::ui::wallet::wallets_screen::WalletsBalancesScreen;
 use crate::ui::withdrawals::WithdrawalScreen;
 use dash_sdk::dpp::identity::Identity;
 use dash_sdk::dpp::prelude::IdentityPublicKey;
@@ -23,7 +24,6 @@ use identities::register_dpns_name_screen::RegisterDpnsNameScreen;
 use std::fmt;
 use std::hash::Hash;
 use std::sync::Arc;
-use crate::ui::wallet::wallets_screen::WalletsBalancesScreen;
 
 mod add_key_screen;
 pub mod components;
@@ -35,8 +35,8 @@ pub mod keys_screen;
 pub mod network_chooser_screen;
 pub mod transfers;
 pub mod transition_visualizer_screen;
-pub mod withdrawals;
 pub(crate) mod wallet;
+pub mod withdrawals;
 
 #[derive(Debug, Clone, Copy, Ord, PartialOrd, Eq, PartialEq, Hash)]
 pub enum RootScreenType {
@@ -158,7 +158,9 @@ impl ScreenType {
             ScreenType::AddNewWallet => {
                 Screen::AddNewWalletScreen(AddNewWalletScreen::new(app_context))
             }
-            ScreenType::WalletsBalances => Screen::WalletsBalancesScreen(WalletsBalancesScreen::new(app_context))
+            ScreenType::WalletsBalances => {
+                Screen::WalletsBalancesScreen(WalletsBalancesScreen::new(app_context))
+            }
         }
     }
 }

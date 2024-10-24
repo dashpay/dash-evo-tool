@@ -2,11 +2,11 @@ use crate::database::Database;
 use crate::model::wallet::{AddressInfo, DerivationPathReference, DerivationPathType, Wallet};
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dpp::dashcore::bip32::DerivationPath;
-use dash_sdk::dpp::dashcore::{Network, OutPoint, ScriptBuf, Txid, TxOut};
+use dash_sdk::dpp::dashcore::hashes::Hash;
+use dash_sdk::dpp::dashcore::{Network, OutPoint, ScriptBuf, TxOut, Txid};
 use rusqlite::params;
 use std::collections::{BTreeMap, HashMap};
 use std::str::FromStr;
-use dash_sdk::dpp::dashcore::hashes::Hash;
 
 impl Database {
     /// Insert a new wallet into the wallet table
@@ -229,7 +229,7 @@ impl Database {
 
         // Step 4: Retrieve UTXOs for each wallet and add them to the wallets.
         let mut utxo_stmt = conn.prepare(
-            "SELECT txid, vout, address, value, script_pubkey FROM utxos WHERE network = ?"
+            "SELECT txid, vout, address, value, script_pubkey FROM utxos WHERE network = ?",
         )?;
 
         let utxo_rows = utxo_stmt.query_map([network_str.clone()], |row| {

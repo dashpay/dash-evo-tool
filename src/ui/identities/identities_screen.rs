@@ -21,8 +21,8 @@ use eframe::egui::{self, Context};
 use eframe::emath::Align;
 use egui::{Color32, Frame, Margin, RichText, Ui};
 use egui_extras::{Column, TableBuilder};
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::Ordering;
+use std::sync::{Arc, Mutex};
 
 pub struct IdentitiesScreen {
     pub identities: Arc<Mutex<Vec<QualifiedIdentity>>>,

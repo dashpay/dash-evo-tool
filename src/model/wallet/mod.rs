@@ -56,6 +56,7 @@ impl TryFrom<u32> for DerivationPathReference {
 
 use crate::context::AppContext;
 use bitflags::bitflags;
+use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dpp::balances::credits::Duffs;
 
 bitflags! {
@@ -128,7 +129,7 @@ impl Wallet {
         network: Network,
         change: bool,
         register: Option<&AppContext>,
-    ) -> Result<PublicKey, String> {
+    ) -> Result<(PublicKey, DerivationPath), String> {
         let mut address_index = 0;
         let mut found_unused_derivation_path = None;
         while found_unused_derivation_path.is_none() {
@@ -141,6 +142,21 @@ impl Wallet {
                     .to_pub();
                 if let Some(app_context) = register {
                     let address = Address::p2pkh(&public_key, network);
+                    app_context
+                        .core_client
+                        .import_address(
+                            &address,
+                            Some(
+                                format!(
+                                    "Managed by Dash Evo Tool {} {}",
+                                    self.alias.clone().unwrap_or_default(),
+                                    derivation_path
+                                )
+                                .as_str(),
+                            ),
+                            Some(false),
+                        )
+                        .map_err(|e| e.to_string())?;
                     app_context
                         .db
                         .add_address(
@@ -162,7 +178,8 @@ impl Wallet {
                     );
 
                     // Add the address and its derivation path to `known_addresses`
-                    self.known_addresses.insert(address, derivation_path.clone());
+                    self.known_addresses
+                        .insert(address, derivation_path.clone());
                 }
                 found_unused_derivation_path = Some(derivation_path);
                 break;
@@ -171,11 +188,11 @@ impl Wallet {
             }
         }
 
-        let extended_public_key = found_unused_derivation_path
-            .unwrap()
+        let derivation_path = found_unused_derivation_path.unwrap();
+        let extended_public_key = derivation_path
             .derive_pub_ecdsa_for_master_seed(&self.seed, network)
             .expect("derivation should not be able to fail");
-        Ok(extended_public_key.to_pub())
+        Ok((extended_public_key.to_pub(), derivation_path))
     }
 
     pub fn identity_authentication_ecdsa_public_key(
@@ -244,8 +261,21 @@ impl Wallet {
         register: Option<&AppContext>,
     ) -> Result<Address, String> {
         Ok(Address::p2pkh(
-            &self.unused_bip_44_public_key(network, false, register)?,
+            &self.unused_bip_44_public_key(network, false, register)?.0,
             network,
+        ))
+    }
+
+    pub fn receive_address_with_derivation_path(
+        &mut self,
+        network: Network,
+        register: Option<&AppContext>,
+    ) -> Result<(Address, DerivationPath), String> {
+        let (receive_public_key, derivation_path) =
+            self.unused_bip_44_public_key(network, false, register)?;
+        Ok((
+            Address::p2pkh(&receive_public_key, network),
+            derivation_path,
         ))
     }
 
@@ -255,8 +285,21 @@ impl Wallet {
         register: Option<&AppContext>,
     ) -> Result<Address, String> {
         Ok(Address::p2pkh(
-            &self.unused_bip_44_public_key(network, true, register)?,
+            &self.unused_bip_44_public_key(network, true, register)?.0,
             network,
+        ))
+    }
+
+    pub fn change_address_with_derivation_path(
+        &mut self,
+        network: Network,
+        register: Option<&AppContext>,
+    ) -> Result<(Address, DerivationPath), String> {
+        let (receive_public_key, derivation_path) =
+            self.unused_bip_44_public_key(network, true, register)?;
+        Ok((
+            Address::p2pkh(&receive_public_key, network),
+            derivation_path,
         ))
     }
 

@@ -120,7 +120,7 @@ impl AppContext {
                 Ok(transaction) => transaction,
                 Err(_) => {
                     wallet
-                        .reload_utxos(&self.core_client)
+                        .reload_utxos(&self.core_client, self.network, Some(self))
                         .map_err(|e| e.to_string())?;
                     wallet.asset_lock_transaction(
                         sdk.network,

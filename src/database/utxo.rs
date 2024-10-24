@@ -1,9 +1,22 @@
-use dash_sdk::dashcore_rpc::dashcore::{OutPoint, ScriptBuf, Txid, TxOut};
+use crate::database::Database;
+use dash_sdk::dashcore_rpc::dashcore::{OutPoint, ScriptBuf, TxOut, Txid};
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use rusqlite::params;
-use crate::database::Database;
 
 impl Database {
+    /// Deletes a UTXO from the database given its OutPoint and network.
+    pub fn drop_utxo(&self, outpoint: &OutPoint, network: &str) -> rusqlite::Result<()> {
+        let txid_bytes = outpoint.txid.as_byte_array(); // &[u8; 32]
+        let vout = outpoint.vout as i64; // i64
+
+        self.execute(
+            "DELETE FROM utxos WHERE txid = ? AND vout = ? AND network = ?",
+            params![txid_bytes, vout, network],
+        )?;
+
+        Ok(())
+    }
+
     pub(crate) fn insert_utxo(
         &self,
         txid: &[u8],

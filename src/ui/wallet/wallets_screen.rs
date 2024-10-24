@@ -1,19 +1,19 @@
 use crate::app::{AppAction, DesiredAppAction};
 use crate::context::AppContext;
 use crate::model::wallet::Wallet;
-use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::{ScreenLike, MessageType, ScreenType, RootScreenType};
-use dash_sdk::dashcore_rpc::dashcore::{Address, Network};
-use eframe::egui::{self, ComboBox, Context, Ui};
-use std::sync::{Arc, RwLock};
-use std::sync::atomic::Ordering;
-use dash_sdk::dpp::dashcore::bip32::{ChildNumber, DerivationPath};
-use egui_extras::{Column, TableBuilder};
-use crate::platform::BackendTask;
 use crate::platform::contested_names::ContestedResourceTask;
 use crate::platform::core::CoreTask;
+use crate::platform::BackendTask;
 use crate::ui::components::left_panel::add_left_panel;
-
+use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::{MessageType, RootScreenType, ScreenLike, ScreenType};
+use dash_sdk::dashcore_rpc::dashcore::{Address, Network};
+use dash_sdk::dashcore_rpc::RpcApi;
+use dash_sdk::dpp::dashcore::bip32::{ChildNumber, DerivationPath};
+use eframe::egui::{self, ComboBox, Context, Ui};
+use egui_extras::{Column, TableBuilder};
+use std::sync::atomic::Ordering;
+use std::sync::{Arc, RwLock};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SortColumn {
@@ -48,7 +48,7 @@ impl DerivationPathHelpers for DerivationPath {
         // BIP44 external paths have the form m/44'/coin_type'/account'/0/...
         let coin_type = match network {
             Network::Dash => 5,
-            _ => 1
+            _ => 1,
         };
         let components = self.as_ref();
         components.len() == 5
@@ -61,7 +61,7 @@ impl DerivationPathHelpers for DerivationPath {
         // BIP44 change paths have the form m/44'/coin_type'/account'/1/...
         let coin_type = match network {
             Network::Dash => 5,
-            _ => 1
+            _ => 1,
         };
         let components = self.as_ref();
         components.len() >= 5
@@ -70,7 +70,6 @@ impl DerivationPathHelpers for DerivationPath {
             && components[3] == ChildNumber::Normal { index: 1 }
     }
 }
-
 
 // Define a struct to hold the address data
 struct AddressData {
@@ -173,7 +172,10 @@ impl WalletsBalancesScreen {
                                 .as_ref()
                                 .map_or(false, |selected| Arc::ptr_eq(selected, wallet));
 
-                            if ui.selectable_label(is_selected, wallet_alias.clone()).clicked() {
+                            if ui
+                                .selectable_label(is_selected, wallet_alias.clone())
+                                .clicked()
+                            {
                                 // Update the selected wallet
                                 self.selected_wallet = Some(wallet.clone());
                             }
@@ -204,7 +206,10 @@ impl WalletsBalancesScreen {
 
                             // Update the alias in the database
                             let seed = wallet.seed;
-                            self.app_context.db.set_wallet_alias(&seed, Some(alias.clone())).ok();
+                            self.app_context
+                                .db
+                                .set_wallet_alias(&seed, Some(alias.clone()))
+                                .ok();
                         }
                     }
 
@@ -235,37 +240,41 @@ impl WalletsBalancesScreen {
                 .known_addresses
                 .iter()
                 .map(|(address, derivation_path)| {
-                    let utxo_info = wallet
-                        .utxos
-                        .as_ref()
-                        .and_then(|utxos| utxos.get(address));
+                    let utxo_info = wallet.utxos.as_ref().and_then(|utxos| utxos.get(address));
 
                     let utxo_count = utxo_info.map(|outpoints| outpoints.len()).unwrap_or(0);
 
                     // Calculate total received by summing UTXO values
                     let total_received = utxo_info
-                        .map(|outpoints| {
-                            outpoints.values().map(|txout| txout.value).sum::<u64>()
-                        })
+                        .map(|outpoints| outpoints.values().map(|txout| txout.value).sum::<u64>())
                         .unwrap_or(0u64);
 
-                    let index = derivation_path.into_iter().last().cloned().unwrap_or(ChildNumber::Normal { index: 0});
+                    let index = derivation_path
+                        .into_iter()
+                        .last()
+                        .cloned()
+                        .unwrap_or(ChildNumber::Normal { index: 0 });
                     let index = match index {
                         ChildNumber::Normal { index } => index,
                         ChildNumber::Hardened { index } => index,
                         _ => 0,
                     };
-                    let address_type = if derivation_path.is_bip44_external(self.app_context.network) {
-                        "BIP44 External".to_string()
-                    } else if derivation_path.is_bip44_change(self.app_context.network) {
-                        "BIP44 Change".to_string()
-                    } else {
-                        "Unknown".to_string()
-                    };
+                    let address_type =
+                        if derivation_path.is_bip44_external(self.app_context.network) {
+                            "BIP44 External".to_string()
+                        } else if derivation_path.is_bip44_change(self.app_context.network) {
+                            "BIP44 Change".to_string()
+                        } else {
+                            "Unknown".to_string()
+                        };
 
                     AddressData {
                         address: address.clone(),
-                        balance: wallet.address_balances.get(address).cloned().unwrap_or_default(),
+                        balance: wallet
+                            .address_balances
+                            .get(address)
+                            .cloned()
+                            .unwrap_or_default(),
                         utxo_count,
                         total_received,
                         address_type,
@@ -429,12 +438,10 @@ impl ScreenLike for WalletsBalancesScreen {
                 ),
             ]
         } else {
-            vec![
-                (
-                    "Add Wallet",
-                    DesiredAppAction::AddScreenType(ScreenType::AddNewWallet),
-                ),
-            ]
+            vec![(
+                "Add Wallet",
+                DesiredAppAction::AddScreenType(ScreenType::AddNewWallet),
+            )]
         };
         let mut action = add_top_panel(
             ctx,
@@ -463,8 +470,6 @@ impl ScreenLike for WalletsBalancesScreen {
             } else {
                 ui.label("No wallet selected.");
             }
-
-
 
             // Display error message if any
             if let Some((message, message_type)) = &self.error_message {

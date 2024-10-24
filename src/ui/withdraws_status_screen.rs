@@ -108,22 +108,38 @@ impl WithdrawsStatusScreen {
     fn show_withdraws_data(&self, ui: &mut egui::Ui, data: &WithdrawStatusData) {
         ui.heading("General Information");
         ui.separator();
-        ui.label(format!(
-            "Total withdrawals amount: {:.2} DASH",
-            data.total_amount as f64 / (dash_to_credits!(1) as f64)
-        ));
-        ui.label(format!(
-            "Recent withdrawals amount: {:.2} DASH",
-            data.recent_withdrawal_amounts as f64 / (dash_to_credits!(1) as f64)
-        ));
-        ui.label(format!(
-            "Daily withdrawals limit: {:.2} DASH",
-            data.daily_withdrawal_limit as f64 / (dash_to_credits!(1) as f64)
-        ));
-        ui.label(format!(
-            "Total credits on Platform: {:.2} DASH",
-            data.total_credits_on_platform as f64 / (dash_to_credits!(1) as f64)
-        ));
+        egui::Grid::new("general_info_grid")
+            .num_columns(2)
+            .spacing([40.0, 8.0]) // Adjust spacing as needed
+            .show(ui, |ui| {
+                ui.label("Total withdrawals amount:");
+                ui.label(format!(
+                    "{:.2} DASH",
+                    data.total_amount as f64 / (dash_to_credits!(1) as f64)
+                ));
+                ui.end_row();
+
+                ui.label("Recent withdrawals amount:");
+                ui.label(format!(
+                    "{:.2} DASH",
+                    data.recent_withdrawal_amounts as f64 / (dash_to_credits!(1) as f64)
+                ));
+                ui.end_row();
+
+                ui.label("Daily withdrawals limit:");
+                ui.label(format!(
+                    "{:.2} DASH",
+                    data.daily_withdrawal_limit as f64 / (dash_to_credits!(1) as f64)
+                ));
+                ui.end_row();
+
+                ui.label("Total credits on Platform:");
+                ui.label(format!(
+                    "{:.2} DASH",
+                    data.total_credits_on_platform as f64 / (dash_to_credits!(1) as f64)
+                ));
+                ui.end_row();
+            });
         ui.add_space(30.0);
         ui.heading(format!("Withdrawals ({})", data.withdrawals.len()));
         ui.separator();

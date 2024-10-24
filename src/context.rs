@@ -142,21 +142,17 @@ impl AppContext {
                 Vec::new() // Use default value if loading fails
             });
 
-        // Collect the identifiers from local qualified identities
-        let local_identifiers: Vec<_> = local_qualified_identities
-            .iter()
-            .map(|identity| identity.identity.id())
-            .collect();
-
-        // Filter the contested names by checking if they were awarded to any local identifier
-        let owned_contested_names: Vec<ContestedName> = all_contested_names
+        let owned_contested_names = all_contested_names
             .into_iter()
             .filter(|contested_name| {
-                if let Some(awarded_to) = &contested_name.awarded_to {
-                    local_identifiers.contains(awarded_to)
-                } else {
-                    false
-                }
+                contested_name
+                    .awarded_to
+                    .as_ref()
+                    .map_or(false, |awarded_to| {
+                        local_qualified_identities
+                            .iter()
+                            .any(|identity| identity.identity.id() == awarded_to)
+                    })
             })
             .collect();
 

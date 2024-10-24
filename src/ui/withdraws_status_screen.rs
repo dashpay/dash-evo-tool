@@ -15,6 +15,8 @@ use std::sync::{Arc, Mutex};
 use dash_sdk::dpp::data_contracts::withdrawals_contract::WithdrawalStatus;
 use dash_sdk::dpp::platform_value::Value;
 
+const ITEMS_PER_PAGE: usize = 20;
+
 pub struct WithdrawsStatusScreen {
     pub app_context: Arc<AppContext>,
     data: Arc<Mutex<Option<WithdrawStatusData>>>,
@@ -26,6 +28,7 @@ pub struct WithdrawsStatusScreen {
     filter_status_complete: Cell<bool>,
     filter_status_expired: Cell<bool>,
     filter_status_mix: RefCell<Vec<Value>>,
+    pagination_current_page: Cell<usize>,
     error_message: Option<String>,
 }
 
@@ -56,6 +59,7 @@ impl WithdrawsStatusScreen {
                                               Value::U8(WithdrawalStatus::BROADCASTED as u8),
                                               Value::U8(WithdrawalStatus::COMPLETE as u8),
                                               Value::U8(WithdrawalStatus::EXPIRED as u8)]),
+            pagination_current_page: Cell::new(0),
         }
     }
 
@@ -201,6 +205,13 @@ impl WithdrawsStatusScreen {
             });
         ui.add_space(30.0);
 
+        let total_pages = (data.withdrawals.len() + ITEMS_PER_PAGE - 1) / ITEMS_PER_PAGE;
+        let mut current_page = self.pagination_current_page.get().min(total_pages - 1); // Clamp to valid page range
+
+        // Calculate the slice of data for the current page
+        let start_index = current_page * ITEMS_PER_PAGE;
+        let end_index = (start_index + ITEMS_PER_PAGE).min(data.withdrawals.len());
+
         ui.heading(format!("Withdrawals ({})", data.withdrawals.len()));
         ui.separator();
         TableBuilder::new(ui)
@@ -264,7 +275,7 @@ impl WithdrawsStatusScreen {
                 });
             })
             .body(|mut body| {
-                for record in &data.withdrawals {
+                for record in &data.withdrawals[start_index..end_index] {
                     body.row(18.0, |mut row| {
                         row.col(|ui| {
                             ui.label(&record.date_time.format("%Y-%m-%d %H:%M:%S").to_string());
@@ -287,6 +298,18 @@ impl WithdrawsStatusScreen {
                     });
                 }
             });
+        // Pagination controls at the bottom
+        ui.horizontal(|ui| {
+            if ui.button("Previous").clicked() && current_page > 0 {
+                self.pagination_current_page.set(current_page - 1)
+            }
+
+            ui.label(format!("Page {}/{}", current_page + 1, total_pages));
+
+            if ui.button("Next").clicked() && current_page < total_pages - 1 {
+                self.pagination_current_page.set(current_page + 1)
+            }
+        });
     }
 
     fn util_build_combined_filter_status_mix(&self) {

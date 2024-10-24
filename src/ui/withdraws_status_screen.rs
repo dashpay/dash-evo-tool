@@ -1,4 +1,4 @@
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use crate::app::{AppAction, DesiredAppAction};
 use crate::context::AppContext;
 use crate::platform::withdrawals::{WithdrawRecord, WithdrawStatusData, WithdrawalsTask};
@@ -12,12 +12,20 @@ use egui::{Context, Ui};
 use egui_extras::{Column, TableBuilder};
 use itertools::Itertools;
 use std::sync::{Arc, Mutex};
+use dash_sdk::dpp::data_contracts::withdrawals_contract::WithdrawalStatus;
+use dash_sdk::dpp::platform_value::Value;
 
 pub struct WithdrawsStatusScreen {
     pub app_context: Arc<AppContext>,
     data: Arc<Mutex<Option<WithdrawStatusData>>>,
     sort_column: Cell<Option<SortColumn>>,
     sort_ascending: Cell<bool>,
+    filter_status_queued: Cell<bool>,
+    filter_status_pooled: Cell<bool>,
+    filter_status_broadcasted: Cell<bool>,
+    filter_status_complete: Cell<bool>,
+    filter_status_expired: Cell<bool>,
+    filter_status_mix: RefCell<Vec<Value>>,
     error_message: Option<String>,
 }
 
@@ -37,8 +45,17 @@ impl WithdrawsStatusScreen {
             data: Arc::new(Mutex::new(None)),
             sort_ascending: Cell::from(true),
             sort_column: Cell::from(Some(SortColumn::DateTime)),
-
             error_message: None,
+            filter_status_queued: Cell::new(true),
+            filter_status_pooled: Cell::new(true),
+            filter_status_broadcasted: Cell::new(true),
+            filter_status_complete: Cell::new(true),
+            filter_status_expired: Cell::new(false),
+            filter_status_mix: RefCell::new(vec![Value::U8(WithdrawalStatus::QUEUED as u8),
+                                              Value::U8(WithdrawalStatus::POOLED as u8),
+                                              Value::U8(WithdrawalStatus::BROADCASTED as u8),
+                                              Value::U8(WithdrawalStatus::COMPLETE as u8),
+                                              Value::U8(WithdrawalStatus::EXPIRED as u8)]),
         }
     }
 
@@ -106,12 +123,13 @@ impl WithdrawsStatusScreen {
     }
 
     fn show_withdraws_data(&self, ui: &mut egui::Ui, data: &WithdrawStatusData) {
-        ui.heading("General Information");
-        ui.separator();
         egui::Grid::new("general_info_grid")
             .num_columns(2)
-            .spacing([40.0, 8.0]) // Adjust spacing as needed
+            .spacing([20.0, 8.0]) // Adjust spacing as needed
             .show(ui, |ui| {
+                ui.heading("General Information");
+                ui.separator();
+                ui.end_row();
                 ui.label("Total withdrawals amount:");
                 ui.label(format!(
                     "{:.2} DASH",
@@ -140,7 +158,49 @@ impl WithdrawsStatusScreen {
                 ));
                 ui.end_row();
             });
+
+        ui.add_space(30.0); // Optional spacing between the grids
+
+        egui::Grid::new("filters_grid")
+            .show(ui, |ui| {
+                ui.heading("Filters");
+                ui.end_row();
+                ui.horizontal(|ui| {
+                    ui.label("Filter by status:");
+                    ui.add_space(8.0); // Space after label
+                    let mut value = self.filter_status_queued.get();
+                    if ui.checkbox(&mut value, "Queued").changed() {
+                        self.filter_status_queued.set(value);
+                        self.util_build_combined_filter_status_mix();
+                    }
+                    ui.add_space(8.0);
+                    let mut value = self.filter_status_pooled.get();
+                    if ui.checkbox(&mut value, "Pooled").changed() {
+                        self.filter_status_pooled.set(value);
+                        self.util_build_combined_filter_status_mix();
+                    }
+                    ui.add_space(8.0);
+                    let mut value = self.filter_status_broadcasted.get();
+                    if ui.checkbox(&mut value, "Broadcasted").changed() {
+                        self.filter_status_broadcasted.set(value);
+                        self.util_build_combined_filter_status_mix();
+                    }
+                    ui.add_space(8.0);
+                    let mut value = self.filter_status_complete.get();
+                    if ui.checkbox(&mut value, "Complete").changed() {
+                        self.filter_status_complete.set(value);
+                        self.util_build_combined_filter_status_mix();
+                    }
+                    ui.add_space(8.0);
+                    let mut value = self.filter_status_expired.get();
+                    if ui.checkbox(&mut value, "Expired").changed() {
+                        self.filter_status_expired.set(value);
+                        self.util_build_combined_filter_status_mix();
+                    }
+                });
+            });
         ui.add_space(30.0);
+
         ui.heading(format!("Withdrawals ({})", data.withdrawals.len()));
         ui.separator();
         TableBuilder::new(ui)
@@ -228,6 +288,28 @@ impl WithdrawsStatusScreen {
                 }
             });
     }
+
+    fn util_build_combined_filter_status_mix(&self) {
+        let mut res = vec![];
+        if self.filter_status_queued.get() {
+            res.push(Value::U8(WithdrawalStatus::QUEUED as u8));
+        }
+        if self.filter_status_pooled.get() {
+            res.push(Value::U8(WithdrawalStatus::POOLED as u8));
+        }
+        if self.filter_status_broadcasted.get() {
+            res.push(Value::U8(WithdrawalStatus::BROADCASTED as u8));
+        }
+        if self.filter_status_complete.get() {
+            res.push(Value::U8(WithdrawalStatus::COMPLETE as u8));
+        }
+        if self.filter_status_expired.get() {
+            res.push(Value::U8(WithdrawalStatus::EXPIRED as u8));
+        }
+
+        self.filter_status_mix.borrow_mut().clear();
+        self.filter_status_mix.borrow_mut().extend(res);
+    }
 }
 
 impl ScreenLike for WithdrawsStatusScreen {
@@ -258,7 +340,7 @@ impl ScreenLike for WithdrawsStatusScreen {
         let query = (
             "Refresh",
             DesiredAppAction::BackendTask(BackendTask::WithdrawalTask(
-                WithdrawalsTask::QueryWithdrawals,
+                WithdrawalsTask::QueryWithdrawals(self.filter_status_mix.borrow().clone()),
             )),
         );
         let mut action = add_top_panel(

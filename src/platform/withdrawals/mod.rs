@@ -25,7 +25,7 @@ pub const WITHDRAWAL_TRANSACTIONS_SUM_AMOUNT_TREE_KEY: [u8; 1] = [2];
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum WithdrawalsTask {
-    QueryWithdrawals,
+    QueryWithdrawals(Vec<Value>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -54,13 +54,14 @@ impl AppContext {
     ) -> Result<BackendTaskSuccessResult, String> {
         let sdk = sdk.clone();
         match &task {
-            WithdrawalsTask::QueryWithdrawals => self.query_withdrawals(sdk).await,
+            WithdrawalsTask::QueryWithdrawals(status_filter) => self.query_withdrawals(sdk, status_filter).await,
         }
     }
 
     pub(super) async fn query_withdrawals(
         self: &Arc<Self>,
         sdk: Sdk,
+        status_filter: &Vec<Value>,
     ) -> Result<BackendTaskSuccessResult, String> {
         let queued_document_query = DocumentQuery {
             data_contract: self.withdraws_contract.clone(),
@@ -68,13 +69,7 @@ impl AppContext {
             where_clauses: vec![WhereClause {
                 field: "status".to_string(),
                 operator: WhereOperator::In,
-                value: Value::Array(vec![
-                    Value::U8(WithdrawalStatus::QUEUED as u8),
-                    Value::U8(WithdrawalStatus::POOLED as u8),
-                    Value::U8(WithdrawalStatus::BROADCASTED as u8),
-                    Value::U8(WithdrawalStatus::COMPLETE as u8),
-                    Value::U8(WithdrawalStatus::EXPIRED as u8),
-                ]),
+                value: Value::Array(status_filter.to_vec()),
             }],
             order_by_clauses: vec![
                 OrderClause {

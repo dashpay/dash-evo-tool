@@ -1,3 +1,4 @@
+use crate::components::instant_send_listener::InstantSendListener;
 use crate::context::AppContext;
 use crate::database::Database;
 use crate::logging::initialize_logger;
@@ -9,16 +10,16 @@ use crate::ui::network_chooser_screen::NetworkChooserScreen;
 use crate::ui::transition_visualizer_screen::TransitionVisualizerScreen;
 use crate::ui::wallet::wallets_screen::WalletsBalancesScreen;
 use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike, ScreenType};
-use dash_sdk::dpp::dashcore::Network;
+use dash_sdk::dpp::dashcore::{InstantLock, Network};
 use derive_more::From;
 use eframe::{egui, App};
 use egui::Widget;
 use std::collections::BTreeMap;
 use std::ops::BitOrAssign;
-use std::sync::Arc;
+use std::sync::{mpsc, Arc};
 use std::time::Instant;
 use std::vec;
-use tokio::sync::mpsc;
+use tokio::sync::mpsc as tokiompsc;
 
 #[derive(Debug, From)]
 pub enum TaskResult {
@@ -43,8 +44,11 @@ pub struct AppState {
     pub chosen_network: Network,
     pub mainnet_app_context: Arc<AppContext>,
     pub testnet_app_context: Option<Arc<AppContext>>,
-    pub task_result_sender: mpsc::Sender<TaskResult>, // Channel sender for sending task results
-    pub task_result_receiver: mpsc::Receiver<TaskResult>, // Channel receiver for receiving task results
+    pub mainnet_instant_send_listener: InstantSendListener,
+    pub testnet_instant_send_listener: InstantSendListener,
+    pub instant_send_receiver: mpsc::Receiver<(InstantLock, Network)>,
+    pub task_result_sender: tokiompsc::Sender<TaskResult>, // Channel sender for sending task results
+    pub task_result_receiver: tokiompsc::Receiver<TaskResult>, // Channel receiver for receiving task results
     last_repaint: Instant, // Track the last time we requested a repaint
 }
 
@@ -149,10 +153,28 @@ impl AppState {
         }
 
         // // Create a channel with a buffer size of 32 (adjust as needed)
-        let (task_result_sender, task_result_receiver) = mpsc::channel(256);
+        let (task_result_sender, task_result_receiver) = tokiompsc::channel(256);
 
         // Initialize the last repaint time to the current instant
         let last_repaint = Instant::now();
+
+        // Create a channel for communication with the InstantSendListener
+        let (instant_send_sender, instant_send_receiver) = mpsc::channel();
+
+        // Pass the sender to the listener when creating it
+        let mainnet_instant_send_listener = InstantSendListener::spawn_listener(
+            Network::Dash,
+            "tcp://127.0.0.1:23708",
+            instant_send_sender.clone(), // Clone the sender for each listener
+        )
+        .expect("Failed to create mainnet InstantSend listener");
+
+        let testnet_instant_send_listener = InstantSendListener::spawn_listener(
+            Network::Testnet,
+            "tcp://127.0.0.1:23709",
+            instant_send_sender, // Use the original sender or create a new one if needed
+        )
+        .expect("Failed to create testnet InstantSend listener");
 
         Self {
             main_screens: [
@@ -187,6 +209,9 @@ impl AppState {
             chosen_network,
             mainnet_app_context,
             testnet_app_context,
+            mainnet_instant_send_listener,
+            testnet_instant_send_listener,
+            instant_send_receiver,
             task_result_sender,
             task_result_receiver,
             last_repaint,

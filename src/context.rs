@@ -1,3 +1,4 @@
+use crate::components::instant_send_listener::InstantSendListener;
 use crate::config::{Config, NetworkConfig};
 use crate::context_provider::Provider;
 use crate::database::Database;

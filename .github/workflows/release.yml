@@ -79,7 +79,7 @@ jobs:
 
       - name: Install essentials
         if: ${{ runner.os == 'Linux' }}
-        run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config clang cmake unzip libsqlite3-dev gcc-mingw-w64 mingw-w64 libsqlite3-dev mingw-w64-x86-64-dev gcc-aarch64-linux-gnu && uname -a && cargo clean
+        run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config clang cmake unzip libsqlite3-dev gcc-mingw-w64 mingw-w64 libsqlite3-dev mingw-w64-x86-64-dev gcc-aarch64-linux-gnu zip && uname -a && cargo clean
 
       - name: Install protoc (ARM)
         if: ${{ matrix.platform == 'arm64' }}

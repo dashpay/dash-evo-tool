@@ -91,7 +91,7 @@ impl WithdrawsStatusScreen {
         }
         if self.requested_data.get() {
             ui.centered_and_justified(|ui| {
-                self.test_spinner(ui, 75.0);
+                self.load_spinner(ui, 75.0);
             });
         }
         if self.error_message.is_some() {
@@ -339,7 +339,7 @@ impl WithdrawsStatusScreen {
         app_action
     }
 
-    fn test_spinner(&self, ui: &mut egui::Ui, size: f32) {
+    fn load_spinner(&self, ui: &mut egui::Ui, size: f32) {
         let (rect, _) = ui.allocate_exact_size(Vec2::splat(size), egui::Sense::hover());
         if !ui.is_rect_visible(rect) {
             return;

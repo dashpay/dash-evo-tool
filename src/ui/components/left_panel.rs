@@ -56,6 +56,11 @@ pub fn add_left_panel(
             RootScreenType::RootScreenTransitionVisualizerScreen,
             "tools.png",
         ),
+        (
+            "W",
+            RootScreenType::RootScreenWithdrawsStatus,
+            "withdraws.png",
+        ),
         ("N", RootScreenType::RootScreenNetworkChooser, "config.png"),
     ];
 

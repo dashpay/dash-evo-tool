@@ -7,6 +7,7 @@ use crate::ui::dpns_contested_names_screen::{DPNSContestedNamesScreen, DPNSSubsc
 use crate::ui::identities::identities_screen::IdentitiesScreen;
 use crate::ui::network_chooser_screen::NetworkChooserScreen;
 use crate::ui::transition_visualizer_screen::TransitionVisualizerScreen;
+use crate::ui::withdraws_status_screen::WithdrawsStatusScreen;
 use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike, ScreenType};
 use dash_sdk::dpp::dashcore::Network;
 use derive_more::From;
@@ -125,6 +126,7 @@ impl AppState {
         let mut transition_visualizer_screen =
             TransitionVisualizerScreen::new(&mainnet_app_context);
         let mut document_query_screen = DocumentQueryScreen::new(&mainnet_app_context);
+        let mut withdraws_status_screen = WithdrawsStatusScreen::new(&mainnet_app_context);
         let mut network_chooser_screen = NetworkChooserScreen::new(
             &mainnet_app_context,
             testnet_app_context.as_ref(),
@@ -149,6 +151,7 @@ impl AppState {
                     DPNSContestedNamesScreen::new(&testnet_app_context, DPNSSubscreen::Owned);
                 transition_visualizer_screen = TransitionVisualizerScreen::new(testnet_app_context);
                 document_query_screen = DocumentQueryScreen::new(testnet_app_context);
+                withdraws_status_screen = WithdrawsStatusScreen::new(testnet_app_context);
             }
             network_chooser_screen.current_network = chosen_network;
         }
@@ -184,6 +187,10 @@ impl AppState {
                 (
                     RootScreenType::RootScreenDocumentQuery,
                     Screen::DocumentQueryScreen(document_query_screen),
+                ),
+                (
+                    RootScreenType::RootScreenWithdrawsStatus,
+                    Screen::WithdrawsStatusScreen(withdraws_status_screen),
                 ),
                 (
                     RootScreenType::RootScreenNetworkChooser,
@@ -296,6 +303,9 @@ impl App for AppState {
                     }
                     BackendTaskSuccessResult::SuccessfulVotes(_) => {
                         self.visible_screen_mut().refresh();
+                    }
+                    BackendTaskSuccessResult::WithdrawalStatus(_) => {
+                        self.visible_screen_mut().display_task_result(message);
                     }
                 },
                 TaskResult::Error(message) => {

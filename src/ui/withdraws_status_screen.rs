@@ -17,7 +17,8 @@ use std::sync::{Arc, Mutex};
 
 pub struct WithdrawsStatusScreen {
     pub app_context: Arc<AppContext>,
-    loading_data: Cell<bool>,
+    first_load: Cell<bool>,
+    requested_data: Cell<bool>,
     data: Arc<Mutex<Option<WithdrawStatusData>>>,
     sort_column: Cell<Option<SortColumn>>,
     sort_ascending: Cell<bool>,
@@ -55,7 +56,8 @@ impl WithdrawsStatusScreen {
         Self {
             app_context: app_context.clone(),
             data: Arc::new(Mutex::new(None)),
-            loading_data: Cell::new(false),
+            first_load: Cell::new(true),
+            requested_data: Cell::new(false),
             sort_ascending: Cell::from(false),
             sort_column: Cell::from(Some(SortColumn::DateTime)),
             error_message: None,
@@ -80,7 +82,14 @@ impl WithdrawsStatusScreen {
 
     fn show_output(&mut self, ui: &mut egui::Ui) -> AppAction {
         let mut app_action = AppAction::None;
-        if self.loading_data.get() {
+        if self.first_load.get() {
+            self.first_load.set(false);
+            self.requested_data.set(true);
+            app_action |= AppAction::BackendTask(BackendTask::WithdrawalTask(
+                WithdrawalsTask::QueryWithdrawals(self.filter_status_mix.borrow().clone()),
+            ));
+        }
+        if self.requested_data.get() {
             ui.centered_and_justified(|ui| {
                 self.test_spinner(ui, 75.0);
             });
@@ -98,12 +107,6 @@ impl WithdrawsStatusScreen {
             if let Some(ref mut data) = *lock_data {
                 self.sort_withdraws_data(&mut data.withdrawals);
                 app_action |= self.show_withdraws_data(ui, data);
-            }
-            else {
-                self.loading_data.set(true);
-                app_action |= AppAction::BackendTask(BackendTask::WithdrawalTask(
-                    WithdrawalsTask::QueryWithdrawals(self.filter_status_mix.borrow().clone()),
-                ));
             }
         }
         app_action
@@ -188,7 +191,7 @@ impl WithdrawsStatusScreen {
                 if ui.checkbox(&mut value, "Queued").changed() {
                     self.filter_status_queued.set(value);
                     self.util_build_combined_filter_status_mix();
-                    self.loading_data.set(true);
+                    self.requested_data.set(true);
                     app_action |= AppAction::BackendTask(BackendTask::WithdrawalTask(
                         WithdrawalsTask::QueryWithdrawals(self.filter_status_mix.borrow().clone()),
                     ));
@@ -198,7 +201,7 @@ impl WithdrawsStatusScreen {
                 if ui.checkbox(&mut value, "Pooled").changed() {
                     self.filter_status_pooled.set(value);
                     self.util_build_combined_filter_status_mix();
-                    self.loading_data.set(true);
+                    self.requested_data.set(true);
                     app_action |= AppAction::BackendTask(BackendTask::WithdrawalTask(
                         WithdrawalsTask::QueryWithdrawals(self.filter_status_mix.borrow().clone()),
                     ));
@@ -208,7 +211,7 @@ impl WithdrawsStatusScreen {
                 if ui.checkbox(&mut value, "Broadcasted").changed() {
                     self.filter_status_broadcasted.set(value);
                     self.util_build_combined_filter_status_mix();
-                    self.loading_data.set(true);
+                    self.requested_data.set(true);
                     app_action |= AppAction::BackendTask(BackendTask::WithdrawalTask(
                         WithdrawalsTask::QueryWithdrawals(self.filter_status_mix.borrow().clone()),
                     ));
@@ -218,7 +221,7 @@ impl WithdrawsStatusScreen {
                 if ui.checkbox(&mut value, "Complete").changed() {
                     self.filter_status_complete.set(value);
                     self.util_build_combined_filter_status_mix();
-                    self.loading_data.set(true);
+                    self.requested_data.set(true);
                     app_action |= AppAction::BackendTask(BackendTask::WithdrawalTask(
                         WithdrawalsTask::QueryWithdrawals(self.filter_status_mix.borrow().clone()),
                     ));
@@ -228,7 +231,7 @@ impl WithdrawsStatusScreen {
                 if ui.checkbox(&mut value, "Expired").changed() {
                     self.filter_status_expired.set(value);
                     self.util_build_combined_filter_status_mix();
-                    self.loading_data.set(true);
+                    self.requested_data.set(true);
                     app_action |= AppAction::BackendTask(BackendTask::WithdrawalTask(
                         WithdrawalsTask::QueryWithdrawals(self.filter_status_mix.borrow().clone()),
                     ));
@@ -252,80 +255,87 @@ impl WithdrawsStatusScreen {
             self.pagination_items_per_page.set(selected);
         }
         let total_pages = (data.withdrawals.len() + (self.pagination_items_per_page.get() as usize) - 1) / (self.pagination_items_per_page.get() as usize);
-        let mut current_page = self.pagination_current_page.get().min(total_pages - 1); // Clamp to valid page range
-        // Calculate the slice of data for the current page
-        let start_index = current_page * (self.pagination_items_per_page.get() as usize);
-        let end_index = (start_index + (self.pagination_items_per_page.get() as usize)).min(data.withdrawals.len());
-        ui.separator();
-        TableBuilder::new(ui)
-            .striped(true)
-            .resizable(true)
-            .column(Column::initial(150.0).resizable(true)) // Date / Time
-            .column(Column::initial(80.0).resizable(true)) // Status
-            .column(Column::initial(140.0).resizable(true)) // Amount
-            .column(Column::initial(350.0).resizable(true)) // OwnerID
-            .column(Column::initial(320.0).resizable(true)) // Destination
-            .header(20.0, |mut header| {
-                header.col(|ui| {
-                    if ui.selectable_label(false, "Date / Time").clicked() {
-                        self.handle_column_click(SortColumn::DateTime);
-                    }
-                });
-                header.col(|ui| {
-                    if ui.selectable_label(false, "Status").clicked() {
-                        self.handle_column_click(SortColumn::Status);
-                    }
-                });
-                header.col(|ui| {
-                    if ui.selectable_label(false, "Amount").clicked() {
-                        self.handle_column_click(SortColumn::Amount);
-                    }
-                });
-                header.col(|ui| {
-                    if ui.selectable_label(false, "Owner ID").clicked() {
-                        self.handle_column_click(SortColumn::OwnerId);
-                    }
-                });
-                header.col(|ui| {
-                    if ui.selectable_label(false, "Destination").clicked() {
-                        self.handle_column_click(SortColumn::Destination);
-                    }
-                });
-            })
-            .body(|mut body| {
-                for record in &data.withdrawals[start_index..end_index] {
-                    body.row(18.0, |mut row| {
-                        row.col(|ui| {
-                            ui.label(&record.date_time.format("%Y-%m-%d %H:%M:%S").to_string());
-                        });
-                        row.col(|ui| {
-                            ui.label(format!("{}", &record.status));
-                        });
-                        row.col(|ui| {
-                            ui.label(format!(
-                                "{:.2} DASH",
-                                record.amount as f64 / (dash_to_credits!(1) as f64)
-                            ));
-                        });
-                        row.col(|ui| {
-                            ui.label(format!("{}", &record.owner_id));
-                        });
-                        row.col(|ui| {
-                            ui.label(format!("{}", &record.address));
-                        });
+        if (total_pages > 0) {
+            let mut current_page = self.pagination_current_page.get().min(total_pages - 1); // Clamp to valid page range
+            // Calculate the slice of data for the current page
+            let start_index = current_page * (self.pagination_items_per_page.get() as usize);
+            let end_index = (start_index + (self.pagination_items_per_page.get() as usize)).min(data.withdrawals.len());
+            ui.separator();
+            TableBuilder::new(ui)
+                .striped(true)
+                .resizable(true)
+                .column(Column::initial(150.0).resizable(true)) // Date / Time
+                .column(Column::initial(80.0).resizable(true)) // Status
+                .column(Column::initial(140.0).resizable(true)) // Amount
+                .column(Column::initial(350.0).resizable(true)) // OwnerID
+                .column(Column::initial(320.0).resizable(true)) // Destination
+                .header(20.0, |mut header| {
+                    header.col(|ui| {
+                        if ui.selectable_label(false, "Date / Time").clicked() {
+                            self.handle_column_click(SortColumn::DateTime);
+                        }
                     });
+                    header.col(|ui| {
+                        if ui.selectable_label(false, "Status").clicked() {
+                            self.handle_column_click(SortColumn::Status);
+                        }
+                    });
+                    header.col(|ui| {
+                        if ui.selectable_label(false, "Amount").clicked() {
+                            self.handle_column_click(SortColumn::Amount);
+                        }
+                    });
+                    header.col(|ui| {
+                        if ui.selectable_label(false, "Owner ID").clicked() {
+                            self.handle_column_click(SortColumn::OwnerId);
+                        }
+                    });
+                    header.col(|ui| {
+                        if ui.selectable_label(false, "Destination").clicked() {
+                            self.handle_column_click(SortColumn::Destination);
+                        }
+                    });
+                })
+                .body(|mut body| {
+                    for record in &data.withdrawals[start_index..end_index] {
+                        body.row(18.0, |mut row| {
+                            row.col(|ui| {
+                                ui.label(&record.date_time.format("%Y-%m-%d %H:%M:%S").to_string());
+                            });
+                            row.col(|ui| {
+                                ui.label(format!("{}", &record.status));
+                            });
+                            row.col(|ui| {
+                                ui.label(format!(
+                                    "{:.2} DASH",
+                                    record.amount as f64 / (dash_to_credits!(1) as f64)
+                                ));
+                            });
+                            row.col(|ui| {
+                                ui.label(format!("{}", &record.owner_id));
+                            });
+                            row.col(|ui| {
+                                ui.label(format!("{}", &record.address));
+                            });
+                        });
+                    }
+                });
+            // Pagination controls at the bottom
+            ui.horizontal(|ui| {
+                if ui.button("Previous").clicked() && current_page > 0 {
+                    self.pagination_current_page.set(current_page - 1)
+                }
+                ui.label(format!("Page {}/{}", current_page + 1, total_pages));
+                if ui.button("Next").clicked() && current_page < total_pages - 1 {
+                    self.pagination_current_page.set(current_page + 1)
                 }
             });
-        // Pagination controls at the bottom
-        ui.horizontal(|ui| {
-            if ui.button("Previous").clicked() && current_page > 0 {
-                self.pagination_current_page.set(current_page - 1)
-            }
-            ui.label(format!("Page {}/{}", current_page + 1, total_pages));
-            if ui.button("Next").clicked() && current_page < total_pages - 1 {
-                self.pagination_current_page.set(current_page + 1)
-            }
-        });
+        }
+        else {
+            ui.centered_and_justified(|ui| {
+                ui.heading("No withdrawals");
+            });
+        }
         app_action
     }
 
@@ -397,7 +407,7 @@ impl ScreenLike for WithdrawsStatusScreen {
 
     fn display_message(&mut self, message: &str, message_type: MessageType) {
         self.error_message = Some(message.to_string());
-        self.loading_data.set(false);
+        self.requested_data.set(false);
     }
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         if let BackendTaskSuccessResult::WithdrawalStatus(data) = backend_task_success_result {
@@ -407,7 +417,7 @@ impl ScreenLike for WithdrawsStatusScreen {
             });
             *lock_data = Some(data);
             self.error_message = None;
-            self.loading_data.set(false);
+            self.requested_data.set(false);
         }
     }
 

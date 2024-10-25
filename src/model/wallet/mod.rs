@@ -3,7 +3,9 @@ mod utxos;
 
 use dash_sdk::dashcore_rpc::dashcore::bip32::KeyDerivationType;
 use dash_sdk::dpp::dashcore::bip32::DerivationPath;
-use dash_sdk::dpp::dashcore::{Address, Network, OutPoint, PrivateKey, PublicKey, TxOut};
+use dash_sdk::dpp::dashcore::{
+    Address, InstantLock, Network, OutPoint, PrivateKey, PublicKey, Transaction, TxOut,
+};
 use std::collections::{BTreeMap, HashMap};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
 pub enum DerivationPathReference {
@@ -58,6 +60,7 @@ use crate::context::AppContext;
 use bitflags::bitflags;
 use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dpp::balances::credits::Duffs;
+use dash_sdk::dpp::fee::Credits;
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
@@ -93,6 +96,7 @@ pub struct Wallet {
     pub address_balances: BTreeMap<Address, u64>,
     pub known_addresses: BTreeMap<Address, DerivationPath>,
     pub watched_addresses: BTreeMap<DerivationPath, AddressInfo>,
+    pub unused_asset_locks: Vec<(Transaction, Credits, Option<InstantLock>)>,
     pub alias: Option<String>,
     pub utxos: Option<HashMap<Address, HashMap<OutPoint, TxOut>>>,
     pub is_main: bool,

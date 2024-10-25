@@ -1,9 +1,13 @@
 use crate::database::Database;
 use crate::model::wallet::{AddressInfo, DerivationPathReference, DerivationPathType, Wallet};
 use dash_sdk::dashcore_rpc::dashcore::Address;
+use dash_sdk::dpp::balances::credits::Duffs;
 use dash_sdk::dpp::dashcore::bip32::DerivationPath;
+use dash_sdk::dpp::dashcore::consensus::deserialize;
 use dash_sdk::dpp::dashcore::hashes::Hash;
-use dash_sdk::dpp::dashcore::{Network, OutPoint, ScriptBuf, TxOut, Txid};
+use dash_sdk::dpp::dashcore::{
+    InstantLock, Network, OutPoint, ScriptBuf, Transaction, TxOut, Txid,
+};
 use rusqlite::params;
 use std::collections::{BTreeMap, HashMap};
 use std::str::FromStr;
@@ -144,6 +148,7 @@ impl Database {
                     address_balances: BTreeMap::new(),
                     known_addresses: BTreeMap::new(),
                     watched_addresses: BTreeMap::new(),
+                    unused_asset_locks: vec![],
                     alias,
                     utxos: None,
                     is_main,
@@ -267,6 +272,38 @@ impl Database {
                         .or_insert_with(HashMap::new)
                         .insert(outpoint, tx_out.clone());
                 }
+            }
+        }
+
+        // Step 6: Retrieve asset lock transactions for each wallet and add them to the wallets.
+        let mut asset_lock_stmt = conn.prepare(
+            "SELECT wallet, amount, transaction_data, instant_lock_data FROM asset_lock_transaction where identity_id IS NULL",
+        )?;
+
+        let asset_lock_rows = asset_lock_stmt.query_map([], |row| {
+            let wallet_seed: Vec<u8> = row.get(0)?;
+            let amount: Duffs = row.get(1)?;
+            let tx_data: Vec<u8> = row.get(2)?;
+            let islock_data: Option<Vec<u8>> = row.get(3)?;
+
+            let wallet_seed_array: [u8; 64] =
+                wallet_seed.try_into().expect("Seed should be 64 bytes");
+            let tx: Transaction = deserialize(&tx_data).expect("Failed to deserialize transaction");
+            let islock: Option<InstantLock> = if let Some(islock_bytes) = islock_data {
+                Some(deserialize(&islock_bytes).expect("Failed to deserialize InstantLock"))
+            } else {
+                None
+            };
+
+            Ok((wallet_seed_array, tx, amount, islock))
+        })?;
+
+        // Step 7: Add the asset lock transactions to the corresponding wallets.
+        for row in asset_lock_rows {
+            let (wallet_seed, tx, amount, islock) = row?;
+
+            if let Some(wallet) = wallets_map.get_mut(&wallet_seed) {
+                wallet.unused_asset_locks.push((tx, amount, islock));
             }
         }
 

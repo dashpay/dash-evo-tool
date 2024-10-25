@@ -1,3 +1,4 @@
+mod asset_lock_transaction;
 mod contested_names;
 mod contracts;
 mod identities;

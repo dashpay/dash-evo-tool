@@ -1,8 +1,8 @@
-use dash_sdk::dpp::dashcore::consensus::deserialize;
-use dash_sdk::dpp::dashcore::hashes::Hash;
-use dash_sdk::dpp::dashcore::{InstantLock, Network, Txid};
+use dash_sdk::dpp::dashcore::consensus::Decodable;
+use dash_sdk::dpp::dashcore::{InstantLock, Network, Transaction};
 use image::EncodableLayout;
 use std::error::Error;
+use std::io::Cursor;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     mpsc, Arc,
@@ -20,7 +20,7 @@ impl InstantSendListener {
     pub fn spawn_listener(
         network: Network,
         endpoint: &str,
-        sender: mpsc::Sender<(InstantLock, Network)>,
+        sender: mpsc::Sender<(Transaction, InstantLock, Network)>,
     ) -> Result<Self, Box<dyn Error>> {
         let should_stop = Arc::new(AtomicBool::new(false));
         let endpoint = endpoint.to_string();
@@ -35,10 +35,7 @@ impl InstantSendListener {
             // Connect to the zmqpubhashtxlock endpoint.
             socket.connect(&endpoint).expect("Failed to connect");
 
-            // Subscribe to the "rawtxlock" and "hashtxlock" events.
-            socket
-                .set_subscribe(b"rawtxlock")
-                .expect("Failed to subscribe to rawtxlock");
+            // Subscribe to the "rawtxlocksig" events.
             socket
                 .set_subscribe(b"rawtxlocksig")
                 .expect("Failed to subscribe to rawtxlocksig");
@@ -66,36 +63,40 @@ impl InstantSendListener {
                             let data_bytes = data_message.as_bytes();
 
                             match topic {
-                                "rawtxlock" => {
-                                    println!("Received rawtxlock for InstantSend:");
-                                    println!("Data (hex): {}", hex::encode(data_bytes));
+                                "rawtxlocksig" => {
+                                    // println!("Received rawtxlocksig for InstantSend:");
+                                    // println!("Data (hex): {}", hex::encode(data_bytes));
 
-                                    // Deserialize the InstantLock
-                                    match deserialize::<InstantLock>(data_bytes) {
-                                        Ok(insta_lock) => {
-                                            println!("InstantLock: {:?}", insta_lock);
-                                            // Send the InstantLock back to the main thread
-                                            if let Err(e) = sender_clone.send((insta_lock, network))
-                                            {
-                                                eprintln!(
-                                                    "Error sending data to main thread: {}",
-                                                    e
-                                                );
+                                    // Create a cursor over the data_bytes
+                                    let mut cursor = Cursor::new(data_bytes);
+
+                                    // Deserialize the transaction
+                                    match Transaction::consensus_decode(&mut cursor) {
+                                        Ok(tx) => {
+                                            // Deserialize the InstantLock from the remaining bytes
+                                            match InstantLock::consensus_decode(&mut cursor) {
+                                                Ok(islock) => {
+                                                    // Send the Transaction, InstantLock, and Network back to the main thread
+                                                    if let Err(e) =
+                                                        sender_clone.send((tx, islock, network))
+                                                    {
+                                                        eprintln!(
+                                                            "Error sending data to main thread: {}",
+                                                            e
+                                                        );
+                                                    }
+                                                }
+                                                Err(e) => {
+                                                    eprintln!(
+                                                        "Error deserializing InstantLock: {}",
+                                                        e
+                                                    );
+                                                }
                                             }
                                         }
                                         Err(e) => {
-                                            eprintln!("Error deserializing InstantLock: {}", e);
+                                            eprintln!("Error deserializing transaction: {}", e);
                                         }
-                                    }
-                                }
-                                "hashtxlock" => {
-                                    println!("Received hashtxlock for InstantSend:");
-                                    if data_bytes.len() == 32 {
-                                        let txid = Txid::from_slice(data_bytes).unwrap();
-                                        println!("Transaction ID: {}", txid);
-                                        // You can process the txid as needed
-                                    } else {
-                                        eprintln!("Invalid txid length");
                                     }
                                 }
                                 _ => {

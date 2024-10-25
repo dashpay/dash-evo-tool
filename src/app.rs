@@ -10,7 +10,7 @@ use crate::ui::network_chooser_screen::NetworkChooserScreen;
 use crate::ui::transition_visualizer_screen::TransitionVisualizerScreen;
 use crate::ui::wallet::wallets_screen::WalletsBalancesScreen;
 use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike, ScreenType};
-use dash_sdk::dpp::dashcore::{InstantLock, Network};
+use dash_sdk::dpp::dashcore::{InstantLock, Network, Transaction};
 use derive_more::From;
 use eframe::{egui, App};
 use egui::Widget;
@@ -46,7 +46,7 @@ pub struct AppState {
     pub testnet_app_context: Option<Arc<AppContext>>,
     pub mainnet_instant_send_listener: InstantSendListener,
     pub testnet_instant_send_listener: InstantSendListener,
-    pub instant_send_receiver: mpsc::Receiver<(InstantLock, Network)>,
+    pub instant_send_receiver: mpsc::Receiver<(Transaction, InstantLock, Network)>,
     pub task_result_sender: tokiompsc::Sender<TaskResult>, // Channel sender for sending task results
     pub task_result_receiver: tokiompsc::Receiver<TaskResult>, // Channel receiver for receiving task results
     last_repaint: Instant, // Track the last time we requested a repaint

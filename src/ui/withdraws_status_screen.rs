@@ -9,7 +9,7 @@ use dash_sdk::dpp::dash_to_credits;
 use dash_sdk::dpp::data_contracts::withdrawals_contract::WithdrawalStatus;
 use dash_sdk::dpp::document::DocumentV0Getters;
 use dash_sdk::dpp::platform_value::Value;
-use egui::{ComboBox, Context, Ui};
+use egui::{Color32, ComboBox, Context, Stroke, Ui, Vec2};
 use egui_extras::{Column, TableBuilder};
 use itertools::Itertools;
 use std::cell::{Cell, RefCell};
@@ -17,6 +17,7 @@ use std::sync::{Arc, Mutex};
 
 pub struct WithdrawsStatusScreen {
     pub app_context: Arc<AppContext>,
+    loading_data: Cell<bool>,
     data: Arc<Mutex<Option<WithdrawStatusData>>>,
     sort_column: Cell<Option<SortColumn>>,
     sort_ascending: Cell<bool>,
@@ -54,6 +55,7 @@ impl WithdrawsStatusScreen {
         Self {
             app_context: app_context.clone(),
             data: Arc::new(Mutex::new(None)),
+            loading_data: Cell::new(false),
             sort_ascending: Cell::from(false),
             sort_column: Cell::from(Some(SortColumn::DateTime)),
             error_message: None,
@@ -76,7 +78,13 @@ impl WithdrawsStatusScreen {
 
     fn show_input_field(&mut self, ui: &mut Ui) {}
 
-    fn show_output(&mut self, ui: &mut egui::Ui) {
+    fn show_output(&mut self, ui: &mut egui::Ui) -> AppAction {
+        let mut app_action = AppAction::None;
+        if self.loading_data.get() {
+            ui.centered_and_justified(|ui| {
+                self.test_spinner(ui, 75.0);
+            });
+        }
         if self.error_message.is_some() {
             ui.centered_and_justified(|ui| {
                 ui.heading(self.error_message.as_ref().unwrap());
@@ -89,9 +97,16 @@ impl WithdrawsStatusScreen {
 
             if let Some(ref mut data) = *lock_data {
                 self.sort_withdraws_data(&mut data.withdrawals);
-                self.show_withdraws_data(ui, data);
+                app_action |= self.show_withdraws_data(ui, data);
+            }
+            else {
+                self.loading_data.set(true);
+                app_action |= AppAction::BackendTask(BackendTask::WithdrawalTask(
+                    WithdrawalsTask::QueryWithdrawals(self.filter_status_mix.borrow().clone()),
+                ));
             }
         }
+        app_action
     }
 
     fn sort_withdraws_data(&self, data: &mut Vec<WithdrawRecord>) {
@@ -123,7 +138,8 @@ impl WithdrawsStatusScreen {
         }
     }
 
-    fn show_withdraws_data(&self, ui: &mut egui::Ui, data: &WithdrawStatusData) {
+    fn show_withdraws_data(&self, ui: &mut egui::Ui, data: &WithdrawStatusData) -> AppAction {
+        let mut app_action = AppAction::None;
         egui::Grid::new("general_info_grid")
             .num_columns(2)
             .spacing([20.0, 8.0]) // Adjust spacing as needed
@@ -172,30 +188,50 @@ impl WithdrawsStatusScreen {
                 if ui.checkbox(&mut value, "Queued").changed() {
                     self.filter_status_queued.set(value);
                     self.util_build_combined_filter_status_mix();
+                    self.loading_data.set(true);
+                    app_action |= AppAction::BackendTask(BackendTask::WithdrawalTask(
+                        WithdrawalsTask::QueryWithdrawals(self.filter_status_mix.borrow().clone()),
+                    ));
                 }
                 ui.add_space(8.0);
                 let mut value = self.filter_status_pooled.get();
                 if ui.checkbox(&mut value, "Pooled").changed() {
                     self.filter_status_pooled.set(value);
                     self.util_build_combined_filter_status_mix();
+                    self.loading_data.set(true);
+                    app_action |= AppAction::BackendTask(BackendTask::WithdrawalTask(
+                        WithdrawalsTask::QueryWithdrawals(self.filter_status_mix.borrow().clone()),
+                    ));
                 }
                 ui.add_space(8.0);
                 let mut value = self.filter_status_broadcasted.get();
                 if ui.checkbox(&mut value, "Broadcasted").changed() {
                     self.filter_status_broadcasted.set(value);
                     self.util_build_combined_filter_status_mix();
+                    self.loading_data.set(true);
+                    app_action |= AppAction::BackendTask(BackendTask::WithdrawalTask(
+                        WithdrawalsTask::QueryWithdrawals(self.filter_status_mix.borrow().clone()),
+                    ));
                 }
                 ui.add_space(8.0);
                 let mut value = self.filter_status_complete.get();
                 if ui.checkbox(&mut value, "Complete").changed() {
                     self.filter_status_complete.set(value);
                     self.util_build_combined_filter_status_mix();
+                    self.loading_data.set(true);
+                    app_action |= AppAction::BackendTask(BackendTask::WithdrawalTask(
+                        WithdrawalsTask::QueryWithdrawals(self.filter_status_mix.borrow().clone()),
+                    ));
                 }
                 ui.add_space(8.0);
                 let mut value = self.filter_status_expired.get();
                 if ui.checkbox(&mut value, "Expired").changed() {
                     self.filter_status_expired.set(value);
                     self.util_build_combined_filter_status_mix();
+                    self.loading_data.set(true);
+                    app_action |= AppAction::BackendTask(BackendTask::WithdrawalTask(
+                        WithdrawalsTask::QueryWithdrawals(self.filter_status_mix.borrow().clone()),
+                    ));
                 }
             });
         });
@@ -215,7 +251,6 @@ impl WithdrawsStatusScreen {
         if selected != old_selected {
             self.pagination_items_per_page.set(selected);
         }
-        println!("computing with:{}", self.pagination_items_per_page.get() as usize);
         let total_pages = (data.withdrawals.len() + (self.pagination_items_per_page.get() as usize) - 1) / (self.pagination_items_per_page.get() as usize);
         let mut current_page = self.pagination_current_page.get().min(total_pages - 1); // Clamp to valid page range
         // Calculate the slice of data for the current page
@@ -286,13 +321,45 @@ impl WithdrawsStatusScreen {
             if ui.button("Previous").clicked() && current_page > 0 {
                 self.pagination_current_page.set(current_page - 1)
             }
-
             ui.label(format!("Page {}/{}", current_page + 1, total_pages));
-
             if ui.button("Next").clicked() && current_page < total_pages - 1 {
                 self.pagination_current_page.set(current_page + 1)
             }
         });
+        app_action
+    }
+
+    fn test_spinner(&self, ui: &mut egui::Ui, size: f32) {
+        let (rect, _) = ui.allocate_exact_size(Vec2::splat(size), egui::Sense::hover());
+        if !ui.is_rect_visible(rect) {
+            return;
+        }
+
+        let painter = ui.painter_at(rect);
+        let center = rect.center();
+        let time = ui.input(|i| i.time); // Time in seconds since the program started
+
+        // Spinner parameters
+        let segments = 12;
+        let radius = size * 0.5;
+        let thickness = size * 0.1;
+        let rotation_speed = std::f32::consts::TAU / 1.5; // One full rotation every 1.5 seconds
+
+        for i in 0..segments {
+            let t = i as f32 / segments as f32;
+            let angle = t * std::f32::consts::TAU - ((time as f32) * rotation_speed);
+            let alpha = t;
+
+            let color = Color32::from_rgba_premultiplied(150, 150, 150, (alpha * 255.0) as u8);
+
+            let start = center + Vec2::angled(angle) * (radius - thickness);
+            let end = center + Vec2::angled(angle) * radius;
+
+            painter.line_segment(
+                [start, end],
+                Stroke::new(thickness * (1.0 - t), color),
+            );
+        }
     }
 
     fn util_build_combined_filter_status_mix(&self) {
@@ -330,6 +397,7 @@ impl ScreenLike for WithdrawsStatusScreen {
 
     fn display_message(&mut self, message: &str, message_type: MessageType) {
         self.error_message = Some(message.to_string());
+        self.loading_data.set(false);
     }
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         if let BackendTaskSuccessResult::WithdrawalStatus(data) = backend_task_success_result {
@@ -339,6 +407,7 @@ impl ScreenLike for WithdrawsStatusScreen {
             });
             *lock_data = Some(data);
             self.error_message = None;
+            self.loading_data.set(false);
         }
     }
 
@@ -364,7 +433,7 @@ impl ScreenLike for WithdrawsStatusScreen {
 
         egui::CentralPanel::default().show(ctx, |ui| {
             self.show_input_field(ui);
-            self.show_output(ui);
+            action |= self.show_output(ui);
         });
 
         action

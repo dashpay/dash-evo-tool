@@ -9,13 +9,11 @@ use dash_sdk::dpp::dash_to_credits;
 use dash_sdk::dpp::data_contracts::withdrawals_contract::WithdrawalStatus;
 use dash_sdk::dpp::document::DocumentV0Getters;
 use dash_sdk::dpp::platform_value::Value;
-use egui::{Context, Ui};
+use egui::{ComboBox, Context, Ui};
 use egui_extras::{Column, TableBuilder};
 use itertools::Itertools;
 use std::cell::{Cell, RefCell};
 use std::sync::{Arc, Mutex};
-
-const ITEMS_PER_PAGE: usize = 20;
 
 pub struct WithdrawsStatusScreen {
     pub app_context: Arc<AppContext>,
@@ -29,6 +27,7 @@ pub struct WithdrawsStatusScreen {
     filter_status_expired: Cell<bool>,
     filter_status_mix: RefCell<Vec<Value>>,
     pagination_current_page: Cell<usize>,
+    pagination_items_per_page: Cell<PaginationItemsPerPage>,
     error_message: Option<String>,
 }
 
@@ -39,6 +38,15 @@ enum SortColumn {
     Amount,
     OwnerId,
     Destination,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum PaginationItemsPerPage {
+    Items10 = 10,
+    Items15 = 15,
+    Items20 = 20,
+    Items30 = 30,
+    Items50 = 50,
 }
 
 impl WithdrawsStatusScreen {
@@ -62,6 +70,7 @@ impl WithdrawsStatusScreen {
                 Value::U8(WithdrawalStatus::EXPIRED as u8),
             ]),
             pagination_current_page: Cell::new(0),
+            pagination_items_per_page: Cell::new(PaginationItemsPerPage::Items15),
         }
     }
 
@@ -191,15 +200,27 @@ impl WithdrawsStatusScreen {
             });
         });
         ui.add_space(30.0);
-
-        let total_pages = (data.withdrawals.len() + ITEMS_PER_PAGE - 1) / ITEMS_PER_PAGE;
-        let mut current_page = self.pagination_current_page.get().min(total_pages - 1); // Clamp to valid page range
-
-        // Calculate the slice of data for the current page
-        let start_index = current_page * ITEMS_PER_PAGE;
-        let end_index = (start_index + ITEMS_PER_PAGE).min(data.withdrawals.len());
-
         ui.heading(format!("Withdrawals ({})", data.withdrawals.len()));
+        let mut selected = self.pagination_items_per_page.get();
+        let old_selected = selected;
+        ComboBox::from_label("Items per page")
+            .selected_text(format!("{}", selected as usize))
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut selected, PaginationItemsPerPage::Items10, "10");
+                ui.selectable_value(&mut selected, PaginationItemsPerPage::Items15, "15");
+                ui.selectable_value(&mut selected, PaginationItemsPerPage::Items20, "20");
+                ui.selectable_value(&mut selected, PaginationItemsPerPage::Items30, "30");
+                ui.selectable_value(&mut selected, PaginationItemsPerPage::Items50, "50");
+            });
+        if selected != old_selected {
+            self.pagination_items_per_page.set(selected);
+        }
+        println!("computing with:{}", self.pagination_items_per_page.get() as usize);
+        let total_pages = (data.withdrawals.len() + (self.pagination_items_per_page.get() as usize) - 1) / (self.pagination_items_per_page.get() as usize);
+        let mut current_page = self.pagination_current_page.get().min(total_pages - 1); // Clamp to valid page range
+        // Calculate the slice of data for the current page
+        let start_index = current_page * (self.pagination_items_per_page.get() as usize);
+        let end_index = (start_index + (self.pagination_items_per_page.get() as usize)).min(data.withdrawals.len());
         ui.separator();
         TableBuilder::new(ui)
             .striped(true)

@@ -24,6 +24,7 @@ use dash_sdk::platform::{Identity, IdentityPublicKey};
 use dash_sdk::Sdk;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, RwLock};
+use dash_sdk::dpp::dashcore::Transaction;
 use tokio::sync::mpsc;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -144,6 +145,7 @@ pub struct IdentityRegistrationInfo {
     pub keys: IdentityKeys,
     pub identity_index: u32,
     pub wallet: Arc<RwLock<Wallet>>,
+    pub transaction_asset_lock_to_use: Transaction,
 }
 
 impl PartialEq for IdentityRegistrationInfo {

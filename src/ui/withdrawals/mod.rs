@@ -76,7 +76,13 @@ impl WithdrawalScreen {
             ui.text_edit_singleline(&mut self.withdrawal_amount);
 
             if ui.button("Max").clicked() {
-                self.withdrawal_amount = self.max_amount.to_string();
+                let expected_max_amount = self.max_amount.saturating_sub(30000) as f64 * 1e-8;
+
+                // Use flooring and format the result with 4 decimal places
+                let floored_amount = (expected_max_amount * 10_000.0).floor() / 10_000.0;
+
+                // Set the withdrawal amount to the floored value formatted as a string
+                self.withdrawal_amount = format!("{:.4}", floored_amount);
             }
         });
     }

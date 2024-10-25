@@ -58,6 +58,7 @@ impl TryFrom<u32> for DerivationPathReference {
 
 use crate::context::AppContext;
 use bitflags::bitflags;
+use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
 use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dpp::balances::credits::Duffs;
 use dash_sdk::dpp::fee::Credits;
@@ -106,6 +107,10 @@ pub struct Wallet {
 impl Wallet {
     pub fn has_balance(&self) -> bool {
         self.max_balance() > 0
+    }
+
+    pub fn has_unused_asset_lock(&self) -> bool {
+        self.unused_asset_locks.len() > 0
     }
 
     pub fn max_balance(&self) -> u64 {
@@ -248,15 +253,42 @@ impl Wallet {
     }
 
     pub fn identity_registration_ecdsa_private_key(
-        &self,
+        &mut self,
         network: Network,
         index: u32,
-    ) -> PrivateKey {
+        register_addresses: Option<&AppContext>,
+    ) -> Result<PrivateKey, String> {
         let derivation_path = DerivationPath::identity_registration_path(network, index);
-        let extended_public_key = derivation_path
+        let extended_private_key = derivation_path
             .derive_priv_ecdsa_for_master_seed(&self.seed, network)
             .expect("derivation should not be able to fail");
-        extended_public_key.to_priv()
+        let private_key = extended_private_key.to_priv();
+
+        if let Some(app_context) = register_addresses {
+            let secp = Secp256k1::new();
+            let address = Address::p2pkh(&private_key.public_key(&secp), network);
+            app_context
+                .db
+                .add_address(
+                    &self.seed,
+                    &address,
+                    &derivation_path,
+                    DerivationPathReference::BlockchainIdentityCreditRegistrationFunding,
+                    DerivationPathType::CREDIT_FUNDING,
+                    None,
+                )
+                .map_err(|e| e.to_string())?;
+            self.known_addresses.insert(address.clone(), derivation_path.clone());
+            self.watched_addresses.insert(
+                derivation_path.clone(),
+                AddressInfo {
+                    address: address.clone(),
+                    path_type: DerivationPathType::CREDIT_FUNDING,
+                    path_reference: DerivationPathReference::BlockchainIdentityCreditRegistrationFunding,
+                },
+            );
+        }
+        Ok(private_key)
     }
 
     pub fn receive_address(

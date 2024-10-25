@@ -289,7 +289,7 @@ impl WalletsBalancesScreen {
         self.sort_address_data(&mut address_data);
 
         // Render the table
-        egui::ScrollArea::vertical().show(ui, |ui| {
+        egui::ScrollArea::vertical().id_salt("address_table").show(ui, |ui| {
             egui::Frame::group(ui.style())
                 .fill(ui.visuals().panel_fill)
                 .show(ui, |ui| {
@@ -420,6 +420,61 @@ impl WalletsBalancesScreen {
             self.add_receiving_address();
         }
     }
+
+    fn render_wallet_asset_locks(&mut self, ui: &mut Ui) {
+        if let Some(wallet) = &self.selected_wallet {
+            let wallet = wallet.read().unwrap();
+
+            if wallet.unused_asset_locks.is_empty() {
+                ui.label("No asset locks available.");
+                return;
+            }
+
+            ui.label("Asset Locks:");
+            egui::ScrollArea::vertical().id_salt("asset_locks_table").show(ui, |ui| {
+                TableBuilder::new(ui)
+                    .striped(true)
+                    .resizable(true)
+                    .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                    .column(Column::initial(200.0)) // Transaction ID
+                    .column(Column::initial(100.0)) // Amount (Duffs)
+                    .column(Column::initial(100.0)) // InstantLock status
+                    .header(30.0, |mut header| {
+                        header.col(|ui| {
+                            ui.label("Transaction ID");
+                        });
+                        header.col(|ui| {
+                            ui.label("Amount (Duffs)");
+                        });
+                        header.col(|ui| {
+                            ui.label("InstantLock");
+                        });
+                    })
+                    .body(|mut body| {
+                        for (tx, amount, islock) in &wallet.unused_asset_locks {
+                            body.row(25.0, |mut row| {
+                                row.col(|ui| {
+                                    ui.label(tx.txid().to_string());
+                                });
+                                row.col(|ui| {
+                                    ui.label(format!("{}", amount));
+                                });
+                                row.col(|ui| {
+                                    let status = if islock.is_some() {
+                                        "Yes"
+                                    } else {
+                                        "No"
+                                    };
+                                    ui.label(status);
+                                });
+                            });
+                        }
+                    });
+            });
+        } else {
+            ui.label("No wallet selected.");
+        }
+    }
 }
 
 impl ScreenLike for WalletsBalancesScreen {
@@ -466,6 +521,12 @@ impl ScreenLike for WalletsBalancesScreen {
             // Render the address table
             if self.selected_wallet.is_some() {
                 action |= self.render_address_table(ui);
+
+                ui.add_space(20.0);
+
+                // Render the asset locks section
+                self.render_wallet_asset_locks(ui);
+
                 self.render_bottom_options(ui);
             } else {
                 ui.label("No wallet selected.");

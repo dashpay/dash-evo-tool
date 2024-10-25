@@ -35,6 +35,7 @@ struct KeyInfo {
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub enum FundingMethod {
     NoSelection,
+    UseUnusedAssetLock,
     UseWalletBalance,
     AddressWithQRCode,
     AttachedCoreWallet,
@@ -47,6 +48,7 @@ impl fmt::Display for FundingMethod {
             FundingMethod::AddressWithQRCode => "Address with QR Code",
             FundingMethod::AttachedCoreWallet => "Attached Core Wallet",
             FundingMethod::UseWalletBalance => "Use Wallet Balance",
+            FundingMethod::UseUnusedAssetLock => "Use Unused Asset Lock (recommended)",
         };
         write!(f, "{}", output)
     }
@@ -389,10 +391,11 @@ impl AddNewIdentityScreen {
     }
 
     fn render_funding_method(&mut self, ui: &mut egui::Ui) {
-        let Some(selected_wallet) = self.selected_wallet.as_ref() else {
+        let Some(selected_wallet) = self.selected_wallet.clone() else {
             return;
         };
-        let mut funding_method = self.funding_method.write().unwrap(); // Write lock on funding_method
+        let funding_method_arc = self.funding_method.clone();
+        let mut funding_method = funding_method_arc.write().unwrap(); // Write lock on funding_method
 
         ComboBox::from_label("Funding Method")
             .selected_text(format!("{}", *funding_method))
@@ -402,7 +405,17 @@ impl AddNewIdentityScreen {
                     FundingMethod::NoSelection,
                     "Please select funding method",
                 );
-                if selected_wallet.read().unwrap().has_balance() {
+                let wallet = selected_wallet.read().unwrap();
+                if wallet.has_unused_asset_lock() {
+                    if ui.selectable_value(
+                        &mut *funding_method,
+                        FundingMethod::UseUnusedAssetLock,
+                        "Use Unused Evo Funding Locks (recommended)",
+                    ).changed() {
+                        self.update_identity_key();
+                    }
+                }
+                if wallet.has_balance() {
                     ui.selectable_value(
                         &mut *funding_method,
                         FundingMethod::UseWalletBalance,
@@ -414,11 +427,13 @@ impl AddNewIdentityScreen {
                     FundingMethod::AddressWithQRCode,
                     "Address with QR Code",
                 );
-                ui.selectable_value(
-                    &mut *funding_method,
-                    FundingMethod::AttachedCoreWallet,
-                    "Attached Core Wallet",
-                );
+
+
+                // ui.selectable_value(
+                //     &mut *funding_method,
+                //     FundingMethod::AttachedCoreWallet,
+                //     "Attached Core Wallet",
+                // );
             });
     }
 
@@ -491,7 +506,7 @@ impl AddNewIdentityScreen {
         }
     }
 
-    fn register_identity_clicked(&mut self) -> AppAction {
+    fn register_identity_clicked(&mut self, funding_method: FundingMethod) -> AppAction {
         if self.identity_keys.master_private_key.is_some() {
             // Parse the funding amount or fall back to the default value
             let amount = self.funding_amount_exact.unwrap_or_else(|| {
@@ -507,7 +522,7 @@ impl AddNewIdentityScreen {
                     alias_input: self.alias_input.clone(),
                     amount,
                     keys: self.identity_keys.clone(),
-                    identity_index: 0, // Default index, modify if needed
+                    identity_index: self.identity_id_number,
                     wallet: Arc::clone(selected_wallet), // Clone the Arc reference
                 };
 
@@ -664,9 +679,12 @@ impl ScreenLike for AddNewIdentityScreen {
             ui.heading("Follow these steps to create your identity!");
             ui.add_space(5.0);
 
+            let mut step_number = 1;
+
             self.render_wallet_selection(ui);
 
             ui.heading("1. Choose your funding method.");
+            step_number += 1;
 
             ui.add_space(10.0);
             self.render_funding_method(ui);
@@ -682,6 +700,7 @@ impl ScreenLike for AddNewIdentityScreen {
 
             if funding_method == FundingMethod::AddressWithQRCode {
                 ui.heading("2. Choose how much you would like to transfer to your new identity?");
+                step_number += 1;
 
                 self.render_funding_amount_input(ui);
             }
@@ -689,32 +708,37 @@ impl ScreenLike for AddNewIdentityScreen {
             if funding_method == FundingMethod::UseWalletBalance {
                 self.show_wallet_balance(ui);
 
+                step_number += 1;
+
                 ui.heading("2. How much of your wallet balance would you like to transfer?");
+                step_number += 1;
 
                 self.render_funding_amount_input(ui);
             }
 
-            let Ok(amount_dash) = self.funding_amount.parse::<f64>() else {
-                return;
-            };
-
             // Extract the step from the RwLock to minimize borrow scope
             let step = self.step.read().unwrap().clone();
 
-            if step == ChooseFundingMethod && funding_method == FundingMethod::AddressWithQRCode {
-                if let Err(e) = self.render_qr_code(ui, amount_dash) {
-                    eprintln!("Error: {:?}", e);
+            if funding_method != FundingMethod::UseUnusedAssetLock {
+                let Ok(amount_dash) = self.funding_amount.parse::<f64>() else {
+                    return;
+                };
+
+                if step == ChooseFundingMethod && funding_method == FundingMethod::AddressWithQRCode {
+                    if let Err(e) = self.render_qr_code(ui, amount_dash) {
+                        eprintln!("Error: {:?}", e);
+                    }
                 }
             }
 
-            if step < FundsReceived && funding_method != FundingMethod::UseWalletBalance {
+            if step < FundsReceived && funding_method == FundingMethod::AddressWithQRCode {
                 ui.add_space(20.0);
                 ui.heading("...Waiting for funds to continue...");
                 return;
             }
 
             ui.heading(
-                "3. Choose an identity index. Leave this 0 if this is your first identity for this wallet."
+                format!("{}. Choose an identity index. Leave this 0 if this is your first identity for this wallet.", step_number).as_str()
             );
 
             self.render_identity_index_input(ui);
@@ -727,7 +751,7 @@ impl ScreenLike for AddNewIdentityScreen {
 
             self.render_keys_input(ui);
 
-            if step == ReadyToCreate || funding_method == FundingMethod::UseWalletBalance {
+            if step == ReadyToCreate || funding_method == FundingMethod::UseWalletBalance || funding_method == FundingMethod::UseUnusedAssetLock {
                 if ui.button("Create Identity").clicked() {
                     action = self.register_identity_clicked();
                 }

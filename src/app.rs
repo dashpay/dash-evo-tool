@@ -288,7 +288,40 @@ impl AppState {
     }
 }
 
-impl AppState {}
+impl AppState {
+    // /// This function continuously listens for asset locks and updates the wallets accordingly.
+    // fn start_listening_for_asset_locks(&mut self) {
+    //     let instant_send_receiver = self.instant_send_receiver.clone(); // Clone the receiver
+    //     let mainnet_app_context = self.mainnet_app_context.clone();
+    //     let testnet_app_context = self.testnet_app_context.clone();
+    //
+    //     // Spawn a new task to listen asynchronously for asset locks
+    //     task::spawn_blocking(move || {
+    //         while let Ok((tx, islock, network)) = instant_send_receiver.recv() {
+    //             let app_context = match network {
+    //                 Network::Dash => &mainnet_app_context,
+    //                 Network::Testnet => {
+    //                     if let Some(context) = testnet_app_context.as_ref() {
+    //                         context
+    //                     } else {
+    //                         // Handle the case when testnet_app_context is None
+    //                         eprintln!("No testnet app context available for Testnet");
+    //                         continue; // Skip this iteration or handle as needed
+    //                     }
+    //                 }
+    //                 _ => continue,
+    //             };
+    //             // Store the asset lock transaction in the database
+    //             if let Err(e) = app_context.store_asset_lock_in_db(&tx, islock) {
+    //                 eprintln!("Failed to store asset lock: {}", e);
+    //             }
+    //
+    //             // Sleep briefly to avoid busy-waiting
+    //             std::thread::sleep(Duration::from_millis(50));
+    //         }
+    //     });
+    // }
+}
 
 impl App for AppState {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
@@ -323,6 +356,28 @@ impl App for AppState {
                 }
             }
         }
+
+        // **Poll the instant_send_receiver for any new InstantSend messages**
+        while let Ok((tx, islock, network)) = self.instant_send_receiver.try_recv() {
+                        let app_context = match network {
+                            Network::Dash => &self.mainnet_app_context,
+                            Network::Testnet => {
+                                if let Some(context) = self.testnet_app_context.as_ref() {
+                                    context
+                                } else {
+                                    // Handle the case when testnet_app_context is None
+                                    eprintln!("No testnet app context available for Testnet");
+                                    continue; // Skip this iteration or handle as needed
+                                }
+                            }
+                            _ => continue,
+                        };
+                        // Store the asset lock transaction in the database
+                        if let Err(e) = app_context.store_asset_lock_in_db(&tx, Some(islock)) {
+                            eprintln!("Failed to store asset lock: {}", e);
+                        }
+        }
+
 
         // Use a timer to repaint the UI every 0.05 seconds
         ctx.request_repaint_after(std::time::Duration::from_millis(50));

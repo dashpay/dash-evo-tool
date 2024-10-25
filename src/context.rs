@@ -9,7 +9,7 @@ use crate::model::wallet::Wallet;
 use crate::sdk_wrapper::initialize_sdk;
 use crate::ui::RootScreenType;
 use dash_sdk::dashcore_rpc::{Auth, Client};
-use dash_sdk::dpp::dashcore::Network;
+use dash_sdk::dpp::dashcore::{Address, Network};
 use dash_sdk::dpp::identity::Identity;
 use dash_sdk::dpp::system_data_contracts::{load_system_data_contract, SystemDataContract};
 use dash_sdk::dpp::version::PlatformVersion;
@@ -18,6 +18,8 @@ use dash_sdk::Sdk;
 use rusqlite::Result;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, RwLock};
+use dash_sdk::dashcore_rpc::dashcore::{InstantLock, Transaction};
+use dash_sdk::dpp::dashcore::transaction::special_transaction::TransactionPayload::AssetLockPayloadType;
 
 #[derive(Debug)]
 pub struct AppContext {
@@ -161,5 +163,47 @@ impl AppContext {
         contracts.insert(0, dpns_contract);
 
         Ok(contracts)
+    }
+
+    /// Store the asset lock transaction in the database and update the wallet.
+    pub(crate) fn store_asset_lock_in_db(
+        &self,
+        tx: &Transaction,
+        islock: Option<InstantLock>,
+    ) -> rusqlite::Result<()> {
+        // Extract the asset lock payload from the transaction
+        let Some(AssetLockPayloadType(payload)) = tx.special_transaction_payload.as_ref() else {
+            return Ok(());
+        };
+
+        // Identify the wallet associated with the transaction
+        let wallets = self.wallets.read().unwrap();
+        for wallet_arc in wallets.iter() {
+            let mut wallet = wallet_arc.write().unwrap();
+
+            // Check if any of the addresses in the transaction outputs match the wallet's known addresses
+            let matches_wallet = payload.credit_outputs.iter().any(|tx_out| {
+                if let Ok(output_addr) = Address::from_script(&tx_out.script_pubkey, self.network) {
+                    wallet.known_addresses.contains_key(&output_addr)
+                } else {
+                    false
+                }
+            });
+
+            if matches_wallet {
+                // Calculate the total amount from the credit outputs
+                let amount: u64 = payload.credit_outputs.iter().map(|tx_out| tx_out.value).sum();
+
+                // Store the asset lock transaction in the database
+                self.db.store_asset_lock_transaction(tx, amount, islock.as_ref(), &wallet.seed)?;
+
+                // Add the asset lock to the wallet's unused_asset_locks
+                wallet.unused_asset_locks.push((tx.clone(), amount, islock));
+
+                break; // Exit the loop after updating the relevant wallet
+            }
+        }
+
+        Ok(())
     }
 }

@@ -278,13 +278,15 @@ impl Wallet {
                     None,
                 )
                 .map_err(|e| e.to_string())?;
-            self.known_addresses.insert(address.clone(), derivation_path.clone());
+            self.known_addresses
+                .insert(address.clone(), derivation_path.clone());
             self.watched_addresses.insert(
                 derivation_path.clone(),
                 AddressInfo {
                     address: address.clone(),
                     path_type: DerivationPathType::CREDIT_FUNDING,
-                    path_reference: DerivationPathReference::BlockchainIdentityCreditRegistrationFunding,
+                    path_reference:
+                        DerivationPathReference::BlockchainIdentityCreditRegistrationFunding,
                 },
             );
         }

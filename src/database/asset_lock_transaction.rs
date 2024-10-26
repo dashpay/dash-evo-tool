@@ -3,7 +3,7 @@ use dash_sdk::dpp::dashcore::{
     consensus::{deserialize, serialize},
     InstantLock, Transaction,
 };
-use rusqlite::{params, Connection};
+use rusqlite::params;
 
 impl Database {
     /// Stores an asset lock transaction and optional InstantLock into the database.

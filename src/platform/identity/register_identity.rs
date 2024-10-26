@@ -1,12 +1,11 @@
 use crate::context::AppContext;
 use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
-use crate::platform::identity::IdentityRegistrationInfo;
+use crate::platform::identity::{IdentityRegistrationInfo, IdentityRegistrationMethod};
 use dash_sdk::dapi_client::DapiRequestExecutor;
 use dash_sdk::dapi_grpc::core::v0::{
     BroadcastTransactionRequest, GetBlockchainStatusRequest, GetTransactionRequest,
     GetTransactionResponse,
 };
-use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dpp::dashcore::psbt::serialize::Serialize;
 use dash_sdk::dpp::dashcore::{Address, Transaction};
 use dash_sdk::dpp::prelude::AssetLockProof;
@@ -105,37 +104,54 @@ impl AppContext {
     ) -> Result<(), String> {
         let IdentityRegistrationInfo {
             alias_input,
-            amount,
             keys,
-            identity_index,
             wallet,
+            identity_registration_method,
         } = input;
 
         let sdk = self.sdk.clone();
 
-        // Scope the write lock to avoid holding it across an await.
-        let (asset_lock_transaction, asset_lock_proof_private_key, change_address) = {
-            let mut wallet = wallet.write().unwrap();
-            match wallet.asset_lock_transaction(sdk.network, amount, identity_index, Some(self)) {
-                Ok(transaction) => transaction,
-                Err(_) => {
-                    wallet
-                        .reload_utxos(&self.core_client, self.network, Some(self))
-                        .map_err(|e| e.to_string())?;
-                    wallet.asset_lock_transaction(
+        let (asset_lock_proof, asset_lock_proof_private_key) = match identity_registration_method {
+            IdentityRegistrationMethod::UseAssetLock(address, asset_lock_proof) => {
+                let wallet = wallet.read().unwrap();
+                let private_key = wallet
+                    .private_key_for_address(&address, self.network)?
+                    .ok_or("Asset Lock not valid for wallet")?;
+                (asset_lock_proof, private_key)
+            }
+            IdentityRegistrationMethod::FundWithWallet(amount, identity_index) => {
+                // Scope the write lock to avoid holding it across an await.
+                let (asset_lock_transaction, asset_lock_proof_private_key, change_address) = {
+                    let mut wallet = wallet.write().unwrap();
+                    match wallet.asset_lock_transaction(
                         sdk.network,
                         amount,
                         identity_index,
                         Some(self),
-                    )?
-                }
+                    ) {
+                        Ok(transaction) => transaction,
+                        Err(_) => {
+                            wallet
+                                .reload_utxos(&self.core_client, self.network, Some(self))
+                                .map_err(|e| e.to_string())?;
+                            wallet.asset_lock_transaction(
+                                sdk.network,
+                                amount,
+                                identity_index,
+                                Some(self),
+                            )?
+                        }
+                    }
+                };
+
+                let asset_lock_proof = self
+                    .broadcast_and_retrieve_asset_lock(&asset_lock_transaction, &change_address)
+                    .await
+                    .map_err(|e| e.to_string())?;
+
+                (asset_lock_proof, asset_lock_proof_private_key)
             }
         };
-
-        let asset_lock_proof = self
-            .broadcast_and_retrieve_asset_lock(&asset_lock_transaction, &change_address)
-            .await
-            .map_err(|e| e.to_string())?;
 
         let identity_id = asset_lock_proof
             .create_identifier()
@@ -166,6 +182,9 @@ impl AppContext {
             .map_err(|e| e.to_string())?;
 
         qualified_identity.identity = updated_identity;
+        if !alias_input.is_empty() {
+            qualified_identity.alias = Some(alias_input);
+        }
 
         self.insert_local_qualified_identity(&qualified_identity)
             .map_err(|e| e.to_string())?;

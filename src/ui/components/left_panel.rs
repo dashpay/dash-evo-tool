@@ -37,7 +37,7 @@ fn load_icon(ctx: &Context, path: &str) -> Option<TextureHandle> {
 
 pub fn add_left_panel(
     ctx: &Context,
-    app_context: &Arc<AppContext>,
+    _app_context: &Arc<AppContext>,
     selected_screen: RootScreenType,
 ) -> AppAction {
     let mut action = AppAction::None;

@@ -8,7 +8,7 @@ use dash_sdk::dpp::voting::vote_polls::contested_document_resource_vote_poll::Co
 use dash_sdk::drive::query::vote_poll_vote_state_query::{
     ContestedDocumentVotePollDriveQuery, ContestedDocumentVotePollDriveQueryResultType,
 };
-use dash_sdk::platform::{DriveDocumentQuery, FetchMany};
+use dash_sdk::platform::FetchMany;
 use dash_sdk::Sdk;
 use tokio::sync::mpsc;
 
@@ -17,7 +17,7 @@ impl AppContext {
         &self,
         name: &String,
         sdk: Sdk,
-        sender: mpsc::Sender<TaskResult>,
+        _sender: mpsc::Sender<TaskResult>,
     ) -> Result<(), String> {
         let data_contract = self.dpns_contract.as_ref();
         let document_type = data_contract

@@ -19,12 +19,12 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
 use dash_sdk::dpp::identity::{KeyID, KeyType, Purpose, SecurityLevel};
+use dash_sdk::dpp::prelude::AssetLockProof;
 use dash_sdk::dpp::ProtocolError;
 use dash_sdk::platform::{Identity, IdentityPublicKey};
 use dash_sdk::Sdk;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, RwLock};
-use dash_sdk::dpp::dashcore::Transaction;
 use tokio::sync::mpsc;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -138,22 +138,26 @@ impl IdentityKeys {
     }
 }
 
+pub type IdentityIndex = u32;
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IdentityRegistrationMethod {
+    UseAssetLock(Address, AssetLockProof),
+    FundWithWallet(Duffs, IdentityIndex),
+}
+
 #[derive(Debug, Clone)]
 pub struct IdentityRegistrationInfo {
     pub alias_input: String,
-    pub amount: Duffs,
     pub keys: IdentityKeys,
-    pub identity_index: u32,
     pub wallet: Arc<RwLock<Wallet>>,
-    pub transaction_asset_lock_to_use: Transaction,
+    pub identity_registration_method: IdentityRegistrationMethod,
 }
 
 impl PartialEq for IdentityRegistrationInfo {
     fn eq(&self, other: &Self) -> bool {
         self.alias_input == other.alias_input
-            && self.amount == other.amount
+            && self.identity_registration_method == other.identity_registration_method
             && self.keys == other.keys
-            && self.identity_index == other.identity_index
     }
 }
 

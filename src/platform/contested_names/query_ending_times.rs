@@ -16,7 +16,7 @@ impl AppContext {
     pub(super) async fn query_dpns_ending_times(
         self: &Arc<Self>,
         sdk: Sdk,
-        sender: mpsc::Sender<TaskResult>,
+        _sender: mpsc::Sender<TaskResult>,
     ) -> Result<(), String> {
         let now: DateTime<Utc> = Utc::now();
         let start_time_dt = now - Duration::weeks(2);

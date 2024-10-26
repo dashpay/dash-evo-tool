@@ -1,7 +1,7 @@
 use crate::context::AppContext;
 use crate::model::wallet::Wallet;
 use dash_sdk::dashcore_rpc::{Client, RpcApi};
-use dash_sdk::dpp::dashcore::{Address, Network, OutPoint, PublicKey, TxOut};
+use dash_sdk::dpp::dashcore::{Address, Network, OutPoint, TxOut};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 impl Wallet {
@@ -99,7 +99,7 @@ impl Wallet {
                 // Now update self.utxos by removing UTXOs not present in new_outpoints
                 if let Some(ref mut current_utxos) = self.utxos {
                     // Remove UTXOs that are no longer unspent
-                    for (address, utxos) in current_utxos.iter_mut() {
+                    for utxos in current_utxos.values_mut() {
                         utxos.retain(|outpoint, _| new_outpoints.contains(outpoint));
                     }
                     // Remove addresses with no UTXOs

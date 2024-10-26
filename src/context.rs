@@ -1,4 +1,3 @@
-use crate::components::instant_send_listener::InstantSendListener;
 use crate::config::{Config, NetworkConfig};
 use crate::context_provider::Provider;
 use crate::database::Database;
@@ -8,7 +7,9 @@ use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::sdk_wrapper::initialize_sdk;
 use crate::ui::RootScreenType;
+use dash_sdk::dashcore_rpc::dashcore::{InstantLock, Transaction};
 use dash_sdk::dashcore_rpc::{Auth, Client};
+use dash_sdk::dpp::dashcore::transaction::special_transaction::TransactionPayload::AssetLockPayloadType;
 use dash_sdk::dpp::dashcore::{Address, Network};
 use dash_sdk::dpp::identity::Identity;
 use dash_sdk::dpp::system_data_contracts::{load_system_data_contract, SystemDataContract};
@@ -18,8 +19,6 @@ use dash_sdk::Sdk;
 use rusqlite::Result;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, RwLock};
-use dash_sdk::dashcore_rpc::dashcore::{InstantLock, Transaction};
-use dash_sdk::dpp::dashcore::transaction::special_transaction::TransactionPayload::AssetLockPayloadType;
 
 #[derive(Debug)]
 pub struct AppContext {
@@ -192,10 +191,15 @@ impl AppContext {
 
             if matches_wallet {
                 // Calculate the total amount from the credit outputs
-                let amount: u64 = payload.credit_outputs.iter().map(|tx_out| tx_out.value).sum();
+                let amount: u64 = payload
+                    .credit_outputs
+                    .iter()
+                    .map(|tx_out| tx_out.value)
+                    .sum();
 
                 // Store the asset lock transaction in the database
-                self.db.store_asset_lock_transaction(tx, amount, islock.as_ref(), &wallet.seed)?;
+                self.db
+                    .store_asset_lock_transaction(tx, amount, islock.as_ref(), &wallet.seed)?;
 
                 // Add the asset lock to the wallet's unused_asset_locks
                 wallet.unused_asset_locks.push((tx.clone(), amount, islock));

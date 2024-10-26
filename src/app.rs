@@ -13,7 +13,6 @@ use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike, ScreenType};
 use dash_sdk::dpp::dashcore::{InstantLock, Network, Transaction};
 use derive_more::From;
 use eframe::{egui, App};
-use egui::Widget;
 use std::collections::BTreeMap;
 use std::ops::BitOrAssign;
 use std::sync::{mpsc, Arc};
@@ -359,25 +358,24 @@ impl App for AppState {
 
         // **Poll the instant_send_receiver for any new InstantSend messages**
         while let Ok((tx, islock, network)) = self.instant_send_receiver.try_recv() {
-                        let app_context = match network {
-                            Network::Dash => &self.mainnet_app_context,
-                            Network::Testnet => {
-                                if let Some(context) = self.testnet_app_context.as_ref() {
-                                    context
-                                } else {
-                                    // Handle the case when testnet_app_context is None
-                                    eprintln!("No testnet app context available for Testnet");
-                                    continue; // Skip this iteration or handle as needed
-                                }
-                            }
-                            _ => continue,
-                        };
-                        // Store the asset lock transaction in the database
-                        if let Err(e) = app_context.store_asset_lock_in_db(&tx, Some(islock)) {
-                            eprintln!("Failed to store asset lock: {}", e);
-                        }
+            let app_context = match network {
+                Network::Dash => &self.mainnet_app_context,
+                Network::Testnet => {
+                    if let Some(context) = self.testnet_app_context.as_ref() {
+                        context
+                    } else {
+                        // Handle the case when testnet_app_context is None
+                        eprintln!("No testnet app context available for Testnet");
+                        continue; // Skip this iteration or handle as needed
+                    }
+                }
+                _ => continue,
+            };
+            // Store the asset lock transaction in the database
+            if let Err(e) = app_context.store_asset_lock_in_db(&tx, Some(islock)) {
+                eprintln!("Failed to store asset lock: {}", e);
+            }
         }
-
 
         // Use a timer to repaint the UI every 0.05 seconds
         ctx.request_repaint_after(std::time::Duration::from_millis(50));

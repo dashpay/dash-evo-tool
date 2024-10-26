@@ -9,7 +9,7 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::identities::add_new_identity_screen::AddNewIdentityScreenStep::{
     ChooseFundingMethod, FundsReceived, ReadyToCreate,
 };
-use crate::ui::ScreenLike;
+use crate::ui::{MessageType, ScreenLike};
 use arboard::Clipboard;
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dashcore_rpc::RpcApi;
@@ -756,6 +756,9 @@ impl AddNewIdentityScreen {
 }
 
 impl ScreenLike for AddNewIdentityScreen {
+    fn display_message(&mut self, message: &str, _message_type: MessageType) {
+        todo!()
+    }
     fn display_task_result(&mut self, _backend_task_success_result: BackendTaskSuccessResult) {
         let mut step = self.step.write().unwrap();
         *step = AddNewIdentityScreenStep::WaitingForPlatformAcceptance;

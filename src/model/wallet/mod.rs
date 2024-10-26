@@ -62,6 +62,7 @@ use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
 use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dpp::balances::credits::Duffs;
 use dash_sdk::dpp::fee::Credits;
+use dash_sdk::dpp::prelude::AssetLockProof;
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
@@ -97,7 +98,13 @@ pub struct Wallet {
     pub address_balances: BTreeMap<Address, u64>,
     pub known_addresses: BTreeMap<Address, DerivationPath>,
     pub watched_addresses: BTreeMap<DerivationPath, AddressInfo>,
-    pub unused_asset_locks: Vec<(Transaction, Credits, Option<InstantLock>)>,
+    pub unused_asset_locks: Vec<(
+        Transaction,
+        Address,
+        Credits,
+        Option<InstantLock>,
+        Option<AssetLockProof>,
+    )>,
     pub alias: Option<String>,
     pub utxos: Option<HashMap<Address, HashMap<OutPoint, TxOut>>>,
     pub is_main: bool,

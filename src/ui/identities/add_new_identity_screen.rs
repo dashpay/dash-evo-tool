@@ -444,6 +444,72 @@ impl AddNewIdentityScreen {
             });
     }
 
+    fn render_choose_funding_asset_lock(&mut self, ui: &mut egui::Ui) {
+        // Ensure a wallet is selected
+        let Some(selected_wallet) = self.selected_wallet.clone() else {
+            ui.label("No wallet selected.");
+            return;
+        };
+
+        // Read the wallet to access unused asset locks
+        let wallet = selected_wallet.read().unwrap();
+
+        if wallet.unused_asset_locks.is_empty() {
+            ui.label("No unused asset locks available.");
+            return;
+        }
+
+        ui.heading("Select an unused asset lock:");
+
+        // Track the index of the currently selected asset lock (if any)
+        let selected_index = self.funding_asset_lock.as_ref().and_then(|(proof, _)| {
+            wallet
+                .unused_asset_locks
+                .iter()
+                .position(|(_, _, _, _, p)| p.as_ref() == Some(proof))
+        });
+
+        // Display the asset locks in a scrollable area
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            for (index, (tx, address, amount, islock, proof)) in
+                wallet.unused_asset_locks.iter().enumerate()
+            {
+                ui.horizontal(|ui| {
+                    let tx_id = tx.txid().to_string();
+                    let lock_amount = *amount as f64 * 1e-8; // Convert to DASH
+                    let is_locked = if islock.is_some() { "Yes" } else { "No" };
+
+                    // Display asset lock information with "Selected" if this one is selected
+                    let selected_text = if Some(index) == selected_index {
+                        " (Selected)"
+                    } else {
+                        ""
+                    };
+
+                    ui.label(format!(
+                        "TxID: {}, Address: {}, Amount: {:.8} DASH, InstantLock: {}{}",
+                        tx_id, address, lock_amount, is_locked, selected_text
+                    ));
+
+                    // Button to select this asset lock
+                    if ui.button("Select").clicked() {
+                        // Update the selected asset lock
+                        self.funding_asset_lock = Some((
+                            proof.clone().expect("Asset lock proof is required"),
+                            address.clone(),
+                        ));
+
+                        // Update the step to ready to create identity
+                        let mut step = self.step.write().unwrap();
+                        *step = AddNewIdentityScreenStep::ReadyToCreate;
+                    }
+                });
+
+                ui.add_space(5.0); // Add space between each entry
+            }
+        });
+    }
+
     fn render_keys_input(&mut self, ui: &mut egui::Ui) {
         let mut keys_to_remove = vec![];
 
@@ -768,6 +834,19 @@ impl ScreenLike for AddNewIdentityScreen {
                 return;
             }
 
+            if funding_method == FundingMethod::UseUnusedAssetLock {
+                ui.heading(
+                    format!("{}. Choose the unused asset lock that you would like to use.", step_number).as_str()
+                );
+                ui.add_space(10.0);
+                self.render_choose_funding_asset_lock(ui);
+                step_number += 1;
+            }
+
+            if self
+                .funding_asset_lock.is_none() {
+                return;
+            }
             ui.heading(
                 format!("{}. Choose an identity index. Leave this 0 if this is your first identity for this wallet.", step_number).as_str()
             );

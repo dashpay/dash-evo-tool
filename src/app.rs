@@ -372,7 +372,7 @@ impl App for AppState {
                 _ => continue,
             };
             // Store the asset lock transaction in the database
-            if let Err(e) = app_context.store_asset_lock_in_db(&tx, Some(islock)) {
+            if let Err(e) = app_context.store_asset_lock_in_db(&tx, Some(islock), None) {
                 eprintln!("Failed to store asset lock: {}", e);
             }
         }

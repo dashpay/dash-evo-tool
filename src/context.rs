@@ -10,8 +10,11 @@ use crate::ui::RootScreenType;
 use dash_sdk::dashcore_rpc::dashcore::{InstantLock, Transaction};
 use dash_sdk::dashcore_rpc::{Auth, Client};
 use dash_sdk::dpp::dashcore::transaction::special_transaction::TransactionPayload::AssetLockPayloadType;
-use dash_sdk::dpp::dashcore::{Address, Network};
+use dash_sdk::dpp::dashcore::{Address, Network, OutPoint};
+use dash_sdk::dpp::identity::state_transition::asset_lock_proof::chain::ChainAssetLockProof;
+use dash_sdk::dpp::identity::state_transition::asset_lock_proof::InstantAssetLockProof;
 use dash_sdk::dpp::identity::Identity;
+use dash_sdk::dpp::prelude::{AssetLockProof, CoreBlockHeight};
 use dash_sdk::dpp::system_data_contracts::{load_system_data_contract, SystemDataContract};
 use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::platform::DataContract;
@@ -169,6 +172,7 @@ impl AppContext {
         &self,
         tx: &Transaction,
         islock: Option<InstantLock>,
+        chain_locked_height: Option<CoreBlockHeight>,
     ) -> rusqlite::Result<()> {
         // Extract the asset lock payload from the transaction
         let Some(AssetLockPayloadType(payload)) = tx.special_transaction_payload.as_ref() else {
@@ -201,8 +205,34 @@ impl AppContext {
                 self.db
                     .store_asset_lock_transaction(tx, amount, islock.as_ref(), &wallet.seed)?;
 
+                let proof = if let Some(islock) = islock.as_ref() {
+                    // Deserialize the InstantLock
+                    Some(AssetLockProof::Instant(InstantAssetLockProof::new(
+                        islock.clone(),
+                        tx.clone(),
+                        0,
+                    )))
+                } else if let Some(chain_locked_height) = chain_locked_height {
+                    Some(AssetLockProof::Chain(ChainAssetLockProof {
+                        core_chain_locked_height: chain_locked_height,
+                        out_point: OutPoint::new(tx.txid(), 0),
+                    }))
+                } else {
+                    None
+                };
+
+                let first = payload
+                    .credit_outputs
+                    .first()
+                    .expect("Expected at least one credit output");
+
+                let address = Address::from_script(&first.script_pubkey, self.network)
+                    .expect("expected an address");
+
                 // Add the asset lock to the wallet's unused_asset_locks
-                wallet.unused_asset_locks.push((tx.clone(), amount, islock));
+                wallet
+                    .unused_asset_locks
+                    .push((tx.clone(), address, amount, islock, proof));
 
                 break; // Exit the loop after updating the relevant wallet
             }

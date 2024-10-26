@@ -439,11 +439,16 @@ impl WalletsBalancesScreen {
                         .resizable(true)
                         .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
                         .column(Column::initial(200.0)) // Transaction ID
+                        .column(Column::initial(100.0)) // Address
                         .column(Column::initial(100.0)) // Amount (Duffs)
                         .column(Column::initial(100.0)) // InstantLock status
+                        .column(Column::initial(100.0)) // Usable status
                         .header(30.0, |mut header| {
                             header.col(|ui| {
                                 ui.label("Transaction ID");
+                            });
+                            header.col(|ui| {
+                                ui.label("Address");
                             });
                             header.col(|ui| {
                                 ui.label("Amount (Duffs)");
@@ -451,18 +456,28 @@ impl WalletsBalancesScreen {
                             header.col(|ui| {
                                 ui.label("InstantLock");
                             });
+                            header.col(|ui| {
+                                ui.label("Usable");
+                            });
                         })
                         .body(|mut body| {
-                            for (tx, amount, islock) in &wallet.unused_asset_locks {
+                            for (tx, address, amount, islock, proof) in &wallet.unused_asset_locks {
                                 body.row(25.0, |mut row| {
                                     row.col(|ui| {
                                         ui.label(tx.txid().to_string());
+                                    });
+                                    row.col(|ui| {
+                                        ui.label(address.to_string());
                                     });
                                     row.col(|ui| {
                                         ui.label(format!("{}", amount));
                                     });
                                     row.col(|ui| {
                                         let status = if islock.is_some() { "Yes" } else { "No" };
+                                        ui.label(status);
+                                    });
+                                    row.col(|ui| {
+                                        let status = if proof.is_some() { "Yes" } else { "No" };
                                         ui.label(status);
                                     });
                                 });

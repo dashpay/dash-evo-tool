@@ -1,6 +1,8 @@
 use crate::app::{AppAction, DesiredAppAction};
 use crate::context::AppContext;
-use crate::platform::withdrawals::{WithdrawRecord, WithdrawStatusData, WithdrawalsTask};
+use crate::platform::withdrawals::{
+    WithdrawRecord, WithdrawStatusData, WithdrawStatusPartialData, WithdrawalsTask,
+};
 use crate::platform::{BackendTask, BackendTaskSuccessResult};
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::top_panel::add_top_panel;
@@ -13,11 +15,11 @@ use egui::{ComboBox, Context, Ui};
 use egui_extras::{Column, TableBuilder};
 use itertools::Itertools;
 use std::cell::{Cell, RefCell};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 pub struct WithdrawsStatusScreen {
     pub app_context: Arc<AppContext>,
-    data: Arc<Mutex<Option<WithdrawStatusData>>>,
+    data: Arc<RwLock<Option<WithdrawStatusData>>>,
     sort_column: Cell<Option<SortColumn>>,
     sort_ascending: Cell<bool>,
     filter_status_queued: Cell<bool>,
@@ -25,9 +27,9 @@ pub struct WithdrawsStatusScreen {
     filter_status_broadcasted: Cell<bool>,
     filter_status_complete: Cell<bool>,
     filter_status_expired: Cell<bool>,
-    filter_status_mix: RefCell<Vec<Value>>,
-    pagination_current_page: Cell<usize>,
-    pagination_items_per_page: Cell<PaginationItemsPerPage>,
+    filter_status_mix: Vec<WithdrawalStatus>,
+    pagination_current_page: usize,
+    pagination_items_per_page: PaginationItemsPerPage,
     error_message: Option<String>,
 }
 
@@ -49,11 +51,17 @@ enum PaginationItemsPerPage {
     Items50 = 50,
 }
 
+impl From<PaginationItemsPerPage> for u32 {
+    fn from(item: PaginationItemsPerPage) -> Self {
+        item as u32
+    }
+}
+
 impl WithdrawsStatusScreen {
     pub fn new(app_context: &Arc<AppContext>) -> Self {
         Self {
             app_context: app_context.clone(),
-            data: Arc::new(Mutex::new(None)),
+            data: Arc::new(RwLock::new(None)),
             sort_ascending: Cell::from(false),
             sort_column: Cell::from(Some(SortColumn::DateTime)),
             error_message: None,
@@ -62,15 +70,15 @@ impl WithdrawsStatusScreen {
             filter_status_broadcasted: Cell::new(true),
             filter_status_complete: Cell::new(true),
             filter_status_expired: Cell::new(false),
-            filter_status_mix: RefCell::new(vec![
-                Value::U8(WithdrawalStatus::QUEUED as u8),
-                Value::U8(WithdrawalStatus::POOLED as u8),
-                Value::U8(WithdrawalStatus::BROADCASTED as u8),
-                Value::U8(WithdrawalStatus::COMPLETE as u8),
-                Value::U8(WithdrawalStatus::EXPIRED as u8),
-            ]),
-            pagination_current_page: Cell::new(0),
-            pagination_items_per_page: Cell::new(PaginationItemsPerPage::Items15),
+            filter_status_mix: vec![
+                WithdrawalStatus::QUEUED,
+                WithdrawalStatus::POOLED,
+                WithdrawalStatus::BROADCASTED,
+                WithdrawalStatus::COMPLETE,
+                WithdrawalStatus::EXPIRED,
+            ],
+            pagination_current_page: 0,
+            pagination_items_per_page: PaginationItemsPerPage::Items15,
         }
     }
 
@@ -82,19 +90,18 @@ impl WithdrawsStatusScreen {
                 ui.heading(self.error_message.as_ref().unwrap());
             });
         } else {
-            let mut lock_data = self.data.lock().unwrap_or_else(|poisoned| {
-                // Mutex is poisoned, trying to recover the inner data
-                poisoned.into_inner()
-            });
+            let lock_data = self.data.read().unwrap().clone();
 
-            if let Some(ref mut data) = *lock_data {
-                self.sort_withdraws_data(&mut data.withdrawals);
-                self.show_withdraws_data(ui, data);
+            if let Some(mut data) = lock_data {
+                let sorted_data = self.sort_withdraws_data(data.withdrawals.as_slice());
+                data.withdrawals = sorted_data;
+                self.show_withdraws_data(ui, &data);
             }
         }
     }
 
-    fn sort_withdraws_data(&self, data: &mut Vec<WithdrawRecord>) {
+    fn sort_withdraws_data(&self, data: &[WithdrawRecord]) -> Vec<WithdrawRecord> {
+        let mut result_data = data.to_vec();
         if let Some(column) = self.sort_column.get() {
             let compare = |a: &WithdrawRecord, b: &WithdrawRecord| -> std::cmp::Ordering {
                 let ord = match column {
@@ -110,8 +117,9 @@ impl WithdrawsStatusScreen {
                     ord.reverse()
                 }
             };
-            data.sort_by(compare);
+            result_data.sort_by(compare);
         }
+        result_data
     }
 
     fn handle_column_click(&self, current_sort: SortColumn) {
@@ -123,7 +131,7 @@ impl WithdrawsStatusScreen {
         }
     }
 
-    fn show_withdraws_data(&self, ui: &mut egui::Ui, data: &WithdrawStatusData) {
+    fn show_withdraws_data(&mut self, ui: &mut egui::Ui, data: &WithdrawStatusData) {
         egui::Grid::new("general_info_grid")
             .num_columns(2)
             .spacing([20.0, 8.0]) // Adjust spacing as needed
@@ -201,7 +209,7 @@ impl WithdrawsStatusScreen {
         });
         ui.add_space(30.0);
         ui.heading(format!("Withdrawals ({})", data.withdrawals.len()));
-        let mut selected = self.pagination_items_per_page.get();
+        let mut selected = self.pagination_items_per_page;
         let old_selected = selected;
         ComboBox::from_label("Items per page")
             .selected_text(format!("{}", selected as usize))
@@ -213,14 +221,18 @@ impl WithdrawsStatusScreen {
                 ui.selectable_value(&mut selected, PaginationItemsPerPage::Items50, "50");
             });
         if selected != old_selected {
-            self.pagination_items_per_page.set(selected);
+            self.pagination_items_per_page = selected;
         }
-        println!("computing with:{}", self.pagination_items_per_page.get() as usize);
-        let total_pages = (data.withdrawals.len() + (self.pagination_items_per_page.get() as usize) - 1) / (self.pagination_items_per_page.get() as usize);
-        let mut current_page = self.pagination_current_page.get().min(total_pages - 1); // Clamp to valid page range
-        // Calculate the slice of data for the current page
-        let start_index = current_page * (self.pagination_items_per_page.get() as usize);
-        let end_index = (start_index + (self.pagination_items_per_page.get() as usize)).min(data.withdrawals.len());
+        println!("computing with:{}", self.pagination_items_per_page as usize);
+        let total_pages = (data.withdrawals.len() + (self.pagination_items_per_page as usize) - 1)
+            / (self.pagination_items_per_page as usize);
+        let mut current_page = self
+            .pagination_current_page
+            .min(total_pages.saturating_sub(1)); // Clamp to valid page range
+                                                 // Calculate the slice of data for the current page
+        let start_index = current_page * (self.pagination_items_per_page as usize);
+        let end_index =
+            (start_index + (self.pagination_items_per_page as usize)).min(data.withdrawals.len());
         ui.separator();
         TableBuilder::new(ui)
             .striped(true)
@@ -284,46 +296,41 @@ impl WithdrawsStatusScreen {
         // Pagination controls at the bottom
         ui.horizontal(|ui| {
             if ui.button("Previous").clicked() && current_page > 0 {
-                self.pagination_current_page.set(current_page - 1)
+                self.pagination_current_page = current_page - 1
             }
 
             ui.label(format!("Page {}/{}", current_page + 1, total_pages));
 
             if ui.button("Next").clicked() && current_page < total_pages - 1 {
-                self.pagination_current_page.set(current_page + 1)
+                self.pagination_current_page = current_page + 1
             }
         });
     }
 
-    fn util_build_combined_filter_status_mix(&self) {
+    fn util_build_combined_filter_status_mix(&mut self) {
         let mut res = vec![];
         if self.filter_status_queued.get() {
-            res.push(Value::U8(WithdrawalStatus::QUEUED as u8));
+            res.push(WithdrawalStatus::QUEUED);
         }
         if self.filter_status_pooled.get() {
-            res.push(Value::U8(WithdrawalStatus::POOLED as u8));
+            res.push(WithdrawalStatus::POOLED);
         }
         if self.filter_status_broadcasted.get() {
-            res.push(Value::U8(WithdrawalStatus::BROADCASTED as u8));
+            res.push(WithdrawalStatus::BROADCASTED);
         }
         if self.filter_status_complete.get() {
-            res.push(Value::U8(WithdrawalStatus::COMPLETE as u8));
+            res.push(WithdrawalStatus::COMPLETE);
         }
         if self.filter_status_expired.get() {
-            res.push(Value::U8(WithdrawalStatus::EXPIRED as u8));
+            res.push(WithdrawalStatus::EXPIRED);
         }
-
-        self.filter_status_mix.borrow_mut().clear();
-        self.filter_status_mix.borrow_mut().extend(res);
+        self.filter_status_mix = res;
     }
 }
 
 impl ScreenLike for WithdrawsStatusScreen {
     fn refresh(&mut self) {
-        let mut lock_data = self.data.lock().unwrap_or_else(|poisoned| {
-            // Mutex is poisoned, trying to recover the inner data
-            poisoned.into_inner()
-        });
+        let mut lock_data = self.data.write().unwrap();
         *lock_data = None;
         self.error_message = None;
     }
@@ -333,11 +340,12 @@ impl ScreenLike for WithdrawsStatusScreen {
     }
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         if let BackendTaskSuccessResult::WithdrawalStatus(data) = backend_task_success_result {
-            let mut lock_data = self.data.lock().unwrap_or_else(|poisoned| {
-                // Mutex is poisoned, trying to recover the inner data
-                poisoned.into_inner()
-            });
-            *lock_data = Some(data);
+            let mut lock_data = self.data.write().unwrap();
+            if let Some(old_data) = lock_data.as_mut() {
+                old_data.merge_with_data(data)
+            } else {
+                *lock_data = Some(data.try_into().expect("expected data to already exist"));
+            }
             self.error_message = None;
         }
     }
@@ -346,7 +354,13 @@ impl ScreenLike for WithdrawsStatusScreen {
         let query = (
             "Refresh",
             DesiredAppAction::BackendTask(BackendTask::WithdrawalTask(
-                WithdrawalsTask::QueryWithdrawals(self.filter_status_mix.borrow().clone()),
+                WithdrawalsTask::QueryWithdrawals(
+                    self.filter_status_mix.clone(),
+                    self.pagination_items_per_page.into(),
+                    None,
+                    true,
+                    true,
+                ),
             )),
         );
         let mut action = add_top_panel(

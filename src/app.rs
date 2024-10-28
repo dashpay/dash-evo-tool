@@ -1,3 +1,7 @@
+use crate::app_dir::{
+    app_user_data_file_path, copy_mainnet_env_file_if_not_exists,
+    create_app_user_data_directory_if_not_exists,
+};
 use crate::context::AppContext;
 use crate::database::Database;
 use crate::logging::initialize_logger;
@@ -18,7 +22,6 @@ use std::sync::Arc;
 use std::time::Instant;
 use std::vec;
 use tokio::sync::mpsc;
-use crate::app_dir::{app_user_data_file_path, copy_mainnet_env_file_if_not_exists, create_app_user_data_directory_if_not_exists};
 
 #[derive(Debug, From)]
 pub enum TaskResult {

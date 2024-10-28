@@ -1,10 +1,10 @@
 use std::str::FromStr;
 
+use crate::app_dir::app_user_data_file_path;
 use dash_sdk::dapi_client::AddressList;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::sdk::Uri;
 use serde::Deserialize;
-use crate::app_dir::app_user_data_file_path;
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct Config {

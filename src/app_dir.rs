@@ -1,8 +1,8 @@
+use directories::ProjectDirs;
 use std::fs;
 use std::path::{Path, PathBuf};
-use directories::ProjectDirs;
 
-const QUALIFIER: &str = "";  // Typically empty on macOS and Linux
+const QUALIFIER: &str = ""; // Typically empty on macOS and Linux
 const ORGANIZATION: &str = "DashCoreGroup";
 const APPLICATION: &str = "DashEvoTool";
 
@@ -25,9 +25,12 @@ pub fn copy_mainnet_env_file_if_not_exists() {
     let app_data_dir = app_user_data_dir_path();
     let env_mainnet_file = app_data_dir.join(".env".to_string());
     if env_mainnet_file.exists() && env_mainnet_file.is_file() {
-
     } else {
         let env_example_file = PathBuf::from(".env.example");
-        fs::copy(&env_example_file, app_user_data_file_path(".env".parse().unwrap())).expect("Failed to copy main net env file");
+        fs::copy(
+            &env_example_file,
+            app_user_data_file_path(".env".parse().unwrap()),
+        )
+        .expect("Failed to copy main net env file");
     }
 }

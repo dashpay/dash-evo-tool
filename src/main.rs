@@ -5,12 +5,12 @@ mod logging;
 mod sdk_wrapper;
 mod ui;
 
+mod app_dir;
 mod components;
 mod context;
 mod context_provider;
 mod model;
 mod platform;
-mod app_dir;
 
 fn main() -> eframe::Result<()> {
     // Initialize the Tokio runtime

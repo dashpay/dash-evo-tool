@@ -1,6 +1,8 @@
 use crate::app::{AppAction, DesiredAppAction};
 use crate::context::AppContext;
-use crate::platform::withdrawals::{WithdrawRecord, WithdrawStatusData, WithdrawalsTask};
+use crate::platform::withdrawals::{
+    WithdrawRecord, WithdrawStatusData, WithdrawStatusPartialData, WithdrawalsTask,
+};
 use crate::platform::{BackendTask, BackendTaskSuccessResult};
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::top_panel::add_top_panel;
@@ -13,13 +15,13 @@ use egui::{Color32, ComboBox, Context, Stroke, Ui, Vec2};
 use egui_extras::{Column, TableBuilder};
 use itertools::Itertools;
 use std::cell::{Cell, RefCell};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 pub struct WithdrawsStatusScreen {
     pub app_context: Arc<AppContext>,
-    first_load: Cell<bool>,
     requested_data: Cell<bool>,
-    data: Arc<Mutex<Option<WithdrawStatusData>>>,
+    first_load: Cell<bool>,
+    data: Arc<RwLock<Option<WithdrawStatusData>>>,
     sort_column: Cell<Option<SortColumn>>,
     sort_ascending: Cell<bool>,
     filter_status_queued: Cell<bool>,
@@ -27,9 +29,9 @@ pub struct WithdrawsStatusScreen {
     filter_status_broadcasted: Cell<bool>,
     filter_status_complete: Cell<bool>,
     filter_status_expired: Cell<bool>,
-    filter_status_mix: RefCell<Vec<Value>>,
-    pagination_current_page: Cell<usize>,
-    pagination_items_per_page: Cell<PaginationItemsPerPage>,
+    filter_status_mix: Vec<WithdrawalStatus>,
+    pagination_current_page: usize,
+    pagination_items_per_page: PaginationItemsPerPage,
     error_message: Option<String>,
 }
 
@@ -51,18 +53,17 @@ enum PaginationItemsPerPage {
     Items50 = 50,
 }
 
-// Define a struct to represent each filter status
-struct FilterStatus<'a> {
-    label: &'a str,
-    value: &'a Cell<bool>,
-    status: WithdrawalStatus,
+impl From<PaginationItemsPerPage> for u32 {
+    fn from(item: PaginationItemsPerPage) -> Self {
+        item as u32
+    }
 }
 
 impl WithdrawsStatusScreen {
     pub fn new(app_context: &Arc<AppContext>) -> Self {
         Self {
             app_context: app_context.clone(),
-            data: Arc::new(Mutex::new(None)),
+            data: Arc::new(RwLock::new(None)),
             first_load: Cell::new(true),
             requested_data: Cell::new(false),
             sort_ascending: Cell::from(false),
@@ -73,15 +74,15 @@ impl WithdrawsStatusScreen {
             filter_status_broadcasted: Cell::new(true),
             filter_status_complete: Cell::new(true),
             filter_status_expired: Cell::new(false),
-            filter_status_mix: RefCell::new(vec![
-                Value::U8(WithdrawalStatus::QUEUED as u8),
-                Value::U8(WithdrawalStatus::POOLED as u8),
-                Value::U8(WithdrawalStatus::BROADCASTED as u8),
-                Value::U8(WithdrawalStatus::COMPLETE as u8),
-                Value::U8(WithdrawalStatus::EXPIRED as u8),
-            ]),
-            pagination_current_page: Cell::new(0),
-            pagination_items_per_page: Cell::new(PaginationItemsPerPage::Items15),
+            filter_status_mix: vec![
+                WithdrawalStatus::QUEUED,
+                WithdrawalStatus::POOLED,
+                WithdrawalStatus::BROADCASTED,
+                WithdrawalStatus::COMPLETE,
+                WithdrawalStatus::EXPIRED,
+            ],
+            pagination_current_page: 0,
+            pagination_items_per_page: PaginationItemsPerPage::Items15,
         }
     }
 
@@ -93,12 +94,18 @@ impl WithdrawsStatusScreen {
             self.first_load.set(false);
             self.requested_data.set(true);
             app_action |= AppAction::BackendTask(BackendTask::WithdrawalTask(
-                WithdrawalsTask::QueryWithdrawals(self.filter_status_mix.borrow().clone()),
+                WithdrawalsTask::QueryWithdrawals(
+                    self.filter_status_mix.clone(),
+                    self.pagination_items_per_page.into(),
+                    None,
+                    true,
+                    true,
+                )
             ));
         }
         if self.requested_data.get() {
             ui.centered_and_justified(|ui| {
-                self.load_spinner(ui, 75.0);
+                self.show_spinner(ui, 75.0);
             });
         }
         if self.error_message.is_some() {
@@ -106,20 +113,30 @@ impl WithdrawsStatusScreen {
                 ui.heading(self.error_message.as_ref().unwrap());
             });
         } else {
-            let mut lock_data = self.data.lock().unwrap_or_else(|poisoned| {
-                // Mutex is poisoned, trying to recover the inner data
-                poisoned.into_inner()
-            });
+            let lock_data = self.data.read().unwrap().clone();
 
-            if let Some(ref mut data) = *lock_data {
-                self.sort_withdraws_data(&mut data.withdrawals);
-                app_action |= self.show_withdraws_data(ui, data);
+            if let Some(mut data) = lock_data {
+                let sorted_data = self.sort_withdraws_data(data.withdrawals.as_slice());
+                data.withdrawals = sorted_data;
+                app_action |= self.show_withdraws_data(ui, &data);
+            } else {
+                self.requested_data.set(true);
+                app_action |= AppAction::BackendTask(BackendTask::WithdrawalTask(
+                    WithdrawalsTask::QueryWithdrawals(
+                        self.filter_status_mix.clone(),
+                        self.pagination_items_per_page.into(),
+                        None,
+                        true,
+                        true,
+                    )
+                ));
             }
         }
         app_action
     }
 
-    fn sort_withdraws_data(&self, data: &mut Vec<WithdrawRecord>) {
+    fn sort_withdraws_data(&self, data: &[WithdrawRecord]) -> Vec<WithdrawRecord> {
+        let mut result_data = data.to_vec();
         if let Some(column) = self.sort_column.get() {
             let compare = |a: &WithdrawRecord, b: &WithdrawRecord| -> std::cmp::Ordering {
                 let ord = match column {
@@ -135,8 +152,9 @@ impl WithdrawsStatusScreen {
                     ord.reverse()
                 }
             };
-            data.sort_by(compare);
+            result_data.sort_by(compare);
         }
+        result_data
     }
 
     fn handle_column_click(&self, current_sort: SortColumn) {
@@ -148,7 +166,7 @@ impl WithdrawsStatusScreen {
         }
     }
 
-    fn show_withdraws_data(&self, ui: &mut egui::Ui, data: &WithdrawStatusData) -> AppAction {
+    fn show_withdraws_data(&mut self, ui: &mut egui::Ui, data: &WithdrawStatusData) -> AppAction {
         let mut app_action = AppAction::None;
         egui::Grid::new("general_info_grid")
             .num_columns(2)
@@ -185,59 +203,110 @@ impl WithdrawsStatusScreen {
                 ));
                 ui.end_row();
             });
-
         ui.add_space(30.0); // Optional spacing between the grids
+        egui::Grid::new("filters_grid").show(ui, |ui| {
+            ui.heading("Filters");
+            ui.end_row();
+            ui.horizontal(|ui| {
+                ui.label("Filter by status:");
+                ui.add_space(8.0); // Space after label
 
-        // Initialize the filters (this could be done in your `new` method or elsewhere)
-        let filter_statuses = vec![
-            FilterStatus {
-                label: "Queued",
-                value: &self.filter_status_queued,
-                status: WithdrawalStatus::QUEUED,
-            },
-            FilterStatus {
-                label: "Pooled",
-                value: &self.filter_status_pooled,
-                status: WithdrawalStatus::POOLED,
-            },
-            FilterStatus {
-                label: "Broadcasted",
-                value: &self.filter_status_broadcasted,
-                status: WithdrawalStatus::BROADCASTED,
-            },
-            FilterStatus {
-                label: "Complete",
-                value: &self.filter_status_complete,
-                status: WithdrawalStatus::COMPLETE,
-            },
-            FilterStatus {
-                label: "Expired",
-                value: &self.filter_status_expired,
-                status: WithdrawalStatus::EXPIRED,
-            },
-        ];
-
-        // In your `show_withdraws_data` method, replace the repetitive code with a loop
-        ui.horizontal(|ui| {
-            ui.label("Filter by status:");
-            ui.add_space(8.0); // Space after label
-            for filter in &filter_statuses {
-                let mut value = filter.value.get();
-                if ui.checkbox(&mut value, filter.label).changed() {
-                    filter.value.set(value);
+                let mut value = self.filter_status_queued.get();
+                if ui.checkbox(&mut value, "Queued").changed() {
+                    self.filter_status_queued.set(value);
                     self.util_build_combined_filter_status_mix();
                     self.requested_data.set(true);
+                    let mut lock_data = self.data.write().unwrap();
+                    *lock_data = None;
                     app_action |= AppAction::BackendTask(BackendTask::WithdrawalTask(
-                        WithdrawalsTask::QueryWithdrawals(self.filter_status_mix.borrow().clone()),
+                        WithdrawalsTask::QueryWithdrawals(
+                            self.filter_status_mix.clone(),
+                            self.pagination_items_per_page.into(),
+                            None,
+                            true,
+                            true,
+                        )
                     ));
                 }
                 ui.add_space(8.0);
-            }
+                let mut value = self.filter_status_pooled.get();
+                if ui.checkbox(&mut value, "Pooled").changed() {
+                    self.filter_status_pooled.set(value);
+                    self.util_build_combined_filter_status_mix();
+                    self.requested_data.set(true);
+                    let mut lock_data = self.data.write().unwrap();
+                    *lock_data = None;
+                    app_action |= AppAction::BackendTask(BackendTask::WithdrawalTask(
+                        WithdrawalsTask::QueryWithdrawals(
+                            self.filter_status_mix.clone(),
+                            self.pagination_items_per_page.into(),
+                            None,
+                            true,
+                            true,
+                        )
+                    ));
+                }
+                ui.add_space(8.0);
+                let mut value = self.filter_status_broadcasted.get();
+                if ui.checkbox(&mut value, "Broadcasted").changed() {
+                    self.filter_status_broadcasted.set(value);
+                    self.util_build_combined_filter_status_mix();
+                    self.requested_data.set(true);
+                    let mut lock_data = self.data.write().unwrap();
+                    *lock_data = None;
+                    app_action |= AppAction::BackendTask(BackendTask::WithdrawalTask(
+                        WithdrawalsTask::QueryWithdrawals(
+                            self.filter_status_mix.clone(),
+                            self.pagination_items_per_page.into(),
+                            None,
+                            true,
+                            true,
+                        )
+                    ));
+                }
+                ui.add_space(8.0);
+                let mut value = self.filter_status_complete.get();
+                if ui.checkbox(&mut value, "Complete").changed() {
+                    self.filter_status_complete.set(value);
+                    self.util_build_combined_filter_status_mix();
+                    self.requested_data.set(true);
+                    let mut lock_data = self.data.write().unwrap();
+                    *lock_data = None;
+                    app_action |= AppAction::BackendTask(BackendTask::WithdrawalTask(
+                        WithdrawalsTask::QueryWithdrawals(
+                            self.filter_status_mix.clone(),
+                            self.pagination_items_per_page.into(),
+                            None,
+                            true,
+                            true,
+                        )
+                    ));
+                }
+                ui.add_space(8.0);
+                let mut value = self.filter_status_expired.get();
+                if ui.checkbox(&mut value, "Expired").changed() {
+                    self.filter_status_expired.set(value);
+                    self.util_build_combined_filter_status_mix();
+                    self.requested_data.set(true);
+                    let mut lock_data = self.data.write().unwrap();
+                    *lock_data = None;
+                    app_action |= AppAction::BackendTask(BackendTask::WithdrawalTask(
+                        WithdrawalsTask::QueryWithdrawals(
+                            self.filter_status_mix.clone(),
+                            self.pagination_items_per_page.into(),
+                            None,
+                            true,
+                            true,
+                        )
+                    ));
+                }
+                ui.add_space(8.0);
+            });
         });
 
         ui.add_space(30.0);
         ui.heading(format!("Withdrawals ({})", data.withdrawals.len()));
-        let mut selected = self.pagination_items_per_page.get();
+        let mut selected = self.pagination_items_per_page;
         let old_selected = selected;
         ComboBox::from_label("Items per page")
             .selected_text(format!("{}", selected as usize))
@@ -249,14 +318,18 @@ impl WithdrawsStatusScreen {
                 ui.selectable_value(&mut selected, PaginationItemsPerPage::Items50, "50");
             });
         if selected != old_selected {
-            self.pagination_items_per_page.set(selected);
+            self.pagination_items_per_page = selected;
         }
-        let total_pages = (data.withdrawals.len() + (self.pagination_items_per_page.get() as usize) - 1) / (self.pagination_items_per_page.get() as usize);
+        let total_pages = (data.withdrawals.len() + (self.pagination_items_per_page as usize) - 1)
+            / (self.pagination_items_per_page as usize);
         if (total_pages > 0) {
-            let mut current_page = self.pagination_current_page.get().min(total_pages - 1); // Clamp to valid page range
+            let mut current_page = self
+                .pagination_current_page
+                .min(total_pages.saturating_sub(1)); // Clamp to valid page range
             // Calculate the slice of data for the current page
-            let start_index = current_page * (self.pagination_items_per_page.get() as usize);
-            let end_index = (start_index + (self.pagination_items_per_page.get() as usize)).min(data.withdrawals.len());
+            let start_index = current_page * (self.pagination_items_per_page as usize);
+            let end_index =
+                (start_index + (self.pagination_items_per_page as usize)).min(data.withdrawals.len());
             ui.separator();
             TableBuilder::new(ui)
                 .striped(true)
@@ -295,36 +368,50 @@ impl WithdrawsStatusScreen {
                 })
                 .body(|mut body| {
                     for record in &data.withdrawals[start_index..end_index] {
-                        body.row(18.0, |mut row| {
-                            row.col(|ui| {
-                                ui.label(&record.date_time.format("%Y-%m-%d %H:%M:%S").to_string());
+                        if self.filter_status_mix.contains(&record.status) {
+                            body.row(18.0, |mut row| {
+                                row.col(|ui| {
+                                    ui.label(&record.date_time.format("%Y-%m-%d %H:%M:%S").to_string());
+                                });
+                                row.col(|ui| {
+                                    ui.label(format!("{}", &record.status));
+                                });
+                                row.col(|ui| {
+                                    ui.label(format!(
+                                        "{:.2} DASH",
+                                        record.amount as f64 / (dash_to_credits!(1) as f64)
+                                    ));
+                                });
+                                row.col(|ui| {
+                                    ui.label(format!("{}", &record.owner_id));
+                                });
+                                row.col(|ui| {
+                                    ui.label(format!("{}", &record.address));
+                                });
                             });
-                            row.col(|ui| {
-                                ui.label(format!("{}", &record.status));
-                            });
-                            row.col(|ui| {
-                                ui.label(format!(
-                                    "{:.2} DASH",
-                                    record.amount as f64 / (dash_to_credits!(1) as f64)
-                                ));
-                            });
-                            row.col(|ui| {
-                                ui.label(format!("{}", &record.owner_id));
-                            });
-                            row.col(|ui| {
-                                ui.label(format!("{}", &record.address));
-                            });
-                        });
+                        }
                     }
                 });
             // Pagination controls at the bottom
             ui.horizontal(|ui| {
                 if ui.button("Previous").clicked() && current_page > 0 {
-                    self.pagination_current_page.set(current_page - 1)
+                    self.pagination_current_page = current_page - 1
                 }
                 ui.label(format!("Page {}/{}", current_page + 1, total_pages));
-                if ui.button("Next").clicked() && current_page < total_pages - 1 {
-                    self.pagination_current_page.set(current_page + 1)
+
+                if ui.button("Next").clicked() && current_page < total_pages {
+                    self.pagination_current_page = current_page + 1;
+                    if current_page == total_pages - 1 {
+                        app_action = AppAction::BackendTask(BackendTask::WithdrawalTask(
+                            WithdrawalsTask::QueryWithdrawals(
+                                self.filter_status_mix.clone(),
+                                self.pagination_items_per_page.into(),
+                                data.withdrawals.last().map(|withdrawal_record| withdrawal_record.document_id),
+                                false,
+                                false,
+                            ),
+                        ));
+                    }
                 }
             });
         }
@@ -336,7 +423,7 @@ impl WithdrawsStatusScreen {
         app_action
     }
 
-    fn load_spinner(&self, ui: &mut egui::Ui, size: f32) {
+    fn show_spinner(&self, ui: &mut egui::Ui, size: f32) {
         let (rect, _) = ui.allocate_exact_size(Vec2::splat(size), egui::Sense::hover());
         if !ui.is_rect_visible(rect) {
             return;
@@ -368,36 +455,30 @@ impl WithdrawsStatusScreen {
             );
         }
     }
-
-    fn util_build_combined_filter_status_mix(&self) {
+    fn util_build_combined_filter_status_mix(&mut self) {
         let mut res = vec![];
         if self.filter_status_queued.get() {
-            res.push(Value::U8(WithdrawalStatus::QUEUED as u8));
+            res.push(WithdrawalStatus::QUEUED);
         }
         if self.filter_status_pooled.get() {
-            res.push(Value::U8(WithdrawalStatus::POOLED as u8));
+            res.push(WithdrawalStatus::POOLED);
         }
         if self.filter_status_broadcasted.get() {
-            res.push(Value::U8(WithdrawalStatus::BROADCASTED as u8));
+            res.push(WithdrawalStatus::BROADCASTED);
         }
         if self.filter_status_complete.get() {
-            res.push(Value::U8(WithdrawalStatus::COMPLETE as u8));
+            res.push(WithdrawalStatus::COMPLETE);
         }
         if self.filter_status_expired.get() {
-            res.push(Value::U8(WithdrawalStatus::EXPIRED as u8));
+            res.push(WithdrawalStatus::EXPIRED);
         }
-
-        self.filter_status_mix.borrow_mut().clear();
-        self.filter_status_mix.borrow_mut().extend(res);
+        self.filter_status_mix = res;
     }
 }
 
 impl ScreenLike for WithdrawsStatusScreen {
     fn refresh(&mut self) {
-        let mut lock_data = self.data.lock().unwrap_or_else(|poisoned| {
-            // Mutex is poisoned, trying to recover the inner data
-            poisoned.into_inner()
-        });
+        let mut lock_data = self.data.write().unwrap();
         *lock_data = None;
         self.error_message = None;
     }
@@ -408,11 +489,12 @@ impl ScreenLike for WithdrawsStatusScreen {
     }
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         if let BackendTaskSuccessResult::WithdrawalStatus(data) = backend_task_success_result {
-            let mut lock_data = self.data.lock().unwrap_or_else(|poisoned| {
-                // Mutex is poisoned, trying to recover the inner data
-                poisoned.into_inner()
-            });
-            *lock_data = Some(data);
+            let mut lock_data = self.data.write().unwrap();
+            if let Some(old_data) = lock_data.as_mut() {
+                old_data.merge_with_data(data)
+            } else {
+                *lock_data = Some(data.try_into().expect("expected data to already exist"));
+            }
             self.error_message = None;
             self.requested_data.set(false);
         }
@@ -422,7 +504,13 @@ impl ScreenLike for WithdrawsStatusScreen {
         let query = (
             "Refresh",
             DesiredAppAction::BackendTask(BackendTask::WithdrawalTask(
-                WithdrawalsTask::QueryWithdrawals(self.filter_status_mix.borrow().clone()),
+                WithdrawalsTask::QueryWithdrawals(
+                    self.filter_status_mix.clone(),
+                    self.pagination_items_per_page.into(),
+                    None,
+                    true,
+                    true,
+                ),
             )),
         );
         let mut action = add_top_panel(

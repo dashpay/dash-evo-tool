@@ -51,6 +51,13 @@ enum PaginationItemsPerPage {
     Items50 = 50,
 }
 
+// Define a struct to represent each filter status
+struct FilterStatus<'a> {
+    label: &'a str,
+    value: &'a Cell<bool>,
+    status: WithdrawalStatus,
+}
+
 impl WithdrawsStatusScreen {
     pub fn new(app_context: &Arc<AppContext>) -> Self {
         Self {
@@ -181,15 +188,43 @@ impl WithdrawsStatusScreen {
 
         ui.add_space(30.0); // Optional spacing between the grids
 
-        egui::Grid::new("filters_grid").show(ui, |ui| {
-            ui.heading("Filters");
-            ui.end_row();
-            ui.horizontal(|ui| {
-                ui.label("Filter by status:");
-                ui.add_space(8.0); // Space after label
-                let mut value = self.filter_status_queued.get();
-                if ui.checkbox(&mut value, "Queued").changed() {
-                    self.filter_status_queued.set(value);
+        // Initialize the filters (this could be done in your `new` method or elsewhere)
+        let filter_statuses = vec![
+            FilterStatus {
+                label: "Queued",
+                value: &self.filter_status_queued,
+                status: WithdrawalStatus::QUEUED,
+            },
+            FilterStatus {
+                label: "Pooled",
+                value: &self.filter_status_pooled,
+                status: WithdrawalStatus::POOLED,
+            },
+            FilterStatus {
+                label: "Broadcasted",
+                value: &self.filter_status_broadcasted,
+                status: WithdrawalStatus::BROADCASTED,
+            },
+            FilterStatus {
+                label: "Complete",
+                value: &self.filter_status_complete,
+                status: WithdrawalStatus::COMPLETE,
+            },
+            FilterStatus {
+                label: "Expired",
+                value: &self.filter_status_expired,
+                status: WithdrawalStatus::EXPIRED,
+            },
+        ];
+
+        // In your `show_withdraws_data` method, replace the repetitive code with a loop
+        ui.horizontal(|ui| {
+            ui.label("Filter by status:");
+            ui.add_space(8.0); // Space after label
+            for filter in &filter_statuses {
+                let mut value = filter.value.get();
+                if ui.checkbox(&mut value, filter.label).changed() {
+                    filter.value.set(value);
                     self.util_build_combined_filter_status_mix();
                     self.requested_data.set(true);
                     app_action |= AppAction::BackendTask(BackendTask::WithdrawalTask(
@@ -197,47 +232,9 @@ impl WithdrawsStatusScreen {
                     ));
                 }
                 ui.add_space(8.0);
-                let mut value = self.filter_status_pooled.get();
-                if ui.checkbox(&mut value, "Pooled").changed() {
-                    self.filter_status_pooled.set(value);
-                    self.util_build_combined_filter_status_mix();
-                    self.requested_data.set(true);
-                    app_action |= AppAction::BackendTask(BackendTask::WithdrawalTask(
-                        WithdrawalsTask::QueryWithdrawals(self.filter_status_mix.borrow().clone()),
-                    ));
-                }
-                ui.add_space(8.0);
-                let mut value = self.filter_status_broadcasted.get();
-                if ui.checkbox(&mut value, "Broadcasted").changed() {
-                    self.filter_status_broadcasted.set(value);
-                    self.util_build_combined_filter_status_mix();
-                    self.requested_data.set(true);
-                    app_action |= AppAction::BackendTask(BackendTask::WithdrawalTask(
-                        WithdrawalsTask::QueryWithdrawals(self.filter_status_mix.borrow().clone()),
-                    ));
-                }
-                ui.add_space(8.0);
-                let mut value = self.filter_status_complete.get();
-                if ui.checkbox(&mut value, "Complete").changed() {
-                    self.filter_status_complete.set(value);
-                    self.util_build_combined_filter_status_mix();
-                    self.requested_data.set(true);
-                    app_action |= AppAction::BackendTask(BackendTask::WithdrawalTask(
-                        WithdrawalsTask::QueryWithdrawals(self.filter_status_mix.borrow().clone()),
-                    ));
-                }
-                ui.add_space(8.0);
-                let mut value = self.filter_status_expired.get();
-                if ui.checkbox(&mut value, "Expired").changed() {
-                    self.filter_status_expired.set(value);
-                    self.util_build_combined_filter_status_mix();
-                    self.requested_data.set(true);
-                    app_action |= AppAction::BackendTask(BackendTask::WithdrawalTask(
-                        WithdrawalsTask::QueryWithdrawals(self.filter_status_mix.borrow().clone()),
-                    ));
-                }
-            });
+            }
         });
+
         ui.add_space(30.0);
         ui.heading(format!("Withdrawals ({})", data.withdrawals.len()));
         let mut selected = self.pagination_items_per_page.get();

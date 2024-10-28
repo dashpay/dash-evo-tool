@@ -53,12 +53,6 @@ enum PaginationItemsPerPage {
     Items50 = 50,
 }
 
-struct FilterStatus<'a> {
-    label: &'a str,
-    value: Cell<bool>,
-    status: WithdrawalStatus,
-}
-
 impl From<PaginationItemsPerPage> for u32 {
     fn from(item: PaginationItemsPerPage) -> Self {
         item as u32
@@ -209,60 +203,104 @@ impl WithdrawsStatusScreen {
                 ));
                 ui.end_row();
             });
-
         ui.add_space(30.0); // Optional spacing between the grids
-
-        // Initialize the filters (this could be done in your `new` method or elsewhere)
-        let filter_statuses = vec![
-            FilterStatus {
-                label: "Queued",
-                value: self.filter_status_queued.clone(),
-                status: WithdrawalStatus::QUEUED,
-            },
-            FilterStatus {
-                label: "Pooled",
-                value: self.filter_status_pooled.clone(),
-                status: WithdrawalStatus::POOLED,
-            },
-            FilterStatus {
-                label: "Broadcasted",
-                value: self.filter_status_broadcasted.clone(),
-                status: WithdrawalStatus::BROADCASTED,
-            },
-            FilterStatus {
-                label: "Complete",
-                value: self.filter_status_complete.clone(),
-                status: WithdrawalStatus::COMPLETE,
-            },
-            FilterStatus {
-                label: "Expired",
-                value: self.filter_status_expired.clone(),
-                status: WithdrawalStatus::EXPIRED,
-            },
-        ];
         egui::Grid::new("filters_grid").show(ui, |ui| {
             ui.heading("Filters");
             ui.end_row();
             ui.horizontal(|ui| {
                 ui.label("Filter by status:");
                 ui.add_space(8.0); // Space after label
-                for filter in &filter_statuses {
-                    let mut value = filter.value.get();
-                    if ui.checkbox(&mut value, filter.label).changed() {
-                        filter.value.set(value);
-                        self.util_build_combined_filter_status_mix();
-                        self.requested_data.set(true);
-                        app_action |= AppAction::BackendTask(BackendTask::WithdrawalTask(
-                            WithdrawalsTask::QueryWithdrawals(
-                                self.filter_status_mix.clone(),
-                                self.pagination_items_per_page.into(),
-                                None,
-                                true,
-                                true,
-                            )
-                        ));
-                    }
+
+                let mut value = self.filter_status_queued.get();
+                if ui.checkbox(&mut value, "Queued").changed() {
+                    self.filter_status_queued.set(value);
+                    self.util_build_combined_filter_status_mix();
+                    self.requested_data.set(true);
+                    let mut lock_data = self.data.write().unwrap();
+                    *lock_data = None;
+                    app_action |= AppAction::BackendTask(BackendTask::WithdrawalTask(
+                        WithdrawalsTask::QueryWithdrawals(
+                            self.filter_status_mix.clone(),
+                            self.pagination_items_per_page.into(),
+                            None,
+                            true,
+                            true,
+                        )
+                    ));
                 }
+                ui.add_space(8.0);
+                let mut value = self.filter_status_pooled.get();
+                if ui.checkbox(&mut value, "Pooled").changed() {
+                    self.filter_status_pooled.set(value);
+                    self.util_build_combined_filter_status_mix();
+                    self.requested_data.set(true);
+                    let mut lock_data = self.data.write().unwrap();
+                    *lock_data = None;
+                    app_action |= AppAction::BackendTask(BackendTask::WithdrawalTask(
+                        WithdrawalsTask::QueryWithdrawals(
+                            self.filter_status_mix.clone(),
+                            self.pagination_items_per_page.into(),
+                            None,
+                            true,
+                            true,
+                        )
+                    ));
+                }
+                ui.add_space(8.0);
+                let mut value = self.filter_status_broadcasted.get();
+                if ui.checkbox(&mut value, "Broadcasted").changed() {
+                    self.filter_status_broadcasted.set(value);
+                    self.util_build_combined_filter_status_mix();
+                    self.requested_data.set(true);
+                    let mut lock_data = self.data.write().unwrap();
+                    *lock_data = None;
+                    app_action |= AppAction::BackendTask(BackendTask::WithdrawalTask(
+                        WithdrawalsTask::QueryWithdrawals(
+                            self.filter_status_mix.clone(),
+                            self.pagination_items_per_page.into(),
+                            None,
+                            true,
+                            true,
+                        )
+                    ));
+                }
+                ui.add_space(8.0);
+                let mut value = self.filter_status_complete.get();
+                if ui.checkbox(&mut value, "Complete").changed() {
+                    self.filter_status_complete.set(value);
+                    self.util_build_combined_filter_status_mix();
+                    self.requested_data.set(true);
+                    let mut lock_data = self.data.write().unwrap();
+                    *lock_data = None;
+                    app_action |= AppAction::BackendTask(BackendTask::WithdrawalTask(
+                        WithdrawalsTask::QueryWithdrawals(
+                            self.filter_status_mix.clone(),
+                            self.pagination_items_per_page.into(),
+                            None,
+                            true,
+                            true,
+                        )
+                    ));
+                }
+                ui.add_space(8.0);
+                let mut value = self.filter_status_expired.get();
+                if ui.checkbox(&mut value, "Expired").changed() {
+                    self.filter_status_expired.set(value);
+                    self.util_build_combined_filter_status_mix();
+                    self.requested_data.set(true);
+                    let mut lock_data = self.data.write().unwrap();
+                    *lock_data = None;
+                    app_action |= AppAction::BackendTask(BackendTask::WithdrawalTask(
+                        WithdrawalsTask::QueryWithdrawals(
+                            self.filter_status_mix.clone(),
+                            self.pagination_items_per_page.into(),
+                            None,
+                            true,
+                            true,
+                        )
+                    ));
+                }
+                ui.add_space(8.0);
             });
         });
         ui.add_space(30.0);
@@ -329,26 +367,28 @@ impl WithdrawsStatusScreen {
                 })
                 .body(|mut body| {
                     for record in &data.withdrawals[start_index..end_index] {
-                        body.row(18.0, |mut row| {
-                            row.col(|ui| {
-                                ui.label(&record.date_time.format("%Y-%m-%d %H:%M:%S").to_string());
+                        if self.filter_status_mix.contains(&record.status) {
+                            body.row(18.0, |mut row| {
+                                row.col(|ui| {
+                                    ui.label(&record.date_time.format("%Y-%m-%d %H:%M:%S").to_string());
+                                });
+                                row.col(|ui| {
+                                    ui.label(format!("{}", &record.status));
+                                });
+                                row.col(|ui| {
+                                    ui.label(format!(
+                                        "{:.2} DASH",
+                                        record.amount as f64 / (dash_to_credits!(1) as f64)
+                                    ));
+                                });
+                                row.col(|ui| {
+                                    ui.label(format!("{}", &record.owner_id));
+                                });
+                                row.col(|ui| {
+                                    ui.label(format!("{}", &record.address));
+                                });
                             });
-                            row.col(|ui| {
-                                ui.label(format!("{}", &record.status));
-                            });
-                            row.col(|ui| {
-                                ui.label(format!(
-                                    "{:.2} DASH",
-                                    record.amount as f64 / (dash_to_credits!(1) as f64)
-                                ));
-                            });
-                            row.col(|ui| {
-                                ui.label(format!("{}", &record.owner_id));
-                            });
-                            row.col(|ui| {
-                                ui.label(format!("{}", &record.address));
-                            });
-                        });
+                        }
                     }
                 });
             // Pagination controls at the bottom

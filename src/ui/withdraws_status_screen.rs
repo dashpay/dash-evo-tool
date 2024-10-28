@@ -84,7 +84,8 @@ impl WithdrawsStatusScreen {
 
     fn show_input_field(&mut self, ui: &mut Ui) {}
 
-    fn show_output(&mut self, ui: &mut egui::Ui) {
+    fn show_output(&mut self, ui: &mut egui::Ui) -> AppAction {
+        let mut action = AppAction::None;
         if self.error_message.is_some() {
             ui.centered_and_justified(|ui| {
                 ui.heading(self.error_message.as_ref().unwrap());
@@ -95,9 +96,10 @@ impl WithdrawsStatusScreen {
             if let Some(mut data) = lock_data {
                 let sorted_data = self.sort_withdraws_data(data.withdrawals.as_slice());
                 data.withdrawals = sorted_data;
-                self.show_withdraws_data(ui, &data);
+                action |= self.show_withdraws_data(ui, &data);
             }
         }
+        action
     }
 
     fn sort_withdraws_data(&self, data: &[WithdrawRecord]) -> Vec<WithdrawRecord> {
@@ -131,7 +133,8 @@ impl WithdrawsStatusScreen {
         }
     }
 
-    fn show_withdraws_data(&mut self, ui: &mut egui::Ui, data: &WithdrawStatusData) {
+    fn show_withdraws_data(&mut self, ui: &mut egui::Ui, data: &WithdrawStatusData) -> AppAction {
+        let mut action = AppAction::None;
         egui::Grid::new("general_info_grid")
             .num_columns(2)
             .spacing([20.0, 8.0]) // Adjust spacing as needed
@@ -301,10 +304,23 @@ impl WithdrawsStatusScreen {
 
             ui.label(format!("Page {}/{}", current_page + 1, total_pages));
 
-            if ui.button("Next").clicked() && current_page < total_pages - 1 {
-                self.pagination_current_page = current_page + 1
+            if ui.button("Next").clicked() && current_page < total_pages {
+                self.pagination_current_page = current_page + 1;
+                if current_page == total_pages - 1 {
+                    action = AppAction::BackendTask(BackendTask::WithdrawalTask(
+                        WithdrawalsTask::QueryWithdrawals(
+                            self.filter_status_mix.clone(),
+                            self.pagination_items_per_page.into(),
+                            data.withdrawals.last().map(|withdrawal_record| withdrawal_record.document_id),
+                            false,
+                            false,
+                        ),
+                    ));
+                }
             }
         });
+
+        action
     }
 
     fn util_build_combined_filter_status_mix(&mut self) {
@@ -378,7 +394,7 @@ impl ScreenLike for WithdrawsStatusScreen {
 
         egui::CentralPanel::default().show(ctx, |ui| {
             self.show_input_field(ui);
-            self.show_output(ui);
+            action |= self.show_output(ui);
         });
 
         action

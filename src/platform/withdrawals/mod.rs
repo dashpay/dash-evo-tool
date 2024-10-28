@@ -48,6 +48,7 @@ pub struct WithdrawRecord {
     pub status: WithdrawalStatus,
     pub amount: Credits,
     pub owner_id: Identifier,
+    pub document_id: Identifier,
     pub address: Address,
 }
 
@@ -326,6 +327,7 @@ fn util_convert_document_to_record(
         status,
         amount,
         owner_id,
+        document_id: document.id(),
         address,
     })
 }

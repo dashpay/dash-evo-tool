@@ -16,9 +16,15 @@ pub fn create_app_user_data_directory_if_not_exists() {
     fs::create_dir_all(app_data_dir).expect("Failed to create config directory");
 }
 
-pub fn app_user_data_file_path(filename: String) -> PathBuf {
+pub fn app_user_data_file_path(filename: &str) -> Result<PathBuf, std::io::Error> {
+    if filename.is_empty() || filename.contains(std::path::is_separator) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Invalid filename",
+        ));
+    }
     let app_data_dir = app_user_data_dir_path();
-    app_data_dir.join(filename)
+    Ok(app_data_dir.join(filename))
 }
 
 pub fn copy_mainnet_env_file_if_not_exists() {
@@ -27,9 +33,10 @@ pub fn copy_mainnet_env_file_if_not_exists() {
     if env_mainnet_file.exists() && env_mainnet_file.is_file() {
     } else {
         let env_example_file = PathBuf::from(".env.example");
+        let target_env_file_path = app_user_data_file_path(".env").expect("should create target env file path");
         fs::copy(
             &env_example_file,
-            app_user_data_file_path(".env".parse().unwrap()),
+            target_env_file_path,
         )
         .expect("Failed to copy main net env file");
     }

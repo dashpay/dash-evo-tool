@@ -106,7 +106,8 @@ impl AppState {
         create_app_user_data_directory_if_not_exists();
         copy_mainnet_env_file_if_not_exists();
         initialize_logger();
-        let db = Arc::new(Database::new(app_user_data_file_path("data.db".to_string())).unwrap());
+        let db_file_path = app_user_data_file_path("data.db").expect("should create db file path");
+        let db = Arc::new(Database::new(db_file_path).unwrap());
         db.initialize().unwrap();
 
         let settings = db.get_settings().expect("expected to get settings");

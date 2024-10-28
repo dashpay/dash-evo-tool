@@ -1,7 +1,7 @@
 use crate::app::{AppAction, DesiredAppAction};
 use crate::context::AppContext;
 use crate::platform::withdrawals::{
-    WithdrawRecord, WithdrawStatusData, WithdrawStatusPartialData, WithdrawalsTask,
+    WithdrawRecord, WithdrawStatusData, WithdrawalsTask,
 };
 use crate::platform::{BackendTask, BackendTaskSuccessResult};
 use crate::ui::components::left_panel::add_left_panel;
@@ -10,25 +10,23 @@ use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::dpp::dash_to_credits;
 use dash_sdk::dpp::data_contracts::withdrawals_contract::WithdrawalStatus;
 use dash_sdk::dpp::document::DocumentV0Getters;
-use dash_sdk::dpp::platform_value::Value;
 use egui::{Color32, ComboBox, Context, Stroke, Ui, Vec2};
 use egui_extras::{Column, TableBuilder};
 use itertools::Itertools;
-use std::cell::{Cell, RefCell};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, RwLock};
 
 pub struct WithdrawsStatusScreen {
     pub app_context: Arc<AppContext>,
-    requested_data: Cell<bool>,
-    first_load: Cell<bool>,
+    requested_data: bool,
+    first_load: bool,
     data: Arc<RwLock<Option<WithdrawStatusData>>>,
-    sort_column: Cell<Option<SortColumn>>,
-    sort_ascending: Cell<bool>,
-    filter_status_queued: Cell<bool>,
-    filter_status_pooled: Cell<bool>,
-    filter_status_broadcasted: Cell<bool>,
-    filter_status_complete: Cell<bool>,
-    filter_status_expired: Cell<bool>,
+    sort_column: Option<SortColumn>,
+    sort_ascending: bool,
+    filter_status_queued: bool,
+    filter_status_pooled: bool,
+    filter_status_broadcasted: bool,
+    filter_status_complete: bool,
+    filter_status_expired: bool,
     filter_status_mix: Vec<WithdrawalStatus>,
     pagination_current_page: usize,
     pagination_items_per_page: PaginationItemsPerPage,
@@ -64,16 +62,16 @@ impl WithdrawsStatusScreen {
         Self {
             app_context: app_context.clone(),
             data: Arc::new(RwLock::new(None)),
-            first_load: Cell::new(true),
-            requested_data: Cell::new(false),
-            sort_ascending: Cell::from(false),
-            sort_column: Cell::from(Some(SortColumn::DateTime)),
+            first_load: true,
+            requested_data: false,
+            sort_ascending: false,
+            sort_column: Some(SortColumn::DateTime),
             error_message: None,
-            filter_status_queued: Cell::new(true),
-            filter_status_pooled: Cell::new(true),
-            filter_status_broadcasted: Cell::new(true),
-            filter_status_complete: Cell::new(true),
-            filter_status_expired: Cell::new(false),
+            filter_status_queued: true,
+            filter_status_pooled: true,
+            filter_status_broadcasted: true,
+            filter_status_complete: true,
+            filter_status_expired: false,
             filter_status_mix: vec![
                 WithdrawalStatus::QUEUED,
                 WithdrawalStatus::POOLED,
@@ -90,9 +88,9 @@ impl WithdrawsStatusScreen {
 
     fn show_output(&mut self, ui: &mut egui::Ui) -> AppAction {
         let mut app_action = AppAction::None;
-        if self.first_load.get() {
-            self.first_load.set(false);
-            self.requested_data.set(true);
+        if self.first_load {
+            self.first_load = false;
+            self.requested_data = true;
             app_action |= AppAction::BackendTask(BackendTask::WithdrawalTask(
                 WithdrawalsTask::QueryWithdrawals(
                     self.filter_status_mix.clone(),
@@ -103,7 +101,7 @@ impl WithdrawsStatusScreen {
                 )
             ));
         }
-        if self.requested_data.get() {
+        if self.requested_data {
             ui.centered_and_justified(|ui| {
                 self.show_spinner(ui, 75.0);
             });
@@ -120,7 +118,7 @@ impl WithdrawsStatusScreen {
                 data.withdrawals = sorted_data;
                 app_action |= self.show_withdraws_data(ui, &data);
             } else {
-                self.requested_data.set(true);
+                self.requested_data = true;
                 app_action |= AppAction::BackendTask(BackendTask::WithdrawalTask(
                     WithdrawalsTask::QueryWithdrawals(
                         self.filter_status_mix.clone(),
@@ -137,7 +135,7 @@ impl WithdrawsStatusScreen {
 
     fn sort_withdraws_data(&self, data: &[WithdrawRecord]) -> Vec<WithdrawRecord> {
         let mut result_data = data.to_vec();
-        if let Some(column) = self.sort_column.get() {
+        if let Some(column) = self.sort_column {
             let compare = |a: &WithdrawRecord, b: &WithdrawRecord| -> std::cmp::Ordering {
                 let ord = match column {
                     SortColumn::DateTime => a.date_time.cmp(&b.date_time),
@@ -146,7 +144,7 @@ impl WithdrawsStatusScreen {
                     SortColumn::OwnerId => a.owner_id.cmp(&b.owner_id),
                     SortColumn::Destination => a.address.cmp(&b.address),
                 };
-                if self.sort_ascending.get() {
+                if self.sort_ascending {
                     ord
                 } else {
                     ord.reverse()
@@ -157,12 +155,12 @@ impl WithdrawsStatusScreen {
         result_data
     }
 
-    fn handle_column_click(&self, current_sort: SortColumn) {
-        if self.sort_column.get() == Some(current_sort) {
-            self.sort_ascending.set(!self.sort_ascending.get());
+    fn handle_column_click(&mut self, current_sort: SortColumn) {
+        if self.sort_column == Some(current_sort) {
+            self.sort_ascending = !self.sort_ascending;
         } else {
-            self.sort_column.set(Some(current_sort));
-            self.sort_ascending.set(true);
+            self.sort_column = Some(current_sort);
+            self.sort_ascending = true;
         }
     }
 
@@ -211,11 +209,9 @@ impl WithdrawsStatusScreen {
                 ui.label("Filter by status:");
                 ui.add_space(8.0); // Space after label
 
-                let mut value = self.filter_status_queued.get();
-                if ui.checkbox(&mut value, "Queued").changed() {
-                    self.filter_status_queued.set(value);
+                if ui.checkbox(&mut self.filter_status_queued, "Queued").changed() {
                     self.util_build_combined_filter_status_mix();
-                    self.requested_data.set(true);
+                    self.requested_data = true;
                     let mut lock_data = self.data.write().unwrap();
                     *lock_data = None;
                     app_action |= AppAction::BackendTask(BackendTask::WithdrawalTask(
@@ -229,11 +225,9 @@ impl WithdrawsStatusScreen {
                     ));
                 }
                 ui.add_space(8.0);
-                let mut value = self.filter_status_pooled.get();
-                if ui.checkbox(&mut value, "Pooled").changed() {
-                    self.filter_status_pooled.set(value);
+                if ui.checkbox(&mut self.filter_status_pooled, "Pooled").changed() {
                     self.util_build_combined_filter_status_mix();
-                    self.requested_data.set(true);
+                    self.requested_data = true;
                     let mut lock_data = self.data.write().unwrap();
                     *lock_data = None;
                     app_action |= AppAction::BackendTask(BackendTask::WithdrawalTask(
@@ -247,11 +241,9 @@ impl WithdrawsStatusScreen {
                     ));
                 }
                 ui.add_space(8.0);
-                let mut value = self.filter_status_broadcasted.get();
-                if ui.checkbox(&mut value, "Broadcasted").changed() {
-                    self.filter_status_broadcasted.set(value);
+                if ui.checkbox(&mut self.filter_status_broadcasted, "Broadcasted").changed() {
                     self.util_build_combined_filter_status_mix();
-                    self.requested_data.set(true);
+                    self.requested_data = true;
                     let mut lock_data = self.data.write().unwrap();
                     *lock_data = None;
                     app_action |= AppAction::BackendTask(BackendTask::WithdrawalTask(
@@ -265,11 +257,9 @@ impl WithdrawsStatusScreen {
                     ));
                 }
                 ui.add_space(8.0);
-                let mut value = self.filter_status_complete.get();
-                if ui.checkbox(&mut value, "Complete").changed() {
-                    self.filter_status_complete.set(value);
+                if ui.checkbox(&mut self.filter_status_complete, "Complete").changed() {
                     self.util_build_combined_filter_status_mix();
-                    self.requested_data.set(true);
+                    self.requested_data = true;
                     let mut lock_data = self.data.write().unwrap();
                     *lock_data = None;
                     app_action |= AppAction::BackendTask(BackendTask::WithdrawalTask(
@@ -283,11 +273,9 @@ impl WithdrawsStatusScreen {
                     ));
                 }
                 ui.add_space(8.0);
-                let mut value = self.filter_status_expired.get();
-                if ui.checkbox(&mut value, "Expired").changed() {
-                    self.filter_status_expired.set(value);
+                if ui.checkbox(&mut self.filter_status_expired, "Expired").changed() {
                     self.util_build_combined_filter_status_mix();
-                    self.requested_data.set(true);
+                    self.requested_data = true;
                     let mut lock_data = self.data.write().unwrap();
                     *lock_data = None;
                     app_action |= AppAction::BackendTask(BackendTask::WithdrawalTask(
@@ -457,19 +445,19 @@ impl WithdrawsStatusScreen {
     }
     fn util_build_combined_filter_status_mix(&mut self) {
         let mut res = vec![];
-        if self.filter_status_queued.get() {
+        if self.filter_status_queued {
             res.push(WithdrawalStatus::QUEUED);
         }
-        if self.filter_status_pooled.get() {
+        if self.filter_status_pooled {
             res.push(WithdrawalStatus::POOLED);
         }
-        if self.filter_status_broadcasted.get() {
+        if self.filter_status_broadcasted {
             res.push(WithdrawalStatus::BROADCASTED);
         }
-        if self.filter_status_complete.get() {
+        if self.filter_status_complete {
             res.push(WithdrawalStatus::COMPLETE);
         }
-        if self.filter_status_expired.get() {
+        if self.filter_status_expired {
             res.push(WithdrawalStatus::EXPIRED);
         }
         self.filter_status_mix = res;
@@ -485,7 +473,7 @@ impl ScreenLike for WithdrawsStatusScreen {
 
     fn display_message(&mut self, message: &str, message_type: MessageType) {
         self.error_message = Some(message.to_string());
-        self.requested_data.set(false);
+        self.requested_data = false;
     }
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         if let BackendTaskSuccessResult::WithdrawalStatus(data) = backend_task_success_result {
@@ -496,7 +484,7 @@ impl ScreenLike for WithdrawsStatusScreen {
                 *lock_data = Some(data.try_into().expect("expected data to already exist"));
             }
             self.error_message = None;
-            self.requested_data.set(false);
+            self.requested_data = false;
         }
     }
 

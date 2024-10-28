@@ -1,10 +1,11 @@
 use std::panic;
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
+use crate::app_dir::app_user_data_file_path;
 
 pub fn initialize_logger() {
     // Initialize log file, with improved error handling
-    let log_file = match std::fs::File::create("explorer.log") {
+    let log_file = match std::fs::File::create(app_user_data_file_path("explorer.log".to_string())) {
         Ok(file) => file,
         Err(e) => panic!("Failed to create log file: {:?}", e),
     };

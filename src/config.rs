@@ -4,6 +4,7 @@ use dash_sdk::dapi_client::AddressList;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::sdk::Uri;
 use serde::Deserialize;
+use crate::app_dir::app_user_data_file_path;
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct Config {
@@ -59,7 +60,7 @@ impl Config {
     /// Loads the configuration for all networks from environment variables and `.env` file.
     pub fn load() -> Result<Self, ConfigError> {
         // Load the .env file if available
-        if let Err(err) = dotenvy::from_path(".env") {
+        if let Err(err) = dotenvy::from_path(app_user_data_file_path(".env".to_string())) {
             tracing::warn!(
                 ?err,
                 "Failed to load .env file. Continuing with environment variables."

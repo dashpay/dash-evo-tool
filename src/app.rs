@@ -18,6 +18,7 @@ use std::sync::Arc;
 use std::time::Instant;
 use std::vec;
 use tokio::sync::mpsc;
+use crate::app_dir::{app_user_data_file_path, copy_mainnet_env_file_if_not_exists, create_app_user_data_directory_if_not_exists};
 
 #[derive(Debug, From)]
 pub enum TaskResult {
@@ -99,8 +100,10 @@ impl BitOrAssign for AppAction {
 }
 impl AppState {
     pub fn new() -> Self {
+        create_app_user_data_directory_if_not_exists();
+        copy_mainnet_env_file_if_not_exists();
         initialize_logger();
-        let db = Arc::new(Database::new("identities.db").unwrap());
+        let db = Arc::new(Database::new(app_user_data_file_path("data.db".to_string())).unwrap());
         db.initialize().unwrap();
 
         let settings = db.get_settings().expect("expected to get settings");

@@ -10,6 +10,7 @@ mod context;
 mod context_provider;
 mod model;
 mod platform;
+mod app_dir;
 
 fn main() -> eframe::Result<()> {
     // Initialize the Tokio runtime

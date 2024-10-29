@@ -6,7 +6,7 @@ mod vote_on_dpns_name;
 use crate::app::TaskResult;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
-use crate::platform::BackendTaskSuccessResult;
+use crate::backend_task::BackendTaskSuccessResult;
 use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
 use dash_sdk::Sdk;
 use std::sync::Arc;

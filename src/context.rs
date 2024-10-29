@@ -1,3 +1,4 @@
+use std::collections::{BTreeMap, BTreeSet};
 use crate::config::{Config, NetworkConfig};
 use crate::context_provider::Provider;
 use crate::database::Database;
@@ -10,7 +11,7 @@ use crate::ui::RootScreenType;
 use dash_sdk::dashcore_rpc::dashcore::{InstantLock, Transaction};
 use dash_sdk::dashcore_rpc::{Auth, Client};
 use dash_sdk::dpp::dashcore::transaction::special_transaction::TransactionPayload::AssetLockPayloadType;
-use dash_sdk::dpp::dashcore::{Address, Network, OutPoint};
+use dash_sdk::dpp::dashcore::{Address, Network, OutPoint, Txid};
 use dash_sdk::dpp::identity::state_transition::asset_lock_proof::chain::ChainAssetLockProof;
 use dash_sdk::dpp::identity::state_transition::asset_lock_proof::InstantAssetLockProof;
 use dash_sdk::dpp::identity::Identity;
@@ -21,7 +22,8 @@ use dash_sdk::platform::DataContract;
 use dash_sdk::Sdk;
 use rusqlite::Result;
 use std::sync::atomic::AtomicBool;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
+use dash_sdk::dpp::platform_value::Bytes32;
 
 #[derive(Debug)]
 pub struct AppContext {
@@ -35,6 +37,7 @@ pub struct AppContext {
     pub(crate) core_client: Client,
     pub(crate) has_wallet: AtomicBool,
     pub(crate) wallets: RwLock<Vec<Arc<RwLock<Wallet>>>>,
+    pub(crate) transactions_waiting_for_finality: Mutex<BTreeMap<Txid, Option<AssetLockProof>>>,
     pub(crate) platform_version: &'static PlatformVersion,
 }
 
@@ -91,6 +94,7 @@ impl AppContext {
             core_client,
             has_wallet: (!wallets.is_empty()).into(),
             wallets: RwLock::new(wallets),
+            transactions_waiting_for_finality: Mutex::new(BTreeMap::new()),
             platform_version: PlatformVersion::latest(),
         };
 
@@ -121,6 +125,15 @@ impl AppContext {
     ) -> Result<()> {
         self.db
             .insert_local_qualified_identity(qualified_identity, self)
+    }
+
+    /// This is for before we know if Platform will accept the identity
+    pub fn insert_local_qualified_identity_in_creation(
+        &self,
+        qualified_identity: &QualifiedIdentity,
+    ) -> Result<()> {
+        self.db
+            .insert_local_qualified_identity_in_creation(qualified_identity, self)
     }
 
     pub fn load_local_qualified_identities(&self) -> Result<Vec<QualifiedIdentity>> {
@@ -168,7 +181,7 @@ impl AppContext {
     }
 
     /// Store the asset lock transaction in the database and update the wallet.
-    pub(crate) fn store_asset_lock_in_db(
+    pub(crate) fn received_asset_lock_finality(
         &self,
         tx: &Transaction,
         islock: Option<InstantLock>,
@@ -178,6 +191,31 @@ impl AppContext {
         let Some(AssetLockPayloadType(payload)) = tx.special_transaction_payload.as_ref() else {
             return Ok(());
         };
+
+        let proof = if let Some(islock) = islock.as_ref() {
+            // Deserialize the InstantLock
+            Some(AssetLockProof::Instant(InstantAssetLockProof::new(
+                islock.clone(),
+                tx.clone(),
+                0,
+            )))
+        } else if let Some(chain_locked_height) = chain_locked_height {
+            Some(AssetLockProof::Chain(ChainAssetLockProof {
+                core_chain_locked_height: chain_locked_height,
+                out_point: OutPoint::new(tx.txid(), 0),
+            }))
+        } else {
+            None
+        };
+
+        {
+            let mut transactions = self.transactions_waiting_for_finality.lock().unwrap();
+
+            if let Some(asset_lock_proof) = transactions.get_mut(&tx.txid()) {
+                *asset_lock_proof = proof.clone();
+            }
+        }
+
 
         // Identify the wallet associated with the transaction
         let wallets = self.wallets.read().unwrap();
@@ -204,22 +242,6 @@ impl AppContext {
                 // Store the asset lock transaction in the database
                 self.db
                     .store_asset_lock_transaction(tx, amount, islock.as_ref(), &wallet.seed)?;
-
-                let proof = if let Some(islock) = islock.as_ref() {
-                    // Deserialize the InstantLock
-                    Some(AssetLockProof::Instant(InstantAssetLockProof::new(
-                        islock.clone(),
-                        tx.clone(),
-                        0,
-                    )))
-                } else if let Some(chain_locked_height) = chain_locked_height {
-                    Some(AssetLockProof::Chain(ChainAssetLockProof {
-                        core_chain_locked_height: chain_locked_height,
-                        out_point: OutPoint::new(tx.txid(), 0),
-                    }))
-                } else {
-                    None
-                };
 
                 let first = payload
                     .credit_outputs

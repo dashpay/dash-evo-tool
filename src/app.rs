@@ -1,8 +1,8 @@
-use crate::components::instant_send_listener::InstantSendListener;
+use crate::components::instant_send_listener::{CoreZMQListener, ZMQMessage};
 use crate::context::AppContext;
 use crate::database::Database;
 use crate::logging::initialize_logger;
-use crate::platform::{BackendTask, BackendTaskSuccessResult};
+use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::ui::document_query_screen::DocumentQueryScreen;
 use crate::ui::dpns_contested_names_screen::DPNSContestedNamesScreen;
 use crate::ui::identities::identities_screen::IdentitiesScreen;
@@ -43,9 +43,9 @@ pub struct AppState {
     pub chosen_network: Network,
     pub mainnet_app_context: Arc<AppContext>,
     pub testnet_app_context: Option<Arc<AppContext>>,
-    pub mainnet_instant_send_listener: InstantSendListener,
-    pub testnet_instant_send_listener: InstantSendListener,
-    pub instant_send_receiver: mpsc::Receiver<(Transaction, InstantLock, Network)>,
+    pub mainnet_core_zmq_listener: CoreZMQListener,
+    pub testnet_core_zmq_listener: CoreZMQListener,
+    pub core_message_receiver: mpsc::Receiver<(ZMQMessage, Network)>,
     pub task_result_sender: tokiompsc::Sender<TaskResult>, // Channel sender for sending task results
     pub task_result_receiver: tokiompsc::Receiver<TaskResult>, // Channel receiver for receiving task results
     last_repaint: Instant, // Track the last time we requested a repaint
@@ -161,14 +161,14 @@ impl AppState {
         let (instant_send_sender, instant_send_receiver) = mpsc::channel();
 
         // Pass the sender to the listener when creating it
-        let mainnet_instant_send_listener = InstantSendListener::spawn_listener(
+        let mainnet_core_zmq_listener = CoreZMQListener::spawn_listener(
             Network::Dash,
             "tcp://127.0.0.1:23708",
             instant_send_sender.clone(), // Clone the sender for each listener
         )
         .expect("Failed to create mainnet InstantSend listener");
 
-        let testnet_instant_send_listener = InstantSendListener::spawn_listener(
+        let testnet_core_zmq_listener = CoreZMQListener::spawn_listener(
             Network::Testnet,
             "tcp://127.0.0.1:23709",
             instant_send_sender, // Use the original sender or create a new one if needed
@@ -208,9 +208,9 @@ impl AppState {
             chosen_network,
             mainnet_app_context,
             testnet_app_context,
-            mainnet_instant_send_listener,
-            testnet_instant_send_listener,
-            instant_send_receiver,
+            mainnet_core_zmq_listener,
+            testnet_core_zmq_listener,
+            core_message_receiver: instant_send_receiver,
             task_result_sender,
             task_result_receiver,
             last_repaint,
@@ -357,7 +357,7 @@ impl App for AppState {
         }
 
         // **Poll the instant_send_receiver for any new InstantSend messages**
-        while let Ok((tx, islock, network)) = self.instant_send_receiver.try_recv() {
+        while let Ok((message, network)) = self.core_message_receiver.try_recv() {
             let app_context = match network {
                 Network::Dash => &self.mainnet_app_context,
                 Network::Testnet => {
@@ -371,9 +371,18 @@ impl App for AppState {
                 }
                 _ => continue,
             };
-            // Store the asset lock transaction in the database
-            if let Err(e) = app_context.store_asset_lock_in_db(&tx, Some(islock), None) {
-                eprintln!("Failed to store asset lock: {}", e);
+            match message {
+                ZMQMessage::ISLockedTransaction(tx, is_lock) => {
+                    // Store the asset lock transaction in the database
+                    if let Err(e) = app_context.received_asset_lock_finality(&tx, Some(is_lock), None) {
+                        eprintln!("Failed to store asset lock: {}", e);
+                    }
+                }
+                ZMQMessage::ChainLockedLockedTransaction(tx, height) => {
+                    if let Err(e) = app_context.received_asset_lock_finality(&tx, None, Some(height)) {
+                        eprintln!("Failed to store asset lock: {}", e);
+                    }
+                }
             }
         }
 

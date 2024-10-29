@@ -1,12 +1,12 @@
 use crate::app::AppAction;
 use crate::context::AppContext;
 use crate::model::wallet::Wallet;
-use crate::platform::identity::{
+use crate::backend_task::identity::{
     IdentityKeys, IdentityRegistrationInfo, IdentityRegistrationMethod, IdentityTask,
 };
-use crate::platform::{BackendTask, BackendTaskSuccessResult};
+use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::identities::add_new_identity_screen::AddNewIdentityScreenStep::{
+use crate::ui::identities::add_new_identity_screen::AddNewIdentityWalletFundedScreenStep::{
     ChooseFundingMethod, FundsReceived, ReadyToCreate,
 };
 use crate::ui::{MessageType, ScreenLike};
@@ -58,7 +58,7 @@ impl fmt::Display for FundingMethod {
 }
 
 #[derive(Eq, PartialEq, Ord, PartialOrd, Copy, Clone)]
-pub enum AddNewIdentityScreenStep {
+pub enum AddNewIdentityWalletFundedScreenStep {
     ChooseFundingMethod,
     FundsReceived,
     ReadyToCreate,
@@ -68,7 +68,7 @@ pub enum AddNewIdentityScreenStep {
 
 pub struct AddNewIdentityScreen {
     identity_id_number: u32,
-    step: Arc<RwLock<AddNewIdentityScreenStep>>,
+    step: Arc<RwLock<AddNewIdentityWalletFundedScreenStep>>,
     funding_asset_lock: Option<(AssetLockProof, Address)>,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     core_has_funding_address: Option<bool>,
@@ -117,7 +117,7 @@ impl AddNewIdentityScreen {
     pub fn new(app_context: &Arc<AppContext>) -> Self {
         Self {
             identity_id_number: 0,
-            step: Arc::new(RwLock::new(AddNewIdentityScreenStep::ChooseFundingMethod)),
+            step: Arc::new(RwLock::new(AddNewIdentityWalletFundedScreenStep::ChooseFundingMethod)),
             funding_asset_lock: None,
             selected_wallet: None,
             core_has_funding_address: None,
@@ -186,7 +186,7 @@ impl AddNewIdentityScreen {
                         // Check if expected balance is reached and update funding method and step.
                         if new_balance.to_sat() >= expected_balance {
                             *funding_method.write().unwrap() = FundingMethod::UseWalletBalance;
-                            *step.write().unwrap() = AddNewIdentityScreenStep::FundsReceived;
+                            *step.write().unwrap() = AddNewIdentityWalletFundedScreenStep::FundsReceived;
                             break;
                         }
                     }
@@ -501,7 +501,7 @@ impl AddNewIdentityScreen {
 
                         // Update the step to ready to create identity
                         let mut step = self.step.write().unwrap();
-                        *step = AddNewIdentityScreenStep::ReadyToCreate;
+                        *step = AddNewIdentityWalletFundedScreenStep::ReadyToCreate;
                     }
                 });
 
@@ -600,7 +600,7 @@ impl AddNewIdentityScreen {
                     };
 
                     let mut step = self.step.write().unwrap();
-                    *step = AddNewIdentityScreenStep::WaitingForPlatformAcceptance;
+                    *step = AddNewIdentityWalletFundedScreenStep::WaitingForPlatformAcceptance;
 
                     AppAction::BackendTask(BackendTask::IdentityTask(
                         IdentityTask::RegisterIdentity(identity_input),
@@ -629,7 +629,7 @@ impl AddNewIdentityScreen {
                 };
 
                 let mut step = self.step.write().unwrap();
-                *step = AddNewIdentityScreenStep::WaitingForAssetLock;
+                *step = AddNewIdentityWalletFundedScreenStep::WaitingForAssetLock;
 
                 // Create the backend task to register the identity
                 AppAction::BackendTask(BackendTask::IdentityTask(IdentityTask::RegisterIdentity(
@@ -761,7 +761,7 @@ impl ScreenLike for AddNewIdentityScreen {
     }
     fn display_task_result(&mut self, _backend_task_success_result: BackendTaskSuccessResult) {
         let mut step = self.step.write().unwrap();
-        *step = AddNewIdentityScreenStep::WaitingForPlatformAcceptance;
+        *step = AddNewIdentityWalletFundedScreenStep::WaitingForPlatformAcceptance;
     }
     fn ui(&mut self, ctx: &Context) -> AppAction {
         let mut action = add_top_panel(
@@ -870,11 +870,11 @@ impl ScreenLike for AddNewIdentityScreen {
                 }
             }
 
-            if step == AddNewIdentityScreenStep::WaitingForAssetLock {
+            if step == AddNewIdentityWalletFundedScreenStep::WaitingForAssetLock {
                 ui.heading("Waiting for Asset Lock");
             }
 
-            if step == AddNewIdentityScreenStep::WaitingForPlatformAcceptance {
+            if step == AddNewIdentityWalletFundedScreenStep::WaitingForPlatformAcceptance {
                 ui.heading("Waiting for Platform Acknowledgement");
             }
         });

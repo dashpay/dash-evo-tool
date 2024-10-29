@@ -9,7 +9,7 @@ mod components;
 mod context;
 mod context_provider;
 mod model;
-mod platform;
+mod backend_task;
 
 fn main() -> eframe::Result<()> {
     // Initialize the Tokio runtime

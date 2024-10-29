@@ -1,5 +1,5 @@
 use crate::context::AppContext;
-use crate::platform::BackendTaskSuccessResult;
+use crate::backend_task::BackendTaskSuccessResult;
 use dash_sdk::platform::{Document, DocumentQuery, FetchMany};
 use dash_sdk::Sdk;
 

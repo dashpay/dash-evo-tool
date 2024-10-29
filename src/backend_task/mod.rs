@@ -1,14 +1,15 @@
 use crate::app::TaskResult;
 use crate::context::AppContext;
-use crate::platform::contested_names::ContestedResourceTask;
-use crate::platform::contract::ContractTask;
-use crate::platform::core::{CoreItem, CoreTask};
-use crate::platform::document::DocumentTask;
-use crate::platform::identity::IdentityTask;
+use crate::backend_task::contested_names::ContestedResourceTask;
+use crate::backend_task::contract::ContractTask;
+use crate::backend_task::core::{CoreItem, CoreTask};
+use crate::backend_task::document::DocumentTask;
+use crate::backend_task::identity::IdentityTask;
 use dash_sdk::dpp::voting::votes::Vote;
 use dash_sdk::query_types::Documents;
 use std::sync::Arc;
 use tokio::sync::mpsc;
+use crate::model::qualified_identity::QualifiedIdentity;
 
 pub mod contested_names;
 pub mod contract;

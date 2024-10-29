@@ -4,6 +4,7 @@ mod refresh_identity;
 mod register_dpns_name;
 mod register_identity;
 mod withdraw_from_identity;
+mod transfer;
 
 use crate::app::TaskResult;
 use crate::context::AppContext;
@@ -21,10 +22,11 @@ use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
 use dash_sdk::dpp::identity::{KeyID, KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::prelude::AssetLockProof;
 use dash_sdk::dpp::ProtocolError;
-use dash_sdk::platform::{Identity, IdentityPublicKey};
+use dash_sdk::platform::{Identifier, Identity, IdentityPublicKey};
 use dash_sdk::Sdk;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, RwLock};
+use dash_sdk::dpp::dashcore::{Transaction, Txid};
 use tokio::sync::mpsc;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -141,7 +143,7 @@ impl IdentityKeys {
 pub type IdentityIndex = u32;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IdentityRegistrationMethod {
-    UseAssetLock(Address, AssetLockProof),
+    UseAssetLock(Address, AssetLockProof, Transaction),
     FundWithWallet(Duffs, IdentityIndex),
 }
 
@@ -173,6 +175,7 @@ pub(crate) enum IdentityTask {
     RegisterIdentity(IdentityRegistrationInfo),
     AddKeyToIdentity(QualifiedIdentity, IdentityPublicKey, [u8; 32]),
     WithdrawFromIdentity(QualifiedIdentity, Option<Address>, Credits, Option<KeyID>),
+    Transfer(QualifiedIdentity, Identifier, Credits, Option<KeyID>),
     RegisterDpnsName(RegisterDpnsNameInput),
     RefreshIdentity(QualifiedIdentity),
 }
@@ -370,11 +373,15 @@ impl AppContext {
                     .await
             }
             IdentityTask::RegisterIdentity(registration_info) => {
-                self.register_identity(registration_info).await
+                self.register_identity(registration_info, sender).await
             }
             IdentityTask::RegisterDpnsName(input) => self.register_dpns_name(sdk, input).await,
             IdentityTask::RefreshIdentity(qualified_identity) => {
                 self.refresh_identity(sdk, qualified_identity, sender).await
+            }
+            IdentityTask::Transfer(qualified_identity, to_identifier, credits, id) => {
+                self.transfer_to_identity(qualified_identity, to_identifier, credits, id)
+                    .await
             }
         }
     }

@@ -1,8 +1,8 @@
 use crate::app::AppAction;
 use crate::context::AppContext;
 use crate::model::qualified_identity::IdentityType;
-use crate::platform::identity::{IdentityInputToLoad, IdentityTask};
-use crate::platform::BackendTask;
+use crate::backend_task::identity::{IdentityInputToLoad, IdentityTask};
+use crate::backend_task::BackendTask;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::{MessageType, ScreenLike};
 use dash_sdk::dashcore_rpc::dashcore::Network;

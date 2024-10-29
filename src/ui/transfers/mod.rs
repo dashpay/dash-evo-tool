@@ -1,8 +1,8 @@
 use crate::app::AppAction;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
-use crate::platform::identity::IdentityTask;
-use crate::platform::BackendTask;
+use crate::backend_task::identity::IdentityTask;
+use crate::backend_task::BackendTask;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::key_info_screen::KeyInfoScreen;
 use crate::ui::{MessageType, Screen, ScreenLike};

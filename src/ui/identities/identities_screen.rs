@@ -4,8 +4,8 @@ use crate::model::qualified_identity::EncryptedPrivateKeyTarget::{
     PrivateKeyOnMainIdentity, PrivateKeyOnVoterIdentity,
 };
 use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
-use crate::platform::identity::IdentityTask;
-use crate::platform::BackendTask;
+use crate::backend_task::identity::IdentityTask;
+use crate::backend_task::BackendTask;
 use crate::ui::add_key_screen::AddKeyScreen;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::top_panel::add_top_panel;

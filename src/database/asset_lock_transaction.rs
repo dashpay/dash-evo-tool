@@ -1,8 +1,5 @@
 use crate::database::Database;
-use dash_sdk::dpp::dashcore::{
-    consensus::{deserialize, serialize},
-    InstantLock, Transaction,
-};
+use dash_sdk::dpp::dashcore::{consensus::{deserialize, serialize}, InstantLock, Transaction, Txid};
 use rusqlite::params;
 
 impl Database {
@@ -98,13 +95,29 @@ impl Database {
     /// Sets the identity ID for an asset lock transaction.
     pub fn set_asset_lock_identity_id(
         &self,
-        txid: &str,
+        txid: &[u8],
         identity_id: Option<&[u8]>,
     ) -> rusqlite::Result<()> {
         let conn = self.conn.lock().unwrap();
 
         conn.execute(
-            "UPDATE asset_lock_transaction SET identity_id = ?1 WHERE tx_id = ?2",
+            "UPDATE asset_lock_transaction SET identity_id = ?1, identity_id_potentially_in_creation IS NULL WHERE tx_id = ?2",
+            params![identity_id, txid],
+        )?;
+
+        Ok(())
+    }
+
+    /// Sets the identity ID for an asset lock transaction.
+    pub fn set_asset_lock_identity_id_before_confirmation_by_network(
+        &self,
+        txid: &[u8],
+        identity_id: Option<&[u8]>,
+    ) -> rusqlite::Result<()> {
+        let conn = self.conn.lock().unwrap();
+
+        conn.execute(
+            "UPDATE asset_lock_transaction SET identity_id_potentially_in_creation = ?1 WHERE tx_id = ?2",
             params![identity_id, txid],
         )?;
 

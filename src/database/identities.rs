@@ -26,6 +26,26 @@ impl Database {
         Ok(())
     }
 
+    pub fn insert_local_qualified_identity_in_creation(
+        &self,
+        qualified_identity: &QualifiedIdentity,
+        app_context: &AppContext,
+    ) -> rusqlite::Result<()> {
+        let id = qualified_identity.identity.id().to_vec();
+        let data = qualified_identity.to_bytes();
+        let alias = qualified_identity.alias.clone();
+        let identity_type = format!("{:?}", qualified_identity.identity_type);
+
+        let network = app_context.network_string();
+
+        self.execute(
+            "INSERT OR REPLACE INTO identity (id, data, is_local, alias, identity_type, network, is_in_creation)
+         VALUES (?, ?, 1, ?, ?, ?, 1)",
+            params![id, data, alias, identity_type, network],
+        )?;
+        Ok(())
+    }
+
     pub fn insert_remote_identity_if_not_exists(
         &self,
         identifier: &Identifier,

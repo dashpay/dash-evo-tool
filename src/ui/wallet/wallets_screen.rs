@@ -1,8 +1,8 @@
 use crate::app::{AppAction, DesiredAppAction};
 use crate::context::AppContext;
 use crate::model::wallet::Wallet;
-use crate::platform::core::CoreTask;
-use crate::platform::BackendTask;
+use crate::backend_task::core::CoreTask;
+use crate::backend_task::BackendTask;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::{MessageType, RootScreenType, ScreenLike, ScreenType};

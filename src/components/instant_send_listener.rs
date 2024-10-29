@@ -9,18 +9,26 @@ use std::sync::{
 };
 use std::thread;
 use std::time::Duration;
+use dash_sdk::dpp::prelude::CoreBlockHeight;
 use zmq::Context;
 
-pub struct InstantSendListener {
+pub struct CoreZMQListener {
     should_stop: Arc<AtomicBool>,
     handle: Option<thread::JoinHandle<()>>,
 }
 
-impl InstantSendListener {
+pub enum ZMQMessage {
+    ISLockedTransaction(Transaction, InstantLock),
+    ChainLockedLockedTransaction(Transaction, CoreBlockHeight),
+}
+
+pub const IS_LOCK_SIG_MSG: &[u8; 12] = b"rawtxlocksig";
+
+impl CoreZMQListener {
     pub fn spawn_listener(
         network: Network,
         endpoint: &str,
-        sender: mpsc::Sender<(Transaction, InstantLock, Network)>,
+        sender: mpsc::Sender<(ZMQMessage, Network)>,
     ) -> Result<Self, Box<dyn Error>> {
         let should_stop = Arc::new(AtomicBool::new(false));
         let endpoint = endpoint.to_string();
@@ -37,7 +45,7 @@ impl InstantSendListener {
 
             // Subscribe to the "rawtxlocksig" events.
             socket
-                .set_subscribe(b"rawtxlocksig")
+                .set_subscribe(IS_LOCK_SIG_MSG)
                 .expect("Failed to subscribe to rawtxlocksig");
 
             println!("Connected to ZMQ at {}", endpoint);
@@ -78,7 +86,7 @@ impl InstantSendListener {
                                                 Ok(islock) => {
                                                     // Send the Transaction, InstantLock, and Network back to the main thread
                                                     if let Err(e) =
-                                                        sender_clone.send((tx, islock, network))
+                                                        sender_clone.send((ZMQMessage::ISLockedTransaction(tx, islock), network))
                                                     {
                                                         eprintln!(
                                                             "Error sending data to main thread: {}",
@@ -125,7 +133,7 @@ impl InstantSendListener {
             drop(socket);
         });
 
-        Ok(InstantSendListener {
+        Ok(CoreZMQListener {
             should_stop,
             handle: Some(handle),
         })

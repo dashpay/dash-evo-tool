@@ -1,6 +1,6 @@
 # Dash Evo Tool
 
-**Dash Evo Tool** is a user interface for interacting with Dash Evolution. The current version enables the following actions:
+**Dash Evo Tool** is a graphical user interface for easily interacting with Dash Evolution. The current version enables the following actions:
 
 - Registering a DPNS username
 - Viewing active DPNS username contests

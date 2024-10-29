@@ -26,7 +26,7 @@ use dash_sdk::platform::{Identifier, Identity, IdentityPublicKey};
 use dash_sdk::Sdk;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, RwLock};
-use dash_sdk::dpp::dashcore::{Transaction, Txid};
+use dash_sdk::dpp::dashcore::Transaction;
 use tokio::sync::mpsc;
 
 #[derive(Debug, Clone, PartialEq)]

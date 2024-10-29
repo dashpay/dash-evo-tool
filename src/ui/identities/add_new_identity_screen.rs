@@ -14,7 +14,7 @@ use arboard::Clipboard;
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dpp::balances::credits::Duffs;
-use dash_sdk::dpp::dashcore::PrivateKey;
+use dash_sdk::dpp::dashcore::{PrivateKey, Transaction};
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::prelude::AssetLockProof;
 use eframe::egui::Context;
@@ -69,7 +69,7 @@ pub enum AddNewIdentityWalletFundedScreenStep {
 pub struct AddNewIdentityScreen {
     identity_id_number: u32,
     step: Arc<RwLock<AddNewIdentityWalletFundedScreenStep>>,
-    funding_asset_lock: Option<(AssetLockProof, Address)>,
+    funding_asset_lock: Option<(Transaction, AssetLockProof, Address)>,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     core_has_funding_address: Option<bool>,
     funding_address: Option<Address>,
@@ -462,7 +462,7 @@ impl AddNewIdentityScreen {
         ui.heading("Select an unused asset lock:");
 
         // Track the index of the currently selected asset lock (if any)
-        let selected_index = self.funding_asset_lock.as_ref().and_then(|(proof, _)| {
+        let selected_index = self.funding_asset_lock.as_ref().and_then(|(_, proof, _)| {
             wallet
                 .unused_asset_locks
                 .iter()
@@ -495,6 +495,7 @@ impl AddNewIdentityScreen {
                     if ui.button("Select").clicked() {
                         // Update the selected asset lock
                         self.funding_asset_lock = Some((
+                            tx.clone(),
                             proof.clone().expect("Asset lock proof is required"),
                             address.clone(),
                         ));
@@ -588,7 +589,7 @@ impl AddNewIdentityScreen {
         };
         match funding_method {
             FundingMethod::UseUnusedAssetLock => {
-                if let Some((funding_asset_lock, address)) = self.funding_asset_lock.clone() {
+                if let Some((tx, funding_asset_lock, address)) = self.funding_asset_lock.clone() {
                     let identity_input = IdentityRegistrationInfo {
                         alias_input: self.alias_input.clone(),
                         keys: self.identity_keys.clone(),
@@ -596,6 +597,7 @@ impl AddNewIdentityScreen {
                         identity_registration_method: IdentityRegistrationMethod::UseAssetLock(
                             address,
                             funding_asset_lock,
+                            tx,
                         ),
                     };
 

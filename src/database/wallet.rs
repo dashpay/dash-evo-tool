@@ -6,7 +6,6 @@ use dash_sdk::dpp::balances::credits::Duffs;
 use dash_sdk::dpp::dashcore::bip32::DerivationPath;
 use dash_sdk::dpp::dashcore::consensus::deserialize;
 use dash_sdk::dpp::dashcore::hashes::Hash;
-use dash_sdk::dpp::dashcore::opcodes::all::OP_RETURN;
 use dash_sdk::dpp::dashcore::{
     InstantLock, Network, OutPoint, ScriptBuf, Transaction, TxOut, Txid,
 };

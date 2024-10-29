@@ -9,8 +9,6 @@ use dash_sdk::dpp::voting::votes::Vote;
 use dash_sdk::query_types::Documents;
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use crate::model::qualified_identity::QualifiedIdentity;
-
 pub mod contested_names;
 pub mod contract;
 pub mod core;

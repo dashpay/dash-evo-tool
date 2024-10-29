@@ -10,7 +10,7 @@ use crate::ui::network_chooser_screen::NetworkChooserScreen;
 use crate::ui::transition_visualizer_screen::TransitionVisualizerScreen;
 use crate::ui::wallet::wallets_screen::WalletsBalancesScreen;
 use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike, ScreenType};
-use dash_sdk::dpp::dashcore::{InstantLock, Network, Transaction};
+use dash_sdk::dpp::dashcore::Network;
 use derive_more::From;
 use eframe::{egui, App};
 use std::collections::BTreeMap;

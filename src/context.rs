@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use crate::config::{Config, NetworkConfig};
 use crate::context_provider::Provider;
 use crate::database::Database;
@@ -23,7 +23,6 @@ use dash_sdk::Sdk;
 use rusqlite::Result;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, RwLock};
-use dash_sdk::dpp::platform_value::Bytes32;
 
 #[derive(Debug)]
 pub struct AppContext {

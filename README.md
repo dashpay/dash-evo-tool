@@ -36,15 +36,15 @@ Before you begin, ensure you have met the following requirements:
 
 - **Rust**: Install Rust using [rustup](https://rustup.rs/):
 
-  <<<
+  ```
   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-  <<<
+  ```
 
 - Update Rust to the latest version:
 
-  <<<
+  ```
   rustup update
-  <<<
+  ```
 
 ### Dash Core Wallet Setup
 
@@ -58,21 +58,21 @@ To install Dash Evo Tool:
 
 1. **Clone the repository**:
 
-   <<<
+   ```
    git clone https://github.com/dashpay/dash-evo-tool.git
-   <<<
+   ```
 
 2. **Navigate to the project directory**:
 
-   <<<
+   ```
    cd dash-evo-tool
-   <<<
+   ```
 
 3. **Build the project**:
 
-   <<<
+   ```
    cargo build --release
-   <<<
+   ```
 
    The executable will be in the `target/release` directory.
 
@@ -82,9 +82,9 @@ To install Dash Evo Tool:
 
 Run the application using:
 
-<<<
+```
 cargo run
-<<<
+```
 
 ### Connect to a Network
 
@@ -177,21 +177,21 @@ Contributions are welcome!
 
 - **Create a Branch**:
 
-  <<<
+  ```
   git checkout -b feature/YourFeatureName
-  <<<
+  ```
 
 - **Commit Changes**: Make your changes and commit them with descriptive messages.
 
-  <<<
+  ```
   git commit -m "Add feature: YourFeatureName"
-  <<<
+  ```
 
 - **Push to Branch**:
 
-  <<<
+  ```
   git push origin feature/YourFeatureName
-  <<<
+  ```
 
 - **Submit Pull Request**: Open a pull request on GitHub and describe your changes.
 

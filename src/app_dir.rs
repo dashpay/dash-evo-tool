@@ -3,7 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 const QUALIFIER: &str = ""; // Typically empty on macOS and Linux
-const ORGANIZATION: &str = "DashCoreGroup";
+const ORGANIZATION: &str = "";
 const APPLICATION: &str = "DashEvoTool";
 
 pub fn app_user_data_dir_path() -> Result<PathBuf, std::io::Error> {

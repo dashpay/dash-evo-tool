@@ -78,6 +78,10 @@ To install Dash Evo Tool:
 
 ## Getting Started
 
+### Create `.env` File
+
+Create a new file in the root of the dash-evo-tool directory named `.env` and copy the contents of `.env.example` into it. No changes to the file are necessary in this version.
+
 ### Start the App
 
 Run the application using:

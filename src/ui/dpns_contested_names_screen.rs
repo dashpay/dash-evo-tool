@@ -1,11 +1,11 @@
 use super::components::dpns_subscreen_chooser_panel::add_dpns_subscreen_chooser_panel;
 use super::{Screen, ScreenType};
 use crate::app::{AppAction, DesiredAppAction};
+use crate::backend_task::contested_names::ContestedResourceTask;
+use crate::backend_task::BackendTask;
 use crate::context::AppContext;
 use crate::model::contested_name::{ContestState, ContestedName};
 use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
-use crate::backend_task::contested_names::ContestedResourceTask;
-use crate::backend_task::BackendTask;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::identities::add_existing_identity_screen::AddExistingIdentityScreen;

@@ -3,8 +3,8 @@ use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
 use dash_sdk::dpp::identity::KeyID;
-use dash_sdk::platform::Identifier;
 use dash_sdk::platform::transition::transfer::TransferToIdentity;
+use dash_sdk::platform::Identifier;
 
 impl AppContext {
     pub(super) async fn transfer_to_identity(

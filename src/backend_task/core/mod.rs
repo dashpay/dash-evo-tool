@@ -1,8 +1,8 @@
 mod refresh_wallet_info;
 
+use crate::backend_task::BackendTaskSuccessResult;
 use crate::context::AppContext;
 use crate::model::wallet::Wallet;
-use crate::backend_task::BackendTaskSuccessResult;
 use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dpp::dashcore::{ChainLock, Network};
 use std::sync::{Arc, RwLock};

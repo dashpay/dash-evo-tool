@@ -1,5 +1,8 @@
 use crate::database::Database;
-use dash_sdk::dpp::dashcore::{consensus::{deserialize, serialize}, InstantLock, Transaction};
+use dash_sdk::dpp::dashcore::{
+    consensus::{deserialize, serialize},
+    InstantLock, Transaction,
+};
 use rusqlite::params;
 
 impl Database {

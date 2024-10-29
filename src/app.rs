@@ -1,8 +1,8 @@
+use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::components::instant_send_listener::{CoreZMQListener, ZMQMessage};
 use crate::context::AppContext;
 use crate::database::Database;
 use crate::logging::initialize_logger;
-use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::ui::document_query_screen::DocumentQueryScreen;
 use crate::ui::dpns_contested_names_screen::{DPNSContestedNamesScreen, DPNSSubscreen};
 use crate::ui::identities::identities_screen::IdentitiesScreen;
@@ -402,12 +402,16 @@ impl App for AppState {
             match message {
                 ZMQMessage::ISLockedTransaction(tx, is_lock) => {
                     // Store the asset lock transaction in the database
-                    if let Err(e) = app_context.received_asset_lock_finality(&tx, Some(is_lock), None) {
+                    if let Err(e) =
+                        app_context.received_asset_lock_finality(&tx, Some(is_lock), None)
+                    {
                         eprintln!("Failed to store asset lock: {}", e);
                     }
                 }
                 ZMQMessage::ChainLockedLockedTransaction(tx, height) => {
-                    if let Err(e) = app_context.received_asset_lock_finality(&tx, None, Some(height)) {
+                    if let Err(e) =
+                        app_context.received_asset_lock_finality(&tx, None, Some(height))
+                    {
                         eprintln!("Failed to store asset lock: {}", e);
                     }
                 }

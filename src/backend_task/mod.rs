@@ -1,15 +1,15 @@
 use crate::app::TaskResult;
-use crate::context::AppContext;
 use crate::backend_task::contested_names::ContestedResourceTask;
 use crate::backend_task::contract::ContractTask;
 use crate::backend_task::core::{CoreItem, CoreTask};
 use crate::backend_task::document::DocumentTask;
 use crate::backend_task::identity::IdentityTask;
+use crate::backend_task::withdrawals::{WithdrawStatusPartialData, WithdrawalsTask};
+use crate::context::AppContext;
 use dash_sdk::dpp::voting::votes::Vote;
 use dash_sdk::query_types::Documents;
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use crate::backend_task::withdrawals::{WithdrawalsTask, WithdrawStatusPartialData};
 
 pub mod contested_names;
 pub mod contract;

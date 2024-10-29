@@ -1,8 +1,8 @@
 use crate::app::AppAction;
-use crate::context::AppContext;
-use crate::model::qualified_identity::QualifiedIdentity;
 use crate::backend_task::identity::IdentityTask;
 use crate::backend_task::BackendTask;
+use crate::context::AppContext;
+use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::key_info_screen::KeyInfoScreen;
 use crate::ui::{MessageType, Screen, ScreenLike};
@@ -11,7 +11,8 @@ use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
-use dash_sdk::platform::IdentityPublicKey;
+use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+use dash_sdk::platform::{Identifier, IdentityPublicKey};
 use eframe::egui::{self, Context, Ui};
 use std::str::FromStr;
 use std::sync::Arc;
@@ -19,8 +20,8 @@ use std::sync::Arc;
 pub struct TransferScreen {
     pub identity: QualifiedIdentity,
     selected_key: Option<IdentityPublicKey>,
-    withdrawal_address: String,
-    withdrawal_amount: String,
+    receiver_identity_id: String,
+    amount: String,
     error_message: Option<String>,
     max_amount: u64,
     pub app_context: Arc<AppContext>,
@@ -33,8 +34,8 @@ impl TransferScreen {
         Self {
             identity,
             selected_key: None,
-            withdrawal_address: String::new(),
-            withdrawal_amount: String::new(),
+            receiver_identity_id: String::new(),
+            amount: String::new(),
             error_message: None,
             max_amount,
             app_context: app_context.clone(),
@@ -71,62 +72,41 @@ impl TransferScreen {
 
     fn render_amount_input(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
-            ui.label("Amount:");
+            ui.label("Amount in Dash:");
 
-            ui.text_edit_singleline(&mut self.withdrawal_amount);
-
-            if ui.button("Max").clicked() {
-                self.withdrawal_amount = self.max_amount.to_string();
-            }
+            ui.text_edit_singleline(&mut self.amount);
         });
     }
 
-    fn render_address_input(&mut self, ui: &mut Ui) {
-        let can_have_withdrawal_address = if let Some(key) = self.selected_key.as_ref() {
-            key.purpose() != Purpose::OWNER
-        } else {
-            true
-        };
-        if can_have_withdrawal_address || self.app_context.developer_mode {
-            ui.horizontal(|ui| {
-                ui.label("Address:");
+    fn render_to_identity_input(&mut self, ui: &mut Ui) {
+        ui.horizontal(|ui| {
+            ui.label("Receiver Identity Id:");
 
-                ui.text_edit_singleline(&mut self.withdrawal_address);
-            });
-        }
+            ui.text_edit_singleline(&mut self.receiver_identity_id);
+        });
     }
 
     fn show_confirmation_popup(&mut self, ui: &mut Ui) -> AppAction {
         let mut app_action = AppAction::None;
         let mut is_open = true;
-        egui::Window::new("Confirm Withdrawal")
+        egui::Window::new("Confirm Transfer")
             .collapsible(false)
             .open(&mut is_open)
             .show(ui.ctx(), |ui| {
-                let address = if self.withdrawal_address.is_empty() {
-                    None
-                } else {
-                    match Address::from_str(&self.withdrawal_address) {
-                        Ok(address) => Some(address.assume_checked()),
-                        Err(_) => {
-                            self.error_message = Some("Invalid withdrawal address".to_string());
-                            None
-                        }
-                    }
-                };
-
-                let message_address = if address.is_some() {
-                    self.withdrawal_address.clone()
-                } else if let Some(payout_address) = self
-                    .identity
-                    .masternode_payout_address(self.app_context.network)
-                {
-                    format!("masternode payout address {}", payout_address)
-                } else if !self.app_context.developer_mode {
-                    self.error_message = Some("No masternode payout address".to_string());
+                let identifier = if self.receiver_identity_id.is_empty() {
+                    self.error_message = Some("Invalid identifier".to_string());
                     return;
                 } else {
-                    "to default address".to_string()
+                    match Identifier::from_string_try_encodings(
+                        &self.receiver_identity_id,
+                        &[Encoding::Base58, Encoding::Hex],
+                    ) {
+                        Ok(identifier) => identifier,
+                        Err(_) => {
+                            self.error_message = Some("Invalid identifier".to_string());
+                            return;
+                        }
+                    }
                 };
 
                 let Some(selected_key) = self.selected_key.as_ref() else {
@@ -135,10 +115,10 @@ impl TransferScreen {
                 };
 
                 ui.label(format!(
-                    "Are you sure you want to withdraw {} Dash to {}",
-                    self.withdrawal_amount, message_address
+                    "Are you sure you want to transfer {} Dash to {}",
+                    self.amount, self.receiver_identity_id
                 ));
-                let parts: Vec<&str> = self.withdrawal_amount.split('.').collect();
+                let parts: Vec<&str> = self.amount.split('.').collect();
                 let mut credits: u128 = 0;
 
                 // Process the whole number part if it exists.
@@ -159,14 +139,13 @@ impl TransferScreen {
 
                 if ui.button("Confirm").clicked() {
                     self.confirmation_popup = false;
-                    app_action = AppAction::BackendTask(BackendTask::IdentityTask(
-                        IdentityTask::WithdrawFromIdentity(
+                    app_action =
+                        AppAction::BackendTask(BackendTask::IdentityTask(IdentityTask::Transfer(
                             self.identity.clone(),
-                            address,
+                            identifier,
                             credits as Credits,
                             Some(selected_key.id()),
-                        ),
-                    ));
+                        )));
                 }
                 if ui.button("Cancel").clicked() {
                     self.confirmation_popup = false;
@@ -231,7 +210,7 @@ impl ScreenLike for TransferScreen {
 
                 self.render_key_selection(ui);
                 self.render_amount_input(ui);
-                self.render_address_input(ui);
+                self.render_to_identity_input(ui);
 
                 if ui.button("Transfer").clicked() {
                     self.confirmation_popup = true;

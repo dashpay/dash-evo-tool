@@ -1,5 +1,6 @@
 use dash_sdk::dpp::dashcore::consensus::Decodable;
 use dash_sdk::dpp::dashcore::{InstantLock, Network, Transaction};
+use dash_sdk::dpp::prelude::CoreBlockHeight;
 use image::EncodableLayout;
 use std::error::Error;
 use std::io::Cursor;
@@ -9,7 +10,6 @@ use std::sync::{
 };
 use std::thread;
 use std::time::Duration;
-use dash_sdk::dpp::prelude::CoreBlockHeight;
 use zmq::Context;
 
 pub struct CoreZMQListener {
@@ -85,9 +85,10 @@ impl CoreZMQListener {
                                             match InstantLock::consensus_decode(&mut cursor) {
                                                 Ok(islock) => {
                                                     // Send the Transaction, InstantLock, and Network back to the main thread
-                                                    if let Err(e) =
-                                                        sender_clone.send((ZMQMessage::ISLockedTransaction(tx, islock), network))
-                                                    {
+                                                    if let Err(e) = sender_clone.send((
+                                                        ZMQMessage::ISLockedTransaction(tx, islock),
+                                                        network,
+                                                    )) {
                                                         eprintln!(
                                                             "Error sending data to main thread: {}",
                                                             e
@@ -111,8 +112,6 @@ impl CoreZMQListener {
                                     println!("Received unknown topic: {}", topic);
                                 }
                             }
-                        } else {
-                            println!("Received message without data for topic: {}", topic);
                         }
                     }
                     Err(e) => {

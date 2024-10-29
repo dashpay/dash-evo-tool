@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use crate::config::{Config, NetworkConfig};
 use crate::context_provider::Provider;
 use crate::database::Database;
@@ -12,6 +11,7 @@ use dash_sdk::dashcore_rpc::dashcore::{InstantLock, Transaction};
 use dash_sdk::dashcore_rpc::{Auth, Client};
 use dash_sdk::dpp::dashcore::transaction::special_transaction::TransactionPayload::AssetLockPayloadType;
 use dash_sdk::dpp::dashcore::{Address, Network, OutPoint, Txid};
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::state_transition::asset_lock_proof::chain::ChainAssetLockProof;
 use dash_sdk::dpp::identity::state_transition::asset_lock_proof::InstantAssetLockProof;
 use dash_sdk::dpp::identity::Identity;
@@ -21,9 +21,9 @@ use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::platform::DataContract;
 use dash_sdk::Sdk;
 use rusqlite::Result;
+use std::collections::BTreeMap;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, RwLock};
-use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 
 #[derive(Debug)]
 pub struct AppContext {
@@ -249,7 +249,6 @@ impl AppContext {
                 *asset_lock_proof = proof.clone();
             }
         }
-
 
         // Identify the wallet associated with the transaction
         let wallets = self.wallets.read().unwrap();

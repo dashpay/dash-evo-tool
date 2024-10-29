@@ -1,15 +1,16 @@
 use crate::app::{AppAction, DesiredAppAction};
+use crate::backend_task::identity::IdentityTask;
+use crate::backend_task::BackendTask;
 use crate::context::AppContext;
 use crate::model::qualified_identity::EncryptedPrivateKeyTarget::{
     PrivateKeyOnMainIdentity, PrivateKeyOnVoterIdentity,
 };
 use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
-use crate::backend_task::identity::IdentityTask;
-use crate::backend_task::BackendTask;
 use crate::ui::add_key_screen::AddKeyScreen;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::key_info_screen::KeyInfoScreen;
+use crate::ui::transfers::TransferScreen;
 use crate::ui::withdrawals::WithdrawalScreen;
 use crate::ui::{RootScreenType, Screen, ScreenLike, ScreenType};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -23,7 +24,6 @@ use egui::{Color32, Frame, Margin, RichText, Ui};
 use egui_extras::{Column, TableBuilder};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
-use crate::ui::transfers::TransferScreen;
 
 pub struct IdentitiesScreen {
     pub identities: Arc<Mutex<Vec<QualifiedIdentity>>>,

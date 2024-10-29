@@ -1,8 +1,8 @@
 use crate::app::AppAction;
-use crate::context::AppContext;
-use crate::model::contested_name::ContestedName;
 use crate::backend_task::contested_names::ContestedResourceTask;
 use crate::backend_task::BackendTask;
+use crate::context::AppContext;
+use crate::model::contested_name::ContestedName;
 use crate::ui::components::contract_chooser_panel::add_contract_chooser_panel;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::top_panel::add_top_panel;

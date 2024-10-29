@@ -1,11 +1,10 @@
 use crate::app::AppAction;
+use crate::backend_task::BackendTaskSuccessResult;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
-use crate::backend_task::BackendTaskSuccessResult;
 use crate::ui::add_key_screen::AddKeyScreen;
 use crate::ui::document_query_screen::DocumentQueryScreen;
 use crate::ui::dpns_contested_names_screen::DPNSContestedNamesScreen;
-use wallet::add_new_wallet_screen::AddNewWalletScreen;
 use crate::ui::key_info_screen::KeyInfoScreen;
 use crate::ui::keys_screen::KeysScreen;
 use crate::ui::network_chooser_screen::NetworkChooserScreen;
@@ -26,6 +25,7 @@ use identities::register_dpns_name_screen::RegisterDpnsNameScreen;
 use std::fmt;
 use std::hash::Hash;
 use std::sync::Arc;
+use wallet::add_new_wallet_screen::AddNewWalletScreen;
 
 mod add_key_screen;
 pub mod components;

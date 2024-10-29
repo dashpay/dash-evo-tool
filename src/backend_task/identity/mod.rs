@@ -3,8 +3,8 @@ mod load_identity;
 mod refresh_identity;
 mod register_dpns_name;
 mod register_identity;
-mod withdraw_from_identity;
 mod transfer;
+mod withdraw_from_identity;
 
 use crate::app::TaskResult;
 use crate::context::AppContext;
@@ -15,6 +15,7 @@ use crate::model::wallet::Wallet;
 use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
 use dash_sdk::dashcore_rpc::dashcore::{Address, PrivateKey};
 use dash_sdk::dpp::balances::credits::Duffs;
+use dash_sdk::dpp::dashcore::Transaction;
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
@@ -26,7 +27,6 @@ use dash_sdk::platform::{Identifier, Identity, IdentityPublicKey};
 use dash_sdk::Sdk;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, RwLock};
-use dash_sdk::dpp::dashcore::Transaction;
 use tokio::sync::mpsc;
 
 #[derive(Debug, Clone, PartialEq)]

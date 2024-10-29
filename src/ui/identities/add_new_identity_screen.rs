@@ -1,10 +1,10 @@
 use crate::app::AppAction;
-use crate::context::AppContext;
-use crate::model::wallet::Wallet;
 use crate::backend_task::identity::{
     IdentityKeys, IdentityRegistrationInfo, IdentityRegistrationMethod, IdentityTask,
 };
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
+use crate::context::AppContext;
+use crate::model::wallet::Wallet;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::identities::add_new_identity_screen::AddNewIdentityWalletFundedScreenStep::{
     ChooseFundingMethod, FundsReceived, ReadyToCreate,
@@ -117,7 +117,9 @@ impl AddNewIdentityScreen {
     pub fn new(app_context: &Arc<AppContext>) -> Self {
         Self {
             identity_id_number: 0,
-            step: Arc::new(RwLock::new(AddNewIdentityWalletFundedScreenStep::ChooseFundingMethod)),
+            step: Arc::new(RwLock::new(
+                AddNewIdentityWalletFundedScreenStep::ChooseFundingMethod,
+            )),
             funding_asset_lock: None,
             selected_wallet: None,
             core_has_funding_address: None,
@@ -186,7 +188,8 @@ impl AddNewIdentityScreen {
                         // Check if expected balance is reached and update funding method and step.
                         if new_balance.to_sat() >= expected_balance {
                             *funding_method.write().unwrap() = FundingMethod::UseWalletBalance;
-                            *step.write().unwrap() = AddNewIdentityWalletFundedScreenStep::FundsReceived;
+                            *step.write().unwrap() =
+                                AddNewIdentityWalletFundedScreenStep::FundsReceived;
                             break;
                         }
                     }

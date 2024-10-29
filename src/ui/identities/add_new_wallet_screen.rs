@@ -18,7 +18,6 @@ pub struct AddNewWalletScreen {
     passphrase: String,
     entropy_grid: U256EntropyGrid,
     selected_language: Language,
-    alias_input: String,
     wrote_it_down: bool,
     pub app_context: Arc<AppContext>,
 }
@@ -30,7 +29,6 @@ impl AddNewWalletScreen {
             passphrase: String::new(),
             entropy_grid: U256EntropyGrid::new(),
             selected_language: Language::English,
-            alias_input: String::new(),
             wrote_it_down: false,
             app_context: app_context.clone(),
         }

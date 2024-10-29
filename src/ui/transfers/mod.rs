@@ -13,7 +13,6 @@ use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicK
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::platform::IdentityPublicKey;
 use eframe::egui::{self, Context, Ui};
-use std::convert::identity;
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -181,7 +180,7 @@ impl TransferScreen {
 }
 
 impl ScreenLike for TransferScreen {
-    fn display_message(&mut self, message: &str, message_type: MessageType) {
+    fn display_message(&mut self, message: &str, _message_type: MessageType) {
         self.error_message = Some(message.to_string());
     }
 

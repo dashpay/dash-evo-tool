@@ -1,4 +1,4 @@
-use crate::config::{Config, NetworkConfig};
+use crate::config::Config;
 use crate::context_provider::Provider;
 use crate::database::Database;
 use crate::model::contested_name::ContestedName;
@@ -9,7 +9,6 @@ use crate::sdk_wrapper::initialize_sdk;
 use crate::ui::RootScreenType;
 use dash_sdk::dashcore_rpc::{Auth, Client};
 use dash_sdk::dpp::dashcore::Network;
-use dash_sdk::dpp::identity::Identity;
 use dash_sdk::dpp::system_data_contracts::{load_system_data_contract, SystemDataContract};
 use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::platform::DataContract;
@@ -25,7 +24,6 @@ pub struct AppContext {
     pub(crate) devnet_name: Option<String>,
     pub(crate) db: Arc<Database>,
     pub(crate) sdk: Sdk,
-    pub(crate) config: NetworkConfig,
     pub(crate) dpns_contract: Arc<DataContract>,
     pub(crate) core_client: Client,
     pub(crate) has_wallet: AtomicBool,
@@ -81,7 +79,6 @@ impl AppContext {
             devnet_name: None,
             db,
             sdk,
-            config: network_config,
             dpns_contract: Arc::new(dpns_contract),
             core_client,
             has_wallet: (!wallets.is_empty()).into(),
@@ -103,11 +100,6 @@ impl AppContext {
             Network::Regtest => "regtest".to_string(),
             _ => "unknown".to_string(),
         }
-    }
-
-    pub fn insert_local_identity(&self, identity: &Identity) -> Result<()> {
-        self.db
-            .insert_local_qualified_identity(&identity.clone().into(), self)
     }
 
     pub fn insert_local_qualified_identity(
@@ -136,19 +128,14 @@ impl AppContext {
             .insert_or_update_settings(self.network, root_screen_type)
     }
 
-    /// Retrieves the current `RootScreenType` from the settings
-    pub fn get_settings(&self) -> Result<Option<(Network, RootScreenType)>> {
-        self.db.get_settings()
-    }
-
     /// Retrieves the DPNS contract along with other contracts from the database.
-    pub fn get_contracts(
+    pub fn _get_contracts(
         &self,
         limit: Option<u32>,
         offset: Option<u32>,
     ) -> Result<Vec<QualifiedContract>> {
         // Get contracts from the database
-        let mut contracts = self.db.get_contracts(self, limit, offset)?;
+        let mut contracts = self.db._get_contracts(self, limit, offset)?;
 
         // Add the DPNS contract to the list
         let dpns_contract = QualifiedContract {

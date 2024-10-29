@@ -6,18 +6,13 @@ use dash_sdk::dapi_grpc::core::v0::{
     BroadcastTransactionRequest, GetBlockchainStatusRequest, GetTransactionRequest,
     GetTransactionResponse,
 };
-use dash_sdk::dashcore_rpc::dashcore::PrivateKey;
-use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dpp::dashcore::psbt::serialize::Serialize;
 use dash_sdk::dpp::dashcore::{Address, Transaction};
 use dash_sdk::dpp::prelude::AssetLockProof;
 use dash_sdk::platform::transition::put_identity::PutIdentity;
 use dash_sdk::platform::Identity;
-use dash_sdk::{RequestSettings, Sdk};
-use rand::prelude::StdRng;
-use std::collections::BTreeMap;
+use dash_sdk::RequestSettings;
 use std::time::Duration;
-use tokio::sync::MutexGuard;
 
 impl AppContext {
     pub(crate) async fn broadcast_and_retrieve_asset_lock(
@@ -108,7 +103,7 @@ impl AppContext {
         input: IdentityRegistrationInfo,
     ) -> Result<(), String> {
         let IdentityRegistrationInfo {
-            alias_input,
+            alias_input: _,
             amount,
             keys,
             identity_index,

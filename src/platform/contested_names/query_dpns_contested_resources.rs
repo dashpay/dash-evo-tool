@@ -78,7 +78,7 @@ impl AppContext {
                 // Acquire a permit from the semaphore
                 let _permit: OwnedSemaphorePermit = semaphore.acquire_owned().await.unwrap();
 
-                match self_ref.query_dpns_ending_times(sdk, sender.clone()).await {
+                match self_ref.query_dpns_ending_times(sdk).await {
                     Ok(_) => {
                         // Send a refresh message if the query succeeded
                         sender
@@ -112,10 +112,7 @@ impl AppContext {
                 let _permit: OwnedSemaphorePermit = semaphore.acquire_owned().await.unwrap();
 
                 // Perform the query
-                match self_ref
-                    .query_dpns_vote_contenders(&name, sdk, sender.clone())
-                    .await
-                {
+                match self_ref.query_dpns_vote_contenders(&name, sdk).await {
                     Ok(_) => {
                         // Send a refresh message if the query succeeded
                         sender

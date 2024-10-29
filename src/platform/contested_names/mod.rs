@@ -15,7 +15,6 @@ use tokio::sync::mpsc;
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum ContestedResourceTask {
     QueryDPNSContestedResources,
-    QueryDPNSVoteContenders(String),
     VoteOnDPNSName(String, ResourceVoteChoice, Vec<QualifiedIdentity>),
 }
 
@@ -30,10 +29,6 @@ impl AppContext {
         match &task {
             ContestedResourceTask::QueryDPNSContestedResources => self
                 .query_dpns_contested_resources(sdk, sender)
-                .await
-                .map(|_| BackendTaskSuccessResult::None),
-            ContestedResourceTask::QueryDPNSVoteContenders(name) => self
-                .query_dpns_vote_contenders(name, sdk, sender)
                 .await
                 .map(|_| BackendTaskSuccessResult::None),
             ContestedResourceTask::VoteOnDPNSName(name, vote_choice, voters) => {

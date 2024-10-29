@@ -5,15 +5,15 @@ use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getter
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use egui::{Context, Frame, Margin, SidePanel};
 use std::sync::Arc;
-pub fn add_contract_chooser_panel(
+pub fn _add_contract_chooser_panel(
     ctx: &Context,
     current_search_term: &mut String,
     app_context: &Arc<AppContext>,
 ) -> AppAction {
-    let mut action = AppAction::None;
+    let action = AppAction::None;
 
     // Fetch contracts from the app context
-    let contracts = app_context.get_contracts(None, None).unwrap_or_else(|e| {
+    let contracts = app_context._get_contracts(None, None).unwrap_or_else(|e| {
         eprintln!("Error fetching contracts: {}", e);
         vec![]
     });

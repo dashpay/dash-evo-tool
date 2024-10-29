@@ -354,7 +354,7 @@ impl ScreenLike for IdentitiesScreen {
             right_buttons,
         );
 
-        action |= add_left_panel(ctx, &self.app_context, RootScreenType::RootScreenIdentities);
+        action |= add_left_panel(ctx, RootScreenType::RootScreenIdentities);
 
         let identities = self.identities.lock().unwrap();
 

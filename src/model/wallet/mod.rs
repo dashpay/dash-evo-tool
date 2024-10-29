@@ -175,24 +175,6 @@ impl Wallet {
         Ok(extended_public_key.to_pub())
     }
 
-    pub fn identity_authentication_ecdsa_public_key(
-        &self,
-        network: Network,
-        identity_index: u32,
-        key_index: u32,
-    ) -> PublicKey {
-        let derivation_path = DerivationPath::identity_authentication_path(
-            network,
-            KeyDerivationType::ECDSA,
-            identity_index,
-            key_index,
-        );
-        let extended_public_key = derivation_path
-            .derive_pub_ecdsa_for_master_seed(&self.seed, network)
-            .expect("derivation should not be able to fail");
-        extended_public_key.to_pub()
-    }
-
     pub fn identity_authentication_ecdsa_private_key(
         &self,
         network: Network,
@@ -209,18 +191,6 @@ impl Wallet {
             .derive_priv_ecdsa_for_master_seed(&self.seed, network)
             .expect("derivation should not be able to fail");
         extended_public_key.to_priv()
-    }
-
-    pub fn identity_registration_ecdsa_public_key(
-        &self,
-        network: Network,
-        index: u32,
-    ) -> PublicKey {
-        let derivation_path = DerivationPath::identity_registration_path(network, index);
-        let extended_public_key = derivation_path
-            .derive_pub_ecdsa_for_master_seed(&self.seed, network)
-            .expect("derivation should not be able to fail");
-        extended_public_key.to_pub()
     }
 
     pub fn identity_registration_ecdsa_private_key(

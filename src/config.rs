@@ -1,8 +1,5 @@
-use std::str::FromStr;
-
 use dash_sdk::dapi_client::AddressList;
 use dash_sdk::dpp::dashcore::Network;
-use dash_sdk::sdk::Uri;
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize, Clone)]
@@ -45,14 +42,6 @@ pub struct NetworkConfig {
     pub core_rpc_user: String,
     /// Password for Dash Core RPC interface
     pub core_rpc_password: String,
-    /// URL of the Insight API
-    pub insight_api_url: String,
-    /// Devnet network name if one exists
-    pub devnet_name: Option<String>,
-    /// Optional wallet private key to instantiate the wallet
-    pub wallet_private_key: Option<String>,
-    /// Should this network be visible in the UI
-    pub show_in_ui: bool,
 }
 
 impl Config {
@@ -111,22 +100,8 @@ impl Config {
 }
 
 impl NetworkConfig {
-    /// Check if configuration is set
-    pub fn is_valid(&self) -> bool {
-        !self.core_rpc_user.is_empty()
-            && !self.core_rpc_password.is_empty()
-            && self.core_rpc_port != 0
-            && !self.dapi_addresses.is_empty()
-            && Uri::from_str(&self.insight_api_url).is_ok()
-    }
-
     /// List of DAPI addresses
     pub fn dapi_address_list(&self) -> AddressList {
         AddressList::from(self.dapi_addresses.as_str())
-    }
-
-    /// Insight API URI
-    pub fn insight_api_uri(&self) -> Uri {
-        Uri::from_str(&self.insight_api_url).expect("invalid insight API URL")
     }
 }

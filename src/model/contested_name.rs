@@ -14,15 +14,6 @@ pub enum ContestState {
     Locked,
 }
 
-impl ContestState {
-    pub fn state_is_votable(&self) -> bool {
-        match self {
-            ContestState::Joinable | ContestState::Ongoing => true,
-            _ => false,
-        }
-    }
-}
-
 #[derive(Debug, Encode, Decode, Clone)]
 pub struct ContestedName {
     pub normalized_contested_name: String,

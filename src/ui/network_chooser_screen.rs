@@ -6,7 +6,6 @@ use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::identities::add_new_wallet_screen::AddNewWalletScreen;
 use crate::ui::{RootScreenType, Screen, ScreenLike};
-use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::TimestampMillis;
 use eframe::egui::{self, Color32, Context, Ui};
@@ -55,11 +54,6 @@ impl NetworkChooserScreen {
 
     pub fn current_app_context(&self) -> &Arc<AppContext> {
         self.context_for_network(self.current_network)
-    }
-
-    /// Function to check the status of Dash Core for a given network
-    async fn check_core_status(app_context: &Arc<AppContext>) -> bool {
-        app_context.core_client.get_best_chain_lock().is_ok()
     }
 
     /// Render the network selection table
@@ -259,11 +253,7 @@ impl ScreenLike for NetworkChooserScreen {
             action |= AppAction::BackendTask(BackendTask::CoreTask(CoreTask::GetBestChainLock));
         }
 
-        action |= add_left_panel(
-            ctx,
-            self.current_app_context(),
-            RootScreenType::RootScreenNetworkChooser,
-        );
+        action |= add_left_panel(ctx, RootScreenType::RootScreenNetworkChooser);
 
         egui::CentralPanel::default().show(ctx, |ui| {
             action |= self.render_network_table(ui);

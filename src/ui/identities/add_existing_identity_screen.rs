@@ -20,9 +20,7 @@ struct MasternodeInfo {
     #[serde(rename = "pro-tx-hash")]
     pro_tx_hash: String,
     owner: KeyInfo,
-    collateral: KeyInfo,
     voter: KeyInfo,
-    operator: OperatorInfo,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -30,32 +28,12 @@ struct HPMasternodeInfo {
     #[serde(rename = "protx-tx-hash")]
     protx_tx_hash: String,
     owner: KeyInfo,
-    collateral: KeyInfo,
     voter: KeyInfo,
     payout: KeyInfo,
-    operator: OperatorInfo,
-    #[serde(rename = "node_key")]
-    node_key: Option<NodeKeyInfo>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 struct KeyInfo {
-    address: String,
-    #[serde(rename = "private_key")]
-    private_key: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct OperatorInfo {
-    #[serde(rename = "public_key")]
-    public_key: String,
-    #[serde(rename = "private_key")]
-    private_key: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct NodeKeyInfo {
-    id: String,
     #[serde(rename = "private_key")]
     private_key: String,
 }

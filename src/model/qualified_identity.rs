@@ -152,12 +152,6 @@ impl QualifiedIdentity {
             .0
     }
 
-    pub fn display_string(&self) -> String {
-        self.alias
-            .clone()
-            .unwrap_or(self.identity.id().to_string(Encoding::Base58))
-    }
-
     pub fn display_short_string(&self) -> String {
         self.alias.clone().unwrap_or_else(|| {
             let id_str = self.identity.id().to_string(Encoding::Base58);
@@ -251,7 +245,7 @@ impl QualifiedIdentity {
         let mut keys = vec![];
 
         // Check the main identity's public keys
-        for ((public_key, _)) in self.encrypted_private_keys.values() {
+        for (public_key, _) in self.encrypted_private_keys.values() {
             if public_key.purpose() == Purpose::TRANSFER {
                 keys.push(public_key);
             }

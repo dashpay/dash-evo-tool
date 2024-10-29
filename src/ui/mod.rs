@@ -89,7 +89,6 @@ pub enum ScreenType {
     #[default]
     Identities,
     DPNSContestedNames,
-    AddNewIdentity,
     AddNewWallet,
     AddExistingIdentity,
     TransitionVisualizer,
@@ -109,9 +108,6 @@ impl ScreenType {
             ScreenType::Identities => Screen::IdentitiesScreen(IdentitiesScreen::new(app_context)),
             ScreenType::DPNSContestedNames => {
                 Screen::DPNSContestedNamesScreen(DPNSContestedNamesScreen::new(app_context))
-            }
-            ScreenType::AddNewIdentity => {
-                Screen::AddNewIdentityScreen(AddNewIdentityScreen::new(app_context))
             }
             ScreenType::AddExistingIdentity => {
                 Screen::AddExistingIdentityScreen(AddExistingIdentityScreen::new(app_context))

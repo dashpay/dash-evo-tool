@@ -18,19 +18,11 @@ use eframe::egui::Context;
 use egui::{Color32, ColorImage, ComboBox, TextureHandle, Ui};
 use image::Luma;
 use qrcode::QrCode;
-use serde::Deserialize;
 use std::cmp::PartialEq;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{fmt, thread};
-
-#[derive(Debug, Clone, Deserialize)]
-struct KeyInfo {
-    address: String,
-    #[serde(rename = "private_key")]
-    private_key: String,
-}
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub enum FundingMethod {
@@ -108,7 +100,7 @@ pub fn copy_to_clipboard(text: &str) -> Result<(), String> {
 }
 
 impl AddNewIdentityScreen {
-    pub fn new(app_context: &Arc<AppContext>) -> Self {
+    pub fn _new(app_context: &Arc<AppContext>) -> Self {
         Self {
             identity_id_number: 0,
             step: Arc::new(RwLock::new(AddNewIdentityScreenStep::ChooseFundingMethod)),
@@ -157,7 +149,7 @@ impl AddNewIdentityScreen {
                 {
                     Ok(new_balance) => {
                         // Update wallet balance if it has changed.
-                        if let Some(mut wallet_guard) = selected_wallet.as_ref() {
+                        if let Some(wallet_guard) = selected_wallet.as_ref() {
                             let mut wallet = wallet_guard.write().unwrap();
                             wallet
                                 .update_address_balance(
@@ -197,18 +189,6 @@ impl AddNewIdentityScreen {
 
         // Save the handle and stop flag to allow stopping the thread later.
         self.balance_check_handle = Some((stop_flag, handle));
-    }
-
-    // Stop the balance checking process
-    fn stop_balance_check(&mut self) {
-        if let Some((stop_flag, handle)) = self.balance_check_handle.take() {
-            // Set the atomic flag to stop the thread
-            stop_flag.store(true, Ordering::Relaxed);
-            // Wait for the thread to finish
-            if let Err(e) = handle.join() {
-                eprintln!("Failed to join balance check thread: {:?}", e);
-            }
-        }
     }
 
     fn render_qr_code(&mut self, ui: &mut egui::Ui, amount: f64) -> Result<(), String> {

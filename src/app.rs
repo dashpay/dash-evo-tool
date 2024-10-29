@@ -14,7 +14,6 @@ use eframe::{egui, App};
 use std::collections::BTreeMap;
 use std::ops::BitOrAssign;
 use std::sync::Arc;
-use std::time::Instant;
 use std::vec;
 use tokio::sync::mpsc;
 
@@ -43,15 +42,10 @@ pub struct AppState {
     pub testnet_app_context: Option<Arc<AppContext>>,
     pub task_result_sender: mpsc::Sender<TaskResult>, // Channel sender for sending task results
     pub task_result_receiver: mpsc::Receiver<TaskResult>, // Channel receiver for receiving task results
-    last_repaint: Instant, // Track the last time we requested a repaint
 }
 
 #[derive(Debug, PartialEq)]
 pub enum DesiredAppAction {
-    None,
-    PopScreen,
-    GoToMainScreen,
-    SwitchNetwork(Network),
     AddScreenType(ScreenType),
     BackendTask(BackendTask),
 }
@@ -59,16 +53,12 @@ pub enum DesiredAppAction {
 impl DesiredAppAction {
     pub fn create_action(&self, app_context: &Arc<AppContext>) -> AppAction {
         match self {
-            DesiredAppAction::None => AppAction::None,
-            DesiredAppAction::PopScreen => AppAction::PopScreen,
-            DesiredAppAction::GoToMainScreen => AppAction::GoToMainScreen,
             DesiredAppAction::AddScreenType(screen_type) => {
                 AppAction::AddScreen(screen_type.create_screen(app_context))
             }
             DesiredAppAction::BackendTask(backend_task) => {
                 AppAction::BackendTask(backend_task.clone())
             }
-            DesiredAppAction::SwitchNetwork(network) => AppAction::SwitchNetwork(*network),
         }
     }
 }
@@ -76,7 +66,6 @@ impl DesiredAppAction {
 #[derive(Debug, PartialEq)]
 pub enum AppAction {
     None,
-    PopScreen,
     PopScreenAndRefresh,
     GoToMainScreen,
     SwitchNetwork(Network),
@@ -146,9 +135,6 @@ impl AppState {
         // // Create a channel with a buffer size of 32 (adjust as needed)
         let (task_result_sender, task_result_receiver) = mpsc::channel(256);
 
-        // Initialize the last repaint time to the current instant
-        let last_repaint = Instant::now();
-
         Self {
             main_screens: [
                 (
@@ -180,7 +166,6 @@ impl AppState {
             testnet_app_context,
             task_result_sender,
             task_result_receiver,
-            last_repaint,
         }
     }
 
@@ -209,12 +194,6 @@ impl AppState {
         });
     }
 
-    pub fn active_root_screen(&self) -> &Screen {
-        self.main_screens
-            .get(&self.selected_main_screen)
-            .expect("expected to get screen")
-    }
-
     pub fn active_root_screen_mut(&mut self) -> &mut Screen {
         self.main_screens
             .get_mut(&self.selected_main_screen)
@@ -229,27 +208,11 @@ impl AppState {
         }
     }
 
-    pub fn visible_screen(&self) -> &Screen {
-        if let Some(last_screen) = self.screen_stack.last() {
-            last_screen
-        } else {
-            self.active_root_screen()
-        }
-    }
-
     pub fn visible_screen_mut(&mut self) -> &mut Screen {
         if self.screen_stack.is_empty() {
             self.active_root_screen_mut()
         } else {
             self.screen_stack.last_mut().unwrap()
-        }
-    }
-
-    pub fn visible_screen_type(&self) -> ScreenType {
-        if let Some(last_screen) = self.screen_stack.last() {
-            last_screen.screen_type()
-        } else {
-            self.selected_main_screen.into()
         }
     }
 }
@@ -265,13 +228,6 @@ impl App for AppState {
                 TaskResult::Success(message) => match message {
                     BackendTaskSuccessResult::None => {
                         self.visible_screen_mut().pop_on_success();
-                    }
-                    BackendTaskSuccessResult::Message(message) => {
-                        self.visible_screen_mut()
-                            .display_message(&message, MessageType::Info);
-                    }
-                    BackendTaskSuccessResult::Documents(_) => {
-                        self.visible_screen_mut().display_task_result(message);
                     }
                     BackendTaskSuccessResult::CoreItem(_) => {
                         self.visible_screen_mut().display_task_result(message);
@@ -298,11 +254,6 @@ impl App for AppState {
         match action {
             AppAction::AddScreen(screen) => self.screen_stack.push(screen),
             AppAction::None => {}
-            AppAction::PopScreen => {
-                if !self.screen_stack.is_empty() {
-                    self.screen_stack.pop();
-                }
-            }
             AppAction::PopScreenAndRefresh => {
                 if !self.screen_stack.is_empty() {
                     self.screen_stack.pop();

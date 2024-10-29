@@ -13,7 +13,6 @@ use dash_sdk::dpp::identity::{Purpose, SecurityLevel, TimestampMillis};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::IdentityPublicKey;
 use eframe::egui::Context;
-use futures::StreamExt;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 

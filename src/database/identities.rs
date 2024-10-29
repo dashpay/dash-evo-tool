@@ -2,7 +2,6 @@ use crate::context::AppContext;
 use crate::database::Database;
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-use dash_sdk::platform::Identifier;
 use rusqlite::params;
 
 impl Database {
@@ -23,38 +22,6 @@ impl Database {
          VALUES (?, ?, 1, ?, ?, ?)",
             params![id, data, alias, identity_type, network],
         )?;
-        Ok(())
-    }
-
-    pub fn insert_remote_identity_if_not_exists(
-        &self,
-        identifier: &Identifier,
-        qualified_identity: Option<&QualifiedIdentity>,
-        app_context: &AppContext,
-    ) -> rusqlite::Result<()> {
-        let id = identifier.to_vec();
-        let alias = qualified_identity.and_then(|qi| qi.alias.clone());
-        let identity_type =
-            qualified_identity.map_or("".to_string(), |qi| format!("{:?}", qi.identity_type));
-        let data = qualified_identity.map(|qi| qi.to_bytes());
-
-        let network = app_context.network_string();
-
-        // Check if the identity already exists
-        let conn = self.conn.lock().unwrap();
-        let mut stmt =
-            conn.prepare("SELECT COUNT(*) FROM identity WHERE id = ? AND network = ?")?;
-        let count: i64 = stmt.query_row(params![id, network], |row| row.get(0))?;
-
-        // If the identity doesn't exist, insert it
-        if count == 0 {
-            self.execute(
-                "INSERT INTO identity (id, data, is_local, alias, identity_type, network)
-             VALUES (?, ?, 0, ?, ?, ?)",
-                params![id, data, alias, identity_type, network],
-            )?;
-        }
-
         Ok(())
     }
 

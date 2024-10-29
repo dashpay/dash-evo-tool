@@ -423,6 +423,10 @@ impl ScreenLike for IdentitiesScreen {
             .app_context
             .load_local_qualified_identities()
             .unwrap_or_default();
+
+        // Reset the pop-up state when refreshing
+        self.show_more_keys_popup = None;
+        self.close_more_keys_popup = false;
     }
 
     fn ui(&mut self, ctx: &Context) -> AppAction {

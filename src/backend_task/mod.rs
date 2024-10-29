@@ -9,11 +9,14 @@ use dash_sdk::dpp::voting::votes::Vote;
 use dash_sdk::query_types::Documents;
 use std::sync::Arc;
 use tokio::sync::mpsc;
+use crate::backend_task::withdrawals::{WithdrawalsTask, WithdrawStatusPartialData};
+
 pub mod contested_names;
 pub mod contract;
 pub mod core;
 mod document;
 pub mod identity;
+pub mod withdrawals;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum BackendTask {
@@ -22,6 +25,7 @@ pub(crate) enum BackendTask {
     ContractTask(ContractTask),
     ContestedResourceTask(ContestedResourceTask),
     CoreTask(CoreTask),
+    WithdrawalTask(WithdrawalsTask),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -31,6 +35,7 @@ pub(crate) enum BackendTaskSuccessResult {
     Documents(Documents),
     CoreItem(CoreItem),
     SuccessfulVotes(Vec<Vote>),
+    WithdrawalStatus(WithdrawStatusPartialData),
 }
 
 impl BackendTaskSuccessResult {}
@@ -70,6 +75,9 @@ impl AppContext {
                 self.run_document_task(document_task, &sdk).await
             }
             BackendTask::CoreTask(core_task) => self.run_core_task(core_task).await,
+            BackendTask::WithdrawalTask(withdrawal_task) => {
+                self.run_withdraws_task(withdrawal_task, &sdk).await
+            }
         }
     }
 }

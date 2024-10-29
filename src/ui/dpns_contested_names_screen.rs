@@ -1,7 +1,8 @@
+use super::components::dpns_subscreen_chooser_panel::add_dpns_subscreen_chooser_panel;
 use super::{Screen, ScreenType};
 use crate::app::{AppAction, DesiredAppAction};
 use crate::context::AppContext;
-use crate::model::contested_name::ContestedName;
+use crate::model::contested_name::{ContestState, ContestedName};
 use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
 use crate::backend_task::contested_names::ContestedResourceTask;
 use crate::backend_task::BackendTask;
@@ -11,6 +12,7 @@ use crate::ui::identities::add_existing_identity_screen::AddExistingIdentityScre
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use chrono::{DateTime, LocalResult, TimeZone, Utc};
 use chrono_humanize::HumanTime;
+use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
 use egui::{Context, Frame, Margin, Ui};
 use egui_extras::{Column, TableBuilder};
@@ -24,12 +26,29 @@ enum SortColumn {
     AbstainVotes,
     EndingTime,
     LastUpdated,
+    AwardedTo,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SortOrder {
     Ascending,
     Descending,
+}
+
+pub enum DPNSSubscreen {
+    Active,
+    Past,
+    Owned,
+}
+
+impl DPNSSubscreen {
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            Self::Active => "Active contests",
+            Self::Past => "Past contests",
+            Self::Owned => "My usernames",
+        }
+    }
 }
 
 pub struct DPNSContestedNamesScreen {
@@ -42,16 +61,32 @@ pub struct DPNSContestedNamesScreen {
     sort_column: SortColumn,
     sort_order: SortOrder,
     show_vote_popup_info: Option<(String, ContestedResourceTask)>,
+    pub dpns_subscreen: DPNSSubscreen,
 }
 
 impl DPNSContestedNamesScreen {
-    pub fn new(app_context: &Arc<AppContext>) -> Self {
-        let contested_names = Arc::new(Mutex::new(
-            app_context.ongoing_contested_names().unwrap_or_else(|e| {
-                error!("Failed to load contested names: {:?}", e);
-                Vec::new() // Use default value if loading fails
-            }),
-        ));
+    pub fn new(app_context: &Arc<AppContext>, dpns_subscreen: DPNSSubscreen) -> Self {
+        let contested_names = Arc::new(Mutex::new(match dpns_subscreen {
+            DPNSSubscreen::Active => {
+                app_context.ongoing_contested_names().unwrap_or_else(|e| {
+                    error!("Failed to load contested names: {:?}", e);
+                    Vec::new() // Use default value if loading fails
+                })
+            }
+            DPNSSubscreen::Past => {
+                app_context.all_contested_names().unwrap_or_else(|e| {
+                    error!("Failed to load contested names: {:?}", e);
+                    Vec::new() // Use default value if loading fails
+                })
+            }
+            DPNSSubscreen::Owned => {
+                app_context.owned_contested_names().unwrap_or_else(|e| {
+                    error!("Failed to load contested names: {:?}", e);
+                    Vec::new() // Use default value if loading fails
+                })
+            }
+        }));
+
         let voting_identities = app_context
             .db
             .get_local_voting_identities(&app_context)
@@ -69,6 +104,7 @@ impl DPNSContestedNamesScreen {
             sort_column: SortColumn::ContestedName,
             sort_order: SortOrder::Ascending,
             show_vote_popup_info: None,
+            dpns_subscreen,
         }
     }
 
@@ -81,7 +117,14 @@ impl DPNSContestedNamesScreen {
     ) {
         if let Some(contestants) = &contested_name.contestants {
             for contestant in contestants {
-                let button_text = format!("{} - {} votes", contestant.name, contestant.votes);
+                let first_6_chars_of_id: String = contestant
+                    .id
+                    .to_string(Encoding::Base58)
+                    .chars()
+                    .take(6)
+                    .collect();
+                let button_text =
+                    format!("{}... - {} votes", first_6_chars_of_id, contestant.votes);
 
                 // Determine if this contestant's votes should be bold
                 let text = if contestant.votes == max_contestant_votes && !is_locked_votes_bold {
@@ -118,6 +161,7 @@ impl DPNSContestedNamesScreen {
                 SortColumn::AbstainVotes => a.abstain_votes.cmp(&b.abstain_votes),
                 SortColumn::EndingTime => a.end_time.cmp(&b.end_time),
                 SortColumn::LastUpdated => a.last_updated.cmp(&b.last_updated),
+                SortColumn::AwardedTo => a.awarded_to.cmp(&b.awarded_to),
             };
 
             if self.sort_order == SortOrder::Descending {
@@ -159,12 +203,32 @@ impl DPNSContestedNamesScreen {
     fn render_no_active_contests(&mut self, ui: &mut Ui) {
         ui.vertical_centered(|ui| {
             ui.add_space(20.0); // Add some space to separate from the top
-            ui.label(
-                egui::RichText::new("No active contests at the moment.")
-                    .heading()
-                    .strong()
-                    .color(egui::Color32::GRAY),
-            );
+            match self.dpns_subscreen {
+                DPNSSubscreen::Active => {
+                    ui.label(
+                        egui::RichText::new("No active contests at the moment.")
+                            .heading()
+                            .strong()
+                            .color(egui::Color32::GRAY),
+                    );
+                }
+                DPNSSubscreen::Past => {
+                    ui.label(
+                        egui::RichText::new("No active or past contests at the moment.")
+                            .heading()
+                            .strong()
+                            .color(egui::Color32::GRAY),
+                    );
+                }
+                DPNSSubscreen::Owned => {
+                    ui.label(
+                        egui::RichText::new("No owned usernames.")
+                            .heading()
+                            .strong()
+                            .color(egui::Color32::GRAY),
+                    );
+                }
+            }
             ui.add_space(10.0);
             ui.label("Please check back later or try refreshing the list.");
             ui.add_space(20.0);
@@ -174,7 +238,7 @@ impl DPNSContestedNamesScreen {
         });
     }
 
-    fn render_table(&mut self, ui: &mut Ui) {
+    fn render_table_active_contests(&mut self, ui: &mut Ui) {
         // Clone the contested names vector to avoid holding the lock during UI rendering
         let contested_names = {
             let contested_names_guard = self.contested_names.lock().unwrap();
@@ -350,6 +414,134 @@ impl DPNSContestedNamesScreen {
         });
     }
 
+    fn render_table_past_contests(&mut self, ui: &mut Ui) {
+        // Clone the contested names vector to avoid holding the lock during UI rendering
+        let contested_names = {
+            let contested_names_guard = self.contested_names.lock().unwrap();
+            let mut contested_names = contested_names_guard.clone();
+            self.sort_contested_names(&mut contested_names);
+            contested_names
+        };
+
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            Frame::group(ui.style())
+                .fill(ui.visuals().panel_fill)
+                .stroke(egui::Stroke::new(
+                    1.0,
+                    ui.visuals().widgets.inactive.bg_stroke.color,
+                ))
+                .inner_margin(Margin::same(8.0))
+                .show(ui, |ui| {
+                    TableBuilder::new(ui)
+                        .striped(true)
+                        .resizable(true)
+                        .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                        .column(Column::initial(200.0).resizable(true)) // Contested Name
+                        .column(Column::initial(200.0).resizable(true)) // Ended Time
+                        .column(Column::initial(200.0).resizable(true)) // Last Updated
+                        .column(Column::initial(200.0).resizable(true)) // Awarded To
+                        .header(30.0, |mut header| {
+                            header.col(|ui| {
+                                if ui.button("Contested Name").clicked() {
+                                    self.toggle_sort(SortColumn::ContestedName);
+                                }
+                            });
+                            header.col(|ui| {
+                                if ui.button("Ended Time").clicked() {
+                                    self.toggle_sort(SortColumn::EndingTime);
+                                }
+                            });
+                            header.col(|ui| {
+                                if ui.button("Last Updated").clicked() {
+                                    self.toggle_sort(SortColumn::LastUpdated);
+                                }
+                            });
+                            header.col(|ui| {
+                                if ui.button("Awarded To").clicked() {
+                                    self.toggle_sort(SortColumn::AwardedTo);
+                                }
+                            });
+                        })
+                        .body(|mut body| {
+                            for contested_name in &contested_names {
+                                body.row(25.0, |mut row| {
+                                    row.col(|ui| {
+                                        ui.label(&contested_name.normalized_contested_name);
+                                    });
+                                    row.col(|ui| {
+                                        if let Some(ended_time) = contested_name.end_time {
+                                            // Convert the timestamp to a DateTime object using timestamp_millis_opt
+                                            if let LocalResult::Single(datetime) =
+                                                Utc.timestamp_millis_opt(ended_time as i64)
+                                            {
+                                                // Format the ISO date up to seconds
+                                                let iso_date = datetime
+                                                    .format("%Y-%m-%d %H:%M:%S")
+                                                    .to_string();
+
+                                                // Use chrono-humanize to get the relative time
+                                                let relative_time =
+                                                    HumanTime::from(datetime).to_string();
+
+                                                // Combine both the ISO date and relative time
+                                                let display_text =
+                                                    format!("{} ({})", iso_date, relative_time);
+
+                                                ui.label(display_text);
+                                            } else {
+                                                // Handle case where the timestamp is invalid
+                                                ui.label("Invalid timestamp");
+                                            }
+                                        } else {
+                                            ui.label("Fetching");
+                                        }
+                                    });
+                                    row.col(|ui| {
+                                        if let Some(last_updated) = contested_name.last_updated {
+                                            // Convert the timestamp to a DateTime object using timestamp_millis_opt
+                                            if let LocalResult::Single(datetime) =
+                                                Utc.timestamp_opt(last_updated as i64, 0)
+                                            {
+                                                // Use chrono-humanize to get the relative time
+                                                let relative_time =
+                                                    HumanTime::from(datetime).to_string();
+
+                                                ui.label(relative_time);
+                                            } else {
+                                                // Handle case where the timestamp is invalid
+                                                ui.label("Invalid timestamp");
+                                            }
+                                        } else {
+                                            ui.label("Fetching");
+                                        }
+                                    });
+                                    row.col(|ui| match contested_name.state {
+                                        ContestState::Unknown => {
+                                            ui.label("Fetching");
+                                        }
+                                        ContestState::Joinable => {
+                                            ui.label("Active");
+                                        }
+                                        ContestState::Ongoing => {
+                                            ui.label("Active");
+                                        }
+                                        ContestState::WonBy(identifier) => {
+                                            ui.label(format!(
+                                                "{}",
+                                                identifier.to_string(Encoding::Base58),
+                                            ));
+                                        }
+                                        ContestState::Locked => {
+                                            ui.label("Locked");
+                                        }
+                                    });
+                                });
+                            }
+                        });
+                });
+        });
+    }
+
     fn show_vote_popup(&mut self, ui: &mut Ui) -> AppAction {
         let mut app_action = AppAction::None;
         if self.voting_identities.is_empty() {
@@ -430,10 +622,20 @@ impl DPNSContestedNamesScreen {
 impl ScreenLike for DPNSContestedNamesScreen {
     fn refresh(&mut self) {
         let mut contested_names = self.contested_names.lock().unwrap();
-        *contested_names = self
-            .app_context
-            .ongoing_contested_names()
-            .unwrap_or_default();
+        match self.dpns_subscreen {
+            DPNSSubscreen::Active => {
+                *contested_names = self
+                    .app_context
+                    .ongoing_contested_names()
+                    .unwrap_or_default();
+            }
+            DPNSSubscreen::Past => {
+                *contested_names = self.app_context.all_contested_names().unwrap_or_default();
+            }
+            DPNSSubscreen::Owned => {
+                *contested_names = self.app_context.owned_contested_names().unwrap_or_default();
+            }
+        }
     }
 
     fn refresh_on_arrival(&mut self) {
@@ -483,11 +685,30 @@ impl ScreenLike for DPNSContestedNamesScreen {
             right_buttons,
         );
 
-        action |= add_left_panel(
-            ctx,
-            &self.app_context,
-            RootScreenType::RootScreenDPNSContestedNames,
-        );
+        match self.dpns_subscreen {
+            DPNSSubscreen::Active => {
+                action |= add_left_panel(
+                    ctx,
+                    &self.app_context,
+                    RootScreenType::RootScreenDPNSActiveContests,
+                );
+            }
+            DPNSSubscreen::Past => {
+                action |= add_left_panel(
+                    ctx,
+                    &self.app_context,
+                    RootScreenType::RootScreenDPNSPastContests,
+                );
+            }
+            DPNSSubscreen::Owned => {
+                action |= add_left_panel(
+                    ctx,
+                    &self.app_context,
+                    RootScreenType::RootScreenDPNSOwnedNames,
+                );
+            }
+        }
+        action |= add_dpns_subscreen_chooser_panel(ctx);
 
         // Render the UI with the cloned contested_names vector
         egui::CentralPanel::default().show(ctx, |ui| {
@@ -534,7 +755,17 @@ impl ScreenLike for DPNSContestedNamesScreen {
 
             if has_contested_names {
                 // Render the table if there are contested names
-                self.render_table(ui);
+                match self.dpns_subscreen {
+                    DPNSSubscreen::Active => {
+                        self.render_table_active_contests(ui);
+                    }
+                    DPNSSubscreen::Past => {
+                        self.render_table_past_contests(ui);
+                    }
+                    DPNSSubscreen::Owned => {
+                        self.render_table_past_contests(ui);
+                    }
+                }
             } else {
                 // Render the "no active contests" message if none exist
                 self.render_no_active_contests(ui);

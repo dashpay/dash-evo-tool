@@ -27,7 +27,7 @@ fn main() -> eframe::Result<()> {
             ..Default::default()
         };
         eframe::run_native(
-            "Identity Manager",
+            "Dash Evo Tool",
             native_options,
             Box::new(|_cc| Ok(Box::new(app::AppState::new()))),
         )

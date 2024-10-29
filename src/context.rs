@@ -23,6 +23,7 @@ use dash_sdk::Sdk;
 use rusqlite::Result;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, RwLock};
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 
 #[derive(Debug)]
 pub struct AppContext {
@@ -33,6 +34,7 @@ pub struct AppContext {
     pub(crate) sdk: Sdk,
     pub(crate) config: NetworkConfig,
     pub(crate) dpns_contract: Arc<DataContract>,
+    pub(crate) withdraws_contract: Arc<DataContract>,
     pub(crate) core_client: Client,
     pub(crate) has_wallet: AtomicBool,
     pub(crate) wallets: RwLock<Vec<Arc<RwLock<Wallet>>>>,
@@ -62,6 +64,10 @@ impl AppContext {
             load_system_data_contract(SystemDataContract::DPNS, PlatformVersion::latest())
                 .expect("expected to load dpns contract");
 
+        let withdrawal_contract =
+            load_system_data_contract(SystemDataContract::Withdrawals, PlatformVersion::latest())
+                .expect("expected to get withdrawal contract");
+
         let addr = format!(
             "http://{}:{}",
             network_config.core_host, network_config.core_rpc_port
@@ -90,6 +96,7 @@ impl AppContext {
             sdk,
             config: network_config,
             dpns_contract: Arc::new(dpns_contract),
+            withdraws_contract: Arc::new(withdrawal_contract),
             core_client,
             has_wallet: (!wallets.is_empty()).into(),
             wallets: RwLock::new(wallets),
@@ -145,6 +152,34 @@ impl AppContext {
 
     pub fn ongoing_contested_names(&self) -> Result<Vec<ContestedName>> {
         self.db.get_ongoing_contested_names(self)
+    }
+
+    pub fn owned_contested_names(&self) -> Result<Vec<ContestedName>> {
+        let all_contested_names = self.all_contested_names().unwrap_or_else(|e| {
+            tracing::error!("Failed to load contested names: {:?}", e);
+            Vec::new() // Use default value if loading fails
+        });
+        let local_qualified_identities =
+            self.load_local_qualified_identities().unwrap_or_else(|e| {
+                tracing::error!("Failed to load local qualified identities: {:?}", e);
+                Vec::new() // Use default value if loading fails
+            });
+
+        let owned_contested_names = all_contested_names
+            .into_iter()
+            .filter(|contested_name| {
+                contested_name
+                    .awarded_to
+                    .as_ref()
+                    .map_or(false, |awarded_to| {
+                        local_qualified_identities
+                            .iter()
+                            .any(|identity| identity.identity.id() == awarded_to)
+                    })
+            })
+            .collect();
+
+        Ok(owned_contested_names)
     }
 
     /// Updates the `start_root_screen` in the settings table

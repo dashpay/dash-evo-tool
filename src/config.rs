@@ -93,12 +93,6 @@ impl Config {
 
         if mainnet_config.is_none() && testnet_config.is_none() {
             return Err(ConfigError::NoValidConfigs);
-        } else if mainnet_config.is_none() {
-            tracing::warn!("Failed to load mainnet configuration");
-        } else if testnet_config.is_none() {
-            tracing::warn!(
-                "Failed to load testnet configuration, but successfully loaded mainnet config"
-            );
         }
 
         Ok(Config {

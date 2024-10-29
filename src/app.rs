@@ -105,10 +105,13 @@ impl AppState {
         let mainnet_app_context = AppContext::new(Network::Dash, db.clone());
         let testnet_app_context = AppContext::new(Network::Testnet, db.clone());
 
-        let app_context = if testnet_app_context.is_some() && mainnet_app_context.is_none() {
+        let app_context = if mainnet_app_context.is_some() {
+            mainnet_app_context.clone().unwrap()
+        } else if testnet_app_context.is_some() {
             testnet_app_context.clone().unwrap()
         } else {
-            mainnet_app_context.clone().unwrap()
+            println!("No valid network configurations found in .env file or environment variables");
+            std::process::exit(1);
         };
 
         let identities_screen = IdentitiesScreen::new(&app_context);

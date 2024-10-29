@@ -74,8 +74,6 @@ To install Dash Evo Tool:
    cargo build --release
    ```
 
-   The executable will be in the `target/release` directory.
-
 ## Getting Started
 
 ### Create `.env` File

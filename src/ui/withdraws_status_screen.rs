@@ -215,12 +215,18 @@ impl WithdrawsStatusScreen {
         if selected != old_selected {
             self.pagination_items_per_page.set(selected);
         }
-        println!("computing with:{}", self.pagination_items_per_page.get() as usize);
-        let total_pages = (data.withdrawals.len() + (self.pagination_items_per_page.get() as usize) - 1) / (self.pagination_items_per_page.get() as usize);
+        println!(
+            "computing with:{}",
+            self.pagination_items_per_page.get() as usize
+        );
+        let total_pages =
+            (data.withdrawals.len() + (self.pagination_items_per_page.get() as usize) - 1)
+                / (self.pagination_items_per_page.get() as usize);
         let mut current_page = self.pagination_current_page.get().min(total_pages - 1); // Clamp to valid page range
-        // Calculate the slice of data for the current page
+                                                                                        // Calculate the slice of data for the current page
         let start_index = current_page * (self.pagination_items_per_page.get() as usize);
-        let end_index = (start_index + (self.pagination_items_per_page.get() as usize)).min(data.withdrawals.len());
+        let end_index = (start_index + (self.pagination_items_per_page.get() as usize))
+            .min(data.withdrawals.len());
         ui.separator();
         TableBuilder::new(ui)
             .striped(true)

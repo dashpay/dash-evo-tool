@@ -26,8 +26,7 @@ use std::sync::{Arc, Mutex};
 pub struct IdentitiesScreen {
     pub identities: Arc<Mutex<Vec<QualifiedIdentity>>>,
     pub app_context: Arc<AppContext>,
-    show_more_keys_popup: Option<[u8; 32]>,
-    close_more_keys_popup: bool,
+    pub show_more_keys_popup: Option<QualifiedIdentity>,
 }
 
 impl IdentitiesScreen {
@@ -316,9 +315,8 @@ impl IdentitiesScreen {
                                         // If there are more keys, show "View More" button
                                         if more_keys_available {
                                             if ui.button("View More").clicked() {
-                                                self.show_more_keys_popup = Some(
-                                                    qualified_identity.identity.id().to_buffer(),
-                                                );
+                                                self.show_more_keys_popup =
+                                                    Some(qualified_identity.clone());
                                             }
                                         }
 
@@ -362,8 +360,11 @@ impl IdentitiesScreen {
         action
     }
 
-    fn show_more_keys(&mut self, ui: &mut Ui, qualified_identity: &QualifiedIdentity) -> AppAction {
+    fn show_more_keys(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
+        let Some(qualified_identity) = self.show_more_keys_popup.as_ref() else {
+            return action;
+        };
 
         // Get keys from main identity
         let identity = &qualified_identity.identity;
@@ -408,7 +409,7 @@ impl IdentitiesScreen {
 
         // Close button
         if ui.button("Close").clicked() {
-            self.close_more_keys_popup = true;
+            self.show_more_keys_popup = None;
         }
 
         action
@@ -424,7 +425,6 @@ impl ScreenLike for IdentitiesScreen {
             .unwrap_or_default();
 
         self.show_more_keys_popup = None;
-        self.close_more_keys_popup = false;
     }
 
     fn ui(&mut self, ctx: &Context) -> AppAction {
@@ -457,32 +457,12 @@ impl ScreenLike for IdentitiesScreen {
         });
 
         // Check if we need to show the pop-up
-        if let Some(identity_id) = self.show_more_keys_popup {
-            // Fetch the latest QualifiedIdentity
-            let qualified_identity = {
-                let identities_guard = self.identities.lock().unwrap();
-                identities_guard
-                    .iter()
-                    .find(|qi| qi.identity.id().to_buffer() == identity_id)
-                    .cloned()
-            };
-
-            if let Some(qualified_identity) = qualified_identity {
-                egui::Window::new("More Keys")
-                    .collapsible(false)
-                    .show(ctx, |ui| {
-                        action |= self.show_more_keys(ui, &qualified_identity);
-                    });
-            } else {
-                // If identity not found, close the pop-up
-                self.show_more_keys_popup = None;
-            }
-
-            // Close the pop-up if the flag is set
-            if self.close_more_keys_popup {
-                self.show_more_keys_popup = None;
-                self.close_more_keys_popup = false;
-            }
+        if self.show_more_keys_popup.is_some() {
+            egui::Window::new("More Keys")
+                .collapsible(false)
+                .show(ctx, |ui| {
+                    action |= self.show_more_keys(ui);
+                });
         }
 
         action
@@ -500,7 +480,6 @@ impl IdentitiesScreen {
             identities,
             app_context: app_context.clone(),
             show_more_keys_popup: None,
-            close_more_keys_popup: false,
         }
     }
 }

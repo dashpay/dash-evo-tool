@@ -40,10 +40,10 @@ pub fn app_user_data_file_path(filename: &str) -> Result<PathBuf, std::io::Error
     Ok(app_data_dir.join(filename))
 }
 
-pub fn copy_mainnet_env_file_if_not_exists() {
+pub fn copy_env_file_if_not_exists() {
     let app_data_dir = app_user_data_dir_path().expect("Failed to determine application data directory");
-    let env_mainnet_file = app_data_dir.join(".env".to_string());
-    if env_mainnet_file.exists() && env_mainnet_file.is_file() {
+    let env_file = app_data_dir.join(".env".to_string());
+    if env_file.exists() && env_file.is_file() {
     } else {
         let env_example_file = PathBuf::from(".env.example");
         let target_env_file_path = app_user_data_file_path(".env").expect("should create target env file path");

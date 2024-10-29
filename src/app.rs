@@ -1,5 +1,5 @@
 use crate::app_dir::{
-    app_user_data_file_path, copy_mainnet_env_file_if_not_exists,
+    app_user_data_file_path, copy_env_file_if_not_exists,
     create_app_user_data_directory_if_not_exists,
 };
 use crate::context::AppContext;
@@ -104,7 +104,7 @@ impl BitOrAssign for AppAction {
 impl AppState {
     pub fn new() -> Self {
         create_app_user_data_directory_if_not_exists().expect("Failed to create app user_data directory");
-        copy_mainnet_env_file_if_not_exists();
+        copy_env_file_if_not_exists();
         initialize_logger();
         let db_file_path = app_user_data_file_path("data.db").expect("should create db file path");
         let db = Arc::new(Database::new(db_file_path).unwrap());

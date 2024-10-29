@@ -113,11 +113,7 @@ impl ScreenLike for TransitionVisualizerScreen {
             vec![],
         );
 
-        action |= add_left_panel(
-            ctx,
-            &self.app_context,
-            RootScreenType::RootScreenTransitionVisualizerScreen,
-        );
+        action |= add_left_panel(ctx, RootScreenType::RootScreenTransitionVisualizerScreen);
 
         egui::CentralPanel::default().show(ctx, |ui| {
             self.show_input_field(ui);

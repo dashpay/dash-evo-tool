@@ -157,7 +157,7 @@ impl AddNewIdentityScreen {
                 {
                     Ok(new_balance) => {
                         // Update wallet balance if it has changed.
-                        if let Some(mut wallet_guard) = selected_wallet.as_ref() {
+                        if let Some(wallet_guard) = selected_wallet.as_ref() {
                             let mut wallet = wallet_guard.write().unwrap();
                             wallet
                                 .update_address_balance(

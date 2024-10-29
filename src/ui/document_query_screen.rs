@@ -177,11 +177,7 @@ impl ScreenLike for DocumentQueryScreen {
             vec![],
         );
 
-        action |= add_left_panel(
-            ctx,
-            &self.app_context,
-            RootScreenType::RootScreenDocumentQuery,
-        );
+        action |= add_left_panel(ctx, RootScreenType::RootScreenDocumentQuery);
 
         action |=
             add_contract_chooser_panel(ctx, &mut self.contract_search_term, &self.app_context);

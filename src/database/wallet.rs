@@ -3,7 +3,7 @@ use crate::model::wallet::{AddressInfo, DerivationPathReference, DerivationPathT
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dpp::dashcore::bip32::DerivationPath;
 use dash_sdk::dpp::dashcore::hashes::Hash;
-use dash_sdk::dpp::dashcore::{consensus, Network, OutPoint, Script, ScriptBuf, TxOut, Txid};
+use dash_sdk::dpp::dashcore::{Network, OutPoint, ScriptBuf, TxOut, Txid};
 use rusqlite::params;
 use std::collections::BTreeMap;
 use std::str::FromStr;

@@ -1,4 +1,3 @@
-use crate::app::TaskResult;
 use crate::context::AppContext;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
@@ -10,14 +9,12 @@ use dash_sdk::drive::query::vote_poll_vote_state_query::{
 };
 use dash_sdk::platform::FetchMany;
 use dash_sdk::Sdk;
-use tokio::sync::mpsc;
 
 impl AppContext {
     pub(super) async fn query_dpns_vote_contenders(
         &self,
         name: &String,
         sdk: Sdk,
-        sender: mpsc::Sender<TaskResult>,
     ) -> Result<(), String> {
         let data_contract = self.dpns_contract.as_ref();
         let document_type = data_contract

@@ -259,11 +259,7 @@ impl ScreenLike for NetworkChooserScreen {
             action |= AppAction::BackendTask(BackendTask::CoreTask(CoreTask::GetBestChainLock));
         }
 
-        action |= add_left_panel(
-            ctx,
-            self.current_app_context(),
-            RootScreenType::RootScreenNetworkChooser,
-        );
+        action |= add_left_panel(ctx, RootScreenType::RootScreenNetworkChooser);
 
         egui::CentralPanel::default().show(ctx, |ui| {
             action |= self.render_network_table(ui);

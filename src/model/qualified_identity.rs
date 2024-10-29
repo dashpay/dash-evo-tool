@@ -251,7 +251,7 @@ impl QualifiedIdentity {
         let mut keys = vec![];
 
         // Check the main identity's public keys
-        for ((public_key, _)) in self.encrypted_private_keys.values() {
+        for (public_key, _) in self.encrypted_private_keys.values() {
             if public_key.purpose() == Purpose::TRANSFER {
                 keys.push(public_key);
             }

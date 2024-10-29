@@ -1,10 +1,8 @@
 use crate::app::AppAction;
-use crate::context::AppContext;
 use crate::ui::RootScreenType;
 use eframe::epaint::{Color32, Margin};
 use egui::{Context, Frame, ImageButton, SidePanel, TextureHandle};
 use rust_embed::RustEmbed;
-use std::sync::Arc;
 
 #[derive(RustEmbed)]
 #[folder = "icons/"] // Adjust the folder path if necessary
@@ -35,11 +33,7 @@ fn load_icon(ctx: &Context, path: &str) -> Option<TextureHandle> {
     }
 }
 
-pub fn add_left_panel(
-    ctx: &Context,
-    app_context: &Arc<AppContext>,
-    selected_screen: RootScreenType,
-) -> AppAction {
+pub fn add_left_panel(ctx: &Context, selected_screen: RootScreenType) -> AppAction {
     let mut action = AppAction::None;
 
     // Define the button details directly in this function

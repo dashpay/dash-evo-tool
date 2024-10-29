@@ -33,7 +33,7 @@ impl AppContext {
                 .await
                 .map(|_| BackendTaskSuccessResult::None),
             ContestedResourceTask::QueryDPNSVoteContenders(name) => self
-                .query_dpns_vote_contenders(name, sdk, sender)
+                .query_dpns_vote_contenders(name, sdk)
                 .await
                 .map(|_| BackendTaskSuccessResult::None),
             ContestedResourceTask::VoteOnDPNSName(name, vote_choice, voters) => {

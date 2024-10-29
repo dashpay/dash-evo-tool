@@ -483,11 +483,7 @@ impl ScreenLike for DPNSContestedNamesScreen {
             right_buttons,
         );
 
-        action |= add_left_panel(
-            ctx,
-            &self.app_context,
-            RootScreenType::RootScreenDPNSContestedNames,
-        );
+        action |= add_left_panel(ctx, RootScreenType::RootScreenDPNSContestedNames);
 
         // Render the UI with the cloned contested_names vector
         egui::CentralPanel::default().show(ctx, |ui| {

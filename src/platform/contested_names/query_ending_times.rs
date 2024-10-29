@@ -8,16 +8,10 @@ use dash_sdk::platform::FetchMany;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use crate::app::TaskResult;
 use dash_sdk::Sdk;
-use tokio::sync::mpsc;
 
 impl AppContext {
-    pub(super) async fn query_dpns_ending_times(
-        self: &Arc<Self>,
-        sdk: Sdk,
-        sender: mpsc::Sender<TaskResult>,
-    ) -> Result<(), String> {
+    pub(super) async fn query_dpns_ending_times(self: &Arc<Self>, sdk: Sdk) -> Result<(), String> {
         let now: DateTime<Utc> = Utc::now();
         let start_time_dt = now - Duration::weeks(2);
         let end_time_dt = now + Duration::weeks(2);

@@ -10,7 +10,7 @@ pub fn add_contract_chooser_panel(
     current_search_term: &mut String,
     app_context: &Arc<AppContext>,
 ) -> AppAction {
-    let mut action = AppAction::None;
+    let action = AppAction::None;
 
     // Fetch contracts from the app context
     let contracts = app_context.get_contracts(None, None).unwrap_or_else(|e| {

@@ -26,8 +26,8 @@ use std::sync::{Arc, Mutex};
 pub struct IdentitiesScreen {
     pub identities: Arc<Mutex<Vec<QualifiedIdentity>>>,
     pub app_context: Arc<AppContext>,
-    show_more_keys_popup: Option<[u8; 32]>, // Store identity ID instead of QualifiedIdentity
-    close_more_keys_popup: bool,            // Flag to close the pop-up
+    show_more_keys_popup: Option<[u8; 32]>,
+    close_more_keys_popup: bool,
 }
 
 impl IdentitiesScreen {
@@ -423,7 +423,6 @@ impl ScreenLike for IdentitiesScreen {
             .load_local_qualified_identities()
             .unwrap_or_default();
 
-        // Reset the pop-up state when refreshing
         self.show_more_keys_popup = None;
         self.close_more_keys_popup = false;
     }

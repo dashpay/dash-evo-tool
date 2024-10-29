@@ -103,7 +103,7 @@ impl BitOrAssign for AppAction {
 }
 impl AppState {
     pub fn new() -> Self {
-        create_app_user_data_directory_if_not_exists();
+        create_app_user_data_directory_if_not_exists().expect("Failed to create app user_data directory");
         copy_mainnet_env_file_if_not_exists();
         initialize_logger();
         let db_file_path = app_user_data_file_path("data.db").expect("should create db file path");

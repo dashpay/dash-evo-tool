@@ -31,6 +31,20 @@ pub struct IdentitiesScreen {
 }
 
 impl IdentitiesScreen {
+    pub fn new(app_context: &Arc<AppContext>) -> Self {
+        let identities = Arc::new(Mutex::new(
+            app_context
+                .load_local_qualified_identities()
+                .unwrap_or_default(),
+        ));
+        Self {
+            identities,
+            app_context: app_context.clone(),
+            show_more_keys_popup: None,
+            close_more_keys_popup: false,
+        }
+    }
+
     fn show_alias(ui: &mut Ui, qualified_identity: &QualifiedIdentity) {
         if let Some(alias) = qualified_identity.alias.as_ref() {
             ui.label(alias.clone());
@@ -428,10 +442,25 @@ impl ScreenLike for IdentitiesScreen {
     }
 
     fn ui(&mut self, ctx: &Context) -> AppAction {
-        let right_buttons = vec![(
-            "Load Identity",
-            DesiredAppAction::AddScreenType(ScreenType::AddExistingIdentity),
-        )];
+        let right_buttons = {
+            // Acquire a read lock on wallets
+            // let create_wallet_or_identity = if !self.app_context.has_wallet.load(Ordering::Relaxed)
+            // {
+            //     (
+            //         "Create Wallet",
+            //         DesiredAppAction::AddScreenType(ScreenType::AddNewWallet),
+            //     )
+            // } else {
+            //     (
+            //         "Create Identity",
+            //         DesiredAppAction::AddScreenType(ScreenType::AddNewIdentity),
+            //     )
+            // };
+            vec![(
+                "Load Identity",
+                DesiredAppAction::AddScreenType(ScreenType::AddExistingIdentity),
+            )]
+        };
         let mut action = add_top_panel(
             ctx,
             &self.app_context,
@@ -486,21 +515,5 @@ impl ScreenLike for IdentitiesScreen {
         }
 
         action
-    }
-}
-
-impl IdentitiesScreen {
-    pub fn new(app_context: &Arc<AppContext>) -> Self {
-        let identities = Arc::new(Mutex::new(
-            app_context
-                .load_local_qualified_identities()
-                .unwrap_or_default(),
-        ));
-        Self {
-            identities,
-            app_context: app_context.clone(),
-            show_more_keys_popup: None,
-            close_more_keys_popup: false,
-        }
     }
 }

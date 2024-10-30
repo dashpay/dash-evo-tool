@@ -70,7 +70,7 @@ impl AppContext {
             BackendTask::IdentityTask(identity_task) => self
                 .run_identity_task(identity_task, &sdk, sender)
                 .await
-                .map(|_| BackendTaskSuccessResult::None),
+                .map(|_| BackendTaskSuccessResult::Message("Success".to_string())),
             BackendTask::DocumentTask(document_task) => {
                 self.run_document_task(document_task, &sdk).await
             }

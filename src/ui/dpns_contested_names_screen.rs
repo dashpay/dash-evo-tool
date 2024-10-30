@@ -233,7 +233,7 @@ impl DPNSContestedNamesScreen {
             ui.label("Please check back later or try refreshing the list.");
             ui.add_space(20.0);
             if ui.button("Refresh").clicked() {
-                self.refresh(); // Call refresh logic when the user clicks "Refresh"
+                self.refresh();
             }
         });
     }

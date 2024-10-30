@@ -179,6 +179,11 @@ impl ScreenLike for RegisterDpnsNameScreen {
                 action = self.register_dpns_name_clicked();
             }
 
+            // Close button
+            if ui.button("Close").clicked() {
+                action = AppAction::PopScreenAndRefresh;
+            }
+
             match &self.register_dpns_name_status {
                 RegisterDpnsNameStatus::NotStarted => {
                     // Do nothing
@@ -217,7 +222,7 @@ impl ScreenLike for RegisterDpnsNameScreen {
                     ui.label(format!("Error: {}", msg));
                 }
                 RegisterDpnsNameStatus::Complete => {
-                    action = AppAction::PopScreenAndRefresh;
+                    ui.label(format!("Success"));
                 }
             }
         });

@@ -200,7 +200,8 @@ impl DPNSContestedNamesScreen {
         }
     }
 
-    fn render_no_active_contests(&mut self, ui: &mut Ui) {
+    fn render_no_active_contests(&mut self, ui: &mut Ui) -> AppAction {
+        let mut action = AppAction::None;
         ui.vertical_centered(|ui| {
             ui.add_space(20.0); // Add some space to separate from the top
             match self.dpns_subscreen {
@@ -233,9 +234,13 @@ impl DPNSContestedNamesScreen {
             ui.label("Please check back later or try refreshing the list.");
             ui.add_space(20.0);
             if ui.button("Refresh").clicked() {
-                self.refresh();
+                action = AppAction::BackendTask(BackendTask::ContestedResourceTask(
+                    ContestedResourceTask::QueryDPNSContestedResources,
+                ));
             }
         });
+
+        action
     }
 
     fn render_table_active_contests(&mut self, ui: &mut Ui) {
@@ -652,6 +657,12 @@ impl ScreenLike for DPNSContestedNamesScreen {
             .get_local_user_identities(&self.app_context)
             .unwrap_or_default()
             .into();
+
+        self.contested_names = Arc::new(Mutex::new(
+            self.app_context
+                .ongoing_contested_names()
+                .unwrap_or_default(),
+        ));
     }
 
     fn display_message(&mut self, message: &str, message_type: MessageType) {
@@ -768,7 +779,7 @@ impl ScreenLike for DPNSContestedNamesScreen {
                 }
             } else {
                 // Render the "no active contests" message if none exist
-                self.render_no_active_contests(ui);
+                action = self.render_no_active_contests(ui);
             }
         });
 

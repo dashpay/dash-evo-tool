@@ -658,11 +658,11 @@ impl ScreenLike for DPNSContestedNamesScreen {
             .unwrap_or_default()
             .into();
 
-        self.contested_names = Arc::new(Mutex::new(
-            self.app_context
-                .ongoing_contested_names()
-                .unwrap_or_default(),
-        ));
+        // self.contested_names = Arc::new(Mutex::new(
+        //     self.app_context
+        //         .ongoing_contested_names()
+        //         .unwrap_or_default(),
+        // ));
     }
 
     fn display_message(&mut self, message: &str, message_type: MessageType) {
@@ -779,7 +779,7 @@ impl ScreenLike for DPNSContestedNamesScreen {
                 }
             } else {
                 // Render the "no active contests" message if none exist
-                action = self.render_no_active_contests(ui);
+                action |= self.render_no_active_contests(ui);
             }
         });
 

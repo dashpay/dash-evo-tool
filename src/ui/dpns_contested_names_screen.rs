@@ -657,12 +657,6 @@ impl ScreenLike for DPNSContestedNamesScreen {
             .get_local_user_identities(&self.app_context)
             .unwrap_or_default()
             .into();
-
-        // self.contested_names = Arc::new(Mutex::new(
-        //     self.app_context
-        //         .ongoing_contested_names()
-        //         .unwrap_or_default(),
-        // ));
     }
 
     fn display_message(&mut self, message: &str, message_type: MessageType) {

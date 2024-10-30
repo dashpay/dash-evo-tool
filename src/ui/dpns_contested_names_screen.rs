@@ -658,23 +658,19 @@ impl ScreenLike for DPNSContestedNamesScreen {
             .unwrap_or_default()
             .into();
 
+        let mut contested_names = self.contested_names.lock().unwrap();
         match self.dpns_subscreen {
             DPNSSubscreen::Active => {
-                self.contested_names = Arc::new(Mutex::new(
-                    self.app_context
-                        .ongoing_contested_names()
-                        .unwrap_or_default(),
-                ));
+                *contested_names = self
+                    .app_context
+                    .ongoing_contested_names()
+                    .unwrap_or_default();
             }
             DPNSSubscreen::Past => {
-                self.contested_names = Arc::new(Mutex::new(
-                    self.app_context.all_contested_names().unwrap_or_default(),
-                ));
+                *contested_names = self.app_context.all_contested_names().unwrap_or_default();
             }
             DPNSSubscreen::Owned => {
-                self.contested_names = Arc::new(Mutex::new(
-                    self.app_context.owned_contested_names().unwrap_or_default(),
-                ));
+                *contested_names = self.app_context.owned_contested_names().unwrap_or_default();
             }
         }
     }

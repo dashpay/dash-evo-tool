@@ -222,7 +222,7 @@ impl ScreenLike for RegisterDpnsNameScreen {
                     ui.label(format!("Error: {}", msg));
                 }
                 RegisterDpnsNameStatus::Complete => {
-                    ui.label(format!("Success"));
+                    action = AppAction::PopScreenAndRefresh;
                 }
             }
         });

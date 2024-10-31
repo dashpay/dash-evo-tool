@@ -149,17 +149,17 @@ impl AppContext {
                     .dpns_names
                     .unwrap_or_default()
                     .into_iter()
-                    .map(move |name| {
-                        let clean_name = name
+                    .map(move |dpns_name_info| {
+                        let clean_name = dpns_name_info
                             .name
                             .strip_prefix("string ")
-                            .unwrap_or(&name.name)
+                            .unwrap_or(&dpns_name_info.name)
                             .to_string();
                         (
                             identity.identity.id(),
                             DPNSNameInfo {
                                 name: clean_name,
-                                acquired_at: name.acquired_at,
+                                acquired_at: dpns_name_info.acquired_at,
                             },
                         )
                     })

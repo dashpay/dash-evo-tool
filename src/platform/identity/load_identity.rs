@@ -162,7 +162,9 @@ impl AppContext {
                     .values()
                     .filter_map(|maybe_doc| {
                         maybe_doc.as_ref().and_then(|doc| {
-                            let name = doc.get("normalizedLabel").map(|label| label.to_string());
+                            let name = doc
+                                .get("normalizedLabel")
+                                .map(|label| label.to_str().unwrap_or_default());
                             let acquired_at = doc
                                 .created_at()
                                 .into_iter()
@@ -170,9 +172,10 @@ impl AppContext {
                                 .max();
 
                             match (name, acquired_at) {
-                                (Some(name), Some(acquired_at)) => {
-                                    Some(DPNSNameInfo { name, acquired_at })
-                                }
+                                (Some(name), Some(acquired_at)) => Some(DPNSNameInfo {
+                                    name: name.to_string(),
+                                    acquired_at,
+                                }),
                                 _ => None,
                             }
                         })

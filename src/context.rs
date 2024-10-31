@@ -139,27 +139,28 @@ impl AppContext {
 
     /// Fetches the local identities from the database and then maps them to their DPNS names.
     pub fn local_dpns_names(&self) -> Result<Vec<(Identifier, DPNSNameInfo)>> {
-        let identities = self.db.get_local_qualified_identities(self)?;
+        let qualified_identities = self.db.get_local_qualified_identities(self)?;
 
         // Map each identity's DPNS names to (Identifier, DPNSNameInfo) tuples
-        let mut dpns_names = Vec::new();
-        for identity in identities {
-            let identity_dpns_names = identity.dpns_names.unwrap_or_default();
-            for dpns_name_info in identity_dpns_names {
-                let parsed_name = dpns_name_info
-                    .name
-                    .strip_prefix("string ")
-                    .unwrap_or(&dpns_name_info.name)
-                    .to_string();
-                dpns_names.push((
-                    identity.identity.id(),
-                    DPNSNameInfo {
-                        name: parsed_name,
-                        acquired_at: dpns_name_info.acquired_at,
-                    },
-                ));
-            }
-        }
+        let dpns_names = qualified_identities
+            .into_iter()
+            .flat_map(|qualified_identity| {
+                qualified_identity
+                    .dpns_names
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(move |dpns_name_info| {
+                        (
+                            qualified_identity.identity.id(),
+                            DPNSNameInfo {
+                                name: dpns_name_info.name,
+                                acquired_at: dpns_name_info.acquired_at,
+                            },
+                        )
+                    })
+            })
+            .collect::<Vec<(Identifier, DPNSNameInfo)>>()
+            .into();
 
         Ok(dpns_names)
     }

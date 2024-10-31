@@ -16,7 +16,6 @@ use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::platform::{DataContract, Identifier};
 use dash_sdk::Sdk;
 use rusqlite::Result;
-use std::collections::BTreeMap;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, RwLock};
 
@@ -138,36 +137,26 @@ impl AppContext {
         self.db.get_ongoing_contested_names(self)
     }
 
-    pub fn owned_contested_names(&self) -> Result<Vec<ContestedName>> {
-        let all_contested_names = self.all_contested_names().unwrap_or_else(|e| {
-            tracing::error!("Failed to load contested names: {:?}", e);
-            Vec::new() // Use default value if loading fails
-        });
-        let local_qualified_identities =
-            self.load_local_qualified_identities().unwrap_or_else(|e| {
-                tracing::error!("Failed to load local qualified identities: {:?}", e);
-                Vec::new() // Use default value if loading fails
-            });
+    /// Fetches the local identities from the database and then maps them to their DPNS names.
+    pub fn local_dpns_names(&self) -> Result<Vec<(Identifier, String)>> {
+        let identities = self.db.get_local_qualified_identities(self)?;
 
-        let owned_contested_names = all_contested_names
+        // Map each identity's DPNS names to (Identifier, Name) tuples
+        let dpns_names = identities
             .into_iter()
-            .filter(|contested_name| {
-                contested_name
-                    .awarded_to
-                    .as_ref()
-                    .map_or(false, |awarded_to| {
-                        local_qualified_identities
-                            .iter()
-                            .any(|identity| identity.identity.id() == awarded_to)
+            .flat_map(|identity| {
+                identity
+                    .dpns_names
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(move |name| {
+                        let clean_name = name.strip_prefix("string ").unwrap_or(&name).to_string();
+                        (identity.identity.id(), clean_name)
                     })
             })
-            .collect();
+            .collect::<Vec<(Identifier, String)>>();
 
-        Ok(owned_contested_names)
-    }
-
-    pub fn local_dpns_names(&self) -> Result<Vec<(Identifier, String)>> {
-        self.db.get_local_dpns_names(self)
+        Ok(dpns_names)
     }
 
     /// Updates the `start_root_screen` in the settings table

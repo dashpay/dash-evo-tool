@@ -79,40 +79,6 @@ impl Database {
         identities
     }
 
-    pub fn get_local_dpns_names(
-        &self,
-        app_context: &AppContext,
-    ) -> rusqlite::Result<Vec<(Identifier, String)>> {
-        let network = app_context.network_string();
-
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT data FROM identity WHERE is_local = 1 AND network = ? AND data IS NOT NULL",
-        )?;
-        let identity_iter = stmt.query_map(params![network], |row| {
-            let data: Vec<u8> = row.get(0)?;
-            let identity: QualifiedIdentity = QualifiedIdentity::from_bytes(&data);
-
-            // Map each name with its associated Identifier as a tuple
-            let dpns_names = identity
-                .dpns_names
-                .unwrap_or_default()
-                .into_iter()
-                .map(|name| {
-                    let clean_name = name.strip_prefix("string ").unwrap_or(&name).to_string();
-                    (identity.identity.id(), clean_name)
-                })
-                .collect::<Vec<(Identifier, String)>>();
-
-            Ok(dpns_names)
-        })?;
-
-        // Flatten into a single vector
-        let identities =
-            identity_iter.collect::<rusqlite::Result<Vec<Vec<(Identifier, String)>>>>()?;
-        Ok(identities.into_iter().flatten().collect())
-    }
-
     pub fn get_local_voting_identities(
         &self,
         app_context: &AppContext,

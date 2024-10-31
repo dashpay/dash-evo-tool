@@ -578,8 +578,8 @@ impl DPNSContestedNamesScreen {
                         .striped(true)
                         .resizable(true)
                         .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                        .column(Column::initial(500.0).resizable(true)) // Identifier
-                        .column(Column::initial(500.0).resizable(true)) // DPNS Name
+                        .column(Column::initial(400.0).resizable(true)) // Identifier
+                        .column(Column::initial(400.0).resizable(true)) // DPNS Name
                         .header(30.0, |mut header| {
                             header.col(|ui| {
                                 if ui.button("Identifier").clicked() {

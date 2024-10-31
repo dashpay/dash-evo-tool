@@ -138,6 +138,7 @@ impl AppContext {
     }
 
     /// Fetches the local identities from the database and then maps them to their DPNS names.
+    /// A vector of tuples is used here for easy column sorting in the UI.
     pub fn local_dpns_names(&self) -> Result<Vec<(Identifier, String)>> {
         let identities = self.db.get_local_qualified_identities(self)?;
 

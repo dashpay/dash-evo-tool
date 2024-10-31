@@ -143,21 +143,17 @@ impl AppContext {
 
         // Map each identity's DPNS names to (Identifier, DPNSNameInfo) tuples
         let dpns_names = qualified_identities
-            .into_iter()
+            .iter()
             .flat_map(|qualified_identity| {
-                let id = qualified_identity.identity.id();
-                qualified_identity
-                    .dpns_names
-                    .into_iter()
-                    .map(move |dpns_name_info| {
-                        (
-                            id,
-                            DPNSNameInfo {
-                                name: dpns_name_info.name,
-                                acquired_at: dpns_name_info.acquired_at,
-                            },
-                        )
-                    })
+                qualified_identity.dpns_names.iter().map(|dpns_name_info| {
+                    (
+                        qualified_identity.identity.id(),
+                        DPNSNameInfo {
+                            name: dpns_name_info.name.clone(),
+                            acquired_at: dpns_name_info.acquired_at,
+                        },
+                    )
+                })
             })
             .collect::<Vec<(Identifier, DPNSNameInfo)>>();
 

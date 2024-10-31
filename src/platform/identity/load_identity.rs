@@ -2,7 +2,7 @@ use crate::context::AppContext;
 use crate::model::qualified_identity::EncryptedPrivateKeyTarget::{
     self, PrivateKeyOnMainIdentity, PrivateKeyOnVoterIdentity,
 };
-use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
+use crate::model::qualified_identity::{DPNSNameInfo, IdentityType, QualifiedIdentity};
 use crate::platform::identity::{verify_key_input, IdentityInputToLoad};
 use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
 use dash_sdk::dashcore_rpc::dashcore::PrivateKey;
@@ -158,19 +158,27 @@ impl AppContext {
         let maybe_owned_dpns_names = Document::fetch_many(&self.sdk, dpns_names_document_query)
             .await
             .map(|document_map| {
-                let names: Vec<String> = document_map
+                document_map
                     .values()
                     .filter_map(|maybe_doc| {
                         maybe_doc.as_ref().and_then(|doc| {
-                            doc.get("normalizedLabel").map(|label| label.to_string())
+                            let name = doc.get("normalizedLabel").map(|label| label.to_string());
+                            let acquired_at = doc
+                                .created_at()
+                                .into_iter()
+                                .chain(doc.transferred_at())
+                                .max();
+
+                            match (name, acquired_at) {
+                                (Some(name), Some(acquired_at)) => {
+                                    Some(DPNSNameInfo { name, acquired_at })
+                                }
+                                _ => None,
+                            }
                         })
                     })
-                    .collect();
-                if names.is_empty() {
-                    None
-                } else {
-                    Some(names)
-                }
+                    .collect::<Vec<DPNSNameInfo>>()
+                    .into()
             })
             .map_err(|e| format!("Error fetching DPNS names: {}", e))?;
 

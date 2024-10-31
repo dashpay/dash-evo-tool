@@ -65,6 +65,12 @@ impl From<Purpose> for EncryptedPrivateKeyTarget {
 }
 
 #[derive(Debug, Encode, Decode, Clone, PartialEq)]
+pub struct DPNSNameInfo {
+    pub name: String,
+    pub acquired_at: u64,
+}
+
+#[derive(Debug, Encode, Decode, Clone, PartialEq)]
 pub struct QualifiedIdentity {
     pub identity: Identity,
     pub associated_voter_identity: Option<(Identity, IdentityPublicKey)>,
@@ -74,7 +80,7 @@ pub struct QualifiedIdentity {
     pub alias: Option<String>,
     pub encrypted_private_keys:
         BTreeMap<(EncryptedPrivateKeyTarget, KeyID), (IdentityPublicKey, [u8; 32])>,
-    pub dpns_names: Option<Vec<String>>,
+    pub dpns_names: Option<Vec<DPNSNameInfo>>,
 }
 
 impl Signer for QualifiedIdentity {

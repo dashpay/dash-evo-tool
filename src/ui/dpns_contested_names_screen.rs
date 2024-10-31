@@ -3,7 +3,7 @@ use super::{Screen, ScreenType};
 use crate::app::{AppAction, DesiredAppAction};
 use crate::context::AppContext;
 use crate::model::contested_name::{ContestState, ContestedName};
-use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
+use crate::model::qualified_identity::{DPNSNameInfo, IdentityType, QualifiedIdentity};
 use crate::platform::contested_names::ContestedResourceTask;
 use crate::platform::BackendTask;
 use crate::ui::components::left_panel::add_left_panel;
@@ -58,7 +58,7 @@ pub struct DPNSContestedNamesScreen {
     voting_identities: Vec<QualifiedIdentity>,
     user_identities: Vec<QualifiedIdentity>,
     contested_names: Arc<Mutex<Vec<ContestedName>>>,
-    local_dpns_names: Vec<(Identifier, String)>,
+    local_dpns_names: Vec<(Identifier, DPNSNameInfo)>,
     pub app_context: Arc<AppContext>,
     error_message: Option<(String, MessageType, DateTime<Utc>)>,
     sort_column: SortColumn,
@@ -545,6 +545,14 @@ impl DPNSContestedNamesScreen {
         // Clone and sort a local copy of the `local_dpns_names` vector
         let mut sorted_names = self.local_dpns_names.clone();
         sorted_names.sort_by(|a, b| match self.sort_column {
+            SortColumn::ContestedName => {
+                let order = a.1.name.cmp(&b.1.name); // Sort by DPNS Name
+                if self.sort_order == SortOrder::Descending {
+                    order.reverse()
+                } else {
+                    order
+                }
+            }
             SortColumn::AwardedTo => {
                 let order = a.0.cmp(&b.0); // Sort by Identifier
                 if self.sort_order == SortOrder::Descending {
@@ -553,8 +561,8 @@ impl DPNSContestedNamesScreen {
                     order
                 }
             }
-            SortColumn::ContestedName => {
-                let order = a.1.cmp(&b.1); // Sort by DPNS Name
+            SortColumn::EndingTime => {
+                let order = a.1.acquired_at.cmp(&b.1.acquired_at); // Sort by Acquired At
                 if self.sort_order == SortOrder::Descending {
                     order.reverse()
                 } else {
@@ -578,30 +586,45 @@ impl DPNSContestedNamesScreen {
                         .striped(true)
                         .resizable(true)
                         .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                        .column(Column::initial(400.0).resizable(true)) // Identifier
-                        .column(Column::initial(400.0).resizable(true)) // DPNS Name
+                        .column(Column::initial(200.0).resizable(true)) // DPNS Name
+                        .column(Column::initial(400.0).resizable(true)) // Owner Identifier
+                        .column(Column::initial(300.0).resizable(true)) // Acquired At
                         .header(30.0, |mut header| {
                             header.col(|ui| {
-                                if ui.button("Identifier").clicked() {
-                                    self.toggle_sort(SortColumn::AwardedTo); // Toggle sorting for Identifier
+                                if ui.button("Name").clicked() {
+                                    self.toggle_sort(SortColumn::ContestedName);
                                 }
                             });
                             header.col(|ui| {
-                                if ui.button("DPNS Name").clicked() {
-                                    self.toggle_sort(SortColumn::ContestedName);
-                                    // Toggle sorting for DPNS Name
+                                if ui.button("Owner ID").clicked() {
+                                    self.toggle_sort(SortColumn::AwardedTo);
+                                }
+                            });
+                            header.col(|ui| {
+                                if ui.button("Acquired At").clicked() {
+                                    self.toggle_sort(SortColumn::EndingTime);
                                 }
                             });
                         })
                         .body(|mut body| {
-                            for (identifier, name) in sorted_names {
+                            for (identifier, dpns_info) in sorted_names {
                                 body.row(25.0, |mut row| {
-                                    // Display Identifier and Name on each row
+                                    row.col(|ui| {
+                                        ui.label(dpns_info.name);
+                                    });
                                     row.col(|ui| {
                                         ui.label(identifier.to_string(Encoding::Base58));
                                     });
+
+                                    let datetime = DateTime::from_timestamp(
+                                        dpns_info.acquired_at as i64 / 1000,
+                                        ((dpns_info.acquired_at % 1000) * 1_000_000) as u32,
+                                    )
+                                    .map(|dt| dt.to_string())
+                                    .unwrap_or_else(|| "Invalid timestamp".to_string());
+
                                     row.col(|ui| {
-                                        ui.label(name);
+                                        ui.label(datetime);
                                     });
                                 });
                             }

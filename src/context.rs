@@ -3,7 +3,7 @@ use crate::context_provider::Provider;
 use crate::database::Database;
 use crate::model::contested_name::ContestedName;
 use crate::model::qualified_contract::QualifiedContract;
-use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::qualified_identity::{DPNSNameInfo, QualifiedIdentity};
 use crate::model::wallet::Wallet;
 use crate::sdk_wrapper::initialize_sdk;
 use crate::ui::RootScreenType;
@@ -139,10 +139,10 @@ impl AppContext {
 
     /// Fetches the local identities from the database and then maps them to their DPNS names.
     /// A vector of tuples is used here for easy column sorting in the UI.
-    pub fn local_dpns_names(&self) -> Result<Vec<(Identifier, String)>> {
+    pub fn local_dpns_names(&self) -> Result<Vec<(Identifier, DPNSNameInfo)>> {
         let identities = self.db.get_local_qualified_identities(self)?;
 
-        // Map each identity's DPNS names to (Identifier, Name) tuples
+        // Map each identity's DPNS names to (Identifier, DPNSNameInfo) tuples
         let dpns_names = identities
             .into_iter()
             .flat_map(|identity| {
@@ -151,11 +151,21 @@ impl AppContext {
                     .unwrap_or_default()
                     .into_iter()
                     .map(move |name| {
-                        let clean_name = name.strip_prefix("string ").unwrap_or(&name).to_string();
-                        (identity.identity.id(), clean_name)
+                        let clean_name = name
+                            .name
+                            .strip_prefix("string ")
+                            .unwrap_or(&name.name)
+                            .to_string();
+                        (
+                            identity.identity.id(),
+                            DPNSNameInfo {
+                                name: clean_name,
+                                acquired_at: name.acquired_at,
+                            },
+                        )
                     })
             })
-            .collect::<Vec<(Identifier, String)>>();
+            .collect::<Vec<(Identifier, DPNSNameInfo)>>();
 
         Ok(dpns_names)
     }

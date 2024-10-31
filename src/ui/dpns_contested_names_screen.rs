@@ -720,6 +720,8 @@ impl ScreenLike for DPNSContestedNamesScreen {
             .get_local_user_identities(&self.app_context)
             .unwrap_or_default()
             .into();
+
+        self.local_dpns_names = self.app_context.local_dpns_names().unwrap_or_default();
     }
 
     fn display_message(&mut self, message: &str, message_type: MessageType) {

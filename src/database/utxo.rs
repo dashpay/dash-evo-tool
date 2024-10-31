@@ -1,6 +1,7 @@
 use crate::database::Database;
 use dash_sdk::dashcore_rpc::dashcore::{OutPoint, ScriptBuf, TxOut, Txid};
 use dash_sdk::dpp::dashcore::hashes::Hash;
+use dash_sdk::dpp::dashcore::{Address, Network};
 use rusqlite::params;
 
 impl Database {
@@ -20,16 +21,23 @@ impl Database {
     pub(crate) fn insert_utxo(
         &self,
         txid: &[u8],
-        vout: i64,
-        address: &str,
-        value: i64,
+        vout: u32,
+        address: &Address,
+        value: u64,
         script_pubkey: &[u8],
-        network: &str,
+        network: Network,
     ) -> rusqlite::Result<()> {
         self.execute(
             "INSERT OR IGNORE INTO utxos (txid, vout, address, value, script_pubkey, network)
          VALUES (?, ?, ?, ?, ?, ?)",
-            params![txid, vout, address, value, script_pubkey, network],
+            params![
+                txid,
+                vout,
+                address.to_string(),
+                value,
+                script_pubkey,
+                network.to_string()
+            ],
         )?;
         Ok(())
     }

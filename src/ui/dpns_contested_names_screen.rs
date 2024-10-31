@@ -652,6 +652,31 @@ impl ScreenLike for DPNSContestedNamesScreen {
             .get_local_user_identities(&self.app_context)
             .unwrap_or_default()
             .into();
+
+        self.contested_names = Arc::new(Mutex::new(match self.dpns_subscreen {
+            DPNSSubscreen::Active => {
+                self.app_context
+                    .ongoing_contested_names()
+                    .unwrap_or_else(|e| {
+                        error!("Failed to load contested names: {:?}", e);
+                        Vec::new() // Use default value if loading fails
+                    })
+            }
+            DPNSSubscreen::Past => {
+                self.app_context.all_contested_names().unwrap_or_else(|e| {
+                    error!("Failed to load contested names: {:?}", e);
+                    Vec::new() // Use default value if loading fails
+                })
+            }
+            DPNSSubscreen::Owned => {
+                self.app_context
+                    .owned_contested_names()
+                    .unwrap_or_else(|e| {
+                        error!("Failed to load contested names: {:?}", e);
+                        Vec::new() // Use default value if loading fails
+                    })
+            }
+        }));
     }
 
     fn display_message(&mut self, message: &str, message_type: MessageType) {

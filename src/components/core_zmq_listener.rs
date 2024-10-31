@@ -1,5 +1,5 @@
 use dash_sdk::dpp::dashcore::consensus::Decodable;
-use dash_sdk::dpp::dashcore::{InstantLock, Network, Transaction};
+use dash_sdk::dpp::dashcore::{Block, InstantLock, Network, Transaction};
 use dash_sdk::dpp::prelude::CoreBlockHeight;
 use image::EncodableLayout;
 use std::error::Error;
@@ -19,10 +19,12 @@ pub struct CoreZMQListener {
 
 pub enum ZMQMessage {
     ISLockedTransaction(Transaction, InstantLock),
+    ChainLockedBlock(Block),
     ChainLockedLockedTransaction(Transaction, CoreBlockHeight),
 }
 
 pub const IS_LOCK_SIG_MSG: &[u8; 12] = b"rawtxlocksig";
+pub const CHAIN_LOCKED_BLOCK_MSG: &[u8; 12] = b"rawchainlock";
 
 impl CoreZMQListener {
     pub fn spawn_listener(
@@ -48,6 +50,11 @@ impl CoreZMQListener {
                 .set_subscribe(IS_LOCK_SIG_MSG)
                 .expect("Failed to subscribe to rawtxlocksig");
 
+            // Subscribe to the "rawtxlocksig" events.
+            socket
+                .set_subscribe(CHAIN_LOCKED_BLOCK_MSG)
+                .expect("Failed to subscribe to rawchainlock");
+
             println!("Connected to ZMQ at {}", endpoint);
 
             while !should_stop_clone.load(Ordering::SeqCst) {
@@ -71,9 +78,38 @@ impl CoreZMQListener {
                             let data_bytes = data_message.as_bytes();
 
                             match topic {
+                                "rawchainlock" => {
+                                    println!("Received raw chain locked block:");
+                                    println!("Data (hex): {}", hex::encode(data_bytes));
+
+                                    // Create a cursor over the data_bytes
+                                    let mut cursor = Cursor::new(data_bytes);
+
+                                    // Deserialize the LLMQChainLock
+                                    match Block::consensus_decode(&mut cursor) {
+                                        Ok(block) => {
+                                            // Send the ChainLock and Network back to the main thread
+                                            if let Err(e) = sender_clone.send((
+                                                ZMQMessage::ChainLockedBlock(block),
+                                                network,
+                                            )) {
+                                                eprintln!(
+                                                    "Error sending data to main thread: {}",
+                                                    e
+                                                );
+                                            }
+                                        }
+                                        Err(e) => {
+                                            eprintln!(
+                                                "Error deserializing chain locked block: {}",
+                                                e
+                                            );
+                                        }
+                                    }
+                                }
                                 "rawtxlocksig" => {
-                                    // println!("Received rawtxlocksig for InstantSend:");
-                                    // println!("Data (hex): {}", hex::encode(data_bytes));
+                                    println!("Received rawtxlocksig for InstantSend:");
+                                    println!("Data (hex): {}", hex::encode(data_bytes));
 
                                     // Create a cursor over the data_bytes
                                     let mut cursor = Cursor::new(data_bytes);

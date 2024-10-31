@@ -10,9 +10,7 @@ impl Wallet {
         amount: u64,
     ) -> Option<(BTreeMap<OutPoint, (TxOut, Address)>, u64)> {
         // Ensure UTXOs exist
-        let Some(utxos) = self.utxos.as_mut() else {
-            return None;
-        };
+        let utxos = &mut self.utxos;
 
         let mut required: i64 = amount as i64;
         let mut taken_utxos = BTreeMap::new();
@@ -82,11 +80,9 @@ impl Wallet {
 
                 // Collect current UTXOs into a set for comparison
                 let mut old_outpoints = HashSet::new();
-                if let Some(ref current_utxos) = self.utxos {
-                    for (_address, utxos) in current_utxos.iter() {
-                        for (outpoint, _tx_out) in utxos.iter() {
-                            old_outpoints.insert(outpoint.clone());
-                        }
+                for (_address, utxos) in self.utxos.iter() {
+                    for (outpoint, _tx_out) in utxos.iter() {
+                        old_outpoints.insert(outpoint.clone());
                     }
                 }
 
@@ -97,30 +93,25 @@ impl Wallet {
                     new_outpoints.difference(&old_outpoints).cloned().collect();
 
                 // Now update self.utxos by removing UTXOs not present in new_outpoints
-                if let Some(ref mut current_utxos) = self.utxos {
-                    // Remove UTXOs that are no longer unspent
-                    for utxos in current_utxos.values_mut() {
-                        utxos.retain(|outpoint, _| new_outpoints.contains(outpoint));
-                    }
-                    // Remove addresses with no UTXOs
-                    current_utxos.retain(|_, utxos| !utxos.is_empty());
-                } else {
-                    // If self.utxos is None, initialize it
-                    self.utxos = Some(HashMap::new());
+                let current_utxos = &mut self.utxos;
+                // Remove UTXOs that are no longer unspent
+                for utxos in current_utxos.values_mut() {
+                    utxos.retain(|outpoint, _| new_outpoints.contains(outpoint));
                 }
+                // Remove addresses with no UTXOs
+                current_utxos.retain(|_, utxos| !utxos.is_empty());
 
                 // Add new UTXOs to self.utxos
-                if let Some(ref mut current_utxos) = self.utxos {
-                    for (outpoint, tx_out) in &new_utxo_map {
-                        // Get the address from the script_pubkey
-                        let address = Address::from_script(&tx_out.script_pubkey, network)
-                            .map_err(|e| e.to_string())?;
-                        // Add or update the UTXO in the wallet
-                        current_utxos
-                            .entry(address.clone())
-                            .or_insert_with(HashMap::new)
-                            .insert(outpoint.clone(), tx_out.clone());
-                    }
+                let current_utxos = &mut self.utxos;
+                for (outpoint, tx_out) in &new_utxo_map {
+                    // Get the address from the script_pubkey
+                    let address = Address::from_script(&tx_out.script_pubkey, network)
+                        .map_err(|e| e.to_string())?;
+                    // Add or update the UTXO in the wallet
+                    current_utxos
+                        .entry(address.clone())
+                        .or_insert_with(HashMap::new)
+                        .insert(outpoint.clone(), tx_out.clone());
                 }
 
                 // If save is Some, update the database
@@ -141,11 +132,11 @@ impl Wallet {
 
                         db.insert_utxo(
                             outpoint.txid.as_ref(),
-                            outpoint.vout as i64,
-                            &address.to_string(),
-                            tx_out.value as i64,
+                            outpoint.vout,
+                            &address,
+                            tx_out.value,
                             tx_out.script_pubkey.as_bytes(),
-                            &network.to_string(),
+                            network,
                         )
                         .map_err(|e| e.to_string())?;
                     }

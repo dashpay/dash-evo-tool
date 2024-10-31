@@ -23,7 +23,7 @@ impl AppContext {
         // Step 2: Iterate over each address and update balances
         for address in &addresses {
             // Fetch balance for the address from Dash Core
-            match self.core_client.get_received_by_address(address, None) {
+            match self.core_client.get_received_by_address(address, Some(0)) {
                 Ok(new_balance) => {
                     // Update the wallet's address_balances and database
                     {
@@ -57,11 +57,11 @@ impl AppContext {
             self.db
                 .insert_utxo(
                     &outpoint.txid.as_ref(),          // txid: &[u8]
-                    outpoint.vout as i64,             // vout: i64
-                    &address.to_string(),             // address: &str
-                    tx_out.value as i64,              // value: i64
+                    outpoint.vout,                    // vout: i64
+                    &address,                         // address: &str
+                    tx_out.value,                     // value: i64
                     &tx_out.script_pubkey.to_bytes(), // script_pubkey: &[u8]
-                    &self.network.to_string(),        // network: &str
+                    self.network,                     // network: &str
                 )
                 .map_err(|e| e.to_string())?;
         }

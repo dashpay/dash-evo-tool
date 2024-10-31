@@ -1,5 +1,5 @@
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
-use crate::components::instant_send_listener::{CoreZMQListener, ZMQMessage};
+use crate::components::core_zmq_listener::{CoreZMQListener, ZMQMessage};
 use crate::context::AppContext;
 use crate::database::Database;
 use crate::logging::initialize_logger;
@@ -171,20 +171,20 @@ impl AppState {
         let last_repaint = Instant::now();
 
         // Create a channel for communication with the InstantSendListener
-        let (instant_send_sender, instant_send_receiver) = mpsc::channel();
+        let (core_message_sender, core_message_receiver) = mpsc::channel();
 
         // Pass the sender to the listener when creating it
         let mainnet_core_zmq_listener = CoreZMQListener::spawn_listener(
             Network::Dash,
             "tcp://127.0.0.1:23708",
-            instant_send_sender.clone(), // Clone the sender for each listener
+            core_message_sender.clone(), // Clone the sender for each listener
         )
         .expect("Failed to create mainnet InstantSend listener");
 
         let testnet_core_zmq_listener = CoreZMQListener::spawn_listener(
             Network::Testnet,
             "tcp://127.0.0.1:23709",
-            instant_send_sender, // Use the original sender or create a new one if needed
+            core_message_sender, // Use the original sender or create a new one if needed
         )
         .expect("Failed to create testnet InstantSend listener");
 
@@ -235,7 +235,7 @@ impl AppState {
             testnet_app_context,
             mainnet_core_zmq_listener,
             testnet_core_zmq_listener,
-            core_message_receiver: instant_send_receiver,
+            core_message_receiver,
             task_result_sender,
             task_result_receiver,
             last_repaint,
@@ -403,18 +403,19 @@ impl App for AppState {
                 ZMQMessage::ISLockedTransaction(tx, is_lock) => {
                     // Store the asset lock transaction in the database
                     if let Err(e) =
-                        app_context.received_asset_lock_finality(&tx, Some(is_lock), None)
+                        app_context.received_transaction_finality(&tx, Some(is_lock), None)
                     {
                         eprintln!("Failed to store asset lock: {}", e);
                     }
                 }
                 ZMQMessage::ChainLockedLockedTransaction(tx, height) => {
                     if let Err(e) =
-                        app_context.received_asset_lock_finality(&tx, None, Some(height))
+                        app_context.received_transaction_finality(&tx, None, Some(height))
                     {
                         eprintln!("Failed to store asset lock: {}", e);
                     }
                 }
+                ZMQMessage::ChainLockedBlock(_) => {}
             }
         }
 

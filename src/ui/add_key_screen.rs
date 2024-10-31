@@ -25,8 +25,6 @@ pub struct AddKeyScreen {
 }
 
 impl ScreenLike for AddKeyScreen {
-    fn refresh(&mut self) {}
-
     fn display_message(&mut self, message: &str, _message_type: MessageType) {
         self.error_message = Some(message.to_string());
     }

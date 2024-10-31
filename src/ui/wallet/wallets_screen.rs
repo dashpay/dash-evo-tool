@@ -238,7 +238,7 @@ impl WalletsBalancesScreen {
                 .known_addresses
                 .iter()
                 .map(|(address, derivation_path)| {
-                    let utxo_info = wallet.utxos.as_ref().and_then(|utxos| utxos.get(address));
+                    let utxo_info = wallet.utxos.get(address);
 
                     let utxo_count = utxo_info.map(|outpoints| outpoints.len()).unwrap_or(0);
 
@@ -568,7 +568,5 @@ impl ScreenLike for WalletsBalancesScreen {
         // Optionally implement if needed
     }
 
-    fn refresh(&mut self) {
-        // Optionally implement if needed
-    }
+    fn refresh(&mut self) {}
 }

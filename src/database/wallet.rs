@@ -125,6 +125,27 @@ impl Database {
         }
     }
 
+    /// Add a balance to an existing address.
+    pub fn add_to_address_balance(
+        &self,
+        seed: &[u8; 64],
+        address: &Address,
+        additional_balance: u64,
+    ) -> rusqlite::Result<()> {
+        let rows_affected = self.execute(
+            "UPDATE wallet_addresses
+         SET balance = balance + ?
+         WHERE seed = ? AND address = ?",
+            params![additional_balance, seed, address.to_string()],
+        )?;
+
+        if rows_affected == 0 {
+            Err(rusqlite::Error::QueryReturnedNoRows)
+        } else {
+            Ok(())
+        }
+    }
+
     /// Retrieve all wallets for a specific network, including their addresses, balances, and known addresses.
     pub fn get_wallets(&self, network: &Network) -> rusqlite::Result<Vec<Wallet>> {
         let network_str = network.to_string();
@@ -154,7 +175,7 @@ impl Database {
                     watched_addresses: BTreeMap::new(),
                     unused_asset_locks: vec![],
                     alias,
-                    utxos: None,
+                    utxos: HashMap::new(),
                     is_main,
                     password_hint,
                 },
@@ -271,7 +292,6 @@ impl Database {
                 if wallet.known_addresses.contains_key(&address) {
                     wallet
                         .utxos
-                        .get_or_insert_with(HashMap::new)
                         .entry(address.clone())
                         .or_insert_with(HashMap::new)
                         .insert(outpoint, tx_out.clone());

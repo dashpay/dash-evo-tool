@@ -7,8 +7,10 @@ use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::sdk_wrapper::initialize_sdk;
 use crate::ui::RootScreenType;
+use dash_sdk::dashcore_rpc::dashcore::consensus::deserialize;
 use dash_sdk::dashcore_rpc::dashcore::{InstantLock, Transaction};
 use dash_sdk::dashcore_rpc::{Auth, Client};
+use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::transaction::special_transaction::TransactionPayload::AssetLockPayloadType;
 use dash_sdk::dpp::dashcore::{Address, Network, OutPoint, Txid};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -20,8 +22,9 @@ use dash_sdk::dpp::system_data_contracts::{load_system_data_contract, SystemData
 use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::platform::DataContract;
 use dash_sdk::Sdk;
+use egui::TextBuffer;
 use rusqlite::Result;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -212,6 +215,74 @@ impl AppContext {
         contracts.insert(0, dpns_contract);
 
         Ok(contracts)
+    }
+    pub(crate) fn received_transaction_finality(
+        &self,
+        tx: &Transaction,
+        islock: Option<InstantLock>,
+        chain_locked_height: Option<CoreBlockHeight>,
+    ) -> rusqlite::Result<()> {
+        // Identify the wallet associated with the transaction
+        let wallets = self.wallets.read().unwrap();
+        for wallet_arc in wallets.iter() {
+            let mut wallet = wallet_arc.write().unwrap();
+            for (vout, tx_out) in tx.output.iter().enumerate() {
+                let address = if let Ok(output_addr) =
+                    Address::from_script(&tx_out.script_pubkey, self.network)
+                {
+                    if wallet.known_addresses.contains_key(&output_addr) {
+                        output_addr
+                    } else {
+                        continue;
+                    }
+                } else {
+                    continue;
+                };
+                self.db.insert_utxo(
+                    tx.txid().as_byte_array(),
+                    vout as u32,
+                    &address,
+                    tx_out.value,
+                    &tx_out.script_pubkey.to_bytes(),
+                    self.network,
+                )?;
+                self.db
+                    .add_to_address_balance(&wallet.seed, &address, tx_out.value)?;
+                let proof = if let Some(islock) = islock.as_ref() {
+                    Some(AssetLockProof::Instant(InstantAssetLockProof::new(
+                        islock.clone(),
+                        tx.clone(),
+                        0,
+                    )))
+                } else if let Some(chain_locked_height) = chain_locked_height {
+                    Some(AssetLockProof::Chain(ChainAssetLockProof {
+                        core_chain_locked_height: chain_locked_height,
+                        out_point: OutPoint::new(tx.txid(), 0),
+                    }))
+                } else {
+                    None
+                };
+                // Create the OutPoint and insert it into the wallet.utxos entry
+                let out_point = OutPoint::new(tx.txid(), vout as u32);
+                wallet
+                    .utxos
+                    .entry(address.clone())
+                    .or_insert_with(HashMap::new) // Initialize inner HashMap if needed
+                    .insert(out_point, tx_out.clone()); // Insert the TxOut at the OutPoint
+                wallet
+                    .address_balances
+                    .entry(address)
+                    .and_modify(|balance| *balance += tx_out.value)
+                    .or_insert(tx_out.value);
+            }
+        }
+        if matches!(
+            tx.special_transaction_payload,
+            Some(AssetLockPayloadType(_))
+        ) {
+            self.received_asset_lock_finality(tx, islock, chain_locked_height)?;
+        }
+        Ok(())
     }
 
     /// Store the asset lock transaction in the database and update the wallet.

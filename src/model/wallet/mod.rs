@@ -106,7 +106,7 @@ pub struct Wallet {
         Option<AssetLockProof>,
     )>,
     pub alias: Option<String>,
-    pub utxos: Option<HashMap<Address, HashMap<OutPoint, TxOut>>>,
+    pub utxos: HashMap<Address, HashMap<OutPoint, TxOut>>,
     pub is_main: bool,
     pub password_hint: Option<String>,
 }

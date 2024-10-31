@@ -81,6 +81,7 @@ pub struct AddNewIdentityScreen {
     copied_to_clipboard: Option<Option<String>>,
     identity_keys: IdentityKeys,
     balance_check_handle: Option<(Arc<AtomicBool>, thread::JoinHandle<()>)>,
+    error_message: Option<String>,
     pub app_context: Arc<AppContext>,
 }
 
@@ -136,6 +137,7 @@ impl AddNewIdentityScreen {
                 keys_input: vec![],
             },
             balance_check_handle: None,
+            error_message: None,
             app_context: app_context.clone(),
         }
     }
@@ -762,7 +764,7 @@ impl AddNewIdentityScreen {
 
 impl ScreenLike for AddNewIdentityScreen {
     fn display_message(&mut self, message: &str, _message_type: MessageType) {
-        todo!()
+        self.error_message = Some(message.to_string());
     }
     fn display_task_result(&mut self, _backend_task_success_result: BackendTaskSuccessResult) {
         let mut step = self.step.write().unwrap();
@@ -851,10 +853,6 @@ impl ScreenLike for AddNewIdentityScreen {
                 step_number += 1;
             }
 
-            if self
-                .funding_asset_lock.is_none() {
-                return;
-            }
             ui.heading(
                 format!("{}. Choose an identity index. Leave this 0 if this is your first identity for this wallet.", step_number).as_str()
             );
@@ -877,6 +875,10 @@ impl ScreenLike for AddNewIdentityScreen {
 
             if step == AddNewIdentityWalletFundedScreenStep::WaitingForAssetLock {
                 ui.heading("Waiting for Asset Lock");
+            }
+
+            if let Some(error_message) = self.error_message.as_ref() {
+                ui.heading(error_message);
             }
 
             if step == AddNewIdentityWalletFundedScreenStep::WaitingForPlatformAcceptance {

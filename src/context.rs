@@ -13,9 +13,10 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::Identity;
 use dash_sdk::dpp::system_data_contracts::{load_system_data_contract, SystemDataContract};
 use dash_sdk::dpp::version::PlatformVersion;
-use dash_sdk::platform::DataContract;
+use dash_sdk::platform::{DataContract, Identifier};
 use dash_sdk::Sdk;
 use rusqlite::Result;
+use std::collections::BTreeMap;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, RwLock};
 
@@ -163,6 +164,10 @@ impl AppContext {
             .collect();
 
         Ok(owned_contested_names)
+    }
+
+    pub fn local_dpns_names(&self) -> Result<Vec<(Identifier, String)>> {
+        self.db.get_local_dpns_names(self)
     }
 
     /// Updates the `start_root_screen` in the settings table

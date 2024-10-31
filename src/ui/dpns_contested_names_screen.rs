@@ -14,6 +14,7 @@ use chrono::{DateTime, LocalResult, TimeZone, Utc};
 use chrono_humanize::HumanTime;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
+use dash_sdk::platform::Identifier;
 use egui::{Context, Frame, Margin, Ui};
 use egui_extras::{Column, TableBuilder};
 use std::sync::{Arc, Mutex};
@@ -35,6 +36,7 @@ enum SortOrder {
     Descending,
 }
 
+#[derive(PartialEq)]
 pub enum DPNSSubscreen {
     Active,
     Past,
@@ -56,6 +58,7 @@ pub struct DPNSContestedNamesScreen {
     voting_identities: Arc<Vec<QualifiedIdentity>>,
     user_identities: Arc<Vec<QualifiedIdentity>>,
     contested_names: Arc<Mutex<Vec<ContestedName>>>,
+    local_dpns_names: Arc<Vec<(Identifier, String)>>,
     pub app_context: Arc<AppContext>,
     error_message: Option<(String, MessageType, DateTime<Utc>)>,
     sort_column: SortColumn,
@@ -67,26 +70,17 @@ pub struct DPNSContestedNamesScreen {
 impl DPNSContestedNamesScreen {
     pub fn new(app_context: &Arc<AppContext>, dpns_subscreen: DPNSSubscreen) -> Self {
         let contested_names = Arc::new(Mutex::new(match dpns_subscreen {
-            DPNSSubscreen::Active => {
-                app_context.ongoing_contested_names().unwrap_or_else(|e| {
-                    error!("Failed to load contested names: {:?}", e);
-                    Vec::new() // Use default value if loading fails
-                })
-            }
-            DPNSSubscreen::Past => {
-                app_context.all_contested_names().unwrap_or_else(|e| {
-                    error!("Failed to load contested names: {:?}", e);
-                    Vec::new() // Use default value if loading fails
-                })
-            }
-            DPNSSubscreen::Owned => {
-                app_context.owned_contested_names().unwrap_or_else(|e| {
-                    error!("Failed to load contested names: {:?}", e);
-                    Vec::new() // Use default value if loading fails
-                })
-            }
+            DPNSSubscreen::Active => app_context.ongoing_contested_names().unwrap_or_else(|e| {
+                error!("Failed to load contested names: {:?}", e);
+                Vec::new()
+            }),
+            DPNSSubscreen::Past => app_context.all_contested_names().unwrap_or_else(|e| {
+                error!("Failed to load contested names: {:?}", e);
+                Vec::new()
+            }),
+            DPNSSubscreen::Owned => Vec::new(),
         }));
-
+        let local_dpns_names = app_context.local_dpns_names().unwrap_or_default();
         let voting_identities = app_context
             .db
             .get_local_voting_identities(&app_context)
@@ -99,6 +93,7 @@ impl DPNSContestedNamesScreen {
             voting_identities: Arc::new(voting_identities),
             user_identities: Arc::new(user_identities),
             contested_names,
+            local_dpns_names: Arc::new(local_dpns_names),
             app_context: app_context.clone(),
             error_message: None,
             sort_column: SortColumn::ContestedName,
@@ -542,6 +537,75 @@ impl DPNSContestedNamesScreen {
         });
     }
 
+    fn render_table_local_dpns_names(&mut self, ui: &mut Ui) {
+        // Clone and sort a local copy of the `local_dpns_names` vector
+        let mut sorted_names = self.local_dpns_names.clone().as_ref().clone();
+        sorted_names.sort_by(|a, b| match self.sort_column {
+            SortColumn::AwardedTo => {
+                let order = a.0.cmp(&b.0); // Sort by Identifier
+                if self.sort_order == SortOrder::Descending {
+                    order.reverse()
+                } else {
+                    order
+                }
+            }
+            SortColumn::ContestedName => {
+                let order = a.1.cmp(&b.1); // Sort by DPNS Name
+                if self.sort_order == SortOrder::Descending {
+                    order.reverse()
+                } else {
+                    order
+                }
+            }
+            _ => std::cmp::Ordering::Equal,
+        });
+
+        // Render table UI
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            Frame::group(ui.style())
+                .fill(ui.visuals().panel_fill)
+                .stroke(egui::Stroke::new(
+                    1.0,
+                    ui.visuals().widgets.inactive.bg_stroke.color,
+                ))
+                .inner_margin(Margin::same(8.0))
+                .show(ui, |ui| {
+                    TableBuilder::new(ui)
+                        .striped(true)
+                        .resizable(true)
+                        .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                        .column(Column::initial(500.0).resizable(true)) // Identifier
+                        .column(Column::initial(500.0).resizable(true)) // DPNS Name
+                        .header(30.0, |mut header| {
+                            header.col(|ui| {
+                                if ui.button("Identifier").clicked() {
+                                    self.toggle_sort(SortColumn::AwardedTo); // Toggle sorting for Identifier
+                                }
+                            });
+                            header.col(|ui| {
+                                if ui.button("DPNS Name").clicked() {
+                                    self.toggle_sort(SortColumn::ContestedName);
+                                    // Toggle sorting for DPNS Name
+                                }
+                            });
+                        })
+                        .body(|mut body| {
+                            for (identifier, name) in sorted_names {
+                                body.row(25.0, |mut row| {
+                                    // Display Identifier and Name on each row
+                                    row.col(|ui| {
+                                        ui.label(identifier.to_string(Encoding::Base58));
+                                    });
+                                    row.col(|ui| {
+                                        ui.label(name);
+                                    });
+                                });
+                            }
+                        });
+                });
+        });
+    }
+
     fn show_vote_popup(&mut self, ui: &mut Ui) -> AppAction {
         let mut app_action = AppAction::None;
         if self.voting_identities.is_empty() {
@@ -633,7 +697,8 @@ impl ScreenLike for DPNSContestedNamesScreen {
                 *contested_names = self.app_context.all_contested_names().unwrap_or_default();
             }
             DPNSSubscreen::Owned => {
-                *contested_names = self.app_context.owned_contested_names().unwrap_or_default();
+                self.local_dpns_names =
+                    Arc::new(self.app_context.local_dpns_names().unwrap_or_default());
             }
         }
     }
@@ -763,10 +828,14 @@ impl ScreenLike for DPNSContestedNamesScreen {
                         self.render_table_past_contests(ui);
                     }
                     DPNSSubscreen::Owned => {
-                        self.render_table_past_contests(ui);
+                        self.render_table_local_dpns_names(ui);
                     }
                 }
             } else {
+                if self.dpns_subscreen == DPNSSubscreen::Owned && !self.local_dpns_names.is_empty()
+                {
+                    self.render_table_local_dpns_names(ui);
+                }
                 // Render the "no active contests" message if none exist
                 self.render_no_active_contests(ui);
             }

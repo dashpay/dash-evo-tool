@@ -6,11 +6,14 @@ use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
 use crate::platform::identity::{verify_key_input, IdentityInputToLoad};
 use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
 use dash_sdk::dashcore_rpc::dashcore::PrivateKey;
+use dash_sdk::dpp::document::DocumentV0Getters;
 use dash_sdk::dpp::identifier::MasternodeIdentifiers;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
-use dash_sdk::platform::{Fetch, Identifier, Identity};
+use dash_sdk::dpp::platform_value::Value;
+use dash_sdk::drive::query::{WhereClause, WhereOperator};
+use dash_sdk::platform::{Document, DocumentQuery, Fetch, FetchMany, Identifier, Identity};
 use dash_sdk::Sdk;
 use std::collections::BTreeMap;
 
@@ -138,6 +141,45 @@ impl AppContext {
             }
         }
 
+        // Fetch DPNS names using SDK
+        let dpns_names_document_query = DocumentQuery {
+            data_contract: self.dpns_contract.clone(),
+            document_type_name: "domain".to_string(),
+            where_clauses: vec![WhereClause {
+                field: "records.identity".to_string(),
+                operator: WhereOperator::Equal,
+                value: Value::Identifier(identity_id.into()),
+            }],
+            order_by_clauses: vec![],
+            limit: 100,
+            start: None,
+        };
+        let maybe_owned_dpns_names: Option<Vec<String>> =
+            match Document::fetch_many(&self.sdk, dpns_names_document_query).await {
+                Ok(document_map) => {
+                    let names: Vec<String> = document_map
+                        .iter()
+                        .filter_map(|(_, maybe_doc)| {
+                            if let Some(doc) = maybe_doc {
+                                Some(
+                                    doc.get("normalizedLabel")
+                                        .expect("expected normalizedLabel")
+                                        .to_string(),
+                                )
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+                    if names.is_empty() {
+                        None
+                    } else {
+                        Some(names)
+                    }
+                }
+                Err(e) => return Err(format!("Error fetching DPNS names: {}", e)), // Could also just make it None and still return the Identity without DPNS names
+            };
+
         let qualified_identity = QualifiedIdentity {
             identity,
             associated_voter_identity,
@@ -150,6 +192,7 @@ impl AppContext {
                 Some(alias_input)
             },
             encrypted_private_keys,
+            dpns_names: maybe_owned_dpns_names,
         };
 
         // Insert qualified identity into the database

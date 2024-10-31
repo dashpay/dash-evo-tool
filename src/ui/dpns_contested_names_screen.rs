@@ -55,10 +55,10 @@ impl DPNSSubscreen {
 
 pub struct DPNSContestedNamesScreen {
     // No need for Mutex as this can only refresh when entering screen
-    voting_identities: Arc<Vec<QualifiedIdentity>>,
-    user_identities: Arc<Vec<QualifiedIdentity>>,
+    voting_identities: Vec<QualifiedIdentity>,
+    user_identities: Vec<QualifiedIdentity>,
     contested_names: Arc<Mutex<Vec<ContestedName>>>,
-    local_dpns_names: Arc<Vec<(Identifier, String)>>,
+    local_dpns_names: Vec<(Identifier, String)>,
     pub app_context: Arc<AppContext>,
     error_message: Option<(String, MessageType, DateTime<Utc>)>,
     sort_column: SortColumn,
@@ -80,7 +80,11 @@ impl DPNSContestedNamesScreen {
             }),
             DPNSSubscreen::Owned => Vec::new(),
         }));
-        let local_dpns_names = app_context.local_dpns_names().unwrap_or_default();
+        let local_dpns_names = match dpns_subscreen {
+            DPNSSubscreen::Active => Vec::new(),
+            DPNSSubscreen::Past => Vec::new(),
+            DPNSSubscreen::Owned => app_context.local_dpns_names().unwrap_or_default(),
+        };
         let voting_identities = app_context
             .db
             .get_local_voting_identities(&app_context)
@@ -90,10 +94,10 @@ impl DPNSContestedNamesScreen {
             .get_local_user_identities(&app_context)
             .unwrap_or_default();
         Self {
-            voting_identities: Arc::new(voting_identities),
-            user_identities: Arc::new(user_identities),
+            voting_identities: voting_identities,
+            user_identities: user_identities,
             contested_names,
-            local_dpns_names: Arc::new(local_dpns_names),
+            local_dpns_names: local_dpns_names,
             app_context: app_context.clone(),
             error_message: None,
             sort_column: SortColumn::ContestedName,
@@ -195,7 +199,7 @@ impl DPNSContestedNamesScreen {
         }
     }
 
-    fn render_no_active_contests(&mut self, ui: &mut Ui) {
+    fn render_no_active_contests_or_owned_names(&mut self, ui: &mut Ui) {
         ui.vertical_centered(|ui| {
             ui.add_space(20.0); // Add some space to separate from the top
             match self.dpns_subscreen {
@@ -539,7 +543,7 @@ impl DPNSContestedNamesScreen {
 
     fn render_table_local_dpns_names(&mut self, ui: &mut Ui) {
         // Clone and sort a local copy of the `local_dpns_names` vector
-        let mut sorted_names = self.local_dpns_names.clone().as_ref().clone();
+        let mut sorted_names = self.local_dpns_names.clone();
         sorted_names.sort_by(|a, b| match self.sort_column {
             SortColumn::AwardedTo => {
                 let order = a.0.cmp(&b.0); // Sort by Identifier
@@ -697,8 +701,7 @@ impl ScreenLike for DPNSContestedNamesScreen {
                 *contested_names = self.app_context.all_contested_names().unwrap_or_default();
             }
             DPNSSubscreen::Owned => {
-                self.local_dpns_names =
-                    Arc::new(self.app_context.local_dpns_names().unwrap_or_default());
+                self.local_dpns_names = self.app_context.local_dpns_names().unwrap_or_default();
             }
         }
     }
@@ -837,7 +840,7 @@ impl ScreenLike for DPNSContestedNamesScreen {
                     self.render_table_local_dpns_names(ui);
                 }
                 // Render the "no active contests" message if none exist
-                self.render_no_active_contests(ui);
+                self.render_no_active_contests_or_owned_names(ui);
             }
         });
 

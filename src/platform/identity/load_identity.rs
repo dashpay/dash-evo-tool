@@ -154,31 +154,25 @@ impl AppContext {
             limit: 100,
             start: None,
         };
-        let maybe_owned_dpns_names: Option<Vec<String>> =
-            match Document::fetch_many(&self.sdk, dpns_names_document_query).await {
-                Ok(document_map) => {
-                    let names: Vec<String> = document_map
-                        .iter()
-                        .filter_map(|(_, maybe_doc)| {
-                            if let Some(doc) = maybe_doc {
-                                Some(
-                                    doc.get("normalizedLabel")
-                                        .expect("expected normalizedLabel")
-                                        .to_string(),
-                                )
-                            } else {
-                                None
-                            }
+
+        let maybe_owned_dpns_names = Document::fetch_many(&self.sdk, dpns_names_document_query)
+            .await
+            .map(|document_map| {
+                let names: Vec<String> = document_map
+                    .values()
+                    .filter_map(|maybe_doc| {
+                        maybe_doc.as_ref().and_then(|doc| {
+                            doc.get("normalizedLabel").map(|label| label.to_string())
                         })
-                        .collect();
-                    if names.is_empty() {
-                        None
-                    } else {
-                        Some(names)
-                    }
+                    })
+                    .collect();
+                if names.is_empty() {
+                    None
+                } else {
+                    Some(names)
                 }
-                Err(e) => return Err(format!("Error fetching DPNS names: {}", e)), // Could also just make it None and still return the Identity without DPNS names
-            };
+            })
+            .map_err(|e| format!("Error fetching DPNS names: {}", e))?;
 
         let qualified_identity = QualifiedIdentity {
             identity,

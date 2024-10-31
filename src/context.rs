@@ -142,29 +142,24 @@ impl AppContext {
         let identities = self.db.get_local_qualified_identities(self)?;
 
         // Map each identity's DPNS names to (Identifier, DPNSNameInfo) tuples
-        let dpns_names = identities
-            .into_iter()
-            .flat_map(|identity| {
-                identity
-                    .dpns_names
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(move |dpns_name_info| {
-                        let clean_name = dpns_name_info
-                            .name
-                            .strip_prefix("string ")
-                            .unwrap_or(&dpns_name_info.name)
-                            .to_string();
-                        (
-                            identity.identity.id(),
-                            DPNSNameInfo {
-                                name: clean_name,
-                                acquired_at: dpns_name_info.acquired_at,
-                            },
-                        )
-                    })
-            })
-            .collect::<Vec<(Identifier, DPNSNameInfo)>>();
+        let mut dpns_names = Vec::new();
+        for identity in identities {
+            let identity_dpns_names = identity.dpns_names.unwrap_or_default();
+            for dpns_name_info in identity_dpns_names {
+                let parsed_name = dpns_name_info
+                    .name
+                    .strip_prefix("string ")
+                    .unwrap_or(&dpns_name_info.name)
+                    .to_string();
+                dpns_names.push((
+                    identity.identity.id(),
+                    DPNSNameInfo {
+                        name: parsed_name,
+                        acquired_at: dpns_name_info.acquired_at,
+                    },
+                ));
+            }
+        }
 
         Ok(dpns_names)
     }

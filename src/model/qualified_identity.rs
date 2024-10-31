@@ -80,7 +80,7 @@ pub struct QualifiedIdentity {
     pub alias: Option<String>,
     pub encrypted_private_keys:
         BTreeMap<(EncryptedPrivateKeyTarget, KeyID), (IdentityPublicKey, [u8; 32])>,
-    pub dpns_names: Option<Vec<DPNSNameInfo>>,
+    pub dpns_names: Vec<DPNSNameInfo>,
 }
 
 impl Signer for QualifiedIdentity {
@@ -278,7 +278,7 @@ impl From<Identity> for QualifiedIdentity {
             identity_type: IdentityType::User,
             alias: None,
             encrypted_private_keys: Default::default(),
-            dpns_names: None,
+            dpns_names: vec![],
         }
     }
 }

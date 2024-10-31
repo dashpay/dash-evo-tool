@@ -145,13 +145,13 @@ impl AppContext {
         let dpns_names = qualified_identities
             .into_iter()
             .flat_map(|qualified_identity| {
+                let id = qualified_identity.identity.id();
                 qualified_identity
                     .dpns_names
-                    .unwrap_or_default()
                     .into_iter()
                     .map(move |dpns_name_info| {
                         (
-                            qualified_identity.identity.id(),
+                            id,
                             DPNSNameInfo {
                                 name: dpns_name_info.name,
                                 acquired_at: dpns_name_info.acquired_at,
@@ -159,8 +159,7 @@ impl AppContext {
                         )
                     })
             })
-            .collect::<Vec<(Identifier, DPNSNameInfo)>>()
-            .into();
+            .collect::<Vec<(Identifier, DPNSNameInfo)>>();
 
         Ok(dpns_names)
     }

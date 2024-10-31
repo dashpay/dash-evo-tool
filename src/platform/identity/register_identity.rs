@@ -157,7 +157,7 @@ impl AppContext {
             identity_type: IdentityType::User,
             alias: None,
             encrypted_private_keys: keys.to_encrypted_private_keys(),
-            dpns_names: None,
+            dpns_names: vec![],
         };
 
         let updated_identity = identity

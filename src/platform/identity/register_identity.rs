@@ -36,11 +36,11 @@ impl AppContext {
 
         let sdk = &self.sdk;
 
-        let block_hash = sdk
+        let response =  sdk
             .execute(GetBlockchainStatusRequest {}, RequestSettings::default())
-            .await?
-            .chain
-            .map(|chain| chain.best_block_hash)
+            .await?;
+
+        let block_hash = response.chain.map(|chain| chain.best_block_hash)
             .ok_or_else(|| dash_sdk::Error::DapiClientError("Missing `chain` field".to_owned()))?;
 
         // tracing::debug!(

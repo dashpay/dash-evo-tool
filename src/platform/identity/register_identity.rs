@@ -40,7 +40,7 @@ impl AppContext {
             .execute(GetBlockchainStatusRequest {}, RequestSettings::default())
             .await?;
 
-        let block_hash = response.chain.map(|chain| chain.best_block_hash)
+        let block_hash = response.inner.chain.map(|chain| chain.best_block_hash)
             .ok_or_else(|| dash_sdk::Error::DapiClientError("Missing `chain` field".to_owned()))?;
 
         // tracing::debug!(
@@ -82,7 +82,7 @@ impl AppContext {
                 // );
 
                 asset_lock_stream = sdk
-                    .start_instant_send_lock_stream(response.block_hash, address)
+                    .start_instant_send_lock_stream(response.inner.block_hash, address)
                     .await?;
 
                 // tracing::debug!("Stream restarted.");

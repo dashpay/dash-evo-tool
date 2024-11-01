@@ -3,11 +3,23 @@ use crate::backend_task::identity::{IdentityRegistrationInfo, IdentityRegistrati
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::context::AppContext;
 use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
+use dash_sdk::dapi_client::DapiRequestExecutor;
 use dash_sdk::dashcore_rpc::RpcApi;
+use dash_sdk::dpp::block::extended_epoch_info::ExtendedEpochInfo;
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::psbt::serialize::Serialize;
+use dash_sdk::dpp::dashcore::OutPoint;
+use dash_sdk::dpp::identity::state_transition::asset_lock_proof::chain::ChainAssetLockProof;
+use dash_sdk::dpp::native_bls::NativeBlsModule;
+use dash_sdk::dpp::prelude::AssetLockProof;
+use dash_sdk::dpp::state_transition::identity_create_transition::methods::IdentityCreateTransitionMethodsV0;
+use dash_sdk::dpp::state_transition::identity_create_transition::IdentityCreateTransition;
+use dash_sdk::dpp::version::PlatformVersion;
+use dash_sdk::platform::proto::{get_epochs_info_request, GetEpochsInfoRequest};
 use dash_sdk::platform::transition::put_identity::PutIdentity;
-use dash_sdk::platform::Identity;
+use dash_sdk::platform::types::evonode::EvoNode;
+use dash_sdk::platform::{Fetch, FetchUnproved, Identity};
+use dash_sdk::query_types::EvoNodeStatus;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
@@ -109,6 +121,10 @@ impl AppContext {
 
         let sdk = self.sdk.clone();
 
+        let (_, metadata) = ExtendedEpochInfo::fetch_with_metadata(&sdk, 0, None)
+            .await
+            .map_err(|e| e.to_string())?;
+
         let (asset_lock_proof, asset_lock_proof_private_key, tx_id) =
             match identity_registration_method {
                 IdentityRegistrationMethod::UseAssetLock(
@@ -116,11 +132,38 @@ impl AppContext {
                     asset_lock_proof,
                     transaction,
                 ) => {
+                    let tx_id = transaction.txid();
                     let wallet = wallet.read().unwrap();
                     let private_key = wallet
                         .private_key_for_address(&address, self.network)?
                         .ok_or("Asset Lock not valid for wallet")?;
-                    (asset_lock_proof, private_key, transaction.txid())
+                    let asset_lock_proof =
+                        if let AssetLockProof::Instant(instant_asset_lock_proof) =
+                            asset_lock_proof.as_ref()
+                        {
+                            // we need to make sure the instant send asset lock is recent
+                            let raw_transaction_info = self
+                                .core_client
+                                .get_raw_transaction_info(&tx_id, None)
+                                .map_err(|e| e.to_string())?;
+
+                            if raw_transaction_info.chainlock
+                                && raw_transaction_info.height.is_some()
+                                && raw_transaction_info.confirmations.is_some()
+                                && raw_transaction_info.confirmations.unwrap() > 8
+                            {
+                                // we should use a chain lock instead
+                                AssetLockProof::Chain(ChainAssetLockProof {
+                                    core_chain_locked_height: metadata.core_chain_locked_height,
+                                    out_point: OutPoint::new(tx_id, 0),
+                                })
+                            } else {
+                                AssetLockProof::Instant(instant_asset_lock_proof.clone())
+                            }
+                        } else {
+                            asset_lock_proof
+                        };
+                    (asset_lock_proof, private_key, tx_id)
                 }
                 IdentityRegistrationMethod::FundWithWallet(amount, identity_index) => {
                     // Scope the write lock to avoid holding it across an await.
@@ -186,6 +229,13 @@ impl AppContext {
             .expect("expected to create an identifier");
 
         let public_keys = keys.to_public_keys_map();
+
+        match Identity::fetch_by_identifier(&sdk, identity_id).await {
+            Ok(Some(_)) => return Err("Identity already exists".to_string()),
+            Ok(None) => {}
+            Err(e) => return Err(format!("Error fetching identity: {}", e)),
+        };
+
         let identity = Identity::new_with_id_and_keys(identity_id, public_keys, sdk.version())
             .expect("expected to make identity");
 
@@ -220,7 +270,24 @@ impl AppContext {
                 &qualified_identity,
             )
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| {
+                let identity_create_transition =
+                    IdentityCreateTransition::try_from_identity_with_signer(
+                        &identity,
+                        asset_lock_proof,
+                        asset_lock_proof_private_key.inner.as_ref(),
+                        &qualified_identity,
+                        &NativeBlsModule,
+                        0,
+                        PlatformVersion::latest(),
+                    )
+                    .expect("expected to make transition");
+                format!(
+                    "error: {}, transaction is {:?}",
+                    e.to_string(),
+                    identity_create_transition
+                )
+            })?;
 
         qualified_identity.identity = updated_identity;
 

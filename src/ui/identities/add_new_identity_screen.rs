@@ -360,7 +360,7 @@ impl AddNewIdentityScreen {
             ui.label("No wallet selected");
         }
     }
-    fn render_wallet_selection(&mut self, ui: &mut Ui) {
+    fn render_wallet_selection(&mut self, ui: &mut Ui) -> bool {
         if self.app_context.has_wallet.load(Ordering::Relaxed) {
             let wallets = &self.app_context.wallets.read().unwrap();
             if wallets.len() > 1 {
@@ -370,6 +370,12 @@ impl AddNewIdentityScreen {
                     .as_ref()
                     .and_then(|wallet| wallet.read().ok()?.alias.clone())
                     .unwrap_or_else(|| "Select".to_string());
+
+                ui.heading(
+                    "1. Choose the wallet to use in which this identities keys will come from.",
+                );
+
+                ui.add_space(10.0);
 
                 // Display the ComboBox for wallet selection
                 ComboBox::from_label("Select Wallet")
@@ -393,10 +399,17 @@ impl AddNewIdentityScreen {
                             }
                         }
                     });
+                ui.add_space(10.0);
+                true
             } else if let Some(wallet) = wallets.first() {
                 // Automatically select the only available wallet
                 self.selected_wallet = Some(wallet.clone());
+                false
+            } else {
+                false
             }
+        } else {
+            false
         }
     }
 
@@ -788,9 +801,18 @@ impl ScreenLike for AddNewIdentityScreen {
 
             let mut step_number = 1;
 
-            self.render_wallet_selection(ui);
+            if self.render_wallet_selection(ui) {
+                // We had more than 1 wallet
+                step_number += 1;
+            }
 
-            ui.heading("1. Choose your funding method.");
+            if self.selected_wallet.is_none() {
+                return;
+            };
+
+            ui.heading(
+                format!("{}. Choose your funding method.", step_number).as_str()
+            );
             step_number += 1;
 
             ui.add_space(10.0);

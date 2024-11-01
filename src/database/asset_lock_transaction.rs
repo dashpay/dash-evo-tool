@@ -104,7 +104,9 @@ impl Database {
         let conn = self.conn.lock().unwrap();
 
         conn.execute(
-            "UPDATE asset_lock_transaction SET identity_id = ?1, identity_id_potentially_in_creation IS NULL WHERE tx_id = ?2",
+            "UPDATE asset_lock_transaction
+         SET identity_id = ?1, identity_id_potentially_in_creation = NULL
+         WHERE tx_id = ?2",
             params![identity_id, txid],
         )?;
 

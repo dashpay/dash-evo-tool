@@ -15,6 +15,7 @@ use crate::model::wallet::Wallet;
 use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
 use dash_sdk::dashcore_rpc::dashcore::{Address, PrivateKey};
 use dash_sdk::dpp::balances::credits::Duffs;
+use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::Transaction;
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -28,6 +29,7 @@ use dash_sdk::Sdk;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 use tokio::sync::mpsc;
+use tracing_subscriber::util::SubscriberInitExt;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct IdentityInputToLoad {
@@ -106,6 +108,16 @@ impl IdentityKeys {
         let secp = Secp256k1::new();
         let mut key_map = BTreeMap::new();
         if let Some(master_private_key) = master_private_key {
+            let data = match master_private_key_type {
+                KeyType::ECDSA_SECP256K1 => master_private_key.public_key(&secp).to_bytes().into(),
+                KeyType::ECDSA_HASH160 => master_private_key
+                    .public_key(&secp)
+                    .pubkey_hash()
+                    .to_byte_array()
+                    .to_vec()
+                    .into(),
+                _ => panic!("need a ECDSA Key for now"),
+            };
             let key = IdentityPublicKey::V0(IdentityPublicKeyV0 {
                 id: 0,
                 purpose: Purpose::AUTHENTICATION,
@@ -113,7 +125,7 @@ impl IdentityKeys {
                 contract_bounds: None,
                 key_type: *master_private_key_type,
                 read_only: false,
-                data: master_private_key.public_key(&secp).to_bytes().into(),
+                data,
                 disabled_at: None,
             });
 
@@ -122,6 +134,16 @@ impl IdentityKeys {
         key_map.extend(keys_input.iter().enumerate().map(
             |(i, (private_key, key_type, purpose, security_level))| {
                 let id = (i + 1) as KeyID;
+                let data = match key_type {
+                    KeyType::ECDSA_SECP256K1 => private_key.public_key(&secp).to_bytes().into(),
+                    KeyType::ECDSA_HASH160 => private_key
+                        .public_key(&secp)
+                        .pubkey_hash()
+                        .to_byte_array()
+                        .to_vec()
+                        .into(),
+                    _ => panic!("need a ECDSA Key for now"),
+                };
                 let identity_public_key = IdentityPublicKey::V0(IdentityPublicKeyV0 {
                     id,
                     purpose: *purpose,
@@ -129,7 +151,7 @@ impl IdentityKeys {
                     contract_bounds: None,
                     key_type: *key_type,
                     read_only: false,
-                    data: private_key.public_key(&secp).to_bytes().into(),
+                    data,
                     disabled_at: None,
                 });
                 (id, identity_public_key)

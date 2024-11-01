@@ -1,6 +1,7 @@
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::context::AppContext;
 use crate::model::wallet::Wallet;
+use crate::ui::wallet::wallets_screen::DerivationPathHelpers;
 use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dpp::dashcore::Address;
 use std::sync::{Arc, RwLock};
@@ -15,8 +16,14 @@ impl AppContext {
             let wallet_guard = wallet.read().map_err(|e| e.to_string())?;
             wallet_guard
                 .known_addresses
-                .keys()
-                .cloned()
+                .iter()
+                .filter_map(|(address, derivation_path)| {
+                    if derivation_path.is_bip44(self.network) {
+                        Some(address.clone())
+                    } else {
+                        None
+                    }
+                })
                 .collect::<Vec<_>>()
         };
 

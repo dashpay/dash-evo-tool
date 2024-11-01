@@ -38,10 +38,23 @@ pub struct WalletsBalancesScreen {
 }
 
 pub trait DerivationPathHelpers {
+    fn is_bip44(&self, network: Network) -> bool;
     fn is_bip44_external(&self, network: Network) -> bool;
     fn is_bip44_change(&self, network: Network) -> bool;
 }
 impl DerivationPathHelpers for DerivationPath {
+    fn is_bip44(&self, network: Network) -> bool {
+        // BIP44 external paths have the form m/44'/coin_type'/account'/0/...
+        let coin_type = match network {
+            Network::Dash => 5,
+            _ => 1,
+        };
+        let components = self.as_ref();
+        components.len() == 5
+            && components[0] == ChildNumber::Hardened { index: 44 }
+            && components[1] == ChildNumber::Hardened { index: coin_type }
+    }
+
     fn is_bip44_external(&self, network: Network) -> bool {
         // BIP44 external paths have the form m/44'/coin_type'/account'/0/...
         let coin_type = match network {

@@ -67,7 +67,7 @@ impl AppContext {
             Err(error) if error.to_string().contains("AlreadyExists") => {
                 // tracing::warn!("Transaction already broadcasted.");
 
-                let GetTransactionResponse { block_hash, .. } = sdk
+                let response = sdk
                     .execute(
                         GetTransactionRequest {
                             id: asset_lock_transaction.txid().to_string(),
@@ -82,7 +82,7 @@ impl AppContext {
                 // );
 
                 asset_lock_stream = sdk
-                    .start_instant_send_lock_stream(block_hash, address)
+                    .start_instant_send_lock_stream(response.block_hash, address)
                     .await?;
 
                 // tracing::debug!("Stream restarted.");

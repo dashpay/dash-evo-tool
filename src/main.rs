@@ -5,6 +5,7 @@ mod logging;
 mod sdk_wrapper;
 mod ui;
 
+mod app_dir;
 mod components;
 mod context;
 mod context_provider;

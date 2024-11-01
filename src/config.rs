@@ -1,5 +1,6 @@
 use std::str::FromStr;
 
+use crate::app_dir::app_user_data_file_path;
 use dash_sdk::dapi_client::AddressList;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::sdk::Uri;
@@ -59,7 +60,8 @@ impl Config {
     /// Loads the configuration for all networks from environment variables and `.env` file.
     pub fn load() -> Result<Self, ConfigError> {
         // Load the .env file if available
-        if let Err(err) = dotenvy::from_path(".env") {
+        let env_file_path = app_user_data_file_path(".env").expect("should create .env file path");
+        if let Err(err) = dotenvy::from_path(env_file_path) {
             tracing::warn!(
                 ?err,
                 "Failed to load .env file. Continuing with environment variables."

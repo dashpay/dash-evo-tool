@@ -846,26 +846,29 @@ impl ScreenLike for DPNSContestedNamesScreen {
                 !contested_names.is_empty()
             };
 
-            if has_contested_names {
-                // Render the table if there are contested names
-                match self.dpns_subscreen {
-                    DPNSSubscreen::Active => {
+            // Render the proper table
+            match self.dpns_subscreen {
+                DPNSSubscreen::Active => {
+                    if has_contested_names {
                         self.render_table_active_contests(ui);
+                    } else {
+                        self.render_no_active_contests_or_owned_names(ui);
                     }
-                    DPNSSubscreen::Past => {
+                }
+                DPNSSubscreen::Past => {
+                    if has_contested_names {
                         self.render_table_past_contests(ui);
+                    } else {
+                        self.render_no_active_contests_or_owned_names(ui);
                     }
-                    DPNSSubscreen::Owned => {
+                }
+                DPNSSubscreen::Owned => {
+                    if !self.local_dpns_names.is_empty() {
                         self.render_table_local_dpns_names(ui);
+                    } else {
+                        self.render_no_active_contests_or_owned_names(ui);
                     }
                 }
-            } else {
-                if self.dpns_subscreen == DPNSSubscreen::Owned && !self.local_dpns_names.is_empty()
-                {
-                    self.render_table_local_dpns_names(ui);
-                }
-                // Render the "no active contests" message if none exist
-                self.render_no_active_contests_or_owned_names(ui);
             }
         });
 

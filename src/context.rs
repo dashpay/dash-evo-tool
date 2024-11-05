@@ -11,7 +11,7 @@ use dash_sdk::dashcore_rpc::dashcore::{InstantLock, Transaction};
 use dash_sdk::dashcore_rpc::{Auth, Client};
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::transaction::special_transaction::TransactionPayload::AssetLockPayloadType;
-use dash_sdk::dpp::dashcore::{Address, Network, OutPoint, Txid};
+use dash_sdk::dpp::dashcore::{Address, Network, OutPoint, ScriptBuf, TxOut, Txid};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::state_transition::asset_lock_proof::chain::ChainAssetLockProof;
 use dash_sdk::dpp::identity::state_transition::asset_lock_proof::InstantAssetLockProof;
@@ -214,7 +214,7 @@ impl AppContext {
         tx: &Transaction,
         islock: Option<InstantLock>,
         chain_locked_height: Option<CoreBlockHeight>,
-    ) -> rusqlite::Result<Vec<(OutPoint, Address)>> {
+    ) -> rusqlite::Result<Vec<(OutPoint, TxOut, Address)>> {
         // Initialize a vector to collect wallet outpoints
         let mut wallet_outpoints = Vec::new();
 
@@ -254,7 +254,7 @@ impl AppContext {
                     .insert(out_point.clone(), tx_out.clone()); // Insert the TxOut at the OutPoint
 
                 // Collect the outpoint
-                wallet_outpoints.push((out_point.clone(), address.clone()));
+                wallet_outpoints.push((out_point.clone(), tx_out.clone(), address.clone()));
 
                 wallet
                     .address_balances

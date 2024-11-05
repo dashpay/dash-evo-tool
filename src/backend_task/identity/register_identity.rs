@@ -3,7 +3,6 @@ use crate::backend_task::identity::{IdentityRegistrationInfo, IdentityRegistrati
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::context::AppContext;
 use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
-use dash_sdk::dapi_client::DapiRequestExecutor;
 use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dpp::block::extended_epoch_info::ExtendedEpochInfo;
 use dash_sdk::dpp::dashcore::hashes::Hash;
@@ -15,11 +14,8 @@ use dash_sdk::dpp::prelude::AssetLockProof;
 use dash_sdk::dpp::state_transition::identity_create_transition::methods::IdentityCreateTransitionMethodsV0;
 use dash_sdk::dpp::state_transition::identity_create_transition::IdentityCreateTransition;
 use dash_sdk::dpp::version::PlatformVersion;
-use dash_sdk::platform::proto::{get_epochs_info_request, GetEpochsInfoRequest};
 use dash_sdk::platform::transition::put_identity::PutIdentity;
-use dash_sdk::platform::types::evonode::EvoNode;
-use dash_sdk::platform::{Fetch, FetchUnproved, Identity};
-use dash_sdk::query_types::EvoNodeStatus;
+use dash_sdk::platform::{Fetch, Identity};
 use std::time::Duration;
 use tokio::sync::mpsc;
 
@@ -224,7 +220,7 @@ impl AppContext {
                 }
                 IdentityRegistrationMethod::FundWithUtxo(
                     utxo,
-                    script_pubkey,
+                    tx_out,
                     input_address,
                     identity_index,
                 ) => {
@@ -234,7 +230,7 @@ impl AppContext {
                         wallet.asset_lock_transaction_for_utxo(
                             sdk.network,
                             utxo,
-                            script_pubkey,
+                            tx_out,
                             input_address,
                             identity_index,
                             Some(self),

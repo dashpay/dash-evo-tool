@@ -21,8 +21,11 @@ impl AddNewIdentityScreen {
                 // Get the receive address
                 if self.funding_address.is_none() {
                     let mut wallet = wallet_guard.write().unwrap();
-                    let receive_address = wallet
-                        .receive_address(self.app_context.network, Some(&self.app_context))?;
+                    let receive_address = wallet.receive_address(
+                        self.app_context.network,
+                        false,
+                        Some(&self.app_context),
+                    )?;
 
                     if let Some(has_address) = self.core_has_funding_address {
                         if !has_address {
@@ -85,33 +88,33 @@ impl AddNewIdentityScreen {
         }
 
         ui.add_space(10.0);
-        ui.label(&pay_uri);
 
-        if ui.button("Copy").clicked() {
-            if let Err(e) = copy_to_clipboard(pay_uri.as_str()) {
-                self.copied_to_clipboard = Some(Some(e));
-            } else {
-                self.copied_to_clipboard = Some(None);
-            }
-        }
+        ui.horizontal(|ui| {
+            ui.label(&pay_uri);
+            ui.add_space(8.0);
 
-        if let Some(error) = self.copied_to_clipboard.as_ref() {
-            if let Some(error) = error {
-                ui.label(format!("Failed to copy to clipboard: {}", error));
-            } else {
-                ui.label("Address copied to clipboard.");
+            if ui.button("Copy").clicked() {
+                if let Err(e) = copy_to_clipboard(pay_uri.as_str()) {
+                    self.copied_to_clipboard = Some(Some(e));
+                } else {
+                    self.copied_to_clipboard = Some(None);
+                }
             }
-        }
+
+            if let Some(error) = self.copied_to_clipboard.as_ref() {
+                if let Some(error) = error {
+                    ui.label(format!("Failed to copy to clipboard: {}", error));
+                } else {
+                    ui.label("Address copied to clipboard.");
+                }
+            }
+        });
 
         Ok(())
     }
 
     pub fn render_ui_by_wallet_qr_code(&mut self, ui: &mut Ui, mut step_number: u32) -> AppAction {
         let mut action = AppAction::None;
-
-        let Some(selected_wallet) = &self.selected_wallet else {
-            return action;
-        };
 
         // Extract the step from the RwLock to minimize borrow scope
         let step = self.step.read().unwrap().clone();
@@ -147,14 +150,17 @@ impl AddNewIdentityScreen {
                 ui.heading("Waiting for funds");
             }
             AddNewIdentityWalletFundedScreenStep::FundsReceived => {
-                if let Some((utxo, script_buf, address)) = self.funding_utxo.clone() {
+                let Some(selected_wallet) = &self.selected_wallet else {
+                    return action;
+                };
+                if let Some((utxo, tx_out, address)) = self.funding_utxo.clone() {
                     let identity_input = IdentityRegistrationInfo {
                         alias_input: self.alias_input.clone(),
                         keys: self.identity_keys.clone(),
                         wallet: Arc::clone(selected_wallet), // Clone the Arc reference
                         identity_registration_method: IdentityRegistrationMethod::FundWithUtxo(
                             utxo,
-                            script_buf,
+                            tx_out,
                             address,
                             self.identity_id_number,
                         ),
@@ -171,7 +177,7 @@ impl AddNewIdentityScreen {
             }
             AddNewIdentityWalletFundedScreenStep::ReadyToCreate => {}
             AddNewIdentityWalletFundedScreenStep::WaitingForAssetLock => {
-                ui.heading("Waiting for Core Chain to produce proof of transfer of funds");
+                ui.heading("Waiting for Core Chain to produce proof of transfer of funds.");
             }
             AddNewIdentityWalletFundedScreenStep::WaitingForPlatformAcceptance => {
                 ui.heading("Waiting for Platform acknowledgement");

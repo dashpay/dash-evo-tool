@@ -140,7 +140,7 @@ impl Wallet {
         &mut self,
         network: Network,
         utxo: OutPoint,
-        script_pubkey: ScriptBuf,
+        previous_tx_output: TxOut,
         input_address: Address,
         identity_index: u32,
         register_addresses: Option<&AppContext>,
@@ -155,7 +155,7 @@ impl Wallet {
 
         let one_time_key_hash = asset_lock_public_key.pubkey_hash();
         let fee = 3_000;
-        let output_amount = utxo.vout as u64 - fee;
+        let output_amount = previous_tx_output.value - fee;
 
         let payload_output = TxOut {
             value: output_amount,
@@ -195,7 +195,7 @@ impl Wallet {
             .enumerate()
             .map(|(i, input)| {
                 cache
-                    .legacy_signature_hash(i, &script_pubkey, sighash_u32)
+                    .legacy_signature_hash(i, &previous_tx_output.script_pubkey, sighash_u32)
                     .expect("expected sighash")
             })
             .collect();

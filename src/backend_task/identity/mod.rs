@@ -13,7 +13,7 @@ use crate::model::qualified_identity::{
 };
 use crate::model::wallet::Wallet;
 use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
-use dash_sdk::dashcore_rpc::dashcore::{Address, PrivateKey};
+use dash_sdk::dashcore_rpc::dashcore::{Address, PrivateKey, TxOut};
 use dash_sdk::dpp::balances::credits::Duffs;
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::{OutPoint, ScriptBuf, Transaction};
@@ -166,7 +166,7 @@ pub type IdentityIndex = u32;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IdentityRegistrationMethod {
     UseAssetLock(Address, AssetLockProof, Transaction),
-    FundWithUtxo(OutPoint, ScriptBuf, Address, IdentityIndex),
+    FundWithUtxo(OutPoint, TxOut, Address, IdentityIndex),
     FundWithWallet(Duffs, IdentityIndex),
 }
 

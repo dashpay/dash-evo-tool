@@ -108,7 +108,7 @@ impl WalletsBalancesScreen {
         if let Some(wallet) = &self.selected_wallet {
             let result = {
                 let mut wallet = wallet.write().unwrap();
-                wallet.receive_address(self.app_context.network, Some(&self.app_context))
+                wallet.receive_address(self.app_context.network, true, Some(&self.app_context))
             };
 
             // Now the immutable borrow of `wallet` is dropped, and we can use `self` mutably

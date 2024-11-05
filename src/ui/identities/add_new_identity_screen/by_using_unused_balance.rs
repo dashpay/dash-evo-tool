@@ -50,7 +50,7 @@ impl AddNewIdentityScreen {
 
         match step {
             AddNewIdentityWalletFundedScreenStep::WaitingForAssetLock => {
-                ui.heading("Waiting for Core Chain to produce proof of transfer of funds");
+                ui.heading("Waiting for Core Chain to produce proof of transfer of funds.");
             }
             AddNewIdentityWalletFundedScreenStep::WaitingForPlatformAcceptance => {
                 ui.heading("Waiting for Platform acknowledgement");

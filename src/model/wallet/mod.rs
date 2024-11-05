@@ -143,6 +143,7 @@ impl Wallet {
     pub fn unused_bip_44_public_key(
         &mut self,
         network: Network,
+        skip_known_addresses_with_no_funds: bool,
         change: bool,
         register: Option<&AppContext>,
     ) -> Result<(PublicKey, DerivationPath), String> {
@@ -151,7 +152,30 @@ impl Wallet {
         while found_unused_derivation_path.is_none() {
             let derivation_path =
                 DerivationPath::bip_44_payment_path(network, 0, change, address_index);
-            if self.watched_addresses.get(&derivation_path).is_none() {
+
+            if let Some(address_info) = self.watched_addresses.get(&derivation_path) {
+                // Address is known
+                let address = &address_info.address;
+                let balance = self.address_balances.get(address).cloned().unwrap_or(0);
+
+                if balance > 0 {
+                    // Address has funds, skip it
+                    address_index += 1;
+                    continue;
+                }
+
+                // Address is known and has zero balance
+                if !skip_known_addresses_with_no_funds {
+                    // We can use this address
+                    found_unused_derivation_path = Some(derivation_path.clone());
+                    break;
+                } else {
+                    // Skip known addresses with no funds
+                    address_index += 1;
+                    continue;
+                }
+            } else {
+                // Address is not known, proceed to register it
                 let public_key = derivation_path
                     .derive_pub_ecdsa_for_master_seed(&self.seed, network)
                     .expect("derivation should not be able to fail")
@@ -197,10 +221,8 @@ impl Wallet {
                     self.known_addresses
                         .insert(address, derivation_path.clone());
                 }
-                found_unused_derivation_path = Some(derivation_path);
+                found_unused_derivation_path = Some(derivation_path.clone());
                 break;
-            } else {
-                address_index += 1;
             }
         }
 
@@ -303,10 +325,18 @@ impl Wallet {
     pub fn receive_address(
         &mut self,
         network: Network,
+        skip_known_addresses_with_no_funds: bool,
         register: Option<&AppContext>,
     ) -> Result<Address, String> {
         Ok(Address::p2pkh(
-            &self.unused_bip_44_public_key(network, false, register)?.0,
+            &self
+                .unused_bip_44_public_key(
+                    network,
+                    skip_known_addresses_with_no_funds,
+                    false,
+                    register,
+                )?
+                .0,
             network,
         ))
     }
@@ -317,7 +347,7 @@ impl Wallet {
         register: Option<&AppContext>,
     ) -> Result<(Address, DerivationPath), String> {
         let (receive_public_key, derivation_path) =
-            self.unused_bip_44_public_key(network, false, register)?;
+            self.unused_bip_44_public_key(network, false, false, register)?;
         Ok((
             Address::p2pkh(&receive_public_key, network),
             derivation_path,
@@ -330,7 +360,9 @@ impl Wallet {
         register: Option<&AppContext>,
     ) -> Result<Address, String> {
         Ok(Address::p2pkh(
-            &self.unused_bip_44_public_key(network, true, register)?.0,
+            &self
+                .unused_bip_44_public_key(network, false, true, register)?
+                .0,
             network,
         ))
     }
@@ -341,7 +373,7 @@ impl Wallet {
         register: Option<&AppContext>,
     ) -> Result<(Address, DerivationPath), String> {
         let (receive_public_key, derivation_path) =
-            self.unused_bip_44_public_key(network, true, register)?;
+            self.unused_bip_44_public_key(network, false, true, register)?;
         Ok((
             Address::p2pkh(&receive_public_key, network),
             derivation_path,

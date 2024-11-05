@@ -11,9 +11,6 @@ use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::wallet::Wallet;
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::identities::add_new_identity_screen::AddNewIdentityWalletFundedScreenStep::{
-    ChooseFundingMethod, FundsReceived, ReadyToCreate,
-};
 use crate::ui::{MessageType, ScreenLike};
 use arboard::Clipboard;
 use dash_sdk::dashcore_rpc::dashcore::Address;
@@ -85,7 +82,7 @@ pub struct AddNewIdentityScreen {
     funding_method: Arc<RwLock<FundingMethod>>,
     funding_amount: String,
     funding_amount_exact: Option<Duffs>,
-    funding_utxo: Option<(OutPoint, ScriptBuf, Address)>,
+    funding_utxo: Option<(OutPoint, TxOut, Address)>,
     alias_input: String,
     copied_to_clipboard: Option<Option<String>>,
     identity_keys: IdentityKeys,
@@ -368,6 +365,7 @@ impl AddNewIdentityScreen {
                     FundingMethod::NoSelection,
                     "Please select funding method",
                 );
+
                 let wallet = selected_wallet.read().unwrap();
                 if wallet.has_unused_asset_lock() {
                     if ui
@@ -379,21 +377,36 @@ impl AddNewIdentityScreen {
                         .changed()
                     {
                         self.update_identity_key();
+                        let mut step = self.step.write().unwrap(); // Write lock on step
+                        *step = AddNewIdentityWalletFundedScreenStep::ReadyToCreate;
                     }
                 }
                 if wallet.has_balance() {
-                    ui.selectable_value(
-                        &mut *funding_method,
-                        FundingMethod::UseWalletBalance,
-                        "Use Wallet Balance",
-                    );
+                    if ui
+                        .selectable_value(
+                            &mut *funding_method,
+                            FundingMethod::UseWalletBalance,
+                            "Use Wallet Balance",
+                        )
+                        .changed()
+                    {
+                        let mut step = self.step.write().unwrap(); // Write lock on step
+                        *step = AddNewIdentityWalletFundedScreenStep::ReadyToCreate;
+                    }
                 }
-                ui.selectable_value(
-                    &mut *funding_method,
-                    FundingMethod::AddressWithQRCode,
-                    "Address with QR Code",
-                );
+                if ui
+                    .selectable_value(
+                        &mut *funding_method,
+                        FundingMethod::AddressWithQRCode,
+                        "Address with QR Code",
+                    )
+                    .changed()
+                {
+                    let mut step = self.step.write().unwrap(); // Write lock on step
+                    *step = AddNewIdentityWalletFundedScreenStep::WaitingOnFunds;
+                }
 
+                // Uncomment this if AttachedCoreWallet is available in the future
                 // ui.selectable_value(
                 //     &mut *funding_method,
                 //     FundingMethod::AttachedCoreWallet,
@@ -445,7 +458,7 @@ impl AddNewIdentityScreen {
             // Render additional keys input (if any) and allow adding more keys
             self.render_keys_input(ui);
         } else {
-            ui.label("Default allows updating the identity, interacting with data contracts, transferring credits to other identities and to the core chain".to_string());
+            ui.label("Default allows updating the identity, interacting with data contracts, transferring credits to other identities and to the Core payment chain.".to_string());
         }
     }
 
@@ -707,10 +720,10 @@ impl ScreenLike for AddNewIdentityScreen {
                     CoreItem::ReceivedAvailableUTXOTransaction(_, outpoints_with_addresses),
                 ) = backend_task_success_result
                 {
-                    for (outpoint, address) in outpoints_with_addresses {
+                    for (outpoint, tx_out, address) in outpoints_with_addresses {
                         if funding_address == &address {
-                            *step =
-                                AddNewIdentityWalletFundedScreenStep::WaitingForPlatformAcceptance;
+                            *step = AddNewIdentityWalletFundedScreenStep::FundsReceived;
+                            self.funding_utxo = Some((outpoint, tx_out, address))
                         }
                     }
                 }
@@ -793,6 +806,8 @@ impl ScreenLike for AddNewIdentityScreen {
             ui.add_space(8.0);
 
             self.render_key_selection(ui);
+
+            ui.add_space(10.0);
 
             ui.heading(
                 format!("{}. Choose your funding method.", step_number).as_str()

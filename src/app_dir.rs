@@ -42,15 +42,22 @@ pub fn app_user_data_file_path(filename: &str) -> Result<PathBuf, std::io::Error
 
 pub fn copy_env_file_if_not_exists() {
     let app_data_dir = app_user_data_dir_path().expect("Failed to determine application data directory");
-    let env_file = app_data_dir.join(".env".to_string());
-    if env_file.exists() && env_file.is_file() {
+    let env_file_in_app_dir = app_data_dir.join(".env".to_string());
+    if env_file_in_app_dir.exists() && env_file_in_app_dir.is_file() {
     } else {
-        let env_example_file = PathBuf::from(".env.example");
-        let target_env_file_path = app_user_data_file_path(".env").expect("should create target env file path");
-        fs::copy(
-            &env_example_file,
-            target_env_file_path,
-        )
-        .expect("Failed to copy main net env file");
+        let env_example_file_in_exe_dir = PathBuf::from(".env.example");
+        if env_example_file_in_exe_dir.exists() && env_example_file_in_exe_dir.is_file() {
+            fs::copy(
+                &env_example_file_in_exe_dir,
+                env_file_in_app_dir,
+            ).expect("Failed to copy main net env file");
+        }
+        else {
+            let env_file_in_exe_dir = PathBuf::from(".env");
+            fs::copy(
+                &env_file_in_exe_dir,
+                env_file_in_app_dir,
+            ).expect("Failed to copy main net env file");
+        }
     }
 }

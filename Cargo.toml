@@ -40,7 +40,7 @@ sha2 = "0.10.8"
 arboard = { version = "3.4.0", default-features = false, features = [
     "windows-sys",
 ] }
-enum_dispatch = "0.3.13"
+ambassador = "0.4.1"
 directories = "5.0"
 
 rusqlite = { version = "0.32.1",  features = ["functions"]}

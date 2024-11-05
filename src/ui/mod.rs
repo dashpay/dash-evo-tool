@@ -13,11 +13,11 @@ use crate::ui::transition_visualizer_screen::TransitionVisualizerScreen;
 use crate::ui::wallet::wallets_screen::WalletsBalancesScreen;
 use crate::ui::withdrawals::WithdrawalScreen;
 use crate::ui::withdraws_status_screen::WithdrawsStatusScreen;
+use ambassador::{delegatable_trait, Delegate};
 use dash_sdk::dpp::identity::Identity;
 use dash_sdk::dpp::prelude::IdentityPublicKey;
 use dpns_contested_names_screen::DPNSSubscreen;
 use egui::Context;
-use enum_dispatch::enum_dispatch;
 use identities::add_existing_identity_screen::AddExistingIdentityScreen;
 use identities::add_new_identity_screen::AddNewIdentityScreen;
 use identities::identities_screen::IdentitiesScreen;
@@ -192,7 +192,8 @@ impl ScreenType {
     }
 }
 
-#[enum_dispatch(ScreenLike)]
+#[derive(Delegate)]
+#[delegate(ScreenLike)]
 pub enum Screen {
     IdentitiesScreen(IdentitiesScreen),
     DPNSContestedNamesScreen(DPNSContestedNamesScreen),
@@ -242,7 +243,7 @@ pub enum MessageType {
     Error,
 }
 
-#[enum_dispatch]
+#[delegatable_trait]
 pub trait ScreenLike {
     fn refresh(&mut self) {}
     fn refresh_on_arrival(&mut self) {

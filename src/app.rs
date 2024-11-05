@@ -1,10 +1,10 @@
-use crate::backend_task::core::CoreItem;
-use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
-use crate::components::core_zmq_listener::{CoreZMQListener, ZMQMessage};
 use crate::app_dir::{
     app_user_data_file_path, copy_env_file_if_not_exists,
     create_app_user_data_directory_if_not_exists,
 };
+use crate::backend_task::core::CoreItem;
+use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
+use crate::components::core_zmq_listener::{CoreZMQListener, ZMQMessage};
 use crate::context::AppContext;
 use crate::database::Database;
 use crate::logging::initialize_logger;
@@ -109,7 +109,8 @@ impl BitOrAssign for AppAction {
 }
 impl AppState {
     pub fn new() -> Self {
-        create_app_user_data_directory_if_not_exists().expect("Failed to create app user_data directory");
+        create_app_user_data_directory_if_not_exists()
+            .expect("Failed to create app user_data directory");
         copy_env_file_if_not_exists();
         initialize_logger();
         let db_file_path = app_user_data_file_path("data.db").expect("should create db file path");

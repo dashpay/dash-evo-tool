@@ -36,11 +36,11 @@ impl AppContext {
 
         let sdk = &self.sdk;
 
-        let block_hash = sdk
+        let response =  sdk
             .execute(GetBlockchainStatusRequest {}, RequestSettings::default())
-            .await?
-            .chain
-            .map(|chain| chain.best_block_hash)
+            .await?;
+
+        let block_hash = response.inner.chain.map(|chain| chain.best_block_hash)
             .ok_or_else(|| dash_sdk::Error::DapiClientError("Missing `chain` field".to_owned()))?;
 
         // tracing::debug!(
@@ -67,7 +67,7 @@ impl AppContext {
             Err(error) if error.to_string().contains("AlreadyExists") => {
                 // tracing::warn!("Transaction already broadcasted.");
 
-                let GetTransactionResponse { block_hash, .. } = sdk
+                let response = sdk
                     .execute(
                         GetTransactionRequest {
                             id: asset_lock_transaction.txid().to_string(),
@@ -82,7 +82,7 @@ impl AppContext {
                 // );
 
                 asset_lock_stream = sdk
-                    .start_instant_send_lock_stream(block_hash, address)
+                    .start_instant_send_lock_stream(response.inner.block_hash, address)
                     .await?;
 
                 // tracing::debug!("Stream restarted.");

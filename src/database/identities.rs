@@ -6,6 +6,22 @@ use dash_sdk::platform::Identifier;
 use rusqlite::params;
 
 impl Database {
+    /// Updates the alias of a specified identity.
+    pub fn set_alias(
+        &self,
+        identifier: &Identifier,
+        new_alias: Option<&str>,
+    ) -> rusqlite::Result<()> {
+        let id = identifier.to_vec();
+        let conn = self.conn.lock().unwrap();
+
+        conn.execute(
+            "UPDATE identity SET alias = ? WHERE id = ?",
+            params![new_alias, id],
+        )?;
+
+        Ok(())
+    }
     pub fn insert_local_qualified_identity(
         &self,
         qualified_identity: &QualifiedIdentity,
@@ -139,5 +155,25 @@ impl Database {
 
         let identities: rusqlite::Result<Vec<QualifiedIdentity>> = identity_iter.collect();
         identities
+    }
+
+    /// Deletes a local qualified identity with the given identifier from the database.
+    pub fn delete_local_qualified_identity(
+        &self,
+        identifier: &Identifier,
+        app_context: &AppContext,
+    ) -> rusqlite::Result<()> {
+        let id = identifier.to_vec();
+        let network = app_context.network_string();
+
+        let conn = self.conn.lock().unwrap();
+
+        // Perform the deletion only if the identity is marked as local
+        conn.execute(
+            "DELETE FROM identity WHERE id = ? AND network = ? AND is_local = 1",
+            params![id, network],
+        )?;
+
+        Ok(())
     }
 }

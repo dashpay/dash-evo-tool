@@ -18,17 +18,21 @@ use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicK
 use dash_sdk::dpp::identity::Purpose;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::prelude::IdentityPublicKey;
+use dash_sdk::platform::Identifier;
+use dash_sdk::query_types::IndexMap;
 use eframe::egui::{self, Context};
 use eframe::emath::Align;
 use egui::{Color32, Frame, Margin, RichText, Ui};
 use egui_extras::{Column, TableBuilder};
+use std::collections::BTreeMap;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
 pub struct IdentitiesScreen {
-    pub identities: Arc<Mutex<Vec<QualifiedIdentity>>>,
+    pub identities: Arc<Mutex<IndexMap<Identifier, QualifiedIdentity>>>,
     pub app_context: Arc<AppContext>,
     pub show_more_keys_popup: Option<QualifiedIdentity>,
+    pub identity_to_remove: Option<QualifiedIdentity>,
 }
 
 impl IdentitiesScreen {
@@ -36,18 +40,53 @@ impl IdentitiesScreen {
         let identities = Arc::new(Mutex::new(
             app_context
                 .load_local_qualified_identities()
-                .unwrap_or_default(),
+                .unwrap_or_default()
+                .into_iter()
+                .map(|qualified_identity| (qualified_identity.identity.id(), qualified_identity))
+                .collect(),
         ));
         Self {
             identities,
             app_context: app_context.clone(),
             show_more_keys_popup: None,
+            identity_to_remove: None,
         }
     }
 
-    fn show_alias(ui: &mut Ui, qualified_identity: &QualifiedIdentity) {
-        if let Some(alias) = qualified_identity.alias.as_ref() {
-            ui.label(alias.clone());
+    fn show_alias(&self, ui: &mut Ui, qualified_identity: &QualifiedIdentity) {
+        let placeholder_text = match qualified_identity.identity_type {
+            IdentityType::Masternode => "A Masternode",
+            IdentityType::Evonode => "An Evonode",
+            IdentityType::User => "An Identity",
+        };
+
+        // Check if alias is set, otherwise use placeholder text
+        let mut alias = qualified_identity.alias.clone().unwrap_or_default();
+
+        // Render the text field with placeholder functionality
+        let text_edit = egui::TextEdit::singleline(&mut alias)
+            .hint_text(placeholder_text)
+            .desired_width(100.0); // Adjust width as needed
+
+        if ui.add(text_edit).changed() {
+            let mut identities = self.identities.lock().unwrap();
+            let identity_to_update = identities
+                .get_mut(&qualified_identity.identity.id())
+                .unwrap();
+
+            // Update the alias if the user changed the text
+            if alias == placeholder_text || alias == "" {
+                identity_to_update.alias = None;
+            } else {
+                identity_to_update.alias = Some(alias);
+            }
+            self.app_context
+                .db
+                .set_alias(
+                    &identity_to_update.identity.id(),
+                    identity_to_update.alias.as_ref().map(|s| s.as_str()),
+                )
+                .ok();
         }
     }
 
@@ -217,9 +256,6 @@ impl IdentitiesScreen {
                                 ui.heading("Type");
                             });
                             header.col(|ui| {
-                                ui.heading("Refresh");
-                            });
-                            header.col(|ui| {
                                 ui.heading("Keys");
                             });
                             header.col(|ui| {
@@ -227,6 +263,9 @@ impl IdentitiesScreen {
                             });
                             header.col(|ui| {
                                 ui.heading("Transfer");
+                            });
+                            header.col(|ui| {
+                                ui.heading("Actions");
                             });
                         })
                         .body(|mut body| {
@@ -239,7 +278,7 @@ impl IdentitiesScreen {
                                     .map(|(identity, _)| identity.public_keys());
                                 body.row(25.0, |mut row| {
                                     row.col(|ui| {
-                                        Self::show_alias(ui, qualified_identity);
+                                        self.show_alias(ui, qualified_identity);
                                     });
                                     row.col(|ui| {
                                         Self::show_identity_id(ui, qualified_identity);
@@ -249,16 +288,6 @@ impl IdentitiesScreen {
                                     });
                                     row.col(|ui| {
                                         ui.label(format!("{}", qualified_identity.identity_type));
-                                    });
-                                    row.col(|ui| {
-                                        if ui.button("Refresh").clicked() {
-                                            action =
-                                                AppAction::BackendTask(BackendTask::IdentityTask(
-                                                    IdentityTask::RefreshIdentity(
-                                                        qualified_identity.clone(),
-                                                    ),
-                                                ));
-                                        }
                                     });
                                     row.col(|ui| {
                                         let mut total_keys_shown = 0;
@@ -357,6 +386,20 @@ impl IdentitiesScreen {
                                             ));
                                         }
                                     });
+                                    row.col(|ui| {
+                                        if ui.button("Refresh").clicked() {
+                                            action =
+                                                AppAction::BackendTask(BackendTask::IdentityTask(
+                                                    IdentityTask::RefreshIdentity(
+                                                        qualified_identity.clone(),
+                                                    ),
+                                                ));
+                                        }
+                                        if ui.button("Remove").clicked() {
+                                            self.identity_to_remove =
+                                                Some(qualified_identity.clone());
+                                        }
+                                    });
                                 });
                             }
                         });
@@ -364,6 +407,61 @@ impl IdentitiesScreen {
         });
 
         action
+    }
+
+    fn show_identity_to_remove(&mut self, ctx: &Context) {
+        // Check if we need to show the confirmation dialog
+        if let Some(identity_to_remove) = self.identity_to_remove.clone() {
+            egui::Window::new("Confirm Removal")
+                .collapsible(false)
+                .resizable(false)
+                .show(ctx, |ui| {
+                    ui.label(format!("Are you sure you want to no longer track this {} identity? It will still be on the blockchain.", identity_to_remove.identity_type));
+                    ui.label(format!(
+                        "Identity ID: {}",
+                        identity_to_remove
+                            .identity
+                            .id()
+                            .to_string(identity_to_remove.identity_type.default_encoding())
+                    ));
+                    ui.horizontal(|ui| {
+                        if ui.button("Yes").clicked() {
+                            // Remove the identity
+                            let identity_id = identity_to_remove.identity.id();
+
+                            // Remove from in-memory identities
+                            {
+                                let mut identities_lock = self.identities.lock().unwrap();
+                                identities_lock.shift_remove(&identity_id);
+                            }
+
+                            // Remove from persistent storage
+                            self.app_context
+                                .db
+                                .delete_local_qualified_identity(&identity_id, &self.app_context).ok();
+
+                            // Also remove associated voter identity, if any
+                            if let Some((voter_identity, _)) =
+                                &identity_to_remove.associated_voter_identity
+                            {
+                                let voter_identity_id = voter_identity.id();
+
+                                self.app_context
+                                    .db
+                                    .delete_local_qualified_identity(&voter_identity_id, &self.app_context)
+                                    .ok();
+                            }
+
+                            // Clear the identity_to_remove
+                            self.identity_to_remove = None;
+                        }
+                        if ui.button("No").clicked() {
+                            // Cancel the removal
+                            self.identity_to_remove = None;
+                        }
+                    });
+                });
+        }
     }
 
     fn show_more_keys(&mut self, ui: &mut Ui) -> AppAction {
@@ -428,7 +526,10 @@ impl ScreenLike for IdentitiesScreen {
         *identities = self
             .app_context
             .load_local_qualified_identities()
-            .unwrap_or_default();
+            .unwrap_or_default()
+            .into_iter()
+            .map(|qualified_identity| (qualified_identity.identity.id(), qualified_identity))
+            .collect();
 
         self.show_more_keys_popup = None;
     }
@@ -467,7 +568,7 @@ impl ScreenLike for IdentitiesScreen {
         // Limit the scope of the MutexGuard by enclosing in a block
         let identities = {
             let identities_guard = self.identities.lock().unwrap();
-            identities_guard.clone()
+            identities_guard.values().cloned().collect::<Vec<_>>()
         };
 
         // Main content
@@ -486,6 +587,11 @@ impl ScreenLike for IdentitiesScreen {
                 .show(ctx, |ui| {
                     action |= self.show_more_keys(ui);
                 });
+        }
+
+        // Check if we need to show the confirmation dialog
+        if self.identity_to_remove.is_some() {
+            self.show_identity_to_remove(ctx);
         }
 
         action

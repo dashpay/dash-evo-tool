@@ -36,6 +36,14 @@ impl IdentityType {
             IdentityType::Evonode => 4,
         }
     }
+
+    pub fn default_encoding(&self) -> Encoding {
+        match self {
+            IdentityType::User => Encoding::Base58,
+            IdentityType::Masternode => Encoding::Hex,
+            IdentityType::Evonode => Encoding::Hex,
+        }
+    }
 }
 
 impl Display for IdentityType {

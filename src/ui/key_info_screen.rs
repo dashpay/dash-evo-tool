@@ -71,6 +71,15 @@ impl ScreenLike for KeyInfoScreen {
                     ui.label(RichText::new("Read Only:").strong());
                     ui.label(format!("{}", self.key.read_only()));
                     ui.end_row();
+
+                    // Disabled
+                    ui.label(RichText::new("Active/Disabled:").strong());
+                    if !self.key.is_disabled() {
+                        ui.label("Active");
+                    } else {
+                        ui.label("Disabled");
+                    }
+                    ui.end_row();
                 });
 
             ui.separator();

@@ -17,7 +17,7 @@ impl AppContext {
         &self,
         name: &String,
         sdk: Sdk,
-        sender: mpsc::Sender<TaskResult>,
+        _sender: mpsc::Sender<TaskResult>,
     ) -> Result<(), String> {
         let data_contract = self.dpns_contract.as_ref();
         let document_type = data_contract

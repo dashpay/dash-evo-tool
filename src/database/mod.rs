@@ -1,8 +1,10 @@
+mod asset_lock_transaction;
 mod contested_names;
 mod contracts;
 mod identities;
 mod initialization;
 mod settings;
+mod utxo;
 mod wallet;
 
 use rusqlite::{Connection, Params};

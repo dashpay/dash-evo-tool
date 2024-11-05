@@ -1,9 +1,7 @@
 use crate::app::{AppAction, DesiredAppAction};
+use crate::backend_task::withdrawals::{WithdrawRecord, WithdrawStatusData, WithdrawalsTask};
+use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
-use crate::platform::withdrawals::{
-    WithdrawRecord, WithdrawStatusData, WithdrawalsTask,
-};
-use crate::platform::{BackendTask, BackendTaskSuccessResult};
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
@@ -98,7 +96,7 @@ impl WithdrawsStatusScreen {
                     None,
                     true,
                     true,
-                )
+                ),
             ));
         }
         if self.requested_data {
@@ -126,7 +124,7 @@ impl WithdrawsStatusScreen {
                         None,
                         true,
                         true,
-                    )
+                    ),
                 ));
             }
         }
@@ -209,7 +207,10 @@ impl WithdrawsStatusScreen {
                 ui.label("Filter by status:");
                 ui.add_space(8.0); // Space after label
 
-                if ui.checkbox(&mut self.filter_status_queued, "Queued").changed() {
+                if ui
+                    .checkbox(&mut self.filter_status_queued, "Queued")
+                    .changed()
+                {
                     self.util_build_combined_filter_status_mix();
                     self.requested_data = true;
                     let mut lock_data = self.data.write().unwrap();
@@ -221,11 +222,14 @@ impl WithdrawsStatusScreen {
                             None,
                             true,
                             true,
-                        )
+                        ),
                     ));
                 }
                 ui.add_space(8.0);
-                if ui.checkbox(&mut self.filter_status_pooled, "Pooled").changed() {
+                if ui
+                    .checkbox(&mut self.filter_status_pooled, "Pooled")
+                    .changed()
+                {
                     self.util_build_combined_filter_status_mix();
                     self.requested_data = true;
                     let mut lock_data = self.data.write().unwrap();
@@ -237,11 +241,14 @@ impl WithdrawsStatusScreen {
                             None,
                             true,
                             true,
-                        )
+                        ),
                     ));
                 }
                 ui.add_space(8.0);
-                if ui.checkbox(&mut self.filter_status_broadcasted, "Broadcasted").changed() {
+                if ui
+                    .checkbox(&mut self.filter_status_broadcasted, "Broadcasted")
+                    .changed()
+                {
                     self.util_build_combined_filter_status_mix();
                     self.requested_data = true;
                     let mut lock_data = self.data.write().unwrap();
@@ -253,11 +260,14 @@ impl WithdrawsStatusScreen {
                             None,
                             true,
                             true,
-                        )
+                        ),
                     ));
                 }
                 ui.add_space(8.0);
-                if ui.checkbox(&mut self.filter_status_complete, "Complete").changed() {
+                if ui
+                    .checkbox(&mut self.filter_status_complete, "Complete")
+                    .changed()
+                {
                     self.util_build_combined_filter_status_mix();
                     self.requested_data = true;
                     let mut lock_data = self.data.write().unwrap();
@@ -269,11 +279,14 @@ impl WithdrawsStatusScreen {
                             None,
                             true,
                             true,
-                        )
+                        ),
                     ));
                 }
                 ui.add_space(8.0);
-                if ui.checkbox(&mut self.filter_status_expired, "Expired").changed() {
+                if ui
+                    .checkbox(&mut self.filter_status_expired, "Expired")
+                    .changed()
+                {
                     self.util_build_combined_filter_status_mix();
                     self.requested_data = true;
                     let mut lock_data = self.data.write().unwrap();
@@ -285,7 +298,7 @@ impl WithdrawsStatusScreen {
                             None,
                             true,
                             true,
-                        )
+                        ),
                     ));
                 }
                 ui.add_space(8.0);
@@ -314,10 +327,10 @@ impl WithdrawsStatusScreen {
             let mut current_page = self
                 .pagination_current_page
                 .min(total_pages.saturating_sub(1)); // Clamp to valid page range
-            // Calculate the slice of data for the current page
+                                                     // Calculate the slice of data for the current page
             let start_index = current_page * (self.pagination_items_per_page as usize);
-            let end_index =
-                (start_index + (self.pagination_items_per_page as usize)).min(data.withdrawals.len());
+            let end_index = (start_index + (self.pagination_items_per_page as usize))
+                .min(data.withdrawals.len());
             ui.separator();
             TableBuilder::new(ui)
                 .striped(true)
@@ -359,7 +372,9 @@ impl WithdrawsStatusScreen {
                         if self.filter_status_mix.contains(&record.status) {
                             body.row(18.0, |mut row| {
                                 row.col(|ui| {
-                                    ui.label(&record.date_time.format("%Y-%m-%d %H:%M:%S").to_string());
+                                    ui.label(
+                                        &record.date_time.format("%Y-%m-%d %H:%M:%S").to_string(),
+                                    );
                                 });
                                 row.col(|ui| {
                                     ui.label(format!("{}", &record.status));
@@ -394,7 +409,9 @@ impl WithdrawsStatusScreen {
                             WithdrawalsTask::QueryWithdrawals(
                                 self.filter_status_mix.clone(),
                                 self.pagination_items_per_page.into(),
-                                data.withdrawals.last().map(|withdrawal_record| withdrawal_record.document_id),
+                                data.withdrawals
+                                    .last()
+                                    .map(|withdrawal_record| withdrawal_record.document_id),
                                 false,
                                 false,
                             ),
@@ -402,8 +419,7 @@ impl WithdrawsStatusScreen {
                     }
                 }
             });
-        }
-        else {
+        } else {
             ui.centered_and_justified(|ui| {
                 ui.heading("No withdrawals");
             });
@@ -437,10 +453,7 @@ impl WithdrawsStatusScreen {
             let start = center + Vec2::angled(angle) * (radius - thickness);
             let end = center + Vec2::angled(angle) * radius;
 
-            painter.line_segment(
-                [start, end],
-                Stroke::new(thickness * (1.0 - t), color),
-            );
+            painter.line_segment([start, end], Stroke::new(thickness * (1.0 - t), color));
         }
     }
     fn util_build_combined_filter_status_mix(&mut self) {

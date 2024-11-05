@@ -37,7 +37,7 @@ fn load_icon(ctx: &Context, path: &str) -> Option<TextureHandle> {
 
 pub fn add_left_panel(
     ctx: &Context,
-    _app_context: &Arc<AppContext>,
+    app_context: &Arc<AppContext>,
     selected_screen: RootScreenType,
 ) -> AppAction {
     let mut action = AppAction::None;
@@ -47,20 +47,14 @@ pub fn add_left_panel(
         ("I", RootScreenType::RootScreenIdentities, "identity.png"),
         (
             "C",
-            RootScreenType::RootScreenDPNSActiveContests,
+            RootScreenType::RootScreenDPNSContestedNames,
             "voting.png",
         ),
         ("Q", RootScreenType::RootScreenDocumentQuery, "doc.png"),
-        ("W", RootScreenType::RootScreenWalletsBalances, "wallet.png"),
         (
             "T",
             RootScreenType::RootScreenTransitionVisualizerScreen,
             "tools.png",
-        ),
-        (
-            "W",
-            RootScreenType::RootScreenWithdrawsStatus,
-            "withdraws.png",
         ),
         ("N", RootScreenType::RootScreenNetworkChooser, "config.png"),
     ];

@@ -14,8 +14,8 @@ impl Database {
         let network_str = network.to_string();
         let screen_type_int = start_root_screen.to_int();
         self.execute(
-            "INSERT INTO settings (id, network, start_root_screen)
-             VALUES (1, ?, ?)
+            "INSERT INTO settings (id, network, start_root_screen, database_version)
+             VALUES (1, ?, ?, 1)
              ON CONFLICT(id) DO UPDATE SET
                 network = excluded.network,
                 start_root_screen = excluded.start_root_screen",

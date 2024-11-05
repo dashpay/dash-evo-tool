@@ -1,8 +1,8 @@
 use crate::app::AppAction;
+use crate::backend_task::identity::{IdentityTask, RegisterDpnsNameInput};
+use crate::backend_task::BackendTask;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
-use crate::platform::identity::{IdentityTask, RegisterDpnsNameInput};
-use crate::platform::BackendTask;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::{MessageType, ScreenLike};
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
@@ -13,7 +13,6 @@ use dash_sdk::dpp::identity::{Purpose, SecurityLevel, TimestampMillis};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::IdentityPublicKey;
 use eframe::egui::Context;
-use futures::StreamExt;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 

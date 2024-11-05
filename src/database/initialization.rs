@@ -7,7 +7,8 @@ impl Database {
             "CREATE TABLE IF NOT EXISTS settings (
             id INTEGER PRIMARY KEY CHECK (id = 1),
             network TEXT NOT NULL,
-            start_root_screen INTEGER NOT NULL
+            start_root_screen INTEGER NOT NULL,
+            database_version INTEGER NOT NULL
         )",
             [],
         )?;
@@ -64,11 +65,29 @@ impl Database {
             [],
         )?;
 
+        self.execute(
+            "CREATE TABLE IF NOT EXISTS asset_lock_transaction (
+                tx_id TEXT PRIMARY KEY,
+                transaction_data BLOB NOT NULL,
+                amount INTEGER,
+                instant_lock_data BLOB,
+                chain_locked_height INTEGER,
+                identity_id BLOB,
+                identity_id_potentially_in_creation BLOB,
+                wallet BLOB NOT NULL,
+                FOREIGN KEY (identity_id) REFERENCES identity(id) ON DELETE CASCADE,
+                FOREIGN KEY (identity_id_potentially_in_creation) REFERENCES identity(id),
+                FOREIGN KEY (wallet) REFERENCES wallet(seed) ON DELETE CASCADE
+            )",
+            [],
+        )?;
+
         // Create the identities table
         self.execute(
             "CREATE TABLE IF NOT EXISTS identity (
                 id BLOB PRIMARY KEY,
                 data BLOB,
+                is_in_creation INTEGER NOT NULL DEFAULT 0,
                 is_local INTEGER NOT NULL,
                 alias TEXT,
                 info TEXT,

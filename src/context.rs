@@ -7,17 +7,24 @@ use crate::model::qualified_identity::{DPNSNameInfo, QualifiedIdentity};
 use crate::model::wallet::Wallet;
 use crate::sdk_wrapper::initialize_sdk;
 use crate::ui::RootScreenType;
+use dash_sdk::dashcore_rpc::dashcore::{InstantLock, Transaction};
 use dash_sdk::dashcore_rpc::{Auth, Client};
-use dash_sdk::dpp::dashcore::Network;
+use dash_sdk::dpp::dashcore::hashes::Hash;
+use dash_sdk::dpp::dashcore::transaction::special_transaction::TransactionPayload::AssetLockPayloadType;
+use dash_sdk::dpp::dashcore::{Address, Network, OutPoint, Txid};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::dpp::identity::state_transition::asset_lock_proof::chain::ChainAssetLockProof;
+use dash_sdk::dpp::identity::state_transition::asset_lock_proof::InstantAssetLockProof;
 use dash_sdk::dpp::identity::Identity;
+use dash_sdk::dpp::prelude::{AssetLockProof, CoreBlockHeight};
 use dash_sdk::dpp::system_data_contracts::{load_system_data_contract, SystemDataContract};
 use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::platform::{DataContract, Identifier};
 use dash_sdk::Sdk;
 use rusqlite::Result;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::AtomicBool;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 #[derive(Debug)]
 pub struct AppContext {
@@ -32,6 +39,7 @@ pub struct AppContext {
     pub(crate) core_client: Client,
     pub(crate) has_wallet: AtomicBool,
     pub(crate) wallets: RwLock<Vec<Arc<RwLock<Wallet>>>>,
+    pub(crate) transactions_waiting_for_finality: Mutex<BTreeMap<Txid, Option<AssetLockProof>>>,
     pub(crate) platform_version: &'static PlatformVersion,
 }
 
@@ -93,6 +101,7 @@ impl AppContext {
             core_client,
             has_wallet: (!wallets.is_empty()).into(),
             wallets: RwLock::new(wallets),
+            transactions_waiting_for_finality: Mutex::new(BTreeMap::new()),
             platform_version: PlatformVersion::latest(),
         };
 
@@ -123,6 +132,15 @@ impl AppContext {
     ) -> Result<()> {
         self.db
             .insert_local_qualified_identity(qualified_identity, self)
+    }
+
+    /// This is for before we know if Platform will accept the identity
+    pub fn insert_local_qualified_identity_in_creation(
+        &self,
+        qualified_identity: &QualifiedIdentity,
+    ) -> Result<()> {
+        self.db
+            .insert_local_qualified_identity_in_creation(qualified_identity, self)
     }
 
     pub fn load_local_qualified_identities(&self) -> Result<Vec<QualifiedIdentity>> {
@@ -190,5 +208,149 @@ impl AppContext {
         contracts.insert(0, dpns_contract);
 
         Ok(contracts)
+    }
+    pub(crate) fn received_transaction_finality(
+        &self,
+        tx: &Transaction,
+        islock: Option<InstantLock>,
+        chain_locked_height: Option<CoreBlockHeight>,
+    ) -> rusqlite::Result<Vec<OutPoint>> {
+        // Initialize a vector to collect wallet outpoints
+        let mut wallet_outpoints = Vec::new();
+
+        // Identify the wallets associated with the transaction
+        let wallets = self.wallets.read().unwrap();
+        for wallet_arc in wallets.iter() {
+            let mut wallet = wallet_arc.write().unwrap();
+            for (vout, tx_out) in tx.output.iter().enumerate() {
+                let address = if let Ok(output_addr) =
+                    Address::from_script(&tx_out.script_pubkey, self.network)
+                {
+                    if wallet.known_addresses.contains_key(&output_addr) {
+                        output_addr
+                    } else {
+                        continue;
+                    }
+                } else {
+                    continue;
+                };
+                self.db.insert_utxo(
+                    tx.txid().as_byte_array(),
+                    vout as u32,
+                    &address,
+                    tx_out.value,
+                    &tx_out.script_pubkey.to_bytes(),
+                    self.network,
+                )?;
+                self.db
+                    .add_to_address_balance(&wallet.seed, &address, tx_out.value)?;
+
+                // Create the OutPoint and insert it into the wallet.utxos entry
+                let out_point = OutPoint::new(tx.txid(), vout as u32);
+                wallet
+                    .utxos
+                    .entry(address.clone())
+                    .or_insert_with(HashMap::new) // Initialize inner HashMap if needed
+                    .insert(out_point.clone(), tx_out.clone()); // Insert the TxOut at the OutPoint
+
+                // Collect the outpoint
+                wallet_outpoints.push(out_point.clone());
+
+                wallet
+                    .address_balances
+                    .entry(address)
+                    .and_modify(|balance| *balance += tx_out.value)
+                    .or_insert(tx_out.value);
+            }
+        }
+        if matches!(
+            tx.special_transaction_payload,
+            Some(AssetLockPayloadType(_))
+        ) {
+            self.received_asset_lock_finality(tx, islock, chain_locked_height)?;
+        }
+        Ok(wallet_outpoints)
+    }
+
+    /// Store the asset lock transaction in the database and update the wallet.
+    pub(crate) fn received_asset_lock_finality(
+        &self,
+        tx: &Transaction,
+        islock: Option<InstantLock>,
+        chain_locked_height: Option<CoreBlockHeight>,
+    ) -> rusqlite::Result<()> {
+        // Extract the asset lock payload from the transaction
+        let Some(AssetLockPayloadType(payload)) = tx.special_transaction_payload.as_ref() else {
+            return Ok(());
+        };
+
+        let proof = if let Some(islock) = islock.as_ref() {
+            // Deserialize the InstantLock
+            Some(AssetLockProof::Instant(InstantAssetLockProof::new(
+                islock.clone(),
+                tx.clone(),
+                0,
+            )))
+        } else if let Some(chain_locked_height) = chain_locked_height {
+            Some(AssetLockProof::Chain(ChainAssetLockProof {
+                core_chain_locked_height: chain_locked_height,
+                out_point: OutPoint::new(tx.txid(), 0),
+            }))
+        } else {
+            None
+        };
+
+        {
+            let mut transactions = self.transactions_waiting_for_finality.lock().unwrap();
+
+            if let Some(asset_lock_proof) = transactions.get_mut(&tx.txid()) {
+                *asset_lock_proof = proof.clone();
+            }
+        }
+
+        // Identify the wallet associated with the transaction
+        let wallets = self.wallets.read().unwrap();
+        for wallet_arc in wallets.iter() {
+            let mut wallet = wallet_arc.write().unwrap();
+
+            // Check if any of the addresses in the transaction outputs match the wallet's known addresses
+            let matches_wallet = payload.credit_outputs.iter().any(|tx_out| {
+                if let Ok(output_addr) = Address::from_script(&tx_out.script_pubkey, self.network) {
+                    wallet.known_addresses.contains_key(&output_addr)
+                } else {
+                    false
+                }
+            });
+
+            if matches_wallet {
+                // Calculate the total amount from the credit outputs
+                let amount: u64 = payload
+                    .credit_outputs
+                    .iter()
+                    .map(|tx_out| tx_out.value)
+                    .sum();
+
+                // Store the asset lock transaction in the database
+                self.db
+                    .store_asset_lock_transaction(tx, amount, islock.as_ref(), &wallet.seed)?;
+
+                let first = payload
+                    .credit_outputs
+                    .first()
+                    .expect("Expected at least one credit output");
+
+                let address = Address::from_script(&first.script_pubkey, self.network)
+                    .expect("expected an address");
+
+                // Add the asset lock to the wallet's unused_asset_locks
+                wallet
+                    .unused_asset_locks
+                    .push((tx.clone(), address, amount, islock, proof));
+
+                break; // Exit the loop after updating the relevant wallet
+            }
+        }
+
+        Ok(())
     }
 }

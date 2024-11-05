@@ -16,10 +16,9 @@ use dash_sdk::drive::query::{OrderClause, WhereClause, WhereOperator};
 use dash_sdk::platform::{Document, DocumentQuery, FetchMany, Identifier};
 use dash_sdk::platform::fetch_current_no_parameters::FetchCurrent;
 use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::Start;
-use dash_sdk::query_types::{Documents, KeysInPath, TotalCreditsInPlatform};
+use dash_sdk::query_types::{KeysInPath, TotalCreditsInPlatform};
 use dash_sdk::Sdk;
 use crate::context::AppContext;
-use crate::platform::BackendTaskSuccessResult;
 
 /// constant id for subtree containing the sum of withdrawals
 pub const WITHDRAWAL_TRANSACTIONS_SUM_AMOUNT_TREE_KEY: [u8; 1] = [2];
@@ -99,6 +98,7 @@ impl WithdrawStatusData {
     }
 }
 
+use crate::backend_task::BackendTaskSuccessResult;
 use std::convert::TryFrom;
 
 #[derive(Debug)]

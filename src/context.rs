@@ -248,20 +248,7 @@ impl AppContext {
                 )?;
                 self.db
                     .add_to_address_balance(&wallet.seed, &address, tx_out.value)?;
-                let proof = if let Some(islock) = islock.as_ref() {
-                    Some(AssetLockProof::Instant(InstantAssetLockProof::new(
-                        islock.clone(),
-                        tx.clone(),
-                        0,
-                    )))
-                } else if let Some(chain_locked_height) = chain_locked_height {
-                    Some(AssetLockProof::Chain(ChainAssetLockProof {
-                        core_chain_locked_height: chain_locked_height,
-                        out_point: OutPoint::new(tx.txid(), 0),
-                    }))
-                } else {
-                    None
-                };
+
                 // Create the OutPoint and insert it into the wallet.utxos entry
                 let out_point = OutPoint::new(tx.txid(), vout as u32);
                 wallet

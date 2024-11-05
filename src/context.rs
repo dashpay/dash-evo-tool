@@ -221,8 +221,11 @@ impl AppContext {
         tx: &Transaction,
         islock: Option<InstantLock>,
         chain_locked_height: Option<CoreBlockHeight>,
-    ) -> rusqlite::Result<()> {
-        // Identify the wallet associated with the transaction
+    ) -> rusqlite::Result<Vec<OutPoint>> {
+        // Initialize a vector to collect wallet outpoints
+        let mut wallet_outpoints = Vec::new();
+
+        // Identify the wallets associated with the transaction
         let wallets = self.wallets.read().unwrap();
         for wallet_arc in wallets.iter() {
             let mut wallet = wallet_arc.write().unwrap();
@@ -255,7 +258,11 @@ impl AppContext {
                     .utxos
                     .entry(address.clone())
                     .or_insert_with(HashMap::new) // Initialize inner HashMap if needed
-                    .insert(out_point, tx_out.clone()); // Insert the TxOut at the OutPoint
+                    .insert(out_point.clone(), tx_out.clone()); // Insert the TxOut at the OutPoint
+
+                // Collect the outpoint
+                wallet_outpoints.push(out_point.clone());
+
                 wallet
                     .address_balances
                     .entry(address)
@@ -269,7 +276,7 @@ impl AppContext {
         ) {
             self.received_asset_lock_finality(tx, islock, chain_locked_height)?;
         }
-        Ok(())
+        Ok(wallet_outpoints)
     }
 
     /// Store the asset lock transaction in the database and update the wallet.

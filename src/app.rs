@@ -1,3 +1,4 @@
+use crate::backend_task::core::CoreItem;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::components::core_zmq_listener::{CoreZMQListener, ZMQMessage};
 use crate::context::AppContext;
@@ -402,10 +403,16 @@ impl App for AppState {
             match message {
                 ZMQMessage::ISLockedTransaction(tx, is_lock) => {
                     // Store the asset lock transaction in the database
-                    if let Err(e) =
-                        app_context.received_transaction_finality(&tx, Some(is_lock), None)
-                    {
-                        eprintln!("Failed to store asset lock: {}", e);
+                    match app_context.received_transaction_finality(&tx, Some(is_lock), None) {
+                        Ok(utxos) => {
+                            let core_item =
+                                CoreItem::ReceivedAvailableUTXOTransaction(tx.clone(), utxos);
+                            self.visible_screen_mut()
+                                .display_task_result(core_item.into());
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to store asset lock: {}", e);
+                        }
                     }
                 }
                 ZMQMessage::ChainLockedLockedTransaction(tx, height) => {

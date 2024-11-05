@@ -4,8 +4,8 @@ mod database;
 mod logging;
 mod sdk_wrapper;
 mod ui;
-
 mod backend_task;
+mod app_dir;
 mod components;
 mod context;
 mod context_provider;

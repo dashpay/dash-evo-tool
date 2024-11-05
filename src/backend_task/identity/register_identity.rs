@@ -222,6 +222,57 @@ impl AppContext {
 
                     (asset_lock_proof, asset_lock_proof_private_key, tx_id)
                 }
+                IdentityRegistrationMethod::FundWithUtxo(
+                    utxo,
+                    script_pubkey,
+                    input_address,
+                    identity_index,
+                ) => {
+                    // Scope the write lock to avoid holding it across an await.
+                    let (asset_lock_transaction, asset_lock_proof_private_key) = {
+                        let mut wallet = wallet.write().unwrap();
+                        wallet.asset_lock_transaction_for_utxo(
+                            sdk.network,
+                            utxo,
+                            script_pubkey,
+                            input_address,
+                            identity_index,
+                            Some(self),
+                        )?
+                    };
+
+                    let tx_id = asset_lock_transaction.txid();
+                    // todo: maybe one day we will want to use platform again, but for right now we use
+                    //  the local core as it is more stable
+                    // let asset_lock_proof = self
+                    //     .broadcast_and_retrieve_asset_lock(&asset_lock_transaction, &change_address)
+                    //     .await
+                    //     .map_err(|e| e.to_string())?;
+
+                    {
+                        let mut proofs = self.transactions_waiting_for_finality.lock().unwrap();
+                        proofs.insert(tx_id, None);
+                    }
+
+                    self.core_client
+                        .send_raw_transaction(&asset_lock_transaction)
+                        .map_err(|e| e.to_string())?;
+
+                    let mut asset_lock_proof;
+
+                    loop {
+                        {
+                            let proofs = self.transactions_waiting_for_finality.lock().unwrap();
+                            if let Some(Some(proof)) = proofs.get(&tx_id) {
+                                asset_lock_proof = proof.clone();
+                                break;
+                            }
+                        }
+                        tokio::time::sleep(Duration::from_millis(200)).await;
+                    }
+
+                    (asset_lock_proof, asset_lock_proof_private_key, tx_id)
+                }
             };
 
         let identity_id = asset_lock_proof

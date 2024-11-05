@@ -10,10 +10,10 @@ use crate::ui::keys_screen::KeysScreen;
 use crate::ui::network_chooser_screen::NetworkChooserScreen;
 use crate::ui::transfers::TransferScreen;
 use crate::ui::transition_visualizer_screen::TransitionVisualizerScreen;
+use crate::ui::wallet::import_wallet_screen::ImportWalletScreen;
 use crate::ui::wallet::wallets_screen::WalletsBalancesScreen;
 use crate::ui::withdrawals::WithdrawalScreen;
 use crate::ui::withdraws_status_screen::WithdrawsStatusScreen;
-use ambassador::{delegatable_trait, Delegate};
 use dash_sdk::dpp::identity::Identity;
 use dash_sdk::dpp::prelude::IdentityPublicKey;
 use dpns_contested_names_screen::DPNSSubscreen;
@@ -114,6 +114,7 @@ pub enum ScreenType {
     DPNSMyUsernames,
     AddNewIdentity,
     WalletsBalances,
+    ImportWallet,
     AddNewWallet,
     AddExistingIdentity,
     TransitionVisualizer,
@@ -188,17 +189,19 @@ impl ScreenType {
             ScreenType::WalletsBalances => {
                 Screen::WalletsBalancesScreen(WalletsBalancesScreen::new(app_context))
             }
+            ScreenType::ImportWallet => {
+                Screen::ImportWalletScreen(ImportWalletScreen::new(app_context))
+            }
         }
     }
 }
 
-#[derive(Delegate)]
-#[delegate(ScreenLike)]
 pub enum Screen {
     IdentitiesScreen(IdentitiesScreen),
     DPNSContestedNamesScreen(DPNSContestedNamesScreen),
     DocumentQueryScreen(DocumentQueryScreen),
     AddNewWalletScreen(AddNewWalletScreen),
+    ImportWalletScreen(ImportWalletScreen),
     AddNewIdentityScreen(AddNewIdentityScreen),
     AddExistingIdentityScreen(AddExistingIdentityScreen),
     KeyInfoScreen(KeyInfoScreen),
@@ -232,6 +235,7 @@ impl Screen {
             Screen::TransferScreen(screen) => screen.app_context = app_context,
             Screen::WalletsBalancesScreen(screen) => screen.app_context = app_context,
             Screen::WithdrawsStatusScreen(screen) => screen.app_context = app_context,
+            Screen::ImportWalletScreen(screen) => screen.app_context = app_context,
         }
     }
 }
@@ -243,7 +247,6 @@ pub enum MessageType {
     Error,
 }
 
-#[delegatable_trait]
 pub trait ScreenLike {
     fn refresh(&mut self) {}
     fn refresh_on_arrival(&mut self) {
@@ -308,6 +311,181 @@ impl Screen {
             Screen::TransferScreen(screen) => ScreenType::TransferScreen(screen.identity.clone()),
             Screen::WalletsBalancesScreen(_) => ScreenType::WalletsBalances,
             Screen::WithdrawsStatusScreen(_) => ScreenType::WithdrawsStatus,
+            Screen::ImportWalletScreen(_) => ScreenType::ImportWallet,
+        }
+    }
+}
+
+impl ScreenLike for Screen {
+    fn refresh(&mut self) {
+        match self {
+            Screen::IdentitiesScreen(screen) => screen.refresh(),
+            Screen::DPNSContestedNamesScreen(screen) => screen.refresh(),
+            Screen::DocumentQueryScreen(screen) => screen.refresh(),
+            Screen::AddNewWalletScreen(screen) => screen.refresh(),
+            Screen::ImportWalletScreen(screen) => screen.refresh(),
+            Screen::AddNewIdentityScreen(screen) => screen.refresh(),
+            Screen::AddExistingIdentityScreen(screen) => screen.refresh(),
+            Screen::KeyInfoScreen(screen) => screen.refresh(),
+            Screen::KeysScreen(screen) => screen.refresh(),
+            Screen::RegisterDpnsNameScreen(screen) => screen.refresh(),
+            Screen::WithdrawalScreen(screen) => screen.refresh(),
+            Screen::TransferScreen(screen) => screen.refresh(),
+            Screen::AddKeyScreen(screen) => screen.refresh(),
+            Screen::TransitionVisualizerScreen(screen) => screen.refresh(),
+            Screen::WithdrawsStatusScreen(screen) => screen.refresh(),
+            Screen::NetworkChooserScreen(screen) => screen.refresh(),
+            Screen::WalletsBalancesScreen(screen) => screen.refresh(),
+        }
+    }
+
+    fn refresh_on_arrival(&mut self) {
+        match self {
+            Screen::IdentitiesScreen(screen) => screen.refresh_on_arrival(),
+            Screen::DPNSContestedNamesScreen(screen) => screen.refresh_on_arrival(),
+            Screen::DocumentQueryScreen(screen) => screen.refresh_on_arrival(),
+            Screen::AddNewWalletScreen(screen) => screen.refresh_on_arrival(),
+            Screen::ImportWalletScreen(screen) => screen.refresh_on_arrival(),
+            Screen::AddNewIdentityScreen(screen) => screen.refresh_on_arrival(),
+            Screen::AddExistingIdentityScreen(screen) => screen.refresh_on_arrival(),
+            Screen::KeyInfoScreen(screen) => screen.refresh_on_arrival(),
+            Screen::KeysScreen(screen) => screen.refresh_on_arrival(),
+            Screen::RegisterDpnsNameScreen(screen) => screen.refresh_on_arrival(),
+            Screen::WithdrawalScreen(screen) => screen.refresh_on_arrival(),
+            Screen::TransferScreen(screen) => screen.refresh_on_arrival(),
+            Screen::AddKeyScreen(screen) => screen.refresh_on_arrival(),
+            Screen::TransitionVisualizerScreen(screen) => screen.refresh_on_arrival(),
+            Screen::WithdrawsStatusScreen(screen) => screen.refresh_on_arrival(),
+            Screen::NetworkChooserScreen(screen) => screen.refresh_on_arrival(),
+            Screen::WalletsBalancesScreen(screen) => screen.refresh_on_arrival(),
+        }
+    }
+
+    fn ui(&mut self, ctx: &Context) -> AppAction {
+        match self {
+            Screen::IdentitiesScreen(screen) => screen.ui(ctx),
+            Screen::DPNSContestedNamesScreen(screen) => screen.ui(ctx),
+            Screen::DocumentQueryScreen(screen) => screen.ui(ctx),
+            Screen::AddNewWalletScreen(screen) => screen.ui(ctx),
+            Screen::ImportWalletScreen(screen) => screen.ui(ctx),
+            Screen::AddNewIdentityScreen(screen) => screen.ui(ctx),
+            Screen::AddExistingIdentityScreen(screen) => screen.ui(ctx),
+            Screen::KeyInfoScreen(screen) => screen.ui(ctx),
+            Screen::KeysScreen(screen) => screen.ui(ctx),
+            Screen::RegisterDpnsNameScreen(screen) => screen.ui(ctx),
+            Screen::WithdrawalScreen(screen) => screen.ui(ctx),
+            Screen::TransferScreen(screen) => screen.ui(ctx),
+            Screen::AddKeyScreen(screen) => screen.ui(ctx),
+            Screen::TransitionVisualizerScreen(screen) => screen.ui(ctx),
+            Screen::WithdrawsStatusScreen(screen) => screen.ui(ctx),
+            Screen::NetworkChooserScreen(screen) => screen.ui(ctx),
+            Screen::WalletsBalancesScreen(screen) => screen.ui(ctx),
+        }
+    }
+
+    fn display_message(&mut self, message: &str, message_type: MessageType) {
+        match self {
+            Screen::IdentitiesScreen(screen) => screen.display_message(message, message_type),
+            Screen::DPNSContestedNamesScreen(screen) => {
+                screen.display_message(message, message_type)
+            }
+            Screen::DocumentQueryScreen(screen) => screen.display_message(message, message_type),
+            Screen::AddNewWalletScreen(screen) => screen.display_message(message, message_type),
+            Screen::ImportWalletScreen(screen) => screen.display_message(message, message_type),
+            Screen::AddNewIdentityScreen(screen) => screen.display_message(message, message_type),
+            Screen::AddExistingIdentityScreen(screen) => {
+                screen.display_message(message, message_type)
+            }
+            Screen::KeyInfoScreen(screen) => screen.display_message(message, message_type),
+            Screen::KeysScreen(screen) => screen.display_message(message, message_type),
+            Screen::RegisterDpnsNameScreen(screen) => screen.display_message(message, message_type),
+            Screen::WithdrawalScreen(screen) => screen.display_message(message, message_type),
+            Screen::TransferScreen(screen) => screen.display_message(message, message_type),
+            Screen::AddKeyScreen(screen) => screen.display_message(message, message_type),
+            Screen::TransitionVisualizerScreen(screen) => {
+                screen.display_message(message, message_type)
+            }
+            Screen::WithdrawsStatusScreen(screen) => screen.display_message(message, message_type),
+            Screen::NetworkChooserScreen(screen) => screen.display_message(message, message_type),
+            Screen::WalletsBalancesScreen(screen) => screen.display_message(message, message_type),
+        }
+    }
+
+    fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
+        match self {
+            Screen::IdentitiesScreen(screen) => {
+                screen.display_task_result(backend_task_success_result.clone())
+            }
+            Screen::DPNSContestedNamesScreen(screen) => {
+                screen.display_task_result(backend_task_success_result.clone())
+            }
+            Screen::DocumentQueryScreen(screen) => {
+                screen.display_task_result(backend_task_success_result.clone())
+            }
+            Screen::AddNewWalletScreen(screen) => {
+                screen.display_task_result(backend_task_success_result.clone())
+            }
+            Screen::ImportWalletScreen(screen) => {
+                screen.display_task_result(backend_task_success_result.clone())
+            }
+            Screen::AddNewIdentityScreen(screen) => {
+                screen.display_task_result(backend_task_success_result.clone())
+            }
+            Screen::AddExistingIdentityScreen(screen) => {
+                screen.display_task_result(backend_task_success_result.clone())
+            }
+            Screen::KeyInfoScreen(screen) => {
+                screen.display_task_result(backend_task_success_result.clone())
+            }
+            Screen::KeysScreen(screen) => {
+                screen.display_task_result(backend_task_success_result.clone())
+            }
+            Screen::RegisterDpnsNameScreen(screen) => {
+                screen.display_task_result(backend_task_success_result.clone())
+            }
+            Screen::WithdrawalScreen(screen) => {
+                screen.display_task_result(backend_task_success_result.clone())
+            }
+            Screen::TransferScreen(screen) => {
+                screen.display_task_result(backend_task_success_result.clone())
+            }
+            Screen::AddKeyScreen(screen) => {
+                screen.display_task_result(backend_task_success_result.clone())
+            }
+            Screen::TransitionVisualizerScreen(screen) => {
+                screen.display_task_result(backend_task_success_result.clone())
+            }
+            Screen::WithdrawsStatusScreen(screen) => {
+                screen.display_task_result(backend_task_success_result.clone())
+            }
+            Screen::NetworkChooserScreen(screen) => {
+                screen.display_task_result(backend_task_success_result.clone())
+            }
+            Screen::WalletsBalancesScreen(screen) => {
+                screen.display_task_result(backend_task_success_result)
+            }
+        }
+    }
+
+    fn pop_on_success(&mut self) {
+        match self {
+            Screen::IdentitiesScreen(screen) => screen.pop_on_success(),
+            Screen::DPNSContestedNamesScreen(screen) => screen.pop_on_success(),
+            Screen::DocumentQueryScreen(screen) => screen.pop_on_success(),
+            Screen::AddNewWalletScreen(screen) => screen.pop_on_success(),
+            Screen::ImportWalletScreen(screen) => screen.pop_on_success(),
+            Screen::AddNewIdentityScreen(screen) => screen.pop_on_success(),
+            Screen::AddExistingIdentityScreen(screen) => screen.pop_on_success(),
+            Screen::KeyInfoScreen(screen) => screen.pop_on_success(),
+            Screen::KeysScreen(screen) => screen.pop_on_success(),
+            Screen::RegisterDpnsNameScreen(screen) => screen.pop_on_success(),
+            Screen::WithdrawalScreen(screen) => screen.pop_on_success(),
+            Screen::TransferScreen(screen) => screen.pop_on_success(),
+            Screen::AddKeyScreen(screen) => screen.pop_on_success(),
+            Screen::TransitionVisualizerScreen(screen) => screen.pop_on_success(),
+            Screen::WithdrawsStatusScreen(screen) => screen.pop_on_success(),
+            Screen::NetworkChooserScreen(screen) => screen.pop_on_success(),
+            Screen::WalletsBalancesScreen(screen) => screen.pop_on_success(),
         }
     }
 }

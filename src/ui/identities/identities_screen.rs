@@ -535,27 +535,29 @@ impl ScreenLike for IdentitiesScreen {
     }
 
     fn ui(&mut self, ctx: &Context) -> AppAction {
-        let right_buttons = {
-            let create_wallet_or_identity = if !self.app_context.has_wallet.load(Ordering::Relaxed)
-            {
+        let mut right_buttons = if !self.app_context.has_wallet.load(Ordering::Relaxed) {
+            [
+                (
+                    "Import Wallet",
+                    DesiredAppAction::AddScreenType(ScreenType::ImportWallet),
+                ),
                 (
                     "Create Wallet",
                     DesiredAppAction::AddScreenType(ScreenType::AddNewWallet),
-                )
-            } else {
-                (
-                    "Create Identity",
-                    DesiredAppAction::AddScreenType(ScreenType::AddNewIdentity),
-                )
-            };
-            vec![
-                create_wallet_or_identity,
-                (
-                    "Load Identity",
-                    DesiredAppAction::AddScreenType(ScreenType::AddExistingIdentity),
                 ),
             ]
+            .to_vec()
+        } else {
+            [(
+                "Create Identity",
+                DesiredAppAction::AddScreenType(ScreenType::AddNewIdentity),
+            )]
+            .to_vec()
         };
+        right_buttons.push((
+            "Load Identity",
+            DesiredAppAction::AddScreenType(ScreenType::AddExistingIdentity),
+        ));
         let mut action = add_top_panel(
             ctx,
             &self.app_context,

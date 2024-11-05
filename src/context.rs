@@ -214,7 +214,7 @@ impl AppContext {
         tx: &Transaction,
         islock: Option<InstantLock>,
         chain_locked_height: Option<CoreBlockHeight>,
-    ) -> rusqlite::Result<Vec<OutPoint>> {
+    ) -> rusqlite::Result<Vec<(OutPoint, Address)>> {
         // Initialize a vector to collect wallet outpoints
         let mut wallet_outpoints = Vec::new();
 
@@ -254,7 +254,7 @@ impl AppContext {
                     .insert(out_point.clone(), tx_out.clone()); // Insert the TxOut at the OutPoint
 
                 // Collect the outpoint
-                wallet_outpoints.push(out_point.clone());
+                wallet_outpoints.push((out_point.clone(), address.clone()));
 
                 wallet
                     .address_balances

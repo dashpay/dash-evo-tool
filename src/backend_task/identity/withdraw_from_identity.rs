@@ -29,7 +29,7 @@ impl AppContext {
             .await
             .map_err(|e| format!("Withdrawal error: {}", e))?;
         qualified_identity.identity.set_balance(remaining_balance);
-        self.insert_local_qualified_identity(&qualified_identity)
+        self.insert_local_qualified_identity(&qualified_identity, None)
             .map_err(|e| format!("Database error: {}", e))
     }
 }

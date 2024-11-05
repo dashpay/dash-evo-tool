@@ -175,6 +175,7 @@ impl Database {
                     watched_addresses: BTreeMap::new(),
                     unused_asset_locks: vec![],
                     alias,
+                    identities: HashMap::new(),
                     utxos: HashMap::new(),
                     is_main,
                     password_hint,

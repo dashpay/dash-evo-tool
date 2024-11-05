@@ -158,6 +158,7 @@ impl AddNewIdentityScreen {
                         alias_input: self.alias_input.clone(),
                         keys: self.identity_keys.clone(),
                         wallet: Arc::clone(selected_wallet), // Clone the Arc reference
+                        wallet_identity_index: self.identity_id_number,
                         identity_registration_method: IdentityRegistrationMethod::FundWithUtxo(
                             utxo,
                             tx_out,

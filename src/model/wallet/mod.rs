@@ -63,6 +63,7 @@ use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dpp::balances::credits::Duffs;
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::prelude::AssetLockProof;
+use dash_sdk::platform::Identity;
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
@@ -106,6 +107,7 @@ pub struct Wallet {
         Option<AssetLockProof>,
     )>,
     pub alias: Option<String>,
+    pub identities: HashMap<u32, Identity>,
     pub utxos: HashMap<Address, HashMap<OutPoint, TxOut>>,
     pub is_main: bool,
     pub password_hint: Option<String>,

@@ -91,8 +91,12 @@ impl Database {
                 is_local INTEGER NOT NULL,
                 alias TEXT,
                 info TEXT,
+                wallet BLOB,
+                wallet_index INTEGER,
                 identity_type TEXT,
-                network TEXT NOT NULL
+                network TEXT NOT NULL,
+                CHECK ((wallet IS NOT NULL AND wallet_index IS NOT NULL) OR (wallet IS NULL AND wallet_index IS NULL)),
+                FOREIGN KEY (wallet) REFERENCES wallet(seed) ON DELETE CASCADE
             )",
             [],
         )?;

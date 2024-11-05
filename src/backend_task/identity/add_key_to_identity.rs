@@ -63,7 +63,7 @@ impl AppContext {
             }
         }
 
-        self.insert_local_qualified_identity(&qualified_identity)
+        self.insert_local_qualified_identity(&qualified_identity, None)
             .map_err(|e| format!("Database error: {}", e))
     }
 }

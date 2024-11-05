@@ -296,7 +296,12 @@ impl AddNewIdentityScreen {
                                 .as_ref()
                                 .map_or(false, |selected| Arc::ptr_eq(selected, wallet));
 
-                            if ui.selectable_label(is_selected, wallet_alias).clicked() {
+                            if ui.selectable_label(is_selected, wallet_alias).changed() {
+                                {
+                                    let wallet = wallet.read().unwrap();
+                                    self.identity_id_number =
+                                        wallet.identities.keys().copied().max().unwrap_or_default();
+                                }
                                 // Update the selected wallet
                                 self.selected_wallet = Some(wallet.clone());
                             }
@@ -310,6 +315,9 @@ impl AddNewIdentityScreen {
                     self.selected_wallet = Some(wallet.clone());
 
                     let wallet = wallet.read().unwrap();
+
+                    self.identity_id_number =
+                        wallet.identities.keys().copied().max().unwrap_or_default();
 
                     self.identity_keys.master_private_key =
                         Some(wallet.identity_authentication_ecdsa_private_key(
@@ -545,6 +553,7 @@ impl AddNewIdentityScreen {
                         alias_input: self.alias_input.clone(),
                         keys: self.identity_keys.clone(),
                         wallet: Arc::clone(selected_wallet), // Clone the Arc reference
+                        wallet_identity_index: self.identity_id_number,
                         identity_registration_method: IdentityRegistrationMethod::UseAssetLock(
                             address,
                             funding_asset_lock,
@@ -575,6 +584,7 @@ impl AddNewIdentityScreen {
                     alias_input: self.alias_input.clone(),
                     keys: self.identity_keys.clone(),
                     wallet: Arc::clone(selected_wallet), // Clone the Arc reference
+                    wallet_identity_index: self.identity_id_number,
                     identity_registration_method: IdentityRegistrationMethod::FundWithWallet(
                         amount,
                         self.identity_id_number,

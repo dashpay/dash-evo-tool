@@ -175,6 +175,7 @@ pub struct IdentityRegistrationInfo {
     pub alias_input: String,
     pub keys: IdentityKeys,
     pub wallet: Arc<RwLock<Wallet>>,
+    pub wallet_identity_index: u32,
     pub identity_registration_method: IdentityRegistrationMethod,
 }
 

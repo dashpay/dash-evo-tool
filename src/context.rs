@@ -123,24 +123,34 @@ impl AppContext {
 
     pub fn insert_local_identity(&self, identity: &Identity) -> Result<()> {
         self.db
-            .insert_local_qualified_identity(&identity.clone().into(), self)
+            .insert_local_qualified_identity(&identity.clone().into(), None, self)
     }
 
     pub fn insert_local_qualified_identity(
         &self,
         qualified_identity: &QualifiedIdentity,
+        wallet_and_identity_id_info: Option<(&[u8], u32)>,
     ) -> Result<()> {
-        self.db
-            .insert_local_qualified_identity(qualified_identity, self)
+        self.db.insert_local_qualified_identity(
+            qualified_identity,
+            wallet_and_identity_id_info,
+            self,
+        )
     }
 
     /// This is for before we know if Platform will accept the identity
     pub fn insert_local_qualified_identity_in_creation(
         &self,
         qualified_identity: &QualifiedIdentity,
+        wallet_id: &[u8],
+        identity_index: u32,
     ) -> Result<()> {
-        self.db
-            .insert_local_qualified_identity_in_creation(qualified_identity, self)
+        self.db.insert_local_qualified_identity_in_creation(
+            qualified_identity,
+            wallet_id,
+            identity_index,
+            self,
+        )
     }
 
     pub fn load_local_qualified_identities(&self) -> Result<Vec<QualifiedIdentity>> {

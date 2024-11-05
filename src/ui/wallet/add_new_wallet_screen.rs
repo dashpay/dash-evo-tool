@@ -57,6 +57,7 @@ impl AddNewWalletScreen {
                 watched_addresses: Default::default(),
                 unused_asset_locks: Default::default(),
                 alias: None,
+                identities: Default::default(),
                 utxos: Default::default(),
                 is_main: true,
                 password_hint: None,

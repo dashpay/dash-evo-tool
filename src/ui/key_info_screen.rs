@@ -211,7 +211,7 @@ impl KeyInfoScreen {
                     );
                     match self
                         .app_context
-                        .insert_local_qualified_identity(&self.identity)
+                        .insert_local_qualified_identity(&self.identity, None)
                     {
                         Ok(_) => {
                             self.error_message = None;

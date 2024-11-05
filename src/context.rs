@@ -7,7 +7,6 @@ use crate::model::qualified_identity::{DPNSNameInfo, QualifiedIdentity};
 use crate::model::wallet::Wallet;
 use crate::sdk_wrapper::initialize_sdk;
 use crate::ui::RootScreenType;
-use dash_sdk::dashcore_rpc::dashcore::consensus::deserialize;
 use dash_sdk::dashcore_rpc::dashcore::{InstantLock, Transaction};
 use dash_sdk::dashcore_rpc::{Auth, Client};
 use dash_sdk::dpp::dashcore::hashes::Hash;
@@ -22,7 +21,6 @@ use dash_sdk::dpp::system_data_contracts::{load_system_data_contract, SystemData
 use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::platform::{DataContract, Identifier};
 use dash_sdk::Sdk;
-use egui::TextBuffer;
 use rusqlite::Result;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::AtomicBool;

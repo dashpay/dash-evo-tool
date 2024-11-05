@@ -247,6 +247,7 @@ impl AppContext {
             identity_type: IdentityType::User,
             alias: None,
             encrypted_private_keys: keys.to_encrypted_private_keys(),
+            dpns_names: vec![],
         };
 
         if !alias_input.is_empty() {

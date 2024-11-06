@@ -11,6 +11,7 @@ use egui::{
     Color32, ComboBox, Direction, FontId, Frame, Grid, Layout, Margin, RichText, Stroke, TextStyle,
     Ui, Vec2,
 };
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 
 pub struct AddNewWalletScreen {
@@ -54,8 +55,9 @@ impl AddNewWalletScreen {
                 address_balances: Default::default(),
                 known_addresses: Default::default(),
                 watched_addresses: Default::default(),
+                unused_asset_locks: Default::default(),
                 alias: None,
-                utxos: None,
+                utxos: Default::default(),
                 is_main: true,
                 password_hint: None,
             };
@@ -68,6 +70,7 @@ impl AddNewWalletScreen {
             // Acquire a write lock and add the new wallet
             if let Ok(mut wallets) = self.app_context.wallets.write() {
                 wallets.push(Arc::new(RwLock::new(wallet)));
+                self.app_context.has_wallet.store(true, Ordering::Relaxed);
             } else {
                 eprintln!("Failed to acquire write lock on wallets");
             }

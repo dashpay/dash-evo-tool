@@ -44,7 +44,6 @@ pub fn add_dpns_subscreen_chooser_panel(ctx: &Context) -> AppAction {
                                     RootScreenType::RootScreenDPNSOwnedNames,
                                 )
                             }
-                            _ => {}
                         }
                     }
 

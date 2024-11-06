@@ -1,8 +1,8 @@
 use crate::app::AppAction;
+use crate::backend_task::identity::{IdentityTask, RegisterDpnsNameInput};
+use crate::backend_task::BackendTask;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
-use crate::platform::identity::{IdentityTask, RegisterDpnsNameInput};
-use crate::platform::BackendTask;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::{MessageType, ScreenLike};
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;

@@ -1,23 +1,23 @@
 use crate::app::AppAction;
+use crate::backend_task::BackendTaskSuccessResult;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
-use crate::platform::BackendTaskSuccessResult;
 use crate::ui::add_key_screen::AddKeyScreen;
 use crate::ui::document_query_screen::DocumentQueryScreen;
 use crate::ui::dpns_contested_names_screen::DPNSContestedNamesScreen;
-use crate::ui::identities::add_new_wallet_screen::AddNewWalletScreen;
 use crate::ui::key_info_screen::KeyInfoScreen;
 use crate::ui::keys_screen::KeysScreen;
 use crate::ui::network_chooser_screen::NetworkChooserScreen;
 use crate::ui::transfers::TransferScreen;
 use crate::ui::transition_visualizer_screen::TransitionVisualizerScreen;
+use crate::ui::wallet::wallets_screen::WalletsBalancesScreen;
 use crate::ui::withdrawals::WithdrawalScreen;
 use crate::ui::withdraws_status_screen::WithdrawsStatusScreen;
+use ambassador::{delegatable_trait, Delegate};
 use dash_sdk::dpp::identity::Identity;
 use dash_sdk::dpp::prelude::IdentityPublicKey;
 use dpns_contested_names_screen::DPNSSubscreen;
 use egui::Context;
-use enum_dispatch::enum_dispatch;
 use identities::add_existing_identity_screen::AddExistingIdentityScreen;
 use identities::add_new_identity_screen::AddNewIdentityScreen;
 use identities::identities_screen::IdentitiesScreen;
@@ -25,6 +25,7 @@ use identities::register_dpns_name_screen::RegisterDpnsNameScreen;
 use std::fmt;
 use std::hash::Hash;
 use std::sync::Arc;
+use wallet::add_new_wallet_screen::AddNewWalletScreen;
 
 mod add_key_screen;
 pub mod components;
@@ -36,6 +37,7 @@ pub mod keys_screen;
 pub mod network_chooser_screen;
 pub mod transfers;
 pub mod transition_visualizer_screen;
+pub(crate) mod wallet;
 pub mod withdrawals;
 pub mod withdraws_status_screen;
 
@@ -46,6 +48,7 @@ pub enum RootScreenType {
     RootScreenDPNSPastContests,
     RootScreenDPNSOwnedNames,
     RootScreenDocumentQuery,
+    RootScreenWalletsBalances,
     RootScreenTransitionVisualizerScreen,
     RootScreenWithdrawsStatus,
     RootScreenNetworkChooser,
@@ -60,9 +63,10 @@ impl RootScreenType {
             RootScreenType::RootScreenDPNSPastContests => 2,
             RootScreenType::RootScreenDPNSOwnedNames => 3,
             RootScreenType::RootScreenDocumentQuery => 4,
-            RootScreenType::RootScreenTransitionVisualizerScreen => 5,
-            RootScreenType::RootScreenNetworkChooser => 6,
-            RootScreenType::RootScreenWithdrawsStatus => 7,
+            RootScreenType::RootScreenWalletsBalances => 5,
+            RootScreenType::RootScreenTransitionVisualizerScreen => 6,
+            RootScreenType::RootScreenNetworkChooser => 7,
+            RootScreenType::RootScreenWithdrawsStatus => 8,
         }
     }
 
@@ -74,9 +78,10 @@ impl RootScreenType {
             2 => Some(RootScreenType::RootScreenDPNSPastContests),
             3 => Some(RootScreenType::RootScreenDPNSOwnedNames),
             4 => Some(RootScreenType::RootScreenDocumentQuery),
-            5 => Some(RootScreenType::RootScreenTransitionVisualizerScreen),
-            6 => Some(RootScreenType::RootScreenNetworkChooser),
-            7 => Some(RootScreenType::RootScreenWithdrawsStatus),
+            5 => Some(RootScreenType::RootScreenWalletsBalances),
+            6 => Some(RootScreenType::RootScreenTransitionVisualizerScreen),
+            7 => Some(RootScreenType::RootScreenNetworkChooser),
+            8 => Some(RootScreenType::RootScreenWithdrawsStatus),
             _ => None,
         }
     }
@@ -95,6 +100,7 @@ impl From<RootScreenType> for ScreenType {
             RootScreenType::RootScreenDocumentQuery => ScreenType::DocumentQueryScreen,
             RootScreenType::RootScreenWithdrawsStatus => ScreenType::WithdrawsStatus,
             RootScreenType::RootScreenNetworkChooser => ScreenType::NetworkChooser,
+            RootScreenType::RootScreenWalletsBalances => ScreenType::WalletsBalances,
         }
     }
 }
@@ -107,6 +113,7 @@ pub enum ScreenType {
     DPNSPastContests,
     DPNSMyUsernames,
     AddNewIdentity,
+    WalletsBalances,
     AddNewWallet,
     AddExistingIdentity,
     TransitionVisualizer,
@@ -178,11 +185,15 @@ impl ScreenType {
             ScreenType::AddNewWallet => {
                 Screen::AddNewWalletScreen(AddNewWalletScreen::new(app_context))
             }
+            ScreenType::WalletsBalances => {
+                Screen::WalletsBalancesScreen(WalletsBalancesScreen::new(app_context))
+            }
         }
     }
 }
 
-#[enum_dispatch(ScreenLike)]
+#[derive(Delegate)]
+#[delegate(ScreenLike)]
 pub enum Screen {
     IdentitiesScreen(IdentitiesScreen),
     DPNSContestedNamesScreen(DPNSContestedNamesScreen),
@@ -199,6 +210,7 @@ pub enum Screen {
     TransitionVisualizerScreen(TransitionVisualizerScreen),
     WithdrawsStatusScreen(WithdrawsStatusScreen),
     NetworkChooserScreen(NetworkChooserScreen),
+    WalletsBalancesScreen(WalletsBalancesScreen),
 }
 
 impl Screen {
@@ -218,6 +230,7 @@ impl Screen {
             Screen::RegisterDpnsNameScreen(screen) => screen.app_context = app_context,
             Screen::AddNewWalletScreen(screen) => screen.app_context = app_context,
             Screen::TransferScreen(screen) => screen.app_context = app_context,
+            Screen::WalletsBalancesScreen(screen) => screen.app_context = app_context,
             Screen::WithdrawsStatusScreen(screen) => screen.app_context = app_context,
         }
     }
@@ -230,7 +243,7 @@ pub enum MessageType {
     Error,
 }
 
-#[enum_dispatch]
+#[delegatable_trait]
 pub trait ScreenLike {
     fn refresh(&mut self) {}
     fn refresh_on_arrival(&mut self) {
@@ -293,6 +306,7 @@ impl Screen {
             Screen::RegisterDpnsNameScreen(_) => ScreenType::RegisterDpnsName,
             Screen::AddNewWalletScreen(_) => ScreenType::AddNewWallet,
             Screen::TransferScreen(screen) => ScreenType::TransferScreen(screen.identity.clone()),
+            Screen::WalletsBalancesScreen(_) => ScreenType::WalletsBalances,
             Screen::WithdrawsStatusScreen(_) => ScreenType::WithdrawsStatus,
         }
     }

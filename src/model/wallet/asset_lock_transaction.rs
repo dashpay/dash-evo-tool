@@ -17,7 +17,11 @@ impl Wallet {
         register_addresses: Option<&AppContext>,
     ) -> Result<(Transaction, PrivateKey, Address), String> {
         let secp = Secp256k1::new();
-        let private_key = self.identity_registration_ecdsa_private_key(network, identity_index);
+        let private_key = self.identity_registration_ecdsa_private_key(
+            network,
+            identity_index,
+            register_addresses,
+        )?;
         let asset_lock_public_key = private_key.public_key(&secp);
 
         let one_time_key_hash = asset_lock_public_key.pubkey_hash();

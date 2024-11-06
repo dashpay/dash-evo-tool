@@ -14,6 +14,7 @@ use dash_sdk::platform::{Fetch, Identity, IdentityPublicKey};
 use dash_sdk::Sdk;
 
 use super::BackendTaskSuccessResult;
+
 impl AppContext {
     pub(super) async fn add_key_to_identity(
         &self,

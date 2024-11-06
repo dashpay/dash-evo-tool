@@ -1,11 +1,11 @@
 use super::components::dpns_subscreen_chooser_panel::add_dpns_subscreen_chooser_panel;
 use super::{Screen, ScreenType};
 use crate::app::{AppAction, DesiredAppAction};
+use crate::backend_task::contested_names::ContestedResourceTask;
+use crate::backend_task::BackendTask;
 use crate::context::AppContext;
 use crate::model::contested_name::{ContestState, ContestedName};
 use crate::model::qualified_identity::{DPNSNameInfo, IdentityType, QualifiedIdentity};
-use crate::platform::contested_names::ContestedResourceTask;
-use crate::platform::BackendTask;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::identities::add_existing_identity_screen::AddExistingIdentityScreen;
@@ -865,26 +865,29 @@ impl ScreenLike for DPNSContestedNamesScreen {
                 !contested_names.is_empty()
             };
 
-            if has_contested_names {
-                // Render the table if there are contested names
-                match self.dpns_subscreen {
-                    DPNSSubscreen::Active => {
+            // Render the proper table
+            match self.dpns_subscreen {
+                DPNSSubscreen::Active => {
+                    if has_contested_names {
                         self.render_table_active_contests(ui);
+                    } else {
+                        self.render_no_active_contests_or_owned_names(ui);
                     }
-                    DPNSSubscreen::Past => {
+                }
+                DPNSSubscreen::Past => {
+                    if has_contested_names {
                         self.render_table_past_contests(ui);
+                    } else {
+                        self.render_no_active_contests_or_owned_names(ui);
                     }
-                    DPNSSubscreen::Owned => {
+                }
+                DPNSSubscreen::Owned => {
+                    if !self.local_dpns_names.is_empty() {
                         self.render_table_local_dpns_names(ui);
+                    } else {
+                        self.render_no_active_contests_or_owned_names(ui);
                     }
                 }
-            } else {
-                if self.dpns_subscreen == DPNSSubscreen::Owned && !self.local_dpns_names.is_empty()
-                {
-                    self.render_table_local_dpns_names(ui);
-                }
-                // Render the "no active contests" message if none exist
-                action |= self.render_no_active_contests_or_owned_names(ui);
             }
         });
 

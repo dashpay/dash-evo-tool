@@ -1,9 +1,9 @@
+use crate::backend_task::identity::{verify_key_input, IdentityInputToLoad};
 use crate::context::AppContext;
 use crate::model::qualified_identity::EncryptedPrivateKeyTarget::{
     self, PrivateKeyOnMainIdentity, PrivateKeyOnVoterIdentity,
 };
 use crate::model::qualified_identity::{DPNSNameInfo, IdentityType, QualifiedIdentity};
-use crate::platform::identity::{verify_key_input, IdentityInputToLoad};
 use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
 use dash_sdk::dashcore_rpc::dashcore::PrivateKey;
 use dash_sdk::dpp::document::DocumentV0Getters;

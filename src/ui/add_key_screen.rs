@@ -1,8 +1,8 @@
 use crate::app::AppAction;
+use crate::backend_task::identity::IdentityTask;
+use crate::backend_task::BackendTask;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
-use crate::platform::identity::IdentityTask;
-use crate::platform::BackendTask;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::{MessageType, ScreenLike};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -124,8 +124,6 @@ impl AddKeyScreen {
 }
 
 impl ScreenLike for AddKeyScreen {
-    fn refresh(&mut self) {}
-
     fn display_message(&mut self, message: &str, message_type: MessageType) {
         if message_type == MessageType::Success && message == "Successfully added key to identity" {
             self.add_key_status = AddKeyStatus::Complete;

@@ -293,7 +293,7 @@ impl App for AppState {
                     }
                     BackendTaskSuccessResult::Message(message) => {
                         self.visible_screen_mut()
-                            .display_message(&message, MessageType::Info);
+                            .display_message(&message, MessageType::Success);
                     }
                     BackendTaskSuccessResult::Documents(_) => {
                         self.visible_screen_mut().display_task_result(message);

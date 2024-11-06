@@ -13,7 +13,6 @@ use dash_sdk::dpp::identity::{Purpose, SecurityLevel, TimestampMillis};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::IdentityPublicKey;
 use eframe::egui::Context;
-use futures::StreamExt;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -133,7 +132,7 @@ impl RegisterDpnsNameScreen {
 
 impl ScreenLike for RegisterDpnsNameScreen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
-        if message_type == MessageType::Info && message == "Success" {
+        if message_type == MessageType::Success && message == "Successfully registered dpns name" {
             self.register_dpns_name_status = RegisterDpnsNameStatus::Complete;
         } else {
             self.register_dpns_name_status =

@@ -16,13 +16,13 @@ use dash_sdk::{
 };
 use rand::{rngs::StdRng, Rng, SeedableRng};
 
-use super::RegisterDpnsNameInput;
+use super::{BackendTaskSuccessResult, RegisterDpnsNameInput};
 impl AppContext {
     pub(super) async fn register_dpns_name(
         &self,
         sdk: &Sdk,
         input: RegisterDpnsNameInput,
-    ) -> Result<(), String> {
+    ) -> Result<BackendTaskSuccessResult, String> {
         let mut rng = StdRng::from_entropy();
         let dpns_contract = self.dpns_contract.clone();
 
@@ -148,6 +148,8 @@ impl AppContext {
             .await
             .map_err(|e| e.to_string())?;
 
-        Ok(())
+        Ok(BackendTaskSuccessResult::Message(
+            "Successfully registered dpns name".to_string(),
+        ))
     }
 }

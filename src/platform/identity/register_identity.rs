@@ -6,18 +6,15 @@ use dash_sdk::dapi_grpc::core::v0::{
     BroadcastTransactionRequest, GetBlockchainStatusRequest, GetTransactionRequest,
     GetTransactionResponse,
 };
-use dash_sdk::dashcore_rpc::dashcore::PrivateKey;
-use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dpp::dashcore::psbt::serialize::Serialize;
 use dash_sdk::dpp::dashcore::{Address, Transaction};
 use dash_sdk::dpp::prelude::AssetLockProof;
 use dash_sdk::platform::transition::put_identity::PutIdentity;
 use dash_sdk::platform::Identity;
-use dash_sdk::{RequestSettings, Sdk};
-use rand::prelude::StdRng;
-use std::collections::BTreeMap;
+use dash_sdk::RequestSettings;
 use std::time::Duration;
-use tokio::sync::MutexGuard;
+
+use super::BackendTaskSuccessResult;
 
 impl AppContext {
     pub(crate) async fn broadcast_and_retrieve_asset_lock(
@@ -39,6 +36,7 @@ impl AppContext {
         let block_hash = sdk
             .execute(GetBlockchainStatusRequest {}, RequestSettings::default())
             .await?
+            .inner
             .chain
             .map(|chain| chain.best_block_hash)
             .ok_or_else(|| dash_sdk::Error::DapiClientError("Missing `chain` field".to_owned()))?;
@@ -74,7 +72,8 @@ impl AppContext {
                         },
                         RequestSettings::default(),
                     )
-                    .await?;
+                    .await?
+                    .inner;
 
                 // tracing::debug!(
                 //     "Restarting the stream from the transaction mined block hash {}",
@@ -106,7 +105,7 @@ impl AppContext {
     pub(super) async fn register_identity(
         &self,
         input: IdentityRegistrationInfo,
-    ) -> Result<(), String> {
+    ) -> Result<BackendTaskSuccessResult, String> {
         let IdentityRegistrationInfo {
             alias_input,
             amount,
@@ -175,6 +174,8 @@ impl AppContext {
         self.insert_local_qualified_identity(&qualified_identity)
             .map_err(|e| e.to_string())?;
 
-        Ok(())
+        Ok(BackendTaskSuccessResult::Message(
+            "Successfully registered identity".to_string(),
+        ))
     }
 }

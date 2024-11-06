@@ -26,6 +26,8 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 use tokio::sync::mpsc;
 
+use super::BackendTaskSuccessResult;
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct IdentityInputToLoad {
     pub identity_id_input: String,
@@ -352,7 +354,7 @@ impl AppContext {
         task: IdentityTask,
         sdk: &Sdk,
         sender: mpsc::Sender<TaskResult>,
-    ) -> Result<(), String> {
+    ) -> Result<BackendTaskSuccessResult, String> {
         match task {
             IdentityTask::LoadIdentity(input) => self.load_identity(sdk, input).await,
             IdentityTask::WithdrawFromIdentity(qualified_identity, to_address, credits, id) => {

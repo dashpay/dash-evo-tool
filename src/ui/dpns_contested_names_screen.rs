@@ -837,7 +837,7 @@ impl ScreenLike for DPNSContestedNamesScreen {
                     ui.allocate_ui(egui::Vec2::new(ui.available_width(), 50.0), |ui| {
                         ui.group(|ui| {
                             ui.set_min_height(50.0);
-                            ui.horizontal(|ui| {
+                            ui.horizontal_wrapped(|ui| {
                                 ui.label(egui::RichText::new(message).color(message_color));
                                 if ui.button("Dismiss").clicked() {
                                     // Update the state outside the closure

@@ -213,7 +213,7 @@ impl ScreenLike for RegisterDpnsNameScreen {
                     ));
                 }
                 RegisterDpnsNameStatus::ErrorMessage(msg) => {
-                    ui.label(format!("Error: {}", msg));
+                    ui.colored_label(egui::Color32::RED, format!("Error: {}", msg));
                 }
                 RegisterDpnsNameStatus::Complete => {
                     action = AppAction::PopScreenAndRefresh;

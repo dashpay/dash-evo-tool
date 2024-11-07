@@ -132,11 +132,18 @@ impl RegisterDpnsNameScreen {
 
 impl ScreenLike for RegisterDpnsNameScreen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
-        if message_type == MessageType::Success && message == "Successfully registered dpns name" {
-            self.register_dpns_name_status = RegisterDpnsNameStatus::Complete;
-        } else {
-            self.register_dpns_name_status =
-                RegisterDpnsNameStatus::ErrorMessage(message.to_string());
+        match message_type {
+            MessageType::Success => {
+                if message == "Successfully registered dpns name" {
+                    self.register_dpns_name_status = RegisterDpnsNameStatus::Complete;
+                }
+            }
+            MessageType::Info => {}
+            MessageType::Error => {
+                // It's not great because the error message can be coming from somewhere else if there are other processes happening
+                self.register_dpns_name_status =
+                    RegisterDpnsNameStatus::ErrorMessage(message.to_string());
+            }
         }
     }
 

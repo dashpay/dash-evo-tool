@@ -11,7 +11,7 @@ use dash_sdk::dashcore_rpc::dashcore::{InstantLock, Transaction};
 use dash_sdk::dashcore_rpc::{Auth, Client};
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::transaction::special_transaction::TransactionPayload::AssetLockPayloadType;
-use dash_sdk::dpp::dashcore::{Address, Network, OutPoint, Txid};
+use dash_sdk::dpp::dashcore::{Address, Network, OutPoint, TxOut, Txid};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::state_transition::asset_lock_proof::chain::ChainAssetLockProof;
 use dash_sdk::dpp::identity::state_transition::asset_lock_proof::InstantAssetLockProof;
@@ -123,24 +123,42 @@ impl AppContext {
 
     pub fn insert_local_identity(&self, identity: &Identity) -> Result<()> {
         self.db
-            .insert_local_qualified_identity(&identity.clone().into(), self)
+            .insert_local_qualified_identity(&identity.clone().into(), None, self)
     }
 
     pub fn insert_local_qualified_identity(
         &self,
         qualified_identity: &QualifiedIdentity,
+        wallet_and_identity_id_info: Option<(&[u8], u32)>,
+    ) -> Result<()> {
+        self.db.insert_local_qualified_identity(
+            qualified_identity,
+            wallet_and_identity_id_info,
+            self,
+        )
+    }
+
+    pub fn update_local_qualified_identity(
+        &self,
+        qualified_identity: &QualifiedIdentity,
     ) -> Result<()> {
         self.db
-            .insert_local_qualified_identity(qualified_identity, self)
+            .update_local_qualified_identity(qualified_identity, self)
     }
 
     /// This is for before we know if Platform will accept the identity
     pub fn insert_local_qualified_identity_in_creation(
         &self,
         qualified_identity: &QualifiedIdentity,
+        wallet_id: &[u8],
+        identity_index: u32,
     ) -> Result<()> {
-        self.db
-            .insert_local_qualified_identity_in_creation(qualified_identity, self)
+        self.db.insert_local_qualified_identity_in_creation(
+            qualified_identity,
+            wallet_id,
+            identity_index,
+            self,
+        )
     }
 
     pub fn load_local_qualified_identities(&self) -> Result<Vec<QualifiedIdentity>> {
@@ -214,7 +232,7 @@ impl AppContext {
         tx: &Transaction,
         islock: Option<InstantLock>,
         chain_locked_height: Option<CoreBlockHeight>,
-    ) -> rusqlite::Result<Vec<OutPoint>> {
+    ) -> rusqlite::Result<Vec<(OutPoint, TxOut, Address)>> {
         // Initialize a vector to collect wallet outpoints
         let mut wallet_outpoints = Vec::new();
 
@@ -243,7 +261,7 @@ impl AppContext {
                     self.network,
                 )?;
                 self.db
-                    .add_to_address_balance(&wallet.seed, &address, tx_out.value)?;
+                    .add_to_address_balance(&wallet.seed_hash(), &address, tx_out.value)?;
 
                 // Create the OutPoint and insert it into the wallet.utxos entry
                 let out_point = OutPoint::new(tx.txid(), vout as u32);
@@ -254,7 +272,7 @@ impl AppContext {
                     .insert(out_point.clone(), tx_out.clone()); // Insert the TxOut at the OutPoint
 
                 // Collect the outpoint
-                wallet_outpoints.push(out_point.clone());
+                wallet_outpoints.push((out_point.clone(), tx_out.clone(), address.clone()));
 
                 wallet
                     .address_balances
@@ -331,8 +349,12 @@ impl AppContext {
                     .sum();
 
                 // Store the asset lock transaction in the database
-                self.db
-                    .store_asset_lock_transaction(tx, amount, islock.as_ref(), &wallet.seed)?;
+                self.db.store_asset_lock_transaction(
+                    tx,
+                    amount,
+                    islock.as_ref(),
+                    &wallet.seed_hash(),
+                )?;
 
                 let first = payload
                     .credit_outputs

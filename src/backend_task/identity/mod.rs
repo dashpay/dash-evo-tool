@@ -13,10 +13,10 @@ use crate::model::qualified_identity::{
 };
 use crate::model::wallet::Wallet;
 use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
-use dash_sdk::dashcore_rpc::dashcore::{Address, PrivateKey};
+use dash_sdk::dashcore_rpc::dashcore::{Address, PrivateKey, TxOut};
 use dash_sdk::dpp::balances::credits::Duffs;
 use dash_sdk::dpp::dashcore::hashes::Hash;
-use dash_sdk::dpp::dashcore::Transaction;
+use dash_sdk::dpp::dashcore::{OutPoint, Transaction};
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
@@ -29,7 +29,6 @@ use dash_sdk::Sdk;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 use tokio::sync::mpsc;
-use tracing_subscriber::util::SubscriberInitExt;
 
 use super::BackendTaskSuccessResult;
 
@@ -168,6 +167,7 @@ pub type IdentityIndex = u32;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IdentityRegistrationMethod {
     UseAssetLock(Address, AssetLockProof, Transaction),
+    FundWithUtxo(OutPoint, TxOut, Address, IdentityIndex),
     FundWithWallet(Duffs, IdentityIndex),
 }
 
@@ -176,6 +176,7 @@ pub struct IdentityRegistrationInfo {
     pub alias_input: String,
     pub keys: IdentityKeys,
     pub wallet: Arc<RwLock<Wallet>>,
+    pub wallet_identity_index: u32,
     pub identity_registration_method: IdentityRegistrationMethod,
 }
 

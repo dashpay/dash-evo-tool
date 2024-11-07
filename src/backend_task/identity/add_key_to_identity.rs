@@ -66,7 +66,7 @@ impl AppContext {
             }
         }
 
-        self.insert_local_qualified_identity(&qualified_identity)
+        self.update_local_qualified_identity(&qualified_identity)
             .map(|_| {
                 BackendTaskSuccessResult::Message("Successfully added key to identity".to_string())
             })

@@ -108,7 +108,7 @@ impl WalletsBalancesScreen {
         if let Some(wallet) = &self.selected_wallet {
             let result = {
                 let mut wallet = wallet.write().unwrap();
-                wallet.receive_address(self.app_context.network, Some(&self.app_context))
+                wallet.receive_address(self.app_context.network, true, Some(&self.app_context))
             };
 
             // Now the immutable borrow of `wallet` is dropped, and we can use `self` mutably
@@ -216,10 +216,10 @@ impl WalletsBalancesScreen {
                             wallet.alias = Some(alias.clone());
 
                             // Update the alias in the database
-                            let seed = wallet.seed;
+                            let seed_hash = wallet.seed_hash();
                             self.app_context
                                 .db
-                                .set_wallet_alias(&seed, Some(alias.clone()))
+                                .set_wallet_alias(&seed_hash, Some(alias.clone()))
                                 .ok();
                         }
                     }

@@ -57,7 +57,7 @@ pub struct AppState {
     last_repaint: Instant, // Track the last time we requested a repaint
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum DesiredAppAction {
     None,
     PopScreen,

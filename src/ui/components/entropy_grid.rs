@@ -21,7 +21,7 @@ impl U256EntropyGrid {
 
     /// Render the UI and allow users to modify bits
     pub fn ui(&mut self, ui: &mut Ui) -> [u8; 32] {
-        ui.heading("1. Hover over this view to create extra randomness for the seed phrase");
+        ui.heading("1. Hover over this view to create extra randomness for the seed phrase.");
 
         // Add padding around the grid
         ui.add_space(10.0); // Top padding

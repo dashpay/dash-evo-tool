@@ -203,7 +203,7 @@ impl AppContext {
         };
 
         // Insert qualified identity into the database
-        self.insert_local_qualified_identity(&qualified_identity)
+        self.insert_local_qualified_identity(&qualified_identity, None)
             .map_err(|e| format!("Database error: {}", e))?;
 
         Ok(BackendTaskSuccessResult::Message(

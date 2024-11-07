@@ -7,10 +7,8 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::dpp::dash_to_credits;
 use dash_sdk::dpp::data_contracts::withdrawals_contract::WithdrawalStatus;
-use dash_sdk::dpp::document::DocumentV0Getters;
 use egui::{Color32, ComboBox, Context, Stroke, Ui, Vec2};
 use egui_extras::{Column, TableBuilder};
-use itertools::Itertools;
 use std::sync::{Arc, RwLock};
 
 pub struct WithdrawsStatusScreen {
@@ -323,8 +321,8 @@ impl WithdrawsStatusScreen {
         }
         let total_pages = (data.withdrawals.len() + (self.pagination_items_per_page as usize) - 1)
             / (self.pagination_items_per_page as usize);
-        if (total_pages > 0) {
-            let mut current_page = self
+        if total_pages > 0 {
+            let current_page = self
                 .pagination_current_page
                 .min(total_pages.saturating_sub(1)); // Clamp to valid page range
                                                      // Calculate the slice of data for the current page
@@ -484,7 +482,7 @@ impl ScreenLike for WithdrawsStatusScreen {
         self.error_message = None;
     }
 
-    fn display_message(&mut self, message: &str, message_type: MessageType) {
+    fn display_message(&mut self, message: &str, _message_type: MessageType) {
         self.error_message = Some(message.to_string());
         self.requested_data = false;
     }

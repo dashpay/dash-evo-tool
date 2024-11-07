@@ -5,7 +5,7 @@ use crate::backend_task::identity::{
 use crate::backend_task::BackendTask;
 use crate::ui::identities::add_new_identity_screen::{
     copy_to_clipboard, generate_qr_code_image, AddNewIdentityScreen,
-    AddNewIdentityWalletFundedScreenStep, FundingMethod,
+    AddNewIdentityWalletFundedScreenStep,
 };
 use dash_sdk::dashcore_rpc::RpcApi;
 use eframe::epaint::TextureHandle;

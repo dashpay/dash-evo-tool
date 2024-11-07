@@ -16,7 +16,7 @@ use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
 use dash_sdk::dashcore_rpc::dashcore::{Address, PrivateKey, TxOut};
 use dash_sdk::dpp::balances::credits::Duffs;
 use dash_sdk::dpp::dashcore::hashes::Hash;
-use dash_sdk::dpp::dashcore::{OutPoint, ScriptBuf, Transaction};
+use dash_sdk::dpp::dashcore::{OutPoint, Transaction};
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
@@ -29,7 +29,6 @@ use dash_sdk::Sdk;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 use tokio::sync::mpsc;
-use tracing_subscriber::util::SubscriberInitExt;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct IdentityInputToLoad {

@@ -1,7 +1,9 @@
 mod asset_lock_transaction;
+pub mod encryption;
 mod utxos;
 
-use dash_sdk::dashcore_rpc::dashcore::bip32::KeyDerivationType;
+use dash_sdk::dashcore_rpc::dashcore::bip32::{ExtendedPubKey, KeyDerivationType};
+
 use dash_sdk::dpp::dashcore::bip32::DerivationPath;
 use dash_sdk::dpp::dashcore::{
     Address, InstantLock, Network, OutPoint, PrivateKey, PublicKey, Transaction, TxOut,
@@ -64,6 +66,7 @@ use dash_sdk::dpp::balances::credits::Duffs;
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::prelude::AssetLockProof;
 use dash_sdk::platform::Identity;
+use zeroize::Zeroize;
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
@@ -95,7 +98,9 @@ pub struct AddressInfo {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Wallet {
-    pub(crate) seed: [u8; 64],
+    pub wallet_seed: WalletSeed,
+    pub uses_password: bool,
+    pub master_ecdsa_extended_public_key: ExtendedPubKey,
     pub address_balances: BTreeMap<Address, u64>,
     pub known_addresses: BTreeMap<Address, DerivationPath>,
     pub watched_addresses: BTreeMap<DerivationPath, AddressInfo>,
@@ -110,7 +115,65 @@ pub struct Wallet {
     pub identities: HashMap<u32, Identity>,
     pub utxos: HashMap<Address, HashMap<OutPoint, TxOut>>,
     pub is_main: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum WalletSeed {
+    Open(OpenWalletSeed),
+    Closed(ClosedWalletSeed),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct OpenWalletSeed {
+    pub seed: [u8; 64],
+    pub wallet_info: ClosedWalletSeed,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClosedWalletSeed {
+    pub seed_hash: [u8; 32], // SHA-256 hash of the seed
+    pub encrypted_seed: Vec<u8>,
+    pub salt: Vec<u8>,
+    pub nonce: Vec<u8>,
     pub password_hint: Option<String>,
+}
+
+impl WalletSeed {
+    /// Opens the wallet by decrypting the seed using the provided password.
+    pub fn open(&mut self, password: &str) -> Result<(), String> {
+        match self {
+            WalletSeed::Open(_) => {
+                // Wallet is already open
+                Ok(())
+            }
+            WalletSeed::Closed(closed_seed) => {
+                // Try to decrypt the seed
+                let seed = closed_seed.decrypt_seed(password)?;
+                let open_wallet_seed = OpenWalletSeed {
+                    seed,
+                    wallet_info: closed_seed.clone(),
+                };
+                *self = WalletSeed::Open(open_wallet_seed);
+                Ok(())
+            }
+        }
+    }
+
+    /// Closes the wallet by securely erasing the seed and transitioning to Closed state.
+    pub fn close(&mut self) {
+        match self {
+            WalletSeed::Open(open_seed) => {
+                // Zeroize the seed
+                open_seed.seed.zeroize();
+                // Transition back to ClosedWalletSeed
+                let closed_seed = open_seed.wallet_info.clone();
+                *self = WalletSeed::Closed(closed_seed);
+            }
+            WalletSeed::Closed(_) => {
+                // Wallet is already closed
+            }
+        }
+    }
 }
 
 impl Wallet {
@@ -126,6 +189,48 @@ impl Wallet {
         self.address_balances.values().sum::<Duffs>()
     }
 
+    fn seed_bytes(&self) -> Result<&[u8; 64], String> {
+        match &self.wallet_seed {
+            WalletSeed::Open(opened) => Ok(&opened.seed),
+            WalletSeed::Closed(_) => Err("Wallet is closed, please decrypt it first".to_string()),
+        }
+    }
+
+    pub fn seed_hash(&self) -> [u8; 32] {
+        match &self.wallet_seed {
+            WalletSeed::Open(opened) => opened.wallet_info.seed_hash,
+            WalletSeed::Closed(closed) => closed.seed_hash,
+        }
+    }
+
+    pub fn encrypted_seed_slice(&self) -> &[u8] {
+        match &self.wallet_seed {
+            WalletSeed::Open(opened) => opened.wallet_info.encrypted_seed.as_slice(),
+            WalletSeed::Closed(closed) => closed.encrypted_seed.as_slice(),
+        }
+    }
+
+    pub fn salt(&self) -> &[u8] {
+        match &self.wallet_seed {
+            WalletSeed::Open(opened) => opened.wallet_info.salt.as_slice(),
+            WalletSeed::Closed(closed) => closed.salt.as_slice(),
+        }
+    }
+
+    pub fn nonce(&self) -> &[u8] {
+        match &self.wallet_seed {
+            WalletSeed::Open(opened) => opened.wallet_info.nonce.as_slice(),
+            WalletSeed::Closed(closed) => closed.nonce.as_slice(),
+        }
+    }
+
+    pub fn password_hint(&self) -> &Option<String> {
+        match &self.wallet_seed {
+            WalletSeed::Open(opened) => &opened.wallet_info.password_hint,
+            WalletSeed::Closed(closed) => &closed.password_hint,
+        }
+    }
+
     pub fn private_key_for_address(
         &self,
         address: &Address,
@@ -135,11 +240,11 @@ impl Wallet {
             .get(address)
             .map(|derivation_path| {
                 derivation_path
-                    .derive_priv_ecdsa_for_master_seed(&self.seed, network)
+                    .derive_priv_ecdsa_for_master_seed(self.seed_bytes()?, network)
                     .map(|extended_private_key| extended_private_key.to_priv())
+                    .map_err(|e| e.to_string())
             })
             .transpose()
-            .map_err(|e| e.to_string())
     }
 
     pub fn unused_bip_44_public_key(
@@ -179,7 +284,7 @@ impl Wallet {
             } else {
                 // Address is not known, proceed to register it
                 let public_key = derivation_path
-                    .derive_pub_ecdsa_for_master_seed(&self.seed, network)
+                    .derive_pub_ecdsa_for_master_seed(self.seed_bytes()?, network)
                     .expect("derivation should not be able to fail")
                     .to_pub();
                 if let Some(app_context) = register {
@@ -202,7 +307,7 @@ impl Wallet {
                     app_context
                         .db
                         .add_address(
-                            &self.seed,
+                            &self.seed_hash(),
                             &address,
                             &derivation_path,
                             DerivationPathReference::BIP44,
@@ -230,7 +335,7 @@ impl Wallet {
 
         let derivation_path = found_unused_derivation_path.unwrap();
         let extended_public_key = derivation_path
-            .derive_pub_ecdsa_for_master_seed(&self.seed, network)
+            .derive_pub_ecdsa_for_master_seed(self.seed_bytes()?, network)
             .expect("derivation should not be able to fail");
         Ok((extended_public_key.to_pub(), derivation_path))
     }
@@ -247,8 +352,10 @@ impl Wallet {
             identity_index,
             key_index,
         );
-        let extended_public_key = derivation_path
-            .derive_pub_ecdsa_for_master_seed(&self.seed, network)
+        let secp = Secp256k1::new();
+        let extended_public_key = self
+            .master_ecdsa_extended_public_key
+            .derive_pub(&secp, &derivation_path)
             .expect("derivation should not be able to fail");
         extended_public_key.to_pub()
     }
@@ -258,7 +365,7 @@ impl Wallet {
         network: Network,
         identity_index: u32,
         key_index: u32,
-    ) -> PrivateKey {
+    ) -> Result<PrivateKey, String> {
         let derivation_path = DerivationPath::identity_authentication_path(
             network,
             KeyDerivationType::ECDSA,
@@ -266,9 +373,9 @@ impl Wallet {
             key_index,
         );
         let extended_public_key = derivation_path
-            .derive_priv_ecdsa_for_master_seed(&self.seed, network)
+            .derive_priv_ecdsa_for_master_seed(self.seed_bytes()?, network)
             .expect("derivation should not be able to fail");
-        extended_public_key.to_priv()
+        Ok(extended_public_key.to_priv())
     }
 
     pub fn identity_registration_ecdsa_public_key(
@@ -277,8 +384,10 @@ impl Wallet {
         index: u32,
     ) -> PublicKey {
         let derivation_path = DerivationPath::identity_registration_path(network, index);
-        let extended_public_key = derivation_path
-            .derive_pub_ecdsa_for_master_seed(&self.seed, network)
+        let secp = Secp256k1::new();
+        let extended_public_key = self
+            .master_ecdsa_extended_public_key
+            .derive_pub(&secp, &derivation_path)
             .expect("derivation should not be able to fail");
         extended_public_key.to_pub()
     }
@@ -291,7 +400,7 @@ impl Wallet {
     ) -> Result<PrivateKey, String> {
         let derivation_path = DerivationPath::identity_registration_path(network, index);
         let extended_private_key = derivation_path
-            .derive_priv_ecdsa_for_master_seed(&self.seed, network)
+            .derive_priv_ecdsa_for_master_seed(self.seed_bytes()?, network)
             .expect("derivation should not be able to fail");
         let private_key = extended_private_key.to_priv();
 
@@ -301,7 +410,7 @@ impl Wallet {
             app_context
                 .db
                 .add_address(
-                    &self.seed,
+                    &self.seed_hash(),
                     &address,
                     &derivation_path,
                     DerivationPathReference::BlockchainIdentityCreditRegistrationFunding,
@@ -402,7 +511,7 @@ impl Wallet {
         // Update the database with the new balance.
         context
             .db
-            .update_address_balance(&self.seed, address, new_balance)
+            .update_address_balance(&self.seed_hash(), address, new_balance)
             .map_err(|e| e.to_string())
     }
 }

@@ -11,7 +11,7 @@ use dash_sdk::dashcore_rpc::dashcore::{InstantLock, Transaction};
 use dash_sdk::dashcore_rpc::{Auth, Client};
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::transaction::special_transaction::TransactionPayload::AssetLockPayloadType;
-use dash_sdk::dpp::dashcore::{Address, Network, OutPoint, ScriptBuf, TxOut, Txid};
+use dash_sdk::dpp::dashcore::{Address, Network, OutPoint, TxOut, Txid};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::state_transition::asset_lock_proof::chain::ChainAssetLockProof;
 use dash_sdk::dpp::identity::state_transition::asset_lock_proof::InstantAssetLockProof;
@@ -253,7 +253,7 @@ impl AppContext {
                     self.network,
                 )?;
                 self.db
-                    .add_to_address_balance(&wallet.seed, &address, tx_out.value)?;
+                    .add_to_address_balance(&wallet.seed_hash(), &address, tx_out.value)?;
 
                 // Create the OutPoint and insert it into the wallet.utxos entry
                 let out_point = OutPoint::new(tx.txid(), vout as u32);
@@ -341,8 +341,12 @@ impl AppContext {
                     .sum();
 
                 // Store the asset lock transaction in the database
-                self.db
-                    .store_asset_lock_transaction(tx, amount, islock.as_ref(), &wallet.seed)?;
+                self.db.store_asset_lock_transaction(
+                    tx,
+                    amount,
+                    islock.as_ref(),
+                    &wallet.seed_hash(),
+                )?;
 
                 let first = payload
                     .credit_outputs

@@ -4,14 +4,12 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::ScreenLike;
 use eframe::egui::Context;
 
-use crate::model::wallet::Wallet;
 use crate::ui::components::entropy_grid::U256EntropyGrid;
 use bip39::{Language, Mnemonic};
 use egui::{
     Color32, ComboBox, Direction, FontId, Frame, Grid, Layout, Margin, RichText, Stroke, TextStyle,
     Ui, Vec2,
 };
-use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 
 pub struct ImportWalletScreen {
@@ -45,41 +43,6 @@ impl ImportWalletScreen {
         )
         .expect("Failed to generate mnemonic");
         self.seed_phrase = Some(mnemonic);
-    }
-
-    fn save_wallet(&mut self) -> AppAction {
-        if let Some(mnemonic) = &self.seed_phrase {
-            let seed = mnemonic.to_seed(self.passphrase.as_str());
-            let wallet = Wallet {
-                seed,
-                address_balances: Default::default(),
-                known_addresses: Default::default(),
-                watched_addresses: Default::default(),
-                unused_asset_locks: Default::default(),
-                alias: None,
-                identities: Default::default(),
-                utxos: Default::default(),
-                is_main: true,
-                password_hint: None,
-            };
-
-            self.app_context
-                .db
-                .insert_wallet(&wallet, &self.app_context.network)
-                .ok();
-
-            // Acquire a write lock and add the new wallet
-            if let Ok(mut wallets) = self.app_context.wallets.write() {
-                wallets.push(Arc::new(RwLock::new(wallet)));
-                self.app_context.has_wallet.store(true, Ordering::Relaxed);
-            } else {
-                eprintln!("Failed to acquire write lock on wallets");
-            }
-
-            AppAction::GoToMainScreen // Navigate back to the main screen after saving
-        } else {
-            AppAction::None // No action if no seed phrase exists
-        }
     }
 
     fn render_seed_phrase_input(&mut self, ui: &mut Ui) {
@@ -288,7 +251,7 @@ impl ScreenLike for ImportWalletScreen {
                             });
 
                         if ui.add(save_button).clicked() {
-                            action = self.save_wallet(); // Trigger the save action
+                            // action = self.save_wallet(); // Trigger the save action
                         }
                     });
                 });

@@ -1,7 +1,6 @@
 use crate::context::AppContext;
 use crate::database::Database;
 use crate::model::qualified_identity::QualifiedIdentity;
-use crate::model::wallet::Wallet;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::platform::Identifier;
 use rusqlite::params;

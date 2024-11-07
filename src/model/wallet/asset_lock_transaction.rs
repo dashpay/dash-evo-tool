@@ -9,6 +9,7 @@ use dash_sdk::dpp::dashcore::transaction::special_transaction::TransactionPayloa
 use dash_sdk::dpp::dashcore::{
     Address, Network, OutPoint, PrivateKey, ScriptBuf, Transaction, TxIn, TxOut,
 };
+
 impl Wallet {
     pub fn asset_lock_transaction(
         &mut self,

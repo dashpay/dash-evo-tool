@@ -133,7 +133,7 @@ impl AppContext {
                 ) => {
                     let tx_id = transaction.txid();
                     let wallet = wallet.read().unwrap();
-                    wallet_id = wallet.seed;
+                    wallet_id = wallet.seed_hash();
                     let private_key = wallet
                         .private_key_for_address(&address, self.network)?
                         .ok_or("Asset Lock not valid for wallet")?;
@@ -169,7 +169,7 @@ impl AppContext {
                     // Scope the write lock to avoid holding it across an await.
                     let (asset_lock_transaction, asset_lock_proof_private_key, change_address) = {
                         let mut wallet = wallet.write().unwrap();
-                        wallet_id = wallet.seed;
+                        wallet_id = wallet.seed_hash();
                         match wallet.asset_lock_transaction(
                             sdk.network,
                             amount,
@@ -232,7 +232,7 @@ impl AppContext {
                     // Scope the write lock to avoid holding it across an await.
                     let (asset_lock_transaction, asset_lock_proof_private_key) = {
                         let mut wallet = wallet.write().unwrap();
-                        wallet_id = wallet.seed;
+                        wallet_id = wallet.seed_hash();
                         wallet.asset_lock_transaction_for_utxo(
                             sdk.network,
                             utxo,

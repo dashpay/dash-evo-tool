@@ -12,7 +12,7 @@ impl Database {
         tx: &Transaction,
         amount: u64, // Include amount as a parameter
         islock: Option<&InstantLock>,
-        wallet_seed: &[u8; 64], // Include wallet_seed as a parameter
+        wallet_seed_hash: &[u8; 32], // Include wallet_seed_hash as a parameter
     ) -> rusqlite::Result<()> {
         let tx_bytes = serialize(tx);
         let txid = tx.txid().to_string();
@@ -36,7 +36,7 @@ impl Database {
 
         conn.execute(
             sql,
-            params![&txid, &tx_bytes, amount, &islock_bytes, wallet_seed],
+            params![&txid, &tx_bytes, amount, &islock_bytes, wallet_seed_hash],
         )?;
 
         Ok(())
@@ -46,7 +46,7 @@ impl Database {
     pub fn get_asset_lock_transaction(
         &self,
         txid: &str,
-    ) -> rusqlite::Result<Option<(Transaction, u64, Option<InstantLock>, [u8; 64])>> {
+    ) -> rusqlite::Result<Option<(Transaction, u64, Option<InstantLock>, [u8; 32])>> {
         let conn = self.conn.lock().unwrap();
 
         let mut stmt = conn.prepare(
@@ -69,11 +69,11 @@ impl Database {
                 None
             };
 
-            let wallet_seed_array: [u8; 64] = wallet_seed
+            let wallet_seed_hash: [u8; 32] = wallet_seed
                 .try_into()
                 .map_err(|_| rusqlite::Error::InvalidQuery)?;
 
-            Ok(Some((tx, amount, islock, wallet_seed_array)))
+            Ok(Some((tx, amount, islock, wallet_seed_hash)))
         } else {
             Ok(None)
         }
@@ -150,7 +150,7 @@ impl Database {
             Option<InstantLock>,
             Option<u32>,
             Option<Vec<u8>>,
-            [u8; 64],
+            [u8; 32],
         )>,
     > {
         let conn = self.conn.lock().unwrap();
@@ -179,7 +179,7 @@ impl Database {
                 None
             };
 
-            let wallet_seed_array: [u8; 64] = wallet_seed
+            let wallet_seed_array: [u8; 32] = wallet_seed
                 .try_into()
                 .map_err(|_| rusqlite::Error::InvalidQuery)?;
 
@@ -200,7 +200,7 @@ impl Database {
     pub fn get_asset_lock_transactions_by_identity_id(
         &self,
         identity_id: &[u8],
-    ) -> rusqlite::Result<Vec<(Transaction, u64, Option<InstantLock>, Option<u32>, [u8; 64])>> {
+    ) -> rusqlite::Result<Vec<(Transaction, u64, Option<InstantLock>, Option<u32>, [u8; 32])>> {
         let conn = self.conn.lock().unwrap();
 
         let mut stmt = conn.prepare(
@@ -226,11 +226,11 @@ impl Database {
                 None
             };
 
-            let wallet_seed_array: [u8; 64] = wallet_seed
+            let wallet_seed_hash: [u8; 32] = wallet_seed
                 .try_into()
                 .map_err(|_| rusqlite::Error::InvalidQuery)?;
 
-            results.push((tx, amount, islock, chain_locked_height, wallet_seed_array));
+            results.push((tx, amount, islock, chain_locked_height, wallet_seed_hash));
         }
 
         Ok(results)

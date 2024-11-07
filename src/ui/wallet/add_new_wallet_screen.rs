@@ -4,23 +4,28 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::ScreenLike;
 use eframe::egui::Context;
 
-use crate::model::wallet::Wallet;
+use crate::model::wallet::{ClosedWalletSeed, OpenWalletSeed, Wallet, WalletSeed};
 use crate::ui::components::entropy_grid::U256EntropyGrid;
 use bip39::{Language, Mnemonic};
+use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
+use dash_sdk::dpp::dashcore::bip32::{ExtendedPrivKey, ExtendedPubKey};
 use egui::{
     Color32, ComboBox, Direction, FontId, Frame, Grid, Layout, Margin, RichText, Stroke, TextStyle,
     Ui, Vec2,
 };
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
+use zxcvbn::zxcvbn;
 
 pub struct AddNewWalletScreen {
     seed_phrase: Option<Mnemonic>,
-    passphrase: String,
+    password: String,
     entropy_grid: U256EntropyGrid,
     selected_language: Language,
     alias_input: String,
     wrote_it_down: bool,
+    password_strength: f64,
+    estimated_time_to_crack: String,
     pub app_context: Arc<AppContext>,
 }
 
@@ -28,11 +33,13 @@ impl AddNewWalletScreen {
     pub fn new(app_context: &Arc<AppContext>) -> Self {
         Self {
             seed_phrase: None,
-            passphrase: String::new(),
+            password: String::new(),
             entropy_grid: U256EntropyGrid::new(),
             selected_language: Language::English,
             alias_input: String::new(),
             wrote_it_down: false,
+            password_strength: 0.0,
+            estimated_time_to_crack: "".to_string(),
             app_context: app_context.clone(),
         }
     }
@@ -49,23 +56,55 @@ impl AddNewWalletScreen {
 
     fn save_wallet(&mut self) -> AppAction {
         if let Some(mnemonic) = &self.seed_phrase {
-            let seed = mnemonic.to_seed(self.passphrase.as_str());
+            let seed = mnemonic.to_seed("");
+
+            let (encrypted_seed, salt, nonce, uses_password) = if self.password.is_empty() {
+                (seed.to_vec(), vec![], vec![], false)
+            } else {
+                // Encrypt the seed to obtain encrypted_seed, salt, and nonce
+                let (encrypted_seed, salt, nonce) =
+                    ClosedWalletSeed::encrypt_seed(&seed, self.password.as_str())
+                        .expect("Encryption failed");
+                (encrypted_seed, salt, nonce, true)
+            };
+
+            // Generate master ECDSA extended private key
+            let master_ecdsa_extended_private_key =
+                ExtendedPrivKey::new_master(self.app_context.network, &seed)
+                    .expect("Failed to create master ECDSA extended private key");
+            let secp = Secp256k1::new();
+            let master_ecdsa_extended_public_key =
+                ExtendedPubKey::from_priv(&secp, &master_ecdsa_extended_private_key);
+
+            // Compute the seed hash
+            let seed_hash = ClosedWalletSeed::compute_seed_hash(&seed);
+
             let wallet = Wallet {
-                seed,
+                wallet_seed: WalletSeed::Open(OpenWalletSeed {
+                    seed,
+                    wallet_info: ClosedWalletSeed {
+                        seed_hash,
+                        encrypted_seed,
+                        salt,
+                        nonce,
+                        password_hint: None, // Set a password hint if needed
+                    },
+                }),
+                uses_password,
+                master_ecdsa_extended_public_key,
                 address_balances: Default::default(),
                 known_addresses: Default::default(),
                 watched_addresses: Default::default(),
                 unused_asset_locks: Default::default(),
-                alias: None,
+                alias: Some(self.alias_input.clone()),
                 identities: Default::default(),
                 utxos: Default::default(),
                 is_main: true,
-                password_hint: None,
             };
 
             self.app_context
                 .db
-                .insert_wallet(&wallet, &self.app_context.network)
+                .store_wallet(&wallet, &self.app_context.network)
                 .ok();
 
             // Acquire a write lock and add the new wallet
@@ -218,6 +257,31 @@ impl AddNewWalletScreen {
     }
 }
 
+fn format_time(seconds: f64) -> String {
+    let minute = 60.0;
+    let hour = 60.0 * minute;
+    let day = 24.0 * hour;
+    let year = 365.25 * day;
+    let century = 100.0 * year;
+    let millennium = 10.0 * century;
+
+    if seconds < minute {
+        format!("{:.2} seconds", seconds)
+    } else if seconds < hour {
+        format!("{:.2} minutes", seconds / minute)
+    } else if seconds < day {
+        format!("{:.2} hours", seconds / hour)
+    } else if seconds < year {
+        format!("{:.2} days", seconds / day)
+    } else if seconds < century {
+        format!("{:.2} years", seconds / year)
+    } else if seconds < millennium {
+        format!("{:.2} centuries", seconds / century)
+    } else {
+        format!("More than a millennium")
+    }
+}
+
 impl ScreenLike for AddNewWalletScreen {
     fn ui(&mut self, ctx: &Context) -> AppAction {
         let mut action = add_top_panel(
@@ -243,13 +307,13 @@ impl ScreenLike for AddNewWalletScreen {
 
                     ui.add_space(5.0);
 
-                    ui.heading("2. Select your desired seed phrase language and press \"Generate\"");
+                    ui.heading("2. Select your desired seed phrase language and press \"Generate\".");
                     self.render_seed_phrase_input(ui);
 
                     ui.add_space(10.0);
 
                     ui.heading(
-                        "3. Write down the passphrase on a piece of paper and put it somewhere secure",
+                        "3. Write down the passphrase on a piece of paper and put it somewhere secure.",
                     );
 
                     ui.add_space(10.0);
@@ -261,16 +325,70 @@ impl ScreenLike for AddNewWalletScreen {
 
                     ui.add_space(20.0);
 
-                    ui.heading("4. Add an optional password that must be used to unlock the wallet");
+                    ui.heading("4. Add a password that must be used to unlock the wallet. (Optional but Recommended)");
+
+                    ui.add_space(8.0);
 
                     ui.horizontal(|ui| {
                         ui.label("Optional Password:");
-                        ui.text_edit_singleline(&mut self.passphrase);
+                        if ui.text_edit_singleline(&mut self.password).changed() {
+                            if !self.password.is_empty() {
+                                let estimate = zxcvbn(&self.password, &[]);
+
+                                // Convert Score to u8
+                                let score_u8 = u8::from(estimate.score());
+
+                                // Use the score to determine password strength percentage
+                                self.password_strength = score_u8 as f64 * 25.0; // Since score ranges from 0 to 4
+
+                                // Get the estimated crack time in seconds
+                                let estimated_seconds = estimate.crack_times().offline_slow_hashing_1e4_per_second();
+
+                                // Format the estimated time to a human-readable string
+                                self.estimated_time_to_crack = estimated_seconds.to_string();
+                            } else {
+                                self.password_strength = 0.0;
+                                self.estimated_time_to_crack = String::new();
+                            }
+                        }
                     });
+
+                    ui.add_space(10.0);
+                    ui.horizontal(|ui| {
+                        ui.label("Password Strength:");
+
+                        // Since score ranges from 0 to 4, adjust percentage accordingly
+                        let strength_percentage = (self.password_strength / 100.0).min(1.0);
+                        let color = match self.password_strength as i32 {
+                            0..=25 => Color32::RED,
+                            26..=50 => Color32::YELLOW,
+                            51..=75 => Color32::LIGHT_GREEN,
+                            _ => Color32::GREEN,
+                        };
+                        ui.add(
+                            egui::ProgressBar::new(strength_percentage as f32)
+                                .desired_width(200.0)
+                                .show_percentage()
+                                .text(match self.password_strength as i32 {
+                                    0 => "None".to_string(),
+                                    1..=25 => "Very Weak".to_string(),
+                                    26..=50 => "Weak".to_string(),
+                                    51..=75 => "Strong".to_string(),
+                                    _ => "Very Strong".to_string(),
+                                })
+                                .fill(color),
+                        );
+                    });
+
+                    ui.add_space(10.0);
+                    ui.label(format!(
+                        "Estimated time to crack: {}",
+                        self.estimated_time_to_crack
+                    ));
 
                     ui.add_space(20.0);
 
-                    ui.heading("5. Save the wallet");
+                    ui.heading("5. Save the wallet.");
                     ui.add_space(5.0);
 
                     // Centered "Save Wallet" button at the bottom

@@ -319,30 +319,37 @@ impl AddNewIdentityScreen {
                     self.identity_id_number =
                         wallet.identities.keys().copied().max().unwrap_or_default();
 
-                    self.identity_keys.master_private_key =
-                        Some(wallet.identity_authentication_ecdsa_private_key(
-                            self.app_context.network,
-                            0,
-                            0,
-                        ));
+                    self.identity_keys.master_private_key = Some(
+                        wallet
+                            .identity_authentication_ecdsa_private_key(
+                                self.app_context.network,
+                                0,
+                                0,
+                            )
+                            .expect("expected to have decrypted wallet"),
+                    );
                     // Update the additional keys input
                     self.identity_keys.keys_input = vec![
                         (
-                            wallet.identity_authentication_ecdsa_private_key(
-                                self.app_context.network,
-                                0,
-                                1,
-                            ),
+                            wallet
+                                .identity_authentication_ecdsa_private_key(
+                                    self.app_context.network,
+                                    0,
+                                    1,
+                                )
+                                .expect("expected to have decrypted wallet"),
                             KeyType::ECDSA_HASH160,
                             Purpose::AUTHENTICATION,
                             SecurityLevel::HIGH,
                         ),
                         (
-                            wallet.identity_authentication_ecdsa_private_key(
-                                self.app_context.network,
-                                0,
-                                2,
-                            ),
+                            wallet
+                                .identity_authentication_ecdsa_private_key(
+                                    self.app_context.network,
+                                    0,
+                                    2,
+                                )
+                                .expect("expected to have decrypted wallet"),
                             KeyType::ECDSA_HASH160,
                             Purpose::TRANSFER,
                             SecurityLevel::CRITICAL,
@@ -647,12 +654,15 @@ impl AddNewIdentityScreen {
             let identity_index = self.identity_id_number;
 
             // Update the master private key and keys input from the wallet
-            self.identity_keys.master_private_key =
-                Some(wallet.identity_authentication_ecdsa_private_key(
-                    self.app_context.network,
-                    identity_index,
-                    0,
-                ));
+            self.identity_keys.master_private_key = Some(
+                wallet
+                    .identity_authentication_ecdsa_private_key(
+                        self.app_context.network,
+                        identity_index,
+                        0,
+                    )
+                    .expect("expected to have decrypted wallet"),
+            );
 
             // Update the additional keys input
             self.identity_keys.keys_input = self
@@ -662,11 +672,13 @@ impl AddNewIdentityScreen {
                 .enumerate()
                 .map(|(key_index, (_, key_type, purpose, security_level))| {
                     (
-                        wallet.identity_authentication_ecdsa_private_key(
-                            self.app_context.network,
-                            identity_index,
-                            key_index as u32 + 1,
-                        ),
+                        wallet
+                            .identity_authentication_ecdsa_private_key(
+                                self.app_context.network,
+                                identity_index,
+                                key_index as u32 + 1,
+                            )
+                            .expect("expected to have decrypted wallet"),
                         *key_type,
                         *purpose,
                         *security_level,
@@ -683,11 +695,13 @@ impl AddNewIdentityScreen {
 
             // Add a new key with default parameters
             self.identity_keys.keys_input.push((
-                wallet.identity_authentication_ecdsa_private_key(
-                    self.app_context.network,
-                    self.identity_id_number,
-                    new_key_index,
-                ),
+                wallet
+                    .identity_authentication_ecdsa_private_key(
+                        self.app_context.network,
+                        self.identity_id_number,
+                        new_key_index,
+                    )
+                    .expect("expected to have decrypted wallet"),
                 KeyType::ECDSA_HASH160,  // Default key type
                 Purpose::AUTHENTICATION, // Default purpose
                 SecurityLevel::HIGH,     // Default security level

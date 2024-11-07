@@ -4,9 +4,7 @@ use crate::backend_task::BackendTaskSuccessResult;
 use crate::context::AppContext;
 use crate::model::wallet::Wallet;
 use dash_sdk::dashcore_rpc::RpcApi;
-use dash_sdk::dpp::dashcore::{
-    Address, ChainLock, Network, OutPoint, ScriptBuf, Transaction, TxOut,
-};
+use dash_sdk::dpp::dashcore::{Address, ChainLock, Network, OutPoint, Transaction, TxOut};
 use std::sync::{Arc, RwLock};
 
 #[derive(Debug, Clone)]

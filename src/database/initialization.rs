@@ -16,9 +16,14 @@ impl Database {
         // Create the wallet table
         self.execute(
             "CREATE TABLE IF NOT EXISTS wallet (
-        seed BLOB NOT NULL PRIMARY KEY,
+        seed_hash BLOB NOT NULL PRIMARY KEY,
+        encrypted_seed BLOB NOT NULL,
+        salt BLOB NOT NULL,
+        nonce BLOB NOT NULL,
+        master_ecdsa_epk BLOB NOT NULL,
         alias TEXT,
         is_main INTEGER,
+        uses_password INTEGER NOT NULL,
         password_hint TEXT,
         network TEXT NOT NULL
     )",
@@ -28,14 +33,14 @@ impl Database {
         // Create wallet addresses
         self.execute(
             "CREATE TABLE IF NOT EXISTS wallet_addresses (
-        seed BLOB NOT NULL,
+        seed_hash BLOB NOT NULL,
         address TEXT NOT NULL,
         derivation_path TEXT NOT NULL,
         balance INTEGER,
         path_reference INTEGER NOT NULL,
         path_type INTEGER NOT NULL,
-        PRIMARY KEY (seed, address),
-        FOREIGN KEY (seed) REFERENCES wallet(seed) ON DELETE CASCADE
+        PRIMARY KEY (seed_hash, address),
+        FOREIGN KEY (seed_hash) REFERENCES wallet(seed_hash) ON DELETE CASCADE
     )",
             [],
         )?;
@@ -77,7 +82,7 @@ impl Database {
                 wallet BLOB NOT NULL,
                 FOREIGN KEY (identity_id) REFERENCES identity(id) ON DELETE CASCADE,
                 FOREIGN KEY (identity_id_potentially_in_creation) REFERENCES identity(id),
-                FOREIGN KEY (wallet) REFERENCES wallet(seed) ON DELETE CASCADE
+                FOREIGN KEY (wallet) REFERENCES wallet(seed_hash) ON DELETE CASCADE
             )",
             [],
         )?;
@@ -96,7 +101,7 @@ impl Database {
                 identity_type TEXT,
                 network TEXT NOT NULL,
                 CHECK ((wallet IS NOT NULL AND wallet_index IS NOT NULL) OR (wallet IS NULL AND wallet_index IS NULL)),
-                FOREIGN KEY (wallet) REFERENCES wallet(seed) ON DELETE CASCADE
+                FOREIGN KEY (wallet) REFERENCES wallet(seed_hash) ON DELETE CASCADE
             )",
             [],
         )?;

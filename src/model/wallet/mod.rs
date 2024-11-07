@@ -159,6 +159,29 @@ impl WalletSeed {
         }
     }
 
+    /// Opens the wallet by decrypting the seed without using a password.
+    pub fn open_no_password(&mut self) -> Result<(), String> {
+        match self {
+            WalletSeed::Open(_) => {
+                // Wallet is already open
+                Ok(())
+            }
+            WalletSeed::Closed(closed_seed) => {
+                let open_wallet_seed =
+                    OpenWalletSeed {
+                        seed: closed_seed.encrypted_seed.clone().try_into().map_err(
+                            |e: Vec<u8>| {
+                                format!("incorred seed size, expected 64 bytes, got {}", e.len())
+                            },
+                        )?,
+                        wallet_info: closed_seed.clone(),
+                    };
+                *self = WalletSeed::Open(open_wallet_seed);
+                Ok(())
+            }
+        }
+    }
+
     /// Closes the wallet by securely erasing the seed and transitioning to Closed state.
     pub fn close(&mut self) {
         match self {
@@ -177,6 +200,9 @@ impl WalletSeed {
 }
 
 impl Wallet {
+    pub fn is_open(&self) -> bool {
+        matches!(self.wallet_seed, WalletSeed::Open(_))
+    }
     pub fn has_balance(&self) -> bool {
         self.max_balance() > 0
     }

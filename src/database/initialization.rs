@@ -1,5 +1,7 @@
 use crate::database::Database;
 
+pub const MIN_SUPPORTED_DB_VERSION: u16 = 0;
+
 impl Database {
     pub fn initialize(&self) -> rusqlite::Result<()> {
         // Create the settings table

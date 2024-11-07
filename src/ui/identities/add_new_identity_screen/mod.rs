@@ -9,7 +9,7 @@ use crate::backend_task::identity::{
 };
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
-use crate::model::wallet::Wallet;
+use crate::model::wallet::{Wallet, WalletSeed};
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::{MessageType, ScreenLike};
 use arboard::Clipboard;
@@ -30,6 +30,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{fmt, thread};
+use zeroize::Zeroize;
 
 #[derive(Debug, Clone, Deserialize)]
 struct KeyInfo {
@@ -263,6 +264,54 @@ impl AddNewIdentityScreen {
         }
     }
 
+    fn render_wallet_unlock(&mut self, ui: &mut Ui) -> bool {
+        if let Some(wallet_guard) = self.selected_wallet.as_ref() {
+            let mut wallet = wallet_guard.write().unwrap();
+
+            // Only render the unlock prompt if the wallet requires a password and is locked
+            if wallet.uses_password && !wallet.is_open() {
+                ui.add_space(10.0);
+                ui.label("This wallet is locked. Please enter the password to unlock it:");
+
+                let mut password = String::new();
+                let password_input = ui.add(
+                    egui::TextEdit::singleline(&mut password)
+                        .password(true)
+                        .hint_text("Enter password"),
+                );
+
+                let unlocked = if password_input.lost_focus()
+                    && ui.input(|i| i.key_pressed(egui::Key::Enter))
+                {
+                    let unlocked = match wallet.wallet_seed.open(&password) {
+                        Ok(_) => {
+                            self.error_message = None; // Clear any previous error
+                            true
+                        }
+                        Err(e) => {
+                            self.error_message = Some(e); // Store the error message
+                            false
+                        }
+                    };
+                    // Clear the password field after submission
+                    password.zeroize();
+                    unlocked
+                } else {
+                    false
+                };
+
+                // Display error message if the password was incorrect
+                if let Some(error_message) = &self.error_message {
+                    ui.add_space(5.0);
+                    ui.colored_label(Color32::RED, error_message);
+                }
+
+                return unlocked;
+            }
+        }
+        false
+    }
+
     fn render_wallet_selection(&mut self, ui: &mut Ui) -> bool {
         if self.app_context.has_wallet.load(Ordering::Relaxed) {
             let wallets = &self.app_context.wallets.read().unwrap();
@@ -316,45 +365,47 @@ impl AddNewIdentityScreen {
 
                     let wallet = wallet.read().unwrap();
 
-                    self.identity_id_number =
-                        wallet.identities.keys().copied().max().unwrap_or_default();
+                    if wallet.is_open() {
+                        self.identity_id_number =
+                            wallet.identities.keys().copied().max().unwrap_or_default();
 
-                    self.identity_keys.master_private_key = Some(
-                        wallet
-                            .identity_authentication_ecdsa_private_key(
-                                self.app_context.network,
-                                0,
-                                0,
-                            )
-                            .expect("expected to have decrypted wallet"),
-                    );
-                    // Update the additional keys input
-                    self.identity_keys.keys_input = vec![
-                        (
+                        self.identity_keys.master_private_key = Some(
                             wallet
                                 .identity_authentication_ecdsa_private_key(
                                     self.app_context.network,
                                     0,
-                                    1,
-                                )
-                                .expect("expected to have decrypted wallet"),
-                            KeyType::ECDSA_HASH160,
-                            Purpose::AUTHENTICATION,
-                            SecurityLevel::HIGH,
-                        ),
-                        (
-                            wallet
-                                .identity_authentication_ecdsa_private_key(
-                                    self.app_context.network,
                                     0,
-                                    2,
                                 )
                                 .expect("expected to have decrypted wallet"),
-                            KeyType::ECDSA_HASH160,
-                            Purpose::TRANSFER,
-                            SecurityLevel::CRITICAL,
-                        ),
-                    ];
+                        );
+                        // Update the additional keys input
+                        self.identity_keys.keys_input = vec![
+                            (
+                                wallet
+                                    .identity_authentication_ecdsa_private_key(
+                                        self.app_context.network,
+                                        0,
+                                        1,
+                                    )
+                                    .expect("expected to have decrypted wallet"),
+                                KeyType::ECDSA_HASH160,
+                                Purpose::AUTHENTICATION,
+                                SecurityLevel::HIGH,
+                            ),
+                            (
+                                wallet
+                                    .identity_authentication_ecdsa_private_key(
+                                        self.app_context.network,
+                                        0,
+                                        2,
+                                    )
+                                    .expect("expected to have decrypted wallet"),
+                                KeyType::ECDSA_HASH160,
+                                Purpose::TRANSFER,
+                                SecurityLevel::CRITICAL,
+                            ),
+                        ];
+                    }
                 }
                 false
             } else {
@@ -780,6 +831,72 @@ impl ScreenLike for AddNewIdentityScreen {
             if self.selected_wallet.is_none() {
                 return;
             };
+
+            let should_ask_for_password = if let Some(wallet_guard) = self.selected_wallet.as_ref() {
+                let mut wallet = wallet_guard.write().unwrap();
+                if !wallet.uses_password {
+                    if let Err(e) = wallet.wallet_seed.open_no_password() {
+                        self.error_message = Some(e);
+                    }
+                    false
+                } else if wallet.is_open() {
+                    false
+                } else {
+                    true
+                }
+            } else {
+                true
+            };
+
+            if should_ask_for_password {
+                let just_unlocked = self.render_wallet_unlock(ui);
+                if just_unlocked {
+                    let wallet_guard = self.selected_wallet.as_ref().unwrap();
+                    let wallet = wallet_guard.read().unwrap();
+
+                    self.identity_id_number =
+                        wallet.identities.keys().copied().max().unwrap_or_default();
+
+                    self.identity_keys.master_private_key = Some(
+                        wallet
+                            .identity_authentication_ecdsa_private_key(
+                                self.app_context.network,
+                                0,
+                                0,
+                            )
+                            .expect("expected to have decrypted wallet"),
+                    );
+                    // Update the additional keys input
+                    self.identity_keys.keys_input = vec![
+                        (
+                            wallet
+                                .identity_authentication_ecdsa_private_key(
+                                    self.app_context.network,
+                                    0,
+                                    1,
+                                )
+                                .expect("expected to have decrypted wallet"),
+                            KeyType::ECDSA_HASH160,
+                            Purpose::AUTHENTICATION,
+                            SecurityLevel::HIGH,
+                        ),
+                        (
+                            wallet
+                                .identity_authentication_ecdsa_private_key(
+                                    self.app_context.network,
+                                    0,
+                                    2,
+                                )
+                                .expect("expected to have decrypted wallet"),
+                            KeyType::ECDSA_HASH160,
+                            Purpose::TRANSFER,
+                            SecurityLevel::CRITICAL,
+                        ),
+                    ];
+                } else {
+                    return;
+                }
+            }
 
             // Display the heading with an info icon that shows a tooltip on hover
             ui.horizontal(|ui| {

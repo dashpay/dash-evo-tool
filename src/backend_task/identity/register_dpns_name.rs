@@ -150,6 +150,7 @@ impl AppContext {
             .map_err(|e| e.to_string())?;
 
         // Re-fetch the identity's DPNS names from Platform
+        // TODO: Use the proof in the response to see if the name is contested or not (document is returned whether it's contested or not)
         let dpns_names_document_query = DocumentQuery {
             data_contract: self.dpns_contract.clone(),
             document_type_name: "domain".to_string(),

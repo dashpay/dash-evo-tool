@@ -233,10 +233,17 @@ impl AddExistingIdentityScreen {
 
 impl ScreenLike for AddExistingIdentityScreen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
-        if message_type == MessageType::Success && message == "Successfully loaded identity" {
-            self.add_identity_status = AddIdentityStatus::Complete;
-        } else {
-            self.add_identity_status = AddIdentityStatus::ErrorMessage(message.to_string());
+        match message_type {
+            MessageType::Success => {
+                if message == "Successfully loaded identity" {
+                    self.add_identity_status = AddIdentityStatus::Complete;
+                }
+            }
+            MessageType::Info => {}
+            MessageType::Error => {
+                // It's not great because the error message can be coming from somewhere else if there are other processes happening
+                self.add_identity_status = AddIdentityStatus::ErrorMessage(message.to_string());
+            }
         }
     }
 

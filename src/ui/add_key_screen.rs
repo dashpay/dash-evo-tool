@@ -125,10 +125,17 @@ impl AddKeyScreen {
 
 impl ScreenLike for AddKeyScreen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
-        if message_type == MessageType::Success && message == "Successfully added key to identity" {
-            self.add_key_status = AddKeyStatus::Complete;
-        } else {
-            self.add_key_status = AddKeyStatus::ErrorMessage(message.to_string());
+        match message_type {
+            MessageType::Success => {
+                if message == "Successfully added key to identity" {
+                    self.add_key_status = AddKeyStatus::Complete;
+                }
+            }
+            MessageType::Info => {}
+            MessageType::Error => {
+                // It's not great because the error message can be coming from somewhere else if there are other processes happening
+                self.add_key_status = AddKeyStatus::ErrorMessage(message.to_string());
+            }
         }
     }
 
@@ -279,7 +286,7 @@ impl ScreenLike for AddKeyScreen {
                         )
                     };
 
-                    ui.label(format!("Loading... Time taken so far: {}", display_time));
+                    ui.label(format!("Adding key... Time taken so far: {}", display_time));
                 }
                 AddKeyStatus::ErrorMessage(msg) => {
                     ui.colored_label(egui::Color32::RED, format!("Error: {}", msg));

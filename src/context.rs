@@ -138,6 +138,14 @@ impl AppContext {
         )
     }
 
+    pub fn update_local_qualified_identity(
+        &self,
+        qualified_identity: &QualifiedIdentity,
+    ) -> Result<()> {
+        self.db
+            .update_local_qualified_identity(qualified_identity, self)
+    }
+
     /// This is for before we know if Platform will accept the identity
     pub fn insert_local_qualified_identity_in_creation(
         &self,

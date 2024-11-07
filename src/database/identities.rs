@@ -64,6 +64,31 @@ impl Database {
         Ok(())
     }
 
+    pub fn update_local_qualified_identity(
+        &self,
+        qualified_identity: &QualifiedIdentity,
+        app_context: &AppContext,
+    ) -> rusqlite::Result<()> {
+        // Extract the fields from `qualified_identity` to use in the SQL update
+        let id = qualified_identity.identity.id().to_vec();
+        let data = qualified_identity.to_bytes();
+        let alias = qualified_identity.alias.clone();
+        let identity_type = format!("{:?}", qualified_identity.identity_type);
+
+        // Get the network string from the app context
+        let network = app_context.network_string();
+
+        // Execute the update statement
+        self.execute(
+            "UPDATE identity
+         SET data = ?, alias = ?, identity_type = ?, network = ?, is_local = 1
+         WHERE id = ?",
+            params![data, alias, identity_type, network, id],
+        )?;
+
+        Ok(())
+    }
+
     pub fn insert_local_qualified_identity_in_creation(
         &self,
         qualified_identity: &QualifiedIdentity,

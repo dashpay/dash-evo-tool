@@ -197,7 +197,7 @@ impl AppContext {
         qualified_identity.dpns_names = owned_dpns_names;
 
         // Insert qualified identity into the database
-        self.insert_local_qualified_identity(&qualified_identity)
+        self.update_local_qualified_identity(&qualified_identity)
             .map_err(|e| format!("Database error: {}", e))?;
 
         Ok(BackendTaskSuccessResult::Message(

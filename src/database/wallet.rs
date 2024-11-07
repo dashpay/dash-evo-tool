@@ -71,7 +71,7 @@ impl Database {
         is_main: bool,
     ) -> rusqlite::Result<()> {
         self.execute(
-            "UPDATE wallet SET alias = ?, is_main = ? WHERE seed = ?",
+            "UPDATE wallet SET alias = ?, is_main = ? WHERE seed_hash = ?",
             params![new_alias, is_main as i32, seed_hash],
         )?;
         Ok(())
@@ -148,7 +148,7 @@ impl Database {
         let rows_affected = self.execute(
             "UPDATE wallet_addresses
          SET balance = balance + ?
-         WHERE seed = ? AND address = ?",
+         WHERE seed_hash = ? AND address = ?",
             params![additional_balance, seed_hash, address.to_string()],
         )?;
 

@@ -283,18 +283,18 @@ impl Wallet {
         let mut address_index = 0;
         let mut found_unused_derivation_path = None;
         let mut known_public_key = None;
-        let derivation_path_extension = DerivationPath::from(
-            [
-                ChildNumber::Normal {
-                    index: change.into(),
-                },
-                ChildNumber::Normal {
-                    index: address_index,
-                },
-            ]
-            .as_slice(),
-        );
         while found_unused_derivation_path.is_none() {
+            let derivation_path_extension = DerivationPath::from(
+                [
+                    ChildNumber::Normal {
+                        index: change.into(),
+                    },
+                    ChildNumber::Normal {
+                        index: address_index,
+                    },
+                ]
+                .as_slice(),
+            );
             let derivation_path =
                 DerivationPath::bip_44_payment_path(network, 0, change, address_index);
 
@@ -351,6 +351,7 @@ impl Wallet {
                             Some(false),
                         )
                         .map_err(|e| e.to_string())?;
+                    println!("adding address {} at {}", &address, &derivation_path);
                     app_context
                         .db
                         .add_address(

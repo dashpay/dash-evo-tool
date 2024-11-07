@@ -89,6 +89,8 @@ pub struct AddNewIdentityScreen {
     identity_keys: IdentityKeys,
     balance_check_handle: Option<(Arc<AtomicBool>, thread::JoinHandle<()>)>,
     error_message: Option<String>,
+    show_password: bool,
+    wallet_password: String,
     show_pop_up_info: Option<String>,
     in_key_selection_advanced_mode: bool,
     pub app_context: Arc<AppContext>,
@@ -148,6 +150,8 @@ impl AddNewIdentityScreen {
             },
             balance_check_handle: None,
             error_message: None,
+            show_password: false,
+            wallet_password: "".to_string(),
             show_pop_up_info: None,
             in_key_selection_advanced_mode: false,
             app_context: app_context.clone(),
@@ -273,32 +277,43 @@ impl AddNewIdentityScreen {
                 ui.add_space(10.0);
                 ui.label("This wallet is locked. Please enter the password to unlock it:");
 
-                let mut password = String::new();
-                let password_input = ui.add(
-                    egui::TextEdit::singleline(&mut password)
-                        .password(true)
-                        .hint_text("Enter password"),
-                );
+                let mut unlocked = false;
+                ui.horizontal(|ui| {
+                    let password_input = ui.add(
+                        egui::TextEdit::singleline(&mut self.wallet_password)
+                            .password(!self.show_password)
+                            .hint_text("Enter password"),
+                    );
 
-                let unlocked = if password_input.lost_focus()
-                    && ui.input(|i| i.key_pressed(egui::Key::Enter))
-                {
-                    let unlocked = match wallet.wallet_seed.open(&password) {
-                        Ok(_) => {
-                            self.error_message = None; // Clear any previous error
-                            true
-                        }
-                        Err(e) => {
-                            self.error_message = Some(e); // Store the error message
-                            false
-                        }
+                    ui.checkbox(&mut self.show_password, "Show Password");
+
+                    unlocked = if password_input.lost_focus()
+                        && ui.input(|i| i.key_pressed(egui::Key::Enter))
+                    {
+                        let unlocked = match wallet.wallet_seed.open(&self.wallet_password) {
+                            Ok(_) => {
+                                self.error_message = None; // Clear any previous error
+                                true
+                            }
+                            Err(_) => {
+                                if let Some(hint) = wallet.password_hint() {
+                                    self.error_message = Some(format!(
+                                        "Incorrect Password, password hint is {}",
+                                        hint
+                                    ));
+                                } else {
+                                    self.error_message = Some("Incorrect Password".to_string());
+                                }
+                                false
+                            }
+                        };
+                        // Clear the password field after submission
+                        self.wallet_password.zeroize();
+                        unlocked
+                    } else {
+                        false
                     };
-                    // Clear the password field after submission
-                    password.zeroize();
-                    unlocked
-                } else {
-                    false
-                };
+                });
 
                 // Display error message if the password was incorrect
                 if let Some(error_message) = &self.error_message {

@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 const QUALIFIER: &str = ""; // Typically empty on macOS and Linux
 const ORGANIZATION: &str = "";
-const APPLICATION: &str = "DashEvoTool";
+const APPLICATION: &str = "Dash-Evo-Tool";
 
 pub fn app_user_data_dir_path() -> Result<PathBuf, std::io::Error> {
     let proj_dirs = ProjectDirs::from(QUALIFIER, ORGANIZATION, APPLICATION).ok_or_else(|| {

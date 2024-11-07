@@ -200,7 +200,7 @@ impl DPNSContestedNamesScreen {
     }
 
     fn render_no_active_contests_or_owned_names(&mut self, ui: &mut Ui) -> AppAction {
-        let mut action = AppAction::None;
+        let mut app_action = AppAction::None;
         ui.vertical_centered(|ui| {
             ui.add_space(20.0); // Add some space to separate from the top
             match self.dpns_subscreen {
@@ -233,13 +233,13 @@ impl DPNSContestedNamesScreen {
             ui.label("Please check back later or try refreshing the list.");
             ui.add_space(20.0);
             if ui.button("Refresh").clicked() {
-                action = AppAction::BackendTask(BackendTask::ContestedResourceTask(
+                app_action |= AppAction::BackendTask(BackendTask::ContestedResourceTask(
                     ContestedResourceTask::QueryDPNSContestedResources,
                 ));
             }
         });
 
-        action
+        app_action
     }
 
     fn render_table_active_contests(&mut self, ui: &mut Ui) {
@@ -871,21 +871,21 @@ impl ScreenLike for DPNSContestedNamesScreen {
                     if has_contested_names {
                         self.render_table_active_contests(ui);
                     } else {
-                        self.render_no_active_contests_or_owned_names(ui);
+                        action |= self.render_no_active_contests_or_owned_names(ui);
                     }
                 }
                 DPNSSubscreen::Past => {
                     if has_contested_names {
                         self.render_table_past_contests(ui);
                     } else {
-                        self.render_no_active_contests_or_owned_names(ui);
+                        action |= self.render_no_active_contests_or_owned_names(ui);
                     }
                 }
                 DPNSSubscreen::Owned => {
                     if !self.local_dpns_names.is_empty() {
                         self.render_table_local_dpns_names(ui);
                     } else {
-                        self.render_no_active_contests_or_owned_names(ui);
+                        action |= self.render_no_active_contests_or_owned_names(ui);
                     }
                 }
             }

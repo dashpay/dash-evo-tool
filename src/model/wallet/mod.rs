@@ -2,7 +2,7 @@ mod asset_lock_transaction;
 pub mod encryption;
 mod utxos;
 
-use dash_sdk::dashcore_rpc::dashcore::bip32::{ExtendedPubKey, KeyDerivationType};
+use dash_sdk::dashcore_rpc::dashcore::bip32::{ChildNumber, ExtendedPubKey, KeyDerivationType};
 
 use dash_sdk::dpp::dashcore::bip32::DerivationPath;
 use dash_sdk::dpp::dashcore::{
@@ -100,7 +100,7 @@ pub struct AddressInfo {
 pub struct Wallet {
     pub wallet_seed: WalletSeed,
     pub uses_password: bool,
-    pub master_ecdsa_extended_public_key: ExtendedPubKey,
+    pub master_bip44_ecdsa_extended_public_key: ExtendedPubKey,
     pub address_balances: BTreeMap<Address, u64>,
     pub known_addresses: BTreeMap<Address, DerivationPath>,
     pub watched_addresses: BTreeMap<DerivationPath, AddressInfo>,
@@ -256,6 +256,18 @@ impl Wallet {
     ) -> Result<(PublicKey, DerivationPath), String> {
         let mut address_index = 0;
         let mut found_unused_derivation_path = None;
+        let mut known_public_key = None;
+        let derivation_path_extension = DerivationPath::from(
+            [
+                ChildNumber::Normal {
+                    index: change.into(),
+                },
+                ChildNumber::Normal {
+                    index: address_index,
+                },
+            ]
+            .as_slice(),
+        );
         while found_unused_derivation_path.is_none() {
             let derivation_path =
                 DerivationPath::bip_44_payment_path(network, 0, change, address_index);
@@ -275,6 +287,13 @@ impl Wallet {
                 if !skip_known_addresses_with_no_funds {
                     // We can use this address
                     found_unused_derivation_path = Some(derivation_path.clone());
+                    let secp = Secp256k1::new();
+                    let public_key = self
+                        .master_bip44_ecdsa_extended_public_key
+                        .derive_pub(&secp, &derivation_path_extension)
+                        .map_err(|e| e.to_string())?
+                        .to_pub();
+                    known_public_key = Some(public_key.clone());
                     break;
                 } else {
                     // Skip known addresses with no funds
@@ -282,11 +301,13 @@ impl Wallet {
                     continue;
                 }
             } else {
-                // Address is not known, proceed to register it
-                let public_key = derivation_path
-                    .derive_pub_ecdsa_for_master_seed(self.seed_bytes()?, network)
-                    .expect("derivation should not be able to fail")
+                let secp = Secp256k1::new();
+                let public_key = self
+                    .master_bip44_ecdsa_extended_public_key
+                    .derive_pub(&secp, &derivation_path_extension)
+                    .map_err(|e| e.to_string())?
                     .to_pub();
+                known_public_key = Some(public_key.clone());
                 if let Some(app_context) = register {
                     let address = Address::p2pkh(&public_key, network);
                     app_context
@@ -334,10 +355,8 @@ impl Wallet {
         }
 
         let derivation_path = found_unused_derivation_path.unwrap();
-        let extended_public_key = derivation_path
-            .derive_pub_ecdsa_for_master_seed(self.seed_bytes()?, network)
-            .expect("derivation should not be able to fail");
-        Ok((extended_public_key.to_pub(), derivation_path))
+        let known_public_key = known_public_key.unwrap();
+        Ok((known_public_key, derivation_path))
     }
 
     pub fn identity_authentication_ecdsa_public_key(
@@ -345,19 +364,17 @@ impl Wallet {
         network: Network,
         identity_index: u32,
         key_index: u32,
-    ) -> PublicKey {
+    ) -> Result<PublicKey, String> {
         let derivation_path = DerivationPath::identity_authentication_path(
             network,
             KeyDerivationType::ECDSA,
             identity_index,
             key_index,
         );
-        let secp = Secp256k1::new();
-        let extended_public_key = self
-            .master_ecdsa_extended_public_key
-            .derive_pub(&secp, &derivation_path)
-            .expect("derivation should not be able to fail");
-        extended_public_key.to_pub()
+        let extended_public_key = derivation_path
+            .derive_pub_ecdsa_for_master_seed(self.seed_bytes()?, network)
+            .map_err(|e| e.to_string())?;
+        Ok(extended_public_key.to_pub())
     }
 
     pub fn identity_authentication_ecdsa_private_key(
@@ -386,7 +403,7 @@ impl Wallet {
         let derivation_path = DerivationPath::identity_registration_path(network, index);
         let secp = Secp256k1::new();
         let extended_public_key = self
-            .master_ecdsa_extended_public_key
+            .master_bip44_ecdsa_extended_public_key
             .derive_pub(&secp, &derivation_path)
             .expect("derivation should not be able to fail");
         extended_public_key.to_pub()

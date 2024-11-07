@@ -20,7 +20,7 @@ impl Database {
         encrypted_seed BLOB NOT NULL,
         salt BLOB NOT NULL,
         nonce BLOB NOT NULL,
-        master_ecdsa_epk BLOB NOT NULL,
+        master_ecdsa_bip44_account_0_epk BLOB NOT NULL,
         alias TEXT,
         is_main INTEGER,
         uses_password INTEGER NOT NULL,

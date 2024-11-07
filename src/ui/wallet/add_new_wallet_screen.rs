@@ -4,11 +4,16 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::ScreenLike;
 use eframe::egui::Context;
 
-use crate::model::wallet::{ClosedWalletSeed, OpenWalletSeed, Wallet, WalletSeed};
+use crate::model::wallet::{
+    ClosedWalletSeed, DerivationPathReference, DerivationPathType, OpenWalletSeed, Wallet,
+    WalletSeed,
+};
 use crate::ui::components::entropy_grid::U256EntropyGrid;
 use bip39::{Language, Mnemonic};
+use dash_sdk::dashcore_rpc::dashcore::bip32::{ChildNumber, DerivationPath};
 use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
 use dash_sdk::dpp::dashcore::bip32::{ExtendedPrivKey, ExtendedPubKey};
+use dash_sdk::dpp::dashcore::Network;
 use egui::{
     Color32, ComboBox, Direction, FontId, Frame, Grid, Layout, Margin, RichText, Stroke, TextStyle,
     Ui, Vec2,
@@ -16,6 +21,30 @@ use egui::{
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 use zxcvbn::zxcvbn;
+
+// Constants for feature purposes and sub-features
+pub const BIP44_PURPOSE: u32 = 44;
+pub const DASH_COIN_TYPE: u32 = 5;
+pub const DASH_TESTNET_COIN_TYPE: u32 = 1;
+pub const DASH_BIP44_ACCOUNT_0_PATH_MAINNET: [ChildNumber; 3] = [
+    ChildNumber::Hardened {
+        index: BIP44_PURPOSE,
+    },
+    ChildNumber::Hardened {
+        index: DASH_COIN_TYPE,
+    },
+    ChildNumber::Hardened { index: 0 },
+];
+
+pub const DASH_BIP44_ACCOUNT_0_PATH_TESTNET: [ChildNumber; 3] = [
+    ChildNumber::Hardened {
+        index: BIP44_PURPOSE,
+    },
+    ChildNumber::Hardened {
+        index: DASH_TESTNET_COIN_TYPE,
+    },
+    ChildNumber::Hardened { index: 0 },
+];
 
 pub struct AddNewWalletScreen {
     seed_phrase: Option<Mnemonic>,
@@ -26,6 +55,7 @@ pub struct AddNewWalletScreen {
     wrote_it_down: bool,
     password_strength: f64,
     estimated_time_to_crack: String,
+    error: Option<String>,
     pub app_context: Arc<AppContext>,
 }
 
@@ -40,6 +70,7 @@ impl AddNewWalletScreen {
             wrote_it_down: false,
             password_strength: 0.0,
             estimated_time_to_crack: "".to_string(),
+            error: None,
             app_context: app_context.clone(),
         }
     }
@@ -54,7 +85,7 @@ impl AddNewWalletScreen {
         self.seed_phrase = Some(mnemonic);
     }
 
-    fn save_wallet(&mut self) -> AppAction {
+    fn save_wallet(&mut self) -> Result<AppAction, String> {
         if let Some(mnemonic) = &self.seed_phrase {
             let seed = mnemonic.to_seed("");
 
@@ -63,8 +94,7 @@ impl AddNewWalletScreen {
             } else {
                 // Encrypt the seed to obtain encrypted_seed, salt, and nonce
                 let (encrypted_seed, salt, nonce) =
-                    ClosedWalletSeed::encrypt_seed(&seed, self.password.as_str())
-                        .expect("Encryption failed");
+                    ClosedWalletSeed::encrypt_seed(&seed, self.password.as_str())?;
                 (encrypted_seed, salt, nonce, true)
             };
 
@@ -72,9 +102,17 @@ impl AddNewWalletScreen {
             let master_ecdsa_extended_private_key =
                 ExtendedPrivKey::new_master(self.app_context.network, &seed)
                     .expect("Failed to create master ECDSA extended private key");
+            let bip44_root_derivation_path: DerivationPath = match self.app_context.network {
+                Network::Dash => DerivationPath::from(DASH_BIP44_ACCOUNT_0_PATH_MAINNET.as_slice()),
+                _ => DerivationPath::from(DASH_BIP44_ACCOUNT_0_PATH_TESTNET.as_slice()),
+            };
             let secp = Secp256k1::new();
-            let master_ecdsa_extended_public_key =
-                ExtendedPubKey::from_priv(&secp, &master_ecdsa_extended_private_key);
+            let master_bip44_ecdsa_extended_public_key = master_ecdsa_extended_private_key
+                .derive_priv(&secp, &bip44_root_derivation_path)
+                .map_err(|e| e.to_string())?;
+
+            let master_bip44_ecdsa_extended_public_key =
+                ExtendedPubKey::from_priv(&secp, &master_bip44_ecdsa_extended_public_key);
 
             // Compute the seed hash
             let seed_hash = ClosedWalletSeed::compute_seed_hash(&seed);
@@ -91,7 +129,7 @@ impl AddNewWalletScreen {
                     },
                 }),
                 uses_password,
-                master_ecdsa_extended_public_key,
+                master_bip44_ecdsa_extended_public_key,
                 address_balances: Default::default(),
                 known_addresses: Default::default(),
                 watched_addresses: Default::default(),
@@ -105,7 +143,7 @@ impl AddNewWalletScreen {
             self.app_context
                 .db
                 .store_wallet(&wallet, &self.app_context.network)
-                .ok();
+                .map_err(|e| e.to_string())?;
 
             // Acquire a write lock and add the new wallet
             if let Ok(mut wallets) = self.app_context.wallets.write() {
@@ -115,9 +153,9 @@ impl AddNewWalletScreen {
                 eprintln!("Failed to acquire write lock on wallets");
             }
 
-            AppAction::GoToMainScreen // Navigate back to the main screen after saving
+            Ok(AppAction::GoToMainScreen) // Navigate back to the main screen after saving
         } else {
-            AppAction::None // No action if no seed phrase exists
+            Ok(AppAction::None) // No action if no seed phrase exists
         }
     }
 
@@ -257,31 +295,6 @@ impl AddNewWalletScreen {
     }
 }
 
-fn format_time(seconds: f64) -> String {
-    let minute = 60.0;
-    let hour = 60.0 * minute;
-    let day = 24.0 * hour;
-    let year = 365.25 * day;
-    let century = 100.0 * year;
-    let millennium = 10.0 * century;
-
-    if seconds < minute {
-        format!("{:.2} seconds", seconds)
-    } else if seconds < hour {
-        format!("{:.2} minutes", seconds / minute)
-    } else if seconds < day {
-        format!("{:.2} hours", seconds / hour)
-    } else if seconds < year {
-        format!("{:.2} days", seconds / day)
-    } else if seconds < century {
-        format!("{:.2} years", seconds / year)
-    } else if seconds < millennium {
-        format!("{:.2} centuries", seconds / century)
-    } else {
-        format!("More than a millennium")
-    }
-}
-
 impl ScreenLike for AddNewWalletScreen {
     fn ui(&mut self, ctx: &Context) -> AppAction {
         let mut action = add_top_panel(
@@ -406,11 +419,34 @@ impl ScreenLike for AddNewWalletScreen {
                             });
 
                         if ui.add(save_button).clicked() {
-                            action = self.save_wallet(); // Trigger the save action
+                            match self.save_wallet() {
+                                Ok(save_wallet_action) => {
+                                    action = save_wallet_action;
+                                }
+                                Err(e) => {
+                                    self.error = Some(e)
+                                }
+                            }
                         }
                     });
                 });
         });
+
+        // Display error popup if there's an error
+        if let Some(error_message) = self.error.as_ref() {
+            let error_message = error_message.clone();
+            egui::Window::new("Error")
+                .resizable(false)
+                .collapsible(false)
+                .anchor(egui::Align2::CENTER_CENTER, Vec2::new(0.0, 0.0))
+                .show(ctx, |ui| {
+                    ui.label(error_message);
+                    ui.add_space(10.0);
+                    if ui.button("Close").clicked() {
+                        self.error = None; // Clear the error to close the popup
+                    }
+                });
+        }
 
         action
     }

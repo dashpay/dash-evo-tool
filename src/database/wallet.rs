@@ -24,17 +24,18 @@ impl Database {
         let network_str = network.to_string();
 
         // Serialize the extended public keys
-        let master_ecdsa_epk_bytes = wallet.master_ecdsa_extended_public_key.encode();
+        let master_ecdsa_bip44_account_0_epk_bytes =
+            wallet.master_bip44_ecdsa_extended_public_key.encode();
 
         self.execute(
-            "INSERT INTO wallet (seed_hash, encrypted_seed, salt, nonce, master_ecdsa_epk, alias, is_main, uses_password, password_hint, network)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO wallet (seed_hash, encrypted_seed, salt, nonce, master_ecdsa_bip44_account_0_epk, alias, is_main, uses_password, password_hint, network)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             params![
                 wallet.seed_hash(),
                 wallet.encrypted_seed_slice(),
                 wallet.salt(),
                 wallet.nonce(),
-                master_ecdsa_epk_bytes,
+                master_ecdsa_bip44_account_0_epk_bytes,
                 wallet.alias.clone(),
                 wallet.is_main as i32,
                 wallet.uses_password,
@@ -55,7 +56,7 @@ impl Database {
         let conn = self.conn.lock().unwrap();
 
         conn.execute(
-            "UPDATE wallet SET alias = ? WHERE seed = ?",
+            "UPDATE wallet SET alias = ? WHERE seed_hash = ?",
             params![new_alias, seed_hash],
         )?;
 
@@ -165,7 +166,7 @@ impl Database {
 
         // Step 1: Retrieve all wallets for the given network.
         let mut stmt = conn.prepare(
-            "SELECT seed_hash, encrypted_seed, salt, nonce, master_ecdsa_epk, alias, is_main, uses_password, password_hint FROM wallet WHERE network = ?",
+            "SELECT seed_hash, encrypted_seed, salt, nonce, master_ecdsa_bip44_account_0_epk, alias, is_main, uses_password, password_hint FROM wallet WHERE network = ?",
         )?;
 
         let mut wallets_map: BTreeMap<[u8; 32], Wallet> = BTreeMap::new();
@@ -175,15 +176,16 @@ impl Database {
             let encrypted_seed: Vec<u8> = row.get(1)?;
             let salt: Vec<u8> = row.get(2)?;
             let nonce: Vec<u8> = row.get(3)?;
-            let master_ecdsa_epk_bytes: Vec<u8> = row.get(4)?;
+            let master_ecdsa_bip44_account_0_epk_bytes: Vec<u8> = row.get(4)?;
             let alias: Option<String> = row.get(5)?;
             let is_main: bool = row.get(6)?;
             let uses_password: bool = row.get(7)?;
-            let password_hint: Option<String> = row.get(7)?;
+            let password_hint: Option<String> = row.get(8)?;
 
             // Reconstruct the extended public keys
-            let master_ecdsa_extended_public_key = ExtendedPubKey::decode(&master_ecdsa_epk_bytes)
-                .expect("Failed to decode ExtendedPubKey");
+            let master_ecdsa_extended_public_key =
+                ExtendedPubKey::decode(&master_ecdsa_bip44_account_0_epk_bytes)
+                    .expect("Failed to decode ExtendedPubKey");
 
             let seed_hash_array: [u8; 32] =
                 seed_hash.try_into().expect("Seed hash should be 32 bytes");
@@ -200,7 +202,7 @@ impl Database {
                         password_hint,
                     }),
                     uses_password,
-                    master_ecdsa_extended_public_key,
+                    master_bip44_ecdsa_extended_public_key: master_ecdsa_extended_public_key,
                     address_balances: BTreeMap::new(),
                     known_addresses: BTreeMap::new(),
                     watched_addresses: BTreeMap::new(),

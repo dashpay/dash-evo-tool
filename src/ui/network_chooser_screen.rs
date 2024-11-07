@@ -132,7 +132,7 @@ impl NetworkChooserScreen {
         );
         ui.label(wallet_count);
 
-        // Add a button to start the network
+        // Add a button to add a wallet
         if ui.button("+").clicked() {
             let context = if network == Network::Dash || self.testnet_app_context.is_none() {
                 &self.mainnet_app_context
@@ -148,6 +148,14 @@ impl NetworkChooserScreen {
         if ui.checkbox(&mut is_selected, "Select").clicked() && is_selected {
             self.current_network = network;
             app_action = AppAction::SwitchNetwork(network);
+            // in 1 second
+            self.recheck_time = Some(
+                (SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .expect("Time went backwards")
+                    + Duration::from_secs(1))
+                .as_millis() as u64,
+            );
         }
 
         // Add a button to start the network

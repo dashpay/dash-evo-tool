@@ -68,10 +68,9 @@ impl AppContext {
                 self.run_contested_resource_task(contested_resource_task, &sdk, sender)
                     .await
             }
-            BackendTask::IdentityTask(identity_task) => self
-                .run_identity_task(identity_task, &sdk, sender)
-                .await
-                .map(|_| BackendTaskSuccessResult::None),
+            BackendTask::IdentityTask(identity_task) => {
+                self.run_identity_task(identity_task, &sdk, sender).await
+            }
             BackendTask::DocumentTask(document_task) => {
                 self.run_document_task(document_task, &sdk).await
             }

@@ -7,13 +7,15 @@ use dash_sdk::platform::{Fetch, Identity};
 use dash_sdk::Sdk;
 use tokio::sync::mpsc;
 
+use super::BackendTaskSuccessResult;
+
 impl AppContext {
     pub(super) async fn refresh_identity(
         &self,
         sdk: &Sdk,
         qualified_identity: QualifiedIdentity,
         sender: mpsc::Sender<TaskResult>,
-    ) -> Result<(), String> {
+    ) -> Result<BackendTaskSuccessResult, String> {
         // Fetch the latest state of the identity from Platform
         let refreshed_identity =
             Identity::fetch_by_identifier(sdk, qualified_identity.identity.id())
@@ -59,6 +61,8 @@ impl AppContext {
             .await
             .map_err(|e| e.to_string())?;
 
-        Ok(())
+        Ok(BackendTaskSuccessResult::Message(
+            "Successfully refreshed identity".to_string(),
+        ))
     }
 }

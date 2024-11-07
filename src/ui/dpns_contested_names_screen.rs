@@ -199,7 +199,8 @@ impl DPNSContestedNamesScreen {
         }
     }
 
-    fn render_no_active_contests_or_owned_names(&mut self, ui: &mut Ui) {
+    fn render_no_active_contests_or_owned_names(&mut self, ui: &mut Ui) -> AppAction {
+        let mut app_action = AppAction::None;
         ui.vertical_centered(|ui| {
             ui.add_space(20.0); // Add some space to separate from the top
             match self.dpns_subscreen {
@@ -232,9 +233,13 @@ impl DPNSContestedNamesScreen {
             ui.label("Please check back later or try refreshing the list.");
             ui.add_space(20.0);
             if ui.button("Refresh").clicked() {
-                self.refresh(); // Call refresh logic when the user clicks "Refresh"
+                app_action |= AppAction::BackendTask(BackendTask::ContestedResourceTask(
+                    ContestedResourceTask::QueryDPNSContestedResources,
+                ));
             }
         });
+
+        app_action
     }
 
     fn render_table_active_contests(&mut self, ui: &mut Ui) {
@@ -744,7 +749,21 @@ impl ScreenLike for DPNSContestedNamesScreen {
             .unwrap_or_default()
             .into();
 
-        self.local_dpns_names = self.app_context.local_dpns_names().unwrap_or_default();
+        let mut contested_names = self.contested_names.lock().unwrap();
+        match self.dpns_subscreen {
+            DPNSSubscreen::Active => {
+                *contested_names = self
+                    .app_context
+                    .ongoing_contested_names()
+                    .unwrap_or_default();
+            }
+            DPNSSubscreen::Past => {
+                *contested_names = self.app_context.all_contested_names().unwrap_or_default();
+            }
+            DPNSSubscreen::Owned => {
+                self.local_dpns_names = self.app_context.local_dpns_names().unwrap_or_default();
+            }
+        }
     }
 
     fn display_message(&mut self, message: &str, message_type: MessageType) {
@@ -818,7 +837,7 @@ impl ScreenLike for DPNSContestedNamesScreen {
                     ui.allocate_ui(egui::Vec2::new(ui.available_width(), 50.0), |ui| {
                         ui.group(|ui| {
                             ui.set_min_height(50.0);
-                            ui.horizontal(|ui| {
+                            ui.horizontal_wrapped(|ui| {
                                 ui.label(egui::RichText::new(message).color(message_color));
                                 if ui.button("Dismiss").clicked() {
                                     // Update the state outside the closure
@@ -852,21 +871,21 @@ impl ScreenLike for DPNSContestedNamesScreen {
                     if has_contested_names {
                         self.render_table_active_contests(ui);
                     } else {
-                        self.render_no_active_contests_or_owned_names(ui);
+                        action |= self.render_no_active_contests_or_owned_names(ui);
                     }
                 }
                 DPNSSubscreen::Past => {
                     if has_contested_names {
                         self.render_table_past_contests(ui);
                     } else {
-                        self.render_no_active_contests_or_owned_names(ui);
+                        action |= self.render_no_active_contests_or_owned_names(ui);
                     }
                 }
                 DPNSSubscreen::Owned => {
                     if !self.local_dpns_names.is_empty() {
                         self.render_table_local_dpns_names(ui);
                     } else {
-                        self.render_no_active_contests_or_owned_names(ui);
+                        action |= self.render_no_active_contests_or_owned_names(ui);
                     }
                 }
             }

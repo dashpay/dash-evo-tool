@@ -6,7 +6,6 @@ use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
 use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dpp::block::extended_epoch_info::ExtendedEpochInfo;
 use dash_sdk::dpp::dashcore::hashes::Hash;
-use dash_sdk::dpp::dashcore::psbt::serialize::Serialize;
 use dash_sdk::dpp::dashcore::OutPoint;
 use dash_sdk::dpp::identity::state_transition::asset_lock_proof::chain::ChainAssetLockProof;
 use dash_sdk::dpp::native_bls::NativeBlsModule;
@@ -107,7 +106,7 @@ impl AppContext {
         &self,
         input: IdentityRegistrationInfo,
         sender: mpsc::Sender<TaskResult>,
-    ) -> Result<(), String> {
+    ) -> Result<BackendTaskSuccessResult, String> {
         let IdentityRegistrationInfo {
             alias_input,
             keys,
@@ -363,6 +362,8 @@ impl AppContext {
             .await
             .map_err(|e| e.to_string())?;
 
-        Ok(())
+        Ok(BackendTaskSuccessResult::Message(
+            "Successfully registered identity".to_string(),
+        ))
     }
 }

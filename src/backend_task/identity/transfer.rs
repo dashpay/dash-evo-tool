@@ -6,6 +6,8 @@ use dash_sdk::dpp::identity::KeyID;
 use dash_sdk::platform::transition::transfer::TransferToIdentity;
 use dash_sdk::platform::Identifier;
 
+use super::BackendTaskSuccessResult;
+
 impl AppContext {
     pub(super) async fn transfer_to_identity(
         &self,
@@ -13,7 +15,7 @@ impl AppContext {
         to_identifier: Identifier,
         credits: Credits,
         id: Option<KeyID>,
-    ) -> Result<(), String> {
+    ) -> Result<BackendTaskSuccessResult, String> {
         let remaining_balance = qualified_identity
             .identity
             .clone()
@@ -28,7 +30,10 @@ impl AppContext {
             .await
             .map_err(|e| format!("Withdrawal error: {}", e))?;
         qualified_identity.identity.set_balance(remaining_balance);
-        self.insert_local_qualified_identity(&qualified_identity, None)
-            .map_err(|e| format!("Database error: {}", e))
+        self.update_local_qualified_identity(&qualified_identity)
+            .map(|_| {
+                BackendTaskSuccessResult::Message("Successfully transferred credits".to_string())
+            })
+            .map_err(|e| e.to_string())
     }
 }

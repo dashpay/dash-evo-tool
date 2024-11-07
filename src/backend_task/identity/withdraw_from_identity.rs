@@ -6,6 +6,8 @@ use dash_sdk::dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
 use dash_sdk::dpp::identity::KeyID;
 use dash_sdk::platform::transition::withdraw_from_identity::WithdrawFromIdentity;
 
+use super::BackendTaskSuccessResult;
+
 impl AppContext {
     pub(super) async fn withdraw_from_identity(
         &self,
@@ -13,7 +15,7 @@ impl AppContext {
         to_address: Option<Address>,
         credits: Credits,
         id: Option<KeyID>,
-    ) -> Result<(), String> {
+    ) -> Result<BackendTaskSuccessResult, String> {
         let remaining_balance = qualified_identity
             .identity
             .clone()
@@ -29,7 +31,10 @@ impl AppContext {
             .await
             .map_err(|e| format!("Withdrawal error: {}", e))?;
         qualified_identity.identity.set_balance(remaining_balance);
-        self.insert_local_qualified_identity(&qualified_identity, None)
+        self.update_local_qualified_identity(&qualified_identity)
+            .map(|_| {
+                BackendTaskSuccessResult::Message("Successfully withdrew from identity".to_string())
+            })
             .map_err(|e| format!("Database error: {}", e))
     }
 }

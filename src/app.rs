@@ -156,7 +156,7 @@ impl AppState {
         if let Some((network, screen_type)) = settings {
             selected_main_screen = screen_type;
             chosen_network = network;
-            if network == Network::Testnet && testnet_app_context.is_some() {
+            if chosen_network == Network::Testnet && testnet_app_context.is_some() {
                 let testnet_app_context = testnet_app_context.as_ref().unwrap();
                 identities_screen = IdentitiesScreen::new(testnet_app_context);
                 dpns_active_contests_screen =
@@ -368,7 +368,7 @@ impl App for AppState {
                     }
                     BackendTaskSuccessResult::Message(message) => {
                         self.visible_screen_mut()
-                            .display_message(&message, MessageType::Info);
+                            .display_message(&message, MessageType::Success);
                     }
                     BackendTaskSuccessResult::Documents(_) => {
                         self.visible_screen_mut().display_task_result(message);

@@ -234,10 +234,11 @@ impl DPNSContestedNamesScreen {
             ui.add_space(20.0);
             if ui.button("Refresh").clicked() {
                 app_action |= AppAction::BackendTask(BackendTask::ContestedResourceTask(
-                    ContestedResourceTask::QueryDPNSContestedResources
+                    ContestedResourceTask::QueryDPNSContestedResources,
                 ));
             }
         });
+
         app_action
     }
 
@@ -748,7 +749,21 @@ impl ScreenLike for DPNSContestedNamesScreen {
             .unwrap_or_default()
             .into();
 
-        self.local_dpns_names = self.app_context.local_dpns_names().unwrap_or_default();
+        let mut contested_names = self.contested_names.lock().unwrap();
+        match self.dpns_subscreen {
+            DPNSSubscreen::Active => {
+                *contested_names = self
+                    .app_context
+                    .ongoing_contested_names()
+                    .unwrap_or_default();
+            }
+            DPNSSubscreen::Past => {
+                *contested_names = self.app_context.all_contested_names().unwrap_or_default();
+            }
+            DPNSSubscreen::Owned => {
+                self.local_dpns_names = self.app_context.local_dpns_names().unwrap_or_default();
+            }
+        }
     }
 
     fn display_message(&mut self, message: &str, message_type: MessageType) {
@@ -822,7 +837,7 @@ impl ScreenLike for DPNSContestedNamesScreen {
                     ui.allocate_ui(egui::Vec2::new(ui.available_width(), 50.0), |ui| {
                         ui.group(|ui| {
                             ui.set_min_height(50.0);
-                            ui.horizontal(|ui| {
+                            ui.horizontal_wrapped(|ui| {
                                 ui.label(egui::RichText::new(message).color(message_color));
                                 if ui.button("Dismiss").clicked() {
                                     // Update the state outside the closure

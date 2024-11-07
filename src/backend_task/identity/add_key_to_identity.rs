@@ -12,6 +12,9 @@ use dash_sdk::dpp::state_transition::proof_result::StateTransitionProofResult;
 use dash_sdk::platform::transition::broadcast::BroadcastStateTransition;
 use dash_sdk::platform::{Fetch, Identity, IdentityPublicKey};
 use dash_sdk::Sdk;
+
+use super::BackendTaskSuccessResult;
+
 impl AppContext {
     pub(super) async fn add_key_to_identity(
         &self,
@@ -19,13 +22,13 @@ impl AppContext {
         mut qualified_identity: QualifiedIdentity,
         mut public_key_to_add: IdentityPublicKey,
         private_key: [u8; 32],
-    ) -> Result<(), String> {
+    ) -> Result<BackendTaskSuccessResult, String> {
         let new_identity_nonce = sdk
             .get_identity_nonce(qualified_identity.identity.id(), true, None)
             .await
             .map_err(|e| format!("Fetch nonce error: {}", e))?;
         let Some(master_key) = qualified_identity.can_sign_with_master_key() else {
-            return Ok(());
+            return Err("Master key not found".to_string());
         };
         let master_key_id = master_key.id();
         let identity = Identity::fetch_by_identifier(sdk, qualified_identity.identity.id())
@@ -64,6 +67,9 @@ impl AppContext {
         }
 
         self.insert_local_qualified_identity(&qualified_identity)
+            .map(|_| {
+                BackendTaskSuccessResult::Message("Successfully added key to identity".to_string())
+            })
             .map_err(|e| format!("Database error: {}", e))
     }
 }

@@ -232,8 +232,19 @@ impl AddExistingIdentityScreen {
 }
 
 impl ScreenLike for AddExistingIdentityScreen {
-    fn display_message(&mut self, message: &str, _message_type: MessageType) {
-        self.add_identity_status = AddIdentityStatus::ErrorMessage(message.to_string());
+    fn display_message(&mut self, message: &str, message_type: MessageType) {
+        match message_type {
+            MessageType::Success => {
+                if message == "Successfully loaded identity" {
+                    self.add_identity_status = AddIdentityStatus::Complete;
+                }
+            }
+            MessageType::Info => {}
+            MessageType::Error => {
+                // It's not great because the error message can be coming from somewhere else if there are other processes happening
+                self.add_identity_status = AddIdentityStatus::ErrorMessage(message.to_string());
+            }
+        }
     }
 
     fn pop_on_success(&mut self) {
@@ -322,7 +333,7 @@ impl ScreenLike for AddExistingIdentityScreen {
                     ui.label(format!("Loading... Time taken so far: {}", display_time));
                 }
                 AddIdentityStatus::ErrorMessage(msg) => {
-                    ui.label(format!("Error: {}", msg));
+                    ui.colored_label(egui::Color32::RED, format!("Error: {}", msg));
                 }
                 AddIdentityStatus::Complete => {
                     action = AppAction::PopScreenAndRefresh;

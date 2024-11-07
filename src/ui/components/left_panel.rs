@@ -94,7 +94,7 @@ pub fn add_left_panel(
                     let button_color = if is_selected {
                         Color32::from_rgb(100, 149, 237) // Highlighted blue color for selected
                     } else {
-                        Color32::from_rgb(169, 169, 169) // Default gray color for unselected
+                        Color32::from_rgb(169, 169, 169) // Default grayish blue color for unselected
                     };
 
                     // Add icon-based button if texture is loaded

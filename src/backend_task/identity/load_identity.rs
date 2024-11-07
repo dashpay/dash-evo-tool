@@ -17,12 +17,14 @@ use dash_sdk::platform::{Document, DocumentQuery, Fetch, FetchMany, Identifier, 
 use dash_sdk::Sdk;
 use std::collections::BTreeMap;
 
+use super::BackendTaskSuccessResult;
+
 impl AppContext {
     pub(super) async fn load_identity(
         &self,
         sdk: &Sdk,
         input: IdentityInputToLoad,
-    ) -> Result<(), String> {
+    ) -> Result<BackendTaskSuccessResult, String> {
         let IdentityInputToLoad {
             identity_id_input,
             identity_type,
@@ -204,6 +206,8 @@ impl AppContext {
         self.insert_local_qualified_identity(&qualified_identity)
             .map_err(|e| format!("Database error: {}", e))?;
 
-        Ok(())
+        Ok(BackendTaskSuccessResult::Message(
+            "Successfully loaded identity".to_string(),
+        ))
     }
 }

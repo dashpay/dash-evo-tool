@@ -85,6 +85,9 @@ pub fn add_left_panel(
                     if *screen_type == RootScreenType::RootScreenDocumentQuery {
                         continue; // Skip rendering the document button for now
                     }
+                    if *screen_type == RootScreenType::RootScreenWithdrawsStatus {
+                        continue; // Skip rendering the withdrawals button for now
+                    }
 
                     let texture: Option<TextureHandle> = load_icon(ctx, icon_path);
                     let is_selected = selected_screen == *screen_type;

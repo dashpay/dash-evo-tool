@@ -1,9 +1,19 @@
+use std::{fs, path::Path};
+
+use rusqlite::{params, Connection};
+
 use crate::database::Database;
 
-pub const MIN_SUPPORTED_DB_VERSION: u16 = 0;
+pub const MIN_SUPPORTED_DB_VERSION: u16 = 1;
+pub const DB_BACKUP_SUFFIX: &str = ".backup";
 
 impl Database {
-    pub fn initialize(&self) -> rusqlite::Result<()> {
+    pub fn initialize(&self, db_file_path: &Path) -> rusqlite::Result<()> {
+        // Check if the current database version meets the minimum requirements
+        if self.is_outdated()? {
+            self.backup_and_recreate_db(db_file_path)?;
+        }
+
         // Create the settings table
         self.execute(
             "CREATE TABLE IF NOT EXISTS settings (
@@ -166,6 +176,64 @@ impl Database {
             [],
         )?;
 
+        // Ensure the database version is set
+        self.set_default_version()?;
+
+        Ok(())
+    }
+
+    fn is_outdated(&self) -> rusqlite::Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let version: u16 = conn
+            .query_row(
+                "SELECT database_version FROM settings WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(0); // Default to version 0 if there's no version set
+        Ok(version < MIN_SUPPORTED_DB_VERSION)
+    }
+
+    fn backup_and_recreate_db(&self, db_file_path: &Path) -> rusqlite::Result<()> {
+        // Close any active connection to allow file operations
+        let _ = self; // Ensure the current connection is closed
+
+        if db_file_path.exists() {
+            // Create a backup file path by appending the backup suffix
+            let backup_path = db_file_path.with_extension(DB_BACKUP_SUFFIX);
+            fs::rename(db_file_path, &backup_path)
+                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(e.into()))?;
+            println!("Old database backed up to {:?}", backup_path);
+        }
+
+        // Recreate a new database file and initialize the schema
+        let new_conn = Connection::open(db_file_path)?;
+        new_conn.execute(
+            "CREATE TABLE IF NOT EXISTS settings (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                network TEXT NOT NULL,
+                start_root_screen INTEGER NOT NULL,
+                database_version INTEGER NOT NULL
+            )",
+            [],
+        )?;
+
+        // Set the version for the new database
+        new_conn.execute(
+            "INSERT INTO settings (id, network, start_root_screen, database_version)
+             VALUES (1, 'default_network', 0, ?)",
+            params![MIN_SUPPORTED_DB_VERSION],
+        )?;
+        Ok(())
+    }
+
+    fn set_default_version(&self) -> rusqlite::Result<()> {
+        self.execute(
+            "INSERT INTO settings (id, network, start_root_screen, database_version)
+             VALUES (1, 'default_network', 0, ?)
+             ON CONFLICT(id) DO UPDATE SET database_version = excluded.database_version",
+            params![MIN_SUPPORTED_DB_VERSION],
+        )?;
         Ok(())
     }
 }

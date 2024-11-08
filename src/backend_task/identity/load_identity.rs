@@ -61,7 +61,7 @@ impl AppContext {
 
         let mut encrypted_private_keys = BTreeMap::new();
 
-        let wallets = self.wallets.read().unwrap();
+        let wallets = self.wallets.read().unwrap().clone();
 
         if identity_type != IdentityType::User && owner_private_key_bytes.is_some() {
             let owner_private_key_bytes = owner_private_key_bytes.unwrap();

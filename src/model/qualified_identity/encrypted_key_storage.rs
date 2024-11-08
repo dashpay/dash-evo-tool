@@ -1,7 +1,8 @@
 use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
 use crate::model::qualified_identity::PrivateKeyTarget;
 use bincode::{Decode, Encode};
-use dash_sdk::dpp::identity::KeyID;
+use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+use dash_sdk::dpp::identity::{KeyID, Purpose, SecurityLevel};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
@@ -119,6 +120,28 @@ impl KeyStorage {
             KeyStorage::Closed(closed) => closed
                 .get(key)
                 .map(|(_, k)| PrivateKeyData::Encrypted(k.clone())),
+        }
+    }
+
+    pub fn find_master_key(&self) -> Option<&QualifiedIdentityPublicKey> {
+        match self {
+            KeyStorage::Open(open) => open
+                .private_keys
+                .values()
+                .find(|(public_key, _)| {
+                    public_key.identity_public_key.purpose() == Purpose::AUTHENTICATION
+                        && public_key.identity_public_key.security_level() == SecurityLevel::MASTER
+                })
+                .map(|(public_key, _)| public_key),
+
+            KeyStorage::Closed(closed) => closed
+                .encrypted_private_keys
+                .values()
+                .find(|(public_key, _)| {
+                    public_key.identity_public_key.purpose() == Purpose::AUTHENTICATION
+                        && public_key.identity_public_key.security_level() == SecurityLevel::MASTER
+                })
+                .map(|(public_key, _)| public_key),
         }
     }
 

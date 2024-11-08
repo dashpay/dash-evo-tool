@@ -276,7 +276,7 @@ impl ScreenLike for AddExistingIdentityScreen {
             }
 
             ui.horizontal(|ui| {
-                ui.label("Identity ID (Hex or Base58):");
+                ui.label("Identity ID / ProTxHash (Hex or Base58):");
                 ui.text_edit_singleline(&mut self.identity_id_input);
             });
 

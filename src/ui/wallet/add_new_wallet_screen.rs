@@ -4,6 +4,7 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::ScreenLike;
 use eframe::egui::Context;
 
+use crate::model::wallet::encryption::{encrypt_message, DASH_SECRET_MESSAGE};
 use crate::model::wallet::{ClosedWalletSeed, OpenWalletSeed, Wallet, WalletSeed};
 use crate::ui::components::entropy_grid::U256EntropyGrid;
 use bip39::{Language, Mnemonic};
@@ -54,6 +55,7 @@ pub struct AddNewWalletScreen {
     estimated_time_to_crack: String,
     error: Option<String>,
     pub app_context: Arc<AppContext>,
+    use_password_for_app: bool,
 }
 
 impl AddNewWalletScreen {
@@ -69,6 +71,7 @@ impl AddNewWalletScreen {
             estimated_time_to_crack: "".to_string(),
             error: None,
             app_context: app_context.clone(),
+            use_password_for_app: true,
         }
     }
 
@@ -92,6 +95,14 @@ impl AddNewWalletScreen {
                 // Encrypt the seed to obtain encrypted_seed, salt, and nonce
                 let (encrypted_seed, salt, nonce) =
                     ClosedWalletSeed::encrypt_seed(&seed, self.password.as_str())?;
+                if self.use_password_for_app {
+                    let (encrypted_message, salt, nonce) =
+                        encrypt_message(DASH_SECRET_MESSAGE, self.password.as_str())?;
+                    self.app_context
+                        .db
+                        .update_main_password(&salt, &nonce, &encrypted_message)
+                        .map_err(|e| e.to_string())?;
+                }
                 (encrypted_seed, salt, nonce, true)
             };
 
@@ -321,6 +332,10 @@ impl ScreenLike for AddNewWalletScreen {
                     ui.heading("2. Select your desired seed phrase language and press \"Generate\".");
                     self.render_seed_phrase_input(ui);
 
+                    if self.seed_phrase.is_none() {
+                        return;
+                    }
+
                     ui.add_space(10.0);
 
                     ui.heading(
@@ -333,6 +348,10 @@ impl ScreenLike for AddNewWalletScreen {
                     ui.horizontal(|ui| {
                         ui.checkbox(&mut self.wrote_it_down, "I wrote it down");
                     });
+
+                    if !self.wrote_it_down {
+                        return;
+                    }
 
                     ui.add_space(20.0);
 
@@ -347,7 +366,7 @@ impl ScreenLike for AddNewWalletScreen {
 
                     ui.add_space(20.0);
 
-                    ui.heading("5. Add a password that must be used to unlock the wallet. (Optional but Recommended)");
+                    ui.heading("5. Add a password that must be used to unlock the wallet. (Optional but recommended)");
 
                     ui.add_space(8.0);
 
@@ -408,9 +427,14 @@ impl ScreenLike for AddNewWalletScreen {
                         self.estimated_time_to_crack
                     ));
 
+                    if self.app_context.password_info.is_none() {
+                        ui.add_space(10.0);
+                        ui.checkbox(&mut self.use_password_for_app, "Use password for Dash Evo Tool loose keys (recommended)");
+                    }
+
                     ui.add_space(20.0);
 
-                    ui.heading("5. Save the wallet.");
+                    ui.heading("6. Save the wallet.");
                     ui.add_space(5.0);
 
                     // Centered "Save Wallet" button at the bottom
@@ -421,7 +445,7 @@ impl ScreenLike for AddNewWalletScreen {
                             .min_size(Vec2::new(300.0, 60.0))
                             .rounding(10.0)
                             .stroke(Stroke::new(1.5, Color32::WHITE))
-                            .sense(if self.wrote_it_down {
+                            .sense(if self.wrote_it_down && self.seed_phrase.is_some() {
                                 egui::Sense::click()
                             } else {
                                 egui::Sense::hover()

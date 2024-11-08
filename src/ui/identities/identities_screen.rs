@@ -7,6 +7,7 @@ use crate::model::qualified_identity::PrivateKeyTarget::{
     PrivateKeyOnMainIdentity, PrivateKeyOnVoterIdentity,
 };
 use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
+use crate::model::wallet::WalletSeedHash;
 use crate::ui::add_key_screen::AddKeyScreen;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::top_panel::add_top_panel;
@@ -25,6 +26,7 @@ use eframe::egui::{self, Context};
 use eframe::emath::Align;
 use egui::{Color32, Frame, Margin, RichText, Ui};
 use egui_extras::{Column, TableBuilder};
+use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
@@ -33,6 +35,7 @@ pub struct IdentitiesScreen {
     pub app_context: Arc<AppContext>,
     pub show_more_keys_popup: Option<QualifiedIdentity>,
     pub identity_to_remove: Option<QualifiedIdentity>,
+    pub wallet_seed_hash_cache: HashMap<WalletSeedHash, String>,
 }
 
 impl IdentitiesScreen {
@@ -50,6 +53,7 @@ impl IdentitiesScreen {
             app_context: app_context.clone(),
             show_more_keys_popup: None,
             identity_to_remove: None,
+            wallet_seed_hash_cache: Default::default(),
         }
     }
 
@@ -102,15 +106,50 @@ impl IdentitiesScreen {
             .on_hover_text(helper);
     }
 
-    fn show_in_wallet(ui: &mut Ui, qualified_identity: &QualifiedIdentity) {
-        // Calculate the balance in DASH (10^-11 conversion)
-        let balance_in_dash = qualified_identity.identity.balance() as f64 * 1e-11;
+    fn find_wallet(&mut self, wallet_seed_hash: &WalletSeedHash) -> Option<String> {
+        if let Some(in_wallet_text) = self.wallet_seed_hash_cache.get(wallet_seed_hash) {
+            return Some(in_wallet_text.clone());
+        }
+        let wallets = self.app_context.wallets.read().unwrap();
+        for wallet in wallets.iter() {
+            let wallet_guard = wallet.read().unwrap();
+            if &wallet_guard.seed_hash() == wallet_seed_hash {
+                let in_wallet_text = if let Some(alias) = wallet_guard.alias.as_ref() {
+                    alias.clone()
+                } else {
+                    hex::encode(wallet_guard.seed_hash())
+                        .split_at(5)
+                        .0
+                        .to_string()
+                };
+                self.wallet_seed_hash_cache
+                    .insert(*wallet_seed_hash, in_wallet_text.clone());
+                return Some(in_wallet_text);
+            }
+        }
+        return None;
+    }
 
-        // Format the balance with 4 decimal places
-        let formatted_balance = format!("{:.4} DASH", balance_in_dash);
+    fn show_in_wallet(&mut self, ui: &mut Ui, qualified_identity: &QualifiedIdentity) {
+        let master_identity_public_key = qualified_identity.private_keys.find_master_key();
+
+        let message = match master_identity_public_key {
+            None => "".to_string(),
+            Some(qualified_identity_public_key) => {
+                match qualified_identity_public_key
+                    .in_wallet_at_derivation_path
+                    .as_ref()
+                {
+                    None => "".to_string(),
+                    Some((wallet_seed_hash, _)) => {
+                        self.find_wallet(wallet_seed_hash).unwrap_or_default()
+                    }
+                }
+            }
+        };
 
         // Add the label with hover text
-        ui.add(egui::Label::new(formatted_balance).sense(egui::Sense::hover()))
+        ui.add(egui::Label::new(message).sense(egui::Sense::hover()))
             .on_hover_text(format!("{}", qualified_identity.identity.balance()));
     }
 
@@ -300,7 +339,7 @@ impl IdentitiesScreen {
                                         Self::show_identity_id(ui, qualified_identity);
                                     });
                                     row.col(|ui| {
-                                        Self::show_in_wallet(ui, qualified_identity);
+                                        self.show_in_wallet(ui, qualified_identity);
                                     });
                                     row.col(|ui| {
                                         Self::show_balance(ui, qualified_identity);

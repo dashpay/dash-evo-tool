@@ -36,7 +36,7 @@ impl Database {
             "UPDATE settings
             SET main_password_salt = ?,
                 main_password_nonce = ?,
-                password_check = ?,
+                password_check = ?
             WHERE id = 1",
             rusqlite::params![salt, nonce, password_check],
         )?;

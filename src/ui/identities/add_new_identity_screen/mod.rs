@@ -531,7 +531,7 @@ impl AddNewIdentityScreen {
         // Render additional key options only if "Advanced" mode is selected
         if self.in_key_selection_advanced_mode {
             // Render the master key input
-            if let Some(master_key) = self.identity_keys.master_private_key {
+            if let Some((master_key, _)) = self.identity_keys.master_private_key {
                 self.render_master_key(ui, master_key);
             }
 
@@ -545,7 +545,7 @@ impl AddNewIdentityScreen {
     fn render_keys_input(&mut self, ui: &mut egui::Ui) {
         let mut keys_to_remove = vec![];
 
-        for (i, (key, key_type, purpose, security_level)) in
+        for (i, ((key, _), key_type, purpose, security_level)) in
             self.identity_keys.keys_input.iter_mut().enumerate()
         {
             ui.horizontal(|ui| {

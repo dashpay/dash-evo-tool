@@ -291,6 +291,7 @@ impl AppContext {
         let identity = Identity::new_with_id_and_keys(identity_id, public_keys, sdk.version())
             .expect("expected to make identity");
 
+        let wallet_seed_hash = wallet.read().unwrap().seed_hash();
         let mut qualified_identity = QualifiedIdentity {
             identity: identity.clone(),
             associated_voter_identity: None,
@@ -298,7 +299,7 @@ impl AppContext {
             associated_owner_key_id: None,
             identity_type: IdentityType::User,
             alias: None,
-            private_keys: keys.to_key_storage(self),
+            private_keys: keys.to_key_storage(wallet_seed_hash),
             dpns_names: vec![],
         };
 

@@ -71,6 +71,7 @@ impl AppContext {
             let qualified_key =
                 QualifiedIdentityPublicKey::from_identity_public_key_with_wallets_check(
                     key,
+                    self.network,
                     wallets.as_slice(),
                 );
             encrypted_private_keys.insert(
@@ -89,6 +90,7 @@ impl AppContext {
             let qualified_key =
                 QualifiedIdentityPublicKey::from_identity_public_key_with_wallets_check(
                     key,
+                    self.network,
                     wallets.as_slice(),
                 );
             encrypted_private_keys.insert(
@@ -125,6 +127,7 @@ impl AppContext {
                 let qualified_key =
                     QualifiedIdentityPublicKey::from_identity_public_key_with_wallets_check(
                         key.clone(),
+                        self.network,
                         wallets.as_slice(),
                     );
                 encrypted_private_keys.insert(
@@ -158,6 +161,7 @@ impl AppContext {
                 let qualified_key =
                     QualifiedIdentityPublicKey::from_identity_public_key_with_wallets_check(
                         public_key.clone(),
+                        self.network,
                         wallets.as_slice(),
                     );
                 encrypted_private_keys.insert(

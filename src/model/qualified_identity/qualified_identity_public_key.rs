@@ -5,6 +5,9 @@ use bincode::error::{DecodeError, EncodeError};
 use bincode::{BorrowDecode, Decode, Encode};
 use dash_sdk::dashcore_rpc::dashcore::bip32::DerivationPath;
 use dash_sdk::dpp::dashcore::bip32::ChildNumber;
+use dash_sdk::dpp::dashcore::Network;
+use dash_sdk::dpp::identity::hash::IdentityPublicKeyHashMethodsV0;
+use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::platform::IdentityPublicKey;
 use std::sync::{Arc, RwLock};
 
@@ -169,30 +172,36 @@ impl From<IdentityPublicKey> for QualifiedIdentityPublicKey {
 }
 
 impl QualifiedIdentityPublicKey {
+    pub fn from_identity_public_key_in_wallet(
+        identity_public_key: IdentityPublicKey,
+        in_wallet_at_derivation_path: Option<(WalletSeedHash, DerivationPath)>,
+    ) -> Self {
+        Self {
+            identity_public_key,
+            in_wallet_at_derivation_path,
+        }
+    }
     pub fn from_identity_public_key_with_wallets_check(
         value: IdentityPublicKey,
-        _wallets: &[Arc<RwLock<Wallet>>],
+        network: Network,
+        wallets: &[Arc<RwLock<Wallet>>],
     ) -> Self {
         // Initialize `in_wallet_at_derivation_path` as `None`
         let mut in_wallet_at_derivation_path = None;
 
-        // // Iterate over each wallet to check for matching derivation paths
-        // for locked_wallet in wallets {
-        //     let wallet = locked_wallet.read().unwrap();
-        //     for (address, derivation_path) in &wallet.known_addresses {
-        //         // Check if this address corresponds to the identity public key's address
-        //         if wallet.master_bip44_ecdsa_extended_public_key.to_string() == value.public_key_string() {
-        //             // Compute the hash (for example, SHA-256 or any other hash, adjust as needed)
-        //             let hash = some_hash_function(&derivation_path.to_string());
-        //
-        //             in_wallet_at_derivation_path = Some((hash, derivation_path.clone()));
-        //             break;
-        //         }
-        //     }
-        //     if in_wallet_at_derivation_path.is_some() {
-        //         break;
-        //     }
-        // }
+        if let Ok(address) = value.address(network) {
+            // Iterate over each wallet to check for matching derivation paths
+            for locked_wallet in wallets {
+                let wallet = locked_wallet.read().unwrap();
+                if let Some(derivation_path) = wallet.known_addresses.get(&address) {
+                    in_wallet_at_derivation_path =
+                        Some((wallet.seed_hash(), derivation_path.clone()));
+                }
+                if in_wallet_at_derivation_path.is_some() {
+                    break;
+                }
+            }
+        }
 
         Self {
             identity_public_key: value,

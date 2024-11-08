@@ -411,7 +411,7 @@ impl Wallet {
         network: Network,
         identity_index: u32,
         key_index: u32,
-    ) -> Result<PrivateKey, String> {
+    ) -> Result<(PrivateKey, DerivationPath), String> {
         let derivation_path = DerivationPath::identity_authentication_path(
             network,
             KeyDerivationType::ECDSA,
@@ -421,7 +421,7 @@ impl Wallet {
         let extended_public_key = derivation_path
             .derive_priv_ecdsa_for_master_seed(self.seed_bytes()?, network)
             .expect("derivation should not be able to fail");
-        Ok(extended_public_key.to_priv())
+        Ok((extended_public_key.to_priv(), derivation_path))
     }
 
     pub fn identity_registration_ecdsa_public_key(

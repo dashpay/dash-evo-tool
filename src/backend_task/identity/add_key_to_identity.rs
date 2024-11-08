@@ -20,7 +20,7 @@ impl AppContext {
         &self,
         sdk: &Sdk,
         mut qualified_identity: QualifiedIdentity,
-        mut public_key_to_add: IdentityPublicKey,
+        mut public_key_to_add: QualifiedIdentityPublicKey,
         private_key: [u8; 32],
     ) -> Result<BackendTaskSuccessResult, String> {
         let new_identity_nonce = sdk
@@ -37,19 +37,20 @@ impl AppContext {
             .unwrap();
         qualified_identity.identity = identity;
         qualified_identity.identity.bump_revision();
-        public_key_to_add.set_id(qualified_identity.identity.get_public_key_max_id() + 1);
-        let qualified_key = QualifiedIdentityPublicKey::from_identity_public_key_with_wallets_check(
-            public_key_to_add.clone(),
-            self.wallets.read().unwrap().as_slice(),
-        );
+        public_key_to_add
+            .identity_public_key
+            .set_id(qualified_identity.identity.get_public_key_max_id() + 1);
         qualified_identity.private_keys.insert_non_encrypted(
-            (PrivateKeyOnMainIdentity, public_key_to_add.id()),
-            (qualified_key, private_key),
+            (
+                PrivateKeyOnMainIdentity,
+                public_key_to_add.identity_public_key.id(),
+            ),
+            (public_key_to_add.clone(), private_key),
         )?;
         let state_transition = IdentityUpdateTransition::try_from_identity_with_signer(
             &qualified_identity.identity,
             &master_key_id,
-            vec![public_key_to_add.clone()],
+            vec![public_key_to_add.identity_public_key.clone()],
             vec![],
             new_identity_nonce,
             UserFeeIncrease::default(),

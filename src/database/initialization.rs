@@ -1,10 +1,11 @@
 use crate::database::Database;
+use chrono::Utc;
 use rusqlite::{params, Connection};
 use std::fs;
 use std::path::Path;
 
-pub const DEFAULT_DB_VERSION: u16 = 1;
-pub const MIN_SUPPORTED_DB_VERSION: u16 = 1;
+pub const DEFAULT_DB_VERSION: u16 = 11;
+pub const MIN_SUPPORTED_DB_VERSION: u16 = 11;
 pub const DEFAULT_NETWORK: &str = "dash";
 
 impl Database {
@@ -61,15 +62,44 @@ impl Database {
         Ok(version < MIN_SUPPORTED_DB_VERSION)
     }
 
-    /// Backs up the existing database and recreates it if it’s outdated.
+    /// Backs up the existing database with a unique timestamped filename, recreates `data.db`, and refreshes the connection.
     fn backup_and_recreate_db(&self, db_file_path: &Path) -> rusqlite::Result<()> {
         if db_file_path.exists() {
-            // Create a backup file path by appending the backup suffix
-            let backup_path = db_file_path.with_extension("backup");
+            // Generate a unique filename with a timestamp for the backup
+            let timestamp = Utc::now().format("%Y%m%d_%H%M%S");
+            let backup_filename = format!("data_backup_{}.db", timestamp);
+            let backup_path = db_file_path.with_file_name(backup_filename);
+
+            // Rename `data.db` to the unique backup file
             fs::rename(db_file_path, &backup_path)
                 .map_err(|e| rusqlite::Error::ToSqlConversionFailure(e.into()))?;
             println!("Old database backed up to {:?}", backup_path);
         }
+
+        // Create a new empty `data.db` file and set up the initial schema
+        let new_conn = Connection::open(db_file_path)?;
+
+        // Initialize the `settings` table in the new database
+        new_conn.execute(
+            "CREATE TABLE IF NOT EXISTS settings (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            network TEXT NOT NULL,
+            start_root_screen INTEGER NOT NULL,
+            database_version INTEGER NOT NULL
+        )",
+            [],
+        )?;
+
+        // Insert default settings for the new database
+        new_conn.execute(
+            "INSERT INTO settings (id, network, start_root_screen, database_version)
+         VALUES (1, ?, 0, ?)",
+            params![DEFAULT_NETWORK, DEFAULT_DB_VERSION],
+        )?;
+
+        // Update the connection in `self.conn` to use the new `data.db` file
+        let mut conn_lock = self.conn.lock().unwrap();
+        *conn_lock = new_conn;
 
         Ok(())
     }

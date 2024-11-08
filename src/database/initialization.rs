@@ -18,6 +18,8 @@ impl Database {
             if self.is_outdated()? {
                 self.backup_and_recreate_db(db_file_path)?;
                 self.create_tables()?;
+                self.set_default_version()?;
+                println!("Database reinitialized with default settings.");
             }
         }
 
@@ -69,25 +71,6 @@ impl Database {
             println!("Old database backed up to {:?}", backup_path);
         }
 
-        // Re-create the settings schema after backup.
-        let new_conn = Connection::open(db_file_path)?;
-        new_conn.execute(
-            "CREATE TABLE IF NOT EXISTS settings (
-                id INTEGER PRIMARY KEY CHECK (id = 1),
-                network TEXT NOT NULL,
-                start_root_screen INTEGER NOT NULL,
-                database_version INTEGER NOT NULL
-            )",
-            [],
-        )?;
-
-        // Insert initial settings with default values.
-        new_conn.execute(
-            "INSERT INTO settings (id, network, start_root_screen, database_version)
-             VALUES (1, ?, 0, ?)",
-            params![DEFAULT_NETWORK, DEFAULT_DB_VERSION],
-        )?;
-        println!("Database reinitialized with default settings.");
         Ok(())
     }
 

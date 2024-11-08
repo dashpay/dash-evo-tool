@@ -2,8 +2,10 @@ use crate::app::AppAction;
 use crate::context::AppContext;
 use crate::model::qualified_identity::encrypted_key_storage::PrivateKeyData;
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::wallet::WalletSeedHash;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::ScreenLike;
+use dash_sdk::dashcore_rpc::dashcore::bip32::DerivationPath;
 use dash_sdk::dpp::dashcore::address::Payload;
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::{Address, PubkeyHash, ScriptHash};
@@ -12,7 +14,7 @@ use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicK
 use dash_sdk::dpp::identity::KeyType;
 use dash_sdk::dpp::identity::KeyType::BIP13_SCRIPT_HASH;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
-use dash_sdk::dpp::prelude::IdentityPublicKey;
+use dash_sdk::platform::IdentityPublicKey;
 use eframe::egui::{self, Context};
 use egui::{RichText, TextEdit};
 use std::sync::Arc;
@@ -20,7 +22,7 @@ use std::sync::Arc;
 pub struct KeyInfoScreen {
     pub identity: QualifiedIdentity,
     pub key: IdentityPublicKey,
-    pub private_key_data: Option<PrivateKeyData>,
+    pub private_key_data: Option<(PrivateKeyData, Option<(WalletSeedHash, DerivationPath)>)>,
     pub app_context: Arc<AppContext>,
     private_key_input: String,
     error_message: Option<String>,
@@ -80,6 +82,18 @@ impl ScreenLike for KeyInfoScreen {
                     } else {
                         ui.label("Disabled");
                     }
+                    ui.end_row();
+
+                    if let Some((_, Some((_, derivation_path)))) = self.private_key_data.as_ref() {
+                        // Disabled
+                        ui.label(RichText::new("In local Wallet").strong());
+                        ui.label(
+                            RichText::new(format!("At derivation path {}", derivation_path))
+                                .strong(),
+                        );
+                        ui.end_row();
+                    }
+
                     ui.end_row();
                 });
 
@@ -150,7 +164,7 @@ impl ScreenLike for KeyInfoScreen {
             ui.separator();
 
             // Display the private key if available
-            if let Some(private_key) = self.private_key_data.as_mut() {
+            if let Some((private_key, _)) = self.private_key_data.as_mut() {
                 ui.label("Private Key:");
                 match private_key {
                     PrivateKeyData::Clear(clear) => {
@@ -187,13 +201,13 @@ impl KeyInfoScreen {
     pub fn new(
         identity: QualifiedIdentity,
         key: IdentityPublicKey,
-        private_key_bytes: Option<PrivateKeyData>,
+        private_key_data: Option<(PrivateKeyData, Option<(WalletSeedHash, DerivationPath)>)>,
         app_context: &Arc<AppContext>,
     ) -> Self {
         Self {
             identity,
             key,
-            private_key_data: private_key_bytes,
+            private_key_data,
             app_context: app_context.clone(),
             private_key_input: String::new(),
             error_message: None,
@@ -212,7 +226,7 @@ impl KeyInfoScreen {
                     self.error_message = Some(format!("Issue verifying private key {}", err));
                 } else if validation_result.unwrap() {
                     // If valid, store the private key in the context and reset the input field
-                    self.private_key_data = Some(PrivateKeyData::Clear(private_key_bytes));
+                    self.private_key_data = Some((PrivateKeyData::Clear(private_key_bytes), None));
                     if let Err(e) = self.identity.private_keys.insert_non_encrypted(
                         (self.key.purpose().into(), self.key.id()),
                         (self.key.clone().into(), private_key_bytes),

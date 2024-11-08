@@ -3,6 +3,7 @@ use crate::backend_task::BackendTaskSuccessResult;
 use crate::context::AppContext;
 use crate::model::qualified_identity::encrypted_key_storage::PrivateKeyData;
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::wallet::WalletSeedHash;
 use crate::ui::add_key_screen::AddKeyScreen;
 use crate::ui::document_query_screen::DocumentQueryScreen;
 use crate::ui::dpns_contested_names_screen::DPNSContestedNamesScreen;
@@ -15,6 +16,7 @@ use crate::ui::wallet::import_wallet_screen::ImportWalletScreen;
 use crate::ui::wallet::wallets_screen::WalletsBalancesScreen;
 use crate::ui::withdrawals::WithdrawalScreen;
 use crate::ui::withdraws_status_screen::WithdrawsStatusScreen;
+use dash_sdk::dashcore_rpc::dashcore::bip32::DerivationPath;
 use dash_sdk::dpp::identity::Identity;
 use dash_sdk::dpp::prelude::IdentityPublicKey;
 use dpns_contested_names_screen::DPNSSubscreen;
@@ -122,7 +124,11 @@ pub enum ScreenType {
     WithdrawalScreen(QualifiedIdentity),
     TransferScreen(QualifiedIdentity),
     AddKeyScreen(QualifiedIdentity),
-    KeyInfo(QualifiedIdentity, IdentityPublicKey, Option<PrivateKeyData>),
+    KeyInfo(
+        QualifiedIdentity,
+        IdentityPublicKey,
+        Option<(PrivateKeyData, Option<(WalletSeedHash, DerivationPath)>)>,
+    ),
     Keys(Identity),
     DocumentQueryScreen,
     WithdrawsStatus,

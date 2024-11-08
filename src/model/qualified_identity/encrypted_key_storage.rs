@@ -1,6 +1,8 @@
 use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
 use crate::model::qualified_identity::PrivateKeyTarget;
+use crate::model::wallet::WalletSeedHash;
 use bincode::{Decode, Encode};
+use dash_sdk::dashcore_rpc::dashcore::bip32::DerivationPath;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::{KeyID, Purpose, SecurityLevel};
 use std::collections::{BTreeMap, BTreeSet};
@@ -120,6 +122,32 @@ impl KeyStorage {
             KeyStorage::Closed(closed) => closed
                 .get(key)
                 .map(|(_, k)| PrivateKeyData::Encrypted(k.clone())),
+        }
+    }
+
+    pub fn get_private_key_data_and_wallet_info(
+        &self,
+        key: &(PrivateKeyTarget, KeyID),
+    ) -> Option<(PrivateKeyData, Option<(WalletSeedHash, DerivationPath)>)> {
+        match self {
+            KeyStorage::Open(open) => open.get(key).map(|(qualified_identity_public_key, k)| {
+                (
+                    PrivateKeyData::Clear(*k),
+                    qualified_identity_public_key
+                        .in_wallet_at_derivation_path
+                        .clone(),
+                )
+            }),
+            KeyStorage::Closed(closed) => {
+                closed.get(key).map(|(qualified_identity_public_key, k)| {
+                    (
+                        PrivateKeyData::Encrypted(k.clone()),
+                        qualified_identity_public_key
+                            .in_wallet_at_derivation_path
+                            .clone(),
+                    )
+                })
+            }
         }
     }
 

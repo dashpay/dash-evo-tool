@@ -353,7 +353,6 @@ impl Wallet {
                             Some(false),
                         )
                         .map_err(|e| e.to_string())?;
-                    println!("adding address {} at {}", &address, &derivation_path);
                     app_context
                         .db
                         .add_address(

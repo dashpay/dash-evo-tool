@@ -3,6 +3,7 @@ use crate::backend_task::identity::IdentityTask;
 use crate::backend_task::BackendTask;
 use crate::context::AppContext;
 use crate::model::qualified_identity::encrypted_key_storage::PrivateKeyData;
+use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
 use crate::model::qualified_identity::PrivateKeyTarget::{
     PrivateKeyOnMainIdentity, PrivateKeyOnVoterIdentity,
 };
@@ -15,6 +16,7 @@ use crate::ui::key_info_screen::KeyInfoScreen;
 use crate::ui::transfers::TransferScreen;
 use crate::ui::withdrawals::WithdrawalScreen;
 use crate::ui::{RootScreenType, Screen, ScreenLike, ScreenType};
+use dash_sdk::dashcore_rpc::dashcore::bip32::DerivationPath;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::Purpose;
@@ -170,7 +172,7 @@ impl IdentitiesScreen {
         ui: &mut Ui,
         identity: &QualifiedIdentity,
         key: &IdentityPublicKey,
-        encrypted_private_key: Option<PrivateKeyData>,
+        encrypted_private_key: Option<(PrivateKeyData, Option<(WalletSeedHash, DerivationPath)>)>,
     ) -> AppAction {
         let button_color = if encrypted_private_key.is_some() {
             Color32::from_rgb(167, 232, 232)
@@ -358,7 +360,7 @@ impl IdentitiesScreen {
                                             if total_keys_shown < max_keys_to_show {
                                                 let holding_private_key = qualified_identity
                                                     .private_keys
-                                                    .get_private_key_data(&(
+                                                    .get_private_key_data_and_wallet_info(&(
                                                         PrivateKeyOnMainIdentity,
                                                         **key_id,
                                                     ));
@@ -387,7 +389,7 @@ impl IdentitiesScreen {
                                                         let holding_private_key =
                                                             qualified_identity
                                                                 .private_keys
-                                                                .get_private_key_data(&(
+                                                                .get_private_key_data_and_wallet_info(&(
                                                                     PrivateKeyOnVoterIdentity,
                                                                     **key_id,
                                                                 ));
@@ -549,7 +551,7 @@ impl IdentitiesScreen {
         for (key_id, key) in main_identity_rest_keys {
             let holding_private_key = qualified_identity
                 .private_keys
-                .get_private_key_data(&(PrivateKeyOnMainIdentity, **key_id));
+                .get_private_key_data_and_wallet_info(&(PrivateKeyOnMainIdentity, **key_id));
             action |= self.show_public_key(ui, qualified_identity, *key, holding_private_key);
         }
 
@@ -563,7 +565,7 @@ impl IdentitiesScreen {
             for (key_id, key) in voter_public_keys_vec.iter() {
                 let holding_private_key = qualified_identity
                     .private_keys
-                    .get_private_key_data(&(PrivateKeyOnVoterIdentity, **key_id));
+                    .get_private_key_data_and_wallet_info(&(PrivateKeyOnVoterIdentity, **key_id));
                 action |= self.show_public_key(ui, qualified_identity, *key, holding_private_key);
             }
         }

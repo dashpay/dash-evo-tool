@@ -1,6 +1,8 @@
+use super::BackendTaskSuccessResult;
 use crate::backend_task::identity::{verify_key_input, IdentityInputToLoad};
 use crate::context::AppContext;
-use crate::model::qualified_identity::EncryptedPrivateKeyTarget::{
+use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
+use crate::model::qualified_identity::PrivateKeyTarget::{
     self, PrivateKeyOnMainIdentity, PrivateKeyOnVoterIdentity,
 };
 use crate::model::qualified_identity::{DPNSNameInfo, IdentityType, QualifiedIdentity};
@@ -16,8 +18,6 @@ use dash_sdk::drive::query::{WhereClause, WhereOperator};
 use dash_sdk::platform::{Document, DocumentQuery, Fetch, FetchMany, Identifier, Identity};
 use dash_sdk::Sdk;
 use std::collections::BTreeMap;
-
-use super::BackendTaskSuccessResult;
 
 impl AppContext {
     pub(super) async fn load_identity(
@@ -61,13 +61,21 @@ impl AppContext {
 
         let mut encrypted_private_keys = BTreeMap::new();
 
+        let wallets = self.wallets.read().unwrap();
+
         if identity_type != IdentityType::User && owner_private_key_bytes.is_some() {
             let owner_private_key_bytes = owner_private_key_bytes.unwrap();
             let key =
                 self.verify_owner_key_exists_on_identity(&identity, &owner_private_key_bytes)?;
+            let key_id = key.id();
+            let qualified_key =
+                QualifiedIdentityPublicKey::from_identity_public_key_with_wallets_check(
+                    key,
+                    wallets.as_slice(),
+                );
             encrypted_private_keys.insert(
-                (PrivateKeyOnMainIdentity, key.id()),
-                (key.clone(), owner_private_key_bytes),
+                (PrivateKeyOnMainIdentity, key_id),
+                (qualified_key, owner_private_key_bytes),
             );
         }
 
@@ -77,9 +85,15 @@ impl AppContext {
                 &identity,
                 &payout_address_private_key_bytes,
             )?;
+            let key_id = key.id();
+            let qualified_key =
+                QualifiedIdentityPublicKey::from_identity_public_key_with_wallets_check(
+                    key,
+                    wallets.as_slice(),
+                );
             encrypted_private_keys.insert(
-                (PrivateKeyOnMainIdentity, key.id()),
-                (key.clone(), payout_address_private_key_bytes),
+                (PrivateKeyOnMainIdentity, key_id),
+                (qualified_key, payout_address_private_key_bytes),
             );
         }
 
@@ -108,9 +122,14 @@ impl AppContext {
                     &voter_identity,
                     &voting_private_key_bytes,
                 )?;
+                let qualified_key =
+                    QualifiedIdentityPublicKey::from_identity_public_key_with_wallets_check(
+                        key.clone(),
+                        wallets.as_slice(),
+                    );
                 encrypted_private_keys.insert(
                     (PrivateKeyOnVoterIdentity, key.id()),
-                    (key.clone(), voting_private_key_bytes),
+                    (qualified_key, voting_private_key_bytes),
                 );
                 Some((voter_identity, key))
             } else {
@@ -136,9 +155,14 @@ impl AppContext {
                         return Err("Private key input length is 0 for key id {key_id}".to_string())
                     }
                 };
+                let qualified_key =
+                    QualifiedIdentityPublicKey::from_identity_public_key_with_wallets_check(
+                        public_key.clone(),
+                        wallets.as_slice(),
+                    );
                 encrypted_private_keys.insert(
-                    (EncryptedPrivateKeyTarget::PrivateKeyOnMainIdentity, key_id),
-                    (public_key.clone(), private_key_bytes),
+                    (PrivateKeyTarget::PrivateKeyOnMainIdentity, key_id),
+                    (qualified_key, private_key_bytes),
                 );
             }
         }
@@ -198,7 +222,7 @@ impl AppContext {
             } else {
                 Some(alias_input)
             },
-            encrypted_private_keys,
+            private_keys: encrypted_private_keys.into(),
             dpns_names: maybe_owned_dpns_names,
         };
 

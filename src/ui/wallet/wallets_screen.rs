@@ -1,6 +1,6 @@
 use crate::app::{AppAction, DesiredAppAction};
 use crate::backend_task::core::CoreTask;
-use crate::backend_task::BackendTask;
+use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::wallet::Wallet;
 use crate::ui::components::left_panel::add_left_panel;
@@ -21,6 +21,7 @@ enum SortColumn {
     TotalReceived,
     Type,
     Index,
+    DerivationPath,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -41,6 +42,7 @@ pub trait DerivationPathHelpers {
     fn is_bip44(&self, network: Network) -> bool;
     fn is_bip44_external(&self, network: Network) -> bool;
     fn is_bip44_change(&self, network: Network) -> bool;
+    fn is_asset_lock_funding(&self, network: Network) -> bool;
 }
 impl DerivationPathHelpers for DerivationPath {
     fn is_bip44(&self, network: Network) -> bool {
@@ -80,6 +82,21 @@ impl DerivationPathHelpers for DerivationPath {
             && components[1] == ChildNumber::Hardened { index: coin_type }
             && components[3] == ChildNumber::Normal { index: 1 }
     }
+
+    fn is_asset_lock_funding(&self, network: Network) -> bool {
+        // BIP44 change paths have the form m/44'/coin_type'/account'/1/...
+        let coin_type = match network {
+            Network::Dash => 5,
+            _ => 1,
+        };
+        // Asset lock funding paths have the form m/9'/coin_type'/5'/1'/x
+        let components = self.as_ref();
+        components.len() == 5
+            && components[0] == ChildNumber::Hardened { index: 9 }
+            && components[1] == ChildNumber::Hardened { index: coin_type }
+            && components[2] == ChildNumber::Hardened { index: 5 }
+            && components[3] == ChildNumber::Hardened { index: 1 }
+    }
 }
 
 // Define a struct to hold the address data
@@ -90,6 +107,7 @@ struct AddressData {
     total_received: u64,
     address_type: String,
     index: u32,
+    derivation_path: DerivationPath,
 }
 
 impl WalletsBalancesScreen {
@@ -139,6 +157,7 @@ impl WalletsBalancesScreen {
                 SortColumn::TotalReceived => a.total_received.cmp(&b.total_received),
                 SortColumn::Type => a.address_type.cmp(&b.address_type),
                 SortColumn::Index => a.index.cmp(&b.index),
+                SortColumn::DerivationPath => a.derivation_path.cmp(&b.derivation_path),
             };
 
             if self.sort_order == SortOrder::Ascending {
@@ -272,11 +291,13 @@ impl WalletsBalancesScreen {
                     };
                     let address_type =
                         if derivation_path.is_bip44_external(self.app_context.network) {
-                            "BIP44 External".to_string()
+                            "Funds".to_string()
                         } else if derivation_path.is_bip44_change(self.app_context.network) {
-                            "BIP44 Change".to_string()
+                            "Change".to_string()
+                        } else if derivation_path.is_asset_lock_funding(self.app_context.network) {
+                            "Identity Creation".to_string()
                         } else {
-                            "Unknown".to_string()
+                            "System".to_string()
                         };
 
                     AddressData {
@@ -290,6 +311,7 @@ impl WalletsBalancesScreen {
                         total_received,
                         address_type,
                         index,
+                        derivation_path: derivation_path.clone(),
                     }
                 })
                 .collect::<Vec<AddressData>>()
@@ -316,6 +338,7 @@ impl WalletsBalancesScreen {
                             .column(Column::initial(150.0)) // Total Received
                             .column(Column::initial(100.0)) // Type
                             .column(Column::initial(60.0)) // Index
+                            .column(Column::remainder()) // Derivation Path
                             .header(30.0, |mut header| {
                                 header.col(|ui| {
                                     let label = if self.sort_column == SortColumn::Address {
@@ -395,6 +418,19 @@ impl WalletsBalancesScreen {
                                         self.toggle_sort(SortColumn::Index);
                                     }
                                 });
+                                header.col(|ui| {
+                                    let label = if self.sort_column == SortColumn::DerivationPath {
+                                        match self.sort_order {
+                                            SortOrder::Ascending => "Full Path ^",
+                                            SortOrder::Descending => "Full Path v",
+                                        }
+                                    } else {
+                                        "Full Path"
+                                    };
+                                    if ui.button(label).clicked() {
+                                        self.toggle_sort(SortColumn::DerivationPath);
+                                    }
+                                });
                             })
                             .body(|mut body| {
                                 for data in &address_data {
@@ -418,6 +454,9 @@ impl WalletsBalancesScreen {
                                         });
                                         row.col(|ui| {
                                             ui.label(format!("{}", data.index));
+                                        });
+                                        row.col(|ui| {
+                                            ui.label(format!("{}", data.derivation_path));
                                         });
                                     });
                                 }
@@ -571,6 +610,10 @@ impl ScreenLike for WalletsBalancesScreen {
         });
 
         action
+    }
+
+    fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
+        println!("{:?}", backend_task_success_result)
     }
 
     fn display_message(&mut self, message: &str, message_type: MessageType) {

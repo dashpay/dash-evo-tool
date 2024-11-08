@@ -2,7 +2,8 @@ use crate::app::{AppAction, DesiredAppAction};
 use crate::backend_task::identity::IdentityTask;
 use crate::backend_task::BackendTask;
 use crate::context::AppContext;
-use crate::model::qualified_identity::EncryptedPrivateKeyTarget::{
+use crate::model::qualified_identity::encrypted_key_storage::PrivateKeyData;
+use crate::model::qualified_identity::PrivateKeyTarget::{
     PrivateKeyOnMainIdentity, PrivateKeyOnVoterIdentity,
 };
 use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
@@ -24,7 +25,6 @@ use eframe::egui::{self, Context};
 use eframe::emath::Align;
 use egui::{Color32, Frame, Margin, RichText, Ui};
 use egui_extras::{Column, TableBuilder};
-use std::collections::BTreeMap;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
@@ -102,6 +102,18 @@ impl IdentitiesScreen {
             .on_hover_text(helper);
     }
 
+    fn show_in_wallet(ui: &mut Ui, qualified_identity: &QualifiedIdentity) {
+        // Calculate the balance in DASH (10^-11 conversion)
+        let balance_in_dash = qualified_identity.identity.balance() as f64 * 1e-11;
+
+        // Format the balance with 4 decimal places
+        let formatted_balance = format!("{:.4} DASH", balance_in_dash);
+
+        // Add the label with hover text
+        ui.add(egui::Label::new(formatted_balance).sense(egui::Sense::hover()))
+            .on_hover_text(format!("{}", qualified_identity.identity.balance()));
+    }
+
     fn show_balance(ui: &mut Ui, qualified_identity: &QualifiedIdentity) {
         // Calculate the balance in DASH (10^-11 conversion)
         let balance_in_dash = qualified_identity.identity.balance() as f64 * 1e-11;
@@ -119,7 +131,7 @@ impl IdentitiesScreen {
         ui: &mut Ui,
         identity: &QualifiedIdentity,
         key: &IdentityPublicKey,
-        encrypted_private_key: Option<&[u8; 32]>,
+        encrypted_private_key: Option<PrivateKeyData>,
     ) -> AppAction {
         let button_color = if encrypted_private_key.is_some() {
             Color32::from_rgb(167, 232, 232)
@@ -149,7 +161,7 @@ impl IdentitiesScreen {
             AppAction::AddScreen(Screen::KeyInfoScreen(KeyInfoScreen::new(
                 identity.clone(),
                 key.clone(),
-                encrypted_private_key.cloned(),
+                encrypted_private_key,
                 &self.app_context,
             )))
         } else {
@@ -234,20 +246,24 @@ impl IdentitiesScreen {
                         .resizable(true)
                         .cell_layout(egui::Layout::left_to_right(Align::Center))
                         // Define columns with resizing and alignment
-                        .column(Column::initial(40.0).resizable(true)) // Name
+                        .column(Column::initial(60.0).resizable(true)) // Name
                         .column(Column::initial(100.0).resizable(true)) // Identity ID
+                        .column(Column::initial(60.0).resizable(true)) // In Wallet
                         .column(Column::initial(100.0).resizable(true)) // Balance
                         .column(Column::initial(80.0).resizable(true)) // Type
-                        .column(Column::initial(80.0).resizable(true)) // Refresh
                         .column(Column::initial(80.0).resizable(true)) // Keys
                         .column(Column::initial(80.0).resizable(true)) // Withdraw
                         .column(Column::initial(80.0).resizable(true)) // Transfer
+                        .column(Column::initial(80.0).resizable(true)) // Actions
                         .header(30.0, |mut header| {
                             header.col(|ui| {
                                 ui.heading("Name");
                             });
                             header.col(|ui| {
                                 ui.heading("Identity ID");
+                            });
+                            header.col(|ui| {
+                                ui.heading("In Wallet");
                             });
                             header.col(|ui| {
                                 ui.heading("Balance");
@@ -284,6 +300,9 @@ impl IdentitiesScreen {
                                         Self::show_identity_id(ui, qualified_identity);
                                     });
                                     row.col(|ui| {
+                                        Self::show_in_wallet(ui, qualified_identity);
+                                    });
+                                    row.col(|ui| {
                                         Self::show_balance(ui, qualified_identity);
                                     });
                                     row.col(|ui| {
@@ -299,9 +318,11 @@ impl IdentitiesScreen {
                                         for (key_id, key) in public_keys_vec.iter() {
                                             if total_keys_shown < max_keys_to_show {
                                                 let holding_private_key = qualified_identity
-                                                    .encrypted_private_keys
-                                                    .get(&(PrivateKeyOnMainIdentity, **key_id))
-                                                    .map(|(_, p)| p);
+                                                    .private_keys
+                                                    .get_private_key_data(&(
+                                                        PrivateKeyOnMainIdentity,
+                                                        **key_id,
+                                                    ));
                                                 action |= self.show_public_key(
                                                     ui,
                                                     qualified_identity,
@@ -326,12 +347,11 @@ impl IdentitiesScreen {
                                                     if total_keys_shown < max_keys_to_show {
                                                         let holding_private_key =
                                                             qualified_identity
-                                                                .encrypted_private_keys
-                                                                .get(&(
+                                                                .private_keys
+                                                                .get_private_key_data(&(
                                                                     PrivateKeyOnVoterIdentity,
                                                                     **key_id,
-                                                                ))
-                                                                .map(|(_, p)| p);
+                                                                ));
                                                         action |= self.show_public_key(
                                                             ui,
                                                             qualified_identity,
@@ -489,9 +509,8 @@ impl IdentitiesScreen {
         ));
         for (key_id, key) in main_identity_rest_keys {
             let holding_private_key = qualified_identity
-                .encrypted_private_keys
-                .get(&(PrivateKeyOnMainIdentity, **key_id))
-                .map(|(_, p)| p);
+                .private_keys
+                .get_private_key_data(&(PrivateKeyOnMainIdentity, **key_id));
             action |= self.show_public_key(ui, qualified_identity, *key, holding_private_key);
         }
 
@@ -504,9 +523,8 @@ impl IdentitiesScreen {
             ui.label("Voter Identity Keys:");
             for (key_id, key) in voter_public_keys_vec.iter() {
                 let holding_private_key = qualified_identity
-                    .encrypted_private_keys
-                    .get(&(PrivateKeyOnVoterIdentity, **key_id))
-                    .map(|(_, p)| p);
+                    .private_keys
+                    .get_private_key_data(&(PrivateKeyOnVoterIdentity, **key_id));
                 action |= self.show_public_key(ui, qualified_identity, *key, holding_private_key);
             }
         }

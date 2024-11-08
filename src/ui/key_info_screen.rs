@@ -1,5 +1,6 @@
 use crate::app::AppAction;
 use crate::context::AppContext;
+use crate::model::qualified_identity::encrypted_key_storage::PrivateKeyData;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::ScreenLike;
@@ -19,7 +20,7 @@ use std::sync::Arc;
 pub struct KeyInfoScreen {
     pub identity: QualifiedIdentity,
     pub key: IdentityPublicKey,
-    pub private_key_bytes: Option<[u8; 32]>,
+    pub private_key_data: Option<PrivateKeyData>,
     pub app_context: Arc<AppContext>,
     private_key_input: String,
     error_message: Option<String>,
@@ -149,13 +150,20 @@ impl ScreenLike for KeyInfoScreen {
             ui.separator();
 
             // Display the private key if available
-            if let Some(private_key) = &self.private_key_bytes {
+            if let Some(private_key) = self.private_key_data.as_mut() {
                 ui.label("Private Key:");
-                let private_key_hex = hex::encode(private_key);
-                ui.add(
-                    TextEdit::multiline(&mut private_key_hex.as_str().to_owned())
-                        .desired_width(f32::INFINITY),
-                );
+                match private_key {
+                    PrivateKeyData::Clear(clear) => {
+                        let private_key_hex = hex::encode(clear);
+                        ui.add(
+                            TextEdit::multiline(&mut private_key_hex.as_str().to_owned())
+                                .desired_width(f32::INFINITY),
+                        );
+                    }
+                    PrivateKeyData::Encrypted(_) => {
+                        ui.label("key is encrypted");
+                    }
+                }
             } else {
                 ui.label("Enter Private Key:");
                 ui.text_edit_singleline(&mut self.private_key_input);
@@ -179,13 +187,13 @@ impl KeyInfoScreen {
     pub fn new(
         identity: QualifiedIdentity,
         key: IdentityPublicKey,
-        private_key_bytes: Option<[u8; 32]>,
+        private_key_bytes: Option<PrivateKeyData>,
         app_context: &Arc<AppContext>,
     ) -> Self {
         Self {
             identity,
             key,
-            private_key_bytes,
+            private_key_data: private_key_bytes,
             app_context: app_context.clone(),
             private_key_input: String::new(),
             error_message: None,
@@ -204,11 +212,13 @@ impl KeyInfoScreen {
                     self.error_message = Some(format!("Issue verifying private key {}", err));
                 } else if validation_result.unwrap() {
                     // If valid, store the private key in the context and reset the input field
-                    self.private_key_bytes = Some(private_key_bytes.clone());
-                    self.identity.encrypted_private_keys.insert(
+                    self.private_key_data = Some(PrivateKeyData::Clear(private_key_bytes));
+                    if let Err(e) = self.identity.private_keys.insert_non_encrypted(
                         (self.key.purpose().into(), self.key.id()),
-                        (self.key.clone(), private_key_bytes),
-                    );
+                        (self.key.clone().into(), private_key_bytes),
+                    ) {
+                        self.error_message = Some(e);
+                    }
                     match self
                         .app_context
                         .insert_local_qualified_identity(&self.identity, None)

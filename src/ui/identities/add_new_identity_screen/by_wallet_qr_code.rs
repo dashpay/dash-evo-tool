@@ -113,7 +113,7 @@ impl AddNewIdentityScreen {
         Ok(())
     }
 
-    pub fn render_ui_by_wallet_qr_code(&mut self, ui: &mut Ui, mut step_number: u32) -> AppAction {
+    pub fn render_ui_by_wallet_qr_code(&mut self, ui: &mut Ui, step_number: u32) -> AppAction {
         let mut action = AppAction::None;
 
         // Extract the step from the RwLock to minimize borrow scope
@@ -132,7 +132,6 @@ impl AddNewIdentityScreen {
             )
             .as_str(),
         );
-        step_number += 1;
 
         ui.add_space(8.0);
 

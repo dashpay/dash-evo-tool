@@ -10,7 +10,7 @@ use egui::{
     Color32, ComboBox, Direction, FontId, Frame, Grid, Layout, Margin, RichText, Stroke, TextStyle,
     Ui, Vec2,
 };
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 pub struct ImportWalletScreen {
     seed_phrase: Option<Mnemonic>,
@@ -183,7 +183,7 @@ impl ImportWalletScreen {
 
 impl ScreenLike for ImportWalletScreen {
     fn ui(&mut self, ctx: &Context) -> AppAction {
-        let mut action = add_top_panel(
+        let action = add_top_panel(
             ctx,
             &self.app_context,
             vec![

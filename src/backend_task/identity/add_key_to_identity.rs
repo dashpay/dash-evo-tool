@@ -1,5 +1,7 @@
+use super::BackendTaskSuccessResult;
 use crate::context::AppContext;
-use crate::model::qualified_identity::EncryptedPrivateKeyTarget::PrivateKeyOnMainIdentity;
+use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
+use crate::model::qualified_identity::PrivateKeyTarget::PrivateKeyOnMainIdentity;
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::{
@@ -12,8 +14,6 @@ use dash_sdk::dpp::state_transition::proof_result::StateTransitionProofResult;
 use dash_sdk::platform::transition::broadcast::BroadcastStateTransition;
 use dash_sdk::platform::{Fetch, Identity, IdentityPublicKey};
 use dash_sdk::Sdk;
-
-use super::BackendTaskSuccessResult;
 
 impl AppContext {
     pub(super) async fn add_key_to_identity(
@@ -30,7 +30,7 @@ impl AppContext {
         let Some(master_key) = qualified_identity.can_sign_with_master_key() else {
             return Err("Master key not found".to_string());
         };
-        let master_key_id = master_key.id();
+        let master_key_id = master_key.identity_public_key.id();
         let identity = Identity::fetch_by_identifier(sdk, qualified_identity.identity.id())
             .await
             .map_err(|e| format!("Fetch nonce error: {}", e))?
@@ -38,10 +38,14 @@ impl AppContext {
         qualified_identity.identity = identity;
         qualified_identity.identity.bump_revision();
         public_key_to_add.set_id(qualified_identity.identity.get_public_key_max_id() + 1);
-        qualified_identity.encrypted_private_keys.insert(
-            (PrivateKeyOnMainIdentity, public_key_to_add.id()),
-            (public_key_to_add.clone(), private_key.clone()),
+        let qualified_key = QualifiedIdentityPublicKey::from_identity_public_key_with_wallets_check(
+            public_key_to_add.clone(),
+            self.wallets.read().unwrap().as_slice(),
         );
+        qualified_identity.private_keys.insert_non_encrypted(
+            (PrivateKeyOnMainIdentity, public_key_to_add.id()),
+            (qualified_key, private_key),
+        )?;
         let state_transition = IdentityUpdateTransition::try_from_identity_with_signer(
             &qualified_identity.identity,
             &master_key_id,

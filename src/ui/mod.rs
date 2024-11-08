@@ -1,6 +1,7 @@
 use crate::app::AppAction;
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::context::AppContext;
+use crate::model::qualified_identity::encrypted_key_storage::PrivateKeyData;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::add_key_screen::AddKeyScreen;
 use crate::ui::document_query_screen::DocumentQueryScreen;
@@ -121,7 +122,7 @@ pub enum ScreenType {
     WithdrawalScreen(QualifiedIdentity),
     TransferScreen(QualifiedIdentity),
     AddKeyScreen(QualifiedIdentity),
-    KeyInfo(QualifiedIdentity, IdentityPublicKey, Option<[u8; 32]>),
+    KeyInfo(QualifiedIdentity, IdentityPublicKey, Option<PrivateKeyData>),
     Keys(Identity),
     DocumentQueryScreen,
     WithdrawsStatus,
@@ -283,7 +284,7 @@ impl Screen {
             Screen::KeyInfoScreen(screen) => ScreenType::KeyInfo(
                 screen.identity.clone(),
                 screen.key.clone(),
-                screen.private_key_bytes.clone(),
+                screen.private_key_data.clone(),
             ),
             Screen::IdentitiesScreen(_) => ScreenType::Identities,
             Screen::DPNSContestedNamesScreen(DPNSContestedNamesScreen {

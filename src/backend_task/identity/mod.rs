@@ -6,11 +6,12 @@ mod register_identity;
 mod transfer;
 mod withdraw_from_identity;
 
+use super::BackendTaskSuccessResult;
 use crate::app::TaskResult;
 use crate::context::AppContext;
-use crate::model::qualified_identity::{
-    EncryptedPrivateKeyTarget, IdentityType, QualifiedIdentity,
-};
+use crate::model::qualified_identity::encrypted_key_storage::KeyStorage;
+use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
+use crate::model::qualified_identity::{IdentityType, PrivateKeyTarget, QualifiedIdentity};
 use crate::model::wallet::Wallet;
 use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
 use dash_sdk::dashcore_rpc::dashcore::{Address, PrivateKey, TxOut};
@@ -29,8 +30,6 @@ use dash_sdk::Sdk;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 use tokio::sync::mpsc;
-
-use super::BackendTaskSuccessResult;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct IdentityInputToLoad {
@@ -51,9 +50,7 @@ pub struct IdentityKeys {
 }
 
 impl IdentityKeys {
-    pub fn to_encrypted_private_keys(
-        &self,
-    ) -> BTreeMap<(EncryptedPrivateKeyTarget, KeyID), (IdentityPublicKey, [u8; 32])> {
+    pub fn to_key_storage(&self, context: &AppContext) -> KeyStorage {
         let Self {
             master_private_key,
             master_private_key_type,
@@ -61,6 +58,9 @@ impl IdentityKeys {
         } = self;
         let secp = Secp256k1::new();
         let mut key_map = BTreeMap::new();
+
+        let wallets = context.wallets.read().unwrap();
+
         if let Some(master_private_key) = master_private_key {
             let key = IdentityPublicKey::V0(IdentityPublicKeyV0 {
                 id: 0,
@@ -73,11 +73,20 @@ impl IdentityKeys {
                 disabled_at: None,
             });
 
+            let qualified_identity_public_key =
+                QualifiedIdentityPublicKey::from_identity_public_key_with_wallets_check(
+                    key,
+                    wallets.as_slice(),
+                );
             key_map.insert(
-                (EncryptedPrivateKeyTarget::PrivateKeyOnMainIdentity, 0),
-                (key, master_private_key.inner.secret_bytes()),
+                (PrivateKeyTarget::PrivateKeyOnMainIdentity, 0),
+                (
+                    qualified_identity_public_key,
+                    master_private_key.inner.secret_bytes(),
+                ),
             );
         }
+
         key_map.extend(keys_input.iter().enumerate().map(
             |(i, (private_key, key_type, purpose, security_level))| {
                 let id = (i + 1) as KeyID;
@@ -91,14 +100,23 @@ impl IdentityKeys {
                     data: private_key.public_key(&secp).to_bytes().into(),
                     disabled_at: None,
                 });
+
+                let qualified_identity_public_key =
+                    QualifiedIdentityPublicKey::from_identity_public_key_with_wallets_check(
+                        identity_public_key,
+                        wallets.as_slice(),
+                    );
                 (
-                    (EncryptedPrivateKeyTarget::PrivateKeyOnMainIdentity, id),
-                    (identity_public_key, private_key.inner.secret_bytes()),
+                    (PrivateKeyTarget::PrivateKeyOnMainIdentity, id),
+                    (
+                        qualified_identity_public_key,
+                        private_key.inner.secret_bytes(),
+                    ),
                 )
             },
         ));
 
-        key_map
+        KeyStorage::Open(key_map.into())
     }
     pub fn to_public_keys_map(&self) -> BTreeMap<KeyID, IdentityPublicKey> {
         let Self {

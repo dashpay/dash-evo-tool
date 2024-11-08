@@ -121,7 +121,7 @@ impl AppContext {
             .await
             .map_err(|e| e.to_string())?;
 
-        let mut wallet_id;
+        let wallet_id;
 
         let (asset_lock_proof, asset_lock_proof_private_key, tx_id) =
             match identity_registration_method {
@@ -207,7 +207,7 @@ impl AppContext {
                         .send_raw_transaction(&asset_lock_transaction)
                         .map_err(|e| e.to_string())?;
 
-                    let mut asset_lock_proof;
+                    let asset_lock_proof;
 
                     loop {
                         {
@@ -259,7 +259,7 @@ impl AppContext {
                         .send_raw_transaction(&asset_lock_transaction)
                         .map_err(|e| e.to_string())?;
 
-                    let mut asset_lock_proof;
+                    let asset_lock_proof;
 
                     loop {
                         {
@@ -298,7 +298,7 @@ impl AppContext {
             associated_owner_key_id: None,
             identity_type: IdentityType::User,
             alias: None,
-            encrypted_private_keys: keys.to_encrypted_private_keys(),
+            private_keys: keys.to_key_storage(self),
             dpns_names: vec![],
         };
 

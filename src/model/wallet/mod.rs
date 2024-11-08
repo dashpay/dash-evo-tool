@@ -117,6 +117,8 @@ pub struct Wallet {
     pub is_main: bool,
 }
 
+pub type WalletSeedHash = [u8; 32];
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum WalletSeed {
     Open(OpenWalletSeed),
@@ -131,7 +133,7 @@ pub struct OpenWalletSeed {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ClosedWalletSeed {
-    pub seed_hash: [u8; 32], // SHA-256 hash of the seed
+    pub seed_hash: WalletSeedHash, // SHA-256 hash of the seed
     pub encrypted_seed: Vec<u8>,
     pub salt: Vec<u8>,
     pub nonce: Vec<u8>,

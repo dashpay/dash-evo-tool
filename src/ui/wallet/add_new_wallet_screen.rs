@@ -4,10 +4,7 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::ScreenLike;
 use eframe::egui::Context;
 
-use crate::model::wallet::{
-    ClosedWalletSeed, DerivationPathReference, DerivationPathType, OpenWalletSeed, Wallet,
-    WalletSeed,
-};
+use crate::model::wallet::{ClosedWalletSeed, OpenWalletSeed, Wallet, WalletSeed};
 use crate::ui::components::entropy_grid::U256EntropyGrid;
 use bip39::{Language, Mnemonic};
 use dash_sdk::dashcore_rpc::dashcore::bip32::{ChildNumber, DerivationPath};

@@ -60,9 +60,16 @@ impl WithdrawalScreen {
                         }
                     } else {
                         for key in self.identity.available_withdrawal_keys() {
-                            let label =
-                                format!("Key ID: {} (Purpose: {:?})", key.id(), key.purpose());
-                            ui.selectable_value(&mut self.selected_key, Some(key.clone()), label);
+                            let label = format!(
+                                "Key ID: {} (Purpose: {:?})",
+                                key.identity_public_key.id(),
+                                key.identity_public_key.purpose()
+                            );
+                            ui.selectable_value(
+                                &mut self.selected_key,
+                                Some(key.identity_public_key.clone()),
+                                label,
+                            );
                         }
                     }
                 });

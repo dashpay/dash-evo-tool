@@ -12,7 +12,7 @@ use dash_sdk::dpp::state_transition::identity_update_transition::methods::Identi
 use dash_sdk::dpp::state_transition::identity_update_transition::IdentityUpdateTransition;
 use dash_sdk::dpp::state_transition::proof_result::StateTransitionProofResult;
 use dash_sdk::platform::transition::broadcast::BroadcastStateTransition;
-use dash_sdk::platform::{Fetch, Identity, IdentityPublicKey};
+use dash_sdk::platform::{Fetch, Identity};
 use dash_sdk::Sdk;
 
 impl AppContext {
@@ -46,7 +46,7 @@ impl AppContext {
                 public_key_to_add.identity_public_key.id(),
             ),
             (public_key_to_add.clone(), private_key),
-        )?;
+        );
         let state_transition = IdentityUpdateTransition::try_from_identity_with_signer(
             &qualified_identity.identity,
             &master_key_id,

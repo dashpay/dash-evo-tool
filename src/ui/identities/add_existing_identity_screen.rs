@@ -3,16 +3,19 @@ use crate::backend_task::identity::{IdentityInputToLoad, IdentityTask};
 use crate::backend_task::BackendTask;
 use crate::context::AppContext;
 use crate::model::qualified_identity::IdentityType;
+use crate::model::wallet::Wallet;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::{MessageType, ScreenLike};
 use dash_sdk::dashcore_rpc::dashcore::Network;
 use dash_sdk::dpp::identity::TimestampMillis;
 use eframe::egui::Context;
+use egui::{ComboBox, Ui};
 use rand::prelude::IteratorRandom;
 use rand::thread_rng;
 use serde::Deserialize;
 use std::fs;
-use std::sync::Arc;
+use std::sync::atomic::Ordering;
+use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone, Deserialize)]
@@ -78,6 +81,12 @@ pub enum AddIdentityStatus {
     Complete,
 }
 
+#[derive(Clone, PartialEq)]
+pub enum IdentityLoadMethod {
+    ByIdentifier,
+    FromWallet,
+}
+
 pub struct AddExistingIdentityScreen {
     identity_id_input: String,
     pub identity_type: IdentityType,
@@ -88,11 +97,15 @@ pub struct AddExistingIdentityScreen {
     keys_input: Vec<String>,
     add_identity_status: AddIdentityStatus,
     testnet_loaded_nodes: Option<TestnetNodes>,
+    pub identity_load_method: IdentityLoadMethod,
+    selected_wallet: Option<Arc<RwLock<Wallet>>>,
+    pub identity_index_input: String,
     pub app_context: Arc<AppContext>,
 }
 
 impl AddExistingIdentityScreen {
     pub fn new(app_context: &Arc<AppContext>) -> Self {
+        let selected_wallet = app_context.wallets.read().unwrap().first().cloned();
         let testnet_loaded_nodes = if app_context.network == Network::Testnet {
             load_testnet_nodes_from_yml(".testnet_nodes.yml")
         } else {
@@ -108,8 +121,136 @@ impl AddExistingIdentityScreen {
             keys_input: vec![String::new()],
             add_identity_status: AddIdentityStatus::NotStarted,
             testnet_loaded_nodes,
+            identity_load_method: IdentityLoadMethod::ByIdentifier,
+            selected_wallet,
+            identity_index_input: String::new(),
             app_context: app_context.clone(),
         }
+    }
+
+    fn render_by_identity(&mut self, ui: &mut egui::Ui) -> AppAction {
+        let mut action = AppAction::None;
+        if self.app_context.network == Network::Testnet && self.testnet_loaded_nodes.is_some() {
+            if ui.button("Fill Random HPMN").clicked() {
+                self.fill_random_hpmn();
+            }
+
+            if ui.button("Fill Random Masternode").clicked() {
+                self.fill_random_masternode();
+            }
+        }
+
+        ui.horizontal(|ui| {
+            ui.label("Identity ID / ProTxHash (Hex or Base58):");
+            ui.text_edit_singleline(&mut self.identity_id_input);
+        });
+
+        self.render_identity_type_selection(ui);
+
+        // Input for Alias
+        ui.horizontal(|ui| {
+            ui.label("Alias:");
+            ui.text_edit_singleline(&mut self.alias_input);
+        });
+
+        // Render the keys input based on identity type
+        self.render_keys_input(ui);
+
+        if ui.button("Load Identity").clicked() {
+            // Set the status to waiting and capture the current time
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("Time went backwards")
+                .as_secs();
+            self.add_identity_status = AddIdentityStatus::WaitingForResult(now);
+            action = self.load_identity_clicked();
+        }
+        action
+    }
+
+    fn render_wallet_selection(&mut self, ui: &mut Ui) {
+        ui.horizontal(|ui| {
+            if self.app_context.has_wallet.load(Ordering::Relaxed) {
+                let wallets = &self.app_context.wallets.read().unwrap();
+                let wallet_aliases: Vec<String> = wallets
+                    .iter()
+                    .map(|wallet| {
+                        wallet
+                            .read()
+                            .unwrap()
+                            .alias
+                            .clone()
+                            .unwrap_or_else(|| "Unnamed Wallet".to_string())
+                    })
+                    .collect();
+
+                let selected_wallet_alias = self
+                    .selected_wallet
+                    .as_ref()
+                    .and_then(|wallet| wallet.read().ok()?.alias.clone())
+                    .unwrap_or_else(|| "Select".to_string());
+
+                // Display the ComboBox for wallet selection
+                ComboBox::from_label("")
+                    .selected_text(selected_wallet_alias.clone())
+                    .show_ui(ui, |ui| {
+                        for (idx, wallet) in wallets.iter().enumerate() {
+                            let wallet_alias = wallet_aliases[idx].clone();
+
+                            let is_selected = self
+                                .selected_wallet
+                                .as_ref()
+                                .map_or(false, |selected| Arc::ptr_eq(selected, wallet));
+
+                            if ui
+                                .selectable_label(is_selected, wallet_alias.clone())
+                                .clicked()
+                            {
+                                // Update the selected wallet
+                                self.selected_wallet = Some(wallet.clone());
+                            }
+                        }
+                    });
+
+                ui.add_space(20.0);
+            } else {
+                ui.label("No wallets available.");
+            }
+        });
+    }
+
+    fn render_from_wallet(&mut self, ui: &mut egui::Ui, wallets_len: usize) -> AppAction {
+        let mut action = AppAction::None;
+
+        // Wallet selection
+        if wallets_len > 1 {
+            self.render_wallet_selection(ui);
+        }
+
+        // Identity index input
+        ui.horizontal(|ui| {
+            ui.label("Identity Index:");
+            ui.text_edit_singleline(&mut self.identity_index_input);
+        });
+
+        if ui.button("Search For Identity").clicked() {
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("Time went backwards")
+                .as_secs();
+            self.add_identity_status = AddIdentityStatus::WaitingForResult(now);
+            action = AppAction::BackendTask(BackendTask::IdentityTask(
+                IdentityTask::SearchIdentityFromWallet(
+                    self.selected_wallet
+                        .as_ref()
+                        .unwrap()
+                        .read()
+                        .unwrap()
+                        .clone(),
+                ),
+            ));
+        }
+        action
     }
 
     fn render_identity_type_selection(&mut self, ui: &mut egui::Ui) {
@@ -263,42 +404,33 @@ impl ScreenLike for AddExistingIdentityScreen {
         );
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("Add Identity");
-
-            if self.app_context.network == Network::Testnet && self.testnet_loaded_nodes.is_some() {
-                if ui.button("Fill Random HPMN").clicked() {
-                    self.fill_random_hpmn();
+            // Prepare tabs
+            let mut tabs = vec![("By Identifier", IdentityLoadMethod::ByIdentifier)];
+            let wallets_len = {
+                // Check if there are wallets
+                let wallets = self.app_context.wallets.read().unwrap();
+                let has_wallet = !wallets.is_empty();
+                if has_wallet {
+                    tabs.push(("From Wallet", IdentityLoadMethod::FromWallet));
                 }
+                wallets.len()
+            };
 
-                if ui.button("Fill Random Masternode").clicked() {
-                    self.fill_random_masternode();
-                }
-            }
-
+            // Render tabs
             ui.horizontal(|ui| {
-                ui.label("Identity ID / ProTxHash (Hex or Base58):");
-                ui.text_edit_singleline(&mut self.identity_id_input);
+                for (tab_name, tab_method) in &tabs {
+                    let selected = self.identity_load_method == *tab_method;
+                    if ui.selectable_label(selected, *tab_name).clicked() {
+                        self.identity_load_method = tab_method.clone();
+                    }
+                }
             });
 
-            self.render_identity_type_selection(ui);
-
-            // Input for Alias
-            ui.horizontal(|ui| {
-                ui.label("Alias:");
-                ui.text_edit_singleline(&mut self.alias_input);
-            });
-
-            // Render the keys input based on identity type
-            self.render_keys_input(ui);
-
-            if ui.button("Load Identity").clicked() {
-                // Set the status to waiting and capture the current time
-                let now = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .expect("Time went backwards")
-                    .as_secs();
-                self.add_identity_status = AddIdentityStatus::WaitingForResult(now);
-                action = self.load_identity_clicked();
+            match self.identity_load_method {
+                IdentityLoadMethod::ByIdentifier => action |= self.render_by_identity(ui),
+                IdentityLoadMethod::FromWallet => {
+                    action |= self.render_from_wallet(ui, wallets_len)
+                }
             }
 
             match &self.add_identity_status {

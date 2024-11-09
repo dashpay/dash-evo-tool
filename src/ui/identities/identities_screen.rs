@@ -360,7 +360,7 @@ impl IdentitiesScreen {
                                             if total_keys_shown < max_keys_to_show {
                                                 let holding_private_key = qualified_identity
                                                     .private_keys
-                                                    .get_private_key_data_and_wallet_info(&(
+                                                    .get_cloned_private_key_data_and_wallet_info(&(
                                                         PrivateKeyOnMainIdentity,
                                                         **key_id,
                                                     ));
@@ -389,7 +389,7 @@ impl IdentitiesScreen {
                                                         let holding_private_key =
                                                             qualified_identity
                                                                 .private_keys
-                                                                .get_private_key_data_and_wallet_info(&(
+                                                                .get_cloned_private_key_data_and_wallet_info(&(
                                                                     PrivateKeyOnVoterIdentity,
                                                                     **key_id,
                                                                 ));
@@ -551,7 +551,7 @@ impl IdentitiesScreen {
         for (key_id, key) in main_identity_rest_keys {
             let holding_private_key = qualified_identity
                 .private_keys
-                .get_private_key_data_and_wallet_info(&(PrivateKeyOnMainIdentity, **key_id));
+                .get_cloned_private_key_data_and_wallet_info(&(PrivateKeyOnMainIdentity, **key_id));
             action |= self.show_public_key(ui, qualified_identity, *key, holding_private_key);
         }
 
@@ -565,7 +565,10 @@ impl IdentitiesScreen {
             for (key_id, key) in voter_public_keys_vec.iter() {
                 let holding_private_key = qualified_identity
                     .private_keys
-                    .get_private_key_data_and_wallet_info(&(PrivateKeyOnVoterIdentity, **key_id));
+                    .get_cloned_private_key_data_and_wallet_info(&(
+                        PrivateKeyOnVoterIdentity,
+                        **key_id,
+                    ));
                 action |= self.show_public_key(ui, qualified_identity, *key, holding_private_key);
             }
         }

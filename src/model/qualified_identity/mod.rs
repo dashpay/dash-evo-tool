@@ -114,7 +114,7 @@ impl Signer for QualifiedIdentity {
             )))?;
         match identity_public_key.key_type() {
             KeyType::ECDSA_SECP256K1 | KeyType::ECDSA_HASH160 => {
-                let signature = signer::sign(data, private_key)?;
+                let signature = signer::sign(data, &private_key)?;
                 Ok(signature.to_vec().into())
             }
             KeyType::BLS12_381 => {

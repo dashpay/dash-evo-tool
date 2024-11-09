@@ -9,6 +9,8 @@ use dash_sdk::dpp::dashcore::{
     Address, InstantLock, Network, OutPoint, PrivateKey, PublicKey, Transaction, TxOut,
 };
 use std::collections::{BTreeMap, HashMap};
+use std::sync::{Arc, RwLock};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
 pub enum DerivationPathReference {
     Unknown = 0,
@@ -257,6 +259,44 @@ impl Wallet {
             WalletSeed::Open(opened) => &opened.wallet_info.password_hint,
             WalletSeed::Closed(closed) => &closed.password_hint,
         }
+    }
+
+    pub fn find_in_arc_rw_lock_slice(
+        slice: &[Arc<RwLock<Wallet>>],
+        wallet_seed_hash: WalletSeedHash,
+    ) -> Option<Arc<RwLock<Wallet>>> {
+        for wallet in slice {
+            // Attempt to read the wallet from the RwLock
+            let wallet_ref = wallet.read().unwrap();
+            // Check if the wallet's seed hash matches the provided wallet_seed_hash
+            if wallet_ref.seed_hash() == wallet_seed_hash {
+                // Return a clone of the Arc<RwLock<Wallet>> that matches
+                return Some(wallet.clone());
+            }
+        }
+        // Return None if no wallet with the matching seed hash is found
+        None
+    }
+
+    pub fn derive_private_key_in_arc_rw_lock_slice(
+        slice: &[Arc<RwLock<Wallet>>],
+        wallet_seed_hash: WalletSeedHash,
+        derivation_path: &DerivationPath,
+    ) -> Result<Option<[u8; 32]>, String> {
+        for wallet in slice {
+            // Attempt to read the wallet from the RwLock
+            let wallet_ref = wallet.read().unwrap();
+            // Check if this wallet's seed hash matches the target hash
+            if wallet_ref.seed_hash() == wallet_seed_hash {
+                // Attempt to derive the private key using the provided derivation path
+                let extended_private_key = derivation_path
+                    .derive_priv_ecdsa_for_master_seed(wallet_ref.seed_bytes()?, Network::Dash)
+                    .map_err(|e| e.to_string())?;
+                return Ok(Some(extended_private_key.private_key.secret_bytes()));
+            }
+        }
+        // Return None if no wallet with the matching seed hash is found
+        Ok(None)
     }
 
     pub fn private_key_for_address(

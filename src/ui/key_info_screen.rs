@@ -167,7 +167,7 @@ impl ScreenLike for KeyInfoScreen {
             if let Some((private_key, _)) = self.private_key_data.as_mut() {
                 ui.label("Private Key:");
                 match private_key {
-                    PrivateKeyData::Clear(clear) => {
+                    PrivateKeyData::Clear(clear) | PrivateKeyData::AlwaysClear(clear) => {
                         let private_key_hex = hex::encode(clear);
                         ui.add(
                             TextEdit::multiline(&mut private_key_hex.as_str().to_owned())
@@ -176,6 +176,9 @@ impl ScreenLike for KeyInfoScreen {
                     }
                     PrivateKeyData::Encrypted(_) => {
                         ui.label("key is encrypted");
+                    }
+                    PrivateKeyData::AtWalletDerivationPath(_) => {
+                        ui.label("key is in encrypted wallet");
                     }
                 }
             } else {
@@ -227,12 +230,10 @@ impl KeyInfoScreen {
                 } else if validation_result.unwrap() {
                     // If valid, store the private key in the context and reset the input field
                     self.private_key_data = Some((PrivateKeyData::Clear(private_key_bytes), None));
-                    if let Err(e) = self.identity.private_keys.insert_non_encrypted(
+                    self.identity.private_keys.insert_non_encrypted(
                         (self.key.purpose().into(), self.key.id()),
                         (self.key.clone().into(), private_key_bytes),
-                    ) {
-                        self.error_message = Some(e);
-                    }
+                    );
                     match self
                         .app_context
                         .insert_local_qualified_identity(&self.identity, None)

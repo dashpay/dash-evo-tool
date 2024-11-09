@@ -7,7 +7,6 @@ use dash_sdk::dashcore_rpc::dashcore::bip32::DerivationPath;
 use dash_sdk::dpp::dashcore::bip32::ChildNumber;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::hash::IdentityPublicKeyHashMethodsV0;
-use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::platform::IdentityPublicKey;
 use std::sync::{Arc, RwLock};
 

@@ -1,5 +1,6 @@
 mod add_key_to_identity;
 mod load_identity;
+mod load_identity_from_wallet;
 mod refresh_identity;
 mod register_dpns_name;
 mod register_identity;
@@ -120,7 +121,7 @@ impl IdentityKeys {
             },
         ));
 
-        KeyStorage::Open(key_map.into())
+        key_map.into()
     }
     pub fn to_public_keys_map(&self) -> BTreeMap<KeyID, IdentityPublicKey> {
         let Self {
@@ -220,6 +221,7 @@ pub struct RegisterDpnsNameInput {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum IdentityTask {
     LoadIdentity(IdentityInputToLoad),
+    SearchIdentityFromWallet(Wallet, IdentityIndex),
     RegisterIdentity(IdentityRegistrationInfo),
     AddKeyToIdentity(QualifiedIdentity, QualifiedIdentityPublicKey, [u8; 32]),
     WithdrawFromIdentity(QualifiedIdentity, Option<Address>, Credits, Option<KeyID>),
@@ -429,6 +431,10 @@ impl AppContext {
             }
             IdentityTask::Transfer(qualified_identity, to_identifier, credits, id) => {
                 self.transfer_to_identity(qualified_identity, to_identifier, credits, id)
+                    .await
+            }
+            IdentityTask::SearchIdentityFromWallet(wallet, identity_index) => {
+                self.load_user_identity_from_wallet(sdk, wallet, identity_index)
                     .await
             }
         }

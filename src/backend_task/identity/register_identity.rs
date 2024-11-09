@@ -166,7 +166,7 @@ impl AppContext {
                 }
                 IdentityRegistrationMethod::FundWithWallet(amount, identity_index) => {
                     // Scope the write lock to avoid holding it across an await.
-                    let (asset_lock_transaction, asset_lock_proof_private_key, change_address) = {
+                    let (asset_lock_transaction, asset_lock_proof_private_key, _) = {
                         let mut wallet = wallet.write().unwrap();
                         wallet_id = wallet.seed_hash();
                         match wallet.asset_lock_transaction(

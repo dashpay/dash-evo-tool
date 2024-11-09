@@ -2,8 +2,7 @@ use crate::app::{AppAction, DesiredAppAction};
 use crate::backend_task::identity::IdentityTask;
 use crate::backend_task::BackendTask;
 use crate::context::AppContext;
-use crate::model::qualified_identity::encrypted_key_storage::PrivateKeyData;
-use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
+use crate::model::qualified_identity::encrypted_key_storage::{PrivateKeyData, WalletDerivationPath};
 use crate::model::qualified_identity::PrivateKeyTarget::{
     PrivateKeyOnMainIdentity, PrivateKeyOnVoterIdentity,
 };
@@ -16,7 +15,6 @@ use crate::ui::key_info_screen::KeyInfoScreen;
 use crate::ui::transfers::TransferScreen;
 use crate::ui::withdrawals::WithdrawalScreen;
 use crate::ui::{RootScreenType, Screen, ScreenLike, ScreenType};
-use dash_sdk::dashcore_rpc::dashcore::bip32::DerivationPath;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::Purpose;
@@ -143,8 +141,8 @@ impl IdentitiesScreen {
                     .as_ref()
                 {
                     None => "".to_string(),
-                    Some((wallet_seed_hash, _)) => {
-                        self.find_wallet(wallet_seed_hash).unwrap_or_default()
+                    Some(wallet_derivation_path) => {
+                        self.find_wallet(&wallet_derivation_path.wallet_seed_hash).unwrap_or_default()
                     }
                 }
             }
@@ -172,7 +170,7 @@ impl IdentitiesScreen {
         ui: &mut Ui,
         identity: &QualifiedIdentity,
         key: &IdentityPublicKey,
-        encrypted_private_key: Option<(PrivateKeyData, Option<(WalletSeedHash, DerivationPath)>)>,
+        encrypted_private_key: Option<(PrivateKeyData, Option<WalletDerivationPath>)>,
     ) -> AppAction {
         let button_color = if encrypted_private_key.is_some() {
             Color32::from_rgb(167, 232, 232)

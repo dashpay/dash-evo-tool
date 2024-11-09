@@ -30,6 +30,7 @@ use std::sync::{Arc, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{fmt, thread};
 use zeroize::Zeroize;
+use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
 
 #[derive(Debug, Clone, Deserialize)]
 struct KeyInfo {
@@ -267,64 +268,64 @@ impl AddNewIdentityScreen {
         }
     }
 
-    fn render_wallet_unlock(&mut self, ui: &mut Ui) -> bool {
-        if let Some(wallet_guard) = self.selected_wallet.as_ref() {
-            let mut wallet = wallet_guard.write().unwrap();
-
-            // Only render the unlock prompt if the wallet requires a password and is locked
-            if wallet.uses_password && !wallet.is_open() {
-                ui.add_space(10.0);
-                ui.label("This wallet is locked. Please enter the password to unlock it:");
-
-                let mut unlocked = false;
-                ui.horizontal(|ui| {
-                    let password_input = ui.add(
-                        egui::TextEdit::singleline(&mut self.wallet_password)
-                            .password(!self.show_password)
-                            .hint_text("Enter password"),
-                    );
-
-                    ui.checkbox(&mut self.show_password, "Show Password");
-
-                    unlocked = if password_input.lost_focus()
-                        && ui.input(|i| i.key_pressed(egui::Key::Enter))
-                    {
-                        let unlocked = match wallet.wallet_seed.open(&self.wallet_password) {
-                            Ok(_) => {
-                                self.error_message = None; // Clear any previous error
-                                true
-                            }
-                            Err(_) => {
-                                if let Some(hint) = wallet.password_hint() {
-                                    self.error_message = Some(format!(
-                                        "Incorrect Password, password hint is {}",
-                                        hint
-                                    ));
-                                } else {
-                                    self.error_message = Some("Incorrect Password".to_string());
-                                }
-                                false
-                            }
-                        };
-                        // Clear the password field after submission
-                        self.wallet_password.zeroize();
-                        unlocked
-                    } else {
-                        false
-                    };
-                });
-
-                // Display error message if the password was incorrect
-                if let Some(error_message) = &self.error_message {
-                    ui.add_space(5.0);
-                    ui.colored_label(Color32::RED, error_message);
-                }
-
-                return unlocked;
-            }
-        }
-        false
-    }
+    // fn render_wallet_unlock(&mut self, ui: &mut Ui) -> bool {
+    //     if let Some(wallet_guard) = self.selected_wallet.as_ref() {
+    //         let mut wallet = wallet_guard.write().unwrap();
+    //
+    //         // Only render the unlock prompt if the wallet requires a password and is locked
+    //         if wallet.uses_password && !wallet.is_open() {
+    //             ui.add_space(10.0);
+    //             ui.label("This wallet is locked. Please enter the password to unlock it:");
+    //
+    //             let mut unlocked = false;
+    //             ui.horizontal(|ui| {
+    //                 let password_input = ui.add(
+    //                     egui::TextEdit::singleline(&mut self.wallet_password)
+    //                         .password(!self.show_password)
+    //                         .hint_text("Enter password"),
+    //                 );
+    //
+    //                 ui.checkbox(&mut self.show_password, "Show Password");
+    //
+    //                 unlocked = if password_input.lost_focus()
+    //                     && ui.input(|i| i.key_pressed(egui::Key::Enter))
+    //                 {
+    //                     let unlocked = match wallet.wallet_seed.open(&self.wallet_password) {
+    //                         Ok(_) => {
+    //                             self.error_message = None; // Clear any previous error
+    //                             true
+    //                         }
+    //                         Err(_) => {
+    //                             if let Some(hint) = wallet.password_hint() {
+    //                                 self.error_message = Some(format!(
+    //                                     "Incorrect Password, password hint is {}",
+    //                                     hint
+    //                                 ));
+    //                             } else {
+    //                                 self.error_message = Some("Incorrect Password".to_string());
+    //                             }
+    //                             false
+    //                         }
+    //                     };
+    //                     // Clear the password field after submission
+    //                     self.wallet_password.zeroize();
+    //                     unlocked
+    //                 } else {
+    //                     false
+    //                 };
+    //             });
+    //
+    //             // Display error message if the password was incorrect
+    //             if let Some(error_message) = &self.error_message {
+    //                 ui.add_space(5.0);
+    //                 ui.colored_label(Color32::RED, error_message);
+    //             }
+    //
+    //             return unlocked;
+    //         }
+    //     }
+    //     false
+    // }
 
     fn render_wallet_selection(&mut self, ui: &mut Ui) -> bool {
         if self.app_context.has_wallet.load(Ordering::Relaxed) {
@@ -794,6 +795,36 @@ impl AddNewIdentityScreen {
                     );
                 });
         });
+    }
+}
+
+impl ScreenWithWalletUnlock for AddNewIdentityScreen {
+    fn selected_wallet_ref(&self) -> &Option<Arc<RwLock<Wallet>>> {
+        &self.selected_wallet
+    }
+
+    fn wallet_password_ref(&self) -> &String {
+        &self.wallet_password
+    }
+
+    fn wallet_password_mut(&mut self) -> &mut String {
+        &mut self.wallet_password
+    }
+
+    fn show_password(&self) -> bool {
+        self.show_password
+    }
+
+    fn show_password_mut(&mut self) -> &mut bool {
+        &mut self.show_password
+    }
+
+    fn set_error_message(&mut self, error_message: Option<String>) {
+        self.error_message = error_message;
+    }
+
+    fn error_message(&self) -> Option<&String> {
+        self.error_message.as_ref()
     }
 }
 

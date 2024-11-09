@@ -9,6 +9,7 @@ use dash_sdk::dpp::dashcore::{
     Address, InstantLock, Network, OutPoint, PrivateKey, PublicKey, Transaction, TxOut,
 };
 use std::collections::{BTreeMap, HashMap};
+use std::ops::Range;
 use std::sync::{Arc, RwLock};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
@@ -65,6 +66,7 @@ use bitflags::bitflags;
 use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
 use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dpp::balances::credits::Duffs;
+use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::prelude::AssetLockProof;
 use dash_sdk::platform::Identity;
@@ -443,6 +445,32 @@ impl Wallet {
             .derive_pub_ecdsa_for_master_seed(self.seed_bytes()?, network)
             .map_err(|e| e.to_string())?;
         Ok(extended_public_key.to_pub())
+    }
+
+    pub fn identity_authentication_ecdsa_public_keys_data_map(
+        &self,
+        network: Network,
+        identity_index: u32,
+        key_index_range: Range<u32>,
+    ) -> Result<(BTreeMap<Vec<u8>, u32>, BTreeMap<[u8;20], u32>), String> {
+        let mut public_key_result_map = BTreeMap::new();
+        let mut public_key_hash_result_map = BTreeMap::new();
+        for key_index in key_index_range {
+            let derivation_path = DerivationPath::identity_authentication_path(
+                network,
+                KeyDerivationType::ECDSA,
+                identity_index,
+                key_index,
+            );
+            let extended_public_key = derivation_path
+                .derive_pub_ecdsa_for_master_seed(self.seed_bytes()?, network)
+                .map_err(|e| e.to_string())?;
+
+            public_key_result_map.insert(extended_public_key.public_key.serialize().to_vec(), key_index);
+            public_key_hash_result_map.insert(extended_public_key.to_pub().pubkey_hash().to_byte_array(), key_index);
+        }
+
+        Ok((public_key_result_map, public_key_hash_result_map))
     }
 
     pub fn identity_authentication_ecdsa_private_key(

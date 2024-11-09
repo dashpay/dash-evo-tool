@@ -239,16 +239,24 @@ impl AddExistingIdentityScreen {
                 .expect("Time went backwards")
                 .as_secs();
             self.add_identity_status = AddIdentityStatus::WaitingForResult(now);
-            action = AppAction::BackendTask(BackendTask::IdentityTask(
-                IdentityTask::SearchIdentityFromWallet(
-                    self.selected_wallet
-                        .as_ref()
-                        .unwrap()
-                        .read()
-                        .unwrap()
-                        .clone(),
-                ),
-            ));
+
+            // Parse identity index input
+            if let Ok(identity_index) = self.identity_index_input.trim().parse::<u32>() {
+                action = AppAction::BackendTask(BackendTask::IdentityTask(
+                    IdentityTask::SearchIdentityFromWallet(
+                        self.selected_wallet
+                            .as_ref()
+                            .unwrap()
+                            .read()
+                            .unwrap()
+                            .clone(),
+                        identity_index,
+                    ),
+                ));
+            } else {
+                // Handle invalid index input (optional)
+                self.add_identity_status = AddIdentityStatus::ErrorMessage("Invalid identity index".to_string());
+            }
         }
         action
     }

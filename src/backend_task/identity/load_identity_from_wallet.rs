@@ -1,20 +1,21 @@
+use std::collections::BTreeMap;
+use dash_sdk::dpp::dashcore::bip32::{DerivationPath, KeyDerivationType};
 use super::{BackendTaskSuccessResult, IdentityIndex};
-use crate::backend_task::identity::{verify_key_input, IdentityInputToLoad};
 use crate::context::AppContext;
 use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
-use crate::model::qualified_identity::PrivateKeyTarget::{
-    self, PrivateKeyOnMainIdentity, PrivateKeyOnVoterIdentity,
-};
-use crate::model::qualified_identity::{DPNSNameInfo, IdentityType, QualifiedIdentity};
+use crate::model::qualified_identity::{DPNSNameInfo, IdentityType, PrivateKeyTarget, QualifiedIdentity};
 use crate::model::wallet::Wallet;
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::document::DocumentV0Getters;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+use dash_sdk::dpp::identity::{KeyID, KeyType};
 use dash_sdk::dpp::platform_value::Value;
 use dash_sdk::drive::query::{WhereClause, WhereOperator};
 use dash_sdk::platform::types::identity::PublicKeyHash;
-use dash_sdk::platform::{Document, DocumentQuery, Fetch, FetchMany, Identifier, Identity};
+use dash_sdk::platform::{Document, DocumentQuery, Fetch, FetchMany, Identity};
 use dash_sdk::Sdk;
+use crate::model::qualified_identity::encrypted_key_storage::{PrivateKeyData, WalletDerivationPath};
 
 impl AppContext {
     pub(super) async fn load_user_identity_from_wallet(
@@ -82,6 +83,32 @@ impl AppContext {
             })
             .map_err(|e| format!("Error fetching DPNS names: {}", e))?;
 
+        let top_bound = identity.public_keys().len() as u32 + 5;
+
+        let (public_key_result_map, public_key_hash_result_map) = wallet.identity_authentication_ecdsa_public_keys_data_map(self.network, identity_index, 0..top_bound)?;
+
+        let wallet_seed_hash = wallet.seed_hash();
+        let private_keys = identity.public_keys().values().filter_map(|public_key| {
+            let index: u32 = match public_key.key_type() {
+                KeyType::ECDSA_SECP256K1 => {
+                    public_key_result_map.get(public_key.data().as_slice()).cloned()
+                }
+                KeyType::ECDSA_HASH160 => {
+                    let hash: [u8;20] = public_key.data().as_slice().try_into().ok()?;
+                    public_key_hash_result_map.get(&hash).cloned()
+                }
+                _ => None,
+            }?;
+            let derivation_path = DerivationPath::identity_authentication_path(
+                self.network,
+                KeyDerivationType::ECDSA,
+                identity_index,
+                index,
+            );
+            let wallet_derivation_path = WalletDerivationPath { wallet_seed_hash, derivation_path};
+            Some(((PrivateKeyTarget::PrivateKeyOnMainIdentity, public_key.id()), (QualifiedIdentityPublicKey { identity_public_key: public_key.clone(), in_wallet_at_derivation_path: Some(wallet_derivation_path.clone()) }, PrivateKeyData::AtWalletDerivationPath(wallet_derivation_path))))
+        }).collect::<BTreeMap<(PrivateKeyTarget, KeyID), (QualifiedIdentityPublicKey, PrivateKeyData)>>().into();
+
         let qualified_identity = QualifiedIdentity {
             identity,
             associated_voter_identity: None,
@@ -89,7 +116,7 @@ impl AppContext {
             associated_owner_key_id: None,
             identity_type: IdentityType::User,
             alias: None,
-            private_keys: encrypted_private_keys.into(),
+            private_keys,
             dpns_names: maybe_owned_dpns_names,
         };
 

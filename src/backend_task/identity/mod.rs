@@ -10,7 +10,7 @@ mod withdraw_from_identity;
 use super::BackendTaskSuccessResult;
 use crate::app::TaskResult;
 use crate::context::AppContext;
-use crate::model::qualified_identity::encrypted_key_storage::KeyStorage;
+use crate::model::qualified_identity::encrypted_key_storage::{KeyStorage, WalletDerivationPath};
 use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
 use crate::model::qualified_identity::{IdentityType, PrivateKeyTarget, QualifiedIdentity};
 use crate::model::wallet::{Wallet, WalletSeedHash};
@@ -81,7 +81,7 @@ impl IdentityKeys {
             let qualified_identity_public_key =
                 QualifiedIdentityPublicKey::from_identity_public_key_in_wallet(
                     key,
-                    Some((wallet_seed_hash, master_private_key_derivation_path.clone())),
+                    Some(WalletDerivationPath { wallet_seed_hash, derivation_path: master_private_key_derivation_path.clone() }),
                 );
             key_map.insert(
                 (PrivateKeyTarget::PrivateKeyOnMainIdentity, 0),
@@ -109,7 +109,7 @@ impl IdentityKeys {
                 let qualified_identity_public_key =
                     QualifiedIdentityPublicKey::from_identity_public_key_in_wallet(
                         identity_public_key,
-                        Some((wallet_seed_hash, derivation_path.clone())),
+                        Some(WalletDerivationPath { wallet_seed_hash, derivation_path: derivation_path.clone() }),
                     );
                 (
                     (PrivateKeyTarget::PrivateKeyOnMainIdentity, id),

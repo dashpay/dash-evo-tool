@@ -1,6 +1,6 @@
 use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
 use crate::model::qualified_identity::PrivateKeyTarget;
-use crate::model::wallet::{Wallet, WalletSeed, WalletSeedHash};
+use crate::model::wallet::{Wallet, WalletSeedHash};
 use bincode::de::{BorrowDecoder, Decoder};
 use bincode::enc::Encoder;
 use bincode::error::{DecodeError, EncodeError};
@@ -15,8 +15,8 @@ use std::sync::{Arc, RwLock};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct WalletDerivationPath {
-    wallet_seed_hash: WalletSeedHash,
-    derivation_path: DerivationPath,
+    pub(crate) wallet_seed_hash: WalletSeedHash,
+    pub(crate) derivation_path: DerivationPath,
 }
 
 impl Encode for WalletDerivationPath {
@@ -170,6 +170,16 @@ pub struct KeyStorage {
         BTreeMap<(PrivateKeyTarget, KeyID), (QualifiedIdentityPublicKey, PrivateKeyData)>,
 }
 
+impl From<BTreeMap<(PrivateKeyTarget, KeyID), (QualifiedIdentityPublicKey, PrivateKeyData)>>
+for KeyStorage
+{
+    fn from(value: BTreeMap<(PrivateKeyTarget, KeyID), (QualifiedIdentityPublicKey, PrivateKeyData)>) -> Self {
+        Self {
+            private_keys: value,
+        }
+    }
+}
+
 impl From<BTreeMap<(PrivateKeyTarget, KeyID), (QualifiedIdentityPublicKey, [u8; 32])>>
     for KeyStorage
 {
@@ -280,7 +290,7 @@ impl KeyStorage {
     pub fn get_private_key_data_and_wallet_info(
         &self,
         key: &(PrivateKeyTarget, KeyID),
-    ) -> Option<(&PrivateKeyData, &Option<(WalletSeedHash, DerivationPath)>)> {
+    ) -> Option<(&PrivateKeyData, &Option<WalletDerivationPath>)> {
         self.private_keys
             .get(key)
             .map(|(qualified_identity_public_key_data, private_key_data)| {
@@ -294,7 +304,7 @@ impl KeyStorage {
     pub fn get_cloned_private_key_data_and_wallet_info(
         &self,
         key: &(PrivateKeyTarget, KeyID),
-    ) -> Option<(PrivateKeyData, Option<(WalletSeedHash, DerivationPath)>)> {
+    ) -> Option<(PrivateKeyData, Option<WalletDerivationPath>)> {
         self.private_keys
             .get(key)
             .map(|(qualified_identity_public_key_data, private_key_data)| {

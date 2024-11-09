@@ -1,11 +1,9 @@
 use crate::app::AppAction;
 use crate::context::AppContext;
-use crate::model::qualified_identity::encrypted_key_storage::PrivateKeyData;
+use crate::model::qualified_identity::encrypted_key_storage::{PrivateKeyData, WalletDerivationPath};
 use crate::model::qualified_identity::QualifiedIdentity;
-use crate::model::wallet::WalletSeedHash;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::ScreenLike;
-use dash_sdk::dashcore_rpc::dashcore::bip32::DerivationPath;
 use dash_sdk::dpp::dashcore::address::Payload;
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::{Address, PubkeyHash, ScriptHash};
@@ -22,7 +20,7 @@ use std::sync::Arc;
 pub struct KeyInfoScreen {
     pub identity: QualifiedIdentity,
     pub key: IdentityPublicKey,
-    pub private_key_data: Option<(PrivateKeyData, Option<(WalletSeedHash, DerivationPath)>)>,
+    pub private_key_data: Option<(PrivateKeyData, Option<WalletDerivationPath>)>,
     pub app_context: Arc<AppContext>,
     private_key_input: String,
     error_message: Option<String>,
@@ -84,11 +82,11 @@ impl ScreenLike for KeyInfoScreen {
                     }
                     ui.end_row();
 
-                    if let Some((_, Some((_, derivation_path)))) = self.private_key_data.as_ref() {
+                    if let Some((_, Some(wallet_derivation_path))) = self.private_key_data.as_ref() {
                         // Disabled
                         ui.label(RichText::new("In local Wallet").strong());
                         ui.label(
-                            RichText::new(format!("At derivation path {}", derivation_path))
+                            RichText::new(format!("At derivation path {}", wallet_derivation_path.derivation_path))
                                 .strong(),
                         );
                         ui.end_row();
@@ -204,7 +202,7 @@ impl KeyInfoScreen {
     pub fn new(
         identity: QualifiedIdentity,
         key: IdentityPublicKey,
-        private_key_data: Option<(PrivateKeyData, Option<(WalletSeedHash, DerivationPath)>)>,
+        private_key_data: Option<(PrivateKeyData, Option<WalletDerivationPath>)>,
         app_context: &Arc<AppContext>,
     ) -> Self {
         Self {

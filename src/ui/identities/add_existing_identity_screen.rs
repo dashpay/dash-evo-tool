@@ -17,6 +17,8 @@ use std::fs;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
+use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
+use crate::ui::identities::add_new_identity_screen::AddNewIdentityScreen;
 
 #[derive(Debug, Clone, Deserialize)]
 struct MasternodeInfo {
@@ -99,6 +101,9 @@ pub struct AddExistingIdentityScreen {
     testnet_loaded_nodes: Option<TestnetNodes>,
     pub identity_load_method: IdentityLoadMethod,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
+    show_password: bool,
+    wallet_password: String,
+    error_message: Option<String>,
     pub identity_index_input: String,
     pub app_context: Arc<AppContext>,
 }
@@ -123,6 +128,9 @@ impl AddExistingIdentityScreen {
             testnet_loaded_nodes,
             identity_load_method: IdentityLoadMethod::ByIdentifier,
             selected_wallet,
+            show_password: false,
+            wallet_password: "".to_string(),
+            error_message: None,
             identity_index_input: String::new(),
             app_context: app_context.clone(),
         }
@@ -225,6 +233,16 @@ impl AddExistingIdentityScreen {
         // Wallet selection
         if wallets_len > 1 {
             self.render_wallet_selection(ui);
+        }
+
+        if self.selected_wallet.is_none() {
+            return action;
+        };
+
+        let (needed_unlock, just_unlocked) = self.render_wallet_unlock_if_needed(ui);
+        
+        if needed_unlock && !just_unlocked {
+            return action;
         }
 
         // Identity index input
@@ -377,6 +395,37 @@ impl AddExistingIdentityScreen {
             self.voting_private_key_input = masternode.voter.private_key.clone();
             self.owner_private_key_input = masternode.owner.private_key.clone();
         }
+    }
+}
+
+
+impl ScreenWithWalletUnlock for AddExistingIdentityScreen {
+    fn selected_wallet_ref(&self) -> &Option<Arc<RwLock<Wallet>>> {
+        &self.selected_wallet
+    }
+
+    fn wallet_password_ref(&self) -> &String {
+        &self.wallet_password
+    }
+
+    fn wallet_password_mut(&mut self) -> &mut String {
+        &mut self.wallet_password
+    }
+
+    fn show_password(&self) -> bool {
+        self.show_password
+    }
+
+    fn show_password_mut(&mut self) -> &mut bool {
+        &mut self.show_password
+    }
+
+    fn set_error_message(&mut self, error_message: Option<String>) {
+        self.error_message = error_message;
+    }
+
+    fn error_message(&self) -> Option<&String> {
+        self.error_message.as_ref()
     }
 }
 

@@ -13,8 +13,35 @@ pub trait ScreenWithWalletUnlock {
     fn set_error_message(&mut self, error_message: Option<String>);
 
     fn error_message(&self) -> Option<&String>;
+
+    fn should_ask_for_password(&mut self) -> bool {
+        if let Some(wallet_guard) = self.selected_wallet_ref().clone()  {
+            let mut wallet = wallet_guard.write().unwrap();
+            if !wallet.uses_password {
+                if let Err(e) = wallet.wallet_seed.open_no_password() {
+                    self.set_error_message(Some(e));
+                }
+                false
+            } else if wallet.is_open() {
+                false
+            } else {
+                true
+            }
+        } else {
+            true
+        }
+    }
+
+    fn render_wallet_unlock_if_needed(&mut self, ui: &mut Ui) -> (bool, bool) {
+        if self.should_ask_for_password() {
+            (true, self.render_wallet_unlock(ui))
+        } else {
+            (false, false)
+        }
+    }
+
     fn render_wallet_unlock(&mut self, ui: &mut Ui) -> bool {
-        if let Some(wallet_guard) = self.selected_wallet_ref().as_ref() {
+        if let Some(wallet_guard) = self.selected_wallet_ref().clone() {
             let mut wallet = wallet_guard.write().unwrap();
 
             // Only render the unlock prompt if the wallet requires a password and is locked
@@ -23,42 +50,57 @@ pub trait ScreenWithWalletUnlock {
                 ui.label("This wallet is locked. Please enter the password to unlock it:");
 
                 let mut unlocked = false;
+
+                // Capture necessary values before the closure
+                let show_password = self.show_password();
+                let mut local_show_password = show_password; // Local copy of show_password
+                let wallet_password_mut = self.wallet_password_mut(); // Mutable reference to the password
+                let mut local_error_message = None; // Local variable for error message
+
                 ui.horizontal(|ui| {
                     let password_input = ui.add(
-                        egui::TextEdit::singleline(self.wallet_password_mut())
-                            .password(!self.show_password())
+                        egui::TextEdit::singleline(wallet_password_mut)
+                            .password(!local_show_password)
                             .hint_text("Enter password"),
                     );
 
-                    ui.checkbox(self.show_password_mut(), "Show Password");
+                    // Checkbox to toggle password visibility
+                    ui.checkbox(&mut local_show_password, "Show Password");
 
-                    unlocked = if password_input.lost_focus()
+                    if password_input.lost_focus()
                         && ui.input(|i| i.key_pressed(egui::Key::Enter))
                     {
-                        let unlocked = match wallet.wallet_seed.open(&self.wallet_password_ref()) {
+                        // Use the password from wallet_password_mut
+                        let wallet_password_ref = &*wallet_password_mut;
+
+                        let unlock_result = wallet.wallet_seed.open(wallet_password_ref);
+
+                        match unlock_result {
                             Ok(_) => {
-                                self.set_error_message(None); // Clear any previous error
-                                true
+                                local_error_message = None;
+                                unlocked = true;
                             }
                             Err(_) => {
                                 if let Some(hint) = wallet.password_hint() {
-                                    self.set_error_message(Some(format!(
+                                    local_error_message = Some(format!(
                                         "Incorrect Password, password hint is {}",
                                         hint
-                                    )));
+                                    ));
                                 } else {
-                                    self.set_error_message(Some("Incorrect Password".to_string()));
+                                    local_error_message = Some("Incorrect Password".to_string());
                                 }
-                                false
                             }
-                        };
+                        }
                         // Clear the password field after submission
-                        self.wallet_password_mut().zeroize();
-                        unlocked
-                    } else {
-                        false
-                    };
+                        wallet_password_mut.zeroize();
+                    }
                 });
+
+                // Update `show_password` after the closure
+                *self.show_password_mut() = local_show_password;
+
+                // Update the error message
+                self.set_error_message(local_error_message);
 
                 // Display error message if the password was incorrect
                 if let Some(error_message) = self.error_message() {

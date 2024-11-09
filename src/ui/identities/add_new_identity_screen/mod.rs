@@ -877,24 +877,9 @@ impl ScreenLike for AddNewIdentityScreen {
                 return;
             };
 
-            let should_ask_for_password = if let Some(wallet_guard) = self.selected_wallet.as_ref() {
-                let mut wallet = wallet_guard.write().unwrap();
-                if !wallet.uses_password {
-                    if let Err(e) = wallet.wallet_seed.open_no_password() {
-                        self.error_message = Some(e);
-                    }
-                    false
-                } else if wallet.is_open() {
-                    false
-                } else {
-                    true
-                }
-            } else {
-                true
-            };
+            let (needed_unlock, just_unlocked) = self.render_wallet_unlock_if_needed(ui);
 
-            if should_ask_for_password {
-                let just_unlocked = self.render_wallet_unlock(ui);
+            if needed_unlock {
                 if just_unlocked {
                     let wallet_guard = self.selected_wallet.as_ref().unwrap();
                     let wallet = wallet_guard.read().unwrap();

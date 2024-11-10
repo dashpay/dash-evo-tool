@@ -4,7 +4,7 @@ use crate::app_dir::{
 };
 use crate::backend_task::core::CoreItem;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
-use crate::components::core_zmq_listener::{CoreZMQListener, ZMQConnectionEvent, ZMQMessage};
+use crate::components::core_zmq_listener::{CoreZMQListener, ZMQMessage};
 use crate::context::AppContext;
 use crate::database::Database;
 use crate::logging::initialize_logger;
@@ -24,7 +24,6 @@ use std::ops::BitOrAssign;
 use std::sync::{mpsc, Arc};
 use std::time::Instant;
 use std::vec;
-use crossbeam_channel::Receiver;
 use tokio::sync::mpsc as tokiompsc;
 
 #[derive(Debug, From)]
@@ -50,7 +49,6 @@ pub struct AppState {
     pub chosen_network: Network,
     pub mainnet_app_context: Arc<AppContext>,
     pub testnet_app_context: Option<Arc<AppContext>>,
-    pub rx_zmq_status: Receiver<ZMQConnectionEvent>,
     pub mainnet_core_zmq_listener: CoreZMQListener,
     pub testnet_core_zmq_listener: CoreZMQListener,
     pub core_message_receiver: mpsc::Receiver<(ZMQMessage, Network)>,
@@ -184,9 +182,6 @@ impl AppState {
         // Create a channel for communication with the InstantSendListener
         let (core_message_sender, core_message_receiver) = mpsc::channel();
 
-        let (tx_zmq_status, rx_zmq_status) = crossbeam_channel::unbounded();
-        //let (tx_zmq_status_testnet, _) = crossbeam_channel::unbounded();
-
         // Pass the sender to the listener when creating it
         let mainnet_core_zmq_listener = CoreZMQListener::spawn_listener(
             Network::Dash,
@@ -196,11 +191,16 @@ impl AppState {
         )
         .expect("Failed to create mainnet InstantSend listener");
 
+        let tx_zmq_status_option = match testnet_app_context {
+            Some(ref context) => Some(context.sx_zmq_status.clone()),
+            None => None,
+        };
+
         let testnet_core_zmq_listener = CoreZMQListener::spawn_listener(
             Network::Testnet,
             "tcp://127.0.0.1:23709",
             core_message_sender, // Use the original sender or create a new one if needed
-            None,
+            tx_zmq_status_option,
         )
         .expect("Failed to create testnet InstantSend listener");
 
@@ -249,8 +249,6 @@ impl AppState {
             chosen_network,
             mainnet_app_context,
             testnet_app_context,
-            //zmq_connection_status: ZMQConnectionEvent::Disconnected,
-            rx_zmq_status,
             mainnet_core_zmq_listener,
             testnet_core_zmq_listener,
             core_message_receiver,
@@ -367,8 +365,8 @@ impl AppState {
 
 impl App for AppState {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        if let Ok(event) = self.mainnet_app_context.rx_zmq_status.try_recv() {
-            if let Ok(mut status) = self.mainnet_app_context.zmq_connection_status.lock() {
+        if let Ok(event) = self.current_app_context().rx_zmq_status.try_recv() {
+            if let Ok(mut status) = self.current_app_context().zmq_connection_status.lock() {
                 *status = event;
             }
         }

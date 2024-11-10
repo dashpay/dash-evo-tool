@@ -66,25 +66,23 @@ pub fn add_top_panel(
         .show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
 
-                let connection_status = {
-                    if let Ok(status) = app_context.zmq_connection_status.lock() {
-                        match *status {
-                            ZMQConnectionEvent::Connected => "CONNECTED",
-                            ZMQConnectionEvent::Disconnected => "DISCONNECTED",
-                        }
-                    } else {
-                        "Lock Error"
-                    }
-                };
-                ui.label(connection_status);
-
                 // Left-aligned content with location view
                 action = add_location_view(ui, location);
 
                 // Right-aligned content with buttons
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
 
-                    //ui.label("takis the cat");
+                    let connection_status = {
+                        if let Ok(status) = app_context.zmq_connection_status.lock() {
+                            match *status {
+                                ZMQConnectionEvent::Connected => "zmq connected",
+                                ZMQConnectionEvent::Disconnected => "zmq disconnected",
+                            }
+                        }
+                        else { "" }
+                    };
+                    ui.label(connection_status);
+
                     for (text, right_button_action) in right_buttons.into_iter().rev() {
                         ui.add_space(8.0);
 

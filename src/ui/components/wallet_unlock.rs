@@ -1,8 +1,8 @@
-use std::sync::{Arc, RwLock};
+use crate::model::wallet::Wallet;
 use eframe::epaint::Color32;
 use egui::Ui;
+use std::sync::{Arc, RwLock};
 use zeroize::Zeroize;
-use crate::model::wallet::Wallet;
 
 pub trait ScreenWithWalletUnlock {
     fn selected_wallet_ref(&self) -> &Option<Arc<RwLock<Wallet>>>;
@@ -15,7 +15,7 @@ pub trait ScreenWithWalletUnlock {
     fn error_message(&self) -> Option<&String>;
 
     fn should_ask_for_password(&mut self) -> bool {
-        if let Some(wallet_guard) = self.selected_wallet_ref().clone()  {
+        if let Some(wallet_guard) = self.selected_wallet_ref().clone() {
             let mut wallet = wallet_guard.write().unwrap();
             if !wallet.uses_password {
                 if let Err(e) = wallet.wallet_seed.open_no_password() {
@@ -67,8 +67,7 @@ pub trait ScreenWithWalletUnlock {
                     // Checkbox to toggle password visibility
                     ui.checkbox(&mut local_show_password, "Show Password");
 
-                    if password_input.lost_focus()
-                        && ui.input(|i| i.key_pressed(egui::Key::Enter))
+                    if password_input.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))
                     {
                         // Use the password from wallet_password_mut
                         let wallet_password_ref = &*wallet_password_mut;

@@ -13,7 +13,7 @@ use crate::context::AppContext;
 use crate::model::qualified_identity::encrypted_key_storage::{KeyStorage, WalletDerivationPath};
 use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
 use crate::model::qualified_identity::{IdentityType, PrivateKeyTarget, QualifiedIdentity};
-use crate::model::wallet::{Wallet, WalletSeedHash};
+use crate::model::wallet::{Wallet, WalletArcRef, WalletSeedHash};
 use dash_sdk::dashcore_rpc::dashcore::bip32::DerivationPath;
 use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
 use dash_sdk::dashcore_rpc::dashcore::{Address, PrivateKey, TxOut};
@@ -81,7 +81,10 @@ impl IdentityKeys {
             let qualified_identity_public_key =
                 QualifiedIdentityPublicKey::from_identity_public_key_in_wallet(
                     key,
-                    Some(WalletDerivationPath { wallet_seed_hash, derivation_path: master_private_key_derivation_path.clone() }),
+                    Some(WalletDerivationPath {
+                        wallet_seed_hash,
+                        derivation_path: master_private_key_derivation_path.clone(),
+                    }),
                 );
             key_map.insert(
                 (PrivateKeyTarget::PrivateKeyOnMainIdentity, 0),
@@ -109,7 +112,10 @@ impl IdentityKeys {
                 let qualified_identity_public_key =
                     QualifiedIdentityPublicKey::from_identity_public_key_in_wallet(
                         identity_public_key,
-                        Some(WalletDerivationPath { wallet_seed_hash, derivation_path: derivation_path.clone() }),
+                        Some(WalletDerivationPath {
+                            wallet_seed_hash,
+                            derivation_path: derivation_path.clone(),
+                        }),
                     );
                 (
                     (PrivateKeyTarget::PrivateKeyOnMainIdentity, id),
@@ -221,7 +227,7 @@ pub struct RegisterDpnsNameInput {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum IdentityTask {
     LoadIdentity(IdentityInputToLoad),
-    SearchIdentityFromWallet(Wallet, IdentityIndex),
+    SearchIdentityFromWallet(WalletArcRef, IdentityIndex),
     RegisterIdentity(IdentityRegistrationInfo),
     AddKeyToIdentity(QualifiedIdentity, QualifiedIdentityPublicKey, [u8; 32]),
     WithdrawFromIdentity(QualifiedIdentity, Option<Address>, Credits, Option<KeyID>),

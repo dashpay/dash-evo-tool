@@ -10,6 +10,7 @@ use dash_sdk::dashcore_rpc::dashcore::{Address, Network};
 use dash_sdk::dpp::dashcore::bip32::{ChildNumber, DerivationPath};
 use eframe::egui::{self, ComboBox, Context, Ui};
 use egui_extras::{Column, TableBuilder};
+use std::collections::HashSet;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 
@@ -36,6 +37,7 @@ pub struct WalletsBalancesScreen {
     error_message: Option<(String, MessageType)>,
     sort_column: SortColumn,
     sort_order: SortOrder,
+    selected_filters: HashSet<String>,
 }
 
 pub trait DerivationPathHelpers {
@@ -113,12 +115,15 @@ struct AddressData {
 impl WalletsBalancesScreen {
     pub fn new(app_context: &Arc<AppContext>) -> Self {
         let selected_wallet = app_context.wallets.read().unwrap().first().cloned();
+        let mut selected_filters = HashSet::new();
+        selected_filters.insert("Funds".to_string()); // "Funds" selected by default
         Self {
             selected_wallet,
             app_context: app_context.clone(),
             error_message: None,
             sort_column: SortColumn::Index,
             sort_order: SortOrder::Ascending,
+            selected_filters,
         }
     }
 
@@ -164,6 +169,41 @@ impl WalletsBalancesScreen {
                 order
             } else {
                 order.reverse()
+            }
+        });
+    }
+
+    fn render_filter_selector(&mut self, ui: &mut Ui) {
+        ui.horizontal(|ui| {
+            let filter_options = ["Funds", "Identity Creation", "System", "Asset Locks"];
+
+            for filter_option in &filter_options {
+                let is_selected = self.selected_filters.contains(*filter_option);
+
+                // Create RichText with a larger font size
+                let text = egui::RichText::new(*filter_option).size(14.0);
+
+                let button = egui::SelectableLabel::new(is_selected, text);
+
+                // Set the desired button size
+                let button_size = egui::Vec2::new(100.0, 30.0);
+
+                if ui.add_sized(button_size, button).clicked() {
+                    let shift_held = ui.input(|i| i.modifiers.shift_only());
+
+                    if shift_held {
+                        // If Shift is held, toggle the filter
+                        if is_selected {
+                            self.selected_filters.remove(*filter_option);
+                        } else {
+                            self.selected_filters.insert((*filter_option).to_string());
+                        }
+                    } else {
+                        // Without Shift, replace the selection
+                        self.selected_filters.clear();
+                        self.selected_filters.insert((*filter_option).to_string());
+                    }
+                }
             }
         });
     }
@@ -261,6 +301,21 @@ impl WalletsBalancesScreen {
 
     fn render_address_table(&mut self, ui: &mut Ui) -> AppAction {
         let action = AppAction::None;
+
+        let mut included_address_types = HashSet::new();
+
+        for filter in &self.selected_filters {
+            match filter.as_str() {
+                "Funds" => {
+                    included_address_types.insert("Funds".to_string());
+                    included_address_types.insert("Change".to_string());
+                }
+                other => {
+                    included_address_types.insert(other.to_string());
+                }
+            }
+        }
+
         // Move the data preparation into its own scope
         let mut address_data = {
             let wallet = self.selected_wallet.as_ref().unwrap().read().unwrap();
@@ -269,7 +324,7 @@ impl WalletsBalancesScreen {
             wallet
                 .known_addresses
                 .iter()
-                .map(|(address, derivation_path)| {
+                .filter_map(|(address, derivation_path)| {
                     let utxo_info = wallet.utxos.get(address);
 
                     let utxo_count = utxo_info.map(|outpoints| outpoints.len()).unwrap_or(0);
@@ -300,18 +355,22 @@ impl WalletsBalancesScreen {
                             "System".to_string()
                         };
 
-                    AddressData {
-                        address: address.clone(),
-                        balance: wallet
-                            .address_balances
-                            .get(address)
-                            .cloned()
-                            .unwrap_or_default(),
-                        utxo_count,
-                        total_received,
-                        address_type,
-                        index,
-                        derivation_path: derivation_path.clone(),
+                    if included_address_types.contains(address_type.as_str()) {
+                        Some(AddressData {
+                            address: address.clone(),
+                            balance: wallet
+                                .address_balances
+                                .get(address)
+                                .cloned()
+                                .unwrap_or_default(),
+                            utxo_count,
+                            total_received,
+                            address_type,
+                            index,
+                            derivation_path: derivation_path.clone(),
+                        })
+                    } else {
+                        None
                     }
                 })
                 .collect::<Vec<AddressData>>()
@@ -467,9 +526,11 @@ impl WalletsBalancesScreen {
     }
 
     fn render_bottom_options(&mut self, ui: &mut Ui) {
-        // Add the button to add a receiving address
-        if ui.button("Add Receiving Address").clicked() {
-            self.add_receiving_address();
+        if self.selected_filters.contains("Funds") {
+            // Add the button to add a receiving address
+            if ui.button("Add Receiving Address").clicked() {
+                self.add_receiving_address();
+            }
         }
     }
 
@@ -585,12 +646,24 @@ impl ScreenLike for WalletsBalancesScreen {
 
             // Render the address table
             if self.selected_wallet.is_some() {
-                action |= self.render_address_table(ui);
+                self.render_filter_selector(ui);
 
                 ui.add_space(20.0);
 
-                // Render the asset locks section
-                self.render_wallet_asset_locks(ui);
+                if !(self.selected_filters.contains("Asset Locks")
+                    && self.selected_filters.len() == 1)
+                {
+                    action |= self.render_address_table(ui);
+                }
+
+                ui.add_space(20.0);
+
+                if self.selected_filters.contains("Asset Locks") {
+                    // Render the asset locks section
+                    self.render_wallet_asset_locks(ui);
+                }
+
+                ui.add_space(15.0);
 
                 self.render_bottom_options(ui);
             } else {

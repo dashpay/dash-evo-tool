@@ -2,7 +2,9 @@ use crate::app::{AppAction, DesiredAppAction};
 use crate::backend_task::identity::IdentityTask;
 use crate::backend_task::BackendTask;
 use crate::context::AppContext;
-use crate::model::qualified_identity::encrypted_key_storage::{PrivateKeyData, WalletDerivationPath};
+use crate::model::qualified_identity::encrypted_key_storage::{
+    PrivateKeyData, WalletDerivationPath,
+};
 use crate::model::qualified_identity::PrivateKeyTarget::{
     PrivateKeyOnMainIdentity, PrivateKeyOnVoterIdentity,
 };
@@ -141,9 +143,9 @@ impl IdentitiesScreen {
                     .as_ref()
                 {
                     None => "".to_string(),
-                    Some(wallet_derivation_path) => {
-                        self.find_wallet(&wallet_derivation_path.wallet_seed_hash).unwrap_or_default()
-                    }
+                    Some(wallet_derivation_path) => self
+                        .find_wallet(&wallet_derivation_path.wallet_seed_hash)
+                        .unwrap_or_default(),
                 }
             }
         };

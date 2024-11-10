@@ -1,10 +1,14 @@
-use std::collections::BTreeMap;
-use dash_sdk::dpp::dashcore::bip32::{DerivationPath, KeyDerivationType};
 use super::{BackendTaskSuccessResult, IdentityIndex};
 use crate::context::AppContext;
+use crate::model::qualified_identity::encrypted_key_storage::{
+    PrivateKeyData, WalletDerivationPath,
+};
 use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
-use crate::model::qualified_identity::{DPNSNameInfo, IdentityType, PrivateKeyTarget, QualifiedIdentity};
-use crate::model::wallet::Wallet;
+use crate::model::qualified_identity::{
+    DPNSNameInfo, IdentityType, PrivateKeyTarget, QualifiedIdentity,
+};
+use crate::model::wallet::{Wallet, WalletArcRef};
+use dash_sdk::dpp::dashcore::bip32::{DerivationPath, KeyDerivationType};
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::document::DocumentV0Getters;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -15,17 +19,19 @@ use dash_sdk::drive::query::{WhereClause, WhereOperator};
 use dash_sdk::platform::types::identity::PublicKeyHash;
 use dash_sdk::platform::{Document, DocumentQuery, Fetch, FetchMany, Identity};
 use dash_sdk::Sdk;
-use crate::model::qualified_identity::encrypted_key_storage::{PrivateKeyData, WalletDerivationPath};
+use std::collections::BTreeMap;
 
 impl AppContext {
     pub(super) async fn load_user_identity_from_wallet(
         &self,
         sdk: &Sdk,
-        wallet: Wallet,
+        wallet_arc_ref: WalletArcRef,
         identity_index: IdentityIndex,
     ) -> Result<BackendTaskSuccessResult, String> {
-        let public_key =
-            wallet.identity_authentication_ecdsa_public_key(self.network, identity_index, 0)?;
+        let public_key = {
+            let mut wallet = wallet_arc_ref.wallet.write().unwrap();
+            wallet.identity_authentication_ecdsa_public_key(self.network, identity_index, 0)?
+        };
 
         let Some(identity) = Identity::fetch(
             &sdk,
@@ -85,9 +91,18 @@ impl AppContext {
 
         let top_bound = identity.public_keys().len() as u32 + 5;
 
-        let (public_key_result_map, public_key_hash_result_map) = wallet.identity_authentication_ecdsa_public_keys_data_map(self.network, identity_index, 0..top_bound)?;
+        let wallet_seed_hash;
+        let (public_key_result_map, public_key_hash_result_map) = {
+            let mut wallet = wallet_arc_ref.wallet.write().unwrap();
+            wallet_seed_hash = wallet.seed_hash();
+            wallet.identity_authentication_ecdsa_public_keys_data_map(
+                self.network,
+                identity_index,
+                0..top_bound,
+                Some(self),
+            )?
+        };
 
-        let wallet_seed_hash = wallet.seed_hash();
         let private_keys = identity.public_keys().values().filter_map(|public_key| {
             let index: u32 = match public_key.key_type() {
                 KeyType::ECDSA_SECP256K1 => {

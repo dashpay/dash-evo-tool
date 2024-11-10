@@ -1,10 +1,10 @@
+use crate::model::qualified_identity::encrypted_key_storage::WalletDerivationPath;
 use crate::model::wallet::Wallet;
 use bincode::{Decode, Encode};
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::hash::IdentityPublicKeyHashMethodsV0;
 use dash_sdk::platform::IdentityPublicKey;
 use std::sync::{Arc, RwLock};
-use crate::model::qualified_identity::encrypted_key_storage::WalletDerivationPath;
 
 #[derive(Debug, Encode, Decode, Clone, PartialEq)]
 pub struct QualifiedIdentityPublicKey {
@@ -44,11 +44,10 @@ impl QualifiedIdentityPublicKey {
             for locked_wallet in wallets {
                 let wallet = locked_wallet.read().unwrap();
                 if let Some(derivation_path) = wallet.known_addresses.get(&address) {
-                    in_wallet_at_derivation_path =
-                        Some(WalletDerivationPath {
-                            wallet_seed_hash: wallet.seed_hash(),
-                            derivation_path: derivation_path.clone(),
-                        });
+                    in_wallet_at_derivation_path = Some(WalletDerivationPath {
+                        wallet_seed_hash: wallet.seed_hash(),
+                        derivation_path: derivation_path.clone(),
+                    });
                 }
                 if in_wallet_at_derivation_path.is_some() {
                     break;

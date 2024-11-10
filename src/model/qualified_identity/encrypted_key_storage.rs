@@ -171,9 +171,11 @@ pub struct KeyStorage {
 }
 
 impl From<BTreeMap<(PrivateKeyTarget, KeyID), (QualifiedIdentityPublicKey, PrivateKeyData)>>
-for KeyStorage
+    for KeyStorage
 {
-    fn from(value: BTreeMap<(PrivateKeyTarget, KeyID), (QualifiedIdentityPublicKey, PrivateKeyData)>) -> Self {
+    fn from(
+        value: BTreeMap<(PrivateKeyTarget, KeyID), (QualifiedIdentityPublicKey, PrivateKeyData)>,
+    ) -> Self {
         Self {
             private_keys: value,
         }

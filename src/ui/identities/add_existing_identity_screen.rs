@@ -5,6 +5,8 @@ use crate::context::AppContext;
 use crate::model::qualified_identity::IdentityType;
 use crate::model::wallet::Wallet;
 use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
+use crate::ui::identities::add_new_identity_screen::AddNewIdentityScreen;
 use crate::ui::{MessageType, ScreenLike};
 use dash_sdk::dashcore_rpc::dashcore::Network;
 use dash_sdk::dpp::identity::TimestampMillis;
@@ -17,8 +19,6 @@ use std::fs;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
-use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
-use crate::ui::identities::add_new_identity_screen::AddNewIdentityScreen;
 
 #[derive(Debug, Clone, Deserialize)]
 struct MasternodeInfo {
@@ -240,7 +240,7 @@ impl AddExistingIdentityScreen {
         };
 
         let (needed_unlock, just_unlocked) = self.render_wallet_unlock_if_needed(ui);
-        
+
         if needed_unlock && !just_unlocked {
             return action;
         }
@@ -262,18 +262,14 @@ impl AddExistingIdentityScreen {
             if let Ok(identity_index) = self.identity_index_input.trim().parse::<u32>() {
                 action = AppAction::BackendTask(BackendTask::IdentityTask(
                     IdentityTask::SearchIdentityFromWallet(
-                        self.selected_wallet
-                            .as_ref()
-                            .unwrap()
-                            .read()
-                            .unwrap()
-                            .clone(),
+                        self.selected_wallet.as_ref().unwrap().clone().into(),
                         identity_index,
                     ),
                 ));
             } else {
                 // Handle invalid index input (optional)
-                self.add_identity_status = AddIdentityStatus::ErrorMessage("Invalid identity index".to_string());
+                self.add_identity_status =
+                    AddIdentityStatus::ErrorMessage("Invalid identity index".to_string());
             }
         }
         action
@@ -397,7 +393,6 @@ impl AddExistingIdentityScreen {
         }
     }
 }
-
 
 impl ScreenWithWalletUnlock for AddExistingIdentityScreen {
     fn selected_wallet_ref(&self) -> &Option<Arc<RwLock<Wallet>>> {

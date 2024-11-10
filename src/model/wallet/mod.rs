@@ -70,6 +70,7 @@ use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::prelude::AssetLockProof;
 use dash_sdk::platform::Identity;
+use egui::epaint::tessellator::PathType;
 use zeroize::Zeroize;
 
 bitflags! {
@@ -98,6 +99,25 @@ pub struct AddressInfo {
     pub address: Address,
     pub path_type: DerivationPathType,
     pub path_reference: DerivationPathReference,
+}
+
+#[derive(Debug, Clone)]
+pub struct WalletArcRef {
+    pub wallet: Arc<RwLock<Wallet>>,
+    pub seed_hash: WalletSeedHash,
+}
+
+impl From<Arc<RwLock<Wallet>>> for WalletArcRef {
+    fn from(wallet: Arc<RwLock<Wallet>>) -> Self {
+        let seed_hash = { wallet.read().unwrap().seed_hash() };
+        Self { wallet, seed_hash }
+    }
+}
+
+impl PartialEq for WalletArcRef {
+    fn eq(&self, other: &Self) -> bool {
+        self.seed_hash == other.seed_hash
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -397,7 +417,7 @@ impl Wallet {
                         .map_err(|e| e.to_string())?;
                     app_context
                         .db
-                        .add_address(
+                        .add_address_if_not_exists(
                             &self.seed_hash(),
                             &address,
                             &derivation_path,
@@ -448,11 +468,12 @@ impl Wallet {
     }
 
     pub fn identity_authentication_ecdsa_public_keys_data_map(
-        &self,
+        &mut self,
         network: Network,
         identity_index: u32,
         key_index_range: Range<u32>,
-    ) -> Result<(BTreeMap<Vec<u8>, u32>, BTreeMap<[u8;20], u32>), String> {
+        register_addresses: Option<&AppContext>,
+    ) -> Result<(BTreeMap<Vec<u8>, u32>, BTreeMap<[u8; 20], u32>), String> {
         let mut public_key_result_map = BTreeMap::new();
         let mut public_key_hash_result_map = BTreeMap::new();
         for key_index in key_index_range {
@@ -466,18 +487,32 @@ impl Wallet {
                 .derive_pub_ecdsa_for_master_seed(self.seed_bytes()?, network)
                 .map_err(|e| e.to_string())?;
 
-            public_key_result_map.insert(extended_public_key.public_key.serialize().to_vec(), key_index);
-            public_key_hash_result_map.insert(extended_public_key.to_pub().pubkey_hash().to_byte_array(), key_index);
+            let public_key = extended_public_key.to_pub();
+            public_key_result_map.insert(
+                extended_public_key.public_key.serialize().to_vec(),
+                key_index,
+            );
+            public_key_hash_result_map.insert(public_key.pubkey_hash().to_byte_array(), key_index);
+            if let Some(app_context) = register_addresses {
+                self.register_address_from_public_key(
+                    &public_key,
+                    &derivation_path,
+                    DerivationPathType::SINGLE_USER_AUTHENTICATION,
+                    DerivationPathReference::BlockchainIdentities,
+                    app_context,
+                )?;
+            }
         }
 
         Ok((public_key_result_map, public_key_hash_result_map))
     }
 
     pub fn identity_authentication_ecdsa_private_key(
-        &self,
+        &mut self,
         network: Network,
         identity_index: u32,
         key_index: u32,
+        register_addresses: Option<&AppContext>,
     ) -> Result<(PrivateKey, DerivationPath), String> {
         let derivation_path = DerivationPath::identity_authentication_path(
             network,
@@ -488,21 +523,87 @@ impl Wallet {
         let extended_public_key = derivation_path
             .derive_priv_ecdsa_for_master_seed(self.seed_bytes()?, network)
             .expect("derivation should not be able to fail");
-        Ok((extended_public_key.to_priv(), derivation_path))
+
+        let private_key = extended_public_key.to_priv();
+        if let Some(app_context) = register_addresses {
+            self.register_address_from_private_key(
+                &private_key,
+                &derivation_path,
+                DerivationPathType::SINGLE_USER_AUTHENTICATION,
+                DerivationPathReference::BlockchainIdentities,
+                app_context,
+            )?;
+        }
+
+        Ok((private_key, derivation_path))
     }
 
-    pub fn identity_registration_ecdsa_public_key(
-        &self,
-        network: Network,
-        index: u32,
-    ) -> PublicKey {
-        let derivation_path = DerivationPath::identity_registration_path(network, index);
+    fn register_address_from_private_key(
+        &mut self,
+        private_key: &PrivateKey,
+        derivation_path: &DerivationPath,
+        path_type: DerivationPathType,
+        path_reference: DerivationPathReference,
+        app_context: &AppContext,
+    ) -> Result<(), String> {
         let secp = Secp256k1::new();
-        let extended_public_key = self
-            .master_bip44_ecdsa_extended_public_key
-            .derive_pub(&secp, &derivation_path)
-            .expect("derivation should not be able to fail");
-        extended_public_key.to_pub()
+        let address = Address::p2pkh(&private_key.public_key(&secp), app_context.network);
+        self.register_address(
+            address,
+            derivation_path,
+            path_type,
+            path_reference,
+            app_context,
+        )
+    }
+
+    fn register_address_from_public_key(
+        &mut self,
+        public_key: &PublicKey,
+        derivation_path: &DerivationPath,
+        path_type: DerivationPathType,
+        path_reference: DerivationPathReference,
+        app_context: &AppContext,
+    ) -> Result<(), String> {
+        let address = Address::p2pkh(public_key, app_context.network);
+        self.register_address(
+            address,
+            derivation_path,
+            path_type,
+            path_reference,
+            app_context,
+        )
+    }
+    fn register_address(
+        &mut self,
+        address: Address,
+        derivation_path: &DerivationPath,
+        path_type: DerivationPathType,
+        path_reference: DerivationPathReference,
+        app_context: &AppContext,
+    ) -> Result<(), String> {
+        app_context
+            .db
+            .add_address_if_not_exists(
+                &self.seed_hash(),
+                &address,
+                derivation_path,
+                DerivationPathReference::BlockchainIdentityCreditRegistrationFunding,
+                DerivationPathType::CREDIT_FUNDING,
+                None,
+            )
+            .map_err(|e| e.to_string())?;
+        self.known_addresses
+            .insert(address.clone(), derivation_path.clone());
+        self.watched_addresses.insert(
+            derivation_path.clone(),
+            AddressInfo {
+                address,
+                path_type,
+                path_reference,
+            },
+        );
+        Ok(())
     }
 
     pub fn identity_registration_ecdsa_private_key(
@@ -518,30 +619,13 @@ impl Wallet {
         let private_key = extended_private_key.to_priv();
 
         if let Some(app_context) = register_addresses {
-            let secp = Secp256k1::new();
-            let address = Address::p2pkh(&private_key.public_key(&secp), network);
-            app_context
-                .db
-                .add_address(
-                    &self.seed_hash(),
-                    &address,
-                    &derivation_path,
-                    DerivationPathReference::BlockchainIdentityCreditRegistrationFunding,
-                    DerivationPathType::CREDIT_FUNDING,
-                    None,
-                )
-                .map_err(|e| e.to_string())?;
-            self.known_addresses
-                .insert(address.clone(), derivation_path.clone());
-            self.watched_addresses.insert(
-                derivation_path.clone(),
-                AddressInfo {
-                    address: address.clone(),
-                    path_type: DerivationPathType::CREDIT_FUNDING,
-                    path_reference:
-                        DerivationPathReference::BlockchainIdentityCreditRegistrationFunding,
-                },
-            );
+            self.register_address_from_private_key(
+                &private_key,
+                &derivation_path,
+                DerivationPathType::CREDIT_FUNDING,
+                DerivationPathReference::BlockchainIdentityCreditRegistrationFunding,
+                app_context,
+            )?;
         }
         Ok(private_key)
     }

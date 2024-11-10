@@ -1,7 +1,9 @@
 use crate::app::AppAction;
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::context::AppContext;
-use crate::model::qualified_identity::encrypted_key_storage::{PrivateKeyData, WalletDerivationPath};
+use crate::model::qualified_identity::encrypted_key_storage::{
+    PrivateKeyData, WalletDerivationPath,
+};
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::add_key_screen::AddKeyScreen;
 use crate::ui::document_query_screen::DocumentQueryScreen;

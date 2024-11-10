@@ -1,6 +1,7 @@
 use super::BackendTaskSuccessResult;
 use crate::backend_task::identity::{verify_key_input, IdentityInputToLoad};
 use crate::context::AppContext;
+use crate::model::qualified_identity::encrypted_key_storage::PrivateKeyData;
 use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
 use crate::model::qualified_identity::PrivateKeyTarget::{
     self, PrivateKeyOnMainIdentity, PrivateKeyOnVoterIdentity,
@@ -8,16 +9,19 @@ use crate::model::qualified_identity::PrivateKeyTarget::{
 use crate::model::qualified_identity::{DPNSNameInfo, IdentityType, QualifiedIdentity};
 use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
 use dash_sdk::dashcore_rpc::dashcore::PrivateKey;
+use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::document::DocumentV0Getters;
 use dash_sdk::dpp::identifier::MasternodeIdentifiers;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+use dash_sdk::dpp::identity::{KeyType, SecurityLevel};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::platform_value::Value;
 use dash_sdk::drive::query::{WhereClause, WhereOperator};
 use dash_sdk::platform::{Document, DocumentQuery, Fetch, FetchMany, Identifier, Identity};
 use dash_sdk::Sdk;
-use std::collections::BTreeMap;
+use egui::ahash::HashMap;
+use std::collections::{BTreeMap, HashSet};
 
 impl AppContext {
     pub(super) async fn load_identity(
@@ -76,7 +80,10 @@ impl AppContext {
                 );
             encrypted_private_keys.insert(
                 (PrivateKeyOnMainIdentity, key_id),
-                (qualified_key, owner_private_key_bytes),
+                (
+                    qualified_key,
+                    PrivateKeyData::Clear(owner_private_key_bytes),
+                ),
             );
         }
 
@@ -95,7 +102,10 @@ impl AppContext {
                 );
             encrypted_private_keys.insert(
                 (PrivateKeyOnMainIdentity, key_id),
-                (qualified_key, payout_address_private_key_bytes),
+                (
+                    qualified_key,
+                    PrivateKeyData::Clear(payout_address_private_key_bytes),
+                ),
             );
         }
 
@@ -132,7 +142,10 @@ impl AppContext {
                     );
                 encrypted_private_keys.insert(
                     (PrivateKeyOnVoterIdentity, key.id()),
-                    (qualified_key, voting_private_key_bytes),
+                    (
+                        qualified_key,
+                        PrivateKeyData::Clear(voting_private_key_bytes),
+                    ),
                 );
                 Some((voter_identity, key))
             } else {
@@ -143,31 +156,78 @@ impl AppContext {
         };
 
         if identity_type == IdentityType::User {
-            for (i, private_key_input) in keys_input.into_iter().enumerate() {
-                let key_id = i as u32;
-                let public_key = match identity.public_keys().get(&key_id) {
-                    Some(key) => key,
-                    None => return Err("No public key matching key id {key_id}".to_string()),
-                };
-                let private_key_bytes = match verify_key_input(
-                    private_key_input,
-                    &public_key.key_type().to_string(),
-                )? {
-                    Some(bytes) => bytes,
-                    None => {
-                        return Err("Private key input length is 0 for key id {key_id}".to_string())
-                    }
-                };
+            let input_private_keys = keys_input
+                .into_iter()
+                .filter_map(|key_string| {
+                    Some(
+                        verify_key_input(key_string, "User Key")
+                            .transpose()?
+                            .and_then(|sk| {
+                                PrivateKey::from_slice(sk.as_slice(), self.network)
+                                    .map_err(|e| e.to_string())
+                            }),
+                    )
+                })
+                .collect::<Result<Vec<PrivateKey>, String>>()?;
+
+            let secp = Secp256k1::new();
+            let (public_key_lookup, public_key_hash_lookup): (
+                HashMap<Vec<u8>, [u8; 32]>,
+                HashMap<[u8; 20], [u8; 32]>,
+            ) = input_private_keys
+                .into_iter()
+                .map(|private_key| {
+                    let public_key = private_key.public_key(&secp);
+                    let public_key_bytes = public_key.to_bytes();
+                    let pub_key_hash = public_key.pubkey_hash().to_byte_array();
+                    (
+                        (public_key_bytes, private_key.inner.secret_bytes()),
+                        (pub_key_hash, private_key.inner.secret_bytes()),
+                    )
+                })
+                .unzip();
+
+            for (&key_id, public_key) in identity.public_keys().iter() {
                 let qualified_key =
                     QualifiedIdentityPublicKey::from_identity_public_key_with_wallets_check(
                         public_key.clone(),
                         self.network,
                         wallets.as_slice(),
                     );
-                encrypted_private_keys.insert(
-                    (PrivateKeyTarget::PrivateKeyOnMainIdentity, key_id),
-                    (qualified_key, private_key_bytes),
-                );
+
+                if let Some(wallet_derivation_path) =
+                    qualified_key.in_wallet_at_derivation_path.clone()
+                {
+                    encrypted_private_keys.insert(
+                        (PrivateKeyTarget::PrivateKeyOnMainIdentity, key_id),
+                        (
+                            qualified_key,
+                            PrivateKeyData::AtWalletDerivationPath(wallet_derivation_path),
+                        ),
+                    );
+                } else if let Some(private_key_bytes) =
+                    public_key_lookup.get(public_key.data().0.as_slice())
+                {
+                    let private_data = match public_key.security_level() {
+                        SecurityLevel::MEDIUM => PrivateKeyData::AlwaysClear(*private_key_bytes),
+                        _ => PrivateKeyData::Clear(*private_key_bytes),
+                    };
+                    encrypted_private_keys.insert(
+                        (PrivateKeyTarget::PrivateKeyOnMainIdentity, key_id),
+                        (qualified_key, private_data),
+                    );
+                } else if let Some(private_key_bytes) =
+                    public_key_hash_lookup.get(public_key.data().0.as_slice())
+                {
+                    let private_data = match public_key.security_level() {
+                        SecurityLevel::MEDIUM => PrivateKeyData::AlwaysClear(*private_key_bytes),
+                        _ => PrivateKeyData::Clear(*private_key_bytes),
+                    };
+                    encrypted_private_keys.insert(
+                        (PrivateKeyTarget::PrivateKeyOnMainIdentity, key_id),
+                        (qualified_key, private_data),
+                    );
+                }
             }
         }
 

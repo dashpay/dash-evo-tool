@@ -1,6 +1,8 @@
 use crate::app::AppAction;
 use crate::context::AppContext;
-use crate::model::qualified_identity::encrypted_key_storage::{PrivateKeyData, WalletDerivationPath};
+use crate::model::qualified_identity::encrypted_key_storage::{
+    PrivateKeyData, WalletDerivationPath,
+};
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::ScreenLike;
@@ -82,12 +84,16 @@ impl ScreenLike for KeyInfoScreen {
                     }
                     ui.end_row();
 
-                    if let Some((_, Some(wallet_derivation_path))) = self.private_key_data.as_ref() {
+                    if let Some((_, Some(wallet_derivation_path))) = self.private_key_data.as_ref()
+                    {
                         // Disabled
                         ui.label(RichText::new("In local Wallet").strong());
                         ui.label(
-                            RichText::new(format!("At derivation path {}", wallet_derivation_path.derivation_path))
-                                .strong(),
+                            RichText::new(format!(
+                                "At derivation path {}",
+                                wallet_derivation_path.derivation_path
+                            ))
+                            .strong(),
                         );
                         ui.end_row();
                     }

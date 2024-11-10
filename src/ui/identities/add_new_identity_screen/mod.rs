@@ -11,6 +11,7 @@ use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::wallet::Wallet;
 use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
 use crate::ui::{MessageType, ScreenLike};
 use arboard::Clipboard;
 use dash_sdk::dashcore_rpc::dashcore::Address;
@@ -30,7 +31,6 @@ use std::sync::{Arc, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{fmt, thread};
 use zeroize::Zeroize;
-use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
 
 #[derive(Debug, Clone, Deserialize)]
 struct KeyInfo {
@@ -378,7 +378,7 @@ impl AddNewIdentityScreen {
                     // Automatically select the only available wallet
                     self.selected_wallet = Some(wallet.clone());
 
-                    let wallet = wallet.read().unwrap();
+                    let mut wallet = wallet.write().unwrap();
 
                     if wallet.is_open() {
                         self.identity_id_number =
@@ -390,6 +390,7 @@ impl AddNewIdentityScreen {
                                     self.app_context.network,
                                     0,
                                     0,
+                                    Some(&self.app_context),
                                 )
                                 .expect("expected to have decrypted wallet"),
                         );
@@ -401,6 +402,7 @@ impl AddNewIdentityScreen {
                                         self.app_context.network,
                                         0,
                                         1,
+                                        Some(&self.app_context),
                                     )
                                     .expect("expected to have decrypted wallet"),
                                 KeyType::ECDSA_HASH160,
@@ -413,6 +415,7 @@ impl AddNewIdentityScreen {
                                         self.app_context.network,
                                         0,
                                         2,
+                                        Some(&self.app_context),
                                     )
                                     .expect("expected to have decrypted wallet"),
                                 KeyType::ECDSA_HASH160,
@@ -716,7 +719,7 @@ impl AddNewIdentityScreen {
     }
     fn update_identity_key(&mut self) {
         if let Some(wallet_guard) = self.selected_wallet.as_ref() {
-            let wallet = wallet_guard.read().unwrap();
+            let mut wallet = wallet_guard.write().unwrap();
             let identity_index = self.identity_id_number;
 
             // Update the master private key and keys input from the wallet
@@ -726,6 +729,7 @@ impl AddNewIdentityScreen {
                         self.app_context.network,
                         identity_index,
                         0,
+                        Some(&self.app_context),
                     )
                     .expect("expected to have decrypted wallet"),
             );
@@ -743,6 +747,7 @@ impl AddNewIdentityScreen {
                                 self.app_context.network,
                                 identity_index,
                                 key_index as u32 + 1,
+                                Some(&self.app_context),
                             )
                             .expect("expected to have decrypted wallet"),
                         *key_type,
@@ -756,7 +761,7 @@ impl AddNewIdentityScreen {
 
     fn add_identity_key(&mut self) {
         if let Some(wallet_guard) = self.selected_wallet.as_ref() {
-            let wallet = wallet_guard.read().unwrap();
+            let mut wallet = wallet_guard.write().unwrap();
             let new_key_index = self.identity_keys.keys_input.len() as u32 + 1;
 
             // Add a new key with default parameters
@@ -766,6 +771,7 @@ impl AddNewIdentityScreen {
                         self.app_context.network,
                         self.identity_id_number,
                         new_key_index,
+                        Some(&self.app_context),
                     )
                     .expect("expected to have decrypted wallet"),
                 KeyType::ECDSA_HASH160,  // Default key type
@@ -882,7 +888,7 @@ impl ScreenLike for AddNewIdentityScreen {
             if needed_unlock {
                 if just_unlocked {
                     let wallet_guard = self.selected_wallet.as_ref().unwrap();
-                    let wallet = wallet_guard.read().unwrap();
+                    let mut wallet = wallet_guard.write().unwrap();
 
                     self.identity_id_number =
                         wallet.identities.keys().copied().max().unwrap_or_default();
@@ -893,6 +899,7 @@ impl ScreenLike for AddNewIdentityScreen {
                                 self.app_context.network,
                                 0,
                                 0,
+                                Some(&self.app_context),
                             )
                             .expect("expected to have decrypted wallet"),
                     );
@@ -904,6 +911,7 @@ impl ScreenLike for AddNewIdentityScreen {
                                     self.app_context.network,
                                     0,
                                     1,
+                                    Some(&self.app_context),
                                 )
                                 .expect("expected to have decrypted wallet"),
                             KeyType::ECDSA_HASH160,
@@ -916,6 +924,7 @@ impl ScreenLike for AddNewIdentityScreen {
                                     self.app_context.network,
                                     0,
                                     2,
+                                    Some(&self.app_context),
                                 )
                                 .expect("expected to have decrypted wallet"),
                             KeyType::ECDSA_HASH160,
@@ -930,10 +939,22 @@ impl ScreenLike for AddNewIdentityScreen {
 
             // Display the heading with an info icon that shows a tooltip on hover
             ui.horizontal(|ui| {
-                ui.heading(format!(
-                    "{}. Choose an identity index. Leave this 0 if this is your first identity for this wallet.",
-                    step_number
-                ));
+
+                let wallet_guard = self.selected_wallet.as_ref().unwrap();
+                let wallet = wallet_guard.read().unwrap();
+                if wallet.identities.is_empty() {
+                    ui.heading(format!(
+                        "{}. Choose an identity index. Leave this 0 if this is your first identity for this wallet.",
+                        step_number
+                    ));
+                } else {
+                    ui.heading(format!(
+                        "{}. Choose an identity index. Leaving this {} is recommended.",
+                        step_number,
+                        wallet.identities.keys().cloned().max().unwrap_or_default()
+                    ));
+                }
+
 
                 // Create a label with click sense and tooltip
                 let info_icon = egui::Label::new("ℹ").sense(egui::Sense::click());

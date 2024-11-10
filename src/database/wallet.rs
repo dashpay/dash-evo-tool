@@ -79,7 +79,7 @@ impl Database {
 
     /// Add a new address to a wallet with optional balance.
     /// If the address already exists, it does nothing.
-    pub fn add_address(
+    pub fn add_address_if_not_exists(
         &self,
         seed_hash: &[u8; 32],
         address: &Address,

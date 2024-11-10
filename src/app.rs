@@ -192,7 +192,7 @@ impl AppState {
             Network::Dash,
             "tcp://127.0.0.1:23708",
             core_message_sender.clone(), // Clone the sender for each listener
-            Some(tx_zmq_status),
+            Some(mainnet_app_context.sx_zmq_status.clone()),
         )
         .expect("Failed to create mainnet InstantSend listener");
 
@@ -249,6 +249,7 @@ impl AppState {
             chosen_network,
             mainnet_app_context,
             testnet_app_context,
+            //zmq_connection_status: ZMQConnectionEvent::Disconnected,
             rx_zmq_status,
             mainnet_core_zmq_listener,
             testnet_core_zmq_listener,
@@ -366,6 +367,11 @@ impl AppState {
 
 impl App for AppState {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if let Ok(event) = self.mainnet_app_context.rx_zmq_status.try_recv() {
+            if let Ok(mut status) = self.mainnet_app_context.zmq_connection_status.lock() {
+                *status = event;
+            }
+        }
         // Poll the receiver for any new task results
         while let Ok(task_result) = self.task_result_receiver.try_recv() {
             // Handle the result on the main thread

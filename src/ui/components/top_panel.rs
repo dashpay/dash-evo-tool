@@ -3,13 +3,11 @@ use crate::context::AppContext;
 use dash_sdk::dashcore_rpc::dashcore::Network;
 use egui::{Align, Color32, Context, Frame, Layout, Margin, RichText, Stroke, TopBottomPanel, Ui};
 use std::sync::Arc;
+use crate::components::core_zmq_listener::ZMQConnectionEvent;
 
 fn add_location_view(ui: &mut Ui, location: Vec<(&str, AppAction)>) -> AppAction {
     let mut action = AppAction::None;
     let font_id = egui::FontId::proportional(22.0);
-
-    ui.label("TAKIS RE");
-
 
     egui::menu::bar(ui, |ui| {
         ui.horizontal(|ui| {
@@ -58,8 +56,6 @@ pub fn add_top_panel(
         _ => Color32::BLACK,
     };
 
-    //app_context.
-
     TopBottomPanel::top("top_panel")
         .frame(
             Frame::none()
@@ -69,11 +65,26 @@ pub fn add_top_panel(
         .exact_height(50.0)
         .show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
+
+                let connection_status = {
+                    if let Ok(status) = app_context.zmq_connection_status.lock() {
+                        match *status {
+                            ZMQConnectionEvent::Connected => "CONNECTED",
+                            ZMQConnectionEvent::Disconnected => "DISCONNECTED",
+                        }
+                    } else {
+                        "Lock Error"
+                    }
+                };
+                ui.label(connection_status);
+
                 // Left-aligned content with location view
                 action = add_location_view(ui, location);
 
                 // Right-aligned content with buttons
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+
+                    //ui.label("takis the cat");
                     for (text, right_button_action) in right_buttons.into_iter().rev() {
                         ui.add_space(8.0);
 

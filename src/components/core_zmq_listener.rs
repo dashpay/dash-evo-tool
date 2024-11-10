@@ -24,6 +24,7 @@ pub enum ZMQMessage {
     ChainLockedLockedTransaction(Transaction, CoreBlockHeight),
 }
 
+#[derive(Debug)]
 pub enum ZMQConnectionEvent {
     Connected,
     Disconnected,
@@ -206,15 +207,15 @@ impl CoreZMQListener {
 
                         match zmq::SocketEvent::from_raw(event_number) {
                             zmq::SocketEvent::CONNECTED => {
-                                println!("Socket connected to {}", endpoint);
                                 if let Some(ref tx) = tx_zmq_status {
+                                    println!("ODY Socket connected to {}", endpoint);
                                     tx.send(ZMQConnectionEvent::Connected).expect("Failed to send connected event");
                                 }
                                 // Connection is successful
                             }
                             zmq::SocketEvent::DISCONNECTED => {
-                                println!("Socket disconnected from {}", endpoint);
                                 if let Some(ref tx) = tx_zmq_status {
+                                    println!("ODY Socket disconnected from {}", endpoint);
                                     tx.send(ZMQConnectionEvent::Disconnected).expect("Failed to send connected event");
                                 }
                                 // Connection is lost

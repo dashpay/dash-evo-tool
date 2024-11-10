@@ -1,3 +1,4 @@
+use crossbeam_channel::Sender;
 use dash_sdk::dpp::dashcore::consensus::Decodable;
 use dash_sdk::dpp::dashcore::{Block, InstantLock, Network, Transaction};
 use dash_sdk::dpp::prelude::CoreBlockHeight;
@@ -10,7 +11,6 @@ use std::sync::{
 };
 use std::thread;
 use std::time::Duration;
-use crossbeam_channel::Sender;
 use zmq::Context;
 
 pub struct CoreZMQListener {
@@ -51,16 +51,25 @@ impl CoreZMQListener {
             let socket = context.socket(zmq::SUB).expect("Failed to create socket");
 
             // Set heartbeat options
-            socket.set_heartbeat_ivl(5000).expect("Failed to set heartbeat interval");      // Send a heartbeat every 5000 ms
-            socket.set_heartbeat_timeout(10000).expect("Failed to set heartbeat timeout");  // Timeout after 10000 ms without response
+            socket
+                .set_heartbeat_ivl(5000)
+                .expect("Failed to set heartbeat interval"); // Send a heartbeat every 5000 ms
+            socket
+                .set_heartbeat_timeout(10000)
+                .expect("Failed to set heartbeat timeout"); // Timeout after 10000 ms without response
 
             let monitor_addr = "inproc://socket-monitor";
-            socket.monitor(monitor_addr, zmq::SocketEvent::ALL as i32)
+            socket
+                .monitor(monitor_addr, zmq::SocketEvent::ALL as i32)
                 .expect("Failed to monitor socket");
 
             // Create the PAIR socket for monitoring
-            let monitor_socket = context.socket(zmq::PAIR).expect("Failed to create monitor socket");
-            monitor_socket.connect(monitor_addr).expect("Failed to connect monitor socket");
+            let monitor_socket = context
+                .socket(zmq::PAIR)
+                .expect("Failed to create monitor socket");
+            monitor_socket
+                .connect(monitor_addr)
+                .expect("Failed to connect monitor socket");
 
             // Connect to the zmqpubhashtxlock endpoint.
             socket.connect(&endpoint).expect("Failed to connect");
@@ -83,7 +92,6 @@ impl CoreZMQListener {
             ];
 
             while !should_stop_clone.load(Ordering::SeqCst) {
-
                 zmq::poll(&mut items, -1).expect("Failed to poll sockets");
 
                 if items[0].is_readable() {
@@ -152,7 +160,9 @@ impl CoreZMQListener {
                                                     Ok(islock) => {
                                                         // Send the Transaction, InstantLock, and Network back to the main thread
                                                         if let Err(e) = sender_clone.send((
-                                                            ZMQMessage::ISLockedTransaction(tx, islock),
+                                                            ZMQMessage::ISLockedTransaction(
+                                                                tx, islock,
+                                                            ),
                                                             network,
                                                         )) {
                                                             eprintln!(
@@ -195,10 +205,14 @@ impl CoreZMQListener {
 
                 if items[1].is_readable() {
                     let mut event_msg = zmq::Message::new();
-                    monitor_socket.recv(&mut event_msg, 0).expect("Failed to receive event message");
+                    monitor_socket
+                        .recv(&mut event_msg, 0)
+                        .expect("Failed to receive event message");
 
                     let mut addr_msg = zmq::Message::new();
-                    monitor_socket.recv(&mut addr_msg, 0).expect("Failed to receive address message");
+                    monitor_socket
+                        .recv(&mut addr_msg, 0)
+                        .expect("Failed to receive address message");
 
                     let data = event_msg.as_ref();
                     if data.len() >= 6 {
@@ -209,14 +223,16 @@ impl CoreZMQListener {
                             zmq::SocketEvent::CONNECTED => {
                                 if let Some(ref tx) = tx_zmq_status {
                                     println!("ODY Socket connected to {}", endpoint);
-                                    tx.send(ZMQConnectionEvent::Connected).expect("Failed to send connected event");
+                                    tx.send(ZMQConnectionEvent::Connected)
+                                        .expect("Failed to send connected event");
                                 }
                                 // Connection is successful
                             }
                             zmq::SocketEvent::DISCONNECTED => {
                                 if let Some(ref tx) = tx_zmq_status {
                                     println!("ODY Socket disconnected from {}", endpoint);
-                                    tx.send(ZMQConnectionEvent::Disconnected).expect("Failed to send connected event");
+                                    tx.send(ZMQConnectionEvent::Disconnected)
+                                        .expect("Failed to send connected event");
                                 }
                                 // Connection is lost
                             }

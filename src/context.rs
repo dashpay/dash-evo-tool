@@ -1,3 +1,4 @@
+use crate::components::core_zmq_listener::ZMQConnectionEvent;
 use crate::config::{Config, NetworkConfig};
 use crate::context_provider::Provider;
 use crate::database::Database;
@@ -7,6 +8,7 @@ use crate::model::qualified_identity::{DPNSNameInfo, QualifiedIdentity};
 use crate::model::wallet::Wallet;
 use crate::sdk_wrapper::initialize_sdk;
 use crate::ui::RootScreenType;
+use crossbeam_channel::{Receiver, Sender};
 use dash_sdk::dashcore_rpc::dashcore::{InstantLock, Transaction};
 use dash_sdk::dashcore_rpc::{Auth, Client};
 use dash_sdk::dpp::dashcore::hashes::Hash;
@@ -25,8 +27,6 @@ use rusqlite::Result;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, RwLock};
-use crossbeam_channel::{Receiver, Sender};
-use crate::components::core_zmq_listener::ZMQConnectionEvent;
 
 #[derive(Debug)]
 pub struct AppContext {

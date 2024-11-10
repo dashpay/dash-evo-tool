@@ -1,9 +1,9 @@
 use crate::app::{AppAction, DesiredAppAction};
+use crate::components::core_zmq_listener::ZMQConnectionEvent;
 use crate::context::AppContext;
 use dash_sdk::dashcore_rpc::dashcore::Network;
 use egui::{Align, Color32, Context, Frame, Layout, Margin, RichText, Stroke, TopBottomPanel, Ui};
 use std::sync::Arc;
-use crate::components::core_zmq_listener::ZMQConnectionEvent;
 
 fn add_location_view(ui: &mut Ui, location: Vec<(&str, AppAction)>) -> AppAction {
     let mut action = AppAction::None;
@@ -36,8 +36,6 @@ fn add_location_view(ui: &mut Ui, location: Vec<(&str, AppAction)>) -> AppAction
         });
     });
 
-
-
     action
 }
 pub fn add_top_panel(
@@ -65,21 +63,20 @@ pub fn add_top_panel(
         .exact_height(50.0)
         .show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
-
                 // Left-aligned content with location view
                 action = add_location_view(ui, location);
 
                 // Right-aligned content with buttons
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-
                     let connection_status = {
                         if let Ok(status) = app_context.zmq_connection_status.lock() {
                             match *status {
                                 ZMQConnectionEvent::Connected => "zmq connected",
                                 ZMQConnectionEvent::Disconnected => "zmq disconnected",
                             }
+                        } else {
+                            ""
                         }
-                        else { "" }
                     };
                     ui.label(connection_status);
 

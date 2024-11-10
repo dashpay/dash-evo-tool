@@ -247,34 +247,4 @@ impl CoreZMQListener {
             handle.join().expect("Failed to join listener thread");
         }
     }
-
-    pub fn handle_monitor_event(&mut self, monitor_socket: &zmq::Socket) {
-        let mut event_msg = zmq::Message::new();
-        monitor_socket.recv(&mut event_msg, 0).expect("Failed to receive event message");
-
-        let mut addr_msg = zmq::Message::new();
-        monitor_socket.recv(&mut addr_msg, 0).expect("Failed to receive address message");
-
-        let data = event_msg.as_ref();
-        if data.len() >= 6 {
-            let event_number = u16::from_be_bytes([data[0], data[1]]);
-            let event_value = u32::from_be_bytes([data[2], data[3], data[4], data[5]]);
-            let endpoint = addr_msg.as_str().unwrap_or("");
-
-            match zmq::SocketEvent::from_raw(event_number) {
-                zmq::SocketEvent::CONNECTED => {
-                    println!("Socket connected to {}", endpoint);
-                    // Connection is successful
-                }
-                zmq::SocketEvent::DISCONNECTED => {
-                    println!("Socket disconnected from {}", endpoint);
-                    // Connection is lost
-                }
-                // Handle other events as needed
-                _ => {}
-            }
-        } else {
-            println!("Invalid event message received");
-        }
-    }
 }

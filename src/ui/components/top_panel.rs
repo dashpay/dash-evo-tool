@@ -8,6 +8,9 @@ fn add_location_view(ui: &mut Ui, location: Vec<(&str, AppAction)>) -> AppAction
     let mut action = AppAction::None;
     let font_id = egui::FontId::proportional(22.0);
 
+    ui.label("TAKIS RE");
+
+
     egui::menu::bar(ui, |ui| {
         ui.horizontal(|ui| {
             let len = location.len();
@@ -35,6 +38,8 @@ fn add_location_view(ui: &mut Ui, location: Vec<(&str, AppAction)>) -> AppAction
         });
     });
 
+
+
     action
 }
 pub fn add_top_panel(
@@ -52,6 +57,8 @@ pub fn add_top_panel(
         Network::Regtest => Color32::from_rgb(139, 69, 19), // Brownish for regtest
         _ => Color32::BLACK,
     };
+
+    //app_context.
 
     TopBottomPanel::top("top_panel")
         .frame(

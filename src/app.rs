@@ -471,7 +471,12 @@ impl App for AppState {
                     .update_settings(root_screen_type)
                     .ok();
             }
-            AppAction::SwitchNetwork(network) => self.change_network(network),
+            AppAction::SwitchNetwork(network) => {
+                self.change_network(network);
+                self.current_app_context()
+                    .update_settings(RootScreenType::RootScreenNetworkChooser)
+                    .ok();
+            }
         }
     }
 }

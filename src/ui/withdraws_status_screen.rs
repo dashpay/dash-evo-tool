@@ -80,7 +80,7 @@ impl WithdrawsStatusScreen {
         }
     }
 
-    fn show_input_field(&mut self, ui: &mut Ui) {}
+    fn show_input_field(&mut self, _ui: &mut Ui) {}
 
     fn show_output(&mut self, ui: &mut egui::Ui) -> AppAction {
         let mut app_action = AppAction::None;

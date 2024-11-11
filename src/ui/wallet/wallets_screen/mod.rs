@@ -1,6 +1,6 @@
 use crate::app::{AppAction, DesiredAppAction};
 use crate::backend_task::core::CoreTask;
-use crate::backend_task::BackendTask;
+use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::wallet::Wallet;
 use crate::ui::components::left_panel::add_left_panel;
@@ -10,6 +10,7 @@ use dash_sdk::dashcore_rpc::dashcore::{Address, Network};
 use dash_sdk::dpp::dashcore::bip32::{ChildNumber, DerivationPath};
 use eframe::egui::{self, ComboBox, Context, Ui};
 use egui_extras::{Column, TableBuilder};
+use std::collections::HashSet;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 
@@ -21,6 +22,7 @@ enum SortColumn {
     TotalReceived,
     Type,
     Index,
+    DerivationPath,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -35,12 +37,14 @@ pub struct WalletsBalancesScreen {
     error_message: Option<(String, MessageType)>,
     sort_column: SortColumn,
     sort_order: SortOrder,
+    selected_filters: HashSet<String>,
 }
 
 pub trait DerivationPathHelpers {
     fn is_bip44(&self, network: Network) -> bool;
     fn is_bip44_external(&self, network: Network) -> bool;
     fn is_bip44_change(&self, network: Network) -> bool;
+    fn is_asset_lock_funding(&self, network: Network) -> bool;
 }
 impl DerivationPathHelpers for DerivationPath {
     fn is_bip44(&self, network: Network) -> bool {
@@ -80,6 +84,21 @@ impl DerivationPathHelpers for DerivationPath {
             && components[1] == ChildNumber::Hardened { index: coin_type }
             && components[3] == ChildNumber::Normal { index: 1 }
     }
+
+    fn is_asset_lock_funding(&self, network: Network) -> bool {
+        // BIP44 change paths have the form m/44'/coin_type'/account'/1/...
+        let coin_type = match network {
+            Network::Dash => 5,
+            _ => 1,
+        };
+        // Asset lock funding paths have the form m/9'/coin_type'/5'/1'/x
+        let components = self.as_ref();
+        components.len() == 5
+            && components[0] == ChildNumber::Hardened { index: 9 }
+            && components[1] == ChildNumber::Hardened { index: coin_type }
+            && components[2] == ChildNumber::Hardened { index: 5 }
+            && components[3] == ChildNumber::Hardened { index: 1 }
+    }
 }
 
 // Define a struct to hold the address data
@@ -90,17 +109,21 @@ struct AddressData {
     total_received: u64,
     address_type: String,
     index: u32,
+    derivation_path: DerivationPath,
 }
 
 impl WalletsBalancesScreen {
     pub fn new(app_context: &Arc<AppContext>) -> Self {
         let selected_wallet = app_context.wallets.read().unwrap().first().cloned();
+        let mut selected_filters = HashSet::new();
+        selected_filters.insert("Funds".to_string()); // "Funds" selected by default
         Self {
             selected_wallet,
             app_context: app_context.clone(),
             error_message: None,
             sort_column: SortColumn::Index,
             sort_order: SortOrder::Ascending,
+            selected_filters,
         }
     }
 
@@ -139,12 +162,48 @@ impl WalletsBalancesScreen {
                 SortColumn::TotalReceived => a.total_received.cmp(&b.total_received),
                 SortColumn::Type => a.address_type.cmp(&b.address_type),
                 SortColumn::Index => a.index.cmp(&b.index),
+                SortColumn::DerivationPath => a.derivation_path.cmp(&b.derivation_path),
             };
 
             if self.sort_order == SortOrder::Ascending {
                 order
             } else {
                 order.reverse()
+            }
+        });
+    }
+
+    fn render_filter_selector(&mut self, ui: &mut Ui) {
+        ui.horizontal(|ui| {
+            let filter_options = ["Funds", "Identity Creation", "System", "Asset Locks"];
+
+            for filter_option in &filter_options {
+                let is_selected = self.selected_filters.contains(*filter_option);
+
+                // Create RichText with a larger font size
+                let text = egui::RichText::new(*filter_option).size(14.0);
+
+                let button = egui::SelectableLabel::new(is_selected, text);
+
+                // Set the desired button size
+                let button_size = egui::Vec2::new(100.0, 30.0);
+
+                if ui.add_sized(button_size, button).clicked() {
+                    let shift_held = ui.input(|i| i.modifiers.shift_only());
+
+                    if shift_held {
+                        // If Shift is held, toggle the filter
+                        if is_selected {
+                            self.selected_filters.remove(*filter_option);
+                        } else {
+                            self.selected_filters.insert((*filter_option).to_string());
+                        }
+                    } else {
+                        // Without Shift, replace the selection
+                        self.selected_filters.clear();
+                        self.selected_filters.insert((*filter_option).to_string());
+                    }
+                }
             }
         });
     }
@@ -242,6 +301,21 @@ impl WalletsBalancesScreen {
 
     fn render_address_table(&mut self, ui: &mut Ui) -> AppAction {
         let action = AppAction::None;
+
+        let mut included_address_types = HashSet::new();
+
+        for filter in &self.selected_filters {
+            match filter.as_str() {
+                "Funds" => {
+                    included_address_types.insert("Funds".to_string());
+                    included_address_types.insert("Change".to_string());
+                }
+                other => {
+                    included_address_types.insert(other.to_string());
+                }
+            }
+        }
+
         // Move the data preparation into its own scope
         let mut address_data = {
             let wallet = self.selected_wallet.as_ref().unwrap().read().unwrap();
@@ -250,7 +324,7 @@ impl WalletsBalancesScreen {
             wallet
                 .known_addresses
                 .iter()
-                .map(|(address, derivation_path)| {
+                .filter_map(|(address, derivation_path)| {
                     let utxo_info = wallet.utxos.get(address);
 
                     let utxo_count = utxo_info.map(|outpoints| outpoints.len()).unwrap_or(0);
@@ -272,24 +346,31 @@ impl WalletsBalancesScreen {
                     };
                     let address_type =
                         if derivation_path.is_bip44_external(self.app_context.network) {
-                            "BIP44 External".to_string()
+                            "Funds".to_string()
                         } else if derivation_path.is_bip44_change(self.app_context.network) {
-                            "BIP44 Change".to_string()
+                            "Change".to_string()
+                        } else if derivation_path.is_asset_lock_funding(self.app_context.network) {
+                            "Identity Creation".to_string()
                         } else {
-                            "Unknown".to_string()
+                            "System".to_string()
                         };
 
-                    AddressData {
-                        address: address.clone(),
-                        balance: wallet
-                            .address_balances
-                            .get(address)
-                            .cloned()
-                            .unwrap_or_default(),
-                        utxo_count,
-                        total_received,
-                        address_type,
-                        index,
+                    if included_address_types.contains(address_type.as_str()) {
+                        Some(AddressData {
+                            address: address.clone(),
+                            balance: wallet
+                                .address_balances
+                                .get(address)
+                                .cloned()
+                                .unwrap_or_default(),
+                            utxo_count,
+                            total_received,
+                            address_type,
+                            index,
+                            derivation_path: derivation_path.clone(),
+                        })
+                    } else {
+                        None
                     }
                 })
                 .collect::<Vec<AddressData>>()
@@ -316,6 +397,7 @@ impl WalletsBalancesScreen {
                             .column(Column::initial(150.0)) // Total Received
                             .column(Column::initial(100.0)) // Type
                             .column(Column::initial(60.0)) // Index
+                            .column(Column::remainder()) // Derivation Path
                             .header(30.0, |mut header| {
                                 header.col(|ui| {
                                     let label = if self.sort_column == SortColumn::Address {
@@ -395,6 +477,19 @@ impl WalletsBalancesScreen {
                                         self.toggle_sort(SortColumn::Index);
                                     }
                                 });
+                                header.col(|ui| {
+                                    let label = if self.sort_column == SortColumn::DerivationPath {
+                                        match self.sort_order {
+                                            SortOrder::Ascending => "Full Path ^",
+                                            SortOrder::Descending => "Full Path v",
+                                        }
+                                    } else {
+                                        "Full Path"
+                                    };
+                                    if ui.button(label).clicked() {
+                                        self.toggle_sort(SortColumn::DerivationPath);
+                                    }
+                                });
                             })
                             .body(|mut body| {
                                 for data in &address_data {
@@ -419,6 +514,9 @@ impl WalletsBalancesScreen {
                                         row.col(|ui| {
                                             ui.label(format!("{}", data.index));
                                         });
+                                        row.col(|ui| {
+                                            ui.label(format!("{}", data.derivation_path));
+                                        });
                                     });
                                 }
                             });
@@ -428,9 +526,11 @@ impl WalletsBalancesScreen {
     }
 
     fn render_bottom_options(&mut self, ui: &mut Ui) {
-        // Add the button to add a receiving address
-        if ui.button("Add Receiving Address").clicked() {
-            self.add_receiving_address();
+        if self.selected_filters.contains("Funds") {
+            // Add the button to add a receiving address
+            if ui.button("Add Receiving Address").clicked() {
+                self.add_receiving_address();
+            }
         }
     }
 
@@ -546,12 +646,24 @@ impl ScreenLike for WalletsBalancesScreen {
 
             // Render the address table
             if self.selected_wallet.is_some() {
-                action |= self.render_address_table(ui);
+                self.render_filter_selector(ui);
 
                 ui.add_space(20.0);
 
-                // Render the asset locks section
-                self.render_wallet_asset_locks(ui);
+                if !(self.selected_filters.contains("Asset Locks")
+                    && self.selected_filters.len() == 1)
+                {
+                    action |= self.render_address_table(ui);
+                }
+
+                ui.add_space(20.0);
+
+                if self.selected_filters.contains("Asset Locks") {
+                    // Render the asset locks section
+                    self.render_wallet_asset_locks(ui);
+                }
+
+                ui.add_space(15.0);
 
                 self.render_bottom_options(ui);
             } else {
@@ -571,6 +683,10 @@ impl ScreenLike for WalletsBalancesScreen {
         });
 
         action
+    }
+
+    fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
+        println!("{:?}", backend_task_success_result)
     }
 
     fn display_message(&mut self, message: &str, message_type: MessageType) {

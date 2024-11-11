@@ -9,23 +9,25 @@ use crate::backend_task::identity::{
 };
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
-use crate::model::wallet::{Wallet, WalletSeed};
+use crate::model::wallet::Wallet;
 use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
 use crate::ui::{MessageType, ScreenLike};
 use arboard::Clipboard;
+use dash_sdk::dashcore_rpc::dashcore::transaction::special_transaction::TransactionPayload;
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dpp::balances::credits::Duffs;
-use dash_sdk::dpp::dashcore::{OutPoint, PrivateKey, ScriptBuf, Transaction, TxOut};
+use dash_sdk::dpp::dashcore::{OutPoint, PrivateKey, Transaction, TxOut};
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::prelude::AssetLockProof;
 use eframe::egui::Context;
-use egui::{Color32, ColorImage, ComboBox, TextureHandle, Ui};
+use egui::ahash::HashSet;
+use egui::{Color32, ColorImage, ComboBox, Ui};
 use image::Luma;
 use qrcode::QrCode;
 use serde::Deserialize;
 use std::cmp::PartialEq;
-use std::ptr::read;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -89,6 +91,8 @@ pub struct AddNewIdentityScreen {
     identity_keys: IdentityKeys,
     balance_check_handle: Option<(Arc<AtomicBool>, thread::JoinHandle<()>)>,
     error_message: Option<String>,
+    show_password: bool,
+    wallet_password: String,
     show_pop_up_info: Option<String>,
     in_key_selection_advanced_mode: bool,
     pub app_context: Arc<AppContext>,
@@ -148,6 +152,8 @@ impl AddNewIdentityScreen {
             },
             balance_check_handle: None,
             error_message: None,
+            show_password: false,
+            wallet_password: "".to_string(),
             show_pop_up_info: None,
             in_key_selection_advanced_mode: false,
             app_context: app_context.clone(),
@@ -241,76 +247,121 @@ impl AddNewIdentityScreen {
         ui.horizontal(|ui| {
             ui.label("Identity Index:");
 
-            // Render a ComboBox to select the identity index
-            ComboBox::from_id_salt("identity_index")
-                .selected_text(format!("{}", self.identity_id_number))
-                .show_ui(ui, |ui| {
-                    // Provide up to 30 entries for selection (0 to 29)
-                    for i in 0..30 {
-                        if ui
-                            .selectable_value(&mut self.identity_id_number, i, format!("{}", i))
-                            .clicked()
-                        {
-                            self.identity_id_number = i;
-                            index_changed = true;
-                        }
+            // Check if we have access to the selected wallet
+            if let Some(wallet_guard) = self.selected_wallet.as_ref() {
+                let wallet = wallet_guard.read().unwrap();
+                let used_indices: HashSet<u32> = wallet.identities.keys().cloned().collect();
+
+                // Modify the selected text to include "(used)" if the current index is used
+                let selected_text = {
+                    let is_used = used_indices.contains(&self.identity_id_number);
+                    if is_used {
+                        format!("{} (used)", self.identity_id_number)
+                    } else {
+                        format!("{}", self.identity_id_number)
                     }
-                });
+                };
+
+                // Render a ComboBox to select the identity index
+                ComboBox::from_id_salt("identity_index")
+                    .selected_text(selected_text)
+                    .show_ui(ui, |ui| {
+                        // Provide up to 30 entries for selection (0 to 29)
+                        for i in 0..30 {
+                            let is_used = used_indices.contains(&i);
+                            let label = if is_used {
+                                format!("{} (used)", i)
+                            } else {
+                                format!("{}", i)
+                            };
+
+                            let is_selected = self.identity_id_number == i;
+
+                            // Enable the option if it's not used or if it's the currently selected index
+                            let enabled = !is_used || is_selected;
+
+                            // Use `add_enabled` to disable used indices
+                            let response = ui.add_enabled(
+                                enabled,
+                                egui::SelectableLabel::new(is_selected, label),
+                            );
+
+                            // Only allow selection if the index is not used
+                            if response.clicked() && !is_used {
+                                self.identity_id_number = i;
+                                index_changed = true;
+                            }
+                        }
+                    });
+            } else {
+                ui.label("No wallet selected");
+            }
         });
 
-        // If the index has changed, call update_identity_key
+        // If the index has changed, update the identity key
         if index_changed {
             self.update_identity_key();
         }
     }
 
-    fn render_wallet_unlock(&mut self, ui: &mut Ui) -> bool {
-        if let Some(wallet_guard) = self.selected_wallet.as_ref() {
-            let mut wallet = wallet_guard.write().unwrap();
-
-            // Only render the unlock prompt if the wallet requires a password and is locked
-            if wallet.uses_password && !wallet.is_open() {
-                ui.add_space(10.0);
-                ui.label("This wallet is locked. Please enter the password to unlock it:");
-
-                let mut password = String::new();
-                let password_input = ui.add(
-                    egui::TextEdit::singleline(&mut password)
-                        .password(true)
-                        .hint_text("Enter password"),
-                );
-
-                let unlocked = if password_input.lost_focus()
-                    && ui.input(|i| i.key_pressed(egui::Key::Enter))
-                {
-                    let unlocked = match wallet.wallet_seed.open(&password) {
-                        Ok(_) => {
-                            self.error_message = None; // Clear any previous error
-                            true
-                        }
-                        Err(e) => {
-                            self.error_message = Some(e); // Store the error message
-                            false
-                        }
-                    };
-                    // Clear the password field after submission
-                    password.zeroize();
-                    unlocked
-                } else {
-                    false
-                };
-
-                // Display error message if the password was incorrect
-                if let Some(error_message) = &self.error_message {
-                    ui.add_space(5.0);
-                    ui.colored_label(Color32::RED, error_message);
-                }
-
-                return unlocked;
-            }
-        }
-        false
-    }
+    // fn render_wallet_unlock(&mut self, ui: &mut Ui) -> bool {
+    //     if let Some(wallet_guard) = self.selected_wallet.as_ref() {
+    //         let mut wallet = wallet_guard.write().unwrap();
+    //
+    //         // Only render the unlock prompt if the wallet requires a password and is locked
+    //         if wallet.uses_password && !wallet.is_open() {
+    //             ui.add_space(10.0);
+    //             ui.label("This wallet is locked. Please enter the password to unlock it:");
+    //
+    //             let mut unlocked = false;
+    //             ui.horizontal(|ui| {
+    //                 let password_input = ui.add(
+    //                     egui::TextEdit::singleline(&mut self.wallet_password)
+    //                         .password(!self.show_password)
+    //                         .hint_text("Enter password"),
+    //                 );
+    //
+    //                 ui.checkbox(&mut self.show_password, "Show Password");
+    //
+    //                 unlocked = if password_input.lost_focus()
+    //                     && ui.input(|i| i.key_pressed(egui::Key::Enter))
+    //                 {
+    //                     let unlocked = match wallet.wallet_seed.open(&self.wallet_password) {
+    //                         Ok(_) => {
+    //                             self.error_message = None; // Clear any previous error
+    //                             true
+    //                         }
+    //                         Err(_) => {
+    //                             if let Some(hint) = wallet.password_hint() {
+    //                                 self.error_message = Some(format!(
+    //                                     "Incorrect Password, password hint is {}",
+    //                                     hint
+    //                                 ));
+    //                             } else {
+    //                                 self.error_message = Some("Incorrect Password".to_string());
+    //                             }
+    //                             false
+    //                         }
+    //                     };
+    //                     // Clear the password field after submission
+    //                     self.wallet_password.zeroize();
+    //                     unlocked
+    //                 } else {
+    //                     false
+    //                 };
+    //             });
+    //
+    //             // Display error message if the password was incorrect
+    //             if let Some(error_message) = &self.error_message {
+    //                 ui.add_space(5.0);
+    //                 ui.colored_label(Color32::RED, error_message);
+    //             }
+    //
+    //             return unlocked;
+    //         }
+    //     }
+    //     false
+    // }
 
     fn render_wallet_selection(&mut self, ui: &mut Ui) -> bool {
         if self.app_context.has_wallet.load(Ordering::Relaxed) {
@@ -363,7 +414,7 @@ impl AddNewIdentityScreen {
                     // Automatically select the only available wallet
                     self.selected_wallet = Some(wallet.clone());
 
-                    let wallet = wallet.read().unwrap();
+                    let mut wallet = wallet.write().unwrap();
 
                     if wallet.is_open() {
                         self.identity_id_number =
@@ -375,6 +426,7 @@ impl AddNewIdentityScreen {
                                     self.app_context.network,
                                     0,
                                     0,
+                                    Some(&self.app_context),
                                 )
                                 .expect("expected to have decrypted wallet"),
                         );
@@ -386,6 +438,7 @@ impl AddNewIdentityScreen {
                                         self.app_context.network,
                                         0,
                                         1,
+                                        Some(&self.app_context),
                                     )
                                     .expect("expected to have decrypted wallet"),
                                 KeyType::ECDSA_HASH160,
@@ -398,6 +451,7 @@ impl AddNewIdentityScreen {
                                         self.app_context.network,
                                         0,
                                         2,
+                                        Some(&self.app_context),
                                     )
                                     .expect("expected to have decrypted wallet"),
                                 KeyType::ECDSA_HASH160,
@@ -517,7 +571,7 @@ impl AddNewIdentityScreen {
         // Render additional key options only if "Advanced" mode is selected
         if self.in_key_selection_advanced_mode {
             // Render the master key input
-            if let Some(master_key) = self.identity_keys.master_private_key {
+            if let Some((master_key, _)) = self.identity_keys.master_private_key {
                 self.render_master_key(ui, master_key);
             }
 
@@ -531,7 +585,7 @@ impl AddNewIdentityScreen {
     fn render_keys_input(&mut self, ui: &mut egui::Ui) {
         let mut keys_to_remove = vec![];
 
-        for (i, (key, key_type, purpose, security_level)) in
+        for (i, ((key, _), key_type, purpose, security_level)) in
             self.identity_keys.keys_input.iter_mut().enumerate()
         {
             ui.horizontal(|ui| {
@@ -701,7 +755,7 @@ impl AddNewIdentityScreen {
     }
     fn update_identity_key(&mut self) {
         if let Some(wallet_guard) = self.selected_wallet.as_ref() {
-            let wallet = wallet_guard.read().unwrap();
+            let mut wallet = wallet_guard.write().unwrap();
             let identity_index = self.identity_id_number;
 
             // Update the master private key and keys input from the wallet
@@ -711,6 +765,7 @@ impl AddNewIdentityScreen {
                         self.app_context.network,
                         identity_index,
                         0,
+                        Some(&self.app_context),
                     )
                     .expect("expected to have decrypted wallet"),
             );
@@ -728,6 +783,7 @@ impl AddNewIdentityScreen {
                                 self.app_context.network,
                                 identity_index,
                                 key_index as u32 + 1,
+                                Some(&self.app_context),
                             )
                             .expect("expected to have decrypted wallet"),
                         *key_type,
@@ -741,7 +797,7 @@ impl AddNewIdentityScreen {
 
     fn add_identity_key(&mut self) {
         if let Some(wallet_guard) = self.selected_wallet.as_ref() {
-            let wallet = wallet_guard.read().unwrap();
+            let mut wallet = wallet_guard.write().unwrap();
             let new_key_index = self.identity_keys.keys_input.len() as u32 + 1;
 
             // Add a new key with default parameters
@@ -751,6 +807,7 @@ impl AddNewIdentityScreen {
                         self.app_context.network,
                         self.identity_id_number,
                         new_key_index,
+                        Some(&self.app_context),
                     )
                     .expect("expected to have decrypted wallet"),
                 KeyType::ECDSA_HASH160,  // Default key type
@@ -783,6 +840,36 @@ impl AddNewIdentityScreen {
     }
 }
 
+impl ScreenWithWalletUnlock for AddNewIdentityScreen {
+    fn selected_wallet_ref(&self) -> &Option<Arc<RwLock<Wallet>>> {
+        &self.selected_wallet
+    }
+
+    fn wallet_password_ref(&self) -> &String {
+        &self.wallet_password
+    }
+
+    fn wallet_password_mut(&mut self) -> &mut String {
+        &mut self.wallet_password
+    }
+
+    fn show_password(&self) -> bool {
+        self.show_password
+    }
+
+    fn show_password_mut(&mut self) -> &mut bool {
+        &mut self.show_password
+    }
+
+    fn set_error_message(&mut self, error_message: Option<String>) {
+        self.error_message = error_message;
+    }
+
+    fn error_message(&self) -> Option<&String> {
+        self.error_message.as_ref()
+    }
+}
+
 impl ScreenLike for AddNewIdentityScreen {
     fn display_message(&mut self, message: &str, _message_type: MessageType) {
         self.error_message = Some(message.to_string());
@@ -799,6 +886,25 @@ impl ScreenLike for AddNewIdentityScreen {
                         if funding_address == &address {
                             *step = AddNewIdentityWalletFundedScreenStep::FundsReceived;
                             self.funding_utxo = Some((outpoint, tx_out, address))
+                        }
+                    }
+                }
+            }
+        } else if *step == AddNewIdentityWalletFundedScreenStep::WaitingForAssetLock {
+            if let BackendTaskSuccessResult::CoreItem(CoreItem::ReceivedAvailableUTXOTransaction(
+                tx,
+                outpoints_with_addresses,
+            )) = backend_task_success_result
+            {
+                if let Some(TransactionPayload::AssetLockPayloadType(asset_lock_payload)) =
+                    tx.special_transaction_payload
+                {
+                    if let Some(funding_address) = self.funding_address.as_ref() {
+                        for (outpoint, tx_out, address) in outpoints_with_addresses {
+                            if funding_address == &address {
+                                *step = AddNewIdentityWalletFundedScreenStep::WaitingForPlatformAcceptance;
+                                self.funding_utxo = Some((outpoint, tx_out, address))
+                            }
                         }
                     }
                 }
@@ -832,37 +938,23 @@ impl ScreenLike for AddNewIdentityScreen {
                 return;
             };
 
-            let should_ask_for_password = if let Some(wallet_guard) = self.selected_wallet.as_ref() {
-                let mut wallet = wallet_guard.write().unwrap();
-                if !wallet.uses_password {
-                    if let Err(e) = wallet.wallet_seed.open_no_password() {
-                        self.error_message = Some(e);
-                    }
-                    false
-                } else if wallet.is_open() {
-                    false
-                } else {
-                    true
-                }
-            } else {
-                true
-            };
+            let (needed_unlock, just_unlocked) = self.render_wallet_unlock_if_needed(ui);
 
-            if should_ask_for_password {
-                let just_unlocked = self.render_wallet_unlock(ui);
+            if needed_unlock {
                 if just_unlocked {
                     let wallet_guard = self.selected_wallet.as_ref().unwrap();
-                    let wallet = wallet_guard.read().unwrap();
+                    let mut wallet = wallet_guard.write().unwrap();
 
                     self.identity_id_number =
-                        wallet.identities.keys().copied().max().unwrap_or_default();
+                        wallet.identities.keys().copied().max().map(|max| max + 1).unwrap_or_default();
 
                     self.identity_keys.master_private_key = Some(
                         wallet
                             .identity_authentication_ecdsa_private_key(
                                 self.app_context.network,
+                                self.identity_id_number,
                                 0,
-                                0,
+                                Some(&self.app_context),
                             )
                             .expect("expected to have decrypted wallet"),
                     );
@@ -872,8 +964,9 @@ impl ScreenLike for AddNewIdentityScreen {
                             wallet
                                 .identity_authentication_ecdsa_private_key(
                                     self.app_context.network,
-                                    0,
+                                    self.identity_id_number,
                                     1,
+                                    Some(&self.app_context),
                                 )
                                 .expect("expected to have decrypted wallet"),
                             KeyType::ECDSA_HASH160,
@@ -884,8 +977,9 @@ impl ScreenLike for AddNewIdentityScreen {
                             wallet
                                 .identity_authentication_ecdsa_private_key(
                                     self.app_context.network,
-                                    0,
+                                    self.identity_id_number,
                                     2,
+                                    Some(&self.app_context),
                                 )
                                 .expect("expected to have decrypted wallet"),
                             KeyType::ECDSA_HASH160,
@@ -900,10 +994,22 @@ impl ScreenLike for AddNewIdentityScreen {
 
             // Display the heading with an info icon that shows a tooltip on hover
             ui.horizontal(|ui| {
-                ui.heading(format!(
-                    "{}. Choose an identity index. Leave this 0 if this is your first identity for this wallet.",
-                    step_number
-                ));
+
+                let wallet_guard = self.selected_wallet.as_ref().unwrap();
+                let wallet = wallet_guard.read().unwrap();
+                if wallet.identities.is_empty() {
+                    ui.heading(format!(
+                        "{}. Choose an identity index. Leave this 0 if this is your first identity for this wallet.",
+                        step_number
+                    ));
+                } else {
+                    ui.heading(format!(
+                        "{}. Choose an identity index. Leaving this {} is recommended.",
+                        step_number,
+                        wallet.identities.keys().cloned().max().map(|max| max + 1).unwrap_or_default()
+                    ));
+                }
+
 
                 // Create a label with click sense and tooltip
                 let info_icon = egui::Label::new("ℹ").sense(egui::Sense::click());

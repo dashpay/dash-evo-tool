@@ -4,10 +4,8 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::ScreenLike;
 use eframe::egui::Context;
 
-use crate::model::wallet::{
-    ClosedWalletSeed, DerivationPathReference, DerivationPathType, OpenWalletSeed, Wallet,
-    WalletSeed,
-};
+use crate::model::wallet::encryption::{encrypt_message, DASH_SECRET_MESSAGE};
+use crate::model::wallet::{ClosedWalletSeed, OpenWalletSeed, Wallet, WalletSeed};
 use crate::ui::components::entropy_grid::U256EntropyGrid;
 use bip39::{Language, Mnemonic};
 use dash_sdk::dashcore_rpc::dashcore::bip32::{ChildNumber, DerivationPath};
@@ -57,6 +55,7 @@ pub struct AddNewWalletScreen {
     estimated_time_to_crack: String,
     error: Option<String>,
     pub app_context: Arc<AppContext>,
+    use_password_for_app: bool,
 }
 
 impl AddNewWalletScreen {
@@ -72,6 +71,7 @@ impl AddNewWalletScreen {
             estimated_time_to_crack: "".to_string(),
             error: None,
             app_context: app_context.clone(),
+            use_password_for_app: true,
         }
     }
 
@@ -95,6 +95,14 @@ impl AddNewWalletScreen {
                 // Encrypt the seed to obtain encrypted_seed, salt, and nonce
                 let (encrypted_seed, salt, nonce) =
                     ClosedWalletSeed::encrypt_seed(&seed, self.password.as_str())?;
+                if self.use_password_for_app {
+                    let (encrypted_message, salt, nonce) =
+                        encrypt_message(DASH_SECRET_MESSAGE, self.password.as_str())?;
+                    self.app_context
+                        .db
+                        .update_main_password(&salt, &nonce, &encrypted_message)
+                        .map_err(|e| e.to_string())?;
+                }
                 (encrypted_seed, salt, nonce, true)
             };
 
@@ -161,18 +169,20 @@ impl AddNewWalletScreen {
 
     fn render_seed_phrase_input(&mut self, ui: &mut Ui) {
         ui.add_space(15.0); // Add spacing from the top
-        ui.vertical(|ui| {
+        ui.vertical_centered(|ui| {
             // Allocate a full-width container to center align the elements
             let available_width = ui.available_width();
 
             ui.allocate_ui_with_layout(
                 Vec2::new(available_width, 0.0),
-                egui::Layout::top_down(egui::Align::Min),
+                egui::Layout::top_down(egui::Align::Center),
                 |ui| {
                     ui.horizontal(|ui| {
                         // Add spacing to align the combo box to the left of the center
                         let half_width = available_width / 2.0 - 400.0; // Adjust half-width with padding
-                        ui.add_space(half_width);
+                        if half_width > 0.0 {
+                            ui.add_space(half_width);
+                        }
 
                         let style = ui.style_mut();
 
@@ -235,8 +245,8 @@ impl AddNewWalletScreen {
             // Create a container with a fixed width (72% of the available width)
             let frame_width = available_width * 0.72;
             ui.allocate_ui_with_layout(
-                Vec2::new(frame_width, 300.0), // Set width and height of the container
-                egui::Layout::top_down(egui::Align::Min),
+                Vec2::new(frame_width, 260.0), // Set width and height of the container
+                egui::Layout::top_down(egui::Align::Center),
                 |ui| {
                     Frame::none()
                         .fill(Color32::WHITE)
@@ -249,15 +259,15 @@ impl AddNewWalletScreen {
 
                             // Calculate the size of each grid cell
                             let column_width = frame_width / columns as f32;
-                            let row_height = 300.0 / rows as f32;
+                            let row_height = 260.0 / rows as f32;
 
-                            Grid::new("seed_phrase_grid")
-                                .num_columns(columns)
-                                .spacing((0.0, 0.0))
-                                .min_col_width(column_width)
-                                .min_row_height(row_height)
-                                .show(ui, |ui| {
-                                    if let Some(mnemonic) = &self.seed_phrase {
+                            if let Some(mnemonic) = &self.seed_phrase {
+                                Grid::new("seed_phrase_grid")
+                                    .num_columns(columns)
+                                    .spacing((0.0, 0.0))
+                                    .min_col_width(column_width)
+                                    .min_row_height(row_height)
+                                    .show(ui, |ui| {
                                         for (i, word) in mnemonic.words().enumerate() {
                                             let word_text = RichText::new(word)
                                                 .size(row_height * 0.5)
@@ -276,18 +286,17 @@ impl AddNewWalletScreen {
                                                 ui.end_row();
                                             }
                                         }
-                                    } else {
-                                        let word_text =
-                                            RichText::new("Seed Phrase").size(40.0).monospace();
+                                    });
+                            } else {
+                                let word_text = RichText::new("Seed Phrase").size(40.0).monospace();
 
-                                        ui.with_layout(
-                                            Layout::centered_and_justified(Direction::LeftToRight),
-                                            |ui| {
-                                                ui.label(word_text);
-                                            },
-                                        );
-                                    }
-                                });
+                                ui.with_layout(
+                                    Layout::centered_and_justified(Direction::LeftToRight),
+                                    |ui| {
+                                        ui.label(word_text);
+                                    },
+                                );
+                            }
                         });
                 },
             );
@@ -323,6 +332,10 @@ impl ScreenLike for AddNewWalletScreen {
                     ui.heading("2. Select your desired seed phrase language and press \"Generate\".");
                     self.render_seed_phrase_input(ui);
 
+                    if self.seed_phrase.is_none() {
+                        return;
+                    }
+
                     ui.add_space(10.0);
 
                     ui.heading(
@@ -336,9 +349,24 @@ impl ScreenLike for AddNewWalletScreen {
                         ui.checkbox(&mut self.wrote_it_down, "I wrote it down");
                     });
 
+                    if !self.wrote_it_down {
+                        return;
+                    }
+
                     ui.add_space(20.0);
 
-                    ui.heading("4. Add a password that must be used to unlock the wallet. (Optional but Recommended)");
+                    ui.heading("4. Select a wallet name to remember it. (This will not go to the blockchain)");
+
+                    ui.add_space(8.0);
+
+                    ui.horizontal(|ui| {
+                        ui.label("Wallet Name:");
+                        ui.text_edit_singleline(&mut self.alias_input);
+                    });
+
+                    ui.add_space(20.0);
+
+                    ui.heading("5. Add a password that must be used to unlock the wallet. (Optional but recommended)");
 
                     ui.add_space(8.0);
 
@@ -399,9 +427,14 @@ impl ScreenLike for AddNewWalletScreen {
                         self.estimated_time_to_crack
                     ));
 
+                    if self.app_context.password_info.is_none() {
+                        ui.add_space(10.0);
+                        ui.checkbox(&mut self.use_password_for_app, "Use password for Dash Evo Tool loose keys (recommended)");
+                    }
+
                     ui.add_space(20.0);
 
-                    ui.heading("5. Save the wallet.");
+                    ui.heading("6. Save the wallet.");
                     ui.add_space(5.0);
 
                     // Centered "Save Wallet" button at the bottom
@@ -412,7 +445,7 @@ impl ScreenLike for AddNewWalletScreen {
                             .min_size(Vec2::new(300.0, 60.0))
                             .rounding(10.0)
                             .stroke(Stroke::new(1.5, Color32::WHITE))
-                            .sense(if self.wrote_it_down {
+                            .sense(if self.wrote_it_down && self.seed_phrase.is_some() {
                                 egui::Sense::click()
                             } else {
                                 egui::Sense::hover()

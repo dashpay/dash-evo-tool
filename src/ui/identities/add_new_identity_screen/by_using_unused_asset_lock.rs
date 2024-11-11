@@ -75,7 +75,7 @@ impl AddNewIdentityScreen {
     pub fn render_ui_by_using_unused_asset_lock(
         &mut self,
         ui: &mut Ui,
-        mut step_number: u32,
+        step_number: u32,
     ) -> AppAction {
         let mut action = AppAction::None;
 
@@ -91,7 +91,6 @@ impl AddNewIdentityScreen {
         );
         ui.add_space(10.0);
         self.render_choose_funding_asset_lock(ui);
-        step_number += 1;
 
         if ui.button("Create Identity").clicked() {
             action |= self.register_identity_clicked(FundingMethod::UseUnusedAssetLock);

@@ -4,8 +4,8 @@ use rusqlite::{params, Connection};
 use std::fs;
 use std::path::Path;
 
-pub const DEFAULT_DB_VERSION: u16 = 11;
-pub const MIN_SUPPORTED_DB_VERSION: u16 = 11;
+pub const DEFAULT_DB_VERSION: u16 = 1;
+pub const MIN_SUPPORTED_DB_VERSION: u16 = 1;
 pub const DEFAULT_NETWORK: &str = "dash";
 
 impl Database {
@@ -65,10 +65,21 @@ impl Database {
     /// Backs up the existing database with a unique timestamped filename, recreates `data.db`, and refreshes the connection.
     fn backup_and_recreate_db(&self, db_file_path: &Path) -> rusqlite::Result<()> {
         if db_file_path.exists() {
+            // Create a "backups" folder in the same directory as `data.db` if not exists
+            let backups_dir = db_file_path
+                .parent()
+                .expect("Expected parent directory in creating db backup folder")
+                .join("backups");
+            fs::create_dir_all(&backups_dir).map_err(|e| {
+                rusqlite::Error::ToSqlConversionFailure(
+                    format!("Failed to create db backups directory: {}", e).into(),
+                )
+            })?;
+
             // Generate a unique filename with a timestamp for the backup
             let timestamp = Utc::now().format("%Y%m%d_%H%M%S");
             let backup_filename = format!("data_backup_{}.db", timestamp);
-            let backup_path = db_file_path.with_file_name(backup_filename);
+            let backup_path = backups_dir.join(backup_filename);
 
             // Rename `data.db` to the unique backup file
             fs::rename(db_file_path, &backup_path)

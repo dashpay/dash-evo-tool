@@ -114,8 +114,8 @@ impl AppState {
         copy_env_file_if_not_exists();
         initialize_logger();
         let db_file_path = app_user_data_file_path("data.db").expect("should create db file path");
-        let db = Arc::new(Database::new(db_file_path).unwrap());
-        db.initialize().unwrap();
+        let db = Arc::new(Database::new(&db_file_path).unwrap());
+        db.initialize(&db_file_path).unwrap();
 
         let settings = db.get_settings().expect("expected to get settings");
 
@@ -477,7 +477,12 @@ impl App for AppState {
                     .update_settings(root_screen_type)
                     .ok();
             }
-            AppAction::SwitchNetwork(network) => self.change_network(network),
+            AppAction::SwitchNetwork(network) => {
+                self.change_network(network);
+                self.current_app_context()
+                    .update_settings(RootScreenType::RootScreenNetworkChooser)
+                    .ok();
+            }
         }
     }
 }

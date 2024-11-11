@@ -121,7 +121,7 @@ impl AppContext {
             .await
             .map_err(|e| e.to_string())?;
 
-        let mut wallet_id;
+        let wallet_id;
 
         let (asset_lock_proof, asset_lock_proof_private_key, tx_id) =
             match identity_registration_method {
@@ -166,7 +166,7 @@ impl AppContext {
                 }
                 IdentityRegistrationMethod::FundWithWallet(amount, identity_index) => {
                     // Scope the write lock to avoid holding it across an await.
-                    let (asset_lock_transaction, asset_lock_proof_private_key, change_address) = {
+                    let (asset_lock_transaction, asset_lock_proof_private_key, _) = {
                         let mut wallet = wallet.write().unwrap();
                         wallet_id = wallet.seed_hash();
                         match wallet.asset_lock_transaction(
@@ -207,7 +207,7 @@ impl AppContext {
                         .send_raw_transaction(&asset_lock_transaction)
                         .map_err(|e| e.to_string())?;
 
-                    let mut asset_lock_proof;
+                    let asset_lock_proof;
 
                     loop {
                         {
@@ -259,7 +259,7 @@ impl AppContext {
                         .send_raw_transaction(&asset_lock_transaction)
                         .map_err(|e| e.to_string())?;
 
-                    let mut asset_lock_proof;
+                    let asset_lock_proof;
 
                     loop {
                         {
@@ -291,6 +291,7 @@ impl AppContext {
         let identity = Identity::new_with_id_and_keys(identity_id, public_keys, sdk.version())
             .expect("expected to make identity");
 
+        let wallet_seed_hash = wallet.read().unwrap().seed_hash();
         let mut qualified_identity = QualifiedIdentity {
             identity: identity.clone(),
             associated_voter_identity: None,
@@ -298,7 +299,7 @@ impl AppContext {
             associated_owner_key_id: None,
             identity_type: IdentityType::User,
             alias: None,
-            encrypted_private_keys: keys.to_encrypted_private_keys(),
+            private_keys: keys.to_key_storage(wallet_seed_hash),
             dpns_names: vec![],
         };
 

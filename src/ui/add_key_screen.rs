@@ -2,6 +2,7 @@ use crate::app::AppAction;
 use crate::backend_task::identity::IdentityTask;
 use crate::backend_task::BackendTask;
 use crate::context::AppContext;
+use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::{MessageType, ScreenLike};
@@ -80,10 +81,14 @@ impl AddKeyScreen {
                             err
                         ));
                     } else if validation_result.unwrap() {
+                        let new_qualified_key = QualifiedIdentityPublicKey {
+                            identity_public_key: new_key.into(),
+                            in_wallet_at_derivation_path: None,
+                        };
                         app_action = AppAction::BackendTask(BackendTask::IdentityTask(
                             IdentityTask::AddKeyToIdentity(
                                 self.identity.clone(),
-                                new_key.into(),
+                                new_qualified_key.into(),
                                 private_key_bytes,
                             ),
                         ));

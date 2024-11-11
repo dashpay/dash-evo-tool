@@ -119,16 +119,22 @@ impl AppState {
 
         let settings = db.get_settings().expect("expected to get settings");
 
-        let mainnet_app_context = match AppContext::new(Network::Dash, db.clone()) {
-            Some(context) => context,
-            None => {
-                eprintln!(
-                    "Error: Failed to create the AppContext. Expected Dash config for mainnet."
-                );
-                std::process::exit(1);
-            }
-        };
-        let testnet_app_context = AppContext::new(Network::Testnet, db.clone());
+        let password_info = settings
+            .clone()
+            .map(|(_, _, password_info)| password_info)
+            .flatten();
+
+        let mainnet_app_context =
+            match AppContext::new(Network::Dash, db.clone(), password_info.clone()) {
+                Some(context) => context,
+                None => {
+                    eprintln!(
+                        "Error: Failed to create the AppContext. Expected Dash config for mainnet."
+                    );
+                    std::process::exit(1);
+                }
+            };
+        let testnet_app_context = AppContext::new(Network::Testnet, db.clone(), password_info);
 
         let mut identities_screen = IdentitiesScreen::new(&mainnet_app_context);
         let mut dpns_active_contests_screen =
@@ -153,7 +159,7 @@ impl AppState {
 
         let mut chosen_network = Network::Dash;
 
-        if let Some((network, screen_type)) = settings {
+        if let Some((network, screen_type, password_info)) = settings {
             selected_main_screen = screen_type;
             chosen_network = network;
             if chosen_network == Network::Testnet && testnet_app_context.is_some() {

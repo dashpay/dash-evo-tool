@@ -1,3 +1,8 @@
+pub mod encrypted_key_storage;
+pub mod qualified_identity_public_key;
+
+use crate::model::qualified_identity::encrypted_key_storage::KeyStorage;
+use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
 use bincode::{Decode, Encode};
 use dash_sdk::dashcore_rpc::dashcore::{signer, PubkeyHash};
 use dash_sdk::dpp::bls_signatures::{Bls12381G2Impl, SignatureSchemes};
@@ -18,7 +23,7 @@ use dash_sdk::dpp::platform_value::BinaryData;
 use dash_sdk::dpp::state_transition::errors::InvalidIdentityPublicKeyTypeError;
 use dash_sdk::dpp::{bls_signatures, ed25519_dalek, ProtocolError};
 use dash_sdk::platform::IdentityPublicKey;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
 use std::fmt::{Display, Formatter};
 
 #[derive(Debug, Encode, Decode, PartialEq, Clone, Copy)]
@@ -57,17 +62,17 @@ impl Display for IdentityType {
 }
 
 #[derive(Debug, Encode, Decode, Clone, Hash, Ord, PartialOrd, Eq, PartialEq)]
-pub enum EncryptedPrivateKeyTarget {
+pub enum PrivateKeyTarget {
     PrivateKeyOnMainIdentity,
     PrivateKeyOnVoterIdentity,
     PrivateKeyOnOperatorIdentity,
 }
 
-impl From<Purpose> for EncryptedPrivateKeyTarget {
+impl From<Purpose> for PrivateKeyTarget {
     fn from(value: Purpose) -> Self {
         match value {
-            Purpose::VOTING => EncryptedPrivateKeyTarget::PrivateKeyOnVoterIdentity,
-            _ => EncryptedPrivateKeyTarget::PrivateKeyOnMainIdentity,
+            Purpose::VOTING => PrivateKeyTarget::PrivateKeyOnVoterIdentity,
+            _ => PrivateKeyTarget::PrivateKeyOnMainIdentity,
         }
     }
 }
@@ -86,8 +91,7 @@ pub struct QualifiedIdentity {
     pub associated_owner_key_id: Option<KeyID>,
     pub identity_type: IdentityType,
     pub alias: Option<String>,
-    pub encrypted_private_keys:
-        BTreeMap<(EncryptedPrivateKeyTarget, KeyID), (IdentityPublicKey, [u8; 32])>,
+    pub private_keys: KeyStorage,
     pub dpns_names: Vec<DPNSNameInfo>,
 }
 
@@ -98,18 +102,19 @@ impl Signer for QualifiedIdentity {
         data: &[u8],
     ) -> Result<BinaryData, ProtocolError> {
         let (_, private_key) = self
-            .encrypted_private_keys
+            .private_keys
             .get(&(
                 identity_public_key.purpose().into(),
                 identity_public_key.id(),
             ))
+            .map_err(|e| ProtocolError::Generic(e))?
             .ok_or(ProtocolError::Generic(format!(
                 "{:?} not found in {:?}",
                 identity_public_key, self
             )))?;
         match identity_public_key.key_type() {
             KeyType::ECDSA_SECP256K1 | KeyType::ECDSA_HASH160 => {
-                let signature = signer::sign(data, private_key)?;
+                let signature = signer::sign(data, &private_key)?;
                 Ok(signature.to_vec().into())
             }
             KeyType::BLS12_381 => {
@@ -144,12 +149,10 @@ impl Signer for QualifiedIdentity {
     }
 
     fn can_sign_with(&self, identity_public_key: &IdentityPublicKey) -> bool {
-        self.encrypted_private_keys
-            .get(&(
-                identity_public_key.purpose().into(),
-                identity_public_key.id(),
-            ))
-            .is_some()
+        self.private_keys.has(&(
+            identity_public_key.purpose().into(),
+            identity_public_key.id(),
+        ))
     }
 }
 
@@ -204,16 +207,16 @@ impl QualifiedIdentity {
             })
     }
 
-    pub fn can_sign_with_master_key(&self) -> Option<&IdentityPublicKey> {
+    pub fn can_sign_with_master_key(&self) -> Option<&QualifiedIdentityPublicKey> {
         if self.identity_type != IdentityType::User {
             return None;
         }
 
         // Iterate through the encrypted private keys to check for a valid master key
-        for ((target, _), (public_key, _)) in &self.encrypted_private_keys {
-            if *target == EncryptedPrivateKeyTarget::PrivateKeyOnMainIdentity
-                && public_key.purpose() == Purpose::AUTHENTICATION
-                && public_key.security_level() == SecurityLevel::MASTER
+        for (target, public_key) in self.private_keys.identity_public_keys() {
+            if *target == PrivateKeyTarget::PrivateKeyOnMainIdentity
+                && public_key.identity_public_key.purpose() == Purpose::AUTHENTICATION
+                && public_key.identity_public_key.security_level() == SecurityLevel::MASTER
             {
                 return Some(public_key);
             }
@@ -234,23 +237,23 @@ impl QualifiedIdentity {
         )
     }
 
-    pub fn available_withdrawal_keys(&self) -> Vec<&IdentityPublicKey> {
+    pub fn available_withdrawal_keys(&self) -> Vec<&QualifiedIdentityPublicKey> {
         let mut keys = vec![];
 
         // Check the main identity's public keys
-        for ((target, _), (public_key, _)) in &self.encrypted_private_keys {
+        for (target, public_key) in self.private_keys.identity_public_keys() {
             match (self.identity_type, target) {
-                (IdentityType::User, EncryptedPrivateKeyTarget::PrivateKeyOnMainIdentity) => {
-                    if public_key.purpose() == Purpose::TRANSFER {
+                (IdentityType::User, PrivateKeyTarget::PrivateKeyOnMainIdentity) => {
+                    if public_key.identity_public_key.purpose() == Purpose::TRANSFER {
                         keys.push(public_key);
                     }
                 }
                 (IdentityType::Masternode | IdentityType::Evonode, target_type) => {
-                    if target_type == &EncryptedPrivateKeyTarget::PrivateKeyOnMainIdentity {
-                        if public_key.purpose() == Purpose::OWNER {
+                    if target_type == &PrivateKeyTarget::PrivateKeyOnMainIdentity {
+                        if public_key.identity_public_key.purpose() == Purpose::OWNER {
                             keys.push(public_key);
                         }
-                        if public_key.purpose() == Purpose::TRANSFER {
+                        if public_key.identity_public_key.purpose() == Purpose::TRANSFER {
                             keys.push(public_key);
                         }
                     }
@@ -262,12 +265,12 @@ impl QualifiedIdentity {
         keys
     }
 
-    pub fn available_transfer_keys(&self) -> Vec<&IdentityPublicKey> {
+    pub fn available_transfer_keys(&self) -> Vec<&QualifiedIdentityPublicKey> {
         let mut keys = vec![];
 
         // Check the main identity's public keys
-        for (public_key, _) in self.encrypted_private_keys.values() {
-            if public_key.purpose() == Purpose::TRANSFER {
+        for (_, public_key) in self.private_keys.identity_public_keys() {
+            if public_key.identity_public_key.purpose() == Purpose::TRANSFER {
                 keys.push(public_key);
             }
         }
@@ -285,7 +288,7 @@ impl From<Identity> for QualifiedIdentity {
             associated_owner_key_id: None,
             identity_type: IdentityType::User,
             alias: None,
-            encrypted_private_keys: Default::default(),
+            private_keys: Default::default(),
             dpns_names: vec![],
         }
     }

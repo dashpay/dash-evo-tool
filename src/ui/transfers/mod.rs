@@ -6,7 +6,6 @@ use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::key_info_screen::KeyInfoScreen;
 use crate::ui::{MessageType, Screen, ScreenLike};
-use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
@@ -14,7 +13,6 @@ use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
 use eframe::egui::{self, Context, Ui};
-use std::str::FromStr;
 use std::sync::Arc;
 
 pub struct TransferScreen {
@@ -61,9 +59,16 @@ impl TransferScreen {
                         }
                     } else {
                         for key in self.identity.available_transfer_keys() {
-                            let label =
-                                format!("Key ID: {} (Purpose: {:?})", key.id(), key.purpose());
-                            ui.selectable_value(&mut self.selected_key, Some(key.clone()), label);
+                            let label = format!(
+                                "Key ID: {} (Purpose: {:?})",
+                                key.identity_public_key.id(),
+                                key.identity_public_key.purpose()
+                            );
+                            ui.selectable_value(
+                                &mut self.selected_key,
+                                Some(key.identity_public_key.clone()),
+                                label,
+                            );
                         }
                     }
                 });

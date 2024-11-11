@@ -1,7 +1,7 @@
 use crate::database::Database;
 use dash_sdk::dpp::dashcore::{
     consensus::{deserialize, serialize},
-    InstantLock, Transaction,
+    InstantLock, Network, Transaction,
 };
 use rusqlite::params;
 
@@ -10,9 +10,10 @@ impl Database {
     pub fn store_asset_lock_transaction(
         &self,
         tx: &Transaction,
-        amount: u64, // Include amount as a parameter
+        amount: u64,
         islock: Option<&InstantLock>,
-        wallet_seed_hash: &[u8; 32], // Include wallet_seed_hash as a parameter
+        wallet_seed_hash: &[u8; 32],
+        network: Network,
     ) -> rusqlite::Result<()> {
         let tx_bytes = serialize(tx);
         let txid = tx.txid().to_string();
@@ -26,17 +27,25 @@ impl Database {
         let conn = self.conn.lock().unwrap();
 
         let sql = "
-        INSERT INTO asset_lock_transaction (tx_id, transaction_data, amount, instant_lock_data, wallet)
-        VALUES (?1, ?2, ?3, ?4, ?5)
+        INSERT INTO asset_lock_transaction (tx_id, transaction_data, amount, instant_lock_data, wallet, network)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6)
         ON CONFLICT(tx_id) DO UPDATE SET
             transaction_data = excluded.transaction_data,
             amount = excluded.amount,
-            instant_lock_data = COALESCE(excluded.instant_lock_data, asset_lock_transaction.instant_lock_data);
+            instant_lock_data = COALESCE(excluded.instant_lock_data, asset_lock_transaction.instant_lock_data),
+            network = excluded.network;
         ";
 
         conn.execute(
             sql,
-            params![&txid, &tx_bytes, amount, &islock_bytes, wallet_seed_hash],
+            params![
+                &txid,
+                &tx_bytes,
+                amount,
+                &islock_bytes,
+                wallet_seed_hash,
+                network.to_string()
+            ],
         )?;
 
         Ok(())
@@ -46,11 +55,11 @@ impl Database {
     pub fn get_asset_lock_transaction(
         &self,
         txid: &str,
-    ) -> rusqlite::Result<Option<(Transaction, u64, Option<InstantLock>, [u8; 32])>> {
+    ) -> rusqlite::Result<Option<(Transaction, u64, Option<InstantLock>, [u8; 32], String)>> {
         let conn = self.conn.lock().unwrap();
 
         let mut stmt = conn.prepare(
-            "SELECT transaction_data, amount, instant_lock_data, wallet FROM asset_lock_transaction WHERE tx_id = ?1",
+            "SELECT transaction_data, amount, instant_lock_data, wallet, network FROM asset_lock_transaction WHERE tx_id = ?1",
         )?;
 
         let mut rows = stmt.query(params![txid])?;
@@ -60,6 +69,7 @@ impl Database {
             let amount: u64 = row.get(1)?;
             let islock_data: Option<Vec<u8>> = row.get(2)?;
             let wallet_seed: Vec<u8> = row.get(3)?;
+            let network: String = row.get(4)?;
 
             let tx: Transaction =
                 deserialize(&tx_data).map_err(|_| rusqlite::Error::InvalidQuery)?;
@@ -73,7 +83,7 @@ impl Database {
                 .try_into()
                 .map_err(|_| rusqlite::Error::InvalidQuery)?;
 
-            Ok(Some((tx, amount, islock, wallet_seed_hash)))
+            Ok(Some((tx, amount, islock, wallet_seed_hash, network)))
         } else {
             Ok(None)
         }
@@ -140,9 +150,11 @@ impl Database {
 
         Ok(())
     }
+
     /// Retrieves all asset lock transactions.
     pub fn get_all_asset_lock_transactions(
         &self,
+        network: Network,
     ) -> rusqlite::Result<
         Vec<(
             Transaction,
@@ -156,10 +168,10 @@ impl Database {
         let conn = self.conn.lock().unwrap();
 
         let mut stmt = conn.prepare(
-            "SELECT transaction_data, amount, instant_lock_data, chain_locked_height, identity_id, wallet FROM asset_lock_transaction",
+            "SELECT transaction_data, amount, instant_lock_data, chain_locked_height, identity_id, wallet, network FROM asset_lock_transaction where network = ?",
         )?;
 
-        let mut rows = stmt.query(params![])?;
+        let mut rows = stmt.query(params![network.to_string()])?;
 
         let mut results = Vec::new();
 
@@ -200,11 +212,20 @@ impl Database {
     pub fn get_asset_lock_transactions_by_identity_id(
         &self,
         identity_id: &[u8],
-    ) -> rusqlite::Result<Vec<(Transaction, u64, Option<InstantLock>, Option<u32>, [u8; 32])>> {
+    ) -> rusqlite::Result<
+        Vec<(
+            Transaction,
+            u64,
+            Option<InstantLock>,
+            Option<u32>,
+            [u8; 32],
+            String,
+        )>,
+    > {
         let conn = self.conn.lock().unwrap();
 
         let mut stmt = conn.prepare(
-            "SELECT transaction_data, amount, instant_lock_data, chain_locked_height, wallet FROM asset_lock_transaction WHERE identity_id = ?1",
+            "SELECT transaction_data, amount, instant_lock_data, chain_locked_height, wallet, network FROM asset_lock_transaction WHERE identity_id = ?1",
         )?;
 
         let mut rows = stmt.query(params![identity_id])?;
@@ -217,6 +238,7 @@ impl Database {
             let islock_data: Option<Vec<u8>> = row.get(2)?;
             let chain_locked_height: Option<u32> = row.get(3)?;
             let wallet_seed: Vec<u8> = row.get(4)?;
+            let network: String = row.get(5)?;
 
             let tx: Transaction =
                 deserialize(&tx_data).map_err(|_| rusqlite::Error::InvalidQuery)?;
@@ -230,7 +252,14 @@ impl Database {
                 .try_into()
                 .map_err(|_| rusqlite::Error::InvalidQuery)?;
 
-            results.push((tx, amount, islock, chain_locked_height, wallet_seed_hash));
+            results.push((
+                tx,
+                amount,
+                islock,
+                chain_locked_height,
+                wallet_seed_hash,
+                network,
+            ));
         }
 
         Ok(results)

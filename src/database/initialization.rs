@@ -85,6 +85,7 @@ impl Database {
                 identity_id BLOB,
                 identity_id_potentially_in_creation BLOB,
                 wallet BLOB NOT NULL,
+                network TEXT NOT NULL,
                 FOREIGN KEY (identity_id) REFERENCES identity(id) ON DELETE CASCADE,
                 FOREIGN KEY (identity_id_potentially_in_creation) REFERENCES identity(id),
                 FOREIGN KEY (wallet) REFERENCES wallet(seed_hash) ON DELETE CASCADE

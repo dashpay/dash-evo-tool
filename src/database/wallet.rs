@@ -1,4 +1,5 @@
 use crate::database::Database;
+use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::{
     AddressInfo, ClosedWalletSeed, DerivationPathReference, DerivationPathType, Wallet, WalletSeed,
 };
@@ -335,10 +336,10 @@ impl Database {
 
         // Step 6: Retrieve asset lock transactions for each wallet and add them to the wallets.
         let mut asset_lock_stmt = conn.prepare(
-            "SELECT wallet, amount, transaction_data, instant_lock_data, chain_locked_height FROM asset_lock_transaction where identity_id IS NULL",
+            "SELECT wallet, amount, transaction_data, instant_lock_data, chain_locked_height FROM asset_lock_transaction where identity_id IS NULL AND network = ?",
         )?;
 
-        let asset_lock_rows = asset_lock_stmt.query_map([], |row| {
+        let asset_lock_rows = asset_lock_stmt.query_map([network.to_string()], |row| {
             let wallet_seed: Vec<u8> = row.get(0)?;
             let amount: Duffs = row.get(1)?;
             let tx_data: Vec<u8> = row.get(2)?;
@@ -400,6 +401,35 @@ impl Database {
                 wallet
                     .unused_asset_locks
                     .push((tx, address, amount, islock, proof));
+            }
+        }
+
+        // Step 8: Retrieve identities for each wallet and add them to the wallets.
+        let mut identity_stmt = conn.prepare(
+            "SELECT data, wallet, wallet_index FROM identity WHERE network = ? AND wallet IS NOT NULL AND wallet_index IS NOT NULL",
+        )?;
+
+        let identity_rows = identity_stmt.query_map([network_str.clone()], |row| {
+            let data: Vec<u8> = row.get(0)?;
+            let wallet_seed_hash: Vec<u8> = row.get(1)?;
+            let wallet_index: u32 = row.get(2)?;
+
+            let wallet_seed_hash_array: [u8; 32] = wallet_seed_hash
+                .try_into()
+                .expect("Seed hash should be 32 bytes");
+
+            Ok((data, wallet_seed_hash_array, wallet_index))
+        })?;
+
+        // Process the identities and add them to the corresponding wallets.
+        for row in identity_rows {
+            let (identity_data, wallet_seed_hash_array, wallet_index) = row?;
+
+            if let Some(wallet) = wallets_map.get_mut(&wallet_seed_hash_array) {
+                let identity: QualifiedIdentity = QualifiedIdentity::from_bytes(&identity_data);
+
+                // Insert the identity into the wallet's identities HashMap with wallet_index as the key
+                wallet.identities.insert(wallet_index, identity.identity);
             }
         }
 

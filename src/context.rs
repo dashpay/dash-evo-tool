@@ -361,6 +361,7 @@ impl AppContext {
                     amount,
                     islock.as_ref(),
                     &wallet.seed_hash(),
+                    self.network,
                 )?;
 
                 let first = payload

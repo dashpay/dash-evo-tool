@@ -14,6 +14,7 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
 use crate::ui::{MessageType, ScreenLike};
 use arboard::Clipboard;
+use dash_sdk::dashcore_rpc::dashcore::transaction::special_transaction::TransactionPayload;
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dpp::balances::credits::Duffs;
@@ -21,6 +22,7 @@ use dash_sdk::dpp::dashcore::{OutPoint, PrivateKey, Transaction, TxOut};
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::prelude::AssetLockProof;
 use eframe::egui::Context;
+use egui::ahash::HashSet;
 use egui::{Color32, ColorImage, ComboBox, Ui};
 use image::Luma;
 use qrcode::QrCode;
@@ -245,24 +247,58 @@ impl AddNewIdentityScreen {
         ui.horizontal(|ui| {
             ui.label("Identity Index:");
 
-            // Render a ComboBox to select the identity index
-            ComboBox::from_id_salt("identity_index")
-                .selected_text(format!("{}", self.identity_id_number))
-                .show_ui(ui, |ui| {
-                    // Provide up to 30 entries for selection (0 to 29)
-                    for i in 0..30 {
-                        if ui
-                            .selectable_value(&mut self.identity_id_number, i, format!("{}", i))
-                            .clicked()
-                        {
-                            self.identity_id_number = i;
-                            index_changed = true;
-                        }
+            // Check if we have access to the selected wallet
+            if let Some(wallet_guard) = self.selected_wallet.as_ref() {
+                let wallet = wallet_guard.read().unwrap();
+                let used_indices: HashSet<u32> = wallet.identities.keys().cloned().collect();
+
+                // Modify the selected text to include "(used)" if the current index is used
+                let selected_text = {
+                    let is_used = used_indices.contains(&self.identity_id_number);
+                    if is_used {
+                        format!("{} (used)", self.identity_id_number)
+                    } else {
+                        format!("{}", self.identity_id_number)
                     }
-                });
+                };
+
+                // Render a ComboBox to select the identity index
+                ComboBox::from_id_salt("identity_index")
+                    .selected_text(selected_text)
+                    .show_ui(ui, |ui| {
+                        // Provide up to 30 entries for selection (0 to 29)
+                        for i in 0..30 {
+                            let is_used = used_indices.contains(&i);
+                            let label = if is_used {
+                                format!("{} (used)", i)
+                            } else {
+                                format!("{}", i)
+                            };
+
+                            let is_selected = self.identity_id_number == i;
+
+                            // Enable the option if it's not used or if it's the currently selected index
+                            let enabled = !is_used || is_selected;
+
+                            // Use `add_enabled` to disable used indices
+                            let response = ui.add_enabled(
+                                enabled,
+                                egui::SelectableLabel::new(is_selected, label),
+                            );
+
+                            // Only allow selection if the index is not used
+                            if response.clicked() && !is_used {
+                                self.identity_id_number = i;
+                                index_changed = true;
+                            }
+                        }
+                    });
+            } else {
+                ui.label("No wallet selected");
+            }
         });
 
-        // If the index has changed, call update_identity_key
+        // If the index has changed, update the identity key
         if index_changed {
             self.update_identity_key();
         }
@@ -854,6 +890,25 @@ impl ScreenLike for AddNewIdentityScreen {
                     }
                 }
             }
+        } else if *step == AddNewIdentityWalletFundedScreenStep::WaitingForAssetLock {
+            if let BackendTaskSuccessResult::CoreItem(CoreItem::ReceivedAvailableUTXOTransaction(
+                tx,
+                outpoints_with_addresses,
+            )) = backend_task_success_result
+            {
+                if let Some(TransactionPayload::AssetLockPayloadType(asset_lock_payload)) =
+                    tx.special_transaction_payload
+                {
+                    if let Some(funding_address) = self.funding_address.as_ref() {
+                        for (outpoint, tx_out, address) in outpoints_with_addresses {
+                            if funding_address == &address {
+                                *step = AddNewIdentityWalletFundedScreenStep::WaitingForPlatformAcceptance;
+                                self.funding_utxo = Some((outpoint, tx_out, address))
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
     fn ui(&mut self, ctx: &Context) -> AppAction {
@@ -891,13 +946,13 @@ impl ScreenLike for AddNewIdentityScreen {
                     let mut wallet = wallet_guard.write().unwrap();
 
                     self.identity_id_number =
-                        wallet.identities.keys().copied().max().unwrap_or_default();
+                        wallet.identities.keys().copied().max().map(|max| max + 1).unwrap_or_default();
 
                     self.identity_keys.master_private_key = Some(
                         wallet
                             .identity_authentication_ecdsa_private_key(
                                 self.app_context.network,
-                                0,
+                                self.identity_id_number,
                                 0,
                                 Some(&self.app_context),
                             )
@@ -909,7 +964,7 @@ impl ScreenLike for AddNewIdentityScreen {
                             wallet
                                 .identity_authentication_ecdsa_private_key(
                                     self.app_context.network,
-                                    0,
+                                    self.identity_id_number,
                                     1,
                                     Some(&self.app_context),
                                 )
@@ -922,7 +977,7 @@ impl ScreenLike for AddNewIdentityScreen {
                             wallet
                                 .identity_authentication_ecdsa_private_key(
                                     self.app_context.network,
-                                    0,
+                                    self.identity_id_number,
                                     2,
                                     Some(&self.app_context),
                                 )
@@ -951,7 +1006,7 @@ impl ScreenLike for AddNewIdentityScreen {
                     ui.heading(format!(
                         "{}. Choose an identity index. Leaving this {} is recommended.",
                         step_number,
-                        wallet.identities.keys().cloned().max().unwrap_or_default()
+                        wallet.identities.keys().cloned().max().map(|max| max + 1).unwrap_or_default()
                     ));
                 }
 

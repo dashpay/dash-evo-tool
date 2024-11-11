@@ -1,3 +1,4 @@
+use crate::components::core_zmq_listener::ZMQConnectionEvent;
 use crate::config::{Config, NetworkConfig};
 use crate::context_provider::Provider;
 use crate::database::Database;
@@ -8,6 +9,7 @@ use crate::model::qualified_identity::{DPNSNameInfo, QualifiedIdentity};
 use crate::model::wallet::Wallet;
 use crate::sdk_wrapper::initialize_sdk;
 use crate::ui::RootScreenType;
+use crossbeam_channel::{Receiver, Sender};
 use dash_sdk::dashcore_rpc::dashcore::{InstantLock, Transaction};
 use dash_sdk::dashcore_rpc::{Auth, Client};
 use dash_sdk::dpp::dashcore::hashes::Hash;
@@ -35,6 +37,9 @@ pub struct AppContext {
     pub(crate) db: Arc<Database>,
     pub(crate) sdk: Sdk,
     pub(crate) config: NetworkConfig,
+    pub(crate) rx_zmq_status: Receiver<ZMQConnectionEvent>,
+    pub(crate) sx_zmq_status: Sender<ZMQConnectionEvent>,
+    pub(crate) zmq_connection_status: Mutex<ZMQConnectionEvent>,
     pub(crate) dpns_contract: Arc<DataContract>,
     pub(crate) withdraws_contract: Arc<DataContract>,
     pub(crate) core_client: Client,
@@ -60,6 +65,7 @@ impl AppContext {
         };
 
         let network_config = config.config_for_network(network).clone()?;
+        let (sx_zmq_status, rx_zmq_status) = crossbeam_channel::unbounded();
 
         // we create provider, but we need to set app context to it later, as we have a circular dependency
         let provider =
@@ -102,6 +108,8 @@ impl AppContext {
             db,
             sdk,
             config: network_config,
+            sx_zmq_status,
+            rx_zmq_status,
             dpns_contract: Arc::new(dpns_contract),
             withdraws_contract: Arc::new(withdrawal_contract),
             core_client,
@@ -110,6 +118,7 @@ impl AppContext {
             password_info,
             transactions_waiting_for_finality: Mutex::new(BTreeMap::new()),
             platform_version: PlatformVersion::latest(),
+            zmq_connection_status: Mutex::new(ZMQConnectionEvent::Disconnected),
         };
 
         let app_context = Arc::new(app_context);

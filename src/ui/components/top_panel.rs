@@ -1,4 +1,5 @@
 use crate::app::{AppAction, DesiredAppAction};
+use crate::components::core_zmq_listener::ZMQConnectionEvent;
 use crate::context::AppContext;
 use dash_sdk::dashcore_rpc::dashcore::Network;
 use egui::{Align, Color32, Context, Frame, Layout, Margin, RichText, Stroke, TopBottomPanel, Ui};
@@ -67,6 +68,18 @@ pub fn add_top_panel(
 
                 // Right-aligned content with buttons
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let connection_status = {
+                        if let Ok(status) = app_context.zmq_connection_status.lock() {
+                            match *status {
+                                ZMQConnectionEvent::Connected => "zmq connected",
+                                ZMQConnectionEvent::Disconnected => "zmq disconnected",
+                            }
+                        } else {
+                            ""
+                        }
+                    };
+                    ui.label(connection_status);
+
                     for (text, right_button_action) in right_buttons.into_iter().rev() {
                         ui.add_space(8.0);
 

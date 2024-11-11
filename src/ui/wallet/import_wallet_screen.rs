@@ -10,7 +10,7 @@ use egui::{
     Color32, ComboBox, Direction, FontId, Frame, Grid, Layout, Margin, RichText, Stroke, TextStyle,
     Ui, Vec2,
 };
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 pub struct ImportWalletScreen {
     seed_phrase: Option<Mnemonic>,
@@ -183,7 +183,7 @@ impl ImportWalletScreen {
 
 impl ScreenLike for ImportWalletScreen {
     fn ui(&mut self, ctx: &Context) -> AppAction {
-        let mut action = add_top_panel(
+        let action = add_top_panel(
             ctx,
             &self.app_context,
             vec![
@@ -209,6 +209,10 @@ impl ScreenLike for ImportWalletScreen {
                     ui.heading("2. Select your desired seed phrase language and press \"Generate\"");
                     self.render_seed_phrase_input(ui);
 
+                    if self.seed_phrase.is_none() {
+                        return;
+                    }
+
                     ui.add_space(10.0);
 
                     ui.heading(
@@ -221,6 +225,10 @@ impl ScreenLike for ImportWalletScreen {
                     ui.horizontal(|ui| {
                         ui.checkbox(&mut self.wrote_it_down, "I wrote it down");
                     });
+
+                    if !self.wrote_it_down {
+                        return;
+                    }
 
                     ui.add_space(20.0);
 
@@ -244,7 +252,7 @@ impl ScreenLike for ImportWalletScreen {
                             .min_size(Vec2::new(300.0, 60.0))
                             .rounding(10.0)
                             .stroke(Stroke::new(1.5, Color32::WHITE))
-                            .sense(if self.wrote_it_down {
+                            .sense(if self.wrote_it_down && self.seed_phrase.is_some() {
                                 egui::Sense::click()
                             } else {
                                 egui::Sense::hover()

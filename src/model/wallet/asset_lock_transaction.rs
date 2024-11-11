@@ -194,7 +194,7 @@ impl Wallet {
             .input
             .iter()
             .enumerate()
-            .map(|(i, input)| {
+            .map(|(i, _)| {
                 cache
                     .legacy_signature_hash(i, &previous_tx_output.script_pubkey, sighash_u32)
                     .expect("expected sighash")

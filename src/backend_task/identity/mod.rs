@@ -1,17 +1,20 @@
 mod add_key_to_identity;
 mod load_identity;
+mod load_identity_from_wallet;
 mod refresh_identity;
 mod register_dpns_name;
 mod register_identity;
 mod transfer;
 mod withdraw_from_identity;
 
+use super::BackendTaskSuccessResult;
 use crate::app::TaskResult;
 use crate::context::AppContext;
-use crate::model::qualified_identity::{
-    EncryptedPrivateKeyTarget, IdentityType, QualifiedIdentity,
-};
-use crate::model::wallet::Wallet;
+use crate::model::qualified_identity::encrypted_key_storage::{KeyStorage, WalletDerivationPath};
+use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
+use crate::model::qualified_identity::{IdentityType, PrivateKeyTarget, QualifiedIdentity};
+use crate::model::wallet::{Wallet, WalletArcRef, WalletSeedHash};
+use dash_sdk::dashcore_rpc::dashcore::bip32::DerivationPath;
 use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
 use dash_sdk::dashcore_rpc::dashcore::{Address, PrivateKey, TxOut};
 use dash_sdk::dpp::balances::credits::Duffs;
@@ -30,8 +33,6 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 use tokio::sync::mpsc;
 
-use super::BackendTaskSuccessResult;
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct IdentityInputToLoad {
     pub identity_id_input: String,
@@ -45,15 +46,18 @@ pub struct IdentityInputToLoad {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct IdentityKeys {
-    pub(crate) master_private_key: Option<PrivateKey>,
+    pub(crate) master_private_key: Option<(PrivateKey, DerivationPath)>,
     pub(crate) master_private_key_type: KeyType,
-    pub(crate) keys_input: Vec<(PrivateKey, KeyType, Purpose, SecurityLevel)>,
+    pub(crate) keys_input: Vec<(
+        (PrivateKey, DerivationPath),
+        KeyType,
+        Purpose,
+        SecurityLevel,
+    )>,
 }
 
 impl IdentityKeys {
-    pub fn to_encrypted_private_keys(
-        &self,
-    ) -> BTreeMap<(EncryptedPrivateKeyTarget, KeyID), (IdentityPublicKey, [u8; 32])> {
+    pub fn to_key_storage(&self, wallet_seed_hash: WalletSeedHash) -> KeyStorage {
         let Self {
             master_private_key,
             master_private_key_type,
@@ -61,7 +65,8 @@ impl IdentityKeys {
         } = self;
         let secp = Secp256k1::new();
         let mut key_map = BTreeMap::new();
-        if let Some(master_private_key) = master_private_key {
+
+        if let Some((master_private_key, master_private_key_derivation_path)) = master_private_key {
             let key = IdentityPublicKey::V0(IdentityPublicKeyV0 {
                 id: 0,
                 purpose: Purpose::AUTHENTICATION,
@@ -73,13 +78,25 @@ impl IdentityKeys {
                 disabled_at: None,
             });
 
+            let qualified_identity_public_key =
+                QualifiedIdentityPublicKey::from_identity_public_key_in_wallet(
+                    key,
+                    Some(WalletDerivationPath {
+                        wallet_seed_hash,
+                        derivation_path: master_private_key_derivation_path.clone(),
+                    }),
+                );
             key_map.insert(
-                (EncryptedPrivateKeyTarget::PrivateKeyOnMainIdentity, 0),
-                (key, master_private_key.inner.secret_bytes()),
+                (PrivateKeyTarget::PrivateKeyOnMainIdentity, 0),
+                (
+                    qualified_identity_public_key,
+                    master_private_key.inner.secret_bytes(),
+                ),
             );
         }
+
         key_map.extend(keys_input.iter().enumerate().map(
-            |(i, (private_key, key_type, purpose, security_level))| {
+            |(i, ((private_key, derivation_path), key_type, purpose, security_level))| {
                 let id = (i + 1) as KeyID;
                 let identity_public_key = IdentityPublicKey::V0(IdentityPublicKeyV0 {
                     id,
@@ -91,24 +108,37 @@ impl IdentityKeys {
                     data: private_key.public_key(&secp).to_bytes().into(),
                     disabled_at: None,
                 });
+
+                let qualified_identity_public_key =
+                    QualifiedIdentityPublicKey::from_identity_public_key_in_wallet(
+                        identity_public_key,
+                        Some(WalletDerivationPath {
+                            wallet_seed_hash,
+                            derivation_path: derivation_path.clone(),
+                        }),
+                    );
                 (
-                    (EncryptedPrivateKeyTarget::PrivateKeyOnMainIdentity, id),
-                    (identity_public_key, private_key.inner.secret_bytes()),
+                    (PrivateKeyTarget::PrivateKeyOnMainIdentity, id),
+                    (
+                        qualified_identity_public_key,
+                        private_key.inner.secret_bytes(),
+                    ),
                 )
             },
         ));
 
-        key_map
+        key_map.into()
     }
     pub fn to_public_keys_map(&self) -> BTreeMap<KeyID, IdentityPublicKey> {
         let Self {
             master_private_key,
             master_private_key_type,
             keys_input,
+            ..
         } = self;
         let secp = Secp256k1::new();
         let mut key_map = BTreeMap::new();
-        if let Some(master_private_key) = master_private_key {
+        if let Some((master_private_key, _)) = master_private_key {
             let data = match master_private_key_type {
                 KeyType::ECDSA_SECP256K1 => master_private_key.public_key(&secp).to_bytes().into(),
                 KeyType::ECDSA_HASH160 => master_private_key
@@ -133,7 +163,7 @@ impl IdentityKeys {
             key_map.insert(0, key);
         }
         key_map.extend(keys_input.iter().enumerate().map(
-            |(i, (private_key, key_type, purpose, security_level))| {
+            |(i, ((private_key, _), key_type, purpose, security_level))| {
                 let id = (i + 1) as KeyID;
                 let data = match key_type {
                     KeyType::ECDSA_SECP256K1 => private_key.public_key(&secp).to_bytes().into(),
@@ -197,8 +227,9 @@ pub struct RegisterDpnsNameInput {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum IdentityTask {
     LoadIdentity(IdentityInputToLoad),
+    SearchIdentityFromWallet(WalletArcRef, IdentityIndex),
     RegisterIdentity(IdentityRegistrationInfo),
-    AddKeyToIdentity(QualifiedIdentity, IdentityPublicKey, [u8; 32]),
+    AddKeyToIdentity(QualifiedIdentity, QualifiedIdentityPublicKey, [u8; 32]),
     WithdrawFromIdentity(QualifiedIdentity, Option<Address>, Credits, Option<KeyID>),
     Transfer(QualifiedIdentity, Identifier, Credits, Option<KeyID>),
     RegisterDpnsName(RegisterDpnsNameInput),
@@ -406,6 +437,10 @@ impl AppContext {
             }
             IdentityTask::Transfer(qualified_identity, to_identifier, credits, id) => {
                 self.transfer_to_identity(qualified_identity, to_identifier, credits, id)
+                    .await
+            }
+            IdentityTask::SearchIdentityFromWallet(wallet, identity_index) => {
+                self.load_user_identity_from_wallet(sdk, wallet, identity_index)
                     .await
             }
         }

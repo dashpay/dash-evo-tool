@@ -113,7 +113,7 @@ impl AddNewIdentityScreen {
         Ok(())
     }
 
-    pub fn render_ui_by_wallet_qr_code(&mut self, ui: &mut Ui, mut step_number: u32) -> AppAction {
+    pub fn render_ui_by_wallet_qr_code(&mut self, ui: &mut Ui, step_number: u32) -> AppAction {
         let mut action = AppAction::None;
 
         // Extract the step from the RwLock to minimize borrow scope
@@ -132,7 +132,6 @@ impl AddNewIdentityScreen {
             )
             .as_str(),
         );
-        step_number += 1;
 
         ui.add_space(8.0);
 
@@ -147,7 +146,7 @@ impl AddNewIdentityScreen {
         match step {
             AddNewIdentityWalletFundedScreenStep::ChooseFundingMethod => {}
             AddNewIdentityWalletFundedScreenStep::WaitingOnFunds => {
-                ui.heading("Waiting for funds");
+                ui.heading("=> Waiting for funds. <=");
             }
             AddNewIdentityWalletFundedScreenStep::FundsReceived => {
                 let Some(selected_wallet) = &self.selected_wallet else {
@@ -178,10 +177,10 @@ impl AddNewIdentityScreen {
             }
             AddNewIdentityWalletFundedScreenStep::ReadyToCreate => {}
             AddNewIdentityWalletFundedScreenStep::WaitingForAssetLock => {
-                ui.heading("Waiting for Core Chain to produce proof of transfer of funds.");
+                ui.heading("=> Waiting for Core Chain to produce proof of transfer of funds. <=");
             }
             AddNewIdentityWalletFundedScreenStep::WaitingForPlatformAcceptance => {
-                ui.heading("Waiting for Platform acknowledgement");
+                ui.heading("=> Waiting for Platform acknowledgement. <=");
             }
             AddNewIdentityWalletFundedScreenStep::Success => {
                 ui.heading("...Success...");

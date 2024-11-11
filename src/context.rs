@@ -3,6 +3,7 @@ use crate::config::{Config, NetworkConfig};
 use crate::context_provider::Provider;
 use crate::database::Database;
 use crate::model::contested_name::ContestedName;
+use crate::model::password_info::PasswordInfo;
 use crate::model::qualified_contract::QualifiedContract;
 use crate::model::qualified_identity::{DPNSNameInfo, QualifiedIdentity};
 use crate::model::wallet::Wallet;
@@ -44,12 +45,17 @@ pub struct AppContext {
     pub(crate) core_client: Client,
     pub(crate) has_wallet: AtomicBool,
     pub(crate) wallets: RwLock<Vec<Arc<RwLock<Wallet>>>>,
+    pub(crate) password_info: Option<PasswordInfo>,
     pub(crate) transactions_waiting_for_finality: Mutex<BTreeMap<Txid, Option<AssetLockProof>>>,
     pub(crate) platform_version: &'static PlatformVersion,
 }
 
 impl AppContext {
-    pub fn new(network: Network, db: Arc<Database>) -> Option<Arc<Self>> {
+    pub fn new(
+        network: Network,
+        db: Arc<Database>,
+        password_info: Option<PasswordInfo>,
+    ) -> Option<Arc<Self>> {
         let config = match Config::load() {
             Ok(config) => config,
             Err(e) => {
@@ -109,6 +115,7 @@ impl AppContext {
             core_client,
             has_wallet: (!wallets.is_empty()).into(),
             wallets: RwLock::new(wallets),
+            password_info,
             transactions_waiting_for_finality: Mutex::new(BTreeMap::new()),
             platform_version: PlatformVersion::latest(),
             zmq_connection_status: Mutex::new(ZMQConnectionEvent::Disconnected),
@@ -212,7 +219,7 @@ impl AppContext {
     }
 
     /// Retrieves the current `RootScreenType` from the settings
-    pub fn get_settings(&self) -> Result<Option<(Network, RootScreenType)>> {
+    pub fn get_settings(&self) -> Result<Option<(Network, RootScreenType, Option<PasswordInfo>)>> {
         self.db.get_settings()
     }
 
@@ -363,6 +370,7 @@ impl AppContext {
                     amount,
                     islock.as_ref(),
                     &wallet.seed_hash(),
+                    self.network,
                 )?;
 
                 let first = payload

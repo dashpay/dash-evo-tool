@@ -448,7 +448,7 @@ impl AddNewIdentityScreen {
                     .unwrap_or_else(|| "Select".to_string());
 
                 ui.heading(
-                    "1. Choose the wallet to use in which this identities keys will come from.",
+                    "1. Choose the wallet to use in which this identity's keys will come from.",
                 );
 
                 ui.add_space(10.0);

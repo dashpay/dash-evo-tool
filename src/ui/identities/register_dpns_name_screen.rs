@@ -15,7 +15,8 @@ use dash_sdk::dpp::identity::{Purpose, SecurityLevel, TimestampMillis};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
 use eframe::egui::Context;
-use egui::{Color32, RichText};
+use egui::{Color32, ComboBox, RichText, Ui};
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::sync::RwLock;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -41,21 +42,6 @@ pub struct RegisterDpnsNameScreen {
 }
 
 impl RegisterDpnsNameScreen {
-    pub fn select_identity(&mut self, identity_id: Identifier) {
-        // Find the qualified identity with the matching identity_id
-        if let Some(qi) = self
-            .qualified_identities
-            .iter()
-            .find(|(qi, _)| qi.identity.id() == &identity_id)
-        {
-            // Set the selected_qualified_identity to the found identity
-            self.selected_qualified_identity = Some(qi.clone());
-        } else {
-            // If not found, you might want to handle this case
-            // For now, we'll set selected_qualified_identity to None
-            self.selected_qualified_identity = None;
-        }
-    }
     pub fn new(app_context: &Arc<AppContext>) -> Self {
         let security_level_of_contract = app_context
             .dpns_contract
@@ -108,19 +94,43 @@ impl RegisterDpnsNameScreen {
         }
     }
 
+    pub fn select_identity(&mut self, identity_id: Identifier) {
+        // Find the qualified identity with the matching identity_id
+        if let Some(qi) = self
+            .qualified_identities
+            .iter()
+            .find(|(qi, _)| qi.identity.id() == &identity_id)
+        {
+            // Set the selected_qualified_identity to the found identity
+            self.selected_qualified_identity = Some(qi.clone());
+        } else {
+            // If not found, you might want to handle this case
+            // For now, we'll set selected_qualified_identity to None
+            self.selected_qualified_identity = None;
+        }
+    }
+
     fn render_identity_id_selection(&mut self, ui: &mut egui::Ui) {
-        if self.qualified_identities.len() == 1 {
+        if self.qualified_identities.len() == 1 || self.show_identity_selector == false {
             // Only one identity, display it directly
-            let qualified_identity = &self.qualified_identities[0];
+            // Or if the identity selector is hidden (coming from the create identity success screen)
+            if self.selected_qualified_identity.is_none() {
+                self.selected_qualified_identity = Some(self.qualified_identities[0].clone());
+            }
             ui.horizontal(|ui| {
                 ui.label("Identity ID:");
                 ui.label(
-                    qualified_identity
+                    self.selected_qualified_identity
+                        .clone()
+                        .expect("Expected a selected identity")
                         .0
                         .alias
                         .as_ref()
                         .unwrap_or(
-                            &qualified_identity
+                            &self
+                                .selected_qualified_identity
+                                .clone()
+                                .expect("Expected a selected identity")
                                 .0
                                 .identity
                                 .id()
@@ -129,7 +139,6 @@ impl RegisterDpnsNameScreen {
                         .clone(),
                 );
             });
-            self.selected_qualified_identity = Some(qualified_identity.clone());
         } else {
             // Multiple identities, display ComboBox
             ui.horizontal(|ui| {
@@ -171,6 +180,61 @@ impl RegisterDpnsNameScreen {
                         }
                     });
             });
+        }
+    }
+
+    fn render_wallet_selection(&mut self, ui: &mut Ui) -> bool {
+        if self.app_context.has_wallet.load(Ordering::Relaxed) {
+            let wallets = &self.app_context.wallets.read().unwrap();
+            if wallets.len() > 1 {
+                // Retrieve the alias of the currently selected wallet, if any
+                let selected_wallet_alias = self
+                    .selected_wallet
+                    .as_ref()
+                    .and_then(|wallet| wallet.read().ok()?.alias.clone())
+                    .unwrap_or_else(|| "Select".to_string());
+
+                ui.heading(
+                    "1. Choose the wallet to use in which this identity's keys will come from.",
+                );
+
+                ui.add_space(10.0);
+
+                // Display the ComboBox for wallet selection
+                ComboBox::from_label("Select Wallet")
+                    .selected_text(selected_wallet_alias)
+                    .show_ui(ui, |ui| {
+                        for wallet in wallets.iter() {
+                            let wallet_alias = wallet
+                                .read()
+                                .ok()
+                                .and_then(|w| w.alias.clone())
+                                .unwrap_or_else(|| "Unnamed Wallet".to_string());
+
+                            let is_selected = self
+                                .selected_wallet
+                                .as_ref()
+                                .map_or(false, |selected| Arc::ptr_eq(selected, wallet));
+
+                            if ui.selectable_label(is_selected, wallet_alias).clicked() {
+                                // Update the selected wallet
+                                self.selected_wallet = Some(wallet.clone());
+                            }
+                        }
+                    });
+                ui.add_space(10.0);
+                true
+            } else if let Some(wallet) = wallets.first() {
+                if self.selected_wallet.is_none() {
+                    // Automatically select the only available wallet
+                    self.selected_wallet = Some(wallet.clone());
+                }
+                false
+            } else {
+                false
+            }
+        } else {
+            false
         }
     }
 
@@ -218,8 +282,17 @@ impl ScreenLike for RegisterDpnsNameScreen {
         );
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("Register DPNS Name");
             ui.add_space(10.0);
+            ui.heading("Follow these steps to register your DPNS name!");
+            ui.add_space(15.0);
+
+            if let Some(wallet) = &self.selected_wallet {
+                if !wallet.read().unwrap().is_open() {
+                    self.render_wallet_selection(ui);
+                }
+            } else {
+                return;
+            }
 
             // Before proceeding, check if we need to render wallet unlock
             let (needs_unlock, just_unlocked) = self.render_wallet_unlock_if_needed(ui);

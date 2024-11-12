@@ -35,7 +35,7 @@ pub struct RegisterDpnsNameScreen {
     name_input: String,
     register_dpns_name_status: RegisterDpnsNameStatus,
     pub app_context: Arc<AppContext>,
-    selected_wallet: Option<Arc<RwLock<Wallet>>>,
+    pub selected_wallet: Option<Arc<RwLock<Wallet>>>,
     wallet_password: String,
     show_password: bool,
     error_message: Option<String>,

@@ -29,6 +29,7 @@ impl AddNewIdentityScreen {
                 if let Some(identity_id) = self.successful_qualified_identity_id {
                     screen.select_identity(identity_id);
                     screen.show_identity_selector = false;
+                    screen.selected_wallet = self.selected_wallet.clone();
                 }
                 // Handle the registration of a new name
                 action = AppAction::PopThenAddScreenToMainScreen(

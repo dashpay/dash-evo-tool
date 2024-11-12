@@ -362,6 +362,7 @@ impl ScreenLike for RegisterDpnsNameScreen {
             ui.add_space(5.0);
             ui.label("  • To prevent name front-running, some names are contested and require a higher fee to register.");
             ui.label("  • Masternodes vote whether or not to award contested names to contestants.");
+            ui.label("  • Contests last two weeks and new contenders can only join during the first week.");
             ui.label("  • Contested names are those that are:");
             ui.label("  • Less than 20 characters long (i.e. “alice”, “quantumexplorer”)");
             ui.label("  • AND");

@@ -269,10 +269,12 @@ impl ScreenLike for RegisterDpnsNameScreen {
             ui.separator();
             ui.add_space(10.0);
 
-            let (needed_unlock, just_unlocked) = self.render_wallet_unlock_if_needed(ui);
+            if self.selected_wallet.is_some() {
+                let (needed_unlock, just_unlocked) = self.render_wallet_unlock_if_needed(ui);
 
-            if needed_unlock && !just_unlocked {
-                return;
+                if needed_unlock && !just_unlocked {
+                    return;
+                }
             }
 
             // Input for the name

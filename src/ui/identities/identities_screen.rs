@@ -104,8 +104,12 @@ impl IdentitiesScreen {
             }
         };
         let identifier_as_string = qualified_identity.identity.id().to_string(encoding);
-        ui.add(egui::Label::new(identifier_as_string).sense(egui::Sense::hover()))
-            .on_hover_text(helper);
+        ui.add(
+            egui::Label::new(identifier_as_string)
+                .sense(egui::Sense::hover())
+                .truncate(),
+        )
+        .on_hover_text(helper);
     }
 
     fn find_wallet(&mut self, wallet_seed_hash: &WalletSeedHash) -> Option<String> {

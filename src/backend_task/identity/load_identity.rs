@@ -22,6 +22,7 @@ use dash_sdk::platform::{Document, DocumentQuery, Fetch, FetchMany, Identifier, 
 use dash_sdk::Sdk;
 use egui::ahash::HashMap;
 use std::collections::{BTreeMap, HashSet};
+use crate::model::wallet::WalletSeedHash;
 
 impl AppContext {
     pub(super) async fn load_identity(
@@ -154,6 +155,8 @@ impl AppContext {
         } else {
             None
         };
+
+        let mut wallet_seed_hash: Option<(WalletSeedHash, u32)> = None;
 
         if identity_type == IdentityType::User {
             let input_private_keys = keys_input

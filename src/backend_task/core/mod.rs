@@ -1,4 +1,5 @@
 mod refresh_wallet_info;
+mod start_dash_qt;
 
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::context::AppContext;
@@ -11,6 +12,7 @@ use std::sync::{Arc, RwLock};
 pub(crate) enum CoreTask {
     GetBestChainLock,
     RefreshWalletInfo(Arc<RwLock<Wallet>>),
+    StartDashQT(Network),
 }
 impl PartialEq for CoreTask {
     fn eq(&self, other: &Self) -> bool {
@@ -42,6 +44,7 @@ impl AppContext {
                 })
                 .map_err(|e| e.to_string()),
             CoreTask::RefreshWalletInfo(wallet) => self.refresh_wallet_info(wallet),
+            CoreTask::StartDashQT(network) => self.start_dash_qt(network).map_err(|e| e.to_string()).map(|_| BackendTaskSuccessResult::None),
         }
     }
 }

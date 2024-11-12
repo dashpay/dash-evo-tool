@@ -599,10 +599,10 @@ impl ScreenLike for IdentitiesScreen {
     fn ui(&mut self, ctx: &Context) -> AppAction {
         let mut right_buttons = if !self.app_context.has_wallet.load(Ordering::Relaxed) {
             [
-                (
-                    "Import Wallet",
-                    DesiredAppAction::AddScreenType(ScreenType::ImportWallet),
-                ),
+                // (
+                //     "Import Wallet",
+                //     DesiredAppAction::AddScreenType(ScreenType::ImportWallet),
+                // ),
                 (
                     "Create Wallet",
                     DesiredAppAction::AddScreenType(ScreenType::AddNewWallet),

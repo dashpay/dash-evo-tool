@@ -396,7 +396,7 @@ impl AddNewIdentityScreen {
                                 .as_ref()
                                 .map_or(false, |selected| Arc::ptr_eq(selected, wallet));
 
-                            if ui.selectable_label(is_selected, wallet_alias).changed() {
+                            if ui.selectable_label(is_selected, wallet_alias).clicked() {
                                 {
                                     let wallet = wallet.read().unwrap();
                                     self.identity_id_number =

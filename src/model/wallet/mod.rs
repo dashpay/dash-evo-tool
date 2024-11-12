@@ -148,21 +148,25 @@ pub enum WalletSeed {
     Open(OpenWalletSeed),
     Closed(ClosedWalletSeed),
 }
-
 #[derive(Debug, Clone, PartialEq)]
-pub struct OpenWalletSeed {
-    pub seed: [u8; 64],
-    pub wallet_info: ClosedWalletSeed,
+pub struct OpenKeyItem<const N: usize> {
+    pub seed: [u8; N],
+    pub wallet_info: ClosedKeyItem,
 }
 
+// Type alias for OpenWalletSeed with a fixed seed size of 64 bytes
+pub type OpenWalletSeed = OpenKeyItem<64>;
+
 #[derive(Debug, Clone, PartialEq)]
-pub struct ClosedWalletSeed {
+pub struct ClosedKeyItem {
     pub seed_hash: WalletSeedHash, // SHA-256 hash of the seed
     pub encrypted_seed: Vec<u8>,
     pub salt: Vec<u8>,
     pub nonce: Vec<u8>,
     pub password_hint: Option<String>,
 }
+
+pub type ClosedWalletSeed = ClosedKeyItem;
 
 impl WalletSeed {
     /// Opens the wallet by decrypting the seed using the provided password.

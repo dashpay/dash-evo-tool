@@ -9,7 +9,7 @@ const NONCE_SIZE: usize = 12; // 96-bit nonce for AES-GCM
 
 pub const DASH_SECRET_MESSAGE: &[u8; 19] = b"dash_secret_message";
 
-use crate::model::wallet::ClosedWalletSeed;
+use crate::model::wallet::ClosedKeyItem;
 use sha2::{Digest, Sha256};
 
 /// Derive a key from the password and salt using Argon2.
@@ -56,7 +56,7 @@ pub fn encrypt_message(
     Ok((encrypted_seed, salt, nonce))
 }
 
-impl ClosedWalletSeed {
+impl ClosedKeyItem {
     pub fn compute_seed_hash(seed: &[u8]) -> [u8; 32] {
         let mut hasher = Sha256::new();
         hasher.update(seed);
@@ -111,13 +111,13 @@ mod tests {
 
         // Encrypt the seed using the encrypt_seed method
         let (encrypted_seed, salt, nonce) =
-            ClosedWalletSeed::encrypt_seed(&seed, password).expect("Encryption failed");
+            ClosedKeyItem::encrypt_seed(&seed, password).expect("Encryption failed");
 
         // Compute the seed hash
-        let seed_hash = ClosedWalletSeed::compute_seed_hash(&seed);
+        let seed_hash = ClosedKeyItem::compute_seed_hash(&seed);
 
         // Create a ClosedWalletSeed instance with the encrypted data
-        let closed_wallet_seed = ClosedWalletSeed {
+        let closed_wallet_seed = ClosedKeyItem {
             seed_hash,
             encrypted_seed,
             salt,
@@ -142,13 +142,13 @@ mod tests {
 
         // Encrypt the seed using the encrypt_seed method
         let (encrypted_seed, salt, nonce) =
-            ClosedWalletSeed::encrypt_seed(&seed, password).expect("Encryption failed");
+            ClosedKeyItem::encrypt_seed(&seed, password).expect("Encryption failed");
 
         // Compute the seed hash
-        let seed_hash = ClosedWalletSeed::compute_seed_hash(&seed);
+        let seed_hash = ClosedKeyItem::compute_seed_hash(&seed);
 
         // Create a ClosedWalletSeed instance with the encrypted data
-        let closed_wallet_seed = ClosedWalletSeed {
+        let closed_wallet_seed = ClosedKeyItem {
             seed_hash,
             encrypted_seed,
             salt,

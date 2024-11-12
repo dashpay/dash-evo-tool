@@ -133,6 +133,7 @@ impl AppContext {
             alias: None,
             private_keys,
             dpns_names: maybe_owned_dpns_names,
+            associated_wallets: vec![wallet_arc_ref.wallet.clone()],
         };
 
         // Insert qualified identity into the database

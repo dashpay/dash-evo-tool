@@ -1,7 +1,7 @@
 use crate::database::Database;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::{
-    AddressInfo, ClosedWalletSeed, DerivationPathReference, DerivationPathType, OpenWalletSeed,
+    AddressInfo, ClosedKeyItem, DerivationPathReference, DerivationPathType, OpenWalletSeed,
     Wallet, WalletSeed,
 };
 use dash_sdk::dashcore_rpc::dashcore::transaction::special_transaction::TransactionPayload;
@@ -191,7 +191,7 @@ impl Database {
 
             let seed_hash_array: [u8; 32] =
                 seed_hash.try_into().expect("Seed hash should be 32 bytes");
-            let closed_wallet_seed = ClosedWalletSeed {
+            let closed_wallet_seed = ClosedKeyItem {
                 seed_hash: seed_hash_array,
                 encrypted_seed: encrypted_seed.clone(),
                 salt,

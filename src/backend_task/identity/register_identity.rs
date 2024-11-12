@@ -13,8 +13,11 @@ use dash_sdk::dpp::prelude::AssetLockProof;
 use dash_sdk::dpp::state_transition::identity_create_transition::methods::IdentityCreateTransitionMethodsV0;
 use dash_sdk::dpp::state_transition::identity_create_transition::IdentityCreateTransition;
 use dash_sdk::dpp::version::PlatformVersion;
+use dash_sdk::dpp::ProtocolError;
 use dash_sdk::platform::transition::put_identity::PutIdentity;
 use dash_sdk::platform::{Fetch, Identity};
+use dash_sdk::Error;
+use std::collections::BTreeMap;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
@@ -132,7 +135,7 @@ impl AppContext {
                 ) => {
                     let tx_id = transaction.txid();
 
-                    eprintln!("UseAssetLock: transaction id for {:#?} is {}", transaction, tx_id);
+                    // eprintln!("UseAssetLock: transaction id for {:#?} is {}", transaction, tx_id);
                     let wallet = wallet.read().unwrap();
                     wallet_id = wallet.seed_hash();
                     let private_key = wallet
@@ -168,7 +171,7 @@ impl AppContext {
                 }
                 IdentityRegistrationMethod::FundWithWallet(amount, identity_index) => {
                     // Scope the write lock to avoid holding it across an await.
-                    let (asset_lock_transaction, asset_lock_proof_private_key, _) = {
+                    let (asset_lock_transaction, asset_lock_proof_private_key, _, used_utxos) = {
                         let mut wallet = wallet.write().unwrap();
                         wallet_id = wallet.seed_hash();
                         match wallet.asset_lock_transaction(
@@ -209,6 +212,19 @@ impl AppContext {
                         .send_raw_transaction(&asset_lock_transaction)
                         .map_err(|e| e.to_string())?;
 
+                    {
+                        let mut wallet = wallet.write().unwrap();
+                        wallet.utxos.retain(|_, utxo_map| {
+                            utxo_map.retain(|outpoint, _| !used_utxos.contains_key(outpoint));
+                            !utxo_map.is_empty() // Keep addresses that still have UTXOs
+                        });
+                        for utxo in used_utxos.keys() {
+                            self.db
+                                .drop_utxo(utxo, &self.network.to_string())
+                                .map_err(|e| e.to_string())?;
+                        }
+                    }
+
                     let asset_lock_proof;
 
                     loop {
@@ -237,15 +253,14 @@ impl AppContext {
                         wallet.asset_lock_transaction_for_utxo(
                             sdk.network,
                             utxo,
-                            tx_out,
-                            input_address,
+                            tx_out.clone(),
+                            input_address.clone(),
                             identity_index,
                             Some(self),
                         )?
                     };
 
                     let tx_id = asset_lock_transaction.txid();
-                    eprintln!("transaction id for {:#?} is {}", asset_lock_transaction, tx_id);
                     // todo: maybe one day we will want to use platform again, but for right now we use
                     //  the local core as it is more stable
                     // let asset_lock_proof = self
@@ -261,6 +276,17 @@ impl AppContext {
                     self.core_client
                         .send_raw_transaction(&asset_lock_transaction)
                         .map_err(|e| e.to_string())?;
+
+                    {
+                        let mut wallet = wallet.write().unwrap();
+                        wallet.utxos.retain(|_, utxo_map| {
+                            utxo_map.retain(|outpoint, _| outpoint != &utxo);
+                            !utxo_map.is_empty()
+                        });
+                        self.db
+                            .drop_utxo(&utxo, &self.network.to_string())
+                            .map_err(|e| e.to_string())?;
+                    }
 
                     let asset_lock_proof;
 
@@ -283,8 +309,6 @@ impl AppContext {
             .create_identifier()
             .expect("expected to create an identifier");
 
-        eprintln!("transaction id is {}, identity id is {}", tx_id, identity_id);
-
         let public_keys = keys.to_public_keys_map();
 
         match Identity::fetch_by_identifier(&sdk, identity_id).await {
@@ -296,7 +320,7 @@ impl AppContext {
         let identity = Identity::new_with_id_and_keys(identity_id, public_keys, sdk.version())
             .expect("expected to make identity");
 
-        let wallet_seed_hash = wallet.read().unwrap().seed_hash();
+        let wallet_seed_hash = { wallet.read().unwrap().seed_hash() };
         let mut qualified_identity = QualifiedIdentity {
             identity: identity.clone(),
             associated_voter_identity: None,
@@ -325,7 +349,7 @@ impl AppContext {
             )
             .map_err(|e| e.to_string())?;
 
-        let updated_identity = identity
+        let updated_identity = match identity
             .put_to_platform_and_wait_for_response(
                 &sdk,
                 asset_lock_proof.clone(),
@@ -333,24 +357,41 @@ impl AppContext {
                 &qualified_identity,
             )
             .await
-            .map_err(|e| {
-                let identity_create_transition =
-                    IdentityCreateTransition::try_from_identity_with_signer(
-                        &identity,
-                        asset_lock_proof,
-                        asset_lock_proof_private_key.inner.as_ref(),
-                        &qualified_identity,
-                        &NativeBlsModule,
-                        0,
-                        PlatformVersion::latest(),
-                    )
-                    .expect("expected to make transition");
-                format!(
-                    "error: {}, transaction is {:?}",
-                    e.to_string(),
-                    identity_create_transition
-                )
-            })?;
+        {
+            Ok(updated_identity) => updated_identity,
+            Err(e) => {
+                if matches!(e, Error::Protocol(ProtocolError::UnknownVersionError(_))) {
+                    identity
+                        .put_to_platform_and_wait_for_response(
+                            &sdk,
+                            asset_lock_proof.clone(),
+                            &asset_lock_proof_private_key,
+                            &qualified_identity,
+                        )
+                        .await
+                        .map_err(|e| {
+                            let identity_create_transition =
+                                IdentityCreateTransition::try_from_identity_with_signer(
+                                    &identity,
+                                    asset_lock_proof,
+                                    asset_lock_proof_private_key.inner.as_ref(),
+                                    &qualified_identity,
+                                    &NativeBlsModule,
+                                    0,
+                                    PlatformVersion::latest(),
+                                )
+                                .expect("expected to make transition");
+                            format!(
+                                "error: {}, transaction is {:?}",
+                                e.to_string(),
+                                identity_create_transition
+                            )
+                        })?
+                } else {
+                    return Err(e.to_string());
+                }
+            }
+        };
 
         qualified_identity.identity = updated_identity;
 
@@ -359,6 +400,13 @@ impl AppContext {
             Some((wallet_id.as_slice(), wallet_identity_index)),
         )
         .map_err(|e| e.to_string())?;
+        {
+            let mut wallet = wallet.write().unwrap();
+            wallet
+                .unused_asset_locks
+                .retain(|(tx, _, _, _, _)| tx.txid() != tx_id);
+        }
+
         self.db
             .set_asset_lock_identity_id(tx_id.as_byte_array(), identity_id.as_bytes())
             .map_err(|e| e.to_string())?;

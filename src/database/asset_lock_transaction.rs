@@ -1,9 +1,9 @@
 use crate::database::Database;
+use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::{
     consensus::{deserialize, serialize},
     InstantLock, Network, Transaction,
 };
-use dash_sdk::dpp::dashcore::hashes::Hash;
 use rusqlite::params;
 
 impl Database {
@@ -109,8 +109,8 @@ impl Database {
     /// Sets the identity ID for an asset lock transaction.
     pub fn set_asset_lock_identity_id(
         &self,
-        tx_id: &[u8;32],
-        identity_id: &[u8;32],
+        tx_id: &[u8; 32],
+        identity_id: &[u8; 32],
     ) -> rusqlite::Result<()> {
         let conn = self.conn.lock().unwrap();
 
@@ -121,7 +121,11 @@ impl Database {
             params![identity_id, tx_id],
         )?;
         if rows_updated == 0 {
-            eprintln!("No rows updated. Check if tx_id {} exists and identity_id {} is correct.", hex::encode(tx_id), hex::encode(identity_id));
+            eprintln!(
+                "No rows updated. Check if tx_id {} exists and identity_id {} is correct.",
+                hex::encode(tx_id),
+                hex::encode(identity_id)
+            );
         }
 
         Ok(())
@@ -130,8 +134,8 @@ impl Database {
     /// Sets the identity ID for an asset lock transaction.
     pub fn set_asset_lock_identity_id_before_confirmation_by_network(
         &self,
-        txid: &[u8;32],
-        identity_id: &[u8;32],
+        txid: &[u8; 32],
+        identity_id: &[u8; 32],
     ) -> rusqlite::Result<()> {
         let conn = self.conn.lock().unwrap();
 
@@ -215,7 +219,7 @@ impl Database {
     /// Retrieves asset lock transactions by identity ID.
     pub fn get_asset_lock_transactions_by_identity_id(
         &self,
-        identity_id: &[u8;32],
+        identity_id: &[u8; 32],
     ) -> rusqlite::Result<
         Vec<(
             Transaction,

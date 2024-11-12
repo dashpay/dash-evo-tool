@@ -7,6 +7,7 @@ use crate::model::qualified_identity::PrivateKeyTarget::{
     self, PrivateKeyOnMainIdentity, PrivateKeyOnVoterIdentity,
 };
 use crate::model::qualified_identity::{DPNSNameInfo, IdentityType, QualifiedIdentity};
+use crate::model::wallet::WalletSeedHash;
 use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
 use dash_sdk::dashcore_rpc::dashcore::PrivateKey;
 use dash_sdk::dpp::dashcore::hashes::Hash;
@@ -22,7 +23,6 @@ use dash_sdk::platform::{Document, DocumentQuery, Fetch, FetchMany, Identifier, 
 use dash_sdk::Sdk;
 use egui::ahash::HashMap;
 use std::collections::{BTreeMap, HashSet};
-use crate::model::wallet::WalletSeedHash;
 
 impl AppContext {
     pub(super) async fn load_identity(

@@ -1,11 +1,11 @@
 use crate::app::{AppAction, DesiredAppAction};
+use crate::backend_task::core::CoreTask;
+use crate::backend_task::BackendTask;
 use crate::components::core_zmq_listener::ZMQConnectionEvent;
 use crate::context::AppContext;
 use dash_sdk::dashcore_rpc::dashcore::Network;
 use egui::{Align, Color32, Context, Frame, Layout, Margin, RichText, Stroke, TopBottomPanel, Ui};
 use std::sync::Arc;
-use crate::backend_task::BackendTask;
-use crate::backend_task::core::CoreTask;
 
 fn add_location_view(ui: &mut Ui, location: Vec<(&str, AppAction)>) -> AppAction {
     let mut action = AppAction::None;
@@ -57,17 +57,18 @@ fn add_connection_indicator(ui: &mut Ui, app_context: &Arc<AppContext>) -> AppAc
 
     // Define circle properties
     let circle_size = 14.0; // Increase size slightly for visibility
-    let color = if connected { Color32::DARK_GREEN } else { Color32::DARK_RED };
+    let color = if connected {
+        Color32::DARK_GREEN
+    } else {
+        Color32::DARK_RED
+    };
 
     // Allocate space for the circle with some padding
     ui.horizontal(|ui| {
         ui.add_space(8.0); // Add padding before the circle for visibility
 
-        let (rect, response) = ui.allocate_exact_size(
-            egui::vec2(circle_size, circle_size),
-            egui::Sense::click(),
-        );
-
+        let (rect, response) =
+            ui.allocate_exact_size(egui::vec2(circle_size, circle_size), egui::Sense::click());
 
         // Offset the circle's center by 5 pixels down
         let circle_center = rect.center() + egui::vec2(0.0, 5.0);
@@ -80,7 +81,8 @@ fn add_connection_indicator(ui: &mut Ui, app_context: &Arc<AppContext>) -> AppAc
         );
 
         // Draw the main circle (the "light")
-        ui.painter().circle_filled(circle_center, circle_size / 2.0, color);
+        ui.painter()
+            .circle_filled(circle_center, circle_size / 2.0, color);
 
         // Tooltip text
         let tooltip_text = if connected {
@@ -125,7 +127,6 @@ pub fn add_top_panel(
         .exact_height(50.0)
         .show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
-
                 action |= add_connection_indicator(ui, app_context);
 
                 // Left-aligned content with location view
@@ -133,7 +134,6 @@ pub fn add_top_panel(
 
                 // Right-aligned content with buttons
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-
                     for (text, right_button_action) in right_buttons.into_iter().rev() {
                         ui.add_space(8.0);
 

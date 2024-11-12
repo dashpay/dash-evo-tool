@@ -202,7 +202,7 @@ impl ScreenLike for RegisterDpnsNameScreen {
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("Register DPNS Name");
             ui.add_space(10.0);
-        
+
             // Before proceeding, check if we need to render wallet unlock
             let (needs_unlock, just_unlocked) = self.render_wallet_unlock_if_needed(ui);
             if needs_unlock {
@@ -210,7 +210,7 @@ impl ScreenLike for RegisterDpnsNameScreen {
                     return;
                 }
             }
-        
+
             // If no identities loaded, give message
             if self.qualified_identities.is_empty() {
                 ui.colored_label(
@@ -219,16 +219,16 @@ impl ScreenLike for RegisterDpnsNameScreen {
                 );
                 return;
             }
-        
+
             // 1. Select the identity to register the name for
             ui.heading("1. Select Identity");
             ui.add_space(5.0);
             self.render_identity_id_selection(ui);
-        
+
             ui.add_space(10.0);
             ui.separator();
             ui.add_space(10.0);
-        
+
             // 2. Input for the name
             ui.heading("2. Enter the Name to Register:");
             ui.add_space(5.0);
@@ -236,8 +236,8 @@ impl ScreenLike for RegisterDpnsNameScreen {
                 ui.label("Name (without \".dash\"):");
                 ui.text_edit_singleline(&mut self.name_input);
             });
-            ui.add_space(10.0);            
-        
+            ui.add_space(10.0);
+
             // Display if the name is contested and the estimated cost
             let name = self.name_input.trim();
             if !name.is_empty() && name.len() >= 3 {
@@ -261,16 +261,16 @@ impl ScreenLike for RegisterDpnsNameScreen {
                     );
                 }
             }
-        
+
             ui.add_space(10.0);
-        
+
             // Register button
             let button = egui::Button::new(RichText::new("Register Name").color(Color32::WHITE))
                 .fill(Color32::from_rgb(0, 128, 255))
                 .frame(true)
                 .rounding(3.0)
                 .min_size(egui::vec2(80.0, 30.0));
-        
+
             if ui.add(button).clicked() {
                 // Set the status to waiting and capture the current time
                 let now = SystemTime::now()
@@ -280,7 +280,7 @@ impl ScreenLike for RegisterDpnsNameScreen {
                 self.register_dpns_name_status = RegisterDpnsNameStatus::WaitingForResult(now);
                 action = self.register_dpns_name_clicked();
             }
-        
+
             // Handle registration status messages
             match &self.register_dpns_name_status {
                 RegisterDpnsNameStatus::NotStarted => {
@@ -292,7 +292,7 @@ impl ScreenLike for RegisterDpnsNameScreen {
                         .expect("Time went backwards")
                         .as_secs();
                     let elapsed_seconds = now - start_time;
-        
+
                     let display_time = if elapsed_seconds < 60 {
                         format!(
                             "{} second{}",
@@ -310,7 +310,7 @@ impl ScreenLike for RegisterDpnsNameScreen {
                             if seconds == 1 { "" } else { "s" }
                         )
                     };
-        
+
                     ui.label(format!(
                         "Registering... Time taken so far: {}",
                         display_time
@@ -336,7 +336,7 @@ impl ScreenLike for RegisterDpnsNameScreen {
             ui.label("  • Allowed characters: letters (A-Z, case-insensitive), numbers (0-9), and hyphens (-)");
             ui.label("  • Cannot start or end with a hyphen (-)");
             ui.label("  • Names are case-sensitive");
-        
+
             ui.add_space(20.0);
 
             // Contested Names Explanation
@@ -349,7 +349,7 @@ impl ScreenLike for RegisterDpnsNameScreen {
             ui.label("  • AND");
             ui.label("  • Contain no numbers or only contain the number(s) 0 and/or 1 (i.e. “bob”, “carol01”)");
         });
-        
+
         action
     }
 }

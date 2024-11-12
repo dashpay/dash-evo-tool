@@ -157,7 +157,8 @@ impl NetworkChooserScreen {
 
         // Add a button to start the network
         if ui.button("Start").clicked() {
-            app_action |= AppAction::BackendTask(BackendTask::CoreTask(CoreTask::StartDashQT(network)));
+            app_action |=
+                AppAction::BackendTask(BackendTask::CoreTask(CoreTask::StartDashQT(network)));
             // in 5 seconds
             self.recheck_time = Some(
                 (SystemTime::now()

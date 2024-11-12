@@ -200,7 +200,7 @@ impl IdentitiesScreen {
             .fill(button_color)
             .frame(true)
             .rounding(3.0)
-            .min_size(egui::Vec2::new(40.0, 18.0));
+            .min_size(egui::Vec2::new(30.0, 18.0));
 
         if ui.add(button).clicked() {
             AppAction::AddScreen(Screen::KeyInfoScreen(KeyInfoScreen::new(
@@ -355,7 +355,7 @@ impl IdentitiesScreen {
                                     });
                                     row.col(|ui| {
                                         ui.horizontal(|ui| {
-                                            ui.spacing_mut().item_spacing.x = 4.0;
+                                            ui.spacing_mut().item_spacing.x = 3.0;
                                     
                                         let mut total_keys_shown = 0;
                                         let max_keys_to_show = 3;

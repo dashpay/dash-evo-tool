@@ -194,7 +194,7 @@ impl RegisterDpnsNameScreen {
                     .and_then(|wallet| wallet.read().ok()?.alias.clone())
                     .unwrap_or_else(|| "Select".to_string());
 
-                ui.heading("1. Choose wallet.");
+                ui.heading("1. Choose wallet to unlock with.");
 
                 ui.add_space(10.0);
 

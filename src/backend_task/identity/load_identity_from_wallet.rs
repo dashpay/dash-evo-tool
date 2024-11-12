@@ -133,7 +133,10 @@ impl AppContext {
             alias: None,
             private_keys,
             dpns_names: maybe_owned_dpns_names,
-            associated_wallets: vec![wallet_arc_ref.wallet.clone()],
+            associated_wallets: BTreeMap::from([(
+                wallet_arc_ref.wallet.read().unwrap().seed_hash(),
+                wallet_arc_ref.wallet.clone(),
+            )]),
         };
 
         // Insert qualified identity into the database

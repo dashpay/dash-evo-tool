@@ -291,7 +291,10 @@ impl AppContext {
             },
             private_keys: encrypted_private_keys.into(),
             dpns_names: maybe_owned_dpns_names,
-            associated_wallets: wallets.clone(),
+            associated_wallets: wallets
+                .iter()
+                .map(|wallet| (wallet.read().unwrap().seed_hash(), wallet.clone()))
+                .collect(),
         };
 
         // Insert qualified identity into the database

@@ -3,7 +3,7 @@ pub mod qualified_identity_public_key;
 
 use crate::model::qualified_identity::encrypted_key_storage::KeyStorage;
 use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
-use crate::model::wallet::Wallet;
+use crate::model::wallet::{Wallet, WalletSeed, WalletSeedHash};
 use bincode::{Decode, Encode};
 use dash_sdk::dashcore_rpc::dashcore::{signer, PubkeyHash};
 use dash_sdk::dpp::bls_signatures::{Bls12381G2Impl, SignatureSchemes};
@@ -24,7 +24,7 @@ use dash_sdk::dpp::platform_value::BinaryData;
 use dash_sdk::dpp::state_transition::errors::InvalidIdentityPublicKeyTypeError;
 use dash_sdk::dpp::{bls_signatures, ed25519_dalek, ProtocolError};
 use dash_sdk::platform::IdentityPublicKey;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::fmt::{Display, Formatter};
 use std::sync::{Arc, RwLock};
 
@@ -95,7 +95,7 @@ pub struct QualifiedIdentity {
     pub alias: Option<String>,
     pub private_keys: KeyStorage,
     pub dpns_names: Vec<DPNSNameInfo>,
-    pub associated_wallets: Vec<Arc<RwLock<Wallet>>>,
+    pub associated_wallets: BTreeMap<WalletSeedHash, Arc<RwLock<Wallet>>>,
 }
 
 impl PartialEq for QualifiedIdentity {
@@ -145,7 +145,7 @@ impl Decode for QualifiedIdentity {
             alias: Option::<String>::decode(decoder)?,
             private_keys: KeyStorage::decode(decoder)?,
             dpns_names: Vec::<DPNSNameInfo>::decode(decoder)?,
-            associated_wallets: Vec::new(), // Initialize with an empty vector
+            associated_wallets: BTreeMap::new(), // Initialize with an empty vector
         })
     }
 }
@@ -163,7 +163,11 @@ impl Signer for QualifiedIdentity {
                     identity_public_key.purpose().into(),
                     identity_public_key.id(),
                 ),
-                self.associated_wallets.as_slice(),
+                self.associated_wallets
+                    .values()
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .as_slice(),
             )
             .map_err(|e| ProtocolError::Generic(e))?
             .ok_or(ProtocolError::Generic(format!(
@@ -348,7 +352,7 @@ impl From<Identity> for QualifiedIdentity {
             alias: None,
             private_keys: Default::default(),
             dpns_names: vec![],
-            associated_wallets: vec![],
+            associated_wallets: BTreeMap::new(),
         }
     }
 }

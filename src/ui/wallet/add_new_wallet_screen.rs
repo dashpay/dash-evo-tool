@@ -427,10 +427,10 @@ impl ScreenLike for AddNewWalletScreen {
                         self.estimated_time_to_crack
                     ));
 
-                    if self.app_context.password_info.is_none() {
-                        ui.add_space(10.0);
-                        ui.checkbox(&mut self.use_password_for_app, "Use password for Dash Evo Tool loose keys (recommended)");
-                    }
+                    // if self.app_context.password_info.is_none() {
+                    //     ui.add_space(10.0);
+                    //     ui.checkbox(&mut self.use_password_for_app, "Use password for Dash Evo Tool loose keys (recommended)");
+                    // }
 
                     ui.add_space(20.0);
 

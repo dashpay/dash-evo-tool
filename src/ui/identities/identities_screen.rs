@@ -356,7 +356,7 @@ impl IdentitiesScreen {
                                     row.col(|ui| {
                                         ui.horizontal(|ui| {
                                             ui.spacing_mut().item_spacing.x = 3.0;
-                                    
+
                                         let mut total_keys_shown = 0;
                                         let max_keys_to_show = 3;
                                         let mut more_keys_available = false;

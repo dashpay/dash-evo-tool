@@ -2,7 +2,8 @@ use crate::app::AppAction;
 use crate::backend_task::identity::{IdentityTask, RegisterDpnsNameInput};
 use crate::backend_task::BackendTask;
 use crate::context::AppContext;
-use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::qualified_identity::encrypted_key_storage::PrivateKeyData;
+use crate::model::qualified_identity::{PrivateKeyTarget, QualifiedIdentity};
 use crate::model::wallet::Wallet;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
@@ -167,6 +168,31 @@ impl RegisterDpnsNameScreen {
                                 .clicked()
                             {
                                 self.selected_qualified_identity = Some(qualified_identity.clone());
+
+                                if let Some((qualified_identity, _)) =  self.selected_qualified_identity.as_ref() {
+                                    let dpns_contract = &self.app_context.dpns_contract;
+
+                                    let preorder_document_type = dpns_contract
+                                        .document_type_for_name("preorder")
+                                        .expect("DPNS preorder document type not found");
+
+                                    let public_key = match qualified_identity
+                                        .document_signing_key(&preorder_document_type)
+                                        .ok_or(
+                                            "Identity doesn't have an authentication key for signing document transitions"
+                                                .to_string(),
+                                        ) {
+                                        Ok(public_key) => public_key,
+                                        Err(e) => {
+                                            self.error_message = Some(e);
+                                            return;
+                                        }
+                                    };
+
+                                    if let Some((_, PrivateKeyData::AtWalletDerivationPath(wallet_derivation_path))) = qualified_identity.private_keys.private_keys.get(&(PrivateKeyTarget::PrivateKeyOnMainIdentity, public_key.id())) {
+                                        self.selected_wallet = qualified_identity.associated_wallets.get(&wallet_derivation_path.wallet_seed_hash).cloned()
+                                    }
+                                }
                             }
                         }
                     });
@@ -221,14 +247,6 @@ impl ScreenLike for RegisterDpnsNameScreen {
             ui.heading("Register DPNS Name");
             ui.add_space(10.0);
 
-            // Before proceeding, check if we need to render wallet unlock
-            let (needs_unlock, just_unlocked) = self.render_wallet_unlock_if_needed(ui);
-            if needs_unlock {
-                if !just_unlocked {
-                    return;
-                }
-            }
-
             // If no identities loaded, give message
             if self.qualified_identities.is_empty() {
                 ui.colored_label(
@@ -238,17 +256,27 @@ impl ScreenLike for RegisterDpnsNameScreen {
                 return;
             }
 
-            // 1. Select the identity to register the name for
+            let mut step = 1;
+
+            // Select the identity to register the name for
             ui.heading("1. Select Identity");
             ui.add_space(5.0);
             self.render_identity_id_selection(ui);
+
+            step += 1;
 
             ui.add_space(10.0);
             ui.separator();
             ui.add_space(10.0);
 
-            // 2. Input for the name
-            ui.heading("2. Enter the Name to Register:");
+            let (needed_unlock, just_unlocked) = self.render_wallet_unlock_if_needed(ui);
+
+            if needed_unlock && !just_unlocked {
+                return;
+            }
+
+            // Input for the name
+            ui.heading(format!("{}. Enter the Name to Register:", step));
             ui.add_space(5.0);
             ui.horizontal(|ui| {
                 ui.label("Name (without \".dash\"):");

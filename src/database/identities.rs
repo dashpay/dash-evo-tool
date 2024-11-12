@@ -170,7 +170,10 @@ impl Database {
             let data: Vec<u8> = row.get(0)?;
             let mut identity: QualifiedIdentity = QualifiedIdentity::from_bytes(&data);
 
-            identity.associated_wallets = wallets.to_vec();
+            identity.associated_wallets = wallets
+                .iter()
+                .map(|wallet| (wallet.read().unwrap().seed_hash(), wallet.clone()))
+                .collect();
 
             Ok(identity)
         })?;

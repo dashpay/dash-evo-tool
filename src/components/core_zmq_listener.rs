@@ -117,8 +117,8 @@ impl CoreZMQListener {
 
                                 match topic {
                                     "rawchainlock" => {
-                                        println!("Received raw chain locked block:");
-                                        println!("Data (hex): {}", hex::encode(data_bytes));
+                                        // println!("Received raw chain locked block:");
+                                        // println!("Data (hex): {}", hex::encode(data_bytes));
 
                                         // Create a cursor over the data_bytes
                                         let mut cursor = Cursor::new(data_bytes);
@@ -146,8 +146,8 @@ impl CoreZMQListener {
                                         }
                                     }
                                     "rawtxlocksig" => {
-                                        println!("Received rawtxlocksig for InstantSend:");
-                                        println!("Data (hex): {}", hex::encode(data_bytes));
+                                        // println!("Received rawtxlocksig for InstantSend:");
+                                        // println!("Data (hex): {}", hex::encode(data_bytes));
 
                                         // Create a cursor over the data_bytes
                                         let mut cursor = Cursor::new(data_bytes);

@@ -175,7 +175,7 @@ impl WalletsBalancesScreen {
 
     fn render_filter_selector(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
-            let filter_options = ["Funds", "Identity Creation", "System", "Asset Locks"];
+            let filter_options = ["Funds", "Identity Creation", "System", "Unused Asset Locks"];
 
             for filter_option in &filter_options {
                 let is_selected = self.selected_filters.contains(*filter_option);
@@ -392,7 +392,7 @@ impl WalletsBalancesScreen {
                             .resizable(true)
                             .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
                             .column(Column::auto()) // Address
-                            .column(Column::initial(100.0)) // Balance
+                            // .column(Column::initial(100.0)) // Balance
                             .column(Column::initial(60.0)) // UTXOs
                             .column(Column::initial(150.0)) // Total Received
                             .column(Column::initial(100.0)) // Type
@@ -412,19 +412,19 @@ impl WalletsBalancesScreen {
                                         self.toggle_sort(SortColumn::Address);
                                     }
                                 });
-                                header.col(|ui| {
-                                    let label = if self.sort_column == SortColumn::Balance {
-                                        match self.sort_order {
-                                            SortOrder::Ascending => "Balance (DASH) ^",
-                                            SortOrder::Descending => "Balance (DASH) v",
-                                        }
-                                    } else {
-                                        "Balance (DASH)"
-                                    };
-                                    if ui.button(label).clicked() {
-                                        self.toggle_sort(SortColumn::Balance);
-                                    }
-                                });
+                                // header.col(|ui| {
+                                //     let label = if self.sort_column == SortColumn::Balance {
+                                //         match self.sort_order {
+                                //             SortOrder::Ascending => "Balance (DASH) ^",
+                                //             SortOrder::Descending => "Balance (DASH) v",
+                                //         }
+                                //     } else {
+                                //         "Balance (DASH)"
+                                //     };
+                                //     if ui.button(label).clicked() {
+                                //         self.toggle_sort(SortColumn::Balance);
+                                //     }
+                                // });
                                 header.col(|ui| {
                                     let label = if self.sort_column == SortColumn::UTXOs {
                                         match self.sort_order {
@@ -497,10 +497,10 @@ impl WalletsBalancesScreen {
                                         row.col(|ui| {
                                             ui.label(data.address.to_string());
                                         });
-                                        row.col(|ui| {
-                                            let dash_balance = data.balance as f64 * 1e-8;
-                                            ui.label(format!("{:.8}", dash_balance));
-                                        });
+                                        // row.col(|ui| {
+                                        //     let dash_balance = data.balance as f64 * 1e-8;
+                                        //     ui.label(format!("{:.8}", dash_balance));
+                                        // });
                                         row.col(|ui| {
                                             ui.label(format!("{}", data.utxo_count));
                                         });
@@ -650,7 +650,7 @@ impl ScreenLike for WalletsBalancesScreen {
 
                 ui.add_space(20.0);
 
-                if !(self.selected_filters.contains("Asset Locks")
+                if !(self.selected_filters.contains("Unused Asset Locks")
                     && self.selected_filters.len() == 1)
                 {
                     action |= self.render_address_table(ui);
@@ -658,7 +658,7 @@ impl ScreenLike for WalletsBalancesScreen {
 
                 ui.add_space(20.0);
 
-                if self.selected_filters.contains("Asset Locks") {
+                if self.selected_filters.contains("Unused Asset Locks") {
                     // Render the asset locks section
                     self.render_wallet_asset_locks(ui);
                 }
@@ -686,7 +686,7 @@ impl ScreenLike for WalletsBalancesScreen {
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
-        println!("{:?}", backend_task_success_result)
+        // println!("{:?}", backend_task_success_result)
     }
 
     fn display_message(&mut self, message: &str, message_type: MessageType) {

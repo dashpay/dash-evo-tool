@@ -1,7 +1,8 @@
 use crate::database::Database;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::{
-    AddressInfo, ClosedWalletSeed, DerivationPathReference, DerivationPathType, Wallet, WalletSeed,
+    AddressInfo, ClosedWalletSeed, DerivationPathReference, DerivationPathType, OpenWalletSeed,
+    Wallet, WalletSeed,
 };
 use dash_sdk::dashcore_rpc::dashcore::transaction::special_transaction::TransactionPayload;
 use dash_sdk::dashcore_rpc::dashcore::Address;
@@ -190,18 +191,29 @@ impl Database {
 
             let seed_hash_array: [u8; 32] =
                 seed_hash.try_into().expect("Seed hash should be 32 bytes");
+            let closed_wallet_seed = ClosedWalletSeed {
+                seed_hash: seed_hash_array,
+                encrypted_seed: encrypted_seed.clone(),
+                salt,
+                nonce,
+                password_hint,
+            };
+            let wallet_seed = if uses_password {
+                WalletSeed::Closed(closed_wallet_seed)
+            } else {
+                WalletSeed::Open(OpenWalletSeed {
+                    seed: encrypted_seed
+                        .try_into()
+                        .expect("expected to decrypt seed with no password"),
+                    wallet_info: closed_wallet_seed,
+                })
+            };
 
             // Insert a new Wallet into the map
             wallets_map.insert(
                 seed_hash_array,
                 Wallet {
-                    wallet_seed: WalletSeed::Closed(ClosedWalletSeed {
-                        seed_hash: seed_hash_array,
-                        encrypted_seed,
-                        salt,
-                        nonce,
-                        password_hint,
-                    }),
+                    wallet_seed,
                     uses_password,
                     master_bip44_ecdsa_extended_public_key: master_ecdsa_extended_public_key,
                     address_balances: BTreeMap::new(),

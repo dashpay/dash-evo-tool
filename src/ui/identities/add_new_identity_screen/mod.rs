@@ -1,6 +1,7 @@
 mod by_using_unused_asset_lock;
 mod by_using_unused_balance;
 mod by_wallet_qr_code;
+mod success_screen;
 
 use crate::app::AppAction;
 use crate::backend_task::core::CoreItem;
@@ -9,22 +10,27 @@ use crate::backend_task::identity::{
 };
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
+use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
 use crate::ui::{MessageType, ScreenLike};
 use arboard::Clipboard;
+use dash_sdk::dashcore_rpc::dashcore::address::Error;
 use dash_sdk::dashcore_rpc::dashcore::transaction::special_transaction::TransactionPayload;
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dpp::balances::credits::Duffs;
 use dash_sdk::dpp::dashcore::{OutPoint, PrivateKey, Transaction, TxOut};
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::prelude::AssetLockProof;
+use dash_sdk::platform::Identifier;
 use eframe::egui::Context;
 use egui::ahash::HashSet;
-use egui::{Color32, ColorImage, ComboBox, Ui};
+use egui::{Color32, ColorImage, ComboBox, ScrollArea, Ui};
 use image::Luma;
+use itertools::Itertools;
 use qrcode::QrCode;
 use serde::Deserialize;
 use std::cmp::PartialEq;
@@ -96,6 +102,7 @@ pub struct AddNewIdentityScreen {
     show_pop_up_info: Option<String>,
     in_key_selection_advanced_mode: bool,
     pub app_context: Arc<AppContext>,
+    successful_qualified_identity_id: Option<Identifier>,
 }
 
 // Function to generate a QR code image from the address
@@ -129,13 +136,78 @@ pub fn copy_to_clipboard(text: &str) -> Result<(), String> {
 
 impl AddNewIdentityScreen {
     pub fn new(app_context: &Arc<AppContext>) -> Self {
+        let mut selected_wallet = None;
+        let mut identity_id_number = 0;
+        let mut identity_keys = None;
+        if app_context.has_wallet.load(Ordering::Relaxed) {
+            let wallets = &app_context.wallets.read().unwrap();
+            if let Some(wallet) = wallets.first() {
+                // Automatically select the only available wallet
+                selected_wallet = Some(wallet.clone());
+                identity_id_number = wallet
+                    .read()
+                    .unwrap()
+                    .identities
+                    .keys()
+                    .copied()
+                    .max()
+                    .map(|a| a + 1)
+                    .unwrap_or_default();
+                let mut wallet = wallet.write().unwrap();
+
+                if wallet.is_open() {
+                    identity_keys = Some(IdentityKeys {
+                        master_private_key: Some(
+                            wallet
+                                .identity_authentication_ecdsa_private_key(
+                                    app_context.network,
+                                    0,
+                                    0,
+                                    Some(&app_context),
+                                )
+                                .expect("expected to have decrypted wallet"),
+                        ),
+                        master_private_key_type: KeyType::ECDSA_HASH160,
+                        keys_input: vec![
+                            (
+                                wallet
+                                    .identity_authentication_ecdsa_private_key(
+                                        app_context.network,
+                                        0,
+                                        1,
+                                        Some(&app_context),
+                                    )
+                                    .expect("expected to have decrypted wallet"),
+                                KeyType::ECDSA_HASH160,
+                                Purpose::AUTHENTICATION,
+                                SecurityLevel::HIGH,
+                            ),
+                            (
+                                wallet
+                                    .identity_authentication_ecdsa_private_key(
+                                        app_context.network,
+                                        0,
+                                        2,
+                                        Some(&app_context),
+                                    )
+                                    .expect("expected to have decrypted wallet"),
+                                KeyType::ECDSA_HASH160,
+                                Purpose::TRANSFER,
+                                SecurityLevel::CRITICAL,
+                            ),
+                        ],
+                    });
+                }
+            }
+        }
+
         Self {
-            identity_id_number: 0,
+            identity_id_number,
             step: Arc::new(RwLock::new(
                 AddNewIdentityWalletFundedScreenStep::ChooseFundingMethod,
             )),
             funding_asset_lock: None,
-            selected_wallet: None,
+            selected_wallet,
             core_has_funding_address: None,
             funding_address: None,
             funding_address_balance: Arc::new(RwLock::new(None)),
@@ -145,11 +217,11 @@ impl AddNewIdentityScreen {
             funding_utxo: None,
             alias_input: String::new(),
             copied_to_clipboard: None,
-            identity_keys: IdentityKeys {
+            identity_keys: identity_keys.unwrap_or(IdentityKeys {
                 master_private_key: None,
                 master_private_key_type: KeyType::ECDSA_HASH160,
                 keys_input: vec![],
-            },
+            }),
             balance_check_handle: None,
             error_message: None,
             show_password: false,
@@ -157,89 +229,90 @@ impl AddNewIdentityScreen {
             show_pop_up_info: None,
             in_key_selection_advanced_mode: false,
             app_context: app_context.clone(),
+            successful_qualified_identity_id: None,
         }
     }
 
-    // Start the balance checking process
-    pub fn start_balance_check(&mut self, check_address: &Address, ui_context: &Context) {
-        let app_context = self.app_context.clone();
-        let balance_state = Arc::clone(&self.funding_address_balance);
-        let stop_flag = Arc::new(AtomicBool::new(false));
-        let stop_flag_clone = Arc::clone(&stop_flag);
-        let ctx = ui_context.clone();
-
-        let selected_wallet = self.selected_wallet.clone();
-        let funding_method = Arc::clone(&self.funding_method);
-        let step = Arc::clone(&self.step);
-
-        let starting_balance = balance_state.read().unwrap().unwrap_or_default();
-        let expected_balance = starting_balance + self.funding_amount.parse::<Duffs>().unwrap_or(1);
-
-        let address = check_address.clone();
-
-        // Spawn a new thread to monitor the balance.
-        let handle = thread::spawn(move || {
-            while !stop_flag_clone.load(Ordering::Relaxed) {
-                match app_context
-                    .core_client
-                    .get_received_by_address(&address, Some(1))
-                {
-                    Ok(new_balance) => {
-                        // Update wallet balance if it has changed.
-                        if let Some(wallet_guard) = selected_wallet.as_ref() {
-                            let mut wallet = wallet_guard.write().unwrap();
-                            wallet
-                                .update_address_balance(
-                                    &address,
-                                    new_balance.to_sat(),
-                                    &app_context,
-                                )
-                                .ok();
-                        }
-
-                        // Write the new balance into the RwLock.
-                        if let Ok(mut balance) = balance_state.write() {
-                            *balance = Some(new_balance.to_sat());
-                        }
-
-                        // Trigger UI redraw.
-                        ctx.request_repaint();
-
-                        // Check if expected balance is reached and update funding method and step.
-                        if new_balance.to_sat() >= expected_balance {
-                            *funding_method.write().unwrap() = FundingMethod::UseWalletBalance;
-                            *step.write().unwrap() =
-                                AddNewIdentityWalletFundedScreenStep::FundsReceived;
-                            break;
-                        }
-                    }
-                    Err(e) => {
-                        // Get the current time
-                        let now = SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .expect("Time went backwards");
-                        eprintln!("[{:?}] Error fetching balance: {:?}", now, e);
-                    }
-                }
-                thread::sleep(Duration::from_secs(1));
-            }
-        });
-
-        // Save the handle and stop flag to allow stopping the thread later.
-        self.balance_check_handle = Some((stop_flag, handle));
-    }
-
-    // Stop the balance checking process
-    fn stop_balance_check(&mut self) {
-        if let Some((stop_flag, handle)) = self.balance_check_handle.take() {
-            // Set the atomic flag to stop the thread
-            stop_flag.store(true, Ordering::Relaxed);
-            // Wait for the thread to finish
-            if let Err(e) = handle.join() {
-                eprintln!("Failed to join balance check thread: {:?}", e);
-            }
-        }
-    }
+    // // Start the balance checking process
+    // pub fn start_balance_check(&mut self, check_address: &Address, ui_context: &Context) {
+    //     let app_context = self.app_context.clone();
+    //     let balance_state = Arc::clone(&self.funding_address_balance);
+    //     let stop_flag = Arc::new(AtomicBool::new(false));
+    //     let stop_flag_clone = Arc::clone(&stop_flag);
+    //     let ctx = ui_context.clone();
+    //
+    //     let selected_wallet = self.selected_wallet.clone();
+    //     let funding_method = Arc::clone(&self.funding_method);
+    //     let step = Arc::clone(&self.step);
+    //
+    //     let starting_balance = balance_state.read().unwrap().unwrap_or_default();
+    //     let expected_balance = starting_balance + self.funding_amount.parse::<Duffs>().unwrap_or(1);
+    //
+    //     let address = check_address.clone();
+    //
+    //     // Spawn a new thread to monitor the balance.
+    //     let handle = thread::spawn(move || {
+    //         while !stop_flag_clone.load(Ordering::Relaxed) {
+    //             match app_context
+    //                 .core_client
+    //                 .get_received_by_address(&address, Some(1))
+    //             {
+    //                 Ok(new_balance) => {
+    //                     // Update wallet balance if it has changed.
+    //                     if let Some(wallet_guard) = selected_wallet.as_ref() {
+    //                         let mut wallet = wallet_guard.write().unwrap();
+    //                         wallet
+    //                             .update_address_balance(
+    //                                 &address,
+    //                                 new_balance.to_sat(),
+    //                                 &app_context,
+    //                             )
+    //                             .ok();
+    //                     }
+    //
+    //                     // Write the new balance into the RwLock.
+    //                     if let Ok(mut balance) = balance_state.write() {
+    //                         *balance = Some(new_balance.to_sat());
+    //                     }
+    //
+    //                     // Trigger UI redraw.
+    //                     ctx.request_repaint();
+    //
+    //                     // Check if expected balance is reached and update funding method and step.
+    //                     if new_balance.to_sat() >= expected_balance {
+    //                         *funding_method.write().unwrap() = FundingMethod::UseWalletBalance;
+    //                         *step.write().unwrap() =
+    //                             AddNewIdentityWalletFundedScreenStep::FundsReceived;
+    //                         break;
+    //                     }
+    //                 }
+    //                 Err(e) => {
+    //                     // Get the current time
+    //                     let now = SystemTime::now()
+    //                         .duration_since(UNIX_EPOCH)
+    //                         .expect("Time went backwards");
+    //                     eprintln!("[{:?}] Error fetching balance: {:?}", now, e);
+    //                 }
+    //             }
+    //             thread::sleep(Duration::from_secs(1));
+    //         }
+    //     });
+    //
+    //     // Save the handle and stop flag to allow stopping the thread later.
+    //     self.balance_check_handle = Some((stop_flag, handle));
+    // }
+    //
+    // // Stop the balance checking process
+    // fn stop_balance_check(&mut self) {
+    //     if let Some((stop_flag, handle)) = self.balance_check_handle.take() {
+    //         // Set the atomic flag to stop the thread
+    //         stop_flag.store(true, Ordering::Relaxed);
+    //         // Wait for the thread to finish
+    //         if let Err(e) = handle.join() {
+    //             eprintln!("Failed to join balance check thread: {:?}", e);
+    //         }
+    //     }
+    // }
 
     fn render_identity_index_input(&mut self, ui: &mut egui::Ui) {
         let mut index_changed = false; // Track if the index has changed
@@ -413,53 +486,6 @@ impl AddNewIdentityScreen {
                 if self.selected_wallet.is_none() {
                     // Automatically select the only available wallet
                     self.selected_wallet = Some(wallet.clone());
-
-                    let mut wallet = wallet.write().unwrap();
-
-                    if wallet.is_open() {
-                        self.identity_id_number =
-                            wallet.identities.keys().copied().max().unwrap_or_default();
-
-                        self.identity_keys.master_private_key = Some(
-                            wallet
-                                .identity_authentication_ecdsa_private_key(
-                                    self.app_context.network,
-                                    0,
-                                    0,
-                                    Some(&self.app_context),
-                                )
-                                .expect("expected to have decrypted wallet"),
-                        );
-                        // Update the additional keys input
-                        self.identity_keys.keys_input = vec![
-                            (
-                                wallet
-                                    .identity_authentication_ecdsa_private_key(
-                                        self.app_context.network,
-                                        0,
-                                        1,
-                                        Some(&self.app_context),
-                                    )
-                                    .expect("expected to have decrypted wallet"),
-                                KeyType::ECDSA_HASH160,
-                                Purpose::AUTHENTICATION,
-                                SecurityLevel::HIGH,
-                            ),
-                            (
-                                wallet
-                                    .identity_authentication_ecdsa_private_key(
-                                        self.app_context.network,
-                                        0,
-                                        2,
-                                        Some(&self.app_context),
-                                    )
-                                    .expect("expected to have decrypted wallet"),
-                                KeyType::ECDSA_HASH160,
-                                Purpose::TRANSFER,
-                                SecurityLevel::CRITICAL,
-                            ),
-                        ];
-                    }
                 }
                 false
             } else {
@@ -486,8 +512,12 @@ impl AddNewIdentityScreen {
                     "Please select funding method",
                 );
 
-                let wallet = selected_wallet.read().unwrap();
-                if wallet.has_unused_asset_lock() {
+                let (has_unused_asset_lock, has_balance) = {
+                    let wallet = selected_wallet.read().unwrap();
+                    (wallet.has_unused_asset_lock(), wallet.has_balance())
+                };
+
+                if has_unused_asset_lock {
                     if ui
                         .selectable_value(
                             &mut *funding_method,
@@ -501,19 +531,19 @@ impl AddNewIdentityScreen {
                         *step = AddNewIdentityWalletFundedScreenStep::ReadyToCreate;
                     }
                 }
-                if wallet.has_balance() {
-                    if ui
-                        .selectable_value(
-                            &mut *funding_method,
-                            FundingMethod::UseWalletBalance,
-                            "Use Wallet Balance",
-                        )
-                        .changed()
-                    {
-                        let mut step = self.step.write().unwrap(); // Write lock on step
-                        *step = AddNewIdentityWalletFundedScreenStep::ReadyToCreate;
-                    }
-                }
+                // if has_balance {
+                //     if ui
+                //         .selectable_value(
+                //             &mut *funding_method,
+                //             FundingMethod::UseWalletBalance,
+                //             "Use Wallet Balance",
+                //         )
+                //         .changed()
+                //     {
+                //         let mut step = self.step.write().unwrap(); // Write lock on step
+                //         *step = AddNewIdentityWalletFundedScreenStep::ReadyToCreate;
+                //     }
+                // }
                 if ui
                     .selectable_value(
                         &mut *funding_method,
@@ -871,44 +901,76 @@ impl ScreenWithWalletUnlock for AddNewIdentityScreen {
 }
 
 impl ScreenLike for AddNewIdentityScreen {
-    fn display_message(&mut self, message: &str, _message_type: MessageType) {
-        self.error_message = Some(message.to_string());
+    fn display_message(&mut self, message: &str, message_type: MessageType) {
+        if message_type == MessageType::Error {
+            self.error_message = Some(format!("Error registering identity: {}", message));
+        } else {
+            self.error_message = Some(message.to_string());
+        }
     }
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         let mut step = self.step.write().unwrap();
-        if *step == AddNewIdentityWalletFundedScreenStep::WaitingOnFunds {
-            if let Some(funding_address) = self.funding_address.as_ref() {
-                if let BackendTaskSuccessResult::CoreItem(
-                    CoreItem::ReceivedAvailableUTXOTransaction(_, outpoints_with_addresses),
-                ) = backend_task_success_result
-                {
-                    for (outpoint, tx_out, address) in outpoints_with_addresses {
-                        if funding_address == &address {
-                            *step = AddNewIdentityWalletFundedScreenStep::FundsReceived;
-                            self.funding_utxo = Some((outpoint, tx_out, address))
-                        }
-                    }
-                }
-            }
-        } else if *step == AddNewIdentityWalletFundedScreenStep::WaitingForAssetLock {
-            if let BackendTaskSuccessResult::CoreItem(CoreItem::ReceivedAvailableUTXOTransaction(
-                tx,
-                outpoints_with_addresses,
-            )) = backend_task_success_result
-            {
-                if let Some(TransactionPayload::AssetLockPayloadType(asset_lock_payload)) =
-                    tx.special_transaction_payload
-                {
-                    if let Some(funding_address) = self.funding_address.as_ref() {
+        match *step {
+            AddNewIdentityWalletFundedScreenStep::ChooseFundingMethod => {}
+            AddNewIdentityWalletFundedScreenStep::WaitingOnFunds => {
+                if let Some(funding_address) = self.funding_address.as_ref() {
+                    if let BackendTaskSuccessResult::CoreItem(
+                        CoreItem::ReceivedAvailableUTXOTransaction(_, outpoints_with_addresses),
+                    ) = backend_task_success_result
+                    {
                         for (outpoint, tx_out, address) in outpoints_with_addresses {
                             if funding_address == &address {
-                                *step = AddNewIdentityWalletFundedScreenStep::WaitingForPlatformAcceptance;
+                                *step = AddNewIdentityWalletFundedScreenStep::FundsReceived;
                                 self.funding_utxo = Some((outpoint, tx_out, address))
                             }
                         }
                     }
                 }
             }
+            AddNewIdentityWalletFundedScreenStep::FundsReceived => {}
+            AddNewIdentityWalletFundedScreenStep::ReadyToCreate => {}
+            AddNewIdentityWalletFundedScreenStep::WaitingForAssetLock => {
+                if let BackendTaskSuccessResult::CoreItem(
+                    CoreItem::ReceivedAvailableUTXOTransaction(tx, _),
+                ) = backend_task_success_result
+                {
+                    if let Some(TransactionPayload::AssetLockPayloadType(asset_lock_payload)) =
+                        tx.special_transaction_payload
+                    {
+                        if asset_lock_payload
+                            .credit_outputs
+                            .iter()
+                            .find(|tx_out| {
+                                let Ok(address) = Address::from_script(
+                                    &tx_out.script_pubkey,
+                                    self.app_context.network,
+                                ) else {
+                                    return false;
+                                };
+                                if let Some(wallet) = &self.selected_wallet {
+                                    let wallet = wallet.read().unwrap();
+                                    wallet.known_addresses.contains_key(&address)
+                                } else {
+                                    false
+                                }
+                            })
+                            .is_some()
+                        {
+                            *step =
+                                AddNewIdentityWalletFundedScreenStep::WaitingForPlatformAcceptance;
+                        }
+                    }
+                }
+            }
+            AddNewIdentityWalletFundedScreenStep::WaitingForPlatformAcceptance => {
+                if let BackendTaskSuccessResult::RegisteredIdentity(qualified_identity) =
+                    backend_task_success_result
+                {
+                    self.successful_qualified_identity_id = Some(qualified_identity.identity.id());
+                    *step = AddNewIdentityWalletFundedScreenStep::Success;
+                }
+            }
+            AddNewIdentityWalletFundedScreenStep::Success => {}
         }
     }
     fn ui(&mut self, ctx: &Context) -> AppAction {
@@ -923,169 +985,173 @@ impl ScreenLike for AddNewIdentityScreen {
         );
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.add_space(10.0);
-            ui.heading("Follow these steps to create your identity!");
-            ui.add_space(15.0);
-
-            let mut step_number = 1;
-
-            if self.render_wallet_selection(ui) {
-                // We had more than 1 wallet
-                step_number += 1;
-            }
-
-            if self.selected_wallet.is_none() {
-                return;
-            };
-
-            let (needed_unlock, just_unlocked) = self.render_wallet_unlock_if_needed(ui);
-
-            if needed_unlock {
-                if just_unlocked {
-                    let wallet_guard = self.selected_wallet.as_ref().unwrap();
-                    let mut wallet = wallet_guard.write().unwrap();
-
-                    self.identity_id_number =
-                        wallet.identities.keys().copied().max().map(|max| max + 1).unwrap_or_default();
-
-                    self.identity_keys.master_private_key = Some(
-                        wallet
-                            .identity_authentication_ecdsa_private_key(
-                                self.app_context.network,
-                                self.identity_id_number,
-                                0,
-                                Some(&self.app_context),
-                            )
-                            .expect("expected to have decrypted wallet"),
-                    );
-                    // Update the additional keys input
-                    self.identity_keys.keys_input = vec![
-                        (
-                            wallet
-                                .identity_authentication_ecdsa_private_key(
-                                    self.app_context.network,
-                                    self.identity_id_number,
-                                    1,
-                                    Some(&self.app_context),
-                                )
-                                .expect("expected to have decrypted wallet"),
-                            KeyType::ECDSA_HASH160,
-                            Purpose::AUTHENTICATION,
-                            SecurityLevel::HIGH,
-                        ),
-                        (
-                            wallet
-                                .identity_authentication_ecdsa_private_key(
-                                    self.app_context.network,
-                                    self.identity_id_number,
-                                    2,
-                                    Some(&self.app_context),
-                                )
-                                .expect("expected to have decrypted wallet"),
-                            KeyType::ECDSA_HASH160,
-                            Purpose::TRANSFER,
-                            SecurityLevel::CRITICAL,
-                        ),
-                    ];
-                } else {
+            ScrollArea::vertical().show(ui, |ui| {
+                let step = {self.step.read().unwrap().clone()};
+                if step == AddNewIdentityWalletFundedScreenStep::Success {
+                    action |= self.show_success(ui);
                     return;
                 }
-            }
+                ui.add_space(10.0);
+                ui.heading("Follow these steps to create your identity!");
+                ui.add_space(15.0);
 
-            // Display the heading with an info icon that shows a tooltip on hover
-            ui.horizontal(|ui| {
+                let mut step_number = 1;
 
-                let wallet_guard = self.selected_wallet.as_ref().unwrap();
-                let wallet = wallet_guard.read().unwrap();
-                if wallet.identities.is_empty() {
+                if self.render_wallet_selection(ui) {
+                    // We had more than 1 wallet
+                    step_number += 1;
+                }
+
+                if self.selected_wallet.is_none() {
+                    return;
+                };
+
+                let (needed_unlock, just_unlocked) = self.render_wallet_unlock_if_needed(ui);
+
+                if needed_unlock {
+                    if just_unlocked {
+                        let wallet_guard = self.selected_wallet.as_ref().unwrap();
+                        let mut wallet = wallet_guard.write().unwrap();
+
+                        self.identity_id_number =
+                            wallet.identities.keys().copied().max().map(|max| max + 1).unwrap_or_default();
+
+                        self.identity_keys.master_private_key = Some(
+                            wallet
+                                .identity_authentication_ecdsa_private_key(
+                                    self.app_context.network,
+                                    self.identity_id_number,
+                                    0,
+                                    Some(&self.app_context),
+                                )
+                                .expect("expected to have decrypted wallet"),
+                        );
+                        // Update the additional keys input
+                        self.identity_keys.keys_input = vec![
+                            (
+                                wallet
+                                    .identity_authentication_ecdsa_private_key(
+                                        self.app_context.network,
+                                        self.identity_id_number,
+                                        1,
+                                        Some(&self.app_context),
+                                    )
+                                    .expect("expected to have decrypted wallet"),
+                                KeyType::ECDSA_HASH160,
+                                Purpose::AUTHENTICATION,
+                                SecurityLevel::HIGH,
+                            ),
+                            (
+                                wallet
+                                    .identity_authentication_ecdsa_private_key(
+                                        self.app_context.network,
+                                        self.identity_id_number,
+                                        2,
+                                        Some(&self.app_context),
+                                    )
+                                    .expect("expected to have decrypted wallet"),
+                                KeyType::ECDSA_HASH160,
+                                Purpose::TRANSFER,
+                                SecurityLevel::CRITICAL,
+                            ),
+                        ];
+                    } else {
+                        return;
+                    }
+                }
+
+                // Display the heading with an info icon that shows a tooltip on hover
+                ui.horizontal(|ui| {
+                    let wallet_guard = self.selected_wallet.as_ref().unwrap();
+                    let wallet = wallet_guard.read().unwrap();
+                    if wallet.identities.is_empty() {
+                        ui.heading(format!(
+                            "{}. Choose an identity index. Leave this 0 if this is your first identity for this wallet.",
+                            step_number
+                        ));
+                    } else {
+                        ui.heading(format!(
+                            "{}. Choose an identity index. Leaving this {} is recommended.",
+                            step_number,
+                            wallet.identities.keys().cloned().max().map(|max| max + 1).unwrap_or_default()
+                        ));
+                    }
+
+
+                    // Create a label with click sense and tooltip
+                    let info_icon = egui::Label::new("ℹ").sense(egui::Sense::click());
+                    let response = ui.add(info_icon)
+                        .on_hover_text("The identity index is an internal reference within the wallet. The wallet’s seed phrase can always be used to recover any identity, including this one, by using the same index.");
+
+                    // Check if the label was clicked
+                    if response.clicked() {
+                        self.show_pop_up_info = Some("The identity index is an internal reference within the wallet. The wallet’s seed phrase can always be used to recover any identity, including this one, by using the same index.".to_string());
+                    }
+                });
+
+                step_number += 1;
+
+                ui.add_space(8.0);
+
+                self.render_identity_index_input(ui);
+
+                ui.add_space(10.0);
+
+                // Display the heading with an info icon that shows a tooltip on hover
+                ui.horizontal(|ui| {
                     ui.heading(format!(
-                        "{}. Choose an identity index. Leave this 0 if this is your first identity for this wallet.",
+                        "{}. Choose what keys you want to add to this new identity.",
                         step_number
                     ));
-                } else {
-                    ui.heading(format!(
-                        "{}. Choose an identity index. Leaving this {} is recommended.",
-                        step_number,
-                        wallet.identities.keys().cloned().max().map(|max| max + 1).unwrap_or_default()
-                    ));
+
+                    // Create a label with click sense and tooltip
+                    let info_icon = egui::Label::new("ℹ").sense(egui::Sense::click());
+                    let response = ui.add(info_icon)
+                        .on_hover_text("Keys allow an identity to perform actions on the Blockchain. They are contained in your wallet and allow you to prove that the action you are making is really coming from yourself.");
+
+                    // Check if the label was clicked
+                    if response.clicked() {
+                        self.show_pop_up_info = Some("Keys allow an identity to perform actions on the Blockchain. They are contained in your wallet and allow you to prove that the action you are making is really coming from yourself.".to_string());
+                    }
+                });
+
+                step_number += 1;
+
+                ui.add_space(8.0);
+
+                self.render_key_selection(ui);
+
+                ui.add_space(10.0);
+
+                ui.heading(
+                    format!("{}. Choose your funding method.", step_number).as_str()
+                );
+                step_number += 1;
+
+                ui.add_space(10.0);
+                self.render_funding_method(ui);
+
+                // Extract the funding method from the RwLock to minimize borrow scope
+                let funding_method = self.funding_method.read().unwrap().clone();
+
+                if funding_method == FundingMethod::NoSelection {
+                    return;
                 }
 
-
-                // Create a label with click sense and tooltip
-                let info_icon = egui::Label::new("ℹ").sense(egui::Sense::click());
-                let response = ui.add(info_icon)
-                    .on_hover_text("The identity index is an internal reference within the wallet. The wallet’s seed phrase can always be used to recover any identity, including this one, by using the same index.");
-
-                // Check if the label was clicked
-                if response.clicked() {
-                    self.show_pop_up_info = Some("The identity index is an internal reference within the wallet. The wallet’s seed phrase can always be used to recover any identity, including this one, by using the same index.".to_string());
+                match funding_method {
+                    FundingMethod::NoSelection => return,
+                    FundingMethod::UseUnusedAssetLock => {
+                        action |= self.render_ui_by_using_unused_asset_lock(ui, step_number);
+                    },
+                    FundingMethod::UseWalletBalance => {
+                        action |= self.render_ui_by_using_unused_balance(ui, step_number);
+                    },
+                    FundingMethod::AddressWithQRCode => {
+                        action |= self.render_ui_by_wallet_qr_code(ui, step_number)
+                    },
+                    FundingMethod::AttachedCoreWallet => return,
                 }
             });
-
-            step_number += 1;
-
-            ui.add_space(8.0);
-
-            self.render_identity_index_input(ui);
-
-            ui.add_space(10.0);
-
-            // Display the heading with an info icon that shows a tooltip on hover
-            ui.horizontal(|ui| {
-                ui.heading(format!(
-                    "{}. Choose what keys you want to add to this new identity.",
-                    step_number
-                ));
-
-                // Create a label with click sense and tooltip
-                let info_icon = egui::Label::new("ℹ").sense(egui::Sense::click());
-                let response = ui.add(info_icon)
-                    .on_hover_text("Keys allow an identity to perform actions on the Blockchain. They are contained in your wallet and allow you to prove that the action you are making is really coming from yourself.");
-
-                // Check if the label was clicked
-                if response.clicked() {
-                    self.show_pop_up_info = Some("Keys allow an identity to perform actions on the Blockchain. They are contained in your wallet and allow you to prove that the action you are making is really coming from yourself.".to_string());
-                }
-            });
-
-            step_number += 1;
-
-            ui.add_space(8.0);
-
-            self.render_key_selection(ui);
-
-            ui.add_space(10.0);
-
-            ui.heading(
-                format!("{}. Choose your funding method.", step_number).as_str()
-            );
-            step_number += 1;
-
-            ui.add_space(10.0);
-            self.render_funding_method(ui);
-
-            // Extract the funding method from the RwLock to minimize borrow scope
-            let funding_method = self.funding_method.read().unwrap().clone();
-
-            if funding_method == FundingMethod::NoSelection {
-                return;
-            }
-
-            match funding_method {
-                FundingMethod::NoSelection => return,
-                FundingMethod::UseUnusedAssetLock => {
-                    action |= self.render_ui_by_using_unused_asset_lock(ui, step_number);
-                },
-                FundingMethod::UseWalletBalance => {
-                    action |= self.render_ui_by_using_unused_balance(ui, step_number);
-                },
-                FundingMethod::AddressWithQRCode => {
-                    action |= self.render_ui_by_wallet_qr_code(ui, step_number)
-                },
-                FundingMethod::AttachedCoreWallet => return,
-            }
-
-
         });
 
         // Show the popup window if `show_popup` is true

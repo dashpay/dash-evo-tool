@@ -93,6 +93,7 @@ impl AddNewIdentityScreen {
         self.render_choose_funding_asset_lock(ui);
 
         if ui.button("Create Identity").clicked() {
+            self.error_message = None;
             action |= self.register_identity_clicked(FundingMethod::UseUnusedAssetLock);
         }
 

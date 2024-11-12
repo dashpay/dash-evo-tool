@@ -9,6 +9,7 @@ use dash_sdk::dpp::dashcore::transaction::special_transaction::TransactionPayloa
 use dash_sdk::dpp::dashcore::{
     Address, Network, OutPoint, PrivateKey, ScriptBuf, Transaction, TxIn, TxOut,
 };
+use std::collections::BTreeMap;
 
 impl Wallet {
     pub fn asset_lock_transaction(
@@ -17,7 +18,15 @@ impl Wallet {
         amount: u64,
         identity_index: u32,
         register_addresses: Option<&AppContext>,
-    ) -> Result<(Transaction, PrivateKey, Address), String> {
+    ) -> Result<
+        (
+            Transaction,
+            PrivateKey,
+            Address,
+            BTreeMap<OutPoint, (TxOut, Address)>,
+        ),
+        String,
+    > {
         let secp = Secp256k1::new();
         let private_key = self.identity_registration_ecdsa_private_key(
             network,
@@ -28,7 +37,7 @@ impl Wallet {
 
         let one_time_key_hash = asset_lock_public_key.pubkey_hash();
         let fee = 3_000;
-        let (mut utxos, change) = self
+        let (utxos, change) = self
             .take_unspent_utxos_for(amount + fee)
             .ok_or("take_unspent_utxos_for() returned None".to_string())?;
 
@@ -99,12 +108,14 @@ impl Wallet {
         // Now we can drop the cache to end the immutable borrow
         drop(cache);
 
+        let mut check_utxos = utxos.clone();
+
         tx.input
             .iter_mut()
             .zip(sighashes.into_iter())
             .try_for_each(|(input, sighash)| {
                 // You need to provide the actual script_pubkey of the UTXO being spent
-                let (_, input_address) = utxos
+                let (_, input_address) = check_utxos
                     .remove(&input.previous_output)
                     .expect("expected a txout");
                 let message = Message::from_digest(sighash.into());
@@ -134,7 +145,7 @@ impl Wallet {
                 Ok::<(), String>(())
             })?;
 
-        Ok((tx, private_key, change_address))
+        Ok((tx, private_key, change_address, utxos))
     }
 
     pub fn asset_lock_transaction_for_utxo(

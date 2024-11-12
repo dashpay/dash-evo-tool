@@ -19,7 +19,7 @@ use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
 use dash_sdk::dashcore_rpc::dashcore::{Address, PrivateKey, TxOut};
 use dash_sdk::dpp::balances::credits::Duffs;
 use dash_sdk::dpp::dashcore::hashes::Hash;
-use dash_sdk::dpp::dashcore::{OutPoint, Transaction};
+use dash_sdk::dpp::dashcore::{OutPoint, PublicKey, Transaction};
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
@@ -78,20 +78,18 @@ impl IdentityKeys {
                 disabled_at: None,
             });
 
+            let wallet_derivation_path = WalletDerivationPath {
+                wallet_seed_hash,
+                derivation_path: master_private_key_derivation_path.clone(),
+            };
             let qualified_identity_public_key =
                 QualifiedIdentityPublicKey::from_identity_public_key_in_wallet(
                     key,
-                    Some(WalletDerivationPath {
-                        wallet_seed_hash,
-                        derivation_path: master_private_key_derivation_path.clone(),
-                    }),
+                    Some(wallet_derivation_path.clone()),
                 );
             key_map.insert(
                 (PrivateKeyTarget::PrivateKeyOnMainIdentity, 0),
-                (
-                    qualified_identity_public_key,
-                    master_private_key.inner.secret_bytes(),
-                ),
+                (qualified_identity_public_key, wallet_derivation_path),
             );
         }
 
@@ -109,20 +107,19 @@ impl IdentityKeys {
                     disabled_at: None,
                 });
 
+                let wallet_derivation_path = WalletDerivationPath {
+                    wallet_seed_hash,
+                    derivation_path: derivation_path.clone(),
+                };
+
                 let qualified_identity_public_key =
                     QualifiedIdentityPublicKey::from_identity_public_key_in_wallet(
                         identity_public_key,
-                        Some(WalletDerivationPath {
-                            wallet_seed_hash,
-                            derivation_path: derivation_path.clone(),
-                        }),
+                        Some(wallet_derivation_path.clone()),
                     );
                 (
                     (PrivateKeyTarget::PrivateKeyOnMainIdentity, id),
-                    (
-                        qualified_identity_public_key,
-                        private_key.inner.secret_bytes(),
-                    ),
+                    (qualified_identity_public_key, wallet_derivation_path),
                 )
             },
         ));

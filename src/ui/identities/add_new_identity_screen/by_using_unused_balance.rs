@@ -47,6 +47,7 @@ impl AddNewIdentityScreen {
         };
 
         if ui.button("Create Identity").clicked() {
+            self.error_message = None;
             action = self.register_identity_clicked(FundingMethod::UseWalletBalance);
         }
 

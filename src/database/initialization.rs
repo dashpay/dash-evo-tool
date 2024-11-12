@@ -197,7 +197,7 @@ impl Database {
         // Create asset lock transaction table
         self.execute(
             "CREATE TABLE IF NOT EXISTS asset_lock_transaction (
-                        tx_id TEXT PRIMARY KEY,
+                        tx_id BLOB PRIMARY KEY,
                         transaction_data BLOB NOT NULL,
                         amount INTEGER,
                         instant_lock_data BLOB,

@@ -456,7 +456,7 @@ impl IdentitiesScreen {
                                     });
                                     row.col(|ui| {
                                         ui.horizontal(|ui| {
-                                            ui.spacing_mut().item_spacing.x = 4.0;
+                                            ui.spacing_mut().item_spacing.x = 3.0;
 
                                         if ui.button("Refresh").clicked() {
                                             action =

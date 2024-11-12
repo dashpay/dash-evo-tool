@@ -48,7 +48,7 @@ image = { version = "0.25.2", default-features = false, features = ["png"] }
 bitflags = "2.6.0"
 libsqlite3-sys = { version = "0.30.1", features = ["bundled"] }
 rust-embed = "8.5.0"
-zmq = "0.10"
+zeromq = "0.4.1"
 zeroize = "1.8.1"
 zxcvbn = "3.1.0"
 argon2 = "0.5"           # For Argon2 key derivation

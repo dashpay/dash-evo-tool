@@ -6,6 +6,7 @@ use crate::backend_task::document::DocumentTask;
 use crate::backend_task::identity::IdentityTask;
 use crate::backend_task::withdrawals::{WithdrawStatusPartialData, WithdrawalsTask};
 use crate::context::AppContext;
+use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::dpp::voting::votes::Vote;
 use dash_sdk::query_types::Documents;
 use derive_more::From;
@@ -35,6 +36,7 @@ pub(crate) enum BackendTaskSuccessResult {
     Message(String),
     Documents(Documents),
     CoreItem(CoreItem),
+    RegisteredIdentity(QualifiedIdentity),
     SuccessfulVotes(Vec<Vote>),
     WithdrawalStatus(WithdrawStatusPartialData),
 }

@@ -457,16 +457,16 @@ impl ScreenLike for AddExistingIdentityScreen {
 
         egui::CentralPanel::default().show(ctx, |ui| {
             // Prepare tabs
-            let mut tabs = vec![("By Identifier", IdentityLoadMethod::ByIdentifier)];
-            let wallets_len = {
-                // Check if there are wallets
-                let wallets = self.app_context.wallets.read().unwrap();
-                let has_wallet = !wallets.is_empty();
-                if has_wallet {
-                    tabs.push(("From Wallet", IdentityLoadMethod::FromWallet));
-                }
-                wallets.len()
-            };
+            let tabs = vec![("By Identifier", IdentityLoadMethod::ByIdentifier)];
+            // let wallets_len = {
+            //     // Check if there are wallets
+            //     let wallets = self.app_context.wallets.read().unwrap();
+            //     let has_wallet = !wallets.is_empty();
+            //     if has_wallet {
+            //         tabs.push(("From Wallet", IdentityLoadMethod::FromWallet));
+            //     }
+            //     wallets.len()
+            // };
 
             // Render tabs
             ui.horizontal(|ui| {
@@ -481,7 +481,7 @@ impl ScreenLike for AddExistingIdentityScreen {
             match self.identity_load_method {
                 IdentityLoadMethod::ByIdentifier => action |= self.render_by_identity(ui),
                 IdentityLoadMethod::FromWallet => {
-                    action |= self.render_from_wallet(ui, wallets_len)
+                    // action |= self.render_from_wallet(ui, wallets_len)
                 }
             }
 

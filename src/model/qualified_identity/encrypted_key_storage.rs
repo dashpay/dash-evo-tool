@@ -219,6 +219,34 @@ impl From<BTreeMap<(PrivateKeyTarget, KeyID), (QualifiedIdentityPublicKey, [u8; 
     }
 }
 
+impl From<BTreeMap<(PrivateKeyTarget, KeyID), (QualifiedIdentityPublicKey, WalletDerivationPath)>>
+    for KeyStorage
+{
+    fn from(
+        value: BTreeMap<
+            (PrivateKeyTarget, KeyID),
+            (QualifiedIdentityPublicKey, WalletDerivationPath),
+        >,
+    ) -> Self {
+        Self {
+            private_keys: value
+                .into_iter()
+                .map(
+                    |(key, (qualified_identity_public_key, wallet_derivation_path))| {
+                        (
+                            key,
+                            (
+                                qualified_identity_public_key,
+                                PrivateKeyData::AtWalletDerivationPath(wallet_derivation_path),
+                            ),
+                        )
+                    },
+                )
+                .collect(),
+        }
+    }
+}
+
 impl KeyStorage {
     pub fn get(
         &self,

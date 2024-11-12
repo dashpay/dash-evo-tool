@@ -11,7 +11,7 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::{Purpose, SecurityLevel, TimestampMillis};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
-use dash_sdk::platform::IdentityPublicKey;
+use dash_sdk::platform::{Identifier, IdentityPublicKey};
 use eframe::egui::Context;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -24,14 +24,30 @@ pub enum RegisterDpnsNameStatus {
 }
 
 pub struct RegisterDpnsNameScreen {
-    qualified_identities: Vec<(QualifiedIdentity, Vec<IdentityPublicKey>)>,
-    selected_qualified_identity: Option<(QualifiedIdentity, Vec<IdentityPublicKey>)>,
+    pub show_identity_selector: bool,
+    pub qualified_identities: Vec<(QualifiedIdentity, Vec<IdentityPublicKey>)>,
+    pub selected_qualified_identity: Option<(QualifiedIdentity, Vec<IdentityPublicKey>)>,
     name_input: String,
     register_dpns_name_status: RegisterDpnsNameStatus,
     pub app_context: Arc<AppContext>,
 }
 
 impl RegisterDpnsNameScreen {
+    pub fn select_identity(&mut self, identity_id: Identifier) {
+        // Find the qualified identity with the matching identity_id
+        if let Some(qi) = self
+            .qualified_identities
+            .iter()
+            .find(|(qi, _)| qi.identity.id() == &identity_id)
+        {
+            // Set the selected_qualified_identity to the found identity
+            self.selected_qualified_identity = Some(qi.clone());
+        } else {
+            // If not found, you might want to handle this case
+            // For now, we'll set selected_qualified_identity to None
+            self.selected_qualified_identity = None;
+        }
+    }
     pub fn new(app_context: &Arc<AppContext>) -> Self {
         let security_level_of_contract = app_context
             .dpns_contract
@@ -64,7 +80,9 @@ impl RegisterDpnsNameScreen {
             })
             .collect();
         let selected_qualified_identity = qualified_identities.first().cloned();
+        let show_identity_selector = qualified_identities.len() > 0;
         Self {
+            show_identity_selector,
             qualified_identities,
             selected_qualified_identity,
             name_input: String::new(),
@@ -166,8 +184,10 @@ impl ScreenLike for RegisterDpnsNameScreen {
                 return;
             }
 
-            // Select the identity to register the name for
-            self.render_identity_id_selection(ui);
+            if self.show_identity_selector {
+                // Select the identity to register the name for
+                self.render_identity_id_selection(ui);
+            }
 
             // Input for the name
             ui.horizontal(|ui| {

@@ -93,6 +93,7 @@ pub enum AppAction {
     SwitchNetwork(Network),
     SetMainScreen(RootScreenType),
     AddScreen(Screen),
+    PopThenAddScreenToMainScreen(RootScreenType, Screen),
     BackendTask(BackendTask),
 }
 
@@ -400,6 +401,9 @@ impl App for AppState {
                     BackendTaskSuccessResult::WithdrawalStatus(_) => {
                         self.visible_screen_mut().display_task_result(message);
                     }
+                    BackendTaskSuccessResult::RegisteredIdentity(_) => {
+                        self.visible_screen_mut().display_task_result(message);
+                    }
                 },
                 TaskResult::Error(message) => {
                     self.visible_screen_mut()
@@ -493,6 +497,14 @@ impl App for AppState {
                 self.change_network(network);
                 self.current_app_context()
                     .update_settings(RootScreenType::RootScreenNetworkChooser)
+                    .ok();
+            }
+            AppAction::PopThenAddScreenToMainScreen(root_screen_type, screen) => {
+                self.screen_stack = vec![screen];
+                self.selected_main_screen = root_screen_type;
+                self.active_root_screen_mut().refresh_on_arrival();
+                self.current_app_context()
+                    .update_settings(root_screen_type)
                     .ok();
             }
         }

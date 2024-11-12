@@ -1,6 +1,7 @@
 mod by_using_unused_asset_lock;
 mod by_using_unused_balance;
 mod by_wallet_qr_code;
+mod success_screen;
 
 use crate::app::AppAction;
 use crate::backend_task::core::CoreItem;
@@ -9,6 +10,7 @@ use crate::backend_task::identity::{
 };
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
+use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
@@ -20,8 +22,10 @@ use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dpp::balances::credits::Duffs;
 use dash_sdk::dpp::dashcore::{OutPoint, PrivateKey, Transaction, TxOut};
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::prelude::AssetLockProof;
+use dash_sdk::platform::Identifier;
 use eframe::egui::Context;
 use egui::ahash::HashSet;
 use egui::{Color32, ColorImage, ComboBox, ScrollArea, Ui};
@@ -98,6 +102,7 @@ pub struct AddNewIdentityScreen {
     show_pop_up_info: Option<String>,
     in_key_selection_advanced_mode: bool,
     pub app_context: Arc<AppContext>,
+    successful_qualified_identity_id: Option<Identifier>,
 }
 
 // Function to generate a QR code image from the address
@@ -224,89 +229,90 @@ impl AddNewIdentityScreen {
             show_pop_up_info: None,
             in_key_selection_advanced_mode: false,
             app_context: app_context.clone(),
+            successful_qualified_identity_id: None,
         }
     }
 
-    // Start the balance checking process
-    pub fn start_balance_check(&mut self, check_address: &Address, ui_context: &Context) {
-        let app_context = self.app_context.clone();
-        let balance_state = Arc::clone(&self.funding_address_balance);
-        let stop_flag = Arc::new(AtomicBool::new(false));
-        let stop_flag_clone = Arc::clone(&stop_flag);
-        let ctx = ui_context.clone();
-
-        let selected_wallet = self.selected_wallet.clone();
-        let funding_method = Arc::clone(&self.funding_method);
-        let step = Arc::clone(&self.step);
-
-        let starting_balance = balance_state.read().unwrap().unwrap_or_default();
-        let expected_balance = starting_balance + self.funding_amount.parse::<Duffs>().unwrap_or(1);
-
-        let address = check_address.clone();
-
-        // Spawn a new thread to monitor the balance.
-        let handle = thread::spawn(move || {
-            while !stop_flag_clone.load(Ordering::Relaxed) {
-                match app_context
-                    .core_client
-                    .get_received_by_address(&address, Some(1))
-                {
-                    Ok(new_balance) => {
-                        // Update wallet balance if it has changed.
-                        if let Some(wallet_guard) = selected_wallet.as_ref() {
-                            let mut wallet = wallet_guard.write().unwrap();
-                            wallet
-                                .update_address_balance(
-                                    &address,
-                                    new_balance.to_sat(),
-                                    &app_context,
-                                )
-                                .ok();
-                        }
-
-                        // Write the new balance into the RwLock.
-                        if let Ok(mut balance) = balance_state.write() {
-                            *balance = Some(new_balance.to_sat());
-                        }
-
-                        // Trigger UI redraw.
-                        ctx.request_repaint();
-
-                        // Check if expected balance is reached and update funding method and step.
-                        if new_balance.to_sat() >= expected_balance {
-                            *funding_method.write().unwrap() = FundingMethod::UseWalletBalance;
-                            *step.write().unwrap() =
-                                AddNewIdentityWalletFundedScreenStep::FundsReceived;
-                            break;
-                        }
-                    }
-                    Err(e) => {
-                        // Get the current time
-                        let now = SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .expect("Time went backwards");
-                        eprintln!("[{:?}] Error fetching balance: {:?}", now, e);
-                    }
-                }
-                thread::sleep(Duration::from_secs(1));
-            }
-        });
-
-        // Save the handle and stop flag to allow stopping the thread later.
-        self.balance_check_handle = Some((stop_flag, handle));
-    }
-
-    // Stop the balance checking process
-    fn stop_balance_check(&mut self) {
-        if let Some((stop_flag, handle)) = self.balance_check_handle.take() {
-            // Set the atomic flag to stop the thread
-            stop_flag.store(true, Ordering::Relaxed);
-            // Wait for the thread to finish
-            if let Err(e) = handle.join() {
-                eprintln!("Failed to join balance check thread: {:?}", e);
-            }
-        }
-    }
+    // // Start the balance checking process
+    // pub fn start_balance_check(&mut self, check_address: &Address, ui_context: &Context) {
+    //     let app_context = self.app_context.clone();
+    //     let balance_state = Arc::clone(&self.funding_address_balance);
+    //     let stop_flag = Arc::new(AtomicBool::new(false));
+    //     let stop_flag_clone = Arc::clone(&stop_flag);
+    //     let ctx = ui_context.clone();
+    //
+    //     let selected_wallet = self.selected_wallet.clone();
+    //     let funding_method = Arc::clone(&self.funding_method);
+    //     let step = Arc::clone(&self.step);
+    //
+    //     let starting_balance = balance_state.read().unwrap().unwrap_or_default();
+    //     let expected_balance = starting_balance + self.funding_amount.parse::<Duffs>().unwrap_or(1);
+    //
+    //     let address = check_address.clone();
+    //
+    //     // Spawn a new thread to monitor the balance.
+    //     let handle = thread::spawn(move || {
+    //         while !stop_flag_clone.load(Ordering::Relaxed) {
+    //             match app_context
+    //                 .core_client
+    //                 .get_received_by_address(&address, Some(1))
+    //             {
+    //                 Ok(new_balance) => {
+    //                     // Update wallet balance if it has changed.
+    //                     if let Some(wallet_guard) = selected_wallet.as_ref() {
+    //                         let mut wallet = wallet_guard.write().unwrap();
+    //                         wallet
+    //                             .update_address_balance(
+    //                                 &address,
+    //                                 new_balance.to_sat(),
+    //                                 &app_context,
+    //                             )
+    //                             .ok();
+    //                     }
+    //
+    //                     // Write the new balance into the RwLock.
+    //                     if let Ok(mut balance) = balance_state.write() {
+    //                         *balance = Some(new_balance.to_sat());
+    //                     }
+    //
+    //                     // Trigger UI redraw.
+    //                     ctx.request_repaint();
+    //
+    //                     // Check if expected balance is reached and update funding method and step.
+    //                     if new_balance.to_sat() >= expected_balance {
+    //                         *funding_method.write().unwrap() = FundingMethod::UseWalletBalance;
+    //                         *step.write().unwrap() =
+    //                             AddNewIdentityWalletFundedScreenStep::FundsReceived;
+    //                         break;
+    //                     }
+    //                 }
+    //                 Err(e) => {
+    //                     // Get the current time
+    //                     let now = SystemTime::now()
+    //                         .duration_since(UNIX_EPOCH)
+    //                         .expect("Time went backwards");
+    //                     eprintln!("[{:?}] Error fetching balance: {:?}", now, e);
+    //                 }
+    //             }
+    //             thread::sleep(Duration::from_secs(1));
+    //         }
+    //     });
+    //
+    //     // Save the handle and stop flag to allow stopping the thread later.
+    //     self.balance_check_handle = Some((stop_flag, handle));
+    // }
+    //
+    // // Stop the balance checking process
+    // fn stop_balance_check(&mut self) {
+    //     if let Some((stop_flag, handle)) = self.balance_check_handle.take() {
+    //         // Set the atomic flag to stop the thread
+    //         stop_flag.store(true, Ordering::Relaxed);
+    //         // Wait for the thread to finish
+    //         if let Err(e) = handle.join() {
+    //             eprintln!("Failed to join balance check thread: {:?}", e);
+    //         }
+    //     }
+    // }
 
     fn render_identity_index_input(&mut self, ui: &mut egui::Ui) {
         let mut index_changed = false; // Track if the index has changed
@@ -904,52 +910,67 @@ impl ScreenLike for AddNewIdentityScreen {
     }
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         let mut step = self.step.write().unwrap();
-        if *step == AddNewIdentityWalletFundedScreenStep::WaitingOnFunds {
-            if let Some(funding_address) = self.funding_address.as_ref() {
-                if let BackendTaskSuccessResult::CoreItem(
-                    CoreItem::ReceivedAvailableUTXOTransaction(_, outpoints_with_addresses),
-                ) = backend_task_success_result
-                {
-                    for (outpoint, tx_out, address) in outpoints_with_addresses {
-                        if funding_address == &address {
-                            *step = AddNewIdentityWalletFundedScreenStep::FundsReceived;
-                            self.funding_utxo = Some((outpoint, tx_out, address))
+        match *step {
+            AddNewIdentityWalletFundedScreenStep::ChooseFundingMethod => {}
+            AddNewIdentityWalletFundedScreenStep::WaitingOnFunds => {
+                if let Some(funding_address) = self.funding_address.as_ref() {
+                    if let BackendTaskSuccessResult::CoreItem(
+                        CoreItem::ReceivedAvailableUTXOTransaction(_, outpoints_with_addresses),
+                    ) = backend_task_success_result
+                    {
+                        for (outpoint, tx_out, address) in outpoints_with_addresses {
+                            if funding_address == &address {
+                                *step = AddNewIdentityWalletFundedScreenStep::FundsReceived;
+                                self.funding_utxo = Some((outpoint, tx_out, address))
+                            }
                         }
                     }
                 }
             }
-        } else if *step == AddNewIdentityWalletFundedScreenStep::WaitingForAssetLock {
-            if let BackendTaskSuccessResult::CoreItem(CoreItem::ReceivedAvailableUTXOTransaction(
-                tx,
-                _,
-            )) = backend_task_success_result
-            {
-                if let Some(TransactionPayload::AssetLockPayloadType(asset_lock_payload)) =
-                    tx.special_transaction_payload
+            AddNewIdentityWalletFundedScreenStep::FundsReceived => {}
+            AddNewIdentityWalletFundedScreenStep::ReadyToCreate => {}
+            AddNewIdentityWalletFundedScreenStep::WaitingForAssetLock => {
+                if let BackendTaskSuccessResult::CoreItem(
+                    CoreItem::ReceivedAvailableUTXOTransaction(tx, _),
+                ) = backend_task_success_result
                 {
-                    if asset_lock_payload
-                        .credit_outputs
-                        .iter()
-                        .find(|tx_out| {
-                            let Ok(address) = Address::from_script(
-                                &tx_out.script_pubkey,
-                                self.app_context.network,
-                            ) else {
-                                return false;
-                            };
-                            if let Some(wallet) = &self.selected_wallet {
-                                let wallet = wallet.read().unwrap();
-                                wallet.known_addresses.contains_key(&address)
-                            } else {
-                                false
-                            }
-                        })
-                        .is_some()
+                    if let Some(TransactionPayload::AssetLockPayloadType(asset_lock_payload)) =
+                        tx.special_transaction_payload
                     {
-                        *step = AddNewIdentityWalletFundedScreenStep::WaitingForPlatformAcceptance;
+                        if asset_lock_payload
+                            .credit_outputs
+                            .iter()
+                            .find(|tx_out| {
+                                let Ok(address) = Address::from_script(
+                                    &tx_out.script_pubkey,
+                                    self.app_context.network,
+                                ) else {
+                                    return false;
+                                };
+                                if let Some(wallet) = &self.selected_wallet {
+                                    let wallet = wallet.read().unwrap();
+                                    wallet.known_addresses.contains_key(&address)
+                                } else {
+                                    false
+                                }
+                            })
+                            .is_some()
+                        {
+                            *step =
+                                AddNewIdentityWalletFundedScreenStep::WaitingForPlatformAcceptance;
+                        }
                     }
                 }
             }
+            AddNewIdentityWalletFundedScreenStep::WaitingForPlatformAcceptance => {
+                if let BackendTaskSuccessResult::RegisteredIdentity(qualified_identity) =
+                    backend_task_success_result
+                {
+                    self.successful_qualified_identity_id = Some(qualified_identity.identity.id());
+                    *step = AddNewIdentityWalletFundedScreenStep::Success;
+                }
+            }
+            AddNewIdentityWalletFundedScreenStep::Success => {}
         }
     }
     fn ui(&mut self, ctx: &Context) -> AppAction {
@@ -965,6 +986,11 @@ impl ScreenLike for AddNewIdentityScreen {
 
         egui::CentralPanel::default().show(ctx, |ui| {
             ScrollArea::vertical().show(ui, |ui| {
+                let step = {self.step.read().unwrap().clone()};
+                if step == AddNewIdentityWalletFundedScreenStep::Success {
+                    action |= self.show_success(ui);
+                    return;
+                }
                 ui.add_space(10.0);
                 ui.heading("Follow these steps to create your identity!");
                 ui.add_space(15.0);

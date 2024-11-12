@@ -70,10 +70,10 @@ impl AddNewIdentityScreen {
             }
         };
 
-        if should_check_balance {
-            // Now `address` is available, and all previous borrows are dropped.
-            self.start_balance_check(&address, ui.ctx());
-        }
+        // if should_check_balance {
+        //     // Now `address` is available, and all previous borrows are dropped.
+        //     self.start_balance_check(&address, ui.ctx());
+        // }
 
         let pay_uri = format!("{}?amount={:.4}", address.to_qr_uri(), amount);
 

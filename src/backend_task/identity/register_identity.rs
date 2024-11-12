@@ -416,8 +416,8 @@ impl AppContext {
             .await
             .map_err(|e| e.to_string())?;
 
-        Ok(BackendTaskSuccessResult::Message(
-            "Successfully registered identity".to_string(),
+        Ok(BackendTaskSuccessResult::RegisteredIdentity(
+            qualified_identity,
         ))
     }
 }

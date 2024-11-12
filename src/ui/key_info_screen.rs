@@ -1,18 +1,20 @@
 use crate::app::AppAction;
 use crate::context::AppContext;
+use crate::model::qualified_identity::encrypted_key_storage::{
+    PrivateKeyData, WalletDerivationPath,
+};
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::ScreenLike;
 use dash_sdk::dpp::dashcore::address::Payload;
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::{Address, PubkeyHash, ScriptHash};
-use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::hash::IdentityPublicKeyHashMethodsV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::KeyType;
 use dash_sdk::dpp::identity::KeyType::BIP13_SCRIPT_HASH;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
-use dash_sdk::dpp::prelude::IdentityPublicKey;
+use dash_sdk::platform::IdentityPublicKey;
 use eframe::egui::{self, Context};
 use egui::{RichText, TextEdit};
 use std::sync::Arc;
@@ -20,7 +22,7 @@ use std::sync::Arc;
 pub struct KeyInfoScreen {
     pub identity: QualifiedIdentity,
     pub key: IdentityPublicKey,
-    pub private_key_bytes: Option<[u8; 32]>,
+    pub private_key_data: Option<(PrivateKeyData, Option<WalletDerivationPath>)>,
     pub app_context: Arc<AppContext>,
     private_key_input: String,
     error_message: Option<String>,
@@ -71,6 +73,31 @@ impl ScreenLike for KeyInfoScreen {
                     // Read Only
                     ui.label(RichText::new("Read Only:").strong());
                     ui.label(format!("{}", self.key.read_only()));
+                    ui.end_row();
+
+                    // Disabled
+                    ui.label(RichText::new("Active/Disabled:").strong());
+                    if !self.key.is_disabled() {
+                        ui.label("Active");
+                    } else {
+                        ui.label("Disabled");
+                    }
+                    ui.end_row();
+
+                    if let Some((_, Some(wallet_derivation_path))) = self.private_key_data.as_ref()
+                    {
+                        // Disabled
+                        ui.label(RichText::new("In local Wallet").strong());
+                        ui.label(
+                            RichText::new(format!(
+                                "At derivation path {}",
+                                wallet_derivation_path.derivation_path
+                            ))
+                            .strong(),
+                        );
+                        ui.end_row();
+                    }
+
                     ui.end_row();
                 });
 
@@ -141,13 +168,23 @@ impl ScreenLike for KeyInfoScreen {
             ui.separator();
 
             // Display the private key if available
-            if let Some(private_key) = &self.private_key_bytes {
+            if let Some((private_key, _)) = self.private_key_data.as_mut() {
                 ui.label("Private Key:");
-                let private_key_hex = hex::encode(private_key);
-                ui.add(
-                    TextEdit::multiline(&mut private_key_hex.as_str().to_owned())
-                        .desired_width(f32::INFINITY),
-                );
+                match private_key {
+                    PrivateKeyData::Clear(clear) | PrivateKeyData::AlwaysClear(clear) => {
+                        let private_key_hex = hex::encode(clear);
+                        ui.add(
+                            TextEdit::multiline(&mut private_key_hex.as_str().to_owned())
+                                .desired_width(f32::INFINITY),
+                        );
+                    }
+                    PrivateKeyData::Encrypted(_) => {
+                        ui.label("key is encrypted");
+                    }
+                    PrivateKeyData::AtWalletDerivationPath(_) => {
+                        ui.label("key is in encrypted wallet");
+                    }
+                }
             } else {
                 ui.label("Enter Private Key:");
                 ui.text_edit_singleline(&mut self.private_key_input);
@@ -171,13 +208,13 @@ impl KeyInfoScreen {
     pub fn new(
         identity: QualifiedIdentity,
         key: IdentityPublicKey,
-        private_key_bytes: Option<[u8; 32]>,
+        private_key_data: Option<(PrivateKeyData, Option<WalletDerivationPath>)>,
         app_context: &Arc<AppContext>,
     ) -> Self {
         Self {
             identity,
             key,
-            private_key_bytes,
+            private_key_data,
             app_context: app_context.clone(),
             private_key_input: String::new(),
             error_message: None,
@@ -196,14 +233,14 @@ impl KeyInfoScreen {
                     self.error_message = Some(format!("Issue verifying private key {}", err));
                 } else if validation_result.unwrap() {
                     // If valid, store the private key in the context and reset the input field
-                    self.private_key_bytes = Some(private_key_bytes.clone());
-                    self.identity.encrypted_private_keys.insert(
+                    self.private_key_data = Some((PrivateKeyData::Clear(private_key_bytes), None));
+                    self.identity.private_keys.insert_non_encrypted(
                         (self.key.purpose().into(), self.key.id()),
-                        (self.key.clone(), private_key_bytes),
+                        (self.key.clone().into(), private_key_bytes),
                     );
                     match self
                         .app_context
-                        .insert_local_qualified_identity(&self.identity)
+                        .insert_local_qualified_identity(&self.identity, None)
                     {
                         Ok(_) => {
                             self.error_message = None;

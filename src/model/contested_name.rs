@@ -1,4 +1,4 @@
-use crate::model::qualified_identity::EncryptedPrivateKeyTarget;
+use crate::model::qualified_identity::PrivateKeyTarget;
 use bincode::{Decode, Encode};
 use dash_sdk::dpp::identity::{KeyID, TimestampMillis};
 use dash_sdk::dpp::prelude::{BlockHeight, CoreBlockHeight, Identifier};
@@ -33,7 +33,7 @@ pub struct ContestedName {
     pub end_time: Option<TimestampMillis>,
     pub state: ContestState,
     pub last_updated: Option<TimestampMillis>,
-    pub my_votes: BTreeMap<(Identifier, EncryptedPrivateKeyTarget, KeyID), ResourceVoteChoice>,
+    pub my_votes: BTreeMap<(Identifier, PrivateKeyTarget, KeyID), ResourceVoteChoice>,
 }
 
 #[derive(Debug, Encode, Decode, Clone)]

@@ -1,22 +1,30 @@
+use crate::app_dir::{
+    app_user_data_file_path, copy_env_file_if_not_exists,
+    create_app_user_data_directory_if_not_exists,
+};
+use crate::backend_task::core::CoreItem;
+use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
+use crate::components::core_zmq_listener::{CoreZMQListener, ZMQMessage};
 use crate::context::AppContext;
 use crate::database::Database;
 use crate::logging::initialize_logger;
-use crate::platform::{BackendTask, BackendTaskSuccessResult};
 use crate::ui::document_query_screen::DocumentQueryScreen;
-use crate::ui::dpns_contested_names_screen::DPNSContestedNamesScreen;
+use crate::ui::dpns_contested_names_screen::{DPNSContestedNamesScreen, DPNSSubscreen};
 use crate::ui::identities::identities_screen::IdentitiesScreen;
 use crate::ui::network_chooser_screen::NetworkChooserScreen;
 use crate::ui::transition_visualizer_screen::TransitionVisualizerScreen;
+use crate::ui::wallet::wallets_screen::WalletsBalancesScreen;
+use crate::ui::withdraws_status_screen::WithdrawsStatusScreen;
 use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike, ScreenType};
 use dash_sdk::dpp::dashcore::Network;
 use derive_more::From;
 use eframe::{egui, App};
 use std::collections::BTreeMap;
 use std::ops::BitOrAssign;
-use std::sync::Arc;
+use std::sync::{mpsc, Arc};
 use std::time::Instant;
 use std::vec;
-use tokio::sync::mpsc;
+use tokio::sync::mpsc as tokiompsc;
 
 #[derive(Debug, From)]
 pub enum TaskResult {
@@ -41,12 +49,15 @@ pub struct AppState {
     pub chosen_network: Network,
     pub mainnet_app_context: Arc<AppContext>,
     pub testnet_app_context: Option<Arc<AppContext>>,
-    pub task_result_sender: mpsc::Sender<TaskResult>, // Channel sender for sending task results
-    pub task_result_receiver: mpsc::Receiver<TaskResult>, // Channel receiver for receiving task results
+    pub mainnet_core_zmq_listener: CoreZMQListener,
+    pub testnet_core_zmq_listener: CoreZMQListener,
+    pub core_message_receiver: mpsc::Receiver<(ZMQMessage, Network)>,
+    pub task_result_sender: tokiompsc::Sender<TaskResult>, // Channel sender for sending task results
+    pub task_result_receiver: tokiompsc::Receiver<TaskResult>, // Channel receiver for receiving task results
     last_repaint: Instant, // Track the last time we requested a repaint
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum DesiredAppAction {
     None,
     PopScreen,
@@ -82,6 +93,7 @@ pub enum AppAction {
     SwitchNetwork(Network),
     SetMainScreen(RootScreenType),
     AddScreen(Screen),
+    PopThenAddScreenToMainScreen(RootScreenType, Screen),
     BackendTask(BackendTask),
 }
 
@@ -98,56 +110,106 @@ impl BitOrAssign for AppAction {
 }
 impl AppState {
     pub fn new() -> Self {
+        create_app_user_data_directory_if_not_exists()
+            .expect("Failed to create app user_data directory");
+        copy_env_file_if_not_exists();
         initialize_logger();
-        let db = Arc::new(Database::new("identities.db").unwrap());
-        db.initialize().unwrap();
+        let db_file_path = app_user_data_file_path("data.db").expect("should create db file path");
+        let db = Arc::new(Database::new(&db_file_path).unwrap());
+        db.initialize(&db_file_path).unwrap();
 
         let settings = db.get_settings().expect("expected to get settings");
 
-        let mainnet_app_context = match AppContext::new(Network::Dash, db.clone()) {
-            Some(context) => context,
-            None => {
-                eprintln!(
-                    "Error: Failed to create the AppContext. Expected Dash config for mainnet."
-                );
-                std::process::exit(1);
-            }
-        };
-        let testnet_app_context = AppContext::new(Network::Testnet, db.clone());
+        let password_info = settings
+            .clone()
+            .map(|(_, _, password_info)| password_info)
+            .flatten();
+
+        let mainnet_app_context =
+            match AppContext::new(Network::Dash, db.clone(), password_info.clone()) {
+                Some(context) => context,
+                None => {
+                    eprintln!(
+                        "Error: Failed to create the AppContext. Expected Dash config for mainnet."
+                    );
+                    std::process::exit(1);
+                }
+            };
+        let testnet_app_context = AppContext::new(Network::Testnet, db.clone(), password_info);
 
         let mut identities_screen = IdentitiesScreen::new(&mainnet_app_context);
-        let mut dpns_contested_names_screen = DPNSContestedNamesScreen::new(&mainnet_app_context);
+        let mut dpns_active_contests_screen =
+            DPNSContestedNamesScreen::new(&mainnet_app_context, DPNSSubscreen::Active);
+        let mut dpns_past_contests_screen =
+            DPNSContestedNamesScreen::new(&mainnet_app_context, DPNSSubscreen::Past);
+        let mut dpns_my_usernames_screen =
+            DPNSContestedNamesScreen::new(&mainnet_app_context, DPNSSubscreen::Owned);
         let mut transition_visualizer_screen =
             TransitionVisualizerScreen::new(&mainnet_app_context);
         let mut document_query_screen = DocumentQueryScreen::new(&mainnet_app_context);
+        let mut withdraws_status_screen = WithdrawsStatusScreen::new(&mainnet_app_context);
         let mut network_chooser_screen = NetworkChooserScreen::new(
             &mainnet_app_context,
             testnet_app_context.as_ref(),
             Network::Dash,
         );
 
+        let mut wallets_balances_screen = WalletsBalancesScreen::new(&mainnet_app_context);
+
         let mut selected_main_screen = RootScreenType::RootScreenIdentities;
 
         let mut chosen_network = Network::Dash;
 
-        if let Some((network, screen_type)) = settings {
+        if let Some((network, screen_type, password_info)) = settings {
             selected_main_screen = screen_type;
             chosen_network = network;
-            if network == Network::Testnet && testnet_app_context.is_some() {
+            if chosen_network == Network::Testnet && testnet_app_context.is_some() {
                 let testnet_app_context = testnet_app_context.as_ref().unwrap();
                 identities_screen = IdentitiesScreen::new(testnet_app_context);
-                dpns_contested_names_screen = DPNSContestedNamesScreen::new(testnet_app_context);
+                dpns_active_contests_screen =
+                    DPNSContestedNamesScreen::new(&testnet_app_context, DPNSSubscreen::Active);
+                dpns_past_contests_screen =
+                    DPNSContestedNamesScreen::new(&testnet_app_context, DPNSSubscreen::Past);
+                dpns_my_usernames_screen =
+                    DPNSContestedNamesScreen::new(&testnet_app_context, DPNSSubscreen::Owned);
                 transition_visualizer_screen = TransitionVisualizerScreen::new(testnet_app_context);
                 document_query_screen = DocumentQueryScreen::new(testnet_app_context);
+                wallets_balances_screen = WalletsBalancesScreen::new(testnet_app_context);
+                withdraws_status_screen = WithdrawsStatusScreen::new(testnet_app_context);
             }
             network_chooser_screen.current_network = chosen_network;
         }
 
         // // Create a channel with a buffer size of 32 (adjust as needed)
-        let (task_result_sender, task_result_receiver) = mpsc::channel(256);
+        let (task_result_sender, task_result_receiver) = tokiompsc::channel(256);
 
         // Initialize the last repaint time to the current instant
         let last_repaint = Instant::now();
+
+        // Create a channel for communication with the InstantSendListener
+        let (core_message_sender, core_message_receiver) = mpsc::channel();
+
+        // Pass the sender to the listener when creating it
+        let mainnet_core_zmq_listener = CoreZMQListener::spawn_listener(
+            Network::Dash,
+            "tcp://127.0.0.1:23708",
+            core_message_sender.clone(), // Clone the sender for each listener
+            Some(mainnet_app_context.sx_zmq_status.clone()),
+        )
+        .expect("Failed to create mainnet InstantSend listener");
+
+        let tx_zmq_status_option = match testnet_app_context {
+            Some(ref context) => Some(context.sx_zmq_status.clone()),
+            None => None,
+        };
+
+        let testnet_core_zmq_listener = CoreZMQListener::spawn_listener(
+            Network::Testnet,
+            "tcp://127.0.0.1:23709",
+            core_message_sender, // Use the original sender or create a new one if needed
+            tx_zmq_status_option,
+        )
+        .expect("Failed to create testnet InstantSend listener");
 
         Self {
             main_screens: [
@@ -156,8 +218,20 @@ impl AppState {
                     Screen::IdentitiesScreen(identities_screen),
                 ),
                 (
-                    RootScreenType::RootScreenDPNSContestedNames,
-                    Screen::DPNSContestedNamesScreen(dpns_contested_names_screen),
+                    RootScreenType::RootScreenDPNSActiveContests,
+                    Screen::DPNSContestedNamesScreen(dpns_active_contests_screen),
+                ),
+                (
+                    RootScreenType::RootScreenDPNSPastContests,
+                    Screen::DPNSContestedNamesScreen(dpns_past_contests_screen),
+                ),
+                (
+                    RootScreenType::RootScreenDPNSOwnedNames,
+                    Screen::DPNSContestedNamesScreen(dpns_my_usernames_screen),
+                ),
+                (
+                    RootScreenType::RootScreenWalletsBalances,
+                    Screen::WalletsBalancesScreen(wallets_balances_screen),
                 ),
                 (
                     RootScreenType::RootScreenTransitionVisualizerScreen,
@@ -166,6 +240,10 @@ impl AppState {
                 (
                     RootScreenType::RootScreenDocumentQuery,
                     Screen::DocumentQueryScreen(document_query_screen),
+                ),
+                (
+                    RootScreenType::RootScreenWithdrawsStatus,
+                    Screen::WithdrawsStatusScreen(withdraws_status_screen),
                 ),
                 (
                     RootScreenType::RootScreenNetworkChooser,
@@ -178,6 +256,9 @@ impl AppState {
             chosen_network,
             mainnet_app_context,
             testnet_app_context,
+            mainnet_core_zmq_listener,
+            testnet_core_zmq_listener,
+            core_message_receiver,
             task_result_sender,
             task_result_receiver,
             last_repaint,
@@ -254,10 +335,48 @@ impl AppState {
     }
 }
 
-impl AppState {}
+impl AppState {
+    // /// This function continuously listens for asset locks and updates the wallets accordingly.
+    // fn start_listening_for_asset_locks(&mut self) {
+    //     let instant_send_receiver = self.instant_send_receiver.clone(); // Clone the receiver
+    //     let mainnet_app_context = self.mainnet_app_context.clone();
+    //     let testnet_app_context = self.testnet_app_context.clone();
+    //
+    //     // Spawn a new task to listen asynchronously for asset locks
+    //     task::spawn_blocking(move || {
+    //         while let Ok((tx, islock, network)) = instant_send_receiver.recv() {
+    //             let app_context = match network {
+    //                 Network::Dash => &mainnet_app_context,
+    //                 Network::Testnet => {
+    //                     if let Some(context) = testnet_app_context.as_ref() {
+    //                         context
+    //                     } else {
+    //                         // Handle the case when testnet_app_context is None
+    //                         eprintln!("No testnet app context available for Testnet");
+    //                         continue; // Skip this iteration or handle as needed
+    //                     }
+    //                 }
+    //                 _ => continue,
+    //             };
+    //             // Store the asset lock transaction in the database
+    //             if let Err(e) = app_context.store_asset_lock_in_db(&tx, islock) {
+    //                 eprintln!("Failed to store asset lock: {}", e);
+    //             }
+    //
+    //             // Sleep briefly to avoid busy-waiting
+    //             std::thread::sleep(Duration::from_millis(50));
+    //         }
+    //     });
+    // }
+}
 
 impl App for AppState {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if let Ok(event) = self.current_app_context().rx_zmq_status.try_recv() {
+            if let Ok(mut status) = self.current_app_context().zmq_connection_status.lock() {
+                *status = event;
+            }
+        }
         // Poll the receiver for any new task results
         while let Ok(task_result) = self.task_result_receiver.try_recv() {
             // Handle the result on the main thread
@@ -268,7 +387,7 @@ impl App for AppState {
                     }
                     BackendTaskSuccessResult::Message(message) => {
                         self.visible_screen_mut()
-                            .display_message(&message, MessageType::Info);
+                            .display_message(&message, MessageType::Success);
                     }
                     BackendTaskSuccessResult::Documents(_) => {
                         self.visible_screen_mut().display_task_result(message);
@@ -279,6 +398,12 @@ impl App for AppState {
                     BackendTaskSuccessResult::SuccessfulVotes(_) => {
                         self.visible_screen_mut().refresh();
                     }
+                    BackendTaskSuccessResult::WithdrawalStatus(_) => {
+                        self.visible_screen_mut().display_task_result(message);
+                    }
+                    BackendTaskSuccessResult::RegisteredIdentity(_) => {
+                        self.visible_screen_mut().display_task_result(message);
+                    }
                 },
                 TaskResult::Error(message) => {
                     self.visible_screen_mut()
@@ -287,6 +412,47 @@ impl App for AppState {
                 TaskResult::Refresh => {
                     self.visible_screen_mut().refresh();
                 }
+            }
+        }
+
+        // **Poll the instant_send_receiver for any new InstantSend messages**
+        while let Ok((message, network)) = self.core_message_receiver.try_recv() {
+            let app_context = match network {
+                Network::Dash => &self.mainnet_app_context,
+                Network::Testnet => {
+                    if let Some(context) = self.testnet_app_context.as_ref() {
+                        context
+                    } else {
+                        // Handle the case when testnet_app_context is None
+                        eprintln!("No testnet app context available for Testnet");
+                        continue; // Skip this iteration or handle as needed
+                    }
+                }
+                _ => continue,
+            };
+            match message {
+                ZMQMessage::ISLockedTransaction(tx, is_lock) => {
+                    // Store the asset lock transaction in the database
+                    match app_context.received_transaction_finality(&tx, Some(is_lock), None) {
+                        Ok(utxos) => {
+                            let core_item =
+                                CoreItem::ReceivedAvailableUTXOTransaction(tx.clone(), utxos);
+                            self.visible_screen_mut()
+                                .display_task_result(core_item.into());
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to store asset lock: {}", e);
+                        }
+                    }
+                }
+                ZMQMessage::ChainLockedLockedTransaction(tx, height) => {
+                    if let Err(e) =
+                        app_context.received_transaction_finality(&tx, None, Some(height))
+                    {
+                        eprintln!("Failed to store asset lock: {}", e);
+                    }
+                }
+                ZMQMessage::ChainLockedBlock(_) => {}
             }
         }
 
@@ -327,7 +493,20 @@ impl App for AppState {
                     .update_settings(root_screen_type)
                     .ok();
             }
-            AppAction::SwitchNetwork(network) => self.change_network(network),
+            AppAction::SwitchNetwork(network) => {
+                self.change_network(network);
+                self.current_app_context()
+                    .update_settings(RootScreenType::RootScreenNetworkChooser)
+                    .ok();
+            }
+            AppAction::PopThenAddScreenToMainScreen(root_screen_type, screen) => {
+                self.screen_stack = vec![screen];
+                self.selected_main_screen = root_screen_type;
+                self.active_root_screen_mut().refresh_on_arrival();
+                self.current_app_context()
+                    .update_settings(root_screen_type)
+                    .ok();
+            }
         }
     }
 }

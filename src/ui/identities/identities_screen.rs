@@ -291,7 +291,7 @@ impl IdentitiesScreen {
                         .resizable(true)
                         .cell_layout(egui::Layout::left_to_right(Align::Center))
                         // Define columns with resizing and alignment
-                        .column(Column::initial(60.0).resizable(true)) // Name
+                        .column(Column::initial(80.0).resizable(true)) // Name
                         .column(Column::initial(330.0).resizable(true)) // Identity ID
                         .column(Column::initial(60.0).resizable(true)) // In Wallet
                         .column(Column::initial(100.0).resizable(true)) // Balance

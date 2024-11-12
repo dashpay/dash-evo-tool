@@ -3,6 +3,7 @@ pub mod qualified_identity_public_key;
 
 use crate::model::qualified_identity::encrypted_key_storage::KeyStorage;
 use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
+use crate::model::wallet::Wallet;
 use bincode::{Decode, Encode};
 use dash_sdk::dashcore_rpc::dashcore::{signer, PubkeyHash};
 use dash_sdk::dpp::bls_signatures::{Bls12381G2Impl, SignatureSchemes};
@@ -25,6 +26,7 @@ use dash_sdk::dpp::{bls_signatures, ed25519_dalek, ProtocolError};
 use dash_sdk::platform::IdentityPublicKey;
 use std::collections::HashSet;
 use std::fmt::{Display, Formatter};
+use std::sync::{Arc, RwLock};
 
 #[derive(Debug, Encode, Decode, PartialEq, Clone, Copy)]
 pub enum IdentityType {
@@ -83,7 +85,7 @@ pub struct DPNSNameInfo {
     pub acquired_at: u64,
 }
 
-#[derive(Debug, Encode, Decode, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct QualifiedIdentity {
     pub identity: Identity,
     pub associated_voter_identity: Option<(Identity, IdentityPublicKey)>,
@@ -93,6 +95,59 @@ pub struct QualifiedIdentity {
     pub alias: Option<String>,
     pub private_keys: KeyStorage,
     pub dpns_names: Vec<DPNSNameInfo>,
+    pub associated_wallets: Vec<Arc<RwLock<Wallet>>>,
+}
+
+impl PartialEq for QualifiedIdentity {
+    fn eq(&self, other: &Self) -> bool {
+        self.identity == other.identity
+            && self.associated_voter_identity == other.associated_voter_identity
+            && self.associated_operator_identity == other.associated_operator_identity
+            && self.associated_owner_key_id == other.associated_owner_key_id
+            && self.identity_type == other.identity_type
+            && self.alias == other.alias
+            && self.private_keys == other.private_keys
+            && self.dpns_names == other.dpns_names
+        // `associated_wallets` is ignored in this comparison
+    }
+}
+
+// Implement Encode manually for QualifiedIdentity, excluding decrypted_wallets
+impl Encode for QualifiedIdentity {
+    fn encode<E: bincode::enc::Encoder>(
+        &self,
+        encoder: &mut E,
+    ) -> Result<(), bincode::error::EncodeError> {
+        self.identity.encode(encoder)?;
+        self.associated_voter_identity.encode(encoder)?;
+        self.associated_operator_identity.encode(encoder)?;
+        self.associated_owner_key_id.encode(encoder)?;
+        self.identity_type.encode(encoder)?;
+        self.alias.encode(encoder)?;
+        self.private_keys.encode(encoder)?;
+        self.dpns_names.encode(encoder)?;
+        // `decrypted_wallets` is skipped
+        Ok(())
+    }
+}
+
+// Implement Decode manually for QualifiedIdentity, excluding decrypted_wallets
+impl Decode for QualifiedIdentity {
+    fn decode<D: bincode::de::Decoder>(
+        decoder: &mut D,
+    ) -> Result<Self, bincode::error::DecodeError> {
+        Ok(Self {
+            identity: Identity::decode(decoder)?,
+            associated_voter_identity: Option::<(Identity, IdentityPublicKey)>::decode(decoder)?,
+            associated_operator_identity: Option::<(Identity, IdentityPublicKey)>::decode(decoder)?,
+            associated_owner_key_id: Option::<KeyID>::decode(decoder)?,
+            identity_type: IdentityType::decode(decoder)?,
+            alias: Option::<String>::decode(decoder)?,
+            private_keys: KeyStorage::decode(decoder)?,
+            dpns_names: Vec::<DPNSNameInfo>::decode(decoder)?,
+            associated_wallets: Vec::new(), // Initialize with an empty vector
+        })
+    }
 }
 
 impl Signer for QualifiedIdentity {
@@ -103,10 +158,13 @@ impl Signer for QualifiedIdentity {
     ) -> Result<BinaryData, ProtocolError> {
         let (_, private_key) = self
             .private_keys
-            .get(&(
-                identity_public_key.purpose().into(),
-                identity_public_key.id(),
-            ))
+            .get_resolve(
+                &(
+                    identity_public_key.purpose().into(),
+                    identity_public_key.id(),
+                ),
+                self.associated_wallets.as_slice(),
+            )
             .map_err(|e| ProtocolError::Generic(e))?
             .ok_or(ProtocolError::Generic(format!(
                 "{:?} not found in {:?}",
@@ -290,6 +348,7 @@ impl From<Identity> for QualifiedIdentity {
             alias: None,
             private_keys: Default::default(),
             dpns_names: vec![],
+            associated_wallets: vec![],
         }
     }
 }

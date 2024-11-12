@@ -156,7 +156,7 @@ impl AppContext {
             None
         };
 
-        let mut wallet_seed_hash: Option<(WalletSeedHash, u32)> = None;
+        // let mut wallet_seed_hash: Option<(WalletSeedHash, u32)> = None;
 
         if identity_type == IdentityType::User {
             let input_private_keys = keys_input
@@ -291,6 +291,7 @@ impl AppContext {
             },
             private_keys: encrypted_private_keys.into(),
             dpns_names: maybe_owned_dpns_names,
+            associated_wallets: wallets.clone(),
         };
 
         // Insert qualified identity into the database

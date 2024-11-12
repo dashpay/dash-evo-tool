@@ -636,12 +636,12 @@ impl AddNewIdentityScreen {
                     .show_ui(ui, |ui| {
                         ui.selectable_value(key_type, KeyType::ECDSA_HASH160, "ECDSA_HASH160");
                         ui.selectable_value(key_type, KeyType::ECDSA_SECP256K1, "ECDSA_SECP256K1");
-                        ui.selectable_value(key_type, KeyType::BLS12_381, "BLS12_381");
-                        ui.selectable_value(
-                            key_type,
-                            KeyType::EDDSA_25519_HASH160,
-                            "EDDSA_25519_HASH160",
-                        );
+                        // ui.selectable_value(key_type, KeyType::BLS12_381, "BLS12_381");
+                        // ui.selectable_value(
+                        //     key_type,
+                        //     KeyType::EDDSA_25519_HASH160,
+                        //     "EDDSA_25519_HASH160",
+                        // );
                     });
 
                 // Security Level selection with conditional filtering

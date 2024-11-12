@@ -271,12 +271,12 @@ impl KeyStorage {
     }
 
     pub fn get_resolve(
-        &mut self,
+        &self,
         key: &(PrivateKeyTarget, KeyID),
         wallets: &[Arc<RwLock<Wallet>>],
     ) -> Result<Option<(QualifiedIdentityPublicKey, [u8; 32])>, String> {
         self.private_keys
-            .get_mut(key)
+            .get(key)
             .map(
                 |(qualified_identity_public_key_data, private_key_data)| match private_key_data {
                     PrivateKeyData::AlwaysClear(clear) | PrivateKeyData::Clear(clear) => {
@@ -295,15 +295,15 @@ impl KeyStorage {
                             derivation_path,
                         )?
                         .ok_or("Wallet not present".to_string())?;
-                        match qualified_identity_public_key_data
-                            .identity_public_key
-                            .security_level()
-                        {
-                            SecurityLevel::MEDIUM => {
-                                *private_key_data = PrivateKeyData::AlwaysClear(derived_key)
-                            }
-                            _ => *private_key_data = PrivateKeyData::Clear(derived_key),
-                        }
+                        // match qualified_identity_public_key_data
+                        //     .identity_public_key
+                        //     .security_level()
+                        // {
+                        //     SecurityLevel::MEDIUM => {
+                        //         *private_key_data = PrivateKeyData::AlwaysClear(derived_key)
+                        //     }
+                        //     _ => *private_key_data = PrivateKeyData::Clear(derived_key),
+                        // }
                         Ok((qualified_identity_public_key_data.clone(), derived_key))
                     }
                 },

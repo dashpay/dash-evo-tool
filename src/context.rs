@@ -178,7 +178,8 @@ impl AppContext {
     }
 
     pub fn load_local_qualified_identities(&self) -> Result<Vec<QualifiedIdentity>> {
-        self.db.get_local_qualified_identities(self)
+        let wallets = self.wallets.read().unwrap();
+        self.db.get_local_qualified_identities(self, &wallets)
     }
 
     pub fn all_contested_names(&self) -> Result<Vec<ContestedName>> {
@@ -191,7 +192,8 @@ impl AppContext {
 
     /// Fetches the local identities from the database and then maps them to their DPNS names.
     pub fn local_dpns_names(&self) -> Result<Vec<(Identifier, DPNSNameInfo)>> {
-        let qualified_identities = self.db.get_local_qualified_identities(self)?;
+        let wallets = self.wallets.read().unwrap();
+        let qualified_identities = self.db.get_local_qualified_identities(self, &wallets)?;
 
         // Map each identity's DPNS names to (Identifier, DPNSNameInfo) tuples
         let dpns_names = qualified_identities

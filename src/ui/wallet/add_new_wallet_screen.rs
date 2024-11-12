@@ -5,7 +5,7 @@ use crate::ui::ScreenLike;
 use eframe::egui::Context;
 
 use crate::model::wallet::encryption::{encrypt_message, DASH_SECRET_MESSAGE};
-use crate::model::wallet::{ClosedWalletSeed, OpenWalletSeed, Wallet, WalletSeed};
+use crate::model::wallet::{ClosedKeyItem, OpenWalletSeed, Wallet, WalletSeed};
 use crate::ui::components::entropy_grid::U256EntropyGrid;
 use bip39::{Language, Mnemonic};
 use dash_sdk::dashcore_rpc::dashcore::bip32::{ChildNumber, DerivationPath};
@@ -94,7 +94,7 @@ impl AddNewWalletScreen {
             } else {
                 // Encrypt the seed to obtain encrypted_seed, salt, and nonce
                 let (encrypted_seed, salt, nonce) =
-                    ClosedWalletSeed::encrypt_seed(&seed, self.password.as_str())?;
+                    ClosedKeyItem::encrypt_seed(&seed, self.password.as_str())?;
                 if self.use_password_for_app {
                     let (encrypted_message, salt, nonce) =
                         encrypt_message(DASH_SECRET_MESSAGE, self.password.as_str())?;
@@ -123,12 +123,12 @@ impl AddNewWalletScreen {
                 ExtendedPubKey::from_priv(&secp, &master_bip44_ecdsa_extended_public_key);
 
             // Compute the seed hash
-            let seed_hash = ClosedWalletSeed::compute_seed_hash(&seed);
+            let seed_hash = ClosedKeyItem::compute_seed_hash(&seed);
 
             let wallet = Wallet {
                 wallet_seed: WalletSeed::Open(OpenWalletSeed {
                     seed,
-                    wallet_info: ClosedWalletSeed {
+                    wallet_info: ClosedKeyItem {
                         seed_hash,
                         encrypted_seed,
                         salt,

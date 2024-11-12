@@ -330,6 +330,7 @@ impl AppContext {
             alias: None,
             private_keys: keys.to_key_storage(wallet_seed_hash),
             dpns_names: vec![],
+            associated_wallets: vec![wallet.clone()],
         };
 
         if !alias_input.is_empty() {

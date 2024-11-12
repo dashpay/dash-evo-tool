@@ -44,7 +44,10 @@ impl AppContext {
                 })
                 .map_err(|e| e.to_string()),
             CoreTask::RefreshWalletInfo(wallet) => self.refresh_wallet_info(wallet),
-            CoreTask::StartDashQT(network) => self.start_dash_qt(network).map_err(|e| e.to_string()).map(|_| BackendTaskSuccessResult::None),
+            CoreTask::StartDashQT(network) => self
+                .start_dash_qt(network)
+                .map_err(|e| e.to_string())
+                .map(|_| BackendTaskSuccessResult::None),
         }
     }
 }

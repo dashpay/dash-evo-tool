@@ -131,6 +131,8 @@ impl AppContext {
                     transaction,
                 ) => {
                     let tx_id = transaction.txid();
+
+                    eprintln!("UseAssetLock: transaction id for {:#?} is {}", transaction, tx_id);
                     let wallet = wallet.read().unwrap();
                     wallet_id = wallet.seed_hash();
                     let private_key = wallet
@@ -243,6 +245,7 @@ impl AppContext {
                     };
 
                     let tx_id = asset_lock_transaction.txid();
+                    eprintln!("transaction id for {:#?} is {}", asset_lock_transaction, tx_id);
                     // todo: maybe one day we will want to use platform again, but for right now we use
                     //  the local core as it is more stable
                     // let asset_lock_proof = self
@@ -280,6 +283,8 @@ impl AppContext {
             .create_identifier()
             .expect("expected to create an identifier");
 
+        eprintln!("transaction id is {}, identity id is {}", tx_id, identity_id);
+
         let public_keys = keys.to_public_keys_map();
 
         match Identity::fetch_by_identifier(&sdk, identity_id).await {
@@ -316,7 +321,7 @@ impl AppContext {
         self.db
             .set_asset_lock_identity_id_before_confirmation_by_network(
                 tx_id.as_byte_array(),
-                Some(identity_id.as_slice()),
+                identity_id.as_bytes(),
             )
             .map_err(|e| e.to_string())?;
 
@@ -355,7 +360,7 @@ impl AppContext {
         )
         .map_err(|e| e.to_string())?;
         self.db
-            .set_asset_lock_identity_id(tx_id.as_byte_array(), Some(identity_id.as_slice()))
+            .set_asset_lock_identity_id(tx_id.as_byte_array(), identity_id.as_bytes())
             .map_err(|e| e.to_string())?;
 
         sender

@@ -686,7 +686,7 @@ impl ScreenLike for WalletsBalancesScreen {
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
-        println!("{:?}", backend_task_success_result)
+        // println!("{:?}", backend_task_success_result)
     }
 
     fn display_message(&mut self, message: &str, message_type: MessageType) {

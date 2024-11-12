@@ -1,10 +1,10 @@
+use crate::context::AppContext;
+use dash_sdk::dpp::dashcore::Network;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{env, io};
-use dash_sdk::dpp::dashcore::Network;
-use crate::context::AppContext;
 
 impl AppContext {
     /// Function to start Dash QT based on the selected network

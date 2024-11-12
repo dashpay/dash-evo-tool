@@ -3,6 +3,7 @@ use dash_sdk::dpp::dashcore::{
     consensus::{deserialize, serialize},
     InstantLock, Network, Transaction,
 };
+use dash_sdk::dpp::dashcore::hashes::Hash;
 use rusqlite::params;
 
 impl Database {
@@ -16,7 +17,7 @@ impl Database {
         network: Network,
     ) -> rusqlite::Result<()> {
         let tx_bytes = serialize(tx);
-        let txid = tx.txid().to_string();
+        let txid = tx.txid().to_byte_array();
 
         let islock_bytes = if let Some(islock) = islock {
             Some(serialize(islock))
@@ -54,7 +55,7 @@ impl Database {
     /// Retrieves an asset lock transaction by its transaction ID.
     pub fn get_asset_lock_transaction(
         &self,
-        txid: &str,
+        txid: &[u8; 32],
     ) -> rusqlite::Result<Option<(Transaction, u64, Option<InstantLock>, [u8; 32], String)>> {
         let conn = self.conn.lock().unwrap();
 
@@ -92,7 +93,7 @@ impl Database {
     /// Updates the chain locked height for an asset lock transaction.
     pub fn update_asset_lock_chain_locked_height(
         &self,
-        txid: &str,
+        txid: &[u8; 32],
         chain_locked_height: Option<u32>,
     ) -> rusqlite::Result<()> {
         let conn = self.conn.lock().unwrap();
@@ -108,17 +109,20 @@ impl Database {
     /// Sets the identity ID for an asset lock transaction.
     pub fn set_asset_lock_identity_id(
         &self,
-        txid: &[u8],
-        identity_id: Option<&[u8]>,
+        tx_id: &[u8;32],
+        identity_id: &[u8;32],
     ) -> rusqlite::Result<()> {
         let conn = self.conn.lock().unwrap();
 
-        conn.execute(
+        let rows_updated = conn.execute(
             "UPDATE asset_lock_transaction
-         SET identity_id = ?1, identity_id_potentially_in_creation = NULL
-         WHERE tx_id = ?2",
-            params![identity_id, txid],
+     SET identity_id = ?1, identity_id_potentially_in_creation = NULL
+     WHERE tx_id = ?2",
+            params![identity_id, tx_id],
         )?;
+        if rows_updated == 0 {
+            eprintln!("No rows updated. Check if tx_id {} exists and identity_id {} is correct.", hex::encode(tx_id), hex::encode(identity_id));
+        }
 
         Ok(())
     }
@@ -126,8 +130,8 @@ impl Database {
     /// Sets the identity ID for an asset lock transaction.
     pub fn set_asset_lock_identity_id_before_confirmation_by_network(
         &self,
-        txid: &[u8],
-        identity_id: Option<&[u8]>,
+        txid: &[u8;32],
+        identity_id: &[u8;32],
     ) -> rusqlite::Result<()> {
         let conn = self.conn.lock().unwrap();
 
@@ -211,7 +215,7 @@ impl Database {
     /// Retrieves asset lock transactions by identity ID.
     pub fn get_asset_lock_transactions_by_identity_id(
         &self,
-        identity_id: &[u8],
+        identity_id: &[u8;32],
     ) -> rusqlite::Result<
         Vec<(
             Transaction,

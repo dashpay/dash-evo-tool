@@ -104,8 +104,12 @@ impl IdentitiesScreen {
             }
         };
         let identifier_as_string = qualified_identity.identity.id().to_string(encoding);
-        ui.add(egui::Label::new(identifier_as_string).sense(egui::Sense::hover()))
-            .on_hover_text(helper);
+        ui.add(
+            egui::Label::new(identifier_as_string)
+                .sense(egui::Sense::hover())
+                .truncate(),
+        )
+        .on_hover_text(helper);
     }
 
     fn find_wallet(&mut self, wallet_seed_hash: &WalletSeedHash) -> Option<String> {
@@ -196,7 +200,7 @@ impl IdentitiesScreen {
             .fill(button_color)
             .frame(true)
             .rounding(3.0)
-            .min_size(egui::vec2(80.0, 30.0));
+            .min_size(egui::Vec2::new(30.0, 18.0));
 
         if ui.add(button).clicked() {
             AppAction::AddScreen(Screen::KeyInfoScreen(KeyInfoScreen::new(
@@ -288,7 +292,7 @@ impl IdentitiesScreen {
                         .cell_layout(egui::Layout::left_to_right(Align::Center))
                         // Define columns with resizing and alignment
                         .column(Column::initial(60.0).resizable(true)) // Name
-                        .column(Column::initial(100.0).resizable(true)) // Identity ID
+                        .column(Column::initial(330.0).resizable(true)) // Identity ID
                         .column(Column::initial(60.0).resizable(true)) // In Wallet
                         .column(Column::initial(100.0).resizable(true)) // Balance
                         .column(Column::initial(80.0).resizable(true)) // Type
@@ -350,6 +354,9 @@ impl IdentitiesScreen {
                                         ui.label(format!("{}", qualified_identity.identity_type));
                                     });
                                     row.col(|ui| {
+                                        ui.horizontal(|ui| {
+                                            ui.spacing_mut().item_spacing.x = 3.0;
+                                    
                                         let mut total_keys_shown = 0;
                                         let max_keys_to_show = 3;
                                         let mut more_keys_available = false;
@@ -410,7 +417,7 @@ impl IdentitiesScreen {
 
                                         // If there are more keys, show "View More" button
                                         if more_keys_available {
-                                            if ui.button("View More").clicked() {
+                                            if ui.button("...").clicked() {
                                                 self.show_more_keys_popup =
                                                     Some(qualified_identity.clone());
                                             }
@@ -425,7 +432,7 @@ impl IdentitiesScreen {
                                                     &self.app_context,
                                                 ),
                                             ));
-                                        }
+                                        }});
                                     });
                                     row.col(|ui| {
                                         if ui.button("Withdraw").clicked() {
@@ -448,6 +455,9 @@ impl IdentitiesScreen {
                                         }
                                     });
                                     row.col(|ui| {
+                                        ui.horizontal(|ui| {
+                                            ui.spacing_mut().item_spacing.x = 3.0;
+
                                         if ui.button("Refresh").clicked() {
                                             action =
                                                 AppAction::BackendTask(BackendTask::IdentityTask(
@@ -459,7 +469,7 @@ impl IdentitiesScreen {
                                         if ui.button("Remove").clicked() {
                                             self.identity_to_remove =
                                                 Some(qualified_identity.clone());
-                                        }
+                                        }});
                                     });
                                 });
                             }

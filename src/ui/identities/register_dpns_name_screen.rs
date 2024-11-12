@@ -262,7 +262,7 @@ impl ScreenLike for RegisterDpnsNameScreen {
                 }
             }
         
-            ui.add_space(5.0);
+            ui.add_space(10.0);
         
             // Register button
             let button = egui::Button::new(RichText::new("Register Name").color(Color32::WHITE))

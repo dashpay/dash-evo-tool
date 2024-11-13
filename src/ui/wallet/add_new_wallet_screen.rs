@@ -12,6 +12,7 @@ use dash_sdk::dashcore_rpc::dashcore::bip32::{ChildNumber, DerivationPath};
 use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
 use dash_sdk::dpp::dashcore::bip32::{ExtendedPrivKey, ExtendedPubKey};
 use dash_sdk::dpp::dashcore::Network;
+use eframe::emath::Align;
 use egui::{
     Color32, ComboBox, Direction, FontId, Frame, Grid, Layout, Margin, RichText, Stroke, TextStyle,
     Ui, Vec2,
@@ -269,16 +270,19 @@ impl AddNewWalletScreen {
                                     .min_row_height(row_height)
                                     .show(ui, |ui| {
                                         for (i, word) in mnemonic.words().enumerate() {
+                                            let number_text = RichText::new(format!("{} ", i + 1))
+                                                .size(row_height * 0.2)
+                                                .color(Color32::GRAY);
+
                                             let word_text = RichText::new(word)
                                                 .size(row_height * 0.5)
-                                                .monospace();
+                                                .color(Color32::BLACK);
 
                                             ui.with_layout(
-                                                Layout::centered_and_justified(
-                                                    Direction::LeftToRight,
-                                                ),
+                                                Layout::left_to_right(Align::Min),
                                                 |ui| {
-                                                    ui.label(word_text);
+                                                    ui.label(number_text); // Add the number with the vertical offset
+                                                    ui.label(word_text); // Add the word
                                                 },
                                             );
 

@@ -12,9 +12,9 @@ use std::thread;
 use std::time::Duration;
 
 #[cfg(not(target_os = "windows"))]
-use zmq::Context;
-#[cfg(not(target_os = "windows"))]
 use image::EncodableLayout;
+#[cfg(not(target_os = "windows"))]
+use zmq::Context;
 
 #[cfg(target_os = "windows")]
 use futures::StreamExt;

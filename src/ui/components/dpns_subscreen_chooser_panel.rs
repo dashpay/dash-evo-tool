@@ -2,7 +2,7 @@ use crate::context::AppContext;
 use crate::ui::dpns_contested_names_screen::DPNSSubscreen;
 use crate::ui::RootScreenType;
 use crate::{app::AppAction, ui};
-use egui::{Color32, Context, Frame, Margin, RichText, SidePanel, Stroke};
+use egui::{Color32, Context, Frame, Margin, RichText, SidePanel};
 
 pub fn add_dpns_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext) -> AppAction {
     let mut action = AppAction::None;

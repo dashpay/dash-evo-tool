@@ -820,7 +820,7 @@ impl ScreenLike for DPNSContestedNamesScreen {
                 );
             }
         }
-        action |= add_dpns_subscreen_chooser_panel(ctx);
+        action |= add_dpns_subscreen_chooser_panel(ctx, self.app_context.as_ref());
 
         // Render the UI with the cloned contested_names vector
         egui::CentralPanel::default().show(ctx, |ui| {

@@ -2,7 +2,6 @@ use crossbeam_channel::Sender;
 use dash_sdk::dpp::dashcore::consensus::Decodable;
 use dash_sdk::dpp::dashcore::{Block, InstantLock, Network, Transaction};
 use dash_sdk::dpp::prelude::CoreBlockHeight;
-use image::EncodableLayout;
 use std::error::Error;
 use std::io::Cursor;
 use std::sync::{
@@ -14,6 +13,15 @@ use std::time::Duration;
 
 #[cfg(not(target_os = "windows"))]
 use zmq::Context;
+#[cfg(not(target_os = "windows"))]
+use image::EncodableLayout;
+
+#[cfg(target_os = "windows")]
+use futures::StreamExt;
+#[cfg(target_os = "windows")]
+use tokio::runtime::Runtime;
+#[cfg(target_os = "windows")]
+use zeromq::{Socket, SocketRecv, SubSocket};
 
 pub struct CoreZMQListener {
     should_stop: Arc<AtomicBool>,
@@ -32,8 +40,15 @@ pub enum ZMQConnectionEvent {
     Disconnected,
 }
 
+#[cfg(not(target_os = "windows"))]
 pub const IS_LOCK_SIG_MSG: &[u8; 12] = b"rawtxlocksig";
+#[cfg(not(target_os = "windows"))]
 pub const CHAIN_LOCKED_BLOCK_MSG: &[u8; 12] = b"rawchainlock";
+
+#[cfg(target_os = "windows")]
+pub const IS_LOCK_SIG_MSG: &str = "rawtxlocksig";
+#[cfg(target_os = "windows")]
+pub const CHAIN_LOCKED_BLOCK_MSG: &str = "rawchainlock";
 
 impl CoreZMQListener {
     #[cfg(not(target_os = "windows"))]
@@ -251,6 +266,142 @@ impl CoreZMQListener {
             println!("Listener is stopping.");
             // Clean up socket (optional, as it will be dropped here).
             drop(socket);
+        });
+
+        Ok(CoreZMQListener {
+            should_stop,
+            handle: Some(handle),
+        })
+    }
+
+    #[cfg(target_os = "windows")]
+    pub fn spawn_listener(
+        network: Network,
+        endpoint: &str,
+        sender: mpsc::Sender<(ZMQMessage, Network)>,
+        tx_zmq_status: Option<Sender<ZMQConnectionEvent>>,
+    ) -> Result<Self, Box<dyn Error>> {
+        let should_stop = Arc::new(AtomicBool::new(false));
+        let endpoint = endpoint.to_string();
+        let should_stop_clone = Arc::clone(&should_stop);
+        let sender_clone = sender.clone();
+
+        let handle = thread::spawn(move || {
+            // Create the runtime inside the thread.
+            let rt = Runtime::new().unwrap();
+            rt.block_on(async move {
+                // Create the socket inside the async context.
+                let mut socket = SubSocket::new();
+
+                // Connect to the endpoint
+                socket
+                    .connect(&endpoint)
+                    .await
+                    .expect("Failed to connect");
+
+                // Subscribe to the "rawtxlocksig" events.
+                socket
+                    .subscribe(IS_LOCK_SIG_MSG)
+                    .await
+                    .expect("Failed to subscribe to rawtxlocksig");
+
+                // Subscribe to the "rawchainlock" events.
+                socket
+                    .subscribe(CHAIN_LOCKED_BLOCK_MSG)
+                    .await
+                    .expect("Failed to subscribe to rawchainlock");
+
+                println!("Subscribed to ZMQ at {}", endpoint);
+
+                while !should_stop_clone.load(Ordering::SeqCst) {
+                    // Receive messages
+                    match socket.recv().await {
+                        Ok(msg) => {
+                            // Access frames using msg.get(n)
+                            if let Some(topic_frame) = msg.get(0) {
+                                let topic = String::from_utf8_lossy(topic_frame).to_string();
+
+                                if let Some(data_frame) = msg.get(1) {
+                                    let data_bytes = data_frame;
+
+                                    match topic.as_str() {
+                                        "rawchainlock" => {
+                                            // Deserialize the Block
+                                            let mut cursor = Cursor::new(data_bytes);
+                                            match Block::consensus_decode(&mut cursor) {
+                                                Ok(block) => {
+                                                    if let Err(e) = sender_clone.send((
+                                                        ZMQMessage::ChainLockedBlock(block),
+                                                        network,
+                                                    )) {
+                                                        eprintln!(
+                                                            "Error sending data to main thread: {}",
+                                                            e
+                                                        );
+                                                    }
+                                                }
+                                                Err(e) => {
+                                                    eprintln!(
+                                                        "Error deserializing chain locked block: {}",
+                                                        e
+                                                    );
+                                                }
+                                            }
+                                        }
+                                        "rawtxlocksig" => {
+                                            // Deserialize the Transaction and InstantLock
+                                            let mut cursor = Cursor::new(data_bytes);
+                                            match Transaction::consensus_decode(&mut cursor) {
+                                                Ok(tx) => {
+                                                    match InstantLock::consensus_decode(&mut cursor)
+                                                    {
+                                                        Ok(islock) => {
+                                                            if let Err(e) = sender_clone.send((
+                                                                ZMQMessage::ISLockedTransaction(
+                                                                    tx, islock,
+                                                                ),
+                                                                network,
+                                                            )) {
+                                                                eprintln!(
+                                                                    "Error sending data to main thread: {}",
+                                                                    e
+                                                                );
+                                                            }
+                                                        }
+                                                        Err(e) => {
+                                                            eprintln!(
+                                                                "Error deserializing InstantLock: {}",
+                                                                e
+                                                            );
+                                                        }
+                                                    }
+                                                }
+                                                Err(e) => {
+                                                    eprintln!(
+                                                        "Error deserializing transaction: {}",
+                                                        e
+                                                    );
+                                                }
+                                            }
+                                        }
+                                        _ => {
+                                            println!("Received unknown topic: {}", topic);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("Error receiving message: {}", e);
+                            // Sleep briefly before retrying
+                            tokio::time::sleep(Duration::from_millis(100)).await;
+                        }
+                    }
+                }
+
+                println!("Listener is stopping.");
+                // The socket will be dropped here
+            });
         });
 
         Ok(CoreZMQListener {

@@ -56,3 +56,6 @@ crossbeam-channel = "0.5.13"
 
 [target.'cfg(not(target_os = "windows"))'.dependencies]
 zmq = "0.10"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+zeromq = "0.4.1"

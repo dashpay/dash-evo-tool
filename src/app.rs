@@ -189,14 +189,12 @@ impl AppState {
         // Create a channel for communication with the InstantSendListener
         let (core_message_sender, core_message_receiver) = mpsc::channel();
 
-        // Pass the sender to the listener when creating it
         let mainnet_core_zmq_listener = CoreZMQListener::spawn_listener(
             Network::Dash,
             "tcp://127.0.0.1:23708",
             core_message_sender.clone(), // Clone the sender for each listener
             Some(mainnet_app_context.sx_zmq_status.clone()),
-        )
-        .expect("Failed to create mainnet InstantSend listener");
+        ).expect("Failed to create mainnet InstantSend listener");
 
         let tx_zmq_status_option = match testnet_app_context {
             Some(ref context) => Some(context.sx_zmq_status.clone()),
@@ -208,8 +206,7 @@ impl AppState {
             "tcp://127.0.0.1:23709",
             core_message_sender, // Use the original sender or create a new one if needed
             tx_zmq_status_option,
-        )
-        .expect("Failed to create testnet InstantSend listener");
+        ).expect("Failed to create testnet InstantSend listener");
 
         Self {
             main_screens: [

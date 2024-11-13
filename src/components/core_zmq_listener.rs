@@ -11,6 +11,8 @@ use std::sync::{
 };
 use std::thread;
 use std::time::Duration;
+
+#[cfg(not(target_os = "windows"))]
 use zmq::Context;
 
 pub struct CoreZMQListener {
@@ -34,6 +36,7 @@ pub const IS_LOCK_SIG_MSG: &[u8; 12] = b"rawtxlocksig";
 pub const CHAIN_LOCKED_BLOCK_MSG: &[u8; 12] = b"rawchainlock";
 
 impl CoreZMQListener {
+    #[cfg(not(target_os = "windows"))]
     pub fn spawn_listener(
         network: Network,
         endpoint: &str,

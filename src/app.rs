@@ -49,8 +49,8 @@ pub struct AppState {
     pub chosen_network: Network,
     pub mainnet_app_context: Arc<AppContext>,
     pub testnet_app_context: Option<Arc<AppContext>>,
-    pub mainnet_core_zmq_listener: CoreZMQListener,
-    pub testnet_core_zmq_listener: CoreZMQListener,
+    pub mainnet_core_zmq_listener: Option<CoreZMQListener>,
+    pub testnet_core_zmq_listener: Option<CoreZMQListener>,
     pub core_message_receiver: mpsc::Receiver<(ZMQMessage, Network)>,
     pub task_result_sender: tokiompsc::Sender<TaskResult>, // Channel sender for sending task results
     pub task_result_receiver: tokiompsc::Receiver<TaskResult>, // Channel receiver for receiving task results
@@ -189,27 +189,40 @@ impl AppState {
         // Create a channel for communication with the InstantSendListener
         let (core_message_sender, core_message_receiver) = mpsc::channel();
 
-        // Pass the sender to the listener when creating it
-        let mainnet_core_zmq_listener = CoreZMQListener::spawn_listener(
-            Network::Dash,
-            "tcp://127.0.0.1:23708",
-            core_message_sender.clone(), // Clone the sender for each listener
-            Some(mainnet_app_context.sx_zmq_status.clone()),
-        )
-        .expect("Failed to create mainnet InstantSend listener");
+        #[cfg(target_os = "windows")]
+        let mainnet_core_zmq_listener: Option<CoreZMQListener> = None;
+
+        #[cfg(not(target_os = "windows"))]
+        let mainnet_core_zmq_listener: Option<CoreZMQListener> = {
+            // Pass the sender to the listener when creating it
+            let zmq_listener = CoreZMQListener::spawn_listener(
+                Network::Dash,
+                "tcp://127.0.0.1:23708",
+                core_message_sender.clone(), // Clone the sender for each listener
+                Some(mainnet_app_context.sx_zmq_status.clone()),
+            ).expect("Failed to create mainnet InstantSend listener");
+            Some(zmq_listener)
+        };
 
         let tx_zmq_status_option = match testnet_app_context {
             Some(ref context) => Some(context.sx_zmq_status.clone()),
             None => None,
         };
 
-        let testnet_core_zmq_listener = CoreZMQListener::spawn_listener(
-            Network::Testnet,
-            "tcp://127.0.0.1:23709",
-            core_message_sender, // Use the original sender or create a new one if needed
-            tx_zmq_status_option,
-        )
-        .expect("Failed to create testnet InstantSend listener");
+        #[cfg(target_os = "windows")]
+        let testnet_core_zmq_listener: Option<CoreZMQListener> = None;
+
+        #[cfg(not(target_os = "windows"))]
+        let testnet_core_zmq_listener: Option<CoreZMQListener> = {
+            let zmq_listener = CoreZMQListener::spawn_listener(
+                Network::Testnet,
+                "tcp://127.0.0.1:23709",
+                core_message_sender, // Use the original sender or create a new one if needed
+                tx_zmq_status_option,
+            )
+                .expect("Failed to create testnet InstantSend listener");
+            Some(zmq_listener) // or however you construct `Data`
+        };
 
         Self {
             main_screens: [

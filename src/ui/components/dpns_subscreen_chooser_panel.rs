@@ -13,16 +13,14 @@ pub fn add_dpns_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext)
         DPNSSubscreen::Owned,
     ];
 
-    let active_screen = match app_context
-        .get_settings()
-        .expect("Expected settings ok")
-        .expect("Expected settings some")
-        .1
-    {
-        ui::RootScreenType::RootScreenDPNSActiveContests => DPNSSubscreen::Active,
-        ui::RootScreenType::RootScreenDPNSPastContests => DPNSSubscreen::Past,
-        ui::RootScreenType::RootScreenDPNSOwnedNames => DPNSSubscreen::Owned,
-        _ => DPNSSubscreen::Active,
+    let active_screen = match app_context.get_settings() {
+        Ok(Some(settings)) => match settings.1 {
+            ui::RootScreenType::RootScreenDPNSActiveContests => DPNSSubscreen::Active,
+            ui::RootScreenType::RootScreenDPNSPastContests => DPNSSubscreen::Past,
+            ui::RootScreenType::RootScreenDPNSOwnedNames => DPNSSubscreen::Owned,
+            _ => DPNSSubscreen::Active,
+        },
+        _ => DPNSSubscreen::Active, // Fallback to Active screen if settings unavailable
     };
 
     SidePanel::left("dpns_subscreen_chooser_panel")

@@ -10,12 +10,11 @@ use crate::model::qualified_identity::PrivateKeyTarget::{
 };
 use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
 use crate::model::wallet::WalletSeedHash;
-use crate::ui::add_key_screen::AddKeyScreen;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::key_info_screen::KeyInfoScreen;
+use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
+use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
 use crate::ui::transfers::TransferScreen;
-use crate::ui::withdrawals::WithdrawalScreen;
 use crate::ui::{RootScreenType, Screen, ScreenLike, ScreenType};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
@@ -31,6 +30,8 @@ use egui_extras::{Column, TableBuilder};
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
+
+use super::withdraw_from_identity_screen::WithdrawalScreen;
 
 pub struct IdentitiesScreen {
     pub identities: Arc<Mutex<IndexMap<Identifier, QualifiedIdentity>>>,

@@ -5,18 +5,18 @@ use crate::model::qualified_identity::encrypted_key_storage::{
     PrivateKeyData, WalletDerivationPath,
 };
 use crate::model::qualified_identity::QualifiedIdentity;
-use crate::ui::add_key_screen::AddKeyScreen;
 use crate::ui::document_query_screen::DocumentQueryScreen;
 use crate::ui::dpns_contested_names_screen::DPNSContestedNamesScreen;
-use crate::ui::key_info_screen::KeyInfoScreen;
-use crate::ui::keys_screen::KeysScreen;
+use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
+use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
+use crate::ui::identities::keys::keys_screen::KeysScreen;
+use crate::ui::identities::withdraw_from_identity_screen::WithdrawalScreen;
 use crate::ui::network_chooser_screen::NetworkChooserScreen;
 use crate::ui::transfers::TransferScreen;
 use crate::ui::transition_visualizer_screen::TransitionVisualizerScreen;
 use crate::ui::wallet::import_wallet_screen::ImportWalletScreen;
 use crate::ui::wallet::wallets_screen::WalletsBalancesScreen;
-use crate::ui::withdrawals::WithdrawalScreen;
-use crate::ui::withdraws_status_screen::WithdrawsStatusScreen;
+use crate::ui::withdrawals_status_screen::WithdrawsStatusScreen;
 use dash_sdk::dpp::identity::Identity;
 use dash_sdk::dpp::prelude::IdentityPublicKey;
 use dpns_contested_names_screen::DPNSSubscreen;
@@ -30,19 +30,15 @@ use std::hash::Hash;
 use std::sync::Arc;
 use wallet::add_new_wallet_screen::AddNewWalletScreen;
 
-mod add_key_screen;
 pub mod components;
 pub mod document_query_screen;
 pub mod dpns_contested_names_screen;
 pub(crate) mod identities;
-pub mod key_info_screen;
-pub mod keys_screen;
 pub mod network_chooser_screen;
 pub mod transfers;
 pub mod transition_visualizer_screen;
 pub(crate) mod wallet;
-pub mod withdrawals;
-pub mod withdraws_status_screen;
+pub mod withdrawals_status_screen;
 
 #[derive(Debug, Clone, Copy, Ord, PartialOrd, Eq, PartialEq, Hash)]
 pub enum RootScreenType {

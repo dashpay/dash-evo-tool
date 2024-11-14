@@ -6,7 +6,7 @@ use crate::model::qualified_identity::encrypted_key_storage::PrivateKeyData;
 use crate::model::qualified_identity::{IdentityType, PrivateKeyTarget, QualifiedIdentity};
 use crate::model::wallet::Wallet;
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::key_info_screen::KeyInfoScreen;
+use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
 use crate::ui::{MessageType, Screen, ScreenLike};
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dpp::fee::Credits;
@@ -17,12 +17,11 @@ use dash_sdk::dpp::prelude::TimestampMillis;
 use dash_sdk::platform::IdentityPublicKey;
 use eframe::egui::{self, Context, Ui};
 use egui::{Color32, RichText};
-use std::collections::HashSet;
 use std::str::FromStr;
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use super::components::wallet_unlock::ScreenWithWalletUnlock;
+use super::keys::key_info_screen::KeyInfoScreen;
 
 pub enum WithdrawFromIdentityStatus {
     NotStarted,

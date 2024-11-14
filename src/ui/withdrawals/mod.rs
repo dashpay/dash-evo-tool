@@ -2,7 +2,9 @@ use crate::app::AppAction;
 use crate::backend_task::identity::IdentityTask;
 use crate::backend_task::BackendTask;
 use crate::context::AppContext;
-use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
+use crate::model::qualified_identity::encrypted_key_storage::PrivateKeyData;
+use crate::model::qualified_identity::{IdentityType, PrivateKeyTarget, QualifiedIdentity};
+use crate::model::wallet::Wallet;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::key_info_screen::KeyInfoScreen;
 use crate::ui::{MessageType, Screen, ScreenLike};
@@ -14,9 +16,13 @@ use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::prelude::TimestampMillis;
 use dash_sdk::platform::IdentityPublicKey;
 use eframe::egui::{self, Context, Ui};
+use egui::{Color32, RichText};
+use std::collections::HashSet;
 use std::str::FromStr;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+use super::components::wallet_unlock::ScreenWithWalletUnlock;
 
 pub enum WithdrawFromIdentityStatus {
     NotStarted,
@@ -34,6 +40,10 @@ pub struct WithdrawalScreen {
     pub app_context: Arc<AppContext>,
     confirmation_popup: bool,
     withdraw_from_identity_status: WithdrawFromIdentityStatus,
+    selected_wallet: Option<Arc<RwLock<Wallet>>>,
+    wallet_password: String,
+    show_password: bool,
+    error_message: Option<String>,
 }
 
 impl WithdrawalScreen {
@@ -48,6 +58,10 @@ impl WithdrawalScreen {
             app_context: app_context.clone(),
             confirmation_popup: false,
             withdraw_from_identity_status: WithdrawFromIdentityStatus::NotStarted,
+            selected_wallet: None,
+            wallet_password: String::new(),
+            show_password: false,
+            error_message: None,
         }
     }
 
@@ -250,7 +264,9 @@ impl ScreenLike for WithdrawalScreen {
             };
 
             if !has_keys {
-                ui.heading(format!("You do not have any withdrawal keys loaded for this {}.", self.identity.identity_type));
+                ui.heading(format!("You do not have any withdrawal keys loaded for this {} identity.", self.identity.identity_type));
+
+                ui.add_space(10.0);
 
                 if self.identity.identity_type != IdentityType::User {
                     ui.heading("An evonode can withdraw with the payout address private key or the owner key.".to_string());
@@ -273,7 +289,12 @@ impl ScreenLike for WithdrawalScreen {
                 }
 
                 if let Some(transfer_key) = transfer_key {
-                    if ui.button("Check Payout Address Key").clicked() {
+                    let key_type_name = match self.identity.identity_type {
+                        IdentityType::User => "Transfer",
+                        IdentityType::Masternode => "Payout",
+                        IdentityType::Evonode => "Payout",
+                    };
+                    if ui.button(format!("Check {} Address Key", key_type_name)).clicked() {
                         action |= AppAction::AddScreen(Screen::KeyInfoScreen(KeyInfoScreen::new(
                             self.identity.clone(),
                             transfer_key.clone(),
@@ -285,17 +306,51 @@ impl ScreenLike for WithdrawalScreen {
             } else {
                 ui.heading("Withdraw Funds");
 
+                ui.add_space(10.0);
+
                 self.render_key_selection(ui);
+
+                ui.add_space(10.0);
+
+                if let Some(selected_key) = self.selected_key.as_ref() {
+                    // If there is an associated wallet then render the wallet unlock component for it if needed
+                    if let Some((_, PrivateKeyData::AtWalletDerivationPath(wallet_derivation_path))) = self.identity.private_keys.private_keys.get(&(PrivateKeyTarget::PrivateKeyOnMainIdentity, selected_key.id())) {
+                        self.selected_wallet = self.identity.associated_wallets.get(&wallet_derivation_path.wallet_seed_hash).cloned();
+                        
+                        let (needed_unlock, just_unlocked) = self.render_wallet_unlock_if_needed(ui);
+
+                        if needed_unlock && !just_unlocked {
+                            return;
+                        }
+                    }
+                } else {
+                    return;
+                }
+
                 self.render_amount_input(ui);
+
+                ui.add_space(10.0);
+
                 self.render_address_input(ui);
 
-                if ui.button("Withdraw").clicked() {
+                ui.add_space(20.0);
+
+                // Withdraw button
+                let button = egui::Button::new(RichText::new("Withdraw").color(Color32::WHITE))
+                    .fill(Color32::from_rgb(0, 128, 255))
+                    .frame(true)
+                    .rounding(3.0)
+                    .min_size(egui::vec2(60.0, 30.0));
+
+                if ui.add(button).clicked() {
                     self.confirmation_popup = true;
                 }
 
                 if self.confirmation_popup {
                     action |= self.show_confirmation_popup(ui);
                 }
+
+                ui.add_space(10.0);
 
                 // Handle withdrawal status messages
                 match &self.withdraw_from_identity_status {
@@ -336,7 +391,7 @@ impl ScreenLike for WithdrawalScreen {
                         ui.colored_label(egui::Color32::RED, format!("Error: {}", msg));
                     }
                     WithdrawFromIdentityStatus::Complete => {
-                        ui.label(format!("Successfully withdrew from identity"));
+                        ui.colored_label(egui::Color32::DARK_GREEN, format!("Successfully withdrew from identity"));
                     }
                 }
 
@@ -346,5 +401,35 @@ impl ScreenLike for WithdrawalScreen {
             }
         });
         action
+    }
+}
+
+impl ScreenWithWalletUnlock for WithdrawalScreen {
+    fn selected_wallet_ref(&self) -> &Option<Arc<RwLock<Wallet>>> {
+        &self.selected_wallet
+    }
+
+    fn wallet_password_ref(&self) -> &String {
+        &self.wallet_password
+    }
+
+    fn wallet_password_mut(&mut self) -> &mut String {
+        &mut self.wallet_password
+    }
+
+    fn show_password(&self) -> bool {
+        self.show_password
+    }
+
+    fn show_password_mut(&mut self) -> &mut bool {
+        &mut self.show_password
+    }
+
+    fn set_error_message(&mut self, error_message: Option<String>) {
+        self.error_message = error_message;
+    }
+
+    fn error_message(&self) -> Option<&String> {
+        self.error_message.as_ref()
     }
 }

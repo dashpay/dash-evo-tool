@@ -256,14 +256,10 @@ impl ScreenLike for RegisterDpnsNameScreen {
                 return;
             }
 
-            let mut step = 1;
-
             // Select the identity to register the name for
             ui.heading("1. Select Identity");
             ui.add_space(5.0);
             self.render_identity_id_selection(ui);
-
-            step += 1;
 
             ui.add_space(10.0);
             ui.separator();
@@ -278,7 +274,7 @@ impl ScreenLike for RegisterDpnsNameScreen {
             }
 
             // Input for the name
-            ui.heading(format!("{}. Enter the Name to Register:", step));
+            ui.heading("2. Enter the Name to Register:");
             ui.add_space(5.0);
             ui.horizontal(|ui| {
                 ui.label("Name (without \".dash\"):");
@@ -296,7 +292,7 @@ impl ScreenLike for RegisterDpnsNameScreen {
                     );
                     ui.colored_label(
                         egui::Color32::DARK_RED,
-                        "Cost ≈ 0.2 Dash",
+                        "Cost ≈ 0.2006 Dash",
                     );
                 } else {
                     ui.colored_label(

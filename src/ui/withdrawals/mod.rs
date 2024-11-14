@@ -11,20 +11,29 @@ use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
+use dash_sdk::dpp::prelude::TimestampMillis;
 use dash_sdk::platform::IdentityPublicKey;
 use eframe::egui::{self, Context, Ui};
 use std::str::FromStr;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+pub enum WithdrawFromIdentityStatus {
+    NotStarted,
+    WaitingForResult(TimestampMillis),
+    ErrorMessage(String),
+    Complete,
+}
 
 pub struct WithdrawalScreen {
     pub identity: QualifiedIdentity,
     selected_key: Option<IdentityPublicKey>,
     withdrawal_address: String,
     withdrawal_amount: String,
-    error_message: Option<String>,
     max_amount: u64,
     pub app_context: Arc<AppContext>,
     confirmation_popup: bool,
+    withdraw_from_identity_status: WithdrawFromIdentityStatus,
 }
 
 impl WithdrawalScreen {
@@ -35,10 +44,10 @@ impl WithdrawalScreen {
             selected_key: None,
             withdrawal_address: String::new(),
             withdrawal_amount: String::new(),
-            error_message: None,
             max_amount,
             app_context: app_context.clone(),
             confirmation_popup: false,
+            withdraw_from_identity_status: WithdrawFromIdentityStatus::NotStarted,
         }
     }
 
@@ -78,7 +87,7 @@ impl WithdrawalScreen {
 
     fn render_amount_input(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
-            ui.label("Amount:");
+            ui.label("Amount (dash):");
 
             ui.text_edit_singleline(&mut self.withdrawal_amount);
 
@@ -122,7 +131,10 @@ impl WithdrawalScreen {
                     match Address::from_str(&self.withdrawal_address) {
                         Ok(address) => Some(address.assume_checked()),
                         Err(_) => {
-                            self.error_message = Some("Invalid withdrawal address".to_string());
+                            self.withdraw_from_identity_status =
+                                WithdrawFromIdentityStatus::ErrorMessage(
+                                    "Invalid withdrawal address".to_string(),
+                                );
                             None
                         }
                     }
@@ -136,14 +148,17 @@ impl WithdrawalScreen {
                 {
                     format!("masternode payout address {}", payout_address)
                 } else if !self.app_context.developer_mode {
-                    self.error_message = Some("No masternode payout address".to_string());
+                    self.withdraw_from_identity_status = WithdrawFromIdentityStatus::ErrorMessage(
+                        "No masternode payout address".to_string(),
+                    );
                     return;
                 } else {
                     "to default address".to_string()
                 };
 
                 let Some(selected_key) = self.selected_key.as_ref() else {
-                    self.error_message = Some("No selected key".to_string());
+                    self.withdraw_from_identity_status =
+                        WithdrawFromIdentityStatus::ErrorMessage("No selected key".to_string());
                     return;
                 };
 
@@ -172,6 +187,12 @@ impl WithdrawalScreen {
 
                 if ui.button("Confirm").clicked() {
                     self.confirmation_popup = false;
+                    let now = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .expect("Time went backwards")
+                        .as_secs();
+                    self.withdraw_from_identity_status =
+                        WithdrawFromIdentityStatus::WaitingForResult(now);
                     app_action = AppAction::BackendTask(BackendTask::IdentityTask(
                         IdentityTask::WithdrawFromIdentity(
                             self.identity.clone(),
@@ -193,8 +214,20 @@ impl WithdrawalScreen {
 }
 
 impl ScreenLike for WithdrawalScreen {
-    fn display_message(&mut self, message: &str, _message_type: MessageType) {
-        self.error_message = Some(message.to_string());
+    fn display_message(&mut self, message: &str, message_type: MessageType) {
+        match message_type {
+            MessageType::Success => {
+                if message == "Successfully withdrew from identity" {
+                    self.withdraw_from_identity_status = WithdrawFromIdentityStatus::Complete;
+                }
+            }
+            MessageType::Info => {}
+            MessageType::Error => {
+                // It's not great because the error message can be coming from somewhere else if there are other processes happening
+                self.withdraw_from_identity_status =
+                    WithdrawFromIdentityStatus::ErrorMessage(message.to_string());
+            }
+        }
     }
 
     /// Renders the UI components for the withdrawal screen
@@ -264,7 +297,50 @@ impl ScreenLike for WithdrawalScreen {
                     action |= self.show_confirmation_popup(ui);
                 }
 
-                if let Some(error_message) = &self.error_message {
+                // Handle withdrawal status messages
+                match &self.withdraw_from_identity_status {
+                    WithdrawFromIdentityStatus::NotStarted => {
+                        // Do nothing
+                    }
+                    WithdrawFromIdentityStatus::WaitingForResult(start_time) => {
+                        let now = SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .expect("Time went backwards")
+                            .as_secs();
+                        let elapsed_seconds = now - start_time;
+
+                        let display_time = if elapsed_seconds < 60 {
+                            format!(
+                                "{} second{}",
+                                elapsed_seconds,
+                                if elapsed_seconds == 1 { "" } else { "s" }
+                            )
+                        } else {
+                            let minutes = elapsed_seconds / 60;
+                            let seconds = elapsed_seconds % 60;
+                            format!(
+                                "{} minute{} and {} second{}",
+                                minutes,
+                                if minutes == 1 { "" } else { "s" },
+                                seconds,
+                                if seconds == 1 { "" } else { "s" }
+                            )
+                        };
+
+                        ui.label(format!(
+                            "Withdrawing... Time taken so far: {}",
+                            display_time
+                        ));
+                    }
+                    WithdrawFromIdentityStatus::ErrorMessage(msg) => {
+                        ui.colored_label(egui::Color32::RED, format!("Error: {}", msg));
+                    }
+                    WithdrawFromIdentityStatus::Complete => {
+                        ui.label(format!("Successfully withdrew from identity"));
+                    }
+                }
+
+                if let WithdrawFromIdentityStatus::ErrorMessage(ref error_message) = self.withdraw_from_identity_status {
                     ui.label(format!("Error: {}", error_message));
                 }
             }

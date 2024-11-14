@@ -313,10 +313,10 @@ impl ScreenLike for WithdrawalScreen {
                 ui.add_space(10.0);
 
                 if let Some(selected_key) = self.selected_key.as_ref() {
-                    // If there is an associated wallet then render the wallet unlock component for it if needed
+                    // If there is an associated wallet then render the wallet unlock component for it if its locked
                     if let Some((_, PrivateKeyData::AtWalletDerivationPath(wallet_derivation_path))) = self.identity.private_keys.private_keys.get(&(PrivateKeyTarget::PrivateKeyOnMainIdentity, selected_key.id())) {
                         self.selected_wallet = self.identity.associated_wallets.get(&wallet_derivation_path.wallet_seed_hash).cloned();
-                        
+
                         let (needed_unlock, just_unlocked) = self.render_wallet_unlock_if_needed(ui);
 
                         if needed_unlock && !just_unlocked {

@@ -4,7 +4,7 @@ use crate::backend_task::contract::ContractTask;
 use crate::backend_task::core::{CoreItem, CoreTask};
 use crate::backend_task::document::DocumentTask;
 use crate::backend_task::identity::IdentityTask;
-use crate::backend_task::withdrawals::{WithdrawStatusPartialData, WithdrawalsTask};
+use crate::backend_task::withdrawal_statuses::{WithdrawStatusPartialData, WithdrawalsTask};
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::dpp::voting::votes::Vote;
@@ -18,7 +18,7 @@ pub mod contract;
 pub mod core;
 mod document;
 pub mod identity;
-pub mod withdrawals;
+pub mod withdrawal_statuses;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum BackendTask {

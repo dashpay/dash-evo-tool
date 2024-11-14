@@ -16,7 +16,7 @@ use crate::ui::transfers::TransferScreen;
 use crate::ui::transition_visualizer_screen::TransitionVisualizerScreen;
 use crate::ui::wallet::import_wallet_screen::ImportWalletScreen;
 use crate::ui::wallet::wallets_screen::WalletsBalancesScreen;
-use crate::ui::withdrawals_status_screen::WithdrawsStatusScreen;
+use crate::ui::withdrawal_statuses_screen::WithdrawsStatusScreen;
 use dash_sdk::dpp::identity::Identity;
 use dash_sdk::dpp::prelude::IdentityPublicKey;
 use dpns_contested_names_screen::DPNSSubscreen;
@@ -38,7 +38,7 @@ pub mod network_chooser_screen;
 pub mod transfers;
 pub mod transition_visualizer_screen;
 pub(crate) mod wallet;
-pub mod withdrawals_status_screen;
+pub mod withdrawal_statuses_screen;
 
 #[derive(Debug, Clone, Copy, Ord, PartialOrd, Eq, PartialEq, Hash)]
 pub enum RootScreenType {

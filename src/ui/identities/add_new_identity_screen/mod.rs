@@ -10,16 +10,13 @@ use crate::backend_task::identity::{
 };
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
-use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
 use crate::ui::{MessageType, ScreenLike};
 use arboard::Clipboard;
-use dash_sdk::dashcore_rpc::dashcore::address::Error;
 use dash_sdk::dashcore_rpc::dashcore::transaction::special_transaction::TransactionPayload;
 use dash_sdk::dashcore_rpc::dashcore::Address;
-use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dpp::balances::credits::Duffs;
 use dash_sdk::dpp::dashcore::{OutPoint, PrivateKey, Transaction, TxOut};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -30,22 +27,11 @@ use eframe::egui::Context;
 use egui::ahash::HashSet;
 use egui::{Color32, ColorImage, ComboBox, ScrollArea, Ui};
 use image::Luma;
-use itertools::Itertools;
 use qrcode::QrCode;
-use serde::Deserialize;
 use std::cmp::PartialEq;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{fmt, thread};
-use zeroize::Zeroize;
-
-#[derive(Debug, Clone, Deserialize)]
-struct KeyInfo {
-    address: String,
-    #[serde(rename = "private_key")]
-    private_key: String,
-}
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub enum FundingMethod {

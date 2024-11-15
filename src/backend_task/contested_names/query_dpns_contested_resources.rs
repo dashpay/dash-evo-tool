@@ -1,5 +1,6 @@
 use crate::app::TaskResult;
 use crate::context::AppContext;
+use crate::model::proof_log_item::{ProofLogItem, RequestType};
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
 use dash_sdk::drive::query::vote_polls_by_document_type_query::VotePollsByDocumentTypeQuery;
@@ -33,11 +34,44 @@ impl AppContext {
             order_ascending: true,
         };
 
-        let contested_resources =
-            ContestedResource::fetch_many(&sdk, query)
+        let (contested_resources, metadata, proof) =
+            ContestedResource::fetch_many_with_metadata_and_proof(&sdk, query.clone(), None)
                 .await
                 .map_err(|e| {
                     tracing::error!("error fetching contested resources: {}", e);
+                    if let dash_sdk::Error::Proof(dash_sdk::ProofVerifierError::GroveDBError {
+                        proof_bytes,
+                        height,
+                        time_ms,
+                        error,
+                    }) = &e
+                    {
+                        // Encode the query using bincode
+                        let encoded_query =
+                            match bincode::encode_to_vec(&query, bincode::config::standard())
+                                .map_err(|encode_err| {
+                                    tracing::error!("error encoding query: {}", encode_err);
+                                    format!("error encoding query: {}", encode_err)
+                                }) {
+                                Ok(encoded_query) => encoded_query,
+                                Err(e) => return e,
+                            };
+
+                        if let Err(e) = self
+                            .db
+                            .insert_proof_log_item(ProofLogItem {
+                                request_type: RequestType::GetContestedResources,
+                                request_bytes: encoded_query,
+                                height: *height,
+                                time_ms: *time_ms,
+                                proof_bytes: proof_bytes.clone(),
+                                error: Some(error.clone()),
+                            })
+                            .map_err(|e| e.to_string())
+                        {
+                            return e;
+                        }
+                    }
                     format!("error fetching contested resources: {}", e)
                 })?;
 

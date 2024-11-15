@@ -43,6 +43,20 @@ impl Database {
 
         Ok(())
     }
+
+    /// Updates the database version in the settings table.
+    pub fn update_database_version(&self, new_version: u16) -> Result<()> {
+        // Ensure the database version is updated
+        self.execute(
+            "UPDATE settings
+             SET database_version = ?
+             WHERE id = 1",
+            params![new_version],
+        )?;
+
+        Ok(())
+    }
+
     /// Retrieves the settings from the database.
     pub fn get_settings(&self) -> Result<Option<(Network, RootScreenType, Option<PasswordInfo>)>> {
         // Query the settings row

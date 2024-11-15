@@ -5,7 +5,7 @@ use std::fs;
 use std::path::Path;
 
 pub const DEFAULT_DB_VERSION: u16 = 1;
-pub const MIN_SUPPORTED_DB_VERSION: u16 = 1;
+pub const CURRENT_DB_VERSION: u16 = 2;
 pub const DEFAULT_NETWORK: &str = "dash";
 
 impl Database {
@@ -16,14 +16,43 @@ impl Database {
             self.set_default_version()?;
         } else {
             // Perform version check and back up and recreate the database if outdated.
-            if self.is_outdated()? {
-                self.backup_and_recreate_db(db_file_path)?;
-                self.create_tables()?;
-                self.set_default_version()?;
-                println!("Database reinitialized with default settings.");
+            if let Some(current_version) = self.is_outdated()? {
+                self.backup_db(db_file_path)?;
+                if !self
+                    .try_perform_migration(current_version, CURRENT_DB_VERSION)
+                    .is_ok()
+                {
+                    // The migration failed
+                    self.recreate_db(db_file_path)?;
+                    self.create_tables()?;
+                    self.set_default_version()?;
+                    println!("Database reinitialized with default settings.");
+                }
             }
         }
 
+        Ok(())
+    }
+
+    fn apply_version_changes(&self, version: u16) -> rusqlite::Result<()> {
+        match version {
+            2 => {
+                self.initialize_proof_log_table()?;
+            }
+            _ => {}
+        }
+
+        Ok(())
+    }
+    fn try_perform_migration(
+        &self,
+        original_version: u16,
+        to_version: u16,
+    ) -> rusqlite::Result<()> {
+        for version in (original_version + 1)..=to_version {
+            self.apply_version_changes(version)?;
+            self.update_database_version(version)?;
+        }
         Ok(())
     }
 
@@ -50,7 +79,7 @@ impl Database {
     }
 
     /// Checks if the current database version is below the minimum supported version.
-    fn is_outdated(&self) -> rusqlite::Result<bool> {
+    fn is_outdated(&self) -> rusqlite::Result<Option<u16>> {
         let conn = self.conn.lock().unwrap();
         let version: u16 = conn
             .query_row(
@@ -59,11 +88,15 @@ impl Database {
                 |row| row.get(0),
             )
             .unwrap_or(0); // Default to version 0 if there's no version set
-        Ok(version < MIN_SUPPORTED_DB_VERSION)
+        if version < CURRENT_DB_VERSION {
+            Ok(Some(version))
+        } else {
+            Ok(None)
+        }
     }
 
     /// Backs up the existing database with a unique timestamped filename, recreates `data.db`, and refreshes the connection.
-    fn backup_and_recreate_db(&self, db_file_path: &Path) -> rusqlite::Result<()> {
+    fn backup_db(&self, db_file_path: &Path) -> rusqlite::Result<()> {
         if db_file_path.exists() {
             // Create a "backups" folder in the same directory as `data.db` if not exists
             let backups_dir = db_file_path
@@ -82,11 +115,25 @@ impl Database {
             let backup_path = backups_dir.join(backup_filename);
 
             // Rename `data.db` to the unique backup file
-            fs::rename(db_file_path, &backup_path)
+            fs::copy(db_file_path, &backup_path)
                 .map_err(|e| rusqlite::Error::ToSqlConversionFailure(e.into()))?;
             println!("Old database backed up to {:?}", backup_path);
         }
+        Ok(())
+    }
 
+    /// Backs up the existing database with a unique timestamped filename, recreates `data.db`, and refreshes the connection.
+    fn recreate_db(&self, db_file_path: &Path) -> rusqlite::Result<()> {
+        // Remove the existing database file if it exists
+        if db_file_path.exists() {
+            fs::remove_file(db_file_path).map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    0,
+                    rusqlite::types::Type::Text,
+                    Box::new(e),
+                )
+            })?;
+        }
         // Create a new empty `data.db` file and set up the initial schema
         let new_conn = Connection::open(db_file_path)?;
 
@@ -290,6 +337,8 @@ impl Database {
             "CREATE INDEX IF NOT EXISTS idx_name_network ON contract (name, network)",
             [],
         )?;
+
+        self.initialize_proof_log_table()?;
 
         Ok(())
     }

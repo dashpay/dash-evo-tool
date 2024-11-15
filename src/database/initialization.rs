@@ -18,11 +18,9 @@ impl Database {
             // Perform version check and back up and recreate the database if outdated.
             if let Some(current_version) = self.is_outdated()? {
                 self.backup_db(db_file_path)?;
-                if !self
-                    .try_perform_migration(current_version, CURRENT_DB_VERSION)
-                    .is_ok()
-                {
+                if let Err(e) = self.try_perform_migration(current_version, CURRENT_DB_VERSION) {
                     // The migration failed
+                    println!("Migration failed: {:?}", e);
                     self.recreate_db(db_file_path)?;
                     self.create_tables()?;
                     self.set_default_version()?;

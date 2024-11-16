@@ -1,11 +1,15 @@
 use crate::app::AppAction;
 use crate::context::AppContext;
 use crate::model::proof_log_item::ProofLogItem;
+use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::tools_subscreen_chooser_panel::add_tools_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::{MessageType, ScreenLike};
+use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::drive::grovedb::operations::proof::GroveDBProof;
 use eframe::egui::{self, Context, Grid, ScrollArea, TextEdit, Ui};
-use eframe::epaint::Vec2;
+use egui::text::LayoutJob;
+use egui::{Color32, FontId, Frame, Stroke, TextFormat, TextStyle, Vec2};
+use regex::Regex;
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -20,6 +24,13 @@ pub struct ProofLogScreen {
     pagination_range: Range<u64>,
     items_per_page: u64,
     display_mode: DisplayMode,
+}
+
+fn extract_hashes_from_error(error: &str) -> Vec<String> {
+    let re = Regex::new(r"[a-fA-F0-9]{64}").unwrap();
+    re.find_iter(error)
+        .map(|mat| mat.as_str().to_string())
+        .collect()
 }
 
 #[derive(Clone, Copy)]
@@ -86,79 +97,94 @@ impl ProofLogScreen {
                 self.fetch_proof_items();
             }
             ui.label("Items per page:");
-            ui.add(egui::DragValue::new(&mut self.items_per_page).clamp_range(10..=1000));
+            ui.add(egui::DragValue::new(&mut self.items_per_page).range(10..=1000));
             if ui.button("Refresh").clicked() {
                 self.fetch_proof_items();
             }
         });
 
-        // Table headers with sorting
-        Grid::new("proof_log_table_headers")
-            .num_columns(4)
-            .striped(true)
+        // Scrollable area for the table
+        ScrollArea::vertical()
+            .id_salt("proof_list_scroll_area")
             .show(ui, |ui| {
-                if ui
-                    .button("Request Type")
-                    .on_hover_text("Click to sort by Request Type")
-                    .clicked()
-                {
-                    self.sort_column = ProofLogColumn::RequestType;
-                    self.sort_ascending = !self.sort_ascending;
-                    self.fetch_proof_items();
-                }
-                if ui
-                    .button("Height")
-                    .on_hover_text("Click to sort by Height")
-                    .clicked()
-                {
-                    self.sort_column = ProofLogColumn::Height;
-                    self.sort_ascending = !self.sort_ascending;
-                    self.fetch_proof_items();
-                }
-                if ui
-                    .button("Time")
-                    .on_hover_text("Click to sort by Time")
-                    .clicked()
-                {
-                    self.sort_column = ProofLogColumn::Time;
-                    self.sort_ascending = !self.sort_ascending;
-                    self.fetch_proof_items();
-                }
-                if ui
-                    .button("Error")
-                    .on_hover_text("Click to sort by Error")
-                    .clicked()
-                {
-                    self.sort_column = ProofLogColumn::Error;
-                    self.sort_ascending = !self.sort_ascending;
-                    self.fetch_proof_items();
-                }
-                ui.end_row();
-            });
+                Grid::new("proof_log_table")
+                    .num_columns(4)
+                    .striped(true)
+                    .show(ui, |ui| {
+                        // Table headers with sorting
+                        if ui
+                            .button("Request Type")
+                            .on_hover_text("Click to sort by Request Type")
+                            .clicked()
+                        {
+                            self.sort_column = ProofLogColumn::RequestType;
+                            self.sort_ascending = !self.sort_ascending;
+                            self.fetch_proof_items();
+                        }
+                        if ui
+                            .button("Height")
+                            .on_hover_text("Click to sort by Height")
+                            .clicked()
+                        {
+                            self.sort_column = ProofLogColumn::Height;
+                            self.sort_ascending = !self.sort_ascending;
+                            self.fetch_proof_items();
+                        }
+                        if ui
+                            .button("Time")
+                            .on_hover_text("Click to sort by Time")
+                            .clicked()
+                        {
+                            self.sort_column = ProofLogColumn::Time;
+                            self.sort_ascending = !self.sort_ascending;
+                            self.fetch_proof_items();
+                        }
+                        if ui
+                            .button("Error")
+                            .on_hover_text("Click to sort by Error")
+                            .clicked()
+                        {
+                            self.sort_column = ProofLogColumn::Error;
+                            self.sort_ascending = !self.sort_ascending;
+                            self.fetch_proof_items();
+                        }
+                        ui.end_row();
 
-        // Scrollable area for proof items
-        ScrollArea::vertical().show(ui, |ui| {
-            for (index, item) in self.proof_items.iter().enumerate() {
-                ui.horizontal(|ui| {
-                    if ui
-                        .selectable_label(
-                            self.selected_proof_index == Some(index),
-                            format!("{:?}", item.request_type),
-                        )
-                        .clicked()
-                    {
-                        self.selected_proof_index = Some(index);
-                    }
-                    ui.label(item.height.to_string());
-                    ui.label(item.time_ms.to_string());
-                    ui.label(
-                        item.error
-                            .as_ref()
-                            .map_or("No Error".to_string(), |e| e.clone()),
-                    );
-                });
-            }
-        });
+                        // Data rows
+                        for (index, item) in self.proof_items.iter().enumerate() {
+                            // First column: selectable label for Request Type
+                            if ui
+                                .selectable_label(
+                                    self.selected_proof_index == Some(index),
+                                    format!("{:?}", item.request_type),
+                                )
+                                .clicked()
+                            {
+                                self.selected_proof_index = Some(index);
+                            }
+
+                            // Second column: Height
+                            ui.label(item.height.to_string());
+
+                            // Third column: Time
+                            ui.label(item.time_ms.to_string());
+
+                            // Fourth column: Error (first 20 chars, full error on hover)
+                            let error_text =
+                                item.error.as_ref().map_or("No Error".to_string(), |e| {
+                                    if e.len() > 20 {
+                                        format!("{}...", &e[..20])
+                                    } else {
+                                        e.clone()
+                                    }
+                                });
+                            ui.label(error_text)
+                                .on_hover_text(item.error.as_deref().unwrap_or("No Error"));
+
+                            ui.end_row();
+                        }
+                    });
+            });
 
         // Pagination controls
         ui.horizontal(|ui| {
@@ -179,6 +205,64 @@ impl ProofLogScreen {
                 self.pagination_range.end
             ));
         });
+    }
+
+    fn highlight_proof_text(proof_text: &str, hashes: &[String], font_id: FontId) -> LayoutJob {
+        let mut job = LayoutJob::default();
+        let mut remaining_text = proof_text;
+
+        while !remaining_text.is_empty() {
+            let empty_string = String::new();
+            // Find the earliest occurrence of any hash
+            let (earliest_pos, matched_hash) = hashes
+                .iter()
+                .filter_map(|hash| remaining_text.find(hash).map(|pos| (pos, hash)))
+                .min_by_key(|&(pos, _)| pos)
+                .unwrap_or((remaining_text.len(), &empty_string));
+
+            // Add text before the matched hash
+            if earliest_pos > 0 {
+                let before_text = &remaining_text[..earliest_pos];
+                job.append(
+                    before_text,
+                    0.0,
+                    TextFormat {
+                        font_id: font_id.clone(),
+                        color: Color32::BLACK,
+                        ..Default::default()
+                    },
+                );
+            }
+
+            if !matched_hash.is_empty() {
+                // Add the matched hash with highlight
+                job.append(
+                    matched_hash,
+                    0.0,
+                    TextFormat {
+                        font_id: font_id.clone(),
+                        color: Color32::from_rgb(0x9b, 0x87, 0x0c), // Highlight color
+                        ..Default::default()
+                    },
+                );
+                // Move past the hash
+                remaining_text = &remaining_text[earliest_pos + matched_hash.len()..];
+            } else {
+                // No more hashes found, add the rest of the text
+                job.append(
+                    remaining_text,
+                    0.0,
+                    TextFormat {
+                        font_id: font_id.clone(),
+                        color: Color32::BLACK,
+                        ..Default::default()
+                    },
+                );
+                break;
+            }
+        }
+
+        job
     }
 
     /// Renders the right side of the screen with proof details.
@@ -219,13 +303,48 @@ impl ProofLogScreen {
                     }
                 };
 
-                // Display proof in a text area
-                ui.add(
-                    TextEdit::multiline(&mut proof_display.clone())
-                        .font(egui::TextStyle::Monospace)
-                        .code_editor()
-                        .desired_rows(20),
-                );
+                // Extract hashes from the error message
+                let hashes = if let Some(error) = &proof_item.error {
+                    extract_hashes_from_error(error)
+                } else {
+                    Vec::new()
+                };
+
+                // Create the layout job with highlighted hashes
+                let font_id = TextStyle::Monospace.resolve(ui.style());
+                let layout_job = Self::highlight_proof_text(&proof_display, &hashes, font_id);
+
+                let frame = Frame::none()
+                    .stroke(Stroke::new(1.0, Color32::BLACK))
+                    .fill(Color32::TRANSPARENT)
+                    .rounding(2.0); // Set margins to zero
+
+                frame.show(ui, |ui| {
+                    ui.set_min_size(Vec2::new(ui.available_width(), 300.0));
+
+                    ScrollArea::vertical()
+                        .id_salt("proof_display_scroll_area")
+                        .show(ui, |ui| {
+                            ui.label(layout_job);
+                        });
+                });
+
+                // frame.show(ui, |ui| {
+                //     // Set the frame to the desired size
+                //     ui.set_min_size(Vec2::new(ui.available_width() - 5.0, 300.0));
+                //
+                //     let mut binding = proof_display.clone();
+                //     // Remove the TextEdit's own frame and background
+                //     let text_edit = TextEdit::multiline(&mut binding)
+                //         .frame(false) // Remove default TextEdit frame
+                //         .desired_width(f32::INFINITY) // Expand horizontally
+                //         .font(egui::TextStyle::Monospace)
+                //         .code_editor()
+                //         .desired_rows(20);
+                //
+                //     // Add the TextEdit to the UI
+                //     ui.add(text_edit);
+                // });
             }
         } else {
             ui.label("No proof selected.");
@@ -247,33 +366,38 @@ impl ScreenLike for ProofLogScreen {
             vec![],
         );
 
+        action |= add_left_panel(
+            ctx,
+            &self.app_context,
+            RootScreenType::RootScreenToolsProofLogScreen,
+        );
+
+        action |= add_tools_subscreen_chooser_panel(ctx, self.app_context.as_ref());
+
         egui::CentralPanel::default().show(ctx, |ui| {
             // Fetch proof items if not already fetched
             if self.proof_items.is_empty() {
                 self.fetch_proof_items();
             }
 
-            ui.horizontal(|ui| {
-                let available_width = ui.available_width();
-                let half_width = available_width / 2.0;
-
+            ui.columns(2, |columns| {
                 // Left side: Proof list
-                ui.allocate_ui_with_layout(
-                    Vec2::new(half_width, ui.available_height()),
-                    egui::Layout::top_down(egui::Align::Min),
-                    |ui| {
-                        self.render_proof_list(ui);
-                    },
-                );
+                columns[0].with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                    ScrollArea::vertical()
+                        .id_salt("proof_list_scroll_area")
+                        .show(ui, |ui| {
+                            self.render_proof_list(ui);
+                        });
+                });
 
                 // Right side: Proof details
-                ui.allocate_ui_with_layout(
-                    Vec2::new(half_width, ui.available_height()),
-                    egui::Layout::top_down(egui::Align::Min),
-                    |ui| {
-                        self.render_proof_details(ui);
-                    },
-                );
+                columns[1].with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                    ScrollArea::vertical()
+                        .id_salt("proof_details_scroll_area")
+                        .show(ui, |ui| {
+                            self.render_proof_details(ui);
+                        });
+                });
             });
         });
 

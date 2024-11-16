@@ -1,4 +1,4 @@
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Ord, PartialOrd, Eq, PartialEq)]
 pub enum RequestType {
     BroadcastStateTransition = 1,
     GetIdentity = 2,
@@ -84,6 +84,7 @@ impl TryFrom<u8> for RequestType {
     }
 }
 
+#[derive(Debug, Clone, Ord, PartialOrd, Eq, PartialEq)]
 pub struct ProofLogItem {
     pub request_type: RequestType,
     pub request_bytes: Vec<u8>,

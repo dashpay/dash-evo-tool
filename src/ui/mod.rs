@@ -53,7 +53,8 @@ pub enum RootScreenType {
     RootScreenDPNSOwnedNames,
     RootScreenDocumentQuery,
     RootScreenWalletsBalances,
-    RootScreenTransitionVisualizerScreen,
+    RootScreenToolsProofLogScreen,
+    RootScreenToolsTransitionVisualizerScreen,
     RootScreenWithdrawsStatus,
     RootScreenNetworkChooser,
 }
@@ -68,9 +69,10 @@ impl RootScreenType {
             RootScreenType::RootScreenDPNSOwnedNames => 3,
             RootScreenType::RootScreenDocumentQuery => 4,
             RootScreenType::RootScreenWalletsBalances => 5,
-            RootScreenType::RootScreenTransitionVisualizerScreen => 6,
+            RootScreenType::RootScreenToolsTransitionVisualizerScreen => 6,
             RootScreenType::RootScreenNetworkChooser => 7,
             RootScreenType::RootScreenWithdrawsStatus => 8,
+            RootScreenType::RootScreenToolsProofLogScreen => 9,
         }
     }
 
@@ -83,9 +85,10 @@ impl RootScreenType {
             3 => Some(RootScreenType::RootScreenDPNSOwnedNames),
             4 => Some(RootScreenType::RootScreenDocumentQuery),
             5 => Some(RootScreenType::RootScreenWalletsBalances),
-            6 => Some(RootScreenType::RootScreenTransitionVisualizerScreen),
+            6 => Some(RootScreenType::RootScreenToolsTransitionVisualizerScreen),
             7 => Some(RootScreenType::RootScreenNetworkChooser),
             8 => Some(RootScreenType::RootScreenWithdrawsStatus),
+            9 => Some(RootScreenType::RootScreenToolsProofLogScreen),
             _ => None,
         }
     }
@@ -98,13 +101,14 @@ impl From<RootScreenType> for ScreenType {
             RootScreenType::RootScreenDPNSActiveContests => ScreenType::DPNSActiveContests,
             RootScreenType::RootScreenDPNSPastContests => ScreenType::DPNSPastContests,
             RootScreenType::RootScreenDPNSOwnedNames => ScreenType::DPNSMyUsernames,
-            RootScreenType::RootScreenTransitionVisualizerScreen => {
+            RootScreenType::RootScreenToolsTransitionVisualizerScreen => {
                 ScreenType::TransitionVisualizer
             }
             RootScreenType::RootScreenDocumentQuery => ScreenType::DocumentQueryScreen,
             RootScreenType::RootScreenWithdrawsStatus => ScreenType::WithdrawsStatus,
             RootScreenType::RootScreenNetworkChooser => ScreenType::NetworkChooser,
             RootScreenType::RootScreenWalletsBalances => ScreenType::WalletsBalances,
+            RootScreenType::RootScreenToolsProofLogScreen => ScreenType::ProofLog,
         }
     }
 }

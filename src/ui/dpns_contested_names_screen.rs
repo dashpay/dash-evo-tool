@@ -17,6 +17,7 @@ use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoic
 use dash_sdk::platform::Identifier;
 use egui::{Context, Frame, Margin, Ui};
 use egui_extras::{Column, TableBuilder};
+use itertools::Itertools;
 use std::sync::{Arc, Mutex};
 use tracing::error;
 
@@ -323,7 +324,24 @@ impl DPNSContestedNamesScreen {
                                         locked_votes > max_contestant_votes;
 
                                     row.col(|ui| {
-                                        ui.label(&contested_name.normalized_contested_name);
+                                        let (used_name, highlighted) = if let Some(contestants) = &contested_name.contestants {
+                                            if let Some(first_contestant) = contestants.first() {
+                                                if contestants.iter().all(|contestant|contestant.name == first_contestant.name) {
+                                                    (first_contestant.name.clone(), Some(contested_name.normalized_contested_name.clone()))
+                                                } else {
+                                                    (contestants.iter().map(|contestant| contestant.name.clone()).join(" or "),
+                                                    Some(contestants.iter().map(|contestant| format!("{} trying to get {}",contestant.id, contestant.name.clone())).join(" and ")))
+                                                }
+                                            } else {
+                                                (contested_name.normalized_contested_name.clone(), None)
+                                            }
+                                        } else {
+                                            (contested_name.normalized_contested_name.clone(), None)
+                                        };
+                                        let label_response = ui.label(used_name);
+                                        if let Some(highlighted_text) = highlighted {
+                                            label_response.on_hover_text(highlighted_text);
+                                        }
                                     });
                                     row.col(|ui| {
                                         let label_text = if let Some(locked_votes) =
@@ -423,6 +441,7 @@ impl DPNSContestedNamesScreen {
         let contested_names = {
             let contested_names_guard = self.contested_names.lock().unwrap();
             let mut contested_names = contested_names_guard.clone();
+            contested_names.retain(|contested_name| contested_name.awarded_to.is_some());
             self.sort_contested_names(&mut contested_names);
             contested_names
         };

@@ -91,19 +91,19 @@ impl ProofLogScreen {
 
     /// Renders the left side of the screen with the list of proofs.
     fn render_proof_list(&mut self, ui: &mut Ui) {
-        ui.horizontal(|ui| {
-            if ui
-                .checkbox(&mut self.show_errors_only, "Show Errors Only")
-                .changed()
-            {
-                self.fetch_proof_items();
-            }
-            ui.label("Items per page:");
-            ui.add(egui::DragValue::new(&mut self.items_per_page).range(10..=1000));
-            if ui.button("Refresh").clicked() {
-                self.fetch_proof_items();
-            }
-        });
+        // ui.horizontal(|ui| {
+        //     if ui
+        //         .checkbox(&mut self.show_errors_only, "Show Errors Only")
+        //         .changed()
+        //     {
+        //         self.fetch_proof_items();
+        //     }
+        //     ui.label("Items per page:");
+        //     ui.add(egui::DragValue::new(&mut self.items_per_page).range(10..=1000));
+        //     if ui.button("Refresh").clicked() {
+        //         self.fetch_proof_items();
+        //     }
+        // });
 
         // Scrollable area for the table
         ScrollArea::vertical()
@@ -174,8 +174,8 @@ impl ProofLogScreen {
                             // Fourth column: Error (first 20 chars, full error on hover)
                             let error_text =
                                 item.error.as_ref().map_or("No Error".to_string(), |e| {
-                                    if e.len() > 20 {
-                                        format!("{}...", &e[..20])
+                                    if e.len() > 40 {
+                                        format!("{}...", &e[..40])
                                     } else {
                                         e.clone()
                                     }

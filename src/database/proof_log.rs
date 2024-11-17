@@ -4,6 +4,19 @@ use rusqlite::params;
 use std::ops::Range;
 
 impl Database {
+    pub fn drop_proof_log_table(&self) -> rusqlite::Result<()> {
+        // Acquire a lock on the database connection
+        let conn = self.conn.lock().unwrap();
+
+        // Execute the SQL command to drop the proof_log table
+        conn.execute("DROP TABLE IF EXISTS proof_log", [])?;
+        Ok(())
+    }
+
+    pub fn remake_proof_log_table(&self) -> rusqlite::Result<()> {
+        self.drop_proof_log_table()?;
+        self.initialize_proof_log_table()
+    }
     pub fn initialize_proof_log_table(&self) -> rusqlite::Result<()> {
         // Create the proof log tree
         self.execute(
@@ -11,6 +24,7 @@ impl Database {
                         proof_id INTEGER PRIMARY KEY AUTOINCREMENT,
                         request_type INTEGER NOT NULL,
                         request_bytes BLOB NOT NULL,
+                        path_query_bytes BLOB NOT NULL,
                         height INTEGER NOT NULL,
                         time_ms INTEGER NOT NULL,
                         proof_bytes BLOB NOT NULL,
@@ -53,11 +67,12 @@ impl Database {
         let request_type_int: u8 = item.request_type.into();
 
         conn.execute(
-            "INSERT INTO proof_log (request_type, request_bytes, height, time_ms, proof_bytes, error)
-             VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO proof_log (request_type, request_bytes, path_query_bytes, height, time_ms, proof_bytes, error)
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
             params![
                 request_type_int,
                 item.request_bytes,
+                item.verification_path_query_bytes,
                 item.height,
                 item.time_ms,
                 item.proof_bytes,
@@ -78,7 +93,7 @@ impl Database {
 
         // Build the query based on the only_get_errored flag
         let mut query = String::from(
-            "SELECT request_type, request_bytes, height, time_ms, proof_bytes, error FROM proof_log",
+            "SELECT request_type, request_bytes, path_query_bytes, height, time_ms, proof_bytes, error FROM proof_log",
         );
 
         if only_get_errored {
@@ -93,10 +108,11 @@ impl Database {
             stmt.query_map(params![range.end - range.start, range.start], |row| {
                 let request_type_int: u8 = row.get(0)?;
                 let request_bytes: Vec<u8> = row.get(1)?;
-                let height: u64 = row.get(2)?;
-                let time_ms: u64 = row.get(3)?;
-                let proof_bytes: Vec<u8> = row.get(4)?;
-                let error: Option<String> = row.get(5)?;
+                let verification_path_query_bytes: Vec<u8> = row.get(2)?;
+                let height: u64 = row.get(3)?;
+                let time_ms: u64 = row.get(4)?;
+                let proof_bytes: Vec<u8> = row.get(5)?;
+                let error: Option<String> = row.get(6)?;
 
                 // Convert u8 to RequestType
                 let request_type = RequestType::try_from(request_type_int).map_err(|_| {
@@ -110,6 +126,7 @@ impl Database {
                 Ok(ProofLogItem {
                     request_type,
                     request_bytes,
+                    verification_path_query_bytes,
                     height,
                     time_ms,
                     proof_bytes,

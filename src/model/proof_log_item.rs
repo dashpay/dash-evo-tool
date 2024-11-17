@@ -34,6 +34,7 @@ pub enum RequestType {
     GetCurrentQuorumsInfo = 32,
 }
 
+use dash_sdk::drive::query::PathQuery;
 use std::convert::TryFrom;
 
 impl From<RequestType> for u8 {
@@ -84,10 +85,11 @@ impl TryFrom<u8> for RequestType {
     }
 }
 
-#[derive(Debug, Clone, Ord, PartialOrd, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub struct ProofLogItem {
     pub request_type: RequestType,
     pub request_bytes: Vec<u8>,
+    pub verification_path_query_bytes: Vec<u8>,
     pub height: u64,
     pub time_ms: u64,
     pub proof_bytes: Vec<u8>,

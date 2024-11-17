@@ -148,7 +148,7 @@ jobs:
       - name: Download Linux AMD64 Artifact
         uses: actions/download-artifact@v4
         with:
-          name: dash-evo-tool-amd64-linux.zip
+          name: dash-evo-tool-x86_64-linux.zip
       - name: Download Linux Arm64 Artifact
         uses: actions/download-artifact@v4
         with:
@@ -156,7 +156,7 @@ jobs:
       - name: Download MacOS AMD64 Artifact
         uses: actions/download-artifact@v4
         with:
-          name: dash-evo-tool-amd64-mac.zip
+          name: dash-evo-tool-x86_64-mac.zip
       - name: Download MacOS ARM64 Artifact
         uses: actions/download-artifact@v4
         with:
@@ -173,9 +173,9 @@ jobs:
         with:
           tag_name: ${{ github.event.inputs.tag }}
           files: |
-            ./dash-evo-tool-amd64-linux.zip
+            ./dash-evo-tool-x86_64-linux.zip
             ./dash-evo-tool-arm64-linux.zip
-            ./dash-evo-tool-amd64-mac.zip
+            ./dash-evo-tool-x86_64-mac.zip
             ./dash-evo-tool-arm64-mac.zip
             ./dash-evo-tool-windows.zip
           draft: false

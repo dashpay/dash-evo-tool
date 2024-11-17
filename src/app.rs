@@ -15,7 +15,7 @@ use crate::ui::network_chooser_screen::NetworkChooserScreen;
 use crate::ui::tool_screens::proof_log_screen::ProofLogScreen;
 use crate::ui::tool_screens::transition_visualizer_screen::TransitionVisualizerScreen;
 use crate::ui::wallet::wallets_screen::WalletsBalancesScreen;
-use crate::ui::withdraws_status_screen::WithdrawsStatusScreen;
+use crate::ui::withdrawal_statuses_screen::WithdrawsStatusScreen;
 use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike, ScreenType};
 use dash_sdk::dpp::dashcore::Network;
 use derive_more::From;

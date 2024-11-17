@@ -1,5 +1,7 @@
 use crate::app::{AppAction, DesiredAppAction};
-use crate::backend_task::withdrawals::{WithdrawRecord, WithdrawStatusData, WithdrawalsTask};
+use crate::backend_task::withdrawal_statuses::{
+    WithdrawRecord, WithdrawStatusData, WithdrawalsTask,
+};
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::ui::components::left_panel::add_left_panel;

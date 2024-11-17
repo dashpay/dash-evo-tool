@@ -17,10 +17,14 @@ impl Database {
         let id = identifier.to_vec();
         let conn = self.conn.lock().unwrap();
 
-        conn.execute(
+        let rows_updated = conn.execute(
             "UPDATE identity SET alias = ? WHERE id = ?",
             params![new_alias, id],
         )?;
+
+        if rows_updated == 0 {
+            return Err(rusqlite::Error::QueryReturnedNoRows);
+        }
 
         Ok(())
     }
@@ -164,11 +168,13 @@ impl Database {
 
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT data FROM identity WHERE is_local = 1 AND network = ? AND data IS NOT NULL",
+            "SELECT data, alias FROM identity WHERE is_local = 1 AND network = ? AND data IS NOT NULL",
         )?;
         let identity_iter = stmt.query_map(params![network], |row| {
             let data: Vec<u8> = row.get(0)?;
+            let alias: Option<String> = row.get(1)?;
             let mut identity: QualifiedIdentity = QualifiedIdentity::from_bytes(&data);
+            identity.alias = alias;
 
             identity.associated_wallets = wallets
                 .iter()

@@ -12,7 +12,8 @@ use crate::ui::document_query_screen::DocumentQueryScreen;
 use crate::ui::dpns_contested_names_screen::{DPNSContestedNamesScreen, DPNSSubscreen};
 use crate::ui::identities::identities_screen::IdentitiesScreen;
 use crate::ui::network_chooser_screen::NetworkChooserScreen;
-use crate::ui::transition_visualizer_screen::TransitionVisualizerScreen;
+use crate::ui::tool_screens::proof_log_screen::ProofLogScreen;
+use crate::ui::tool_screens::transition_visualizer_screen::TransitionVisualizerScreen;
 use crate::ui::wallet::wallets_screen::WalletsBalancesScreen;
 use crate::ui::withdraws_status_screen::WithdrawsStatusScreen;
 use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike, ScreenType};
@@ -146,6 +147,7 @@ impl AppState {
             DPNSContestedNamesScreen::new(&mainnet_app_context, DPNSSubscreen::Owned);
         let mut transition_visualizer_screen =
             TransitionVisualizerScreen::new(&mainnet_app_context);
+        let mut proof_log_screen = ProofLogScreen::new(&mainnet_app_context);
         let mut document_query_screen = DocumentQueryScreen::new(&mainnet_app_context);
         let mut withdraws_status_screen = WithdrawsStatusScreen::new(&mainnet_app_context);
         let mut network_chooser_screen = NetworkChooserScreen::new(
@@ -176,6 +178,7 @@ impl AppState {
                 document_query_screen = DocumentQueryScreen::new(testnet_app_context);
                 wallets_balances_screen = WalletsBalancesScreen::new(testnet_app_context);
                 withdraws_status_screen = WithdrawsStatusScreen::new(testnet_app_context);
+                proof_log_screen = ProofLogScreen::new(testnet_app_context);
             }
             network_chooser_screen.current_network = chosen_network;
         }
@@ -233,8 +236,12 @@ impl AppState {
                     Screen::WalletsBalancesScreen(wallets_balances_screen),
                 ),
                 (
-                    RootScreenType::RootScreenTransitionVisualizerScreen,
+                    RootScreenType::RootScreenToolsTransitionVisualizerScreen,
                     Screen::TransitionVisualizerScreen(transition_visualizer_screen),
+                ),
+                (
+                    RootScreenType::RootScreenToolsProofLogScreen,
+                    Screen::ProofLogScreen(proof_log_screen),
                 ),
                 (
                     RootScreenType::RootScreenDocumentQuery,

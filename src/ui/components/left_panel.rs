@@ -54,7 +54,7 @@ pub fn add_left_panel(
         ("W", RootScreenType::RootScreenWalletsBalances, "wallet.png"),
         (
             "T",
-            RootScreenType::RootScreenTransitionVisualizerScreen,
+            RootScreenType::RootScreenToolsTransitionVisualizerScreen,
             "tools.png",
         ),
         (

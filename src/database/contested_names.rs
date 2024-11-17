@@ -699,10 +699,11 @@ impl Database {
         for (name, new_ending_time) in name_contests {
             // Check if the name exists in the database and retrieve the current ending time
             let existing_ending_time: Option<TimestampMillis> =
-                select_stmt.query_row(params![network, name], |row| {
-                    let ending_time: Result<Option<TimestampMillis>> = row.get(0);
-                    ending_time
-                })?;
+                match select_stmt.query_row(params![network, name], |row| row.get(0)) {
+                    Ok(ending_time) => ending_time,
+                    Err(rusqlite::Error::QueryReturnedNoRows) => continue, // Handle no rows case gracefully
+                    Err(e) => return Err(e.into()),                        // Propagate other errors
+                };
 
             if let Some(existing_ending_time) = existing_ending_time {
                 // Update only if the new ending time is greater than the existing one

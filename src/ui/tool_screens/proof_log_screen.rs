@@ -6,6 +6,7 @@ use crate::ui::components::tools_subscreen_chooser_panel::add_tools_subscreen_ch
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::drive::grovedb::operations::proof::GroveDBProof;
+use dash_sdk::drive::query::PathQuery;
 use eframe::egui::{self, Context, Grid, ScrollArea, TextEdit, Ui};
 use egui::text::LayoutJob;
 use egui::{Color32, FontId, Frame, Stroke, TextFormat, TextStyle, Vec2};
@@ -45,6 +46,7 @@ enum ProofLogColumn {
 enum DisplayMode {
     Hex,
     Json,
+    PathQuery,
 }
 
 impl ProofLogScreen {
@@ -248,16 +250,6 @@ impl ProofLogScreen {
                 // Move past the hash
                 remaining_text = &remaining_text[earliest_pos + matched_hash.len()..];
             } else {
-                // No more hashes found, add the rest of the text
-                job.append(
-                    remaining_text,
-                    0.0,
-                    TextFormat {
-                        font_id: font_id.clone(),
-                        color: Color32::BLACK,
-                        ..Default::default()
-                    },
-                );
                 break;
             }
         }
@@ -271,6 +263,7 @@ impl ProofLogScreen {
             ui.label("Display Mode:");
             ui.radio_value(&mut self.display_mode, DisplayMode::Hex, "Hex");
             ui.radio_value(&mut self.display_mode, DisplayMode::Json, "JSON");
+            ui.radio_value(&mut self.display_mode, DisplayMode::PathQuery, "Path Query");
         });
 
         if let Some(index) = self.selected_proof_index {
@@ -284,30 +277,53 @@ impl ProofLogScreen {
                 } else {
                     ui.label("Error: None");
                 }
-                //display grovedb_proof info
 
                 // Display proof based on display mode
-                let proof_display = match self.display_mode {
-                    DisplayMode::Hex => hex::encode(&proof_item.proof_bytes),
+                let (proof_display, hashes) = match self.display_mode {
+                    DisplayMode::Hex => {
+                        let encoded = hex::encode(&proof_item.proof_bytes);
+                        // Extract hashes from the error message
+                        let hashes = if let Some(error) = &proof_item.error {
+                            extract_hashes_from_error(error)
+                        } else {
+                            Vec::new()
+                        };
+                        (encoded, hashes)
+                    }
                     DisplayMode::Json => {
+                        let hashes = if let Some(error) = &proof_item.error {
+                            extract_hashes_from_error(error)
+                        } else {
+                            Vec::new()
+                        };
                         let config = bincode::config::standard()
                             .with_big_endian()
                             .with_no_limit();
                         let grovedb_proof: Result<GroveDBProof, _> =
                             bincode::decode_from_slice(&proof_item.proof_bytes, config)
                                 .map(|(a, _)| a);
-                        match grovedb_proof {
+                        let text = match grovedb_proof {
                             Ok(proof) => format!("{}", proof),
                             Err(_) => "Invalid GroveDBProof".to_string(),
-                        }
+                        };
+                        (text, hashes)
                     }
-                };
-
-                // Extract hashes from the error message
-                let hashes = if let Some(error) = &proof_item.error {
-                    extract_hashes_from_error(error)
-                } else {
-                    Vec::new()
+                    DisplayMode::PathQuery => {
+                        let config = bincode::config::standard()
+                            .with_big_endian()
+                            .with_no_limit();
+                        let verification_path_query: Result<PathQuery, _> =
+                            bincode::decode_from_slice(
+                                &proof_item.verification_path_query_bytes,
+                                config,
+                            )
+                            .map(|(a, _)| a);
+                        let text = match verification_path_query {
+                            Ok(path_query) => format!("{}", path_query),
+                            Err(_) => "Invalid Path Query".to_string(),
+                        };
+                        (text, vec![])
+                    }
                 };
 
                 // Create the layout job with highlighted hashes
@@ -328,23 +344,6 @@ impl ProofLogScreen {
                             ui.label(layout_job);
                         });
                 });
-
-                // frame.show(ui, |ui| {
-                //     // Set the frame to the desired size
-                //     ui.set_min_size(Vec2::new(ui.available_width() - 5.0, 300.0));
-                //
-                //     let mut binding = proof_display.clone();
-                //     // Remove the TextEdit's own frame and background
-                //     let text_edit = TextEdit::multiline(&mut binding)
-                //         .frame(false) // Remove default TextEdit frame
-                //         .desired_width(f32::INFINITY) // Expand horizontally
-                //         .font(egui::TextStyle::Monospace)
-                //         .code_editor()
-                //         .desired_rows(20);
-                //
-                //     // Add the TextEdit to the UI
-                //     ui.add(text_edit);
-                // });
             }
         } else {
             ui.label("No proof selected.");
@@ -355,6 +354,10 @@ impl ProofLogScreen {
 impl ScreenLike for ProofLogScreen {
     fn display_message(&mut self, _message: &str, _message_type: MessageType) {
         // Implement message display if needed
+    }
+
+    fn refresh_on_arrival(&mut self) {
+        self.fetch_proof_items()
     }
 
     /// Renders the UI components for the proof viewer screen.

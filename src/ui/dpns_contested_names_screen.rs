@@ -786,7 +786,9 @@ impl ScreenLike for DPNSContestedNamesScreen {
     }
 
     fn display_message(&mut self, message: &str, message_type: MessageType) {
-        self.error_message = Some((message.to_string(), message_type, Utc::now()));
+        if !message.contains("try another server") {
+            self.error_message = Some((message.to_string(), message_type, Utc::now()));
+        }
     }
 
     fn ui(&mut self, ctx: &Context) -> AppAction {

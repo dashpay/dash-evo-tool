@@ -36,13 +36,13 @@ Before you begin, ensure you have met the following requirements:
 
 - **Rust**: Install Rust using [rustup](https://rustup.rs/):
 
-  ```
+  ``` shell
   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
   ```
 
 - Update Rust to the latest version:
 
-  ```
+  ``` shell
   rustup update
   ```
 
@@ -58,19 +58,19 @@ To install Dash Evo Tool:
 
 1. **Clone the repository**:
 
-   ```
+   ``` shell
    git clone https://github.com/dashpay/dash-evo-tool.git
    ```
 
 2. **Navigate to the project directory**:
 
-   ```
+   ``` shell
    cd dash-evo-tool
    ```
 
 3. **Build the project**:
 
-   ```
+   ``` shell
    cargo build --release
    ```
 
@@ -80,7 +80,7 @@ To install Dash Evo Tool:
 
 Run the application using:
 
-```
+``` shell
 cargo run
 ```
 

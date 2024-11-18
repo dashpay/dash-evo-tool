@@ -50,7 +50,7 @@ impl AppContext {
             }
         };
 
-        if (overwrite_dash_conf) {
+        if overwrite_dash_conf {
             // Construct the full path to the config file
             let current_dir = env::current_dir()?;
             let config_path = current_dir.join(config_file);

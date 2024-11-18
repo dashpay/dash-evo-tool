@@ -112,7 +112,7 @@ impl NetworkChooserScreen {
                                         } else { //linux
                                             String::from("dash-qt")
                                         };
-                                        if file_name.contains(required_file_name.as_str()) {
+                                        if file_name.ends_with(required_file_name.as_str()) {
                                             self.custom_dash_qt_path = Some(path.display().to_string());
                                             self.custom_dash_qt_error_message = None;
                                             self.current_app_context().db.update_dash_core_execution_settings(self.custom_dash_qt_path.clone(), self.overwrite_dash_conf).expect("Expected to save db settings");

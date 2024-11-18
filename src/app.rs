@@ -153,14 +153,13 @@ impl AppState {
 
         let (custom_dash_qt_path, overwrite_dash_conf) = match settings.clone() {
             Some((
-                _network,
-                _root_screen_type,
-                _password_info,
+               ..,
                 db_custom_dash_qt_path,
                 db_overwrite_dash_qt,
             )) => (db_custom_dash_qt_path, db_overwrite_dash_qt),
             _ => {
-                (None, true) // Default values
+                // Default values: Use system default path and overwrite conf
+                (None, true)
             }
         };
 

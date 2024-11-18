@@ -86,7 +86,7 @@ cargo run
 
 ### Application directory
 
-When the application runs for the first time, it creates a application directory and stores an `.env` file in it (based on [`.env.example`](.env.example)). It also stores application data in the directory. If you need to update the `.env` file, locate it in the application directory for your Operating System:
+When the application runs for the first time, it creates an application directory and stores an `.env` file in it (based on [`.env.example`](.env.example)). It also stores application data in the directory. If you need to update the `.env` file, locate it in the application directory for your Operating System:
 
 | Operating System | Application Directory Path |
 | - | - |

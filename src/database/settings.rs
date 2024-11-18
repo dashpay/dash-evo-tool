@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use crate::database::Database;
 use crate::model::password_info::PasswordInfo;
 use crate::ui::RootScreenType;
@@ -44,6 +45,29 @@ impl Database {
         Ok(())
     }
 
+    pub fn update_dash_core_execution_settings(
+        &self,
+        custom_dash_path: Option<String>,
+        overwrite_dash_conf: bool,
+    ) -> Result<()> {
+        self.execute(
+            "UPDATE settings
+            SET custom_dash_qt_path = ?,
+                overwrite_dash_conf = ?
+            WHERE id = 1",
+            rusqlite::params![custom_dash_path, overwrite_dash_conf],
+        )?;
+
+        Ok(())
+    }
+
+    pub fn add_custom_dash_qt_columns(&self) -> Result<()> {
+        self.execute("ALTER TABLE settings ADD COLUMN custom_dash_qt_path TEXT DEFAULT NULL;", ())?;
+        self.execute("ALTER TABLE settings ADD COLUMN overwrite_dash_conf INTEGER DEFAULT NULL;", ())?;
+
+        Ok(())
+    }
+
     /// Updates the database version in the settings table.
     pub fn update_database_version(&self, new_version: u16) -> Result<()> {
         // Ensure the database version is updated
@@ -58,11 +82,11 @@ impl Database {
     }
 
     /// Retrieves the settings from the database.
-    pub fn get_settings(&self) -> Result<Option<(Network, RootScreenType, Option<PasswordInfo>)>> {
+    pub fn get_settings(&self) -> Result<Option<(Network, RootScreenType, Option<PasswordInfo>, Option<String>, bool)>> {
         // Query the settings row
         let conn = self.conn.lock().unwrap();
         let mut stmt =
-            conn.prepare("SELECT network, start_root_screen, password_check, main_password_salt, main_password_nonce FROM settings WHERE id = 1")?;
+            conn.prepare("SELECT network, start_root_screen, password_check, main_password_salt, main_password_nonce, custom_dash_qt_path, overwrite_dash_conf FROM settings WHERE id = 1")?;
 
         let result = stmt.query_row([], |row| {
             let network: String = row.get(0)?;
@@ -70,6 +94,8 @@ impl Database {
             let password_check: Option<Vec<u8>> = row.get(2)?;
             let main_password_salt: Option<Vec<u8>> = row.get(3)?;
             let main_password_nonce: Option<Vec<u8>> = row.get(4)?;
+            let custom_dash_qt_path: Option<String> = row.get(5)?;
+            let overwrite_dash_conf: Option<bool> = row.get(6)?;
 
             // Combine the password-related fields if all are present, otherwise set to None
             let password_data = match (password_check, main_password_salt, main_password_nonce) {
@@ -89,7 +115,7 @@ impl Database {
             let root_screen_type = RootScreenType::from_int(start_root_screen)
                 .ok_or_else(|| rusqlite::Error::InvalidQuery)?;
 
-            Ok((parsed_network, root_screen_type, password_data))
+            Ok((parsed_network, root_screen_type, password_data, custom_dash_qt_path, overwrite_dash_conf.unwrap_or(true)))
         });
 
         match result {

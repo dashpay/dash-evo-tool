@@ -12,6 +12,7 @@ use dash_sdk::dpp::identity::TimestampMillis;
 use eframe::egui::{self, Color32, Context, Ui};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use crate::model::password_info::PasswordInfo;
 
 pub struct NetworkChooserScreen {
     pub mainnet_app_context: Arc<AppContext>,
@@ -21,6 +22,9 @@ pub struct NetworkChooserScreen {
     pub testnet_core_status_online: bool,
     status_checked: bool,
     pub recheck_time: Option<TimestampMillis>,
+    custom_dash_qt_path: Option<String>,
+    custom_dash_qt_error_message: Option<String>,
+    overwrite_dash_conf: bool,
 }
 
 impl NetworkChooserScreen {
@@ -28,6 +32,8 @@ impl NetworkChooserScreen {
         mainnet_app_context: &Arc<AppContext>,
         testnet_app_context: Option<&Arc<AppContext>>,
         current_network: Network,
+        custom_dash_qt_path: Option<String>,
+        overwrite_dash_conf: bool,
     ) -> Self {
         Self {
             mainnet_app_context: mainnet_app_context.clone(),
@@ -37,6 +43,9 @@ impl NetworkChooserScreen {
             testnet_core_status_online: false,
             status_checked: false,
             recheck_time: None,
+            custom_dash_qt_path,
+            custom_dash_qt_error_message: None,
+            overwrite_dash_conf,
         }
     }
 
@@ -60,7 +69,7 @@ impl NetworkChooserScreen {
     }
 
     /// Render the network selection table
-    fn render_network_table(&mut self, ui: &mut Ui) -> AppAction {
+    fn render_network_table(&mut self, ui: &mut Ui, ctx: &Context) -> AppAction {
         let mut app_action = AppAction::None;
         ui.heading("Choose Network");
 
@@ -81,6 +90,77 @@ impl NetworkChooserScreen {
 
                 // Render Testnet
                 app_action |= self.render_network_row(ui, Network::Testnet, "Testnet");
+            });
+        egui::CollapsingHeader::new("Show more advanced settings")
+            .default_open(false) // The grid is hidden by default
+            .show(ui, |ui| {
+                egui::Grid::new("advanced_settings")
+                    .show(ui, |ui| {
+                        ui.label("Custom Dash-QT path:");
+
+                        if ui.button("Select file").clicked() {
+                            if let Some(path) = rfd::FileDialog::new().pick_file() {
+                                {
+                                    let file_name = path.file_name().and_then(|f| f.to_str());
+                                    if let Some(file_name) = file_name {
+                                        self.custom_dash_qt_path = None;
+                                        self.custom_dash_qt_error_message = None;
+                                        let required_file_name = if cfg!(target_os = "windows") {
+                                            String::from("dash-qt.exe")
+                                        } else if cfg!(target_os = "macos") {
+                                            String::from("dash-qt")
+                                        } else { //linux
+                                            String::from("dash-qt")
+                                        };
+                                        if file_name.contains(required_file_name.as_str()) {
+                                            self.custom_dash_qt_path = Some(path.display().to_string());
+                                            self.custom_dash_qt_error_message = None;
+                                            self.current_app_context().db.update_dash_core_execution_settings(self.custom_dash_qt_path.clone(), self.overwrite_dash_conf).expect("Expected to save db settings");
+                                        } else {
+                                            self.custom_dash_qt_error_message = Some(format!("Invalid file: Please select a valid '{}'.", required_file_name));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        if let Some(ref file) = self.custom_dash_qt_path {
+                            ui.label(format!("Selected: {}", file));
+                        } else if let Some(ref error) = self.custom_dash_qt_error_message {
+                            ui.colored_label(egui::Color32::RED, error);
+                        } else {
+                            ui.label("");
+                        }
+                        if self.custom_dash_qt_path.is_some() || self.custom_dash_qt_error_message.is_some() {
+                            if ui.button("clear").clicked() {
+                                self.custom_dash_qt_path = None;
+                                self.custom_dash_qt_error_message = None;
+                            }
+                        }
+                        ui.end_row();
+
+                        if ui.checkbox(&mut self.overwrite_dash_conf, "Overwrite dash.conf").clicked() {
+                            self.current_app_context().db.update_dash_core_execution_settings(self.custom_dash_qt_path.clone(), self.overwrite_dash_conf).expect("Expected to save db settings");
+                        }
+                        if !self.overwrite_dash_conf {
+                            ui.end_row();
+                            if self.current_network == Network::Dash {
+                                ui.colored_label(egui::Color32::ORANGE, "The following lines must be included in the custom Mainnet dash.conf:");
+                                ui.end_row();
+                                ui.label("zmqpubrawtxlocksig=tcp://0.0.0.0:23708");
+                                ui.end_row();
+                                ui.label("zmqpubrawchainlock=tcp://0.0.0.0:23708");
+                            }
+                            else { //Testnet
+                                ui.colored_label(egui::Color32::ORANGE, "The following lines must be included in the custom Testnet dash.conf:");
+                                ui.end_row();
+                                ui.label("zmqpubrawtxlocksig=tcp://0.0.0.0:23709");
+                                ui.end_row();
+                                ui.label("zmqpubrawchainlock=tcp://0.0.0.0:23709");
+                            }
+                        }
+
+                    });
             });
         app_action
     }
@@ -158,7 +238,7 @@ impl NetworkChooserScreen {
         // Add a button to start the network
         if ui.button("Start").clicked() {
             app_action |=
-                AppAction::BackendTask(BackendTask::CoreTask(CoreTask::StartDashQT(network)));
+                AppAction::BackendTask(BackendTask::CoreTask(CoreTask::StartDashQT(network, self.custom_dash_qt_path.clone(), self.overwrite_dash_conf)));
             // in 5 seconds
             self.recheck_time = Some(
                 (SystemTime::now()
@@ -200,6 +280,7 @@ impl ScreenLike for NetworkChooserScreen {
         }
     }
     fn ui(&mut self, ctx: &Context) -> AppAction {
+        //let _ = self.current_app_context().db.get_settings();
         let mut action = add_top_panel(
             ctx,
             self.current_app_context(),
@@ -219,7 +300,7 @@ impl ScreenLike for NetworkChooserScreen {
         );
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            action |= self.render_network_table(ui);
+            action |= self.render_network_table(ui, ctx);
         });
 
         action

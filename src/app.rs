@@ -123,7 +123,7 @@ impl AppState {
 
         let password_info = settings
             .clone()
-            .map(|(_, _, password_info)| password_info)
+            .map(|(_, _, password_info, _, _)| password_info)
             .flatten();
 
         let mainnet_app_context =
@@ -150,10 +150,22 @@ impl AppState {
         let mut proof_log_screen = ProofLogScreen::new(&mainnet_app_context);
         let mut document_query_screen = DocumentQueryScreen::new(&mainnet_app_context);
         let mut withdraws_status_screen = WithdrawsStatusScreen::new(&mainnet_app_context);
+
+        let (custom_dash_qt_path, overwrite_dash_conf) = match settings.clone() {
+            Some((_network, _root_screen_type, _password_info, db_custom_dash_qt_path, db_overwrite_dash_qt)) => {
+                (db_custom_dash_qt_path, db_overwrite_dash_qt)
+            }
+            _ => {
+                (None, true) // Default values
+            }
+        };
+
         let mut network_chooser_screen = NetworkChooserScreen::new(
             &mainnet_app_context,
             testnet_app_context.as_ref(),
             Network::Dash,
+            custom_dash_qt_path,
+            overwrite_dash_conf,
         );
 
         let mut wallets_balances_screen = WalletsBalancesScreen::new(&mainnet_app_context);
@@ -162,7 +174,7 @@ impl AppState {
 
         let mut chosen_network = Network::Dash;
 
-        if let Some((network, screen_type, password_info)) = settings {
+        if let Some((network, screen_type, password_info, _, _)) = settings {
             selected_main_screen = screen_type;
             chosen_network = network;
             if chosen_network == Network::Testnet && testnet_app_context.is_some() {

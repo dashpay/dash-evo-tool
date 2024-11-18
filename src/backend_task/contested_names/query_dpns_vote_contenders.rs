@@ -48,8 +48,8 @@ impl AppContext {
             ContenderWithSerializedDocument::fetch_many(&sdk, contenders_query.clone())
                 .await
                 .map_err(|e| {
-                    tracing::error!("error fetching contested resources: {}", e);
-                    format!("error fetching contested resources: {}", e)
+                    tracing::error!("Error fetching contested resources: {}", e);
+                    format!("Error fetching contested resources: {}", e)
                 })?;
         self.db
             .insert_or_update_contenders(name, &contenders, document_type, self)

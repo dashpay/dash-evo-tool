@@ -40,7 +40,7 @@ impl AppContext {
             let (contested_resources) = ContestedResource::fetch_many(&sdk, query.clone())
                 .await
                 .map_err(|e| {
-                    tracing::error!("error fetching contested resources: {}", e);
+                    tracing::error!("Error fetching contested resources: {}", e);
                     if let dash_sdk::Error::Proof(
                         dash_sdk::ProofVerifierError::GroveDBProofVerificationError {
                             proof_bytes,
@@ -89,7 +89,7 @@ impl AppContext {
                             return e;
                         }
                     }
-                    format!("error fetching contested resources: {}", e)
+                    format!("Error fetching contested resources: {}", e)
                 })?;
 
             let contested_resources_len = contested_resources.0.len();

@@ -76,10 +76,6 @@ To install Dash Evo Tool:
 
 ## Getting Started
 
-### Create `.env` File
-
-Create a new file in the root of the dash-evo-tool directory named `.env` and copy the contents of `.env.example` into it. No changes to the file are necessary in this version.
-
 ### Start the App
 
 Run the application using:
@@ -87,6 +83,16 @@ Run the application using:
 ```
 cargo run
 ```
+
+### Application directory
+
+When the application runs for the first time, it creates a application directory and stores an `.env` file in it (based on [`.env.example`](.env.example)). It also stores application data in the directory. If you need to update the `.env` file, locate it in the application directory for your Operating System:
+
+| Operating System | Application Directory Path |
+| - | - |
+| macOS | `~/Library/Application Support/Dash-Evo-Tool/` |
+| Windows | `C:\Users\<User>\AppData\Roaming\Dash-Evo-Tool\config` |
+| Linux | `/home/<user>/.config/dash-evo-tool/` |
 
 ### Connect to a Network
 

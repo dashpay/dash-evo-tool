@@ -2,6 +2,7 @@ use crate::app::AppAction;
 use crate::backend_task::core::{CoreItem, CoreTask};
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
+use crate::model::password_info::PasswordInfo;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::wallet::add_new_wallet_screen::AddNewWalletScreen;
@@ -12,7 +13,6 @@ use dash_sdk::dpp::identity::TimestampMillis;
 use eframe::egui::{self, Color32, Context, Ui};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use crate::model::password_info::PasswordInfo;
 
 pub struct NetworkChooserScreen {
     pub mainnet_app_context: Arc<AppContext>,
@@ -237,8 +237,11 @@ impl NetworkChooserScreen {
 
         // Add a button to start the network
         if ui.button("Start").clicked() {
-            app_action |=
-                AppAction::BackendTask(BackendTask::CoreTask(CoreTask::StartDashQT(network, self.custom_dash_qt_path.clone(), self.overwrite_dash_conf)));
+            app_action |= AppAction::BackendTask(BackendTask::CoreTask(CoreTask::StartDashQT(
+                network,
+                self.custom_dash_qt_path.clone(),
+                self.overwrite_dash_conf,
+            )));
             // in 5 seconds
             self.recheck_time = Some(
                 (SystemTime::now()

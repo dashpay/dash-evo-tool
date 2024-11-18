@@ -92,11 +92,18 @@ fn add_connection_indicator(ui: &mut Ui, app_context: &Arc<AppContext>) -> AppAc
         };
         response.clone().on_hover_text(tooltip_text);
 
-        let settings = app_context.db.get_settings().expect("Failed to db get settings");
+        let settings = app_context
+            .db
+            .get_settings()
+            .expect("Failed to db get settings");
         let (custom_dash_qt_path, overwrite_dash_conf) = match settings {
-            Some((_network, _root_screen_type, _password_info, db_custom_dash_qt_path, db_overwrite_dash_qt)) => {
-                (db_custom_dash_qt_path, db_overwrite_dash_qt)
-            }
+            Some((
+                _network,
+                _root_screen_type,
+                _password_info,
+                db_custom_dash_qt_path,
+                db_overwrite_dash_qt,
+            )) => (db_custom_dash_qt_path, db_overwrite_dash_qt),
             _ => {
                 (None, true) // Default values
             }
@@ -105,7 +112,11 @@ fn add_connection_indicator(ui: &mut Ui, app_context: &Arc<AppContext>) -> AppAc
         // Handle click to start DashQT if disconnected
         if response.clicked() && !connected {
             let network = app_context.network;
-            action |= AppAction::BackendTask(BackendTask::CoreTask(CoreTask::StartDashQT(network, custom_dash_qt_path, overwrite_dash_conf)));
+            action |= AppAction::BackendTask(BackendTask::CoreTask(CoreTask::StartDashQT(
+                network,
+                custom_dash_qt_path,
+                overwrite_dash_conf,
+            )));
         }
     });
 

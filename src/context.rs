@@ -221,7 +221,17 @@ impl AppContext {
     }
 
     /// Retrieves the current `RootScreenType` from the settings
-    pub fn get_settings(&self) -> Result<Option<(Network, RootScreenType, Option<PasswordInfo>, Option<String>, bool)>> {
+    pub fn get_settings(
+        &self,
+    ) -> Result<
+        Option<(
+            Network,
+            RootScreenType,
+            Option<PasswordInfo>,
+            Option<String>,
+            bool,
+        )>,
+    > {
         self.db.get_settings()
     }
 

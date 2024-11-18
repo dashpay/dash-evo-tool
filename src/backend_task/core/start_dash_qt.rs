@@ -8,7 +8,12 @@ use std::{env, io};
 
 impl AppContext {
     /// Function to start Dash QT based on the selected network
-    pub(super) fn start_dash_qt(&self, network: Network, custom_dash_qt:Option<String>, overwrite_dash_conf: bool) -> io::Result<()> {
+    pub(super) fn start_dash_qt(
+        &self,
+        network: Network,
+        custom_dash_qt: Option<String>,
+        overwrite_dash_conf: bool,
+    ) -> io::Result<()> {
         let dash_qt_path = match custom_dash_qt {
             Some(ref custom_path) => PathBuf::from(custom_path),
             None => {
@@ -16,7 +21,8 @@ impl AppContext {
                     PathBuf::from("/Applications/Dash-Qt.app/Contents/MacOS/Dash-Qt")
                 } else if cfg!(target_os = "windows") {
                     // Retrieve the PROGRAMFILES environment variable or default to "C:\\Program Files"
-                    let program_files = env::var("PROGRAMFILES").unwrap_or_else(|_| "C:\\Program Files".to_string());
+                    let program_files = env::var("PROGRAMFILES")
+                        .unwrap_or_else(|_| "C:\\Program Files".to_string());
                     PathBuf::from(program_files).join("DashCore\\dash-qt.exe")
                 } else {
                     PathBuf::from("/usr/local/bin/dash-qt") // Default Linux path
@@ -55,8 +61,7 @@ impl AppContext {
                 .stdout(Stdio::null()) // Optional: Suppress output
                 .stderr(Stdio::null())
                 .spawn()?; // Spawn the Dash-Qt process
-        }
-        else {
+        } else {
             // Start Dash-Qt
             Command::new(&dash_qt_path)
                 .stdout(Stdio::null()) // Optional: Suppress output

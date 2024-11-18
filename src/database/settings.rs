@@ -1,9 +1,9 @@
-use std::path::PathBuf;
 use crate::database::Database;
 use crate::model::password_info::PasswordInfo;
 use crate::ui::RootScreenType;
 use dash_sdk::dpp::dashcore::Network;
 use rusqlite::{params, Result};
+use std::path::PathBuf;
 use std::str::FromStr;
 
 impl Database {
@@ -62,8 +62,14 @@ impl Database {
     }
 
     pub fn add_custom_dash_qt_columns(&self) -> Result<()> {
-        self.execute("ALTER TABLE settings ADD COLUMN custom_dash_qt_path TEXT DEFAULT NULL;", ())?;
-        self.execute("ALTER TABLE settings ADD COLUMN overwrite_dash_conf INTEGER DEFAULT NULL;", ())?;
+        self.execute(
+            "ALTER TABLE settings ADD COLUMN custom_dash_qt_path TEXT DEFAULT NULL;",
+            (),
+        )?;
+        self.execute(
+            "ALTER TABLE settings ADD COLUMN overwrite_dash_conf INTEGER DEFAULT NULL;",
+            (),
+        )?;
 
         Ok(())
     }
@@ -82,7 +88,17 @@ impl Database {
     }
 
     /// Retrieves the settings from the database.
-    pub fn get_settings(&self) -> Result<Option<(Network, RootScreenType, Option<PasswordInfo>, Option<String>, bool)>> {
+    pub fn get_settings(
+        &self,
+    ) -> Result<
+        Option<(
+            Network,
+            RootScreenType,
+            Option<PasswordInfo>,
+            Option<String>,
+            bool,
+        )>,
+    > {
         // Query the settings row
         let conn = self.conn.lock().unwrap();
         let mut stmt =
@@ -115,7 +131,13 @@ impl Database {
             let root_screen_type = RootScreenType::from_int(start_root_screen)
                 .ok_or_else(|| rusqlite::Error::InvalidQuery)?;
 
-            Ok((parsed_network, root_screen_type, password_data, custom_dash_qt_path, overwrite_dash_conf.unwrap_or(true)))
+            Ok((
+                parsed_network,
+                root_screen_type,
+                password_data,
+                custom_dash_qt_path,
+                overwrite_dash_conf.unwrap_or(true),
+            ))
         });
 
         match result {

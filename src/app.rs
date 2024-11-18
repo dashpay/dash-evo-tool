@@ -152,9 +152,13 @@ impl AppState {
         let mut withdraws_status_screen = WithdrawsStatusScreen::new(&mainnet_app_context);
 
         let (custom_dash_qt_path, overwrite_dash_conf) = match settings.clone() {
-            Some((_network, _root_screen_type, _password_info, db_custom_dash_qt_path, db_overwrite_dash_qt)) => {
-                (db_custom_dash_qt_path, db_overwrite_dash_qt)
-            }
+            Some((
+                _network,
+                _root_screen_type,
+                _password_info,
+                db_custom_dash_qt_path,
+                db_overwrite_dash_qt,
+            )) => (db_custom_dash_qt_path, db_overwrite_dash_qt),
             _ => {
                 (None, true) // Default values
             }

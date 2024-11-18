@@ -39,9 +39,8 @@ impl AppContext {
                 order_ascending: true,
             };
 
-            // Initialize retry counter and start time
+            // Initialize retry counter
             let mut retries = 0;
-            let start_time = Instant::now();
 
             let contested_resources = match ContestedResource::fetch_many(&sdk, query.clone()).await
             {
@@ -96,14 +95,14 @@ impl AppContext {
                             return Err(e);
                         }
                     }
-                    if e.to_string().contains("try another server") {
+                    if e.to_string().contains("try another server")
+                        || e.to_string().contains(
+                            "contract not found when querying from value with contract info",
+                        )
+                    {
                         retries += 1;
                         if retries > MAX_RETRIES {
-                            tracing::error!(
-                                "Max retries reached for query after {:?}: {}",
-                                start_time.elapsed(),
-                                e
-                            );
+                            tracing::error!("Max retries reached for query: {}", e);
                             return Err(format!(
                                 "Error fetching contested resources after retries: {}",
                                 e

@@ -44,15 +44,47 @@ impl AppContext {
             result_type: ContestedDocumentVotePollDriveQueryResultType::DocumentsAndVoteTally,
         };
 
-        let contenders =
-            ContenderWithSerializedDocument::fetch_many(&sdk, contenders_query.clone())
-                .await
-                .map_err(|e| {
+        // Define retries
+        const MAX_RETRIES: usize = 3;
+        let mut retries = 0;
+
+        loop {
+            match ContenderWithSerializedDocument::fetch_many(&sdk, contenders_query.clone()).await
+            {
+                Ok(contenders) => {
+                    // If successful, proceed to insert/update contenders
+                    return self
+                        .db
+                        .insert_or_update_contenders(name, &contenders, document_type, self)
+                        .map_err(|e| e.to_string());
+                }
+                Err(e) => {
                     tracing::error!("Error fetching contested resources: {}", e);
-                    format!("Error fetching contested resources: {}", e)
-                })?;
-        self.db
-            .insert_or_update_contenders(name, &contenders, document_type, self)
-            .map_err(|e| e.to_string())
+                    let error_str = e.to_string();
+                    if error_str.contains("try another server")
+                        || error_str.contains(
+                            "contract not found when querying from value with contract info",
+                        )
+                    {
+                        retries += 1;
+                        if retries > MAX_RETRIES {
+                            tracing::error!(
+                                "Max retries reached for query_dpns_vote_contenders: {}",
+                                e
+                            );
+                            return Err(format!(
+                                "Error fetching contested resources after retries: {}",
+                                e
+                            ));
+                        } else {
+                            continue;
+                        }
+                    } else {
+                        // For other errors, return immediately
+                        return Err(format!("Error fetching contested resources: {}", e));
+                    }
+                }
+            }
+        }
     }
 }

@@ -15,9 +15,9 @@ impl Database {
             self.set_default_version()?;
         } else {
             // If outdated, back up and either migrate or recreate the database.
-            if let Some(existing_version) = self.is_outdated()? {
+            if let Some(current_version) = self.is_outdated()? {
                 self.backup_db(db_file_path)?;
-                if let Err(e) = self.try_perform_migration(existing_version, DEFAULT_DB_VERSION) {
+                if let Err(e) = self.try_perform_migration(current_version, DEFAULT_DB_VERSION) {
                     // The migration failed
                     println!("Migration failed: {:?}", e);
                     self.recreate_db(db_file_path)?;
@@ -75,8 +75,8 @@ impl Database {
         }
     }
 
-    /// Checks if the version in the existing database settings is below DEFAULT_DB_VERSION.
-    /// If outdated, returns the version in the existing database settings
+    /// Checks if the version in the current database settings is below DEFAULT_DB_VERSION.
+    /// If outdated, returns the version in the current database settings
     fn is_outdated(&self) -> rusqlite::Result<Option<u16>> {
         let conn = self.conn.lock().unwrap();
         let version: u16 = conn

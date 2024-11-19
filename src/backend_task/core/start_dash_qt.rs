@@ -49,7 +49,7 @@ impl AppContext {
                 ))
             }
         };
-        
+
         let mut command = Command::new(&dash_qt_path);
         command.stdout(Stdio::null()).stderr(Stdio::null()); // Suppress output
 

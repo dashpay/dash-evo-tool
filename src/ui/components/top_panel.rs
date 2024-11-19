@@ -97,11 +97,9 @@ fn add_connection_indicator(ui: &mut Ui, app_context: &Arc<AppContext>) -> AppAc
             .get_settings()
             .expect("Failed to db get settings");
         let (custom_dash_qt_path, overwrite_dash_conf) = match settings {
-            Some((
-                ..,
-                db_custom_dash_qt_path,
-                db_overwrite_dash_qt,
-            )) => (db_custom_dash_qt_path, db_overwrite_dash_qt),
+            Some((.., db_custom_dash_qt_path, db_overwrite_dash_qt)) => {
+                (db_custom_dash_qt_path, db_overwrite_dash_qt)
+            }
             _ => {
                 // Default values: Use system default path and overwrite conf
                 (None, true)

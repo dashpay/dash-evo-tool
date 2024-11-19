@@ -19,7 +19,7 @@ impl PartialEq for CoreTask {
         match (self, other) {
             (CoreTask::GetBestChainLock, CoreTask::GetBestChainLock) => true,
             (CoreTask::RefreshWalletInfo(_), CoreTask::RefreshWalletInfo(_)) => true,
-            (CoreTask::StartDashQT(_,_,_), CoreTask::StartDashQT(_,_,_)) => true,
+            (CoreTask::StartDashQT(_, _, _), CoreTask::StartDashQT(_, _, _)) => true,
             _ => false,
         }
     }

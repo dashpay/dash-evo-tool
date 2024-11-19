@@ -240,7 +240,7 @@ impl CoreZMQListener {
                         match zmq::SocketEvent::from_raw(event_number) {
                             zmq::SocketEvent::CONNECTED => {
                                 if let Some(ref tx) = tx_zmq_status {
-                                    println!("ODY Socket connected to {}", endpoint);
+                                    println!("ZMQ Socket connected to {}", endpoint);
                                     tx.send(ZMQConnectionEvent::Connected)
                                         .expect("Failed to send connected event");
                                 }
@@ -248,7 +248,7 @@ impl CoreZMQListener {
                             }
                             zmq::SocketEvent::DISCONNECTED => {
                                 if let Some(ref tx) = tx_zmq_status {
-                                    println!("ODY Socket disconnected from {}", endpoint);
+                                    println!("ZMQ Socket disconnected from {}", endpoint);
                                     tx.send(ZMQConnectionEvent::Disconnected)
                                         .expect("Failed to send connected event");
                                 }

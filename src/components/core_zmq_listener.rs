@@ -140,6 +140,7 @@ impl CoreZMQListener {
 
                                         // Create a cursor over the data_bytes
                                         let mut cursor = Cursor::new(data_bytes);
+                                        println!("zmq_rawchainlock:{:?}", data_bytes);
 
                                         // Deserialize the LLMQChainLock
                                         match Block::consensus_decode(&mut cursor) {
@@ -169,6 +170,7 @@ impl CoreZMQListener {
 
                                         // Create a cursor over the data_bytes
                                         let mut cursor = Cursor::new(data_bytes);
+                                        println!("zmq_rawtxlocksig:{:?}", data_bytes);
 
                                         // Deserialize the transaction
                                         match Transaction::consensus_decode(&mut cursor) {
@@ -328,6 +330,7 @@ impl CoreZMQListener {
                                         "rawchainlock" => {
                                             // Deserialize the Block
                                             let mut cursor = Cursor::new(data_bytes);
+                                            println!("zmq_rawchainlock:{:?}", data_bytes);
                                             match Block::consensus_decode(&mut cursor) {
                                                 Ok(block) => {
                                                     if let Err(e) = sender_clone.send((
@@ -351,6 +354,7 @@ impl CoreZMQListener {
                                         "rawtxlocksig" => {
                                             // Deserialize the Transaction and InstantLock
                                             let mut cursor = Cursor::new(data_bytes);
+                                            println!("zmq_rawtxlocksig:{:?}", data_bytes);
                                             match Transaction::consensus_decode(&mut cursor) {
                                                 Ok(tx) => {
                                                     match InstantLock::consensus_decode(&mut cursor)

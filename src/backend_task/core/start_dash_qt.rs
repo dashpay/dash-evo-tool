@@ -49,25 +49,21 @@ impl AppContext {
                 ))
             }
         };
+        
+        let mut command = Command::new(&dash_qt_path);
+        command.stdout(Stdio::null()).stderr(Stdio::null()); // Suppress output
 
         if overwrite_dash_conf {
             // Construct the full path to the config file
             let current_dir = env::current_dir()?;
             let config_path = current_dir.join(config_file);
-
-            // Start Dash-Qt with the appropriate config
-            Command::new(&dash_qt_path)
-                .arg(format!("-conf={}", config_path.display()))
-                .stdout(Stdio::null()) // Optional: Suppress output
-                .stderr(Stdio::null())
-                .spawn()?; // Spawn the Dash-Qt process
-        } else {
-            // Start Dash-Qt
-            Command::new(&dash_qt_path)
-                .stdout(Stdio::null()) // Optional: Suppress output
-                .stderr(Stdio::null())
-                .spawn()?; // Spawn the Dash-Qt process
+            command.arg(format!("-conf={}", config_path.display()));
+        } else if network == Network::Testnet {
+            command.arg("-testnet");
         }
+
+        // Spawn the Dash-Qt process
+        command.spawn()?;
 
         Ok(())
     }

@@ -69,7 +69,7 @@ impl NetworkChooserScreen {
     }
 
     /// Render the network selection table
-    fn render_network_table(&mut self, ui: &mut Ui, ctx: &Context) -> AppAction {
+    fn render_network_table(&mut self, ui: &mut Ui) -> AppAction {
         let mut app_action = AppAction::None;
         ui.heading("Choose Network");
 
@@ -303,7 +303,7 @@ impl ScreenLike for NetworkChooserScreen {
         );
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            action |= self.render_network_table(ui, ctx);
+            action |= self.render_network_table(ui);
         });
 
         action

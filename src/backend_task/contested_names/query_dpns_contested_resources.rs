@@ -9,6 +9,7 @@ use dash_sdk::platform::FetchMany;
 use dash_sdk::query_types::ContestedResource;
 use dash_sdk::Sdk;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::{mpsc, OwnedSemaphorePermit, Semaphore};
 
 impl AppContext {
@@ -24,22 +25,27 @@ impl AppContext {
         let Some(contested_index) = document_type.find_contested_index() else {
             return Err("No contested index on dpns domains".to_string());
         };
+        const MAX_RETRIES: usize = 3;
         let mut start_at_value = None;
         loop {
             let query = VotePollsByDocumentTypeQuery {
                 contract_id: data_contract.id(),
                 document_type_name: document_type.name().to_string(),
                 index_name: contested_index.name.clone(),
-                start_at_value,
+                start_at_value: start_at_value.clone(),
                 start_index_values: vec!["dash".into()], // hardcoded for dpns
                 end_index_values: vec![],
                 limit: Some(100),
                 order_ascending: true,
             };
 
-            let (contested_resources) = ContestedResource::fetch_many(&sdk, query.clone())
-                .await
-                .map_err(|e| {
+            // Initialize retry counter
+            let mut retries = 0;
+
+            let contested_resources = match ContestedResource::fetch_many(&sdk, query.clone()).await
+            {
+                Ok(contested_resources) => contested_resources,
+                Err(e) => {
                     tracing::error!("Error fetching contested resources: {}", e);
                     if let dash_sdk::Error::Proof(
                         dash_sdk::ProofVerifierError::GroveDBProofVerificationError {
@@ -55,22 +61,22 @@ impl AppContext {
                         let encoded_query =
                             match bincode::encode_to_vec(&query, bincode::config::standard())
                                 .map_err(|encode_err| {
-                                    tracing::error!("error encoding query: {}", encode_err);
-                                    format!("error encoding query: {}", encode_err)
+                                    tracing::error!("Error encoding query: {}", encode_err);
+                                    format!("Error encoding query: {}", encode_err)
                                 }) {
                                 Ok(encoded_query) => encoded_query,
-                                Err(e) => return e,
+                                Err(e) => return Err(e),
                             };
 
                         // Encode the path_query using bincode
                         let verification_path_query_bytes =
                             match bincode::encode_to_vec(&path_query, bincode::config::standard())
                                 .map_err(|encode_err| {
-                                    tracing::error!("error encoding path_query: {}", encode_err);
-                                    format!("error encoding path_query: {}", encode_err)
+                                    tracing::error!("Error encoding path_query: {}", encode_err);
+                                    format!("Error encoding path_query: {}", encode_err)
                                 }) {
                                 Ok(encoded_path_query) => encoded_path_query,
-                                Err(e) => return e,
+                                Err(e) => return Err(e),
                             };
 
                         if let Err(e) = self
@@ -86,12 +92,30 @@ impl AppContext {
                             })
                             .map_err(|e| e.to_string())
                         {
-                            return e;
+                            return Err(e);
                         }
                     }
-                    format!("Error fetching contested resources: {}", e)
-                })?;
-
+                    if e.to_string().contains("try another server")
+                        || e.to_string().contains(
+                            "contract not found when querying from value with contract info",
+                        )
+                    {
+                        retries += 1;
+                        if retries > MAX_RETRIES {
+                            tracing::error!("Max retries reached for query: {}", e);
+                            return Err(format!(
+                                "Error fetching contested resources after retries: {}",
+                                e
+                            ));
+                        } else {
+                            // Retry
+                            continue;
+                        }
+                    } else {
+                        return Err(format!("Error fetching contested resources: {}", e));
+                    }
+                }
+            };
             let contested_resources_len = contested_resources.0.len();
 
             if contested_resources_len == 0 {
@@ -146,7 +170,7 @@ impl AppContext {
                                 .expect("expected to send refresh");
                         }
                         Err(e) => {
-                            tracing::error!("error querying dpns end times: {}", e);
+                            tracing::error!("Error querying dpns end times: {}", e);
                             sender
                                 .send(TaskResult::Error(e))
                                 .await
@@ -184,7 +208,7 @@ impl AppContext {
                         }
                         Err(e) => {
                             tracing::error!(
-                                "error querying dpns vote contenders for {}: {}",
+                                "Error querying dpns vote contenders for {}: {}",
                                 name,
                                 e
                             );

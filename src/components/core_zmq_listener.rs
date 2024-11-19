@@ -11,16 +11,16 @@ use std::sync::{
 use std::thread;
 use std::time::Duration;
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
 use image::EncodableLayout;
-#[cfg(not(target_os = "windows"))]
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
 use zmq::Context;
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 use futures::StreamExt;
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 use tokio::runtime::Runtime;
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 use zeromq::{Socket, SocketRecv, SubSocket};
 
 pub struct CoreZMQListener {
@@ -40,18 +40,18 @@ pub enum ZMQConnectionEvent {
     Disconnected,
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
 pub const IS_LOCK_SIG_MSG: &[u8; 12] = b"rawtxlocksig";
-#[cfg(not(target_os = "windows"))]
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
 pub const CHAIN_LOCKED_BLOCK_MSG: &[u8; 12] = b"rawchainlock";
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 pub const IS_LOCK_SIG_MSG: &str = "rawtxlocksig";
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 pub const CHAIN_LOCKED_BLOCK_MSG: &str = "rawchainlock";
 
 impl CoreZMQListener {
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
     pub fn spawn_listener(
         network: Network,
         endpoint: &str,
@@ -274,7 +274,7 @@ impl CoreZMQListener {
         })
     }
 
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
     pub fn spawn_listener(
         network: Network,
         endpoint: &str,

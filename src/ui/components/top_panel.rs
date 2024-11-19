@@ -127,7 +127,7 @@ pub fn add_top_panel(
         .exact_height(50.0)
         .show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
-                #[cfg(not(target_os = "windows"))]
+                #[cfg(not(any(target_os = "windows", target_os = "linux")))]
                 {
                     action |= add_connection_indicator(ui, app_context);
                 }

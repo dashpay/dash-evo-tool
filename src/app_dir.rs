@@ -51,7 +51,7 @@ pub fn copy_env_file_if_not_exists() {
             fs::copy(&env_example_file_in_exe_dir, env_file_in_app_dir)
                 .expect("Failed to copy main net env file");
         } else {
-            panic!("Failed to create environment variables: failed to find .env.example file in the executable directory");
+            panic!("Failed to find or create environment variables");
         }
     }
 }

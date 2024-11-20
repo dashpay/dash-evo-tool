@@ -412,10 +412,14 @@ impl DPNSContestedNamesScreen {
                                                 let relative_time =
                                                     HumanTime::from(datetime).to_string();
 
-                                                ui.label(relative_time);
+                                                if relative_time.contains("seconds") {
+                                                    ui.label("now");
+                                                } else {
+                                                    ui.label(relative_time);
+                                                }
                                             } else {
-                                                // Handle case where the timestamp is invalid
-                                                ui.label("Invalid timestamp");
+                                            // Handle case where the timestamp is invalid
+                                            ui.label("Invalid timestamp");
                                             }
                                         } else {
                                             ui.label("Fetching");
@@ -529,7 +533,11 @@ impl DPNSContestedNamesScreen {
                                                 let relative_time =
                                                     HumanTime::from(datetime).to_string();
 
-                                                ui.label(relative_time);
+                                                if relative_time.contains("seconds") {
+                                                    ui.label("now");
+                                                } else {
+                                                    ui.label(relative_time);
+                                                }
                                             } else {
                                                 // Handle case where the timestamp is invalid
                                                 ui.label("Invalid timestamp");

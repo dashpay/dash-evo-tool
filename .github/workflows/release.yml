@@ -68,6 +68,7 @@ jobs:
       - name: Setup prerequisites
         run: |
           mkdir -p dash-evo-tool/
+          cp .env.example dash-evo-tool/.env
           cp -r dash_core_configs/ dash-evo-tool/dash_core_configs
 
       - name: Install Rust toolchain

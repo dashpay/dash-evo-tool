@@ -49,9 +49,10 @@ pub fn copy_env_file_if_not_exists() {
         let env_example_file_in_exe_dir = PathBuf::from(".env.example");
         if env_example_file_in_exe_dir.exists() && env_example_file_in_exe_dir.is_file() {
             fs::copy(&env_example_file_in_exe_dir, env_file_in_app_dir)
-                .expect("Failed to copy main net env file");
+                .expect("Failed to copy env file");
         } else {
-            panic!("Failed to find or create environment variables");
+            let env_file_in_exe_dir = PathBuf::from(".env");
+            fs::copy(&env_file_in_exe_dir, env_file_in_app_dir).expect("Failed to copy env file");
         }
     }
 }

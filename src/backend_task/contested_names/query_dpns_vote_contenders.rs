@@ -59,7 +59,7 @@ impl AppContext {
                         .map_err(|e| e.to_string());
                 }
                 Err(e) => {
-                    tracing::error!("Error fetching contested resources: {}", e);
+                    tracing::error!("Error fetching vote contenders: {}", e);
                     let error_str = e.to_string();
                     if error_str.contains("try another server")
                         || error_str.contains(
@@ -73,7 +73,7 @@ impl AppContext {
                                 e
                             );
                             return Err(format!(
-                                "Error fetching contested resources after retries: {}",
+                                "Error fetching vote contenders after retries: {}",
                                 e
                             ));
                         } else {
@@ -81,7 +81,7 @@ impl AppContext {
                         }
                     } else {
                         // For other errors, return immediately
-                        return Err(format!("Error fetching contested resources: {}", e));
+                        return Err(format!("Error fetching vote contenders: {}", e));
                     }
                 }
             }

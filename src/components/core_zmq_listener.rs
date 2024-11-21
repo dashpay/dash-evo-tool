@@ -232,7 +232,7 @@ impl CoreZMQListener {
                         .recv(&mut addr_msg, 0)
                         .expect("Failed to receive address message");
 
-                    let data = event_msg.as_ref();
+                    let data: &[u8] = event_msg.as_ref(); // Explicitly annotate the type
                     if data.len() >= 6 {
                         let event_number = u16::from_le_bytes([data[0], data[1]]);
                         let endpoint = addr_msg.as_str().unwrap_or("");

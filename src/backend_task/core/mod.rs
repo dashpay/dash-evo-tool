@@ -12,13 +12,14 @@ use std::sync::{Arc, RwLock};
 pub(crate) enum CoreTask {
     GetBestChainLock,
     RefreshWalletInfo(Arc<RwLock<Wallet>>),
-    StartDashQT(Network),
+    StartDashQT(Network, Option<String>, bool),
 }
 impl PartialEq for CoreTask {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (CoreTask::GetBestChainLock, CoreTask::GetBestChainLock) => true,
             (CoreTask::RefreshWalletInfo(_), CoreTask::RefreshWalletInfo(_)) => true,
+            (CoreTask::StartDashQT(_, _, _), CoreTask::StartDashQT(_, _, _)) => true,
             _ => false,
         }
     }
@@ -44,8 +45,8 @@ impl AppContext {
                 })
                 .map_err(|e| e.to_string()),
             CoreTask::RefreshWalletInfo(wallet) => self.refresh_wallet_info(wallet),
-            CoreTask::StartDashQT(network) => self
-                .start_dash_qt(network)
+            CoreTask::StartDashQT(network, custom_dash_qt, overwrite_dash_conf) => self
+                .start_dash_qt(network, custom_dash_qt, overwrite_dash_conf)
                 .map_err(|e| e.to_string())
                 .map(|_| BackendTaskSuccessResult::None),
         }

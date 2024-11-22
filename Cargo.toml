@@ -65,3 +65,7 @@ zmq = "0.10"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 zeromq = "0.4.1"
+
+[target.'cfg(any(target_arch = "x86", target_arch = "x86_64"))'.dependencies]
+native-dialog = "0.7.0"
+raw-cpuid = "11.2.0"

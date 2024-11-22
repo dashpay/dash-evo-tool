@@ -1,3 +1,5 @@
+use crate::cpu_compatibility::check_cpu_compatibility;
+
 mod app;
 mod app_dir;
 mod backend_task;
@@ -5,6 +7,7 @@ mod components;
 mod config;
 mod context;
 mod context_provider;
+mod cpu_compatibility;
 mod database;
 mod logging;
 mod model;
@@ -12,6 +15,7 @@ mod sdk_wrapper;
 mod ui;
 
 fn main() -> eframe::Result<()> {
+    check_cpu_compatibility();
     // Initialize the Tokio runtime
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(40)

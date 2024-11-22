@@ -1,5 +1,6 @@
 use crate::app::TaskResult;
 use crate::context::AppContext;
+use crate::model::proof_log_item::{ProofLogItem, RequestType};
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
 use dash_sdk::dpp::platform_value::Value;
@@ -59,7 +60,57 @@ impl AppContext {
                         .map_err(|e| e.to_string());
                 }
                 Err(e) => {
-                    tracing::error!("Error fetching contested resources: {}", e);
+                    tracing::error!("Error fetching vote contenders: {}", e);
+                    if let dash_sdk::Error::Proof(
+                        dash_sdk::ProofVerifierError::GroveDBProofVerificationError {
+                            proof_bytes,
+                            path_query,
+                            height,
+                            time_ms,
+                            error,
+                        },
+                    ) = &e
+                    {
+                        // Encode the query using bincode
+                        let encoded_query = match bincode::encode_to_vec(
+                            &contenders_query,
+                            bincode::config::standard(),
+                        )
+                        .map_err(|encode_err| {
+                            tracing::error!("Error encoding query: {}", encode_err);
+                            format!("Error encoding query: {}", encode_err)
+                        }) {
+                            Ok(encoded_query) => encoded_query,
+                            Err(e) => return Err(e),
+                        };
+
+                        // Encode the path_query using bincode
+                        let verification_path_query_bytes =
+                            match bincode::encode_to_vec(&path_query, bincode::config::standard())
+                                .map_err(|encode_err| {
+                                    tracing::error!("Error encoding path_query: {}", encode_err);
+                                    format!("Error encoding path_query: {}", encode_err)
+                                }) {
+                                Ok(encoded_path_query) => encoded_path_query,
+                                Err(e) => return Err(e),
+                            };
+
+                        if let Err(e) = self
+                            .db
+                            .insert_proof_log_item(ProofLogItem {
+                                request_type: RequestType::GetContestedResourceIdentityVotes,
+                                request_bytes: encoded_query,
+                                verification_path_query_bytes,
+                                height: *height,
+                                time_ms: *time_ms,
+                                proof_bytes: proof_bytes.clone(),
+                                error: Some(error.clone()),
+                            })
+                            .map_err(|e| e.to_string())
+                        {
+                            return Err(e);
+                        }
+                    }
                     let error_str = e.to_string();
                     if error_str.contains("try another server")
                         || error_str.contains(
@@ -73,7 +124,7 @@ impl AppContext {
                                 e
                             );
                             return Err(format!(
-                                "Error fetching contested resources after retries: {}",
+                                "Error fetching vote contenders after retries: {}",
                                 e
                             ));
                         } else {
@@ -81,7 +132,7 @@ impl AppContext {
                         }
                     } else {
                         // For other errors, return immediately
-                        return Err(format!("Error fetching contested resources: {}", e));
+                        return Err(format!("Error fetching vote contenders: {}", e));
                     }
                 }
             }

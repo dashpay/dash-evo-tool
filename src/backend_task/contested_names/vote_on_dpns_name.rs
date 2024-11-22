@@ -22,7 +22,7 @@ impl AppContext {
         name: &String,
         vote_choice: ResourceVoteChoice,
         voters: &Vec<QualifiedIdentity>,
-        sdk: Sdk,
+        sdk: &Sdk,
         _sender: mpsc::Sender<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, String> {
         // Fetch DPNS contract and document type information

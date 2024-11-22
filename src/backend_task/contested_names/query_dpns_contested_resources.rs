@@ -1,4 +1,5 @@
 use crate::app::TaskResult;
+use crate::backend_task::BackendTaskSuccessResult;
 use crate::context::AppContext;
 use crate::model::proof_log_item::{ProofLogItem, RequestType};
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
@@ -9,13 +10,12 @@ use dash_sdk::platform::FetchMany;
 use dash_sdk::query_types::ContestedResource;
 use dash_sdk::Sdk;
 use std::sync::Arc;
-use std::time::Instant;
 use tokio::sync::{mpsc, OwnedSemaphorePermit, Semaphore};
 
 impl AppContext {
     pub(super) async fn query_dpns_contested_resources(
         self: &Arc<Self>,
-        sdk: Sdk,
+        sdk: &Sdk,
         sender: mpsc::Sender<TaskResult>,
     ) -> Result<(), String> {
         let data_contract = self.dpns_contract.as_ref();
@@ -23,7 +23,9 @@ impl AppContext {
             .document_type_for_name("domain")
             .expect("expected document type");
         let Some(contested_index) = document_type.find_contested_index() else {
-            return Err("No contested index on dpns domains".to_string());
+            return Err(
+                "Contested resource query failed: No contested index on dpns domains.".to_string(),
+            );
         };
         const MAX_RETRIES: usize = 3;
         let mut start_at_value = None;
@@ -76,7 +78,9 @@ impl AppContext {
                                     format!("Error encoding path_query: {}", encode_err)
                                 }) {
                                 Ok(encoded_path_query) => encoded_path_query,
-                                Err(e) => return Err(e),
+                                Err(e) => {
+                                    return Err(format!("Contested resource query failed: {}", e))
+                                }
                             };
 
                         if let Err(e) = self
@@ -92,7 +96,7 @@ impl AppContext {
                             })
                             .map_err(|e| e.to_string())
                         {
-                            return Err(e);
+                            return Err(format!("Contested resource query failed: {}", e));
                         }
                     }
                     if e.to_string().contains("try another server")
@@ -104,7 +108,7 @@ impl AppContext {
                         if retries > MAX_RETRIES {
                             tracing::error!("Max retries reached for query: {}", e);
                             return Err(format!(
-                                "Error fetching contested resources after retries: {}",
+                                "Contested resource query failed after retries: {}",
                                 e
                             ));
                         } else {
@@ -112,7 +116,7 @@ impl AppContext {
                             continue;
                         }
                     } else {
-                        return Err(format!("Error fetching contested resources: {}", e));
+                        return Err(format!("Contested resource query failed: {}", e));
                     }
                 }
             };
@@ -139,12 +143,14 @@ impl AppContext {
             let names_to_be_updated = self
                 .db
                 .insert_name_contests_as_normalized_names(contested_resources_as_strings, &self)
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| format!("Contested resource query failed. Failed to insert name contests into database: {}", e.to_string()))?;
 
-            sender
-                .send(TaskResult::Refresh)
-                .await
-                .map_err(|e| e.to_string())?;
+            sender.send(TaskResult::Refresh).await.map_err(|e| {
+                format!(
+                    "Contested resource query failed. Sender failed to send TaskResult: {}",
+                    e.to_string()
+                )
+            })?;
 
             // Create a semaphore with 15 permits
             let semaphore = Arc::new(Semaphore::new(24));
@@ -196,7 +202,7 @@ impl AppContext {
 
                     // Perform the query
                     match self_ref
-                        .query_dpns_vote_contenders(&name, sdk, sender.clone())
+                        .query_dpns_vote_contenders(&name, &sdk, sender.clone())
                         .await
                     {
                         Ok(_) => {
@@ -236,6 +242,12 @@ impl AppContext {
             start_at_value = Some((Value::Text(last_found_name), false))
         }
 
+        sender
+            .send(TaskResult::Success(BackendTaskSuccessResult::Message(
+                "Finished querying DPNS contested resources".to_string(),
+            )))
+            .await
+            .map_err(|e| format!("Finished querying DPNS contested resources but sender failed to send TaskResult: {}", e.to_string()))?;
         Ok(())
     }
 }

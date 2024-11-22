@@ -16,7 +16,7 @@ impl AppContext {
     pub(super) async fn query_dpns_vote_contenders(
         &self,
         name: &String,
-        sdk: Sdk,
+        sdk: &Sdk,
         _sender: mpsc::Sender<TaskResult>,
     ) -> Result<(), String> {
         let data_contract = self.dpns_contract.as_ref();

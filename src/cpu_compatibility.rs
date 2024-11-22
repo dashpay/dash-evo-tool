@@ -9,18 +9,35 @@ pub fn check_cpu_compatibility() {
         let cpuid = CpuId::new();
 
         if let Some(feature_info) = cpuid.get_feature_info() {
-            let avx_supported = feature_info.has_avx();
-            let avx2_supported = cpuid
-                .get_extended_feature_info()
-                .map_or(false, |ext_info| ext_info.has_avx2());
-            let avx512_supported = cpuid
-                .get_extended_feature_info()
-                .map_or(false, |ext_info| ext_info.has_avx512f()); // AVX-512 Foundation
-            if (!avx_supported || !avx2_supported) || !avx512_supported {
+            if !feature_info.has_avx() {
                 MessageDialog::new()
                     .set_type(native_dialog::MessageType::Error)
                     .set_title("Compatibility Error")
-                    .set_text("Your CPU does not support AVX/AVX2/AVX512 instructions. Please use a compatible CPU.")
+                    .set_text("Your CPU does not support AVX instructions. Please use a compatible CPU.")
+                    .show_alert()
+                    .unwrap();
+                std::process::exit(1);
+            }
+            let avx2_supported = cpuid
+                .get_extended_feature_info()
+                .map_or(false, |ext_info| ext_info.has_avx2());
+            if !avx2_supported {
+                MessageDialog::new()
+                    .set_type(native_dialog::MessageType::Error)
+                    .set_title("Compatibility Error")
+                    .set_text("Your CPU does not support AVX2 instructions. Please use a compatible CPU.")
+                    .show_alert()
+                    .unwrap();
+                std::process::exit(1);
+            }
+            let avx512_supported = cpuid
+                .get_extended_feature_info()
+                .map_or(false, |ext_info| ext_info.has_avx512f()); // AVX-512 Foundation
+            if !avx512_supported {
+                MessageDialog::new()
+                    .set_type(native_dialog::MessageType::Error)
+                    .set_title("Compatibility Error")
+                    .set_text("Your CPU does not support AVX512 instructions. Please use a compatible CPU.")
                     .show_alert()
                     .unwrap();
                 std::process::exit(1);

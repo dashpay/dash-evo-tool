@@ -7,7 +7,7 @@
 - Voting on active DPNS username contests
 - Decoding and viewing state transitions
 
-The tool supports both Mainnet and Testnet networks.
+The tool supports both Mainnet and Testnet networks. Check out the [documentation](https://docs.dash.org/en/stable/docs/user/network/dash-evo-tool/index.html) for additional information.
 
 ## Table of Contents
 

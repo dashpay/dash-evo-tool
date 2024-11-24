@@ -35,6 +35,11 @@ impl NetworkChooserScreen {
         custom_dash_qt_path: Option<String>,
         overwrite_dash_conf: bool,
     ) -> Self {
+        let current_time = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("Time went backwards");
+        let recheck_time = Some((current_time + Duration::from_secs(5)).as_millis() as u64);
+
         Self {
             mainnet_app_context: mainnet_app_context.clone(),
             testnet_app_context: testnet_app_context.cloned(),
@@ -42,7 +47,7 @@ impl NetworkChooserScreen {
             mainnet_core_status_online: false,
             testnet_core_status_online: false,
             status_checked: false,
-            recheck_time: None,
+            recheck_time,
             custom_dash_qt_path,
             custom_dash_qt_error_message: None,
             overwrite_dash_conf,
@@ -85,10 +90,10 @@ impl NetworkChooserScreen {
                 ui.label("Start");
                 ui.end_row();
 
-                // Render Mainnet
+                // Render Mainnet Row
                 app_action |= self.render_network_row(ui, Network::Dash, "Mainnet");
 
-                // Render Testnet
+                // Render Testnet Row
                 app_action |= self.render_network_row(ui, Network::Testnet, "Testnet");
             });
         egui::CollapsingHeader::new("Show more advanced settings")
@@ -267,6 +272,19 @@ impl NetworkChooserScreen {
 }
 
 impl ScreenLike for NetworkChooserScreen {
+    fn display_message(&mut self, message: &str, _message_type: super::MessageType) {
+        if message.contains("Failed to get best chain lock") {
+            match self.current_network {
+                Network::Dash => {
+                    self.mainnet_core_status_online = false;
+                }
+                Network::Testnet => {
+                    self.testnet_core_status_online = false;
+                }
+                _ => {}
+            }
+        }
+    }
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         if let BackendTaskSuccessResult::CoreItem(CoreItem::ChainLock(_, network)) =
             backend_task_success_result
@@ -291,9 +309,17 @@ impl ScreenLike for NetworkChooserScreen {
             vec![],
         );
 
-        if !self.status_checked {
-            self.status_checked = true;
-            action |= AppAction::BackendTask(BackendTask::CoreTask(CoreTask::GetBestChainLock));
+        let current_time = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("Time went backwards");
+        if let Some(recheck_time) = self.recheck_time {
+            if current_time.as_millis() as u64 >= recheck_time {
+                action |= AppAction::BackendTask(BackendTask::CoreTask(CoreTask::GetBestChainLock));
+                self.recheck_time =
+                    Some((current_time + Duration::from_secs(5)).as_millis() as u64);
+            }
+        } else {
+            self.recheck_time = Some((current_time + Duration::from_secs(5)).as_millis() as u64);
         }
 
         action |= add_left_panel(

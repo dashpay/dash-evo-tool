@@ -43,7 +43,7 @@ impl AppContext {
                         self.network,
                     ))
                 })
-                .map_err(|e| e.to_string()),
+                .map_err(|e| format!("Failed to get best chain lock: {}", e.to_string())),
             CoreTask::RefreshWalletInfo(wallet) => self.refresh_wallet_info(wallet),
             CoreTask::StartDashQT(network, custom_dash_qt, overwrite_dash_conf) => self
                 .start_dash_qt(network, custom_dash_qt, overwrite_dash_conf)

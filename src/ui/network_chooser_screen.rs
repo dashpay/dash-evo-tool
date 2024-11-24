@@ -35,11 +35,6 @@ impl NetworkChooserScreen {
         custom_dash_qt_path: Option<String>,
         overwrite_dash_conf: bool,
     ) -> Self {
-        let current_time = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("Time went backwards");
-        let recheck_time = Some((current_time + Duration::from_secs(5)).as_millis() as u64);
-
         Self {
             mainnet_app_context: mainnet_app_context.clone(),
             testnet_app_context: testnet_app_context.cloned(),
@@ -47,7 +42,7 @@ impl NetworkChooserScreen {
             mainnet_core_status_online: false,
             testnet_core_status_online: false,
             status_checked: false,
-            recheck_time,
+            recheck_time: None,
             custom_dash_qt_path,
             custom_dash_qt_error_message: None,
             overwrite_dash_conf,
@@ -301,7 +296,6 @@ impl ScreenLike for NetworkChooserScreen {
         }
     }
     fn ui(&mut self, ctx: &Context) -> AppAction {
-        //let _ = self.current_app_context().db.get_settings();
         let mut action = add_top_panel(
             ctx,
             self.current_app_context(),

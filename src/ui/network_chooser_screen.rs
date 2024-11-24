@@ -2,7 +2,6 @@ use crate::app::AppAction;
 use crate::backend_task::core::{CoreItem, CoreTask};
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
-use crate::model::password_info::PasswordInfo;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::wallet::add_new_wallet_screen::AddNewWalletScreen;
@@ -20,7 +19,6 @@ pub struct NetworkChooserScreen {
     pub current_network: Network,
     pub mainnet_core_status_online: bool,
     pub testnet_core_status_online: bool,
-    status_checked: bool,
     pub recheck_time: Option<TimestampMillis>,
     custom_dash_qt_path: Option<String>,
     custom_dash_qt_error_message: Option<String>,
@@ -41,7 +39,6 @@ impl NetworkChooserScreen {
             current_network,
             mainnet_core_status_online: false,
             testnet_core_status_online: false,
-            status_checked: false,
             recheck_time: None,
             custom_dash_qt_path,
             custom_dash_qt_error_message: None,

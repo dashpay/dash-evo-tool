@@ -311,7 +311,7 @@ impl ScreenLike for NetworkChooserScreen {
             if let Some(time) = self.recheck_time {
                 if current_time.as_millis() as u64 >= time {
                     action |= AppAction::BackendTask(BackendTask::CoreTask(
-                        CoreTask::GetBothBestChainLocks,
+                        CoreTask::GetBestChainLocksTestnetAndMainnet,
                     ));
                     self.recheck_time = Some((current_time + recheck_time).as_millis() as u64);
                 }

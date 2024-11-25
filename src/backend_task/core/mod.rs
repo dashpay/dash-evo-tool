@@ -13,7 +13,7 @@ use std::sync::{Arc, RwLock};
 #[derive(Debug, Clone)]
 pub(crate) enum CoreTask {
     GetBestChainLock,
-    GetBothBestChainLocks,
+    GetBestChainLocksTestnetAndMainnet,
     RefreshWalletInfo(Arc<RwLock<Wallet>>),
     StartDashQT(Network, Option<String>, bool),
 }
@@ -61,7 +61,7 @@ impl AppContext {
                         )
                     })
             }
-            CoreTask::GetBothBestChainLocks => {
+            CoreTask::GetBestChainLocksTestnetAndMainnet => {
                 // Load config
                 let config = match Config::load() {
                     Ok(config) => config,

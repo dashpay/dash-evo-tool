@@ -12,15 +12,14 @@ use std::sync::{Arc, RwLock};
 
 #[derive(Debug, Clone)]
 pub(crate) enum CoreTask {
-    GetBestChainLock,
-    GetBestChainLocksTestnetAndMainnet,
+    GetBestChainLocks,
     RefreshWalletInfo(Arc<RwLock<Wallet>>),
     StartDashQT(Network, Option<String>, bool),
 }
 impl PartialEq for CoreTask {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
-            (CoreTask::GetBestChainLock, CoreTask::GetBestChainLock) => true,
+            (CoreTask::GetBestChainLocks, CoreTask::GetBestChainLocks) => true,
             (CoreTask::RefreshWalletInfo(_), CoreTask::RefreshWalletInfo(_)) => true,
             (CoreTask::StartDashQT(_, _, _), CoreTask::StartDashQT(_, _, _)) => true,
             _ => false,
@@ -31,37 +30,15 @@ impl PartialEq for CoreTask {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum CoreItem {
     ReceivedAvailableUTXOTransaction(Transaction, Vec<(OutPoint, TxOut, Address)>),
-    ChainLock(ChainLock, Network),
-    BothChainLocks(ChainLock, ChainLock),
+    ChainLocks(Option<ChainLock>, Option<ChainLock>), // Mainnet, Testnet
 }
 
 impl AppContext {
     pub async fn run_core_task(&self, task: CoreTask) -> Result<BackendTaskSuccessResult, String> {
         match task {
-            CoreTask::GetBestChainLock => {
-                let network_string = match self.network {
-                    Network::Dash => "mainnet",
-                    Network::Testnet => "testnet",
-                    _ => "network",
-                };
+            CoreTask::GetBestChainLocks => {
+                tracing::info!("Getting best chain locks for testnet and mainnet");
 
-                self.core_client
-                    .get_best_chain_lock()
-                    .map(|chain_lock| {
-                        BackendTaskSuccessResult::CoreItem(CoreItem::ChainLock(
-                            chain_lock,
-                            self.network,
-                        ))
-                    })
-                    .map_err(|e| {
-                        format!(
-                            "Failed to get best chain lock for {}: {}",
-                            network_string,
-                            e.to_string()
-                        )
-                    })
-            }
-            CoreTask::GetBestChainLocksTestnetAndMainnet => {
                 // Load configs
                 let config = match Config::load() {
                     Ok(config) => config,
@@ -123,15 +100,16 @@ impl AppContext {
                 // Handle results
                 match (mainnet_result, testnet_result) {
                     (Ok(mainnet_chainlock), Ok(testnet_chainlock)) => {
-                        Ok(BackendTaskSuccessResult::CoreItem(
-                            CoreItem::BothChainLocks(mainnet_chainlock, testnet_chainlock),
-                        ))
+                        Ok(BackendTaskSuccessResult::CoreItem(CoreItem::ChainLocks(
+                            Some(mainnet_chainlock),
+                            Some(testnet_chainlock),
+                        )))
                     }
                     (Ok(mainnet_chainlock), Err(_)) => Ok(BackendTaskSuccessResult::CoreItem(
-                        CoreItem::ChainLock(mainnet_chainlock, Network::Dash),
+                        CoreItem::ChainLocks(Some(mainnet_chainlock), None),
                     )),
                     (Err(_), Ok(testnet_chainlock)) => Ok(BackendTaskSuccessResult::CoreItem(
-                        CoreItem::ChainLock(testnet_chainlock, Network::Testnet),
+                        CoreItem::ChainLocks(None, Some(testnet_chainlock)),
                     )),
                     (Err(_), Err(_)) => {
                         Err("Failed to get best chain lock for both mainnet and testnet"

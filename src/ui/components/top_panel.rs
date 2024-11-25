@@ -145,10 +145,7 @@ pub fn add_top_panel(
         .exact_height(50.0)
         .show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
-                #[cfg(not(target_os = "windows"))]
-                {
-                    action |= add_connection_indicator(ui, app_context);
-                }
+                action |= add_connection_indicator(ui, app_context);
 
                 // Left-aligned content with location view
                 action |= add_location_view(ui, location);

@@ -21,6 +21,8 @@ use futures::StreamExt;
 #[cfg(target_os = "windows")]
 use tokio::runtime::Runtime;
 #[cfg(target_os = "windows")]
+use tokio::time::timeout;
+#[cfg(target_os = "windows")]
 use zeromq::{Socket, SocketRecv, SubSocket};
 
 pub struct CoreZMQListener {
@@ -312,11 +314,10 @@ impl CoreZMQListener {
                     .expect("Failed to subscribe to rawchainlock");
 
                 println!("Subscribed to ZMQ at {}", endpoint);
-
                 while !should_stop_clone.load(Ordering::SeqCst) {
-                    // Receive messages
-                    match socket.recv().await {
-                        Ok(msg) => {
+                    match timeout(Duration::from_secs(30), socket.recv()).await {
+                        Ok(Ok(msg)) => {
+                            // Process the message
                             // Access frames using msg.get(n)
                             if let Some(topic_frame) = msg.get(0) {
                                 let topic = String::from_utf8_lossy(topic_frame).to_string();
@@ -330,6 +331,11 @@ impl CoreZMQListener {
                                             let mut cursor = Cursor::new(data_bytes);
                                             match Block::consensus_decode(&mut cursor) {
                                                 Ok(block) => {
+                                                    if let Some(ref tx) = tx_zmq_status {
+                                                        // ZMQ refresh socket connected status
+                                                        tx.send(ZMQConnectionEvent::Connected)
+                                                            .expect("Failed to send connected event");
+                                                    }
                                                     if let Err(e) = sender_clone.send((
                                                         ZMQMessage::ChainLockedBlock(block),
                                                         network,
@@ -356,6 +362,11 @@ impl CoreZMQListener {
                                                     match InstantLock::consensus_decode(&mut cursor)
                                                     {
                                                         Ok(islock) => {
+                                                            if let Some(ref tx) = tx_zmq_status {
+                                                                // ZMQ refresh socket connected status
+                                                                tx.send(ZMQConnectionEvent::Connected)
+                                                                    .expect("Failed to send connected event");
+                                                            }
                                                             if let Err(e) = sender_clone.send((
                                                                 ZMQMessage::ISLockedTransaction(
                                                                     tx, islock,
@@ -390,12 +401,20 @@ impl CoreZMQListener {
                                     }
                                 }
                             }
-                        }
-                        Err(e) => {
+                        },
+                        Ok(Err(e)) => {
+                            // Handle recv error
                             eprintln!("Error receiving message: {}", e);
                             // Sleep briefly before retrying
                             tokio::time::sleep(Duration::from_millis(100)).await;
-                        }
+                        },
+                        Err(_) => {
+                            // Timeout occurred, handle disconnection
+                            if let Some(ref tx) = tx_zmq_status {
+                                tx.send(ZMQConnectionEvent::Disconnected)
+                                    .expect("Failed to send connected event");
+                            }
+                        },
                     }
                 }
 

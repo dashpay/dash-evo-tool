@@ -10,6 +10,7 @@ use crate::ui::dpns_contested_names_screen::DPNSContestedNamesScreen;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
 use crate::ui::identities::keys::keys_screen::KeysScreen;
+use crate::ui::identities::top_up_identity_screen::TopUpIdentityScreen;
 use crate::ui::identities::withdraw_from_identity_screen::WithdrawalScreen;
 use crate::ui::network_chooser_screen::NetworkChooserScreen;
 use crate::ui::tool_screens::proof_log_screen::ProofLogScreen;
@@ -20,7 +21,7 @@ use crate::ui::withdrawal_statuses_screen::WithdrawsStatusScreen;
 use dash_sdk::dpp::identity::Identity;
 use dash_sdk::dpp::prelude::IdentityPublicKey;
 use dpns_contested_names_screen::DPNSSubscreen;
-use egui::Context;
+use egui::{Context, Widget};
 use identities::add_existing_identity_screen::AddExistingIdentityScreen;
 use identities::add_new_identity_screen::AddNewIdentityScreen;
 use identities::identities_screen::IdentitiesScreen;
@@ -136,6 +137,7 @@ pub enum ScreenType {
     NetworkChooser,
     RegisterDpnsName,
     ProofLog,
+    TopUpIdentity(QualifiedIdentity),
 }
 
 impl ScreenType {
@@ -153,6 +155,9 @@ impl ScreenType {
             ),
             ScreenType::AddNewIdentity => {
                 Screen::AddNewIdentityScreen(AddNewIdentityScreen::new(app_context))
+            }
+            ScreenType::TopUpIdentity(identity) => {
+                Screen::TopUpIdentityScreen(TopUpIdentityScreen::new(identity.clone(), app_context))
             }
             ScreenType::AddExistingIdentity => {
                 Screen::AddExistingIdentityScreen(AddExistingIdentityScreen::new(app_context))
@@ -218,6 +223,7 @@ pub enum Screen {
     KeysScreen(KeysScreen),
     RegisterDpnsNameScreen(RegisterDpnsNameScreen),
     WithdrawalScreen(WithdrawalScreen),
+    TopUpIdentityScreen(TopUpIdentityScreen),
     TransferScreen(TransferScreen),
     AddKeyScreen(AddKeyScreen),
     ProofLogScreen(ProofLogScreen),
@@ -244,6 +250,7 @@ impl Screen {
             Screen::RegisterDpnsNameScreen(screen) => screen.app_context = app_context,
             Screen::AddNewWalletScreen(screen) => screen.app_context = app_context,
             Screen::TransferScreen(screen) => screen.app_context = app_context,
+            Screen::TopUpIdentityScreen(screen) => screen.app_context = app_context,
             Screen::WalletsBalancesScreen(screen) => screen.app_context = app_context,
             Screen::WithdrawsStatusScreen(screen) => screen.app_context = app_context,
             Screen::ImportWalletScreen(screen) => screen.app_context = app_context,
@@ -318,6 +325,9 @@ impl Screen {
             Screen::AddKeyScreen(screen) => ScreenType::AddKeyScreen(screen.identity.clone()),
             Screen::DocumentQueryScreen(_) => ScreenType::DocumentQueryScreen,
             Screen::AddNewIdentityScreen(_) => ScreenType::AddExistingIdentity,
+            Screen::TopUpIdentityScreen(screen) => {
+                ScreenType::TopUpIdentity(screen.identity.clone())
+            }
             Screen::RegisterDpnsNameScreen(_) => ScreenType::RegisterDpnsName,
             Screen::AddNewWalletScreen(_) => ScreenType::AddNewWallet,
             Screen::TransferScreen(screen) => ScreenType::TransferScreen(screen.identity.clone()),
@@ -338,6 +348,7 @@ impl ScreenLike for Screen {
             Screen::AddNewWalletScreen(screen) => screen.refresh(),
             Screen::ImportWalletScreen(screen) => screen.refresh(),
             Screen::AddNewIdentityScreen(screen) => screen.refresh(),
+            Screen::TopUpIdentityScreen(screen) => screen.refresh(),
             Screen::AddExistingIdentityScreen(screen) => screen.refresh(),
             Screen::KeyInfoScreen(screen) => screen.refresh(),
             Screen::KeysScreen(screen) => screen.refresh(),
@@ -361,6 +372,7 @@ impl ScreenLike for Screen {
             Screen::AddNewWalletScreen(screen) => screen.refresh_on_arrival(),
             Screen::ImportWalletScreen(screen) => screen.refresh_on_arrival(),
             Screen::AddNewIdentityScreen(screen) => screen.refresh_on_arrival(),
+            Screen::TopUpIdentityScreen(screen) => screen.refresh_on_arrival(),
             Screen::AddExistingIdentityScreen(screen) => screen.refresh_on_arrival(),
             Screen::KeyInfoScreen(screen) => screen.refresh_on_arrival(),
             Screen::KeysScreen(screen) => screen.refresh_on_arrival(),
@@ -384,6 +396,7 @@ impl ScreenLike for Screen {
             Screen::AddNewWalletScreen(screen) => screen.ui(ctx),
             Screen::ImportWalletScreen(screen) => screen.ui(ctx),
             Screen::AddNewIdentityScreen(screen) => screen.ui(ctx),
+            Screen::TopUpIdentityScreen(screen) => screen.ui(ctx),
             Screen::AddExistingIdentityScreen(screen) => screen.ui(ctx),
             Screen::KeyInfoScreen(screen) => screen.ui(ctx),
             Screen::KeysScreen(screen) => screen.ui(ctx),
@@ -409,6 +422,7 @@ impl ScreenLike for Screen {
             Screen::AddNewWalletScreen(screen) => screen.display_message(message, message_type),
             Screen::ImportWalletScreen(screen) => screen.display_message(message, message_type),
             Screen::AddNewIdentityScreen(screen) => screen.display_message(message, message_type),
+            Screen::TopUpIdentityScreen(screen) => screen.display_message(message, message_type),
             Screen::AddExistingIdentityScreen(screen) => {
                 screen.display_message(message, message_type)
             }
@@ -446,6 +460,9 @@ impl ScreenLike for Screen {
                 screen.display_task_result(backend_task_success_result.clone())
             }
             Screen::AddNewIdentityScreen(screen) => {
+                screen.display_task_result(backend_task_success_result.clone())
+            }
+            Screen::TopUpIdentityScreen(screen) => {
                 screen.display_task_result(backend_task_success_result.clone())
             }
             Screen::AddExistingIdentityScreen(screen) => {
@@ -495,6 +512,7 @@ impl ScreenLike for Screen {
             Screen::AddNewWalletScreen(screen) => screen.pop_on_success(),
             Screen::ImportWalletScreen(screen) => screen.pop_on_success(),
             Screen::AddNewIdentityScreen(screen) => screen.pop_on_success(),
+            Screen::TopUpIdentityScreen(screen) => screen.pop_on_success(),
             Screen::AddExistingIdentityScreen(screen) => screen.pop_on_success(),
             Screen::KeyInfoScreen(screen) => screen.pop_on_success(),
             Screen::KeysScreen(screen) => screen.pop_on_success(),

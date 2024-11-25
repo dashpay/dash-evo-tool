@@ -300,8 +300,7 @@ impl IdentitiesScreen {
                         .column(Column::initial(100.0).resizable(true)) // Balance
                         .column(Column::initial(80.0).resizable(true)) // Type
                         .column(Column::initial(80.0).resizable(true)) // Keys
-                        .column(Column::initial(80.0).resizable(true)) // Withdraw
-                        .column(Column::initial(80.0).resizable(true)) // Transfer
+                        .column(Column::initial(100.0).resizable(true)) // Balance
                         .column(Column::initial(80.0).resizable(true)) // Actions
                         .header(30.0, |mut header| {
                             header.col(|ui| {
@@ -323,10 +322,7 @@ impl IdentitiesScreen {
                                 ui.heading("Keys");
                             });
                             header.col(|ui| {
-                                ui.heading("Withdraw");
-                            });
-                            header.col(|ui| {
-                                ui.heading("Transfer");
+                                ui.heading("Balance");
                             });
                             header.col(|ui| {
                                 ui.heading("Actions");
@@ -446,8 +442,14 @@ impl IdentitiesScreen {
                                                 )),
                                             );
                                         }
-                                    });
-                                    row.col(|ui| {
+                                        if ui.button("Top up").clicked() {
+                                            action = AppAction::AddScreen(
+                                                Screen::WithdrawalScreen(WithdrawalScreen::new(
+                                                    qualified_identity.clone(),
+                                                    &self.app_context,
+                                                )),
+                                            );
+                                        }
                                         if ui.button("Transfer").clicked() {
                                             action = AppAction::AddScreen(Screen::TransferScreen(
                                                 TransferScreen::new(

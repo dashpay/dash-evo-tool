@@ -32,7 +32,7 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 
 pub struct TopUpIdentityScreen {
-    identity: QualifiedIdentity,
+    pub identity: QualifiedIdentity,
     step: Arc<RwLock<WalletFundedScreenStep>>,
     funding_asset_lock: Option<(Transaction, AssetLockProof, Address)>,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,

@@ -195,7 +195,7 @@ impl NetworkChooserScreen {
             } else {
                 &self.testnet_app_context.as_ref().unwrap()
             };
-            app_action |=
+            app_action =
                 AppAction::AddScreen(Screen::AddNewWalletScreen(AddNewWalletScreen::new(context)));
         }
 
@@ -216,7 +216,7 @@ impl NetworkChooserScreen {
 
         // Add a button to start the network
         if ui.button("Start").clicked() {
-            app_action |= AppAction::BackendTask(BackendTask::CoreTask(CoreTask::StartDashQT(
+            app_action = AppAction::BackendTask(BackendTask::CoreTask(CoreTask::StartDashQT(
                 network,
                 self.custom_dash_qt_path.clone(),
                 self.overwrite_dash_conf,
@@ -290,7 +290,7 @@ impl ScreenLike for NetworkChooserScreen {
                 .expect("Time went backwards");
             if let Some(time) = self.recheck_time {
                 if current_time.as_millis() as u64 >= time {
-                    action |=
+                    action =
                         AppAction::BackendTask(BackendTask::CoreTask(CoreTask::GetBestChainLocks));
                     self.recheck_time = Some((current_time + recheck_time).as_millis() as u64);
                 }

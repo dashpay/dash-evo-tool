@@ -254,8 +254,8 @@ impl NetworkChooserScreen {
 }
 
 impl ScreenLike for NetworkChooserScreen {
-    fn display_message(&mut self, message: &str, message_type: super::MessageType) {
-        if message_type == MessageType::Error && message.contains("Failed to get best chain lock") {
+    fn display_message(&mut self, message: &str, _message_type: super::MessageType) {
+        if message.contains("Failed to get best chain lock") {
             if message.contains("mainnet") {
                 self.mainnet_core_status_online = false;
             }

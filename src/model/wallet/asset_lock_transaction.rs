@@ -16,13 +16,14 @@ impl Wallet {
         &mut self,
         network: Network,
         amount: u64,
+        allow_take_fee_from_amount: bool,
         identity_index: u32,
         register_addresses: Option<&AppContext>,
     ) -> Result<
         (
             Transaction,
             PrivateKey,
-            Address,
+            Option<Address>,
             BTreeMap<OutPoint, (TxOut, Address)>,
         ),
         String,
@@ -37,52 +38,71 @@ impl Wallet {
 
         let one_time_key_hash = asset_lock_public_key.pubkey_hash();
         let fee = 3_000;
-        let (utxos, change) = self
-            .take_unspent_utxos_for(amount + fee)
+
+        let (utxos, change_option) = self
+            .take_unspent_utxos_for(amount, fee, allow_take_fee_from_amount)
             .ok_or("take_unspent_utxos_for() returned None".to_string())?;
 
-        let change_address = self.change_address(network, register_addresses)?;
+        let actual_amount = if change_option.is_none() && allow_take_fee_from_amount {
+            // The amount has been adjusted by taking the fee from the amount
+            // Calculate the adjusted amount based on the total value of the UTXOs minus the fee
+            let total_input_value: u64 = utxos.iter().map(|(_, (tx_out, _))| tx_out.value).sum();
+            total_input_value - fee
+        } else {
+            amount
+        };
 
         let payload_output = TxOut {
-            value: amount,
+            value: actual_amount,
             script_pubkey: ScriptBuf::new_p2pkh(&one_time_key_hash),
         };
         let burn_output = TxOut {
-            value: amount,
+            value: actual_amount,
             script_pubkey: ScriptBuf::new_op_return(&[]),
         };
-        if change < fee {
-            return Err("Change < Fee in asset_lock_transaction()".to_string());
-        }
-        let change_output = TxOut {
-            value: change - fee,
-            script_pubkey: change_address.script_pubkey(),
+
+        let (change_output, change_address) = if let Some(change) = change_option {
+            let change_address = self.change_address(network, register_addresses)?;
+            (
+                Some(TxOut {
+                    value: change,
+                    script_pubkey: change_address.script_pubkey(),
+                }),
+                Some(change_address),
+            )
+        } else {
+            (None, None)
         };
+
         let payload = AssetLockPayload {
             version: 1,
             credit_outputs: vec![payload_output],
         };
 
-        // we need to get all inputs from utxos to add them to the transaction
-
+        // Collect inputs from UTXOs
         let inputs = utxos
             .iter()
-            .map(|(utxo, _)| {
-                let mut tx_in = TxIn::default();
-                tx_in.previous_output = utxo.clone();
-                tx_in
+            .map(|(utxo, _)| TxIn {
+                previous_output: utxo.clone(),
+                ..Default::default()
             })
             .collect();
 
-        let sighash_u32 = 1u32;
-
-        let mut tx: Transaction = Transaction {
+        let mut tx = Transaction {
             version: 3,
             lock_time: 0,
             input: inputs,
-            output: vec![burn_output, change_output],
+            output: {
+                let mut outputs = vec![burn_output];
+                if let Some(change_output) = change_output {
+                    outputs.push(change_output);
+                }
+                outputs
+            },
             special_transaction_payload: Some(TransactionPayload::AssetLockPayloadType(payload)),
         };
+
+        let sighash_u32 = 1u32;
 
         let cache = SighashCache::new(&tx);
 

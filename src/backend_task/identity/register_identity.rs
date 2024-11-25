@@ -177,6 +177,7 @@ impl AppContext {
                         match wallet.asset_lock_transaction(
                             sdk.network,
                             amount,
+                            true,
                             identity_index,
                             Some(self),
                         ) {
@@ -188,6 +189,7 @@ impl AppContext {
                                 wallet.asset_lock_transaction(
                                     sdk.network,
                                     amount,
+                                    true,
                                     identity_index,
                                     Some(self),
                                 )?
@@ -409,6 +411,7 @@ impl AppContext {
             wallet
                 .unused_asset_locks
                 .retain(|(tx, _, _, _, _)| tx.txid() != tx_id);
+            wallet.identities.insert(wallet_identity_index, identity);
         }
 
         self.db

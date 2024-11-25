@@ -13,7 +13,9 @@ pub fn check_cpu_compatibility() {
                 MessageDialog::new()
                     .set_type(native_dialog::MessageType::Error)
                     .set_title("Compatibility Error")
-                    .set_text("Your CPU does not support AVX instructions. Please use a compatible CPU.")
+                    .set_text(
+                        "Your CPU does not support AVX instructions. Please use a compatible CPU.",
+                    )
                     .show_alert()
                     .unwrap();
                 std::process::exit(1);
@@ -25,7 +27,9 @@ pub fn check_cpu_compatibility() {
                 MessageDialog::new()
                     .set_type(native_dialog::MessageType::Error)
                     .set_title("Compatibility Error")
-                    .set_text("Your CPU does not support AVX2 instructions. Please use a compatible CPU.")
+                    .set_text(
+                        "Your CPU does not support AVX2 instructions. Please use a compatible CPU.",
+                    )
                     .show_alert()
                     .unwrap();
                 std::process::exit(1);

@@ -62,61 +62,63 @@ impl AppContext {
                     })
             }
             CoreTask::GetBestChainLocksTestnetAndMainnet => {
-                // Load config
+                // Load configs
                 let config = match Config::load() {
                     Ok(config) => config,
                     Err(e) => {
                         return Err(format!("Failed to load config: {}", e));
                     }
                 };
+                let maybe_mainnet_config = config.config_for_network(Network::Dash);
+                let maybe_testnet_config = config.config_for_network(Network::Testnet);
 
                 // Get mainnet best chainlock
-                let mainnet_config = config
-                    .config_for_network(Network::Dash)
-                    .clone()
-                    .ok_or("Failed to get mainnet config".to_string())?;
-                let mainnet_addr = format!(
-                    "http://{}:{}",
-                    mainnet_config.core_host, mainnet_config.core_rpc_port
-                );
-                let mainnet_client = Client::new(
-                    &mainnet_addr,
-                    Auth::UserPass(
-                        mainnet_config.core_rpc_user.to_string(),
-                        mainnet_config.core_rpc_password.to_string(),
-                    ),
-                )
-                .map_err(|_| "Failed to create mainnet client".to_string())?;
-                let mainnet_result = mainnet_client.get_best_chain_lock().map_err(|e| {
-                    format!(
-                        "Failed to get best chain lock for mainnet: {}",
-                        e.to_string()
+                let mainnet_result = if let Some(mainnet_config) = maybe_mainnet_config {
+                    let mainnet_addr = format!(
+                        "http://{}:{}",
+                        mainnet_config.core_host, mainnet_config.core_rpc_port
+                    );
+                    let mainnet_client = Client::new(
+                        &mainnet_addr,
+                        Auth::UserPass(
+                            mainnet_config.core_rpc_user.to_string(),
+                            mainnet_config.core_rpc_password.to_string(),
+                        ),
                     )
-                });
+                    .map_err(|_| "Failed to create mainnet client".to_string())?;
+                    mainnet_client.get_best_chain_lock().map_err(|e| {
+                        format!(
+                            "Failed to get best chain lock for mainnet: {}",
+                            e.to_string()
+                        )
+                    })
+                } else {
+                    Err("Mainnet config not found".to_string())
+                };
 
                 // Get testnet best chainlock
-                let testnet_config = config
-                    .config_for_network(Network::Testnet)
-                    .clone()
-                    .ok_or("Failed to get testnet config".to_string())?;
-                let testnet_addr = format!(
-                    "http://{}:{}",
-                    testnet_config.core_host, testnet_config.core_rpc_port
-                );
-                let testnet_client = Client::new(
-                    &testnet_addr,
-                    Auth::UserPass(
-                        testnet_config.core_rpc_user.to_string(),
-                        testnet_config.core_rpc_password.to_string(),
-                    ),
-                )
-                .map_err(|_| "Failed to create testnet client".to_string())?;
-                let testnet_result = testnet_client.get_best_chain_lock().map_err(|e| {
-                    format!(
-                        "Failed to get best chain lock for testnet: {}",
-                        e.to_string()
+                let testnet_result = if let Some(testnet_config) = maybe_testnet_config {
+                    let testnet_addr = format!(
+                        "http://{}:{}",
+                        testnet_config.core_host, testnet_config.core_rpc_port
+                    );
+                    let testnet_client = Client::new(
+                        &testnet_addr,
+                        Auth::UserPass(
+                            testnet_config.core_rpc_user.to_string(),
+                            testnet_config.core_rpc_password.to_string(),
+                        ),
                     )
-                });
+                    .map_err(|_| "Failed to create testnet client".to_string())?;
+                    testnet_client.get_best_chain_lock().map_err(|e| {
+                        format!(
+                            "Failed to get best chain lock for testnet: {}",
+                            e.to_string()
+                        )
+                    })
+                } else {
+                    Err("Testnet config not found".to_string())
+                };
 
                 // Handle results
                 match (mainnet_result, testnet_result) {
@@ -125,24 +127,13 @@ impl AppContext {
                             CoreItem::BothChainLocks(mainnet_chainlock, testnet_chainlock),
                         ))
                     }
-                    (Ok(mainnet_chainlock), Err(testnet_err)) => {
-                        tracing::error!("{}", testnet_err);
-                        Ok(BackendTaskSuccessResult::CoreItem(CoreItem::ChainLock(
-                            mainnet_chainlock,
-                            Network::Dash,
-                        )))
-                    }
-                    (Err(mainnet_err), Ok(testnet_chainlock)) => {
-                        tracing::error!("{}", mainnet_err);
-                        Ok(BackendTaskSuccessResult::CoreItem(CoreItem::ChainLock(
-                            testnet_chainlock,
-                            Network::Testnet,
-                        )))
-                    }
+                    (Ok(mainnet_chainlock), Err(_)) => Ok(BackendTaskSuccessResult::CoreItem(
+                        CoreItem::ChainLock(mainnet_chainlock, Network::Dash),
+                    )),
+                    (Err(_), Ok(testnet_chainlock)) => Ok(BackendTaskSuccessResult::CoreItem(
+                        CoreItem::ChainLock(testnet_chainlock, Network::Testnet),
+                    )),
                     (Err(_), Err(_)) => {
-                        tracing::error!(
-                            "Failed to get best chain lock for both mainnet and testnet",
-                        );
                         Err("Failed to get best chain lock for both mainnet and testnet"
                             .to_string())
                     }

@@ -242,7 +242,11 @@ impl Wallet {
     }
 
     pub fn max_balance(&self) -> u64 {
-        self.address_balances.values().sum::<Duffs>()
+        self.utxos
+            .values()
+            .map(|outpoints_to_tx_out| outpoints_to_tx_out.values().map(|tx_out| tx_out.value))
+            .flatten()
+            .sum::<Duffs>()
     }
 
     fn seed_bytes(&self) -> Result<&[u8; 64], String> {

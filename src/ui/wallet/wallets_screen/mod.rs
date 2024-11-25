@@ -392,7 +392,7 @@ impl WalletsBalancesScreen {
                             .resizable(true)
                             .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
                             .column(Column::auto()) // Address
-                            // .column(Column::initial(100.0)) // Balance
+                            .column(Column::initial(100.0)) // Balance
                             .column(Column::initial(60.0)) // UTXOs
                             .column(Column::initial(150.0)) // Total Received
                             .column(Column::initial(100.0)) // Type
@@ -412,19 +412,19 @@ impl WalletsBalancesScreen {
                                         self.toggle_sort(SortColumn::Address);
                                     }
                                 });
-                                // header.col(|ui| {
-                                //     let label = if self.sort_column == SortColumn::Balance {
-                                //         match self.sort_order {
-                                //             SortOrder::Ascending => "Balance (DASH) ^",
-                                //             SortOrder::Descending => "Balance (DASH) v",
-                                //         }
-                                //     } else {
-                                //         "Balance (DASH)"
-                                //     };
-                                //     if ui.button(label).clicked() {
-                                //         self.toggle_sort(SortColumn::Balance);
-                                //     }
-                                // });
+                                header.col(|ui| {
+                                    let label = if self.sort_column == SortColumn::Balance {
+                                        match self.sort_order {
+                                            SortOrder::Ascending => "Total Received (DASH) ^",
+                                            SortOrder::Descending => "Total Received (DASH) v",
+                                        }
+                                    } else {
+                                        "Total Received (DASH)"
+                                    };
+                                    if ui.button(label).clicked() {
+                                        self.toggle_sort(SortColumn::Balance);
+                                    }
+                                });
                                 header.col(|ui| {
                                     let label = if self.sort_column == SortColumn::UTXOs {
                                         match self.sort_order {
@@ -497,10 +497,10 @@ impl WalletsBalancesScreen {
                                         row.col(|ui| {
                                             ui.label(data.address.to_string());
                                         });
-                                        // row.col(|ui| {
-                                        //     let dash_balance = data.balance as f64 * 1e-8;
-                                        //     ui.label(format!("{:.8}", dash_balance));
-                                        // });
+                                        row.col(|ui| {
+                                            let dash_balance = data.balance as f64 * 1e-8;
+                                            ui.label(format!("{:.8}", dash_balance));
+                                        });
                                         row.col(|ui| {
                                             ui.label(format!("{}", data.utxo_count));
                                         });

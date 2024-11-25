@@ -1,10 +1,9 @@
 use crate::app::AppAction;
-use crate::ui::identities::add_new_identity_screen::{
-    AddNewIdentityScreen, FundingMethod, WalletFundedScreenStep,
-};
+use crate::ui::identities::add_new_identity_screen::FundingMethod;
+use crate::ui::identities::top_up_identity_screen::{TopUpIdentityScreen, WalletFundedScreenStep};
 use egui::Ui;
 
-impl AddNewIdentityScreen {
+impl TopUpIdentityScreen {
     fn render_choose_funding_asset_lock(&mut self, ui: &mut egui::Ui) {
         // Ensure a wallet is selected
         let Some(selected_wallet) = self.selected_wallet.clone() else {

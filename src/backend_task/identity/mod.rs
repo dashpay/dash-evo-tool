@@ -4,6 +4,7 @@ mod load_identity_from_wallet;
 mod refresh_identity;
 mod register_dpns_name;
 mod register_identity;
+mod top_up_identity;
 mod transfer;
 mod withdraw_from_identity;
 
@@ -192,7 +193,7 @@ impl IdentityKeys {
 
 pub type IdentityIndex = u32;
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum IdentityRegistrationMethod {
+pub enum IdentityFundingMethod {
     UseAssetLock(Address, AssetLockProof, Transaction),
     FundWithUtxo(OutPoint, TxOut, Address, IdentityIndex),
     FundWithWallet(Duffs, IdentityIndex),
@@ -204,14 +205,28 @@ pub struct IdentityRegistrationInfo {
     pub keys: IdentityKeys,
     pub wallet: Arc<RwLock<Wallet>>,
     pub wallet_identity_index: u32,
-    pub identity_registration_method: IdentityRegistrationMethod,
+    pub identity_funding_method: IdentityFundingMethod,
 }
 
 impl PartialEq for IdentityRegistrationInfo {
     fn eq(&self, other: &Self) -> bool {
         self.alias_input == other.alias_input
-            && self.identity_registration_method == other.identity_registration_method
+            && self.identity_funding_method == other.identity_funding_method
             && self.keys == other.keys
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct IdentityTopUpInfo {
+    pub qualified_identity: QualifiedIdentity,
+    pub wallet: Arc<RwLock<Wallet>>,
+    pub identity_funding_method: IdentityFundingMethod,
+}
+
+impl PartialEq for IdentityTopUpInfo {
+    fn eq(&self, other: &Self) -> bool {
+        self.qualified_identity == other.qualified_identity
+            && self.identity_funding_method == other.identity_funding_method
     }
 }
 
@@ -226,6 +241,7 @@ pub(crate) enum IdentityTask {
     LoadIdentity(IdentityInputToLoad),
     SearchIdentityFromWallet(WalletArcRef, IdentityIndex),
     RegisterIdentity(IdentityRegistrationInfo),
+    TopUpIdentity(IdentityTopUpInfo),
     AddKeyToIdentity(QualifiedIdentity, QualifiedIdentityPublicKey, [u8; 32]),
     WithdrawFromIdentity(QualifiedIdentity, Option<Address>, Credits, Option<KeyID>),
     Transfer(QualifiedIdentity, Identifier, Credits, Option<KeyID>),
@@ -439,6 +455,9 @@ impl AppContext {
             IdentityTask::SearchIdentityFromWallet(wallet, identity_index) => {
                 self.load_user_identity_from_wallet(sdk, wallet, identity_index)
                     .await
+            }
+            IdentityTask::TopUpIdentity(top_up_info) => {
+                self.top_up_identity(top_up_info, sender).await
             }
         }
     }

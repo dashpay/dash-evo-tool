@@ -37,6 +37,7 @@ pub(crate) enum BackendTaskSuccessResult {
     Documents(Documents),
     CoreItem(CoreItem),
     RegisteredIdentity(QualifiedIdentity),
+    ToppedUpIdentity(QualifiedIdentity),
     SuccessfulVotes(Vec<Vote>),
     WithdrawalStatus(WithdrawStatusPartialData),
 }

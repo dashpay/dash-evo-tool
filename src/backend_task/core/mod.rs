@@ -12,6 +12,7 @@ use std::sync::{Arc, RwLock};
 
 #[derive(Debug, Clone)]
 pub(crate) enum CoreTask {
+    GetBestChainLock,
     GetBestChainLocks,
     RefreshWalletInfo(Arc<RwLock<Wallet>>),
     StartDashQT(Network, Option<String>, bool),
@@ -19,6 +20,7 @@ pub(crate) enum CoreTask {
 impl PartialEq for CoreTask {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
+            (CoreTask::GetBestChainLock, CoreTask::GetBestChainLock) => true,
             (CoreTask::GetBestChainLocks, CoreTask::GetBestChainLocks) => true,
             (CoreTask::RefreshWalletInfo(_), CoreTask::RefreshWalletInfo(_)) => true,
             (CoreTask::StartDashQT(_, _, _), CoreTask::StartDashQT(_, _, _)) => true,
@@ -30,12 +32,23 @@ impl PartialEq for CoreTask {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum CoreItem {
     ReceivedAvailableUTXOTransaction(Transaction, Vec<(OutPoint, TxOut, Address)>),
+    ChainLock(ChainLock, Network),
     ChainLocks(Option<ChainLock>, Option<ChainLock>), // Mainnet, Testnet
 }
 
 impl AppContext {
     pub async fn run_core_task(&self, task: CoreTask) -> Result<BackendTaskSuccessResult, String> {
         match task {
+            CoreTask::GetBestChainLock => self
+                .core_client
+                .get_best_chain_lock()
+                .map(|chain_lock| {
+                    BackendTaskSuccessResult::CoreItem(CoreItem::ChainLock(
+                        chain_lock,
+                        self.network,
+                    ))
+                })
+                .map_err(|e| e.to_string()),
             CoreTask::GetBestChainLocks => {
                 tracing::info!("Getting best chain locks for testnet and mainnet");
 

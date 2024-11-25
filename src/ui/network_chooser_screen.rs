@@ -13,6 +13,8 @@ use eframe::egui::{self, Color32, Context, Ui};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use super::MessageType;
+
 pub struct NetworkChooserScreen {
     pub mainnet_app_context: Arc<AppContext>,
     pub testnet_app_context: Option<Arc<AppContext>>,
@@ -167,23 +169,11 @@ impl NetworkChooserScreen {
         let mut app_action = AppAction::None;
         ui.label(name);
 
-        // Simulate checking network status
+        // Check network status
         let is_working = self.check_network_status(network);
         let status_color = if is_working {
             Color32::from_rgb(0, 255, 0) // Green if working
         } else {
-            if let Some(recheck_time) = self.recheck_time {
-                let current_time = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .expect("Time went backwards");
-                let current_time_ms = current_time.as_millis() as u64;
-                if current_time_ms >= recheck_time {
-                    app_action |=
-                        AppAction::BackendTask(BackendTask::CoreTask(CoreTask::GetBestChainLock));
-                    self.recheck_time =
-                        Some((current_time + Duration::from_secs(5)).as_millis() as u64);
-                }
-            }
             Color32::from_rgb(255, 0, 0) // Red if not working
         };
 
@@ -253,7 +243,7 @@ impl NetworkChooserScreen {
         app_action
     }
 
-    /// Simulate a function to check if the network is working
+    /// Check if the network is working
     fn check_network_status(&self, network: Network) -> bool {
         match network {
             Network::Dash => self.mainnet_core_status_online,
@@ -264,24 +254,20 @@ impl NetworkChooserScreen {
 }
 
 impl ScreenLike for NetworkChooserScreen {
-    fn display_message(&mut self, message: &str, _message_type: super::MessageType) {
-        if message.contains("Failed to get best chain lock") {
-            match self.current_network {
-                Network::Dash => {
-                    self.mainnet_core_status_online = false;
-                }
-                Network::Testnet => {
-                    self.testnet_core_status_online = false;
-                }
-                _ => {}
+    fn display_message(&mut self, message: &str, message_type: super::MessageType) {
+        if message_type == MessageType::Error && message.contains("Failed to get best chain lock") {
+            if message.contains("mainnet") {
+                self.mainnet_core_status_online = false;
+            }
+            if message.contains("testnet") {
+                self.testnet_core_status_online = false;
             }
         }
     }
+
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
-        if let BackendTaskSuccessResult::CoreItem(CoreItem::ChainLock(_, network)) =
-            backend_task_success_result
-        {
-            match network {
+        match backend_task_success_result {
+            BackendTaskSuccessResult::CoreItem(CoreItem::ChainLock(_, network)) => match network {
                 Network::Dash => {
                     self.mainnet_core_status_online = true;
                 }
@@ -289,9 +275,15 @@ impl ScreenLike for NetworkChooserScreen {
                     self.testnet_core_status_online = true;
                 }
                 _ => {}
+            },
+            BackendTaskSuccessResult::CoreItem(CoreItem::BothChainLocks(_, _)) => {
+                self.mainnet_core_status_online = true;
+                self.testnet_core_status_online = true;
             }
+            _ => {}
         }
     }
+
     fn ui(&mut self, ctx: &Context) -> AppAction {
         let mut action = add_top_panel(
             ctx,
@@ -299,19 +291,6 @@ impl ScreenLike for NetworkChooserScreen {
             vec![("Dash Evo Tool", AppAction::None)],
             vec![],
         );
-
-        let current_time = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("Time went backwards");
-        if let Some(recheck_time) = self.recheck_time {
-            if current_time.as_millis() as u64 >= recheck_time {
-                action |= AppAction::BackendTask(BackendTask::CoreTask(CoreTask::GetBestChainLock));
-                self.recheck_time =
-                    Some((current_time + Duration::from_secs(5)).as_millis() as u64);
-            }
-        } else {
-            self.recheck_time = Some((current_time + Duration::from_secs(5)).as_millis() as u64);
-        }
 
         action |= add_left_panel(
             ctx,
@@ -322,6 +301,24 @@ impl ScreenLike for NetworkChooserScreen {
         egui::CentralPanel::default().show(ctx, |ui| {
             action |= self.render_network_table(ui);
         });
+
+        // If no other action, recheck both network status every n seconds
+        let recheck_time = Duration::from_secs(10);
+        if action == AppAction::None {
+            let current_time = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("Time went backwards");
+            if let Some(time) = self.recheck_time {
+                if current_time.as_millis() as u64 >= time {
+                    action |= AppAction::BackendTask(BackendTask::CoreTask(
+                        CoreTask::GetBothBestChainLocks,
+                    ));
+                    self.recheck_time = Some((current_time + recheck_time).as_millis() as u64);
+                }
+            } else {
+                self.recheck_time = Some((current_time + recheck_time).as_millis() as u64);
+            }
+        }
 
         action
     }

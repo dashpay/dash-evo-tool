@@ -405,6 +405,8 @@ impl IdentitiesScreen {
                                                     }
                                                 }
                                             }
+                                        } else {
+                                            more_keys_available = true;
                                         }
 
                                         // If there are more keys, show "View More" button

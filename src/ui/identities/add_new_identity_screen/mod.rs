@@ -517,19 +517,24 @@ impl AddNewIdentityScreen {
                         *step = AddNewIdentityWalletFundedScreenStep::ReadyToCreate;
                     }
                 }
-                // if has_balance {
-                //     if ui
-                //         .selectable_value(
-                //             &mut *funding_method,
-                //             FundingMethod::UseWalletBalance,
-                //             "Use Wallet Balance",
-                //         )
-                //         .changed()
-                //     {
-                //         let mut step = self.step.write().unwrap(); // Write lock on step
-                //         *step = AddNewIdentityWalletFundedScreenStep::ReadyToCreate;
-                //     }
-                // }
+                if has_balance {
+                    if ui
+                        .selectable_value(
+                            &mut *funding_method,
+                            FundingMethod::UseWalletBalance,
+                            "Use Wallet Balance",
+                        )
+                        .changed()
+                    {
+                        if let Some(wallet) = &self.selected_wallet {
+                            let wallet = wallet.read().unwrap(); // Read lock on the wallet
+                            let max_amount = wallet.max_balance();
+                            self.funding_amount = format!("{:.4}", max_amount as f64 * 1e-8);
+                        }
+                        let mut step = self.step.write().unwrap(); // Write lock on step
+                        *step = AddNewIdentityWalletFundedScreenStep::ReadyToCreate;
+                    }
+                }
                 if ui
                     .selectable_value(
                         &mut *funding_method,

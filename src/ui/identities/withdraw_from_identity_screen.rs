@@ -105,7 +105,7 @@ impl WithdrawalScreen {
             ui.text_edit_singleline(&mut self.withdrawal_amount);
 
             if ui.button("Max").clicked() {
-                let expected_max_amount = self.max_amount.saturating_sub(5000000) as f64 * 1e-8;
+                let expected_max_amount = self.max_amount.saturating_sub(5000000) as f64 * 1e-11;
 
                 // Use flooring and format the result with 4 decimal places
                 let floored_amount = (expected_max_amount * 10_000.0).floor() / 10_000.0;

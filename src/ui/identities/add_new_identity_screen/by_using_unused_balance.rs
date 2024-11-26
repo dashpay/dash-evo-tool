@@ -30,12 +30,14 @@ impl AddNewIdentityScreen {
 
         self.show_wallet_balance(ui);
 
-        step_number += 1;
+        ui.add_space(10.0);
 
         ui.heading(format!(
             "{}. How much of your wallet balance would you like to transfer?",
             step_number
         ));
+
+        step_number += 1;
 
         self.render_funding_amount_input(ui);
 

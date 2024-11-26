@@ -1,4 +1,5 @@
 use super::components::dpns_subscreen_chooser_panel::add_dpns_subscreen_chooser_panel;
+use super::components::top_panel;
 use super::{Screen, ScreenType};
 use crate::app::{AppAction, DesiredAppAction};
 use crate::backend_task::contested_names::ContestedResourceTask;
@@ -66,6 +67,7 @@ pub struct DPNSContestedNamesScreen {
     sort_order: SortOrder,
     show_vote_popup_info: Option<(String, ContestedResourceTask)>,
     pub dpns_subscreen: DPNSSubscreen,
+    refreshing: bool,
 }
 
 impl DPNSContestedNamesScreen {
@@ -105,6 +107,7 @@ impl DPNSContestedNamesScreen {
             sort_order: SortOrder::Ascending,
             show_vote_popup_info: None,
             dpns_subscreen,
+            refreshing: false,
         }
     }
 
@@ -412,10 +415,14 @@ impl DPNSContestedNamesScreen {
                                                 let relative_time =
                                                     HumanTime::from(datetime).to_string();
 
-                                                ui.label(relative_time);
+                                                if relative_time.contains("seconds") {
+                                                    ui.label("now");
+                                                } else {
+                                                    ui.label(relative_time);
+                                                }
                                             } else {
-                                                // Handle case where the timestamp is invalid
-                                                ui.label("Invalid timestamp");
+                                            // Handle case where the timestamp is invalid
+                                            ui.label("Invalid timestamp");
                                             }
                                         } else {
                                             ui.label("Fetching");
@@ -529,7 +536,11 @@ impl DPNSContestedNamesScreen {
                                                 let relative_time =
                                                     HumanTime::from(datetime).to_string();
 
-                                                ui.label(relative_time);
+                                                if relative_time.contains("seconds") {
+                                                    ui.label("now");
+                                                } else {
+                                                    ui.label(relative_time);
+                                                }
                                             } else {
                                                 // Handle case where the timestamp is invalid
                                                 ui.label("Invalid timestamp");
@@ -786,28 +797,36 @@ impl ScreenLike for DPNSContestedNamesScreen {
     }
 
     fn display_message(&mut self, message: &str, message_type: MessageType) {
+        if message.contains("Finished querying DPNS contested resources")
+            || message.contains("Contested resource query failed")
+        {
+            self.refreshing = false;
+        }
         self.error_message = Some((message.to_string(), message_type, Utc::now()));
     }
 
     fn ui(&mut self, ctx: &Context) -> AppAction {
         self.check_error_expiration();
-        let has_identity_that_can_register = !self.user_identities.is_empty();
-        let query = (
+        let mut top_panel_refresh_button = (
             "Refresh",
             DesiredAppAction::BackendTask(BackendTask::ContestedResourceTask(
                 ContestedResourceTask::QueryDPNSContestedResources,
             )),
         );
+        if self.refreshing {
+            top_panel_refresh_button = ("Refreshing...", DesiredAppAction::None)
+        }
+        let has_identity_that_can_register = !self.user_identities.is_empty();
         let right_buttons = if has_identity_that_can_register {
             vec![
                 (
                     "Register Name",
                     DesiredAppAction::AddScreenType(ScreenType::RegisterDpnsName),
                 ),
-                query,
+                top_panel_refresh_button,
             ]
         } else {
-            vec![query]
+            vec![top_panel_refresh_button]
         };
         let mut action = add_top_panel(
             ctx,
@@ -909,6 +928,14 @@ impl ScreenLike for DPNSContestedNamesScreen {
                 }
             }
         });
+
+        if action
+            == AppAction::BackendTask(BackendTask::ContestedResourceTask(
+                ContestedResourceTask::QueryDPNSContestedResources,
+            ))
+        {
+            self.refreshing = true;
+        }
 
         action
     }

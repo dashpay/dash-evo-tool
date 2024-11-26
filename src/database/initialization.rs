@@ -4,8 +4,8 @@ use rusqlite::{params, Connection};
 use std::fs;
 use std::path::Path;
 
-pub const DEFAULT_DB_VERSION: u16 = 1;
-pub const CURRENT_DB_VERSION: u16 = 2;
+pub const DEFAULT_DB_VERSION: u16 = 3;
+
 pub const DEFAULT_NETWORK: &str = "dash";
 
 impl Database {
@@ -15,10 +15,10 @@ impl Database {
             self.create_tables()?;
             self.set_default_version()?;
         } else {
-            // Perform version check and back up and recreate the database if outdated.
+            // If outdated, back up and either migrate or recreate the database.
             if let Some(current_version) = self.is_outdated()? {
                 self.backup_db(db_file_path)?;
-                if let Err(e) = self.try_perform_migration(current_version, CURRENT_DB_VERSION) {
+                if let Err(e) = self.try_perform_migration(current_version, DEFAULT_DB_VERSION) {
                     // The migration failed
                     println!("Migration failed: {:?}", e);
                     self.recreate_db(db_file_path)?;
@@ -34,6 +34,9 @@ impl Database {
 
     fn apply_version_changes(&self, version: u16) -> rusqlite::Result<()> {
         match version {
+            3 => {
+                self.add_custom_dash_qt_columns()?;
+            }
             2 => {
                 self.initialize_proof_log_table()?;
             }
@@ -76,7 +79,8 @@ impl Database {
         }
     }
 
-    /// Checks if the current database version is below the minimum supported version.
+    /// Checks if the version in the current database settings is below DEFAULT_DB_VERSION.
+    /// If outdated, returns the version in the current database settings
     fn is_outdated(&self) -> rusqlite::Result<Option<u16>> {
         let conn = self.conn.lock().unwrap();
         let version: u16 = conn
@@ -86,14 +90,14 @@ impl Database {
                 |row| row.get(0),
             )
             .unwrap_or(0); // Default to version 0 if there's no version set
-        if version < CURRENT_DB_VERSION {
+        if version < DEFAULT_DB_VERSION {
             Ok(Some(version))
         } else {
             Ok(None)
         }
     }
 
-    /// Backs up the existing database with a unique timestamped filename, recreates `data.db`, and refreshes the connection.
+    /// Backs up the existing database with a unique timestamped filename in backups directory.
     fn backup_db(&self, db_file_path: &Path) -> rusqlite::Result<()> {
         if db_file_path.exists() {
             // Create a "backups" folder in the same directory as `data.db` if not exists
@@ -112,15 +116,16 @@ impl Database {
             let backup_filename = format!("data_backup_{}.db", timestamp);
             let backup_path = backups_dir.join(backup_filename);
 
-            // Rename `data.db` to the unique backup file
+            // Copy `data.db` to the unique backup file
             fs::copy(db_file_path, &backup_path)
                 .map_err(|e| rusqlite::Error::ToSqlConversionFailure(e.into()))?;
             println!("Old database backed up to {:?}", backup_path);
         }
+
         Ok(())
     }
 
-    /// Backs up the existing database with a unique timestamped filename, recreates `data.db`, and refreshes the connection.
+    /// Recreates `data.db`, and refreshes the connection.
     fn recreate_db(&self, db_file_path: &Path) -> rusqlite::Result<()> {
         // Remove the existing database file if it exists
         if db_file_path.exists() {
@@ -174,6 +179,8 @@ impl Database {
             main_password_nonce BLOB,
             network TEXT NOT NULL,
             start_root_screen INTEGER NOT NULL,
+            custom_dash_qt_path TEXT,
+            overwrite_dash_conf INTEGER,
             database_version INTEGER NOT NULL
         )",
             [],

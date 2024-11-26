@@ -92,10 +92,28 @@ fn add_connection_indicator(ui: &mut Ui, app_context: &Arc<AppContext>) -> AppAc
         };
         response.clone().on_hover_text(tooltip_text);
 
+        let settings = app_context
+            .db
+            .get_settings()
+            .expect("Failed to db get settings");
+        let (custom_dash_qt_path, overwrite_dash_conf) = match settings {
+            Some((.., db_custom_dash_qt_path, db_overwrite_dash_qt)) => {
+                (db_custom_dash_qt_path, db_overwrite_dash_qt)
+            }
+            _ => {
+                // Default values: Use system default path and overwrite conf
+                (None, true)
+            }
+        };
+
         // Handle click to start DashQT if disconnected
         if response.clicked() && !connected {
             let network = app_context.network;
-            action |= AppAction::BackendTask(BackendTask::CoreTask(CoreTask::StartDashQT(network)));
+            action |= AppAction::BackendTask(BackendTask::CoreTask(CoreTask::StartDashQT(
+                network,
+                custom_dash_qt_path,
+                overwrite_dash_conf,
+            )));
         }
     });
 
@@ -127,10 +145,7 @@ pub fn add_top_panel(
         .exact_height(50.0)
         .show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
-                #[cfg(not(target_os = "windows"))]
-                {
-                    action |= add_connection_indicator(ui, app_context);
-                }
+                action |= add_connection_indicator(ui, app_context);
 
                 // Left-aligned content with location view
                 action |= add_location_view(ui, location);

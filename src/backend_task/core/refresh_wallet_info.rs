@@ -30,7 +30,7 @@ impl AppContext {
         // Step 2: Iterate over each address and update balances
         for address in &addresses {
             // Fetch balance for the address from Dash Core
-            match self.core_client.get_received_by_address(address, Some(0)) {
+            match self.core_client.get_received_by_address(address, None) {
                 Ok(new_balance) => {
                     // Update the wallet's address_balances and database
                     {

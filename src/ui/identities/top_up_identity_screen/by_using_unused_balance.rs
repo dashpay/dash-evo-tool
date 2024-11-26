@@ -47,7 +47,7 @@ impl TopUpIdentityScreen {
             return action;
         };
 
-        if ui.button("Create Identity").clicked() {
+        if ui.button("Top Up Identity").clicked() {
             self.error_message = None;
             action = self.top_up_identity_clicked(FundingMethod::UseWalletBalance);
         }

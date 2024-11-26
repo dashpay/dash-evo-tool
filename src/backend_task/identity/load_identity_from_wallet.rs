@@ -7,7 +7,7 @@ use crate::model::qualified_identity::qualified_identity_public_key::QualifiedId
 use crate::model::qualified_identity::{
     DPNSNameInfo, IdentityType, PrivateKeyTarget, QualifiedIdentity,
 };
-use crate::model::wallet::{Wallet, WalletArcRef};
+use crate::model::wallet::WalletArcRef;
 use dash_sdk::dpp::dashcore::bip32::{DerivationPath, KeyDerivationType};
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::document::DocumentV0Getters;

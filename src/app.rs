@@ -423,6 +423,9 @@ impl App for AppState {
                     BackendTaskSuccessResult::RegisteredIdentity(_) => {
                         self.visible_screen_mut().display_task_result(message);
                     }
+                    BackendTaskSuccessResult::ToppedUpIdentity(_) => {
+                        self.visible_screen_mut().display_task_result(message);
+                    }
                 },
                 TaskResult::Error(message) => {
                     self.visible_screen_mut()

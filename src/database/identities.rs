@@ -5,7 +5,7 @@ use crate::model::wallet::Wallet;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::platform::Identifier;
 use rusqlite::params;
-use std::sync::{Arc, RwLock, RwLockReadGuard};
+use std::sync::{Arc, RwLock};
 
 impl Database {
     /// Updates the alias of a specified identity.

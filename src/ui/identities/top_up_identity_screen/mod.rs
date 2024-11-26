@@ -5,10 +5,7 @@ mod success_screen;
 
 use crate::app::AppAction;
 use crate::backend_task::core::CoreItem;
-use crate::backend_task::identity::{
-    IdentityKeys, IdentityTask, IdentityTopUpInfo, RegisterIdentityFundingMethod,
-    TopUpIdentityFundingMethod,
-};
+use crate::backend_task::identity::{IdentityTask, IdentityTopUpInfo, TopUpIdentityFundingMethod};
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
@@ -24,9 +21,9 @@ use dash_sdk::dpp::balances::credits::Duffs;
 use dash_sdk::dpp::dashcore::{OutPoint, Transaction, TxOut};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
-use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::prelude::AssetLockProof;
 use eframe::egui::Context;
+use eframe::epaint::ahash::HashSet;
 use egui::{ComboBox, ScrollArea, Ui};
 use std::cmp::PartialEq;
 use std::sync::atomic::Ordering;
@@ -38,6 +35,7 @@ pub struct TopUpIdentityScreen {
     funding_asset_lock: Option<(Transaction, AssetLockProof, Address)>,
     wallet: Option<Arc<RwLock<Wallet>>>,
     core_has_funding_address: Option<bool>,
+    top_up_index_number: u32,
     funding_address: Option<Address>,
     funding_address_balance: Arc<RwLock<Option<Duffs>>>,
     funding_method: Arc<RwLock<FundingMethod>>,
@@ -67,6 +65,7 @@ impl TopUpIdentityScreen {
             funding_asset_lock: None,
             wallet: selected_wallet,
             core_has_funding_address: None,
+            top_up_index_number: 0,
             funding_address: None,
             funding_address_balance: Arc::new(RwLock::new(None)),
             funding_method: Arc::new(RwLock::new(FundingMethod::NoSelection)),
@@ -139,6 +138,61 @@ impl TopUpIdentityScreen {
         }
     }
 
+    fn render_top_up_index_input(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.label("Top up Index:");
+
+            // Check if we have access to the selected wallet
+            if let Some(wallet_guard) = self.wallet.as_ref() {
+                let wallet = wallet_guard.read().unwrap();
+                let used_indices: HashSet<u32> = wallet.identities.keys().cloned().collect();
+
+                // Modify the selected text to include "(used)" if the current index is used
+                let selected_text = {
+                    let is_used = used_indices.contains(&self.top_up_index_number);
+                    if is_used {
+                        format!("{} (used)", self.top_up_index_number)
+                    } else {
+                        format!("{}", self.top_up_index_number)
+                    }
+                };
+
+                // Render a ComboBox to select the identity index
+                ComboBox::from_id_salt("identity_index")
+                    .selected_text(selected_text)
+                    .show_ui(ui, |ui| {
+                        // Provide up to 30 entries for selection (0 to 29)
+                        for i in 0..30 {
+                            let is_used = used_indices.contains(&i);
+                            let label = if is_used {
+                                format!("{} (used)", i)
+                            } else {
+                                format!("{}", i)
+                            };
+
+                            let is_selected = self.top_up_index_number == i;
+
+                            // Enable the option if it's not used or if it's the currently selected index
+                            let enabled = !is_used || is_selected;
+
+                            // Use `add_enabled` to disable used indices
+                            let response = ui.add_enabled(
+                                enabled,
+                                egui::SelectableLabel::new(is_selected, label),
+                            );
+
+                            // Only allow selection if the index is not used
+                            if response.clicked() && !is_used {
+                                self.top_up_index_number = i;
+                            }
+                        }
+                    });
+            } else {
+                ui.label("No wallet selected");
+            }
+        });
+    }
+
     fn render_funding_method(&mut self, ui: &mut egui::Ui) {
         let Some(selected_wallet) = self.wallet.clone() else {
             return;
@@ -169,7 +223,6 @@ impl TopUpIdentityScreen {
                         )
                         .changed()
                     {
-                        self.update_identity_key();
                         let mut step = self.step.write().unwrap(); // Write lock on step
                         *step = WalletFundedScreenStep::ReadyToCreate;
                     }
@@ -253,7 +306,8 @@ impl TopUpIdentityScreen {
                     wallet: Arc::clone(selected_wallet), // Clone the Arc reference
                     identity_funding_method: TopUpIdentityFundingMethod::FundWithWallet(
                         amount,
-                        self.identity_id_number,
+                        self.identity.wallet_index.unwrap_or(u32::MAX >> 1),
+                        self.top_up_index_number,
                     ),
                 };
 
@@ -342,7 +396,7 @@ impl ScreenWithWalletUnlock for TopUpIdentityScreen {
 impl ScreenLike for TopUpIdentityScreen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
         if message_type == MessageType::Error {
-            self.error_message = Some(format!("Error top_uping identity: {}", message));
+            self.error_message = Some(format!("Error topping up identity: {}", message));
         } else {
             self.error_message = Some(message.to_string());
         }
@@ -423,7 +477,7 @@ impl ScreenLike for TopUpIdentityScreen {
 
         egui::CentralPanel::default().show(ctx, |ui| {
             ScrollArea::vertical().show(ui, |ui| {
-                let step = {self.step.read().unwrap().clone()};
+                let step = { self.step.read().unwrap().clone() };
                 if step == WalletFundedScreenStep::Success {
                     action |= self.show_success(ui);
                     return;
@@ -443,72 +497,15 @@ impl ScreenLike for TopUpIdentityScreen {
                     return;
                 };
 
-                // Display the heading with an info icon that shows a tooltip on hover
-                ui.horizontal(|ui| {
-                    let wallet_guard = self.wallet.as_ref().unwrap();
-                    let wallet = wallet_guard.read().unwrap();
-                    if wallet.identities.is_empty() {
-                        ui.heading(format!(
-                            "{}. Choose an identity index. Leave this 0 if this is your first identity for this wallet.",
-                            step_number
-                        ));
-                    } else {
-                        ui.heading(format!(
-                            "{}. Choose an identity index. Leaving this {} is recommended.",
-                            step_number,
-                            wallet.identities.keys().cloned().max().map(|max| max + 1).unwrap_or_default()
-                        ));
-                    }
+                let (needed_unlock, just_unlocked) = self.render_wallet_unlock_if_needed(ui);
 
-
-                    // Create a label with click sense and tooltip
-                    let info_icon = egui::Label::new("ℹ").sense(egui::Sense::click());
-                    let response = ui.add(info_icon)
-                        .on_hover_text("The identity index is an internal reference within the wallet. The wallet’s seed phrase can always be used to recover any identity, including this one, by using the same index.");
-
-                    // Check if the label was clicked
-                    if response.clicked() {
-                        self.show_pop_up_info = Some("The identity index is an internal reference within the wallet. The wallet’s seed phrase can always be used to recover any identity, including this one, by using the same index.".to_string());
-                    }
-                });
-
-                step_number += 1;
-
-                ui.add_space(8.0);
-
-                self.render_identity_index_input(ui);
+                if needed_unlock && !just_unlocked {
+                    return;
+                }
 
                 ui.add_space(10.0);
 
-                // Display the heading with an info icon that shows a tooltip on hover
-                ui.horizontal(|ui| {
-                    ui.heading(format!(
-                        "{}. Choose what keys you want to add to this new identity.",
-                        step_number
-                    ));
-
-                    // Create a label with click sense and tooltip
-                    let info_icon = egui::Label::new("ℹ").sense(egui::Sense::click());
-                    let response = ui.add(info_icon)
-                        .on_hover_text("Keys allow an identity to perform actions on the Blockchain. They are contained in your wallet and allow you to prove that the action you are making is really coming from yourself.");
-
-                    // Check if the label was clicked
-                    if response.clicked() {
-                        self.show_pop_up_info = Some("Keys allow an identity to perform actions on the Blockchain. They are contained in your wallet and allow you to prove that the action you are making is really coming from yourself.".to_string());
-                    }
-                });
-
-                step_number += 1;
-
-                ui.add_space(8.0);
-
-                self.render_key_selection(ui);
-
-                ui.add_space(10.0);
-
-                ui.heading(
-                    format!("{}. Choose your funding method.", step_number).as_str()
-                );
+                ui.heading(format!("{}. Choose your funding method.", step_number).as_str());
                 step_number += 1;
 
                 ui.add_space(10.0);
@@ -525,13 +522,13 @@ impl ScreenLike for TopUpIdentityScreen {
                     FundingMethod::NoSelection => return,
                     FundingMethod::UseUnusedAssetLock => {
                         action |= self.render_ui_by_using_unused_asset_lock(ui, step_number);
-                    },
+                    }
                     FundingMethod::UseWalletBalance => {
                         action |= self.render_ui_by_using_unused_balance(ui, step_number);
-                    },
+                    }
                     FundingMethod::AddressWithQRCode => {
                         action |= self.render_ui_by_wallet_qr_code(ui, step_number)
-                    },
+                    }
                     FundingMethod::AttachedCoreWallet => return,
                 }
             });

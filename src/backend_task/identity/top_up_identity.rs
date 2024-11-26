@@ -1,7 +1,5 @@
 use crate::app::TaskResult;
-use crate::backend_task::identity::{
-    IdentityTopUpInfo, RegisterIdentityFundingMethod, TopUpIdentityFundingMethod,
-};
+use crate::backend_task::identity::{IdentityTopUpInfo, TopUpIdentityFundingMethod};
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::context::AppContext;
 use dash_sdk::dashcore_rpc::RpcApi;
@@ -39,8 +37,6 @@ impl AppContext {
             .await
             .map_err(|e| e.to_string())?;
 
-        let wallet_id;
-
         let (asset_lock_proof, asset_lock_proof_private_key, tx_id) = match identity_funding_method
         {
             TopUpIdentityFundingMethod::UseAssetLock(address, asset_lock_proof, transaction) => {
@@ -48,7 +44,6 @@ impl AppContext {
 
                 // eprintln!("UseAssetLock: transaction id for {:#?} is {}", transaction, tx_id);
                 let wallet = wallet.read().unwrap();
-                wallet_id = wallet.seed_hash();
                 let private_key = wallet
                     .private_key_for_address(&address, self.network)?
                     .ok_or("Asset Lock not valid for wallet")?;
@@ -83,7 +78,6 @@ impl AppContext {
                 // Scope the write lock to avoid holding it across an await.
                 let (asset_lock_transaction, asset_lock_proof_private_key, _, used_utxos) = {
                     let mut wallet = wallet.write().unwrap();
-                    wallet_id = wallet.seed_hash();
                     match wallet.registration_asset_lock_transaction(
                         sdk.network,
                         amount,
@@ -162,7 +156,6 @@ impl AppContext {
                 // Scope the write lock to avoid holding it across an await.
                 let (asset_lock_transaction, asset_lock_proof_private_key) = {
                     let mut wallet = wallet.write().unwrap();
-                    wallet_id = wallet.seed_hash();
                     wallet.top_up_asset_lock_transaction_for_utxo(
                         sdk.network,
                         utxo,
@@ -278,6 +271,13 @@ impl AppContext {
         self.update_local_qualified_identity(&qualified_identity)
             .map_err(|e| e.to_string())?;
 
+        {
+            let mut wallet = wallet.write().unwrap();
+            wallet
+                .unused_asset_locks
+                .retain(|(tx, _, _, _, _)| tx.txid() != tx_id);
+        }
+
         self.db
             .set_asset_lock_identity_id(
                 tx_id.as_byte_array(),
@@ -290,7 +290,7 @@ impl AppContext {
             .await
             .map_err(|e| e.to_string())?;
 
-        Ok(BackendTaskSuccessResult::RegisteredIdentity(
+        Ok(BackendTaskSuccessResult::ToppedUpIdentity(
             qualified_identity,
         ))
     }

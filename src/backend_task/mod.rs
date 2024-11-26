@@ -9,7 +9,6 @@ use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::dpp::voting::votes::Vote;
 use dash_sdk::query_types::Documents;
-use derive_more::From;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 

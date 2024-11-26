@@ -151,7 +151,8 @@ impl TopUpIdentityScreen {
                             utxo,
                             tx_out,
                             address,
-                            self.identity.wallet_index.unwrap_or(u32::MAX),
+                            self.identity.wallet_index.unwrap_or(u32::MAX >> 1),
+                            self.top_up_index_number,
                         ),
                     };
 

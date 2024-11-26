@@ -20,7 +20,7 @@ use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
 use dash_sdk::dashcore_rpc::dashcore::{Address, PrivateKey, TxOut};
 use dash_sdk::dpp::balances::credits::Duffs;
 use dash_sdk::dpp::dashcore::hashes::Hash;
-use dash_sdk::dpp::dashcore::{OutPoint, PublicKey, Transaction};
+use dash_sdk::dpp::dashcore::{OutPoint, Transaction};
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
@@ -192,11 +192,19 @@ impl IdentityKeys {
 }
 
 pub type IdentityIndex = u32;
+pub type TopUpIndex = u32;
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum IdentityFundingMethod {
+pub enum RegisterIdentityFundingMethod {
     UseAssetLock(Address, AssetLockProof, Transaction),
     FundWithUtxo(OutPoint, TxOut, Address, IdentityIndex),
     FundWithWallet(Duffs, IdentityIndex),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TopUpIdentityFundingMethod {
+    UseAssetLock(Address, AssetLockProof, Transaction),
+    FundWithUtxo(OutPoint, TxOut, Address, IdentityIndex, TopUpIndex),
+    FundWithWallet(Duffs, IdentityIndex, TopUpIndex),
 }
 
 #[derive(Debug, Clone)]
@@ -205,7 +213,7 @@ pub struct IdentityRegistrationInfo {
     pub keys: IdentityKeys,
     pub wallet: Arc<RwLock<Wallet>>,
     pub wallet_identity_index: u32,
-    pub identity_funding_method: IdentityFundingMethod,
+    pub identity_funding_method: RegisterIdentityFundingMethod,
 }
 
 impl PartialEq for IdentityRegistrationInfo {
@@ -220,7 +228,7 @@ impl PartialEq for IdentityRegistrationInfo {
 pub struct IdentityTopUpInfo {
     pub qualified_identity: QualifiedIdentity,
     pub wallet: Arc<RwLock<Wallet>>,
-    pub identity_funding_method: IdentityFundingMethod,
+    pub identity_funding_method: TopUpIdentityFundingMethod,
 }
 
 impl PartialEq for IdentityTopUpInfo {

@@ -1,5 +1,5 @@
 use crate::app::AppAction;
-use crate::backend_task::identity::{IdentityFundingMethod, IdentityTask, IdentityTopUpInfo};
+use crate::backend_task::identity::{IdentityTask, IdentityTopUpInfo, TopUpIdentityFundingMethod};
 use crate::backend_task::BackendTask;
 use crate::ui::identities::funding_common::{copy_to_clipboard, generate_qr_code_image};
 use crate::ui::identities::top_up_identity_screen::{TopUpIdentityScreen, WalletFundedScreenStep};
@@ -13,7 +13,7 @@ impl TopUpIdentityScreen {
         let (address, should_check_balance) = {
             // Scope the write lock to ensure it's dropped before calling `start_balance_check`.
 
-            if let Some(wallet_guard) = self.selected_wallet.as_ref() {
+            if let Some(wallet_guard) = self.wallet.as_ref() {
                 // Get the receive address
                 if self.funding_address.is_none() {
                     let mut wallet = wallet_guard.write().unwrap();
@@ -140,18 +140,18 @@ impl TopUpIdentityScreen {
                 ui.heading("=> Waiting for funds. <=");
             }
             WalletFundedScreenStep::FundsReceived => {
-                let Some(selected_wallet) = &self.selected_wallet else {
+                let Some(selected_wallet) = &self.wallet else {
                     return action;
                 };
                 if let Some((utxo, tx_out, address)) = self.funding_utxo.clone() {
                     let identity_input = IdentityTopUpInfo {
-                        qualified_identity: QualifiedIdentity {},
+                        qualified_identity: self.identity.clone(),
                         wallet: Arc::clone(selected_wallet), // Clone the Arc reference
-                        identity_funding_method: IdentityFundingMethod::FundWithUtxo(
+                        identity_funding_method: TopUpIdentityFundingMethod::FundWithUtxo(
                             utxo,
                             tx_out,
                             address,
-                            self.identity_id_number,
+                            self.identity.wallet_index.unwrap_or(u32::MAX),
                         ),
                     };
 

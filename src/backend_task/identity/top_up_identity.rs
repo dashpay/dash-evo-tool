@@ -1,29 +1,23 @@
 use crate::app::TaskResult;
 use crate::backend_task::identity::{
-    IdentityFundingMethod, IdentityRegistrationInfo, IdentityTopUpInfo,
+    IdentityTopUpInfo, RegisterIdentityFundingMethod, TopUpIdentityFundingMethod,
 };
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::context::AppContext;
-use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
 use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dpp::block::extended_epoch_info::ExtendedEpochInfo;
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::OutPoint;
 use dash_sdk::dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
 use dash_sdk::dpp::identity::state_transition::asset_lock_proof::chain::ChainAssetLockProof;
-use dash_sdk::dpp::native_bls::NativeBlsModule;
 use dash_sdk::dpp::prelude::AssetLockProof;
-use dash_sdk::dpp::state_transition::identity_create_transition::methods::IdentityCreateTransitionMethodsV0;
-use dash_sdk::dpp::state_transition::identity_create_transition::IdentityCreateTransition;
 use dash_sdk::dpp::state_transition::identity_topup_transition::methods::IdentityTopUpTransitionMethodsV0;
 use dash_sdk::dpp::state_transition::identity_topup_transition::IdentityTopUpTransition;
 use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::dpp::ProtocolError;
-use dash_sdk::platform::transition::put_identity::PutIdentity;
 use dash_sdk::platform::transition::top_up_identity::TopUpIdentity;
-use dash_sdk::platform::{Fetch, Identity};
+use dash_sdk::platform::Fetch;
 use dash_sdk::Error;
-use std::collections::BTreeMap;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
@@ -49,7 +43,7 @@ impl AppContext {
 
         let (asset_lock_proof, asset_lock_proof_private_key, tx_id) = match identity_funding_method
         {
-            IdentityFundingMethod::UseAssetLock(address, asset_lock_proof, transaction) => {
+            TopUpIdentityFundingMethod::UseAssetLock(address, asset_lock_proof, transaction) => {
                 let tx_id = transaction.txid();
 
                 // eprintln!("UseAssetLock: transaction id for {:#?} is {}", transaction, tx_id);
@@ -85,12 +79,12 @@ impl AppContext {
                 };
                 (asset_lock_proof, private_key, tx_id)
             }
-            IdentityFundingMethod::FundWithWallet(amount, identity_index) => {
+            TopUpIdentityFundingMethod::FundWithWallet(amount, identity_index, top_up_index) => {
                 // Scope the write lock to avoid holding it across an await.
                 let (asset_lock_transaction, asset_lock_proof_private_key, _, used_utxos) = {
                     let mut wallet = wallet.write().unwrap();
                     wallet_id = wallet.seed_hash();
-                    match wallet.asset_lock_transaction(
+                    match wallet.registration_asset_lock_transaction(
                         sdk.network,
                         amount,
                         true,
@@ -102,7 +96,7 @@ impl AppContext {
                             wallet
                                 .reload_utxos(&self.core_client, self.network, Some(self))
                                 .map_err(|e| e.to_string())?;
-                            wallet.asset_lock_transaction(
+                            wallet.registration_asset_lock_transaction(
                                 sdk.network,
                                 amount,
                                 true,
@@ -158,17 +152,24 @@ impl AppContext {
 
                 (asset_lock_proof, asset_lock_proof_private_key, tx_id)
             }
-            IdentityFundingMethod::FundWithUtxo(utxo, tx_out, input_address, identity_index) => {
+            TopUpIdentityFundingMethod::FundWithUtxo(
+                utxo,
+                tx_out,
+                input_address,
+                identity_index,
+                top_up_index,
+            ) => {
                 // Scope the write lock to avoid holding it across an await.
                 let (asset_lock_transaction, asset_lock_proof_private_key) = {
                     let mut wallet = wallet.write().unwrap();
                     wallet_id = wallet.seed_hash();
-                    wallet.asset_lock_transaction_for_utxo(
+                    wallet.top_up_asset_lock_transaction_for_utxo(
                         sdk.network,
                         utxo,
                         tx_out.clone(),
                         input_address.clone(),
                         identity_index,
+                        top_up_index,
                         Some(self),
                     )?
                 };

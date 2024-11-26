@@ -1,5 +1,5 @@
 use crate::app::TaskResult;
-use crate::backend_task::identity::{IdentityFundingMethod, IdentityRegistrationInfo};
+use crate::backend_task::identity::{IdentityRegistrationInfo, RegisterIdentityFundingMethod};
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::context::AppContext;
 use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
@@ -128,7 +128,7 @@ impl AppContext {
 
         let (asset_lock_proof, asset_lock_proof_private_key, tx_id) = match identity_funding_method
         {
-            IdentityFundingMethod::UseAssetLock(address, asset_lock_proof, transaction) => {
+            RegisterIdentityFundingMethod::UseAssetLock(address, asset_lock_proof, transaction) => {
                 let tx_id = transaction.txid();
 
                 // eprintln!("UseAssetLock: transaction id for {:#?} is {}", transaction, tx_id);
@@ -164,12 +164,12 @@ impl AppContext {
                 };
                 (asset_lock_proof, private_key, tx_id)
             }
-            IdentityFundingMethod::FundWithWallet(amount, identity_index) => {
+            RegisterIdentityFundingMethod::FundWithWallet(amount, identity_index) => {
                 // Scope the write lock to avoid holding it across an await.
                 let (asset_lock_transaction, asset_lock_proof_private_key, _, used_utxos) = {
                     let mut wallet = wallet.write().unwrap();
                     wallet_id = wallet.seed_hash();
-                    match wallet.asset_lock_transaction(
+                    match wallet.registration_asset_lock_transaction(
                         sdk.network,
                         amount,
                         true,
@@ -181,7 +181,7 @@ impl AppContext {
                             wallet
                                 .reload_utxos(&self.core_client, self.network, Some(self))
                                 .map_err(|e| e.to_string())?;
-                            wallet.asset_lock_transaction(
+                            wallet.registration_asset_lock_transaction(
                                 sdk.network,
                                 amount,
                                 true,
@@ -237,12 +237,17 @@ impl AppContext {
 
                 (asset_lock_proof, asset_lock_proof_private_key, tx_id)
             }
-            IdentityFundingMethod::FundWithUtxo(utxo, tx_out, input_address, identity_index) => {
+            RegisterIdentityFundingMethod::FundWithUtxo(
+                utxo,
+                tx_out,
+                input_address,
+                identity_index,
+            ) => {
                 // Scope the write lock to avoid holding it across an await.
                 let (asset_lock_transaction, asset_lock_proof_private_key) = {
                     let mut wallet = wallet.write().unwrap();
                     wallet_id = wallet.seed_hash();
-                    wallet.asset_lock_transaction_for_utxo(
+                    wallet.registration_asset_lock_transaction_for_utxo(
                         sdk.network,
                         utxo,
                         tx_out.clone(),
@@ -326,6 +331,7 @@ impl AppContext {
                 wallet.read().unwrap().seed_hash(),
                 wallet.clone(),
             )]),
+            wallet_index: Some(wallet_identity_index),
         };
 
         if !alias_input.is_empty() {

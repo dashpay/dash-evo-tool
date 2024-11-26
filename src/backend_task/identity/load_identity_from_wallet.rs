@@ -137,6 +137,7 @@ impl AppContext {
                 wallet_arc_ref.wallet.read().unwrap().seed_hash(),
                 wallet_arc_ref.wallet.clone(),
             )]),
+            wallet_index: Some(identity_index),
         };
 
         // Insert qualified identity into the database

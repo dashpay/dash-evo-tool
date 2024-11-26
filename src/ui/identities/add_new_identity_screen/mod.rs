@@ -6,7 +6,7 @@ mod success_screen;
 use crate::app::AppAction;
 use crate::backend_task::core::CoreItem;
 use crate::backend_task::identity::{
-    IdentityFundingMethod, IdentityKeys, IdentityRegistrationInfo, IdentityTask,
+    IdentityKeys, IdentityRegistrationInfo, IdentityTask, RegisterIdentityFundingMethod,
 };
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
@@ -646,7 +646,7 @@ impl AddNewIdentityScreen {
                         keys: self.identity_keys.clone(),
                         wallet: Arc::clone(selected_wallet), // Clone the Arc reference
                         wallet_identity_index: self.identity_id_number,
-                        identity_funding_method: IdentityFundingMethod::UseAssetLock(
+                        identity_funding_method: RegisterIdentityFundingMethod::UseAssetLock(
                             address,
                             funding_asset_lock,
                             tx,
@@ -677,7 +677,7 @@ impl AddNewIdentityScreen {
                     keys: self.identity_keys.clone(),
                     wallet: Arc::clone(selected_wallet), // Clone the Arc reference
                     wallet_identity_index: self.identity_id_number,
-                    identity_funding_method: IdentityFundingMethod::FundWithWallet(
+                    identity_funding_method: RegisterIdentityFundingMethod::FundWithWallet(
                         amount,
                         self.identity_id_number,
                     ),

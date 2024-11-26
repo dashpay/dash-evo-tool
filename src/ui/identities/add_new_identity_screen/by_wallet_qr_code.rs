@@ -1,6 +1,6 @@
 use crate::app::AppAction;
 use crate::backend_task::identity::{
-    IdentityFundingMethod, IdentityRegistrationInfo, IdentityTask,
+    IdentityRegistrationInfo, IdentityTask, RegisterIdentityFundingMethod,
 };
 use crate::backend_task::BackendTask;
 use crate::ui::identities::add_new_identity_screen::{
@@ -158,7 +158,7 @@ impl AddNewIdentityScreen {
                         keys: self.identity_keys.clone(),
                         wallet: Arc::clone(selected_wallet), // Clone the Arc reference
                         wallet_identity_index: self.identity_id_number,
-                        identity_funding_method: IdentityFundingMethod::FundWithUtxo(
+                        identity_funding_method: RegisterIdentityFundingMethod::FundWithUtxo(
                             utxo,
                             tx_out,
                             address,

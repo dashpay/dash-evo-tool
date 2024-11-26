@@ -5,7 +5,7 @@ use egui::Ui;
 
 impl TopUpIdentityScreen {
     fn show_wallet_balance(&self, ui: &mut egui::Ui) {
-        if let Some(selected_wallet) = &self.selected_wallet {
+        if let Some(selected_wallet) = &self.wallet {
             let wallet = selected_wallet.read().unwrap(); // Read lock on the wallet
 
             let total_balance: u64 = wallet.max_balance(); // Sum up all the balances

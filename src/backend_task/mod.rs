@@ -30,7 +30,7 @@ pub(crate) enum BackendTask {
     WithdrawalTask(WithdrawalsTask),
 }
 
-#[derive(Debug, Clone, PartialEq, From)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) enum BackendTaskSuccessResult {
     None,
     Message(String),

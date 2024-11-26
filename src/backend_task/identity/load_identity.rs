@@ -295,6 +295,7 @@ impl AppContext {
                 .iter()
                 .map(|wallet| (wallet.read().unwrap().seed_hash(), wallet.clone()))
                 .collect(),
+            wallet_index: None, //todo
         };
 
         // Insert qualified identity into the database

@@ -6,7 +6,7 @@ use egui::Ui;
 impl TopUpIdentityScreen {
     fn render_choose_funding_asset_lock(&mut self, ui: &mut egui::Ui) {
         // Ensure a wallet is selected
-        let Some(selected_wallet) = self.selected_wallet.clone() else {
+        let Some(selected_wallet) = self.wallet.clone() else {
             ui.label("No wallet selected.");
             return;
         };
@@ -93,7 +93,7 @@ impl TopUpIdentityScreen {
 
         if ui.button("Create Identity").clicked() {
             self.error_message = None;
-            action |= self.register_identity_clicked(FundingMethod::UseUnusedAssetLock);
+            action |= self.top_up_identity_clicked(FundingMethod::UseUnusedAssetLock);
         }
 
         match step {

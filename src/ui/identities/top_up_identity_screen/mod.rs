@@ -6,7 +6,8 @@ mod success_screen;
 use crate::app::AppAction;
 use crate::backend_task::core::CoreItem;
 use crate::backend_task::identity::{
-    IdentityFundingMethod, IdentityKeys, IdentityTask, IdentityTopUpInfo,
+    IdentityKeys, IdentityTask, IdentityTopUpInfo, RegisterIdentityFundingMethod,
+    TopUpIdentityFundingMethod,
 };
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
@@ -35,7 +36,7 @@ pub struct TopUpIdentityScreen {
     pub identity: QualifiedIdentity,
     step: Arc<RwLock<WalletFundedScreenStep>>,
     funding_asset_lock: Option<(Transaction, AssetLockProof, Address)>,
-    selected_wallet: Option<Arc<RwLock<Wallet>>>,
+    wallet: Option<Arc<RwLock<Wallet>>>,
     core_has_funding_address: Option<bool>,
     funding_address: Option<Address>,
     funding_address_balance: Arc<RwLock<Option<Duffs>>>,
@@ -55,66 +56,16 @@ pub struct TopUpIdentityScreen {
 
 impl TopUpIdentityScreen {
     pub fn new(qualified_identity: QualifiedIdentity, app_context: &Arc<AppContext>) -> Self {
-        let mut selected_wallet = None;
-        let mut identity_keys = None;
-        if app_context.has_wallet.load(Ordering::Relaxed) {
-            let wallets = &app_context.wallets.read().unwrap();
-            if let Some(wallet) = wallets.first() {
-                // Automatically select the only available wallet
-                selected_wallet = Some(wallet.clone());
-                let mut wallet = wallet.write().unwrap();
-
-                if wallet.is_open() {
-                    identity_keys = Some(IdentityKeys {
-                        master_private_key: Some(
-                            wallet
-                                .identity_authentication_ecdsa_private_key(
-                                    app_context.network,
-                                    0,
-                                    0,
-                                    Some(&app_context),
-                                )
-                                .expect("expected to have decrypted wallet"),
-                        ),
-                        master_private_key_type: KeyType::ECDSA_HASH160,
-                        keys_input: vec![
-                            (
-                                wallet
-                                    .identity_authentication_ecdsa_private_key(
-                                        app_context.network,
-                                        0,
-                                        1,
-                                        Some(&app_context),
-                                    )
-                                    .expect("expected to have decrypted wallet"),
-                                KeyType::ECDSA_HASH160,
-                                Purpose::AUTHENTICATION,
-                                SecurityLevel::HIGH,
-                            ),
-                            (
-                                wallet
-                                    .identity_authentication_ecdsa_private_key(
-                                        app_context.network,
-                                        0,
-                                        2,
-                                        Some(&app_context),
-                                    )
-                                    .expect("expected to have decrypted wallet"),
-                                KeyType::ECDSA_HASH160,
-                                Purpose::TRANSFER,
-                                SecurityLevel::CRITICAL,
-                            ),
-                        ],
-                    });
-                }
-            }
-        }
+        let selected_wallet = qualified_identity
+            .associated_wallets
+            .first_key_value()
+            .map(|(_, wallet)| wallet.clone());
 
         Self {
             identity: qualified_identity,
             step: Arc::new(RwLock::new(WalletFundedScreenStep::ChooseFundingMethod)),
             funding_asset_lock: None,
-            selected_wallet,
+            wallet: selected_wallet,
             core_has_funding_address: None,
             funding_address: None,
             funding_address_balance: Arc::new(RwLock::new(None)),
@@ -133,28 +84,13 @@ impl TopUpIdentityScreen {
         }
     }
 
-    fn render_identity_index_input(&mut self, ui: &mut egui::Ui) {
-        let mut index_changed = false; // Track if the index has changed
-
-        let identity_id = self.identity.alias.clone().unwrap_or_else(|| {
-            let id_str = self.identity.id().to_string(Encoding::Base58);
-            id_str.chars().take(5).collect()
-        });
-        ui.label(format!("Topping up Identity: {}", identity_id));
-
-        // If the index has changed, update the identity key
-        if index_changed {
-            self.update_identity_key();
-        }
-    }
-
     fn render_wallet_selection(&mut self, ui: &mut Ui) -> bool {
         if self.app_context.has_wallet.load(Ordering::Relaxed) {
-            let wallets = &self.app_context.wallets.read().unwrap();
+            let wallets = &self.identity.associated_wallets;
             if wallets.len() > 1 {
                 // Retrieve the alias of the currently selected wallet, if any
                 let selected_wallet_alias = self
-                    .selected_wallet
+                    .wallet
                     .as_ref()
                     .and_then(|wallet| wallet.read().ok()?.alias.clone())
                     .unwrap_or_else(|| "Select".to_string());
@@ -169,7 +105,7 @@ impl TopUpIdentityScreen {
                 ComboBox::from_label("Select Wallet")
                     .selected_text(selected_wallet_alias)
                     .show_ui(ui, |ui| {
-                        for wallet in wallets.iter() {
+                        for wallet in wallets.values() {
                             let wallet_alias = wallet
                                 .read()
                                 .ok()
@@ -177,27 +113,22 @@ impl TopUpIdentityScreen {
                                 .unwrap_or_else(|| "Unnamed Wallet".to_string());
 
                             let is_selected = self
-                                .selected_wallet
+                                .wallet
                                 .as_ref()
                                 .map_or(false, |selected| Arc::ptr_eq(selected, wallet));
 
                             if ui.selectable_label(is_selected, wallet_alias).clicked() {
-                                {
-                                    let wallet = wallet.read().unwrap();
-                                    self.identity_id_number =
-                                        wallet.identities.keys().copied().max().unwrap_or_default();
-                                }
                                 // Update the selected wallet
-                                self.selected_wallet = Some(wallet.clone());
+                                self.wallet = Some(wallet.clone());
                             }
                         }
                     });
                 ui.add_space(10.0);
                 true
-            } else if let Some(wallet) = wallets.first() {
-                if self.selected_wallet.is_none() {
+            } else if let Some(wallet) = wallets.values().next() {
+                if self.wallet.is_none() {
                     // Automatically select the only available wallet
-                    self.selected_wallet = Some(wallet.clone());
+                    self.wallet = Some(wallet.clone());
                 }
                 false
             } else {
@@ -209,7 +140,7 @@ impl TopUpIdentityScreen {
     }
 
     fn render_funding_method(&mut self, ui: &mut egui::Ui) {
-        let Some(selected_wallet) = self.selected_wallet.clone() else {
+        let Some(selected_wallet) = self.wallet.clone() else {
             return;
         };
         let funding_method_arc = self.funding_method.clone();
@@ -252,7 +183,7 @@ impl TopUpIdentityScreen {
                         )
                         .changed()
                     {
-                        if let Some(wallet) = &self.selected_wallet {
+                        if let Some(wallet) = &self.wallet {
                             let wallet = wallet.read().unwrap(); // Read lock on the wallet
                             let max_amount = wallet.max_balance();
                             self.funding_amount = format!("{:.4}", max_amount as f64 * 1e-8);
@@ -282,15 +213,16 @@ impl TopUpIdentityScreen {
             });
     }
     fn top_up_identity_clicked(&mut self, funding_method: FundingMethod) -> AppAction {
-        let Some(selected_wallet) = &self.selected_wallet else {
+        let Some(selected_wallet) = &self.wallet else {
             return AppAction::None;
         };
         match funding_method {
             FundingMethod::UseUnusedAssetLock => {
                 if let Some((tx, funding_asset_lock, address)) = self.funding_asset_lock.clone() {
                     let identity_input = IdentityTopUpInfo {
+                        qualified_identity: self.identity.clone(),
                         wallet: Arc::clone(selected_wallet), // Clone the Arc reference
-                        identity_funding_method: IdentityFundingMethod::UseAssetLock(
+                        identity_funding_method: TopUpIdentityFundingMethod::UseAssetLock(
                             address,
                             funding_asset_lock,
                             tx,
@@ -317,8 +249,9 @@ impl TopUpIdentityScreen {
                     return AppAction::None;
                 }
                 let identity_input = IdentityTopUpInfo {
+                    qualified_identity: self.identity.clone(),
                     wallet: Arc::clone(selected_wallet), // Clone the Arc reference
-                    identity_funding_method: IdentityFundingMethod::FundWithWallet(
+                    identity_funding_method: TopUpIdentityFundingMethod::FundWithWallet(
                         amount,
                         self.identity_id_number,
                     ),
@@ -328,7 +261,7 @@ impl TopUpIdentityScreen {
                 *step = WalletFundedScreenStep::WaitingForAssetLock;
 
                 // Create the backend task to top_up the identity
-                AppAction::BackendTask(BackendTask::IdentityTask(IdentityTask::RegisterIdentity(
+                AppAction::BackendTask(BackendTask::IdentityTask(IdentityTask::TopUpIdentity(
                     identity_input,
                 )))
             }
@@ -363,7 +296,7 @@ impl TopUpIdentityScreen {
             // Check if the funding method is `UseWalletBalance`
             if *funding_method == FundingMethod::UseWalletBalance {
                 // Safely access the selected wallet
-                if let Some(wallet) = &self.selected_wallet {
+                if let Some(wallet) = &self.wallet {
                     let wallet = wallet.read().unwrap(); // Read lock on the wallet
                     if ui.button("Max").clicked() {
                         let max_amount = wallet.max_balance();
@@ -378,7 +311,7 @@ impl TopUpIdentityScreen {
 
 impl ScreenWithWalletUnlock for TopUpIdentityScreen {
     fn selected_wallet_ref(&self) -> &Option<Arc<RwLock<Wallet>>> {
-        &self.selected_wallet
+        &self.wallet
     }
 
     fn wallet_password_ref(&self) -> &String {
@@ -453,7 +386,7 @@ impl ScreenLike for TopUpIdentityScreen {
                                 ) else {
                                     return false;
                                 };
-                                if let Some(wallet) = &self.selected_wallet {
+                                if let Some(wallet) = &self.wallet {
                                     let wallet = wallet.read().unwrap();
                                     wallet.known_addresses.contains_key(&address)
                                 } else {
@@ -506,13 +439,13 @@ impl ScreenLike for TopUpIdentityScreen {
                     step_number += 1;
                 }
 
-                if self.selected_wallet.is_none() {
+                if self.wallet.is_none() {
                     return;
                 };
 
                 // Display the heading with an info icon that shows a tooltip on hover
                 ui.horizontal(|ui| {
-                    let wallet_guard = self.selected_wallet.as_ref().unwrap();
+                    let wallet_guard = self.wallet.as_ref().unwrap();
                     let wallet = wallet_guard.read().unwrap();
                     if wallet.identities.is_empty() {
                         ui.heading(format!(

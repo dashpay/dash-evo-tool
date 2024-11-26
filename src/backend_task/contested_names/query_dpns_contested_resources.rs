@@ -29,6 +29,7 @@ impl AppContext {
         };
         const MAX_RETRIES: usize = 3;
         let mut start_at_value = None;
+        let mut names_to_be_updated = Vec::new();
         loop {
             let query = VotePollsByDocumentTypeQuery {
                 contract_id: data_contract.id(),
@@ -140,10 +141,12 @@ impl AppContext {
 
             let last_found_name = contested_resources_as_strings.last().unwrap().clone();
 
-            let names_to_be_updated = self
+            let new_names_to_be_updated = self
                 .db
                 .insert_name_contests_as_normalized_names(contested_resources_as_strings, &self)
                 .map_err(|e| format!("Contested resource query failed. Failed to insert name contests into database: {}", e.to_string()))?;
+
+            names_to_be_updated.extend(new_names_to_be_updated);
 
             sender.send(TaskResult::Refresh).await.map_err(|e| {
                 format!(
@@ -152,94 +155,91 @@ impl AppContext {
                 )
             })?;
 
-            // Create a semaphore with 15 permits
-            let semaphore = Arc::new(Semaphore::new(24));
-
-            let mut handles = Vec::new();
-
-            let handle = {
-                let semaphore = semaphore.clone();
-                let sdk = sdk.clone();
-                let sender = sender.clone();
-                let self_ref = self.clone();
-
-                tokio::spawn(async move {
-                    // Acquire a permit from the semaphore
-                    let _permit: OwnedSemaphorePermit = semaphore.acquire_owned().await.unwrap();
-
-                    match self_ref.query_dpns_ending_times(sdk, sender.clone()).await {
-                        Ok(_) => {
-                            // Send a refresh message if the query succeeded
-                            sender
-                                .send(TaskResult::Refresh)
-                                .await
-                                .expect("expected to send refresh");
-                        }
-                        Err(e) => {
-                            tracing::error!("Error querying dpns end times: {}", e);
-                            sender
-                                .send(TaskResult::Error(e))
-                                .await
-                                .expect("expected to send error");
-                        }
-                    }
-                })
-            };
-
-            handles.push(handle);
-
-            for name in names_to_be_updated {
-                // Clone the semaphore, sdk, and sender for each task
-                let semaphore = semaphore.clone();
-                let sdk = sdk.clone();
-                let sender = sender.clone();
-                let self_ref = self.clone(); // Assuming self is cloneable
-
-                // Spawn each task with a permit from the semaphore
-                let handle = tokio::spawn(async move {
-                    // Acquire a permit from the semaphore
-                    let _permit: OwnedSemaphorePermit = semaphore.acquire_owned().await.unwrap();
-
-                    // Perform the query
-                    match self_ref
-                        .query_dpns_vote_contenders(&name, &sdk, sender.clone())
-                        .await
-                    {
-                        Ok(_) => {
-                            // Send a refresh message if the query succeeded
-                            sender
-                                .send(TaskResult::Refresh)
-                                .await
-                                .expect("expected to send refresh");
-                        }
-                        Err(e) => {
-                            tracing::error!(
-                                "Error querying dpns vote contenders for {}: {}",
-                                name,
-                                e
-                            );
-                            sender
-                                .send(TaskResult::Error(e))
-                                .await
-                                .expect("expected to send error");
-                        }
-                    }
-                });
-
-                // Collect all task handles
-                handles.push(handle);
-            }
-
-            // Await all tasks
-            for handle in handles {
-                if let Err(e) = handle.await {
-                    tracing::error!("Task failed: {:?}", e);
-                }
-            }
             if contested_resources_len < 100 {
                 break;
             }
             start_at_value = Some((Value::Text(last_found_name), false))
+        }
+
+        // Create a semaphore with 15 permits
+        let semaphore = Arc::new(Semaphore::new(24));
+
+        let mut handles = Vec::new();
+
+        let handle = {
+            let semaphore = semaphore.clone();
+            let sdk = sdk.clone();
+            let sender = sender.clone();
+            let self_ref = self.clone();
+
+            tokio::spawn(async move {
+                // Acquire a permit from the semaphore
+                let _permit: OwnedSemaphorePermit = semaphore.acquire_owned().await.unwrap();
+
+                match self_ref.query_dpns_ending_times(sdk, sender.clone()).await {
+                    Ok(_) => {
+                        // Send a refresh message if the query succeeded
+                        sender
+                            .send(TaskResult::Refresh)
+                            .await
+                            .expect("expected to send refresh");
+                    }
+                    Err(e) => {
+                        tracing::error!("Error querying dpns end times: {}", e);
+                        sender
+                            .send(TaskResult::Error(e))
+                            .await
+                            .expect("expected to send error");
+                    }
+                }
+            })
+        };
+
+        handles.push(handle);
+
+        for name in names_to_be_updated {
+            // Clone the semaphore, sdk, and sender for each task
+            let semaphore = semaphore.clone();
+            let sdk = sdk.clone();
+            let sender = sender.clone();
+            let self_ref = self.clone(); // Assuming self is cloneable
+
+            // Spawn each task with a permit from the semaphore
+            let handle = tokio::spawn(async move {
+                // Acquire a permit from the semaphore
+                let _permit: OwnedSemaphorePermit = semaphore.acquire_owned().await.unwrap();
+
+                // Perform the query
+                match self_ref
+                    .query_dpns_vote_contenders(&name, &sdk, sender.clone())
+                    .await
+                {
+                    Ok(_) => {
+                        // Send a refresh message if the query succeeded
+                        sender
+                            .send(TaskResult::Refresh)
+                            .await
+                            .expect("expected to send refresh");
+                    }
+                    Err(e) => {
+                        tracing::error!("Error querying dpns vote contenders for {}: {}", name, e);
+                        sender
+                            .send(TaskResult::Error(e))
+                            .await
+                            .expect("expected to send error");
+                    }
+                }
+            });
+
+            // Collect all task handles
+            handles.push(handle);
+        }
+
+        // Await all tasks
+        for handle in handles {
+            if let Err(e) = handle.await {
+                tracing::error!("Task failed: {:?}", e);
+            }
         }
 
         sender

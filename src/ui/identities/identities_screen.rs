@@ -340,6 +340,8 @@ impl IdentitiesScreen {
                                     .associated_voter_identity
                                     .as_ref()
                                     .map(|(identity, _)| identity.public_keys());
+                                let owner_key_id_opt = qualified_identity.
+                                    associated_owner_key_id;
                                 body.row(25.0, |mut row| {
                                     row.col(|ui| {
                                         self.show_alias(ui, qualified_identity);
@@ -396,6 +398,24 @@ impl IdentitiesScreen {
                                                     voting_identity_public_keys.iter().collect();
                                                 for (key_id, key) in voter_public_keys_vec.iter() {
                                                     if total_keys_shown < max_keys_to_show {
+                                                        if let Some(owner_key_id) = owner_key_id_opt {
+                                                            if (owner_key_id != **key_id) {
+                                                                let holding_owner_key =
+                                                                    qualified_identity
+                                                                        .private_keys
+                                                                        .get_cloned_private_key_data_and_wallet_info(&(
+                                                                            PrivateKeyOnVoterIdentity,
+                                                                            owner_key_id,
+                                                                        ));
+                                                                action |= self.show_public_key(
+                                                                    ui,
+                                                                    qualified_identity,
+                                                                    *key,
+                                                                    holding_owner_key,
+                                                                );
+                                                                total_keys_shown += 1;
+                                                            }
+                                                        };
                                                         let holding_private_key =
                                                             qualified_identity
                                                                 .private_keys

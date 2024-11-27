@@ -614,6 +614,32 @@ impl Wallet {
         Ok(())
     }
 
+    pub fn identity_top_up_ecdsa_private_key(
+        &mut self,
+        network: Network,
+        identity_index: u32,
+        top_up_index: u32,
+        register_addresses: Option<&AppContext>,
+    ) -> Result<PrivateKey, String> {
+        let derivation_path =
+            DerivationPath::identity_top_up_path(network, identity_index, top_up_index);
+        let extended_private_key = derivation_path
+            .derive_priv_ecdsa_for_master_seed(self.seed_bytes()?, network)
+            .expect("derivation should not be able to fail");
+        let private_key = extended_private_key.to_priv();
+
+        if let Some(app_context) = register_addresses {
+            self.register_address_from_private_key(
+                &private_key,
+                &derivation_path,
+                DerivationPathType::CREDIT_FUNDING,
+                DerivationPathReference::BlockchainIdentityCreditRegistrationFunding,
+                app_context,
+            )?;
+        }
+        Ok(private_key)
+    }
+
     pub fn identity_registration_ecdsa_private_key(
         &mut self,
         network: Network,

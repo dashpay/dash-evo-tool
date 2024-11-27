@@ -34,7 +34,6 @@ pub enum RequestType {
     GetCurrentQuorumsInfo = 32,
 }
 
-use dash_sdk::drive::query::PathQuery;
 use std::convert::TryFrom;
 
 impl From<RequestType> for u8 {

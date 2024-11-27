@@ -1,3 +1,4 @@
+use super::withdraw_from_identity_screen::WithdrawalScreen;
 use crate::app::{AppAction, DesiredAppAction};
 use crate::backend_task::identity::IdentityTask;
 use crate::backend_task::BackendTask;
@@ -14,6 +15,7 @@ use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
+use crate::ui::identities::top_up_identity_screen::TopUpIdentityScreen;
 use crate::ui::transfers::TransferScreen;
 use crate::ui::{RootScreenType, Screen, ScreenLike, ScreenType};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -30,8 +32,6 @@ use egui_extras::{Column, TableBuilder};
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
-
-use super::withdraw_from_identity_screen::WithdrawalScreen;
 
 pub struct IdentitiesScreen {
     pub identities: Arc<Mutex<IndexMap<Identifier, QualifiedIdentity>>>,
@@ -297,11 +297,9 @@ impl IdentitiesScreen {
                         .column(Column::initial(80.0).resizable(true)) // Name
                         .column(Column::initial(330.0).resizable(true)) // Identity ID
                         .column(Column::initial(60.0).resizable(true)) // In Wallet
-                        .column(Column::initial(100.0).resizable(true)) // Balance
                         .column(Column::initial(80.0).resizable(true)) // Type
                         .column(Column::initial(80.0).resizable(true)) // Keys
-                        .column(Column::initial(80.0).resizable(true)) // Withdraw
-                        .column(Column::initial(80.0).resizable(true)) // Transfer
+                        .column(Column::initial(140.0).resizable(true)) // Balance
                         .column(Column::initial(80.0).resizable(true)) // Actions
                         .header(30.0, |mut header| {
                             header.col(|ui| {
@@ -314,19 +312,13 @@ impl IdentitiesScreen {
                                 ui.heading("In Wallet");
                             });
                             header.col(|ui| {
-                                ui.heading("Balance");
-                            });
-                            header.col(|ui| {
                                 ui.heading("Type");
                             });
                             header.col(|ui| {
                                 ui.heading("Keys");
                             });
                             header.col(|ui| {
-                                ui.heading("Withdraw");
-                            });
-                            header.col(|ui| {
-                                ui.heading("Transfer");
+                                ui.heading("Balance");
                             });
                             header.col(|ui| {
                                 ui.heading("Actions");
@@ -349,9 +341,6 @@ impl IdentitiesScreen {
                                     });
                                     row.col(|ui| {
                                         self.show_in_wallet(ui, qualified_identity);
-                                    });
-                                    row.col(|ui| {
-                                        Self::show_balance(ui, qualified_identity);
                                     });
                                     row.col(|ui| {
                                         ui.label(format!("{}", qualified_identity.identity_type));
@@ -440,6 +429,7 @@ impl IdentitiesScreen {
                                         }});
                                     });
                                     row.col(|ui| {
+                                        Self::show_balance(ui, qualified_identity);
                                         if ui.button("Withdraw").clicked() {
                                             action = AppAction::AddScreen(
                                                 Screen::WithdrawalScreen(WithdrawalScreen::new(
@@ -448,8 +438,14 @@ impl IdentitiesScreen {
                                                 )),
                                             );
                                         }
-                                    });
-                                    row.col(|ui| {
+                                        if ui.button("Top up").clicked() {
+                                            action = AppAction::AddScreen(
+                                                Screen::TopUpIdentityScreen(TopUpIdentityScreen::new(
+                                                    qualified_identity.clone(),
+                                                    &self.app_context,
+                                                )),
+                                            );
+                                        }
                                         if ui.button("Transfer").clicked() {
                                             action = AppAction::AddScreen(Screen::TransferScreen(
                                                 TransferScreen::new(

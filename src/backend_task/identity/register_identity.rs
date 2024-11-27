@@ -1,5 +1,5 @@
 use crate::app::TaskResult;
-use crate::backend_task::identity::{IdentityRegistrationInfo, IdentityRegistrationMethod};
+use crate::backend_task::identity::{IdentityRegistrationInfo, RegisterIdentityFundingMethod};
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::context::AppContext;
 use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
@@ -115,7 +115,7 @@ impl AppContext {
             keys,
             wallet,
             wallet_identity_index,
-            identity_registration_method,
+            identity_funding_method,
         } = input;
 
         let sdk = self.sdk.clone();
@@ -126,186 +126,181 @@ impl AppContext {
 
         let wallet_id;
 
-        let (asset_lock_proof, asset_lock_proof_private_key, tx_id) =
-            match identity_registration_method {
-                IdentityRegistrationMethod::UseAssetLock(
-                    address,
-                    asset_lock_proof,
-                    transaction,
-                ) => {
-                    let tx_id = transaction.txid();
+        let (asset_lock_proof, asset_lock_proof_private_key, tx_id) = match identity_funding_method
+        {
+            RegisterIdentityFundingMethod::UseAssetLock(address, asset_lock_proof, transaction) => {
+                let tx_id = transaction.txid();
 
-                    // eprintln!("UseAssetLock: transaction id for {:#?} is {}", transaction, tx_id);
-                    let wallet = wallet.read().unwrap();
+                // eprintln!("UseAssetLock: transaction id for {:#?} is {}", transaction, tx_id);
+                let wallet = wallet.read().unwrap();
+                wallet_id = wallet.seed_hash();
+                let private_key = wallet
+                    .private_key_for_address(&address, self.network)?
+                    .ok_or("Asset Lock not valid for wallet")?;
+                let asset_lock_proof = if let AssetLockProof::Instant(instant_asset_lock_proof) =
+                    asset_lock_proof.as_ref()
+                {
+                    // we need to make sure the instant send asset lock is recent
+                    let raw_transaction_info = self
+                        .core_client
+                        .get_raw_transaction_info(&tx_id, None)
+                        .map_err(|e| e.to_string())?;
+
+                    if raw_transaction_info.chainlock
+                        && raw_transaction_info.height.is_some()
+                        && raw_transaction_info.confirmations.is_some()
+                        && raw_transaction_info.confirmations.unwrap() > 8
+                    {
+                        // we should use a chain lock instead
+                        AssetLockProof::Chain(ChainAssetLockProof {
+                            core_chain_locked_height: metadata.core_chain_locked_height,
+                            out_point: OutPoint::new(tx_id, 0),
+                        })
+                    } else {
+                        AssetLockProof::Instant(instant_asset_lock_proof.clone())
+                    }
+                } else {
+                    asset_lock_proof
+                };
+                (asset_lock_proof, private_key, tx_id)
+            }
+            RegisterIdentityFundingMethod::FundWithWallet(amount, identity_index) => {
+                // Scope the write lock to avoid holding it across an await.
+                let (asset_lock_transaction, asset_lock_proof_private_key, _, used_utxos) = {
+                    let mut wallet = wallet.write().unwrap();
                     wallet_id = wallet.seed_hash();
-                    let private_key = wallet
-                        .private_key_for_address(&address, self.network)?
-                        .ok_or("Asset Lock not valid for wallet")?;
-                    let asset_lock_proof =
-                        if let AssetLockProof::Instant(instant_asset_lock_proof) =
-                            asset_lock_proof.as_ref()
-                        {
-                            // we need to make sure the instant send asset lock is recent
-                            let raw_transaction_info = self
-                                .core_client
-                                .get_raw_transaction_info(&tx_id, None)
+                    match wallet.registration_asset_lock_transaction(
+                        sdk.network,
+                        amount,
+                        true,
+                        identity_index,
+                        Some(self),
+                    ) {
+                        Ok(transaction) => transaction,
+                        Err(_) => {
+                            wallet
+                                .reload_utxos(&self.core_client, self.network, Some(self))
                                 .map_err(|e| e.to_string())?;
+                            wallet.registration_asset_lock_transaction(
+                                sdk.network,
+                                amount,
+                                true,
+                                identity_index,
+                                Some(self),
+                            )?
+                        }
+                    }
+                };
 
-                            if raw_transaction_info.chainlock
-                                && raw_transaction_info.height.is_some()
-                                && raw_transaction_info.confirmations.is_some()
-                                && raw_transaction_info.confirmations.unwrap() > 8
-                            {
-                                // we should use a chain lock instead
-                                AssetLockProof::Chain(ChainAssetLockProof {
-                                    core_chain_locked_height: metadata.core_chain_locked_height,
-                                    out_point: OutPoint::new(tx_id, 0),
-                                })
-                            } else {
-                                AssetLockProof::Instant(instant_asset_lock_proof.clone())
-                            }
-                        } else {
-                            asset_lock_proof
-                        };
-                    (asset_lock_proof, private_key, tx_id)
+                let tx_id = asset_lock_transaction.txid();
+                // todo: maybe one day we will want to use platform again, but for right now we use
+                //  the local core as it is more stable
+                // let asset_lock_proof = self
+                //     .broadcast_and_retrieve_asset_lock(&asset_lock_transaction, &change_address)
+                //     .await
+                //     .map_err(|e| e.to_string())?;
+
+                {
+                    let mut proofs = self.transactions_waiting_for_finality.lock().unwrap();
+                    proofs.insert(tx_id, None);
                 }
-                IdentityRegistrationMethod::FundWithWallet(amount, identity_index) => {
-                    // Scope the write lock to avoid holding it across an await.
-                    let (asset_lock_transaction, asset_lock_proof_private_key, _, used_utxos) = {
-                        let mut wallet = wallet.write().unwrap();
-                        wallet_id = wallet.seed_hash();
-                        match wallet.asset_lock_transaction(
-                            sdk.network,
-                            amount,
-                            true,
-                            identity_index,
-                            Some(self),
-                        ) {
-                            Ok(transaction) => transaction,
-                            Err(_) => {
-                                wallet
-                                    .reload_utxos(&self.core_client, self.network, Some(self))
-                                    .map_err(|e| e.to_string())?;
-                                wallet.asset_lock_transaction(
-                                    sdk.network,
-                                    amount,
-                                    true,
-                                    identity_index,
-                                    Some(self),
-                                )?
-                            }
-                        }
-                    };
 
-                    let tx_id = asset_lock_transaction.txid();
-                    // todo: maybe one day we will want to use platform again, but for right now we use
-                    //  the local core as it is more stable
-                    // let asset_lock_proof = self
-                    //     .broadcast_and_retrieve_asset_lock(&asset_lock_transaction, &change_address)
-                    //     .await
-                    //     .map_err(|e| e.to_string())?;
+                self.core_client
+                    .send_raw_transaction(&asset_lock_transaction)
+                    .map_err(|e| e.to_string())?;
 
-                    {
-                        let mut proofs = self.transactions_waiting_for_finality.lock().unwrap();
-                        proofs.insert(tx_id, None);
-                    }
-
-                    self.core_client
-                        .send_raw_transaction(&asset_lock_transaction)
-                        .map_err(|e| e.to_string())?;
-
-                    {
-                        let mut wallet = wallet.write().unwrap();
-                        wallet.utxos.retain(|_, utxo_map| {
-                            utxo_map.retain(|outpoint, _| !used_utxos.contains_key(outpoint));
-                            !utxo_map.is_empty() // Keep addresses that still have UTXOs
-                        });
-                        for utxo in used_utxos.keys() {
-                            self.db
-                                .drop_utxo(utxo, &self.network.to_string())
-                                .map_err(|e| e.to_string())?;
-                        }
-                    }
-
-                    let asset_lock_proof;
-
-                    loop {
-                        {
-                            let proofs = self.transactions_waiting_for_finality.lock().unwrap();
-                            if let Some(Some(proof)) = proofs.get(&tx_id) {
-                                asset_lock_proof = proof.clone();
-                                break;
-                            }
-                        }
-                        tokio::time::sleep(Duration::from_millis(200)).await;
-                    }
-
-                    (asset_lock_proof, asset_lock_proof_private_key, tx_id)
-                }
-                IdentityRegistrationMethod::FundWithUtxo(
-                    utxo,
-                    tx_out,
-                    input_address,
-                    identity_index,
-                ) => {
-                    // Scope the write lock to avoid holding it across an await.
-                    let (asset_lock_transaction, asset_lock_proof_private_key) = {
-                        let mut wallet = wallet.write().unwrap();
-                        wallet_id = wallet.seed_hash();
-                        wallet.asset_lock_transaction_for_utxo(
-                            sdk.network,
-                            utxo,
-                            tx_out.clone(),
-                            input_address.clone(),
-                            identity_index,
-                            Some(self),
-                        )?
-                    };
-
-                    let tx_id = asset_lock_transaction.txid();
-                    // todo: maybe one day we will want to use platform again, but for right now we use
-                    //  the local core as it is more stable
-                    // let asset_lock_proof = self
-                    //     .broadcast_and_retrieve_asset_lock(&asset_lock_transaction, &change_address)
-                    //     .await
-                    //     .map_err(|e| e.to_string())?;
-
-                    {
-                        let mut proofs = self.transactions_waiting_for_finality.lock().unwrap();
-                        proofs.insert(tx_id, None);
-                    }
-
-                    self.core_client
-                        .send_raw_transaction(&asset_lock_transaction)
-                        .map_err(|e| e.to_string())?;
-
-                    {
-                        let mut wallet = wallet.write().unwrap();
-                        wallet.utxos.retain(|_, utxo_map| {
-                            utxo_map.retain(|outpoint, _| outpoint != &utxo);
-                            !utxo_map.is_empty()
-                        });
+                {
+                    let mut wallet = wallet.write().unwrap();
+                    wallet.utxos.retain(|_, utxo_map| {
+                        utxo_map.retain(|outpoint, _| !used_utxos.contains_key(outpoint));
+                        !utxo_map.is_empty() // Keep addresses that still have UTXOs
+                    });
+                    for utxo in used_utxos.keys() {
                         self.db
-                            .drop_utxo(&utxo, &self.network.to_string())
+                            .drop_utxo(utxo, &self.network.to_string())
                             .map_err(|e| e.to_string())?;
                     }
-
-                    let asset_lock_proof;
-
-                    loop {
-                        {
-                            let proofs = self.transactions_waiting_for_finality.lock().unwrap();
-                            if let Some(Some(proof)) = proofs.get(&tx_id) {
-                                asset_lock_proof = proof.clone();
-                                break;
-                            }
-                        }
-                        tokio::time::sleep(Duration::from_millis(200)).await;
-                    }
-
-                    (asset_lock_proof, asset_lock_proof_private_key, tx_id)
                 }
-            };
+
+                let asset_lock_proof;
+
+                loop {
+                    {
+                        let proofs = self.transactions_waiting_for_finality.lock().unwrap();
+                        if let Some(Some(proof)) = proofs.get(&tx_id) {
+                            asset_lock_proof = proof.clone();
+                            break;
+                        }
+                    }
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                }
+
+                (asset_lock_proof, asset_lock_proof_private_key, tx_id)
+            }
+            RegisterIdentityFundingMethod::FundWithUtxo(
+                utxo,
+                tx_out,
+                input_address,
+                identity_index,
+            ) => {
+                // Scope the write lock to avoid holding it across an await.
+                let (asset_lock_transaction, asset_lock_proof_private_key) = {
+                    let mut wallet = wallet.write().unwrap();
+                    wallet_id = wallet.seed_hash();
+                    wallet.registration_asset_lock_transaction_for_utxo(
+                        sdk.network,
+                        utxo,
+                        tx_out.clone(),
+                        input_address.clone(),
+                        identity_index,
+                        Some(self),
+                    )?
+                };
+
+                let tx_id = asset_lock_transaction.txid();
+                // todo: maybe one day we will want to use platform again, but for right now we use
+                //  the local core as it is more stable
+                // let asset_lock_proof = self
+                //     .broadcast_and_retrieve_asset_lock(&asset_lock_transaction, &change_address)
+                //     .await
+                //     .map_err(|e| e.to_string())?;
+
+                {
+                    let mut proofs = self.transactions_waiting_for_finality.lock().unwrap();
+                    proofs.insert(tx_id, None);
+                }
+
+                self.core_client
+                    .send_raw_transaction(&asset_lock_transaction)
+                    .map_err(|e| e.to_string())?;
+
+                {
+                    let mut wallet = wallet.write().unwrap();
+                    wallet.utxos.retain(|_, utxo_map| {
+                        utxo_map.retain(|outpoint, _| outpoint != &utxo);
+                        !utxo_map.is_empty()
+                    });
+                    self.db
+                        .drop_utxo(&utxo, &self.network.to_string())
+                        .map_err(|e| e.to_string())?;
+                }
+
+                let asset_lock_proof;
+
+                loop {
+                    {
+                        let proofs = self.transactions_waiting_for_finality.lock().unwrap();
+                        if let Some(Some(proof)) = proofs.get(&tx_id) {
+                            asset_lock_proof = proof.clone();
+                            break;
+                        }
+                    }
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                }
+
+                (asset_lock_proof, asset_lock_proof_private_key, tx_id)
+            }
+        };
 
         let identity_id = asset_lock_proof
             .create_identifier()
@@ -336,6 +331,8 @@ impl AppContext {
                 wallet.read().unwrap().seed_hash(),
                 wallet.clone(),
             )]),
+            wallet_index: Some(wallet_identity_index),
+            top_ups: Default::default(),
         };
 
         if !alias_input.is_empty() {

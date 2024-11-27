@@ -423,6 +423,9 @@ impl App for AppState {
                     BackendTaskSuccessResult::RegisteredIdentity(_) => {
                         self.visible_screen_mut().display_task_result(message);
                     }
+                    BackendTaskSuccessResult::ToppedUpIdentity(_) => {
+                        self.visible_screen_mut().display_task_result(message);
+                    }
                 },
                 TaskResult::Error(message) => {
                     self.visible_screen_mut()
@@ -457,7 +460,7 @@ impl App for AppState {
                             let core_item =
                                 CoreItem::ReceivedAvailableUTXOTransaction(tx.clone(), utxos);
                             self.visible_screen_mut()
-                                .display_task_result(core_item.into());
+                                .display_task_result(BackendTaskSuccessResult::CoreItem(core_item));
                         }
                         Err(e) => {
                             eprintln!("Failed to store asset lock: {}", e);

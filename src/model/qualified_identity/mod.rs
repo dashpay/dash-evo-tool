@@ -96,6 +96,9 @@ pub struct QualifiedIdentity {
     pub private_keys: KeyStorage,
     pub dpns_names: Vec<DPNSNameInfo>,
     pub associated_wallets: BTreeMap<WalletSeedHash, Arc<RwLock<Wallet>>>,
+    /// The index used to register the identity
+    pub wallet_index: Option<u32>,
+    pub top_ups: BTreeMap<u32, u32>,
 }
 
 impl PartialEq for QualifiedIdentity {
@@ -105,6 +108,7 @@ impl PartialEq for QualifiedIdentity {
             && self.associated_operator_identity == other.associated_operator_identity
             && self.associated_owner_key_id == other.associated_owner_key_id
             && self.identity_type == other.identity_type
+            && self.wallet_index == other.wallet_index
             && self.alias == other.alias
             && self.private_keys == other.private_keys
             && self.dpns_names == other.dpns_names
@@ -146,6 +150,8 @@ impl Decode for QualifiedIdentity {
             private_keys: KeyStorage::decode(decoder)?,
             dpns_names: Vec::<DPNSNameInfo>::decode(decoder)?,
             associated_wallets: BTreeMap::new(), // Initialize with an empty vector
+            wallet_index: None,
+            top_ups: Default::default(),
         })
     }
 }
@@ -353,6 +359,8 @@ impl From<Identity> for QualifiedIdentity {
             private_keys: Default::default(),
             dpns_names: vec![],
             associated_wallets: BTreeMap::new(),
+            wallet_index: None,
+            top_ups: Default::default(),
         }
     }
 }

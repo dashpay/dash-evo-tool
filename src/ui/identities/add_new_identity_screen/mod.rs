@@ -6,13 +6,14 @@ mod success_screen;
 use crate::app::AppAction;
 use crate::backend_task::core::CoreItem;
 use crate::backend_task::identity::{
-    IdentityKeys, IdentityRegistrationInfo, IdentityRegistrationMethod, IdentityTask,
+    IdentityKeys, IdentityRegistrationInfo, IdentityTask, RegisterIdentityFundingMethod,
 };
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::wallet::Wallet;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
+use crate::ui::identities::funding_common::WalletFundedScreenStep;
 use crate::ui::{MessageType, ScreenLike};
 use arboard::Clipboard;
 use dash_sdk::dashcore_rpc::dashcore::transaction::special_transaction::TransactionPayload;
@@ -55,20 +56,9 @@ impl fmt::Display for FundingMethod {
     }
 }
 
-#[derive(Eq, PartialEq, Ord, PartialOrd, Copy, Clone)]
-pub enum AddNewIdentityWalletFundedScreenStep {
-    ChooseFundingMethod,
-    WaitingOnFunds,
-    FundsReceived,
-    ReadyToCreate,
-    WaitingForAssetLock,
-    WaitingForPlatformAcceptance,
-    Success,
-}
-
 pub struct AddNewIdentityScreen {
     identity_id_number: u32,
-    step: Arc<RwLock<AddNewIdentityWalletFundedScreenStep>>,
+    step: Arc<RwLock<WalletFundedScreenStep>>,
     funding_asset_lock: Option<(Transaction, AssetLockProof, Address)>,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     core_has_funding_address: Option<bool>,
@@ -89,35 +79,6 @@ pub struct AddNewIdentityScreen {
     in_key_selection_advanced_mode: bool,
     pub app_context: Arc<AppContext>,
     successful_qualified_identity_id: Option<Identifier>,
-}
-
-// Function to generate a QR code image from the address
-fn generate_qr_code_image(pay_uri: &str) -> Result<ColorImage, qrcode::types::QrError> {
-    // Generate the QR code
-    let code = QrCode::new(pay_uri.as_bytes())?;
-
-    // Render the QR code into an image buffer
-    let image = code.render::<Luma<u8>>().build();
-
-    // Convert the image buffer to ColorImage
-    let size = [image.width() as usize, image.height() as usize];
-    let pixels = image.into_raw();
-    let pixels: Vec<Color32> = pixels
-        .into_iter()
-        .map(|p| {
-            let color = 255 - p; // Invert colors for better visibility
-            Color32::from_rgba_unmultiplied(color, color, color, 255)
-        })
-        .collect();
-
-    Ok(ColorImage { size, pixels })
-}
-
-pub fn copy_to_clipboard(text: &str) -> Result<(), String> {
-    let mut clipboard = Clipboard::new().map_err(|e| e.to_string())?;
-    clipboard
-        .set_text(text.to_string())
-        .map_err(|e| e.to_string())
 }
 
 impl AddNewIdentityScreen {
@@ -189,9 +150,7 @@ impl AddNewIdentityScreen {
 
         Self {
             identity_id_number,
-            step: Arc::new(RwLock::new(
-                AddNewIdentityWalletFundedScreenStep::ChooseFundingMethod,
-            )),
+            step: Arc::new(RwLock::new(WalletFundedScreenStep::ChooseFundingMethod)),
             funding_asset_lock: None,
             selected_wallet,
             core_has_funding_address: None,
@@ -514,7 +473,7 @@ impl AddNewIdentityScreen {
                     {
                         self.update_identity_key();
                         let mut step = self.step.write().unwrap(); // Write lock on step
-                        *step = AddNewIdentityWalletFundedScreenStep::ReadyToCreate;
+                        *step = WalletFundedScreenStep::ReadyToCreate;
                     }
                 }
                 if has_balance {
@@ -532,7 +491,7 @@ impl AddNewIdentityScreen {
                             self.funding_amount = format!("{:.4}", max_amount as f64 * 1e-8);
                         }
                         let mut step = self.step.write().unwrap(); // Write lock on step
-                        *step = AddNewIdentityWalletFundedScreenStep::ReadyToCreate;
+                        *step = WalletFundedScreenStep::ReadyToCreate;
                     }
                 }
                 if ui
@@ -544,7 +503,7 @@ impl AddNewIdentityScreen {
                     .changed()
                 {
                     let mut step = self.step.write().unwrap(); // Write lock on step
-                    *step = AddNewIdentityWalletFundedScreenStep::WaitingOnFunds;
+                    *step = WalletFundedScreenStep::WaitingOnFunds;
                 }
 
                 // Uncomment this if AttachedCoreWallet is available in the future
@@ -687,7 +646,7 @@ impl AddNewIdentityScreen {
                         keys: self.identity_keys.clone(),
                         wallet: Arc::clone(selected_wallet), // Clone the Arc reference
                         wallet_identity_index: self.identity_id_number,
-                        identity_registration_method: IdentityRegistrationMethod::UseAssetLock(
+                        identity_funding_method: RegisterIdentityFundingMethod::UseAssetLock(
                             address,
                             funding_asset_lock,
                             tx,
@@ -695,7 +654,7 @@ impl AddNewIdentityScreen {
                     };
 
                     let mut step = self.step.write().unwrap();
-                    *step = AddNewIdentityWalletFundedScreenStep::WaitingForPlatformAcceptance;
+                    *step = WalletFundedScreenStep::WaitingForPlatformAcceptance;
 
                     AppAction::BackendTask(BackendTask::IdentityTask(
                         IdentityTask::RegisterIdentity(identity_input),
@@ -718,14 +677,14 @@ impl AddNewIdentityScreen {
                     keys: self.identity_keys.clone(),
                     wallet: Arc::clone(selected_wallet), // Clone the Arc reference
                     wallet_identity_index: self.identity_id_number,
-                    identity_registration_method: IdentityRegistrationMethod::FundWithWallet(
+                    identity_funding_method: RegisterIdentityFundingMethod::FundWithWallet(
                         amount,
                         self.identity_id_number,
                     ),
                 };
 
                 let mut step = self.step.write().unwrap();
-                *step = AddNewIdentityWalletFundedScreenStep::WaitingForAssetLock;
+                *step = WalletFundedScreenStep::WaitingForAssetLock;
 
                 // Create the backend task to register the identity
                 AppAction::BackendTask(BackendTask::IdentityTask(IdentityTask::RegisterIdentity(
@@ -902,8 +861,8 @@ impl ScreenLike for AddNewIdentityScreen {
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         let mut step = self.step.write().unwrap();
         match *step {
-            AddNewIdentityWalletFundedScreenStep::ChooseFundingMethod => {}
-            AddNewIdentityWalletFundedScreenStep::WaitingOnFunds => {
+            WalletFundedScreenStep::ChooseFundingMethod => {}
+            WalletFundedScreenStep::WaitingOnFunds => {
                 if let Some(funding_address) = self.funding_address.as_ref() {
                     if let BackendTaskSuccessResult::CoreItem(
                         CoreItem::ReceivedAvailableUTXOTransaction(_, outpoints_with_addresses),
@@ -911,16 +870,16 @@ impl ScreenLike for AddNewIdentityScreen {
                     {
                         for (outpoint, tx_out, address) in outpoints_with_addresses {
                             if funding_address == &address {
-                                *step = AddNewIdentityWalletFundedScreenStep::FundsReceived;
+                                *step = WalletFundedScreenStep::FundsReceived;
                                 self.funding_utxo = Some((outpoint, tx_out, address))
                             }
                         }
                     }
                 }
             }
-            AddNewIdentityWalletFundedScreenStep::FundsReceived => {}
-            AddNewIdentityWalletFundedScreenStep::ReadyToCreate => {}
-            AddNewIdentityWalletFundedScreenStep::WaitingForAssetLock => {
+            WalletFundedScreenStep::FundsReceived => {}
+            WalletFundedScreenStep::ReadyToCreate => {}
+            WalletFundedScreenStep::WaitingForAssetLock => {
                 if let BackendTaskSuccessResult::CoreItem(
                     CoreItem::ReceivedAvailableUTXOTransaction(tx, _),
                 ) = backend_task_success_result
@@ -947,21 +906,20 @@ impl ScreenLike for AddNewIdentityScreen {
                             })
                             .is_some()
                         {
-                            *step =
-                                AddNewIdentityWalletFundedScreenStep::WaitingForPlatformAcceptance;
+                            *step = WalletFundedScreenStep::WaitingForPlatformAcceptance;
                         }
                     }
                 }
             }
-            AddNewIdentityWalletFundedScreenStep::WaitingForPlatformAcceptance => {
+            WalletFundedScreenStep::WaitingForPlatformAcceptance => {
                 if let BackendTaskSuccessResult::RegisteredIdentity(qualified_identity) =
                     backend_task_success_result
                 {
                     self.successful_qualified_identity_id = Some(qualified_identity.identity.id());
-                    *step = AddNewIdentityWalletFundedScreenStep::Success;
+                    *step = WalletFundedScreenStep::Success;
                 }
             }
-            AddNewIdentityWalletFundedScreenStep::Success => {}
+            WalletFundedScreenStep::Success => {}
         }
     }
     fn ui(&mut self, ctx: &Context) -> AppAction {
@@ -978,7 +936,7 @@ impl ScreenLike for AddNewIdentityScreen {
         egui::CentralPanel::default().show(ctx, |ui| {
             ScrollArea::vertical().show(ui, |ui| {
                 let step = {self.step.read().unwrap().clone()};
-                if step == AddNewIdentityWalletFundedScreenStep::Success {
+                if step == WalletFundedScreenStep::Success {
                     action |= self.show_success(ui);
                     return;
                 }

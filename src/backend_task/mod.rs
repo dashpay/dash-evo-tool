@@ -9,7 +9,6 @@ use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::dpp::voting::votes::Vote;
 use dash_sdk::query_types::Documents;
-use derive_more::From;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
@@ -30,13 +29,14 @@ pub(crate) enum BackendTask {
     WithdrawalTask(WithdrawalsTask),
 }
 
-#[derive(Debug, Clone, PartialEq, From)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) enum BackendTaskSuccessResult {
     None,
     Message(String),
     Documents(Documents),
     CoreItem(CoreItem),
     RegisteredIdentity(QualifiedIdentity),
+    ToppedUpIdentity(QualifiedIdentity),
     SuccessfulVotes(Vec<Vote>),
     WithdrawalStatus(WithdrawStatusPartialData),
 }

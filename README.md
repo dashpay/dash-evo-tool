@@ -13,10 +13,12 @@ The tool supports both Mainnet and Testnet networks. Check out the [documentatio
 
 - [Prerequisites](#prerequisites)
   - [Rust Installation](#rust-installation)
+  - [Dependencies](#dependencies)
   - [Dash Core Wallet Setup](#dash-core-wallet-setup)
 - [Installation](#installation)
 - [Getting Started](#getting-started)
   - [Start the App](#start-the-app)
+  - [Application directory](#application-directory)
   - [Connect to a Network](#connect-to-a-network)
 - [Usage](#usage)
   - [Register a DPNS Username](#register-a-dpns-username)
@@ -204,19 +206,19 @@ Contributions are welcome!
 
 - **Create a Branch**:
 
-  ```
+  ``` shell
   git checkout -b feature/YourFeatureName
   ```
 
 - **Commit Changes**: Make your changes and commit them with descriptive messages.
 
-  ```
+  ``` shell
   git commit -m "Add feature: YourFeatureName"
   ```
 
 - **Push to Branch**:
 
-  ```
+  ``` shell
   git push origin feature/YourFeatureName
   ```
 

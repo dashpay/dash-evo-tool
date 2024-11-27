@@ -46,6 +46,25 @@ Before you begin, ensure you have met the following requirements:
   rustup update
   ```
 
+### Dependencies
+
+- Install build-essential tools, SSL development libraries, and other required dependencies. On
+Ubuntu, use:
+
+   ``` shell
+   sudo apt install -y build-essential libssl-dev pkg-config unzip
+   ```
+
+   On other Unix-like systems, use the equivalent package management commands.
+
+- Install Protocol Buffers Compiler (protoc). Download the appropriate protoc binary for your
+system, unzip, and install:
+
+   ``` shell
+   wget https://github.com/protocolbuffers/protobuf/releases/download/v26.1/protoc-26.1-linux-x86_64.zip
+   sudo unzip protoc-*-linux-x86_64.zip -d /usr/local
+   ```
+
 ### Dash Core Wallet Setup
 
 - **Dash Core Wallet**: Download and install from [dash.org/wallets](https://www.dash.org/wallets/).

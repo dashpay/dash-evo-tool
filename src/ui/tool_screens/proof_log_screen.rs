@@ -7,7 +7,7 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::drive::grovedb::operations::proof::GroveDBProof;
 use dash_sdk::drive::query::PathQuery;
-use eframe::egui::{self, Context, Grid, ScrollArea, TextEdit, Ui};
+use eframe::egui::{self, Context, Grid, ScrollArea, Ui};
 use egui::text::LayoutJob;
 use egui::{Color32, FontId, Frame, Stroke, TextFormat, TextStyle, Vec2};
 use regex::Regex;

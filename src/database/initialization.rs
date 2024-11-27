@@ -4,7 +4,7 @@ use rusqlite::{params, Connection};
 use std::fs;
 use std::path::Path;
 
-pub const DEFAULT_DB_VERSION: u16 = 3;
+pub const DEFAULT_DB_VERSION: u16 = 4;
 
 pub const DEFAULT_NETWORK: &str = "dash";
 
@@ -34,6 +34,9 @@ impl Database {
 
     fn apply_version_changes(&self, version: u16) -> rusqlite::Result<()> {
         match version {
+            4 => {
+                self.initialize_top_up_table()?;
+            }
             3 => {
                 self.add_custom_dash_qt_columns()?;
             }
@@ -344,6 +347,8 @@ impl Database {
         )?;
 
         self.initialize_proof_log_table()?;
+
+        self.initialize_top_up_table()?;
 
         Ok(())
     }

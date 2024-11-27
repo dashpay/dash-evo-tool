@@ -1,12 +1,11 @@
 use crate::app::AppAction;
-use crate::ui::identities::add_new_identity_screen::{
-    AddNewIdentityScreen, FundingMethod, WalletFundedScreenStep,
-};
+use crate::ui::identities::add_new_identity_screen::FundingMethod;
+use crate::ui::identities::top_up_identity_screen::{TopUpIdentityScreen, WalletFundedScreenStep};
 use egui::Ui;
 
-impl AddNewIdentityScreen {
+impl TopUpIdentityScreen {
     fn show_wallet_balance(&self, ui: &mut egui::Ui) {
-        if let Some(selected_wallet) = &self.selected_wallet {
+        if let Some(selected_wallet) = &self.wallet {
             let wallet = selected_wallet.read().unwrap(); // Read lock on the wallet
 
             let total_balance: u64 = wallet.max_balance(); // Sum up all the balances
@@ -39,7 +38,7 @@ impl AddNewIdentityScreen {
 
         step_number += 1;
 
-        self.render_funding_amount_input(ui);
+        self.top_up_funding_amount_input(ui);
 
         // Extract the step from the RwLock to minimize borrow scope
         let step = self.step.read().unwrap().clone();
@@ -48,9 +47,9 @@ impl AddNewIdentityScreen {
             return action;
         };
 
-        if ui.button("Create Identity").clicked() {
+        if ui.button("Top Up Identity").clicked() {
             self.error_message = None;
-            action = self.register_identity_clicked(FundingMethod::UseWalletBalance);
+            action = self.top_up_identity_clicked(FundingMethod::UseWalletBalance);
         }
 
         match step {

@@ -34,18 +34,6 @@ pub fn check_cpu_compatibility() {
                     .unwrap();
                 std::process::exit(1);
             }
-            let avx512_supported = cpuid
-                .get_extended_feature_info()
-                .map_or(false, |ext_info| ext_info.has_avx512f()); // AVX-512 Foundation
-            if !avx512_supported {
-                MessageDialog::new()
-                    .set_type(native_dialog::MessageType::Error)
-                    .set_title("Compatibility Error")
-                    .set_text("Your CPU does not support AVX512 instructions. Please use a compatible CPU.")
-                    .show_alert()
-                    .unwrap();
-                std::process::exit(1);
-            }
         } else {
             MessageDialog::new()
                 .set_type(native_dialog::MessageType::Error)

@@ -2,8 +2,6 @@ use crate::context::AppContext;
 use dash_sdk::dpp::dashcore::Network;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{env, io};
 
 impl AppContext {

@@ -5,6 +5,7 @@ mod identities;
 mod initialization;
 mod proof_log;
 mod settings;
+mod top_ups;
 mod utxo;
 mod wallet;
 

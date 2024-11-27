@@ -438,7 +438,8 @@ impl Database {
             let (identity_data, wallet_seed_hash_array, wallet_index) = row?;
 
             if let Some(wallet) = wallets_map.get_mut(&wallet_seed_hash_array) {
-                let identity: QualifiedIdentity = QualifiedIdentity::from_bytes(&identity_data);
+                let mut identity: QualifiedIdentity = QualifiedIdentity::from_bytes(&identity_data);
+                identity.wallet_index = Some(wallet_index);
 
                 // Insert the identity into the wallet's identities HashMap with wallet_index as the key
                 wallet.identities.insert(wallet_index, identity.identity);

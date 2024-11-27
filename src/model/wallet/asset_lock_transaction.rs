@@ -12,7 +12,7 @@ use dash_sdk::dpp::dashcore::{
 use std::collections::BTreeMap;
 
 impl Wallet {
-    pub fn asset_lock_transaction(
+    pub fn registration_asset_lock_transaction(
         &mut self,
         network: Network,
         amount: u64,
@@ -28,12 +28,69 @@ impl Wallet {
         ),
         String,
     > {
-        let secp = Secp256k1::new();
         let private_key = self.identity_registration_ecdsa_private_key(
             network,
             identity_index,
             register_addresses,
         )?;
+        self.asset_lock_transaction_from_private_key(
+            network,
+            amount,
+            allow_take_fee_from_amount,
+            private_key,
+            register_addresses,
+        )
+    }
+
+    pub fn top_up_asset_lock_transaction(
+        &mut self,
+        network: Network,
+        amount: u64,
+        allow_take_fee_from_amount: bool,
+        identity_index: u32,
+        top_up_index: u32,
+        register_addresses: Option<&AppContext>,
+    ) -> Result<
+        (
+            Transaction,
+            PrivateKey,
+            Option<Address>,
+            BTreeMap<OutPoint, (TxOut, Address)>,
+        ),
+        String,
+    > {
+        let private_key = self.identity_top_up_ecdsa_private_key(
+            network,
+            identity_index,
+            top_up_index,
+            register_addresses,
+        )?;
+        self.asset_lock_transaction_from_private_key(
+            network,
+            amount,
+            allow_take_fee_from_amount,
+            private_key,
+            register_addresses,
+        )
+    }
+
+    fn asset_lock_transaction_from_private_key(
+        &mut self,
+        network: Network,
+        amount: u64,
+        allow_take_fee_from_amount: bool,
+        private_key: PrivateKey,
+        register_addresses: Option<&AppContext>,
+    ) -> Result<
+        (
+            Transaction,
+            PrivateKey,
+            Option<Address>,
+            BTreeMap<OutPoint, (TxOut, Address)>,
+        ),
+        String,
+    > {
+        let secp = Secp256k1::new();
         let asset_lock_public_key = private_key.public_key(&secp);
 
         let one_time_key_hash = asset_lock_public_key.pubkey_hash();
@@ -168,7 +225,7 @@ impl Wallet {
         Ok((tx, private_key, change_address, utxos))
     }
 
-    pub fn asset_lock_transaction_for_utxo(
+    pub fn registration_asset_lock_transaction_for_utxo(
         &mut self,
         network: Network,
         utxo: OutPoint,
@@ -177,12 +234,54 @@ impl Wallet {
         identity_index: u32,
         register_addresses: Option<&AppContext>,
     ) -> Result<(Transaction, PrivateKey), String> {
-        let secp = Secp256k1::new();
         let private_key = self.identity_registration_ecdsa_private_key(
             network,
             identity_index,
             register_addresses,
         )?;
+        self.asset_lock_transaction_for_utxo_from_private_key(
+            network,
+            utxo,
+            previous_tx_output,
+            input_address,
+            private_key,
+        )
+    }
+
+    pub fn top_up_asset_lock_transaction_for_utxo(
+        &mut self,
+        network: Network,
+        utxo: OutPoint,
+        previous_tx_output: TxOut,
+        input_address: Address,
+        identity_index: u32,
+        top_up_index: u32,
+        register_addresses: Option<&AppContext>,
+    ) -> Result<(Transaction, PrivateKey), String> {
+        let private_key = self.identity_top_up_ecdsa_private_key(
+            network,
+            identity_index,
+            top_up_index,
+            register_addresses,
+        )?;
+        self.asset_lock_transaction_for_utxo_from_private_key(
+            network,
+            utxo,
+            previous_tx_output,
+            input_address,
+            private_key,
+        )
+    }
+
+    pub fn asset_lock_transaction_for_utxo_from_private_key(
+        &mut self,
+        network: Network,
+        utxo: OutPoint,
+        previous_tx_output: TxOut,
+        input_address: Address,
+        private_key: PrivateKey,
+    ) -> Result<(Transaction, PrivateKey), String> {
+        let secp = Secp256k1::new();
         let asset_lock_public_key = private_key.public_key(&secp);
 
         let one_time_key_hash = asset_lock_public_key.pubkey_hash();

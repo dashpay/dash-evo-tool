@@ -23,16 +23,3 @@ Cargo.lock
 .DS_Store
 .idea/
 **/.DS_Store
-
-# Explorer state
-*_explorer.state
-*_explorer.state.*
-explorer.drive
-
-# Logs
-explorer.log
-
-# Supporting files
-supporting_files/strategy_exports/
-supporting_files/new_identity_private_keys.log
-/identities.db

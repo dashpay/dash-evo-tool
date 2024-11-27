@@ -35,7 +35,6 @@ pub struct TopUpIdentityScreen {
     funding_asset_lock: Option<(Transaction, AssetLockProof, Address)>,
     wallet: Option<Arc<RwLock<Wallet>>>,
     core_has_funding_address: Option<bool>,
-    top_up_index_number: u32,
     funding_address: Option<Address>,
     funding_address_balance: Arc<RwLock<Option<Duffs>>>,
     funding_method: Arc<RwLock<FundingMethod>>,
@@ -65,7 +64,6 @@ impl TopUpIdentityScreen {
             funding_asset_lock: None,
             wallet: selected_wallet,
             core_has_funding_address: None,
-            top_up_index_number: 0,
             funding_address: None,
             funding_address_balance: Arc::new(RwLock::new(None)),
             funding_method: Arc::new(RwLock::new(FundingMethod::NoSelection)),
@@ -136,61 +134,6 @@ impl TopUpIdentityScreen {
         } else {
             false
         }
-    }
-
-    fn render_top_up_index_input(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            ui.label("Top up Index:");
-
-            // Check if we have access to the selected wallet
-            if let Some(wallet_guard) = self.wallet.as_ref() {
-                let wallet = wallet_guard.read().unwrap();
-                let used_indices: HashSet<u32> = wallet.identities.keys().cloned().collect();
-
-                // Modify the selected text to include "(used)" if the current index is used
-                let selected_text = {
-                    let is_used = used_indices.contains(&self.top_up_index_number);
-                    if is_used {
-                        format!("{} (used)", self.top_up_index_number)
-                    } else {
-                        format!("{}", self.top_up_index_number)
-                    }
-                };
-
-                // Render a ComboBox to select the identity index
-                ComboBox::from_id_salt("identity_index")
-                    .selected_text(selected_text)
-                    .show_ui(ui, |ui| {
-                        // Provide up to 30 entries for selection (0 to 29)
-                        for i in 0..30 {
-                            let is_used = used_indices.contains(&i);
-                            let label = if is_used {
-                                format!("{} (used)", i)
-                            } else {
-                                format!("{}", i)
-                            };
-
-                            let is_selected = self.top_up_index_number == i;
-
-                            // Enable the option if it's not used or if it's the currently selected index
-                            let enabled = !is_used || is_selected;
-
-                            // Use `add_enabled` to disable used indices
-                            let response = ui.add_enabled(
-                                enabled,
-                                egui::SelectableLabel::new(is_selected, label),
-                            );
-
-                            // Only allow selection if the index is not used
-                            if response.clicked() && !is_used {
-                                self.top_up_index_number = i;
-                            }
-                        }
-                    });
-            } else {
-                ui.label("No wallet selected");
-            }
-        });
     }
 
     fn render_funding_method(&mut self, ui: &mut egui::Ui) {
@@ -307,7 +250,13 @@ impl TopUpIdentityScreen {
                     identity_funding_method: TopUpIdentityFundingMethod::FundWithWallet(
                         amount,
                         self.identity.wallet_index.unwrap_or(u32::MAX >> 1),
-                        self.top_up_index_number,
+                        self.identity
+                            .top_ups
+                            .keys()
+                            .max()
+                            .cloned()
+                            .map(|i| i + 1)
+                            .unwrap_or_default(),
                     ),
                 };
 

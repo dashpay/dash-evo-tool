@@ -5,6 +5,7 @@ use crate::model::wallet::Wallet;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::platform::Identifier;
 use rusqlite::params;
+use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
 impl Database {
@@ -167,19 +168,47 @@ impl Database {
         let network = app_context.network_string();
 
         let conn = self.conn.lock().unwrap();
+
+        // Prepare the main statement to select identities, including wallet_index
         let mut stmt = conn.prepare(
-            "SELECT data, alias FROM identity WHERE is_local = 1 AND network = ? AND data IS NOT NULL",
+            "SELECT data, alias, wallet_index FROM identity WHERE is_local = 1 AND network = ? AND data IS NOT NULL",
         )?;
+
+        // Prepare the statement to select top-ups (will be used multiple times)
+        let mut top_up_stmt =
+            conn.prepare("SELECT top_up_index, amount FROM top_up WHERE identity_id = ?")?;
+
+        // Iterate over each identity
         let identity_iter = stmt.query_map(params![network], |row| {
             let data: Vec<u8> = row.get(0)?;
             let alias: Option<String> = row.get(1)?;
+            let wallet_index: Option<u32> = row.get(2)?;
+
             let mut identity: QualifiedIdentity = QualifiedIdentity::from_bytes(&data);
             identity.alias = alias;
+            identity.wallet_index = wallet_index;
 
+            // Associate wallets
             identity.associated_wallets = wallets
                 .iter()
                 .map(|wallet| (wallet.read().unwrap().seed_hash(), wallet.clone()))
                 .collect();
+
+            // Retrieve the identity_id as bytes
+            let identity_id = identity.identity.id().to_buffer();
+
+            // Query the top_up table for this identity_id
+            let mut top_ups = BTreeMap::new();
+            let mut rows = top_up_stmt.query(params![identity_id])?;
+
+            while let Some(top_up_row) = rows.next()? {
+                let top_up_index: u32 = top_up_row.get(0)?;
+                let amount: u32 = top_up_row.get(1)?;
+                top_ups.insert(top_up_index, amount);
+            }
+
+            // Assign the top_ups to the identity
+            identity.top_ups = top_ups;
 
             Ok(identity)
         })?;

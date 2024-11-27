@@ -138,6 +138,7 @@ impl AppContext {
                 wallet_arc_ref.wallet.clone(),
             )]),
             wallet_index: Some(identity_index),
+            top_ups: Default::default(),
         };
 
         // Insert qualified identity into the database

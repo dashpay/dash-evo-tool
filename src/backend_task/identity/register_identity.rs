@@ -332,6 +332,7 @@ impl AppContext {
                 wallet.clone(),
             )]),
             wallet_index: Some(wallet_identity_index),
+            top_ups: Default::default(),
         };
 
         if !alias_input.is_empty() {

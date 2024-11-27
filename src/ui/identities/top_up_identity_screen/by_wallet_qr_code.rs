@@ -144,6 +144,15 @@ impl TopUpIdentityScreen {
                     return action;
                 };
                 if let Some((utxo, tx_out, address)) = self.funding_utxo.clone() {
+                    let wallet_index = self.identity.wallet_index.unwrap_or(u32::MAX >> 1);
+                    let top_up_index = self
+                        .identity
+                        .top_ups
+                        .keys()
+                        .max()
+                        .cloned()
+                        .map(|i| i + 1)
+                        .unwrap_or_default();
                     let identity_input = IdentityTopUpInfo {
                         qualified_identity: self.identity.clone(),
                         wallet: Arc::clone(selected_wallet), // Clone the Arc reference
@@ -151,8 +160,8 @@ impl TopUpIdentityScreen {
                             utxo,
                             tx_out,
                             address,
-                            self.identity.wallet_index.unwrap_or(u32::MAX >> 1),
-                            self.top_up_index_number,
+                            wallet_index,
+                            top_up_index,
                         ),
                     };
 

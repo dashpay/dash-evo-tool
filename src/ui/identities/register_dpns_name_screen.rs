@@ -106,10 +106,17 @@ impl RegisterDpnsNameScreen {
         {
             // Set the selected_qualified_identity to the found identity
             self.selected_qualified_identity = Some(qi.clone());
+            // Update the selected wallet
+            self.selected_wallet = get_selected_wallet(
+                &self.selected_qualified_identity,
+                &self.app_context,
+                &mut self.error_message,
+            );
         } else {
             // If not found, you might want to handle this case
             // For now, we'll set selected_qualified_identity to None
             self.selected_qualified_identity = None;
+            self.selected_wallet = None;
         }
     }
 

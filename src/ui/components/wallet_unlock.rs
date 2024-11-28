@@ -61,8 +61,8 @@ pub trait ScreenWithWalletUnlock {
                 // Capture necessary values before the closure
                 let show_password = self.show_password();
                 let mut local_show_password = show_password; // Local copy of show_password
+                let mut local_error_message = self.error_message().cloned(); // Local variable for error message
                 let wallet_password_mut = self.wallet_password_mut(); // Mutable reference to the password
-                let mut local_error_message = None; // Local variable for error message
 
                 ui.horizontal(|ui| {
                     let password_input = ui.add(

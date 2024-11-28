@@ -88,7 +88,7 @@ impl AddNewIdentityScreen {
         let mut identity_keys = None;
         if app_context.has_wallet.load(Ordering::Relaxed) {
             let wallets = &app_context.wallets.read().unwrap();
-            if let Some(wallet) = wallets.first() {
+            if let Some(wallet) = wallets.values().next() {
                 // Automatically select the only available wallet
                 selected_wallet = Some(wallet.clone());
                 identity_id_number = wallet
@@ -402,7 +402,7 @@ impl AddNewIdentityScreen {
                 ComboBox::from_label("Select Wallet")
                     .selected_text(selected_wallet_alias)
                     .show_ui(ui, |ui| {
-                        for wallet in wallets.iter() {
+                        for wallet in wallets.values() {
                             let wallet_alias = wallet
                                 .read()
                                 .ok()
@@ -427,7 +427,7 @@ impl AddNewIdentityScreen {
                     });
                 ui.add_space(10.0);
                 true
-            } else if let Some(wallet) = wallets.first() {
+            } else if let Some(wallet) = wallets.values().next() {
                 if self.selected_wallet.is_none() {
                     // Automatically select the only available wallet
                     self.selected_wallet = Some(wallet.clone());

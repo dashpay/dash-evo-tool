@@ -120,7 +120,7 @@ impl IdentitiesScreen {
             return Some(in_wallet_text.clone());
         }
         let wallets = self.app_context.wallets.read().unwrap();
-        for wallet in wallets.iter() {
+        for wallet in wallets.values() {
             let wallet_guard = wallet.read().unwrap();
             if &wallet_guard.seed_hash() == wallet_seed_hash {
                 let in_wallet_text = if let Some(alias) = wallet_guard.alias.as_ref() {

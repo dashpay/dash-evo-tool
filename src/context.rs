@@ -6,7 +6,7 @@ use crate::model::contested_name::ContestedName;
 use crate::model::password_info::PasswordInfo;
 use crate::model::qualified_contract::QualifiedContract;
 use crate::model::qualified_identity::{DPNSNameInfo, QualifiedIdentity};
-use crate::model::wallet::Wallet;
+use crate::model::wallet::{Wallet, WalletSeedHash};
 use crate::sdk_wrapper::initialize_sdk;
 use crate::ui::RootScreenType;
 use crossbeam_channel::{Receiver, Sender};
@@ -44,7 +44,7 @@ pub struct AppContext {
     pub(crate) withdraws_contract: Arc<DataContract>,
     pub(crate) core_client: Client,
     pub(crate) has_wallet: AtomicBool,
-    pub(crate) wallets: RwLock<Vec<Arc<RwLock<Wallet>>>>,
+    pub(crate) wallets: RwLock<BTreeMap<WalletSeedHash, Arc<RwLock<Wallet>>>>,
     pub(crate) password_info: Option<PasswordInfo>,
     pub(crate) transactions_waiting_for_finality: Mutex<BTreeMap<Txid, Option<AssetLockProof>>>,
     pub(crate) platform_version: &'static PlatformVersion,
@@ -94,11 +94,11 @@ impl AppContext {
         )
         .ok()?;
 
-        let wallets: Vec<_> = db
+        let wallets: BTreeMap<_, _> = db
             .get_wallets(&network)
             .expect("expected to get wallets")
             .into_iter()
-            .map(|w| Arc::new(RwLock::new(w)))
+            .map(|w| (w.seed_hash(), Arc::new(RwLock::new(w))))
             .collect();
 
         let app_context = AppContext {
@@ -266,7 +266,7 @@ impl AppContext {
 
         // Identify the wallets associated with the transaction
         let wallets = self.wallets.read().unwrap();
-        for wallet_arc in wallets.iter() {
+        for wallet_arc in wallets.values() {
             let mut wallet = wallet_arc.write().unwrap();
             for (vout, tx_out) in tx.output.iter().enumerate() {
                 let address = if let Ok(output_addr) =
@@ -356,7 +356,7 @@ impl AppContext {
 
         // Identify the wallet associated with the transaction
         let wallets = self.wallets.read().unwrap();
-        for wallet_arc in wallets.iter() {
+        for wallet_arc in wallets.values() {
             let mut wallet = wallet_arc.write().unwrap();
 
             // Check if any of the addresses in the transaction outputs match the wallet's known addresses

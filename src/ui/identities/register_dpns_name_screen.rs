@@ -172,7 +172,6 @@ impl RegisterDpnsNameScreen {
                                 .clicked()
                             {
                                 self.selected_qualified_identity = Some(qualified_identity.clone());
-                                self.error_message = None;
                                 self.selected_wallet = get_selected_wallet(
                                     &self.selected_qualified_identity,
                                     &self.app_context,

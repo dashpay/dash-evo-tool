@@ -172,24 +172,12 @@ impl RegisterDpnsNameScreen {
                                 .clicked()
                             {
                                 self.selected_qualified_identity = Some(qualified_identity.clone());
-
-                                // Reset the error message
                                 self.error_message = None;
-
-                                // Update the selected wallet using the helper function
                                 self.selected_wallet = get_selected_wallet(
                                     &self.selected_qualified_identity,
                                     &self.app_context,
                                     &mut self.error_message,
                                 );
-
-                                // Optionally handle the case where no wallet is found
-                                if self.selected_wallet.is_none() && self.error_message.is_none() {
-                                    self.error_message = Some(
-                                        "No associated wallet found for the selected identity."
-                                            .to_string(),
-                                    );
-                                }
                             }
                         }
                     });

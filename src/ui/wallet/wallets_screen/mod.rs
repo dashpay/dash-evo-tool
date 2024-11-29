@@ -614,15 +614,25 @@ impl ScreenLike for WalletsBalancesScreen {
                     )),
                 ),
                 (
-                    "Add Wallet",
+                    "Import Wallet",
+                    DesiredAppAction::AddScreenType(ScreenType::ImportWallet),
+                ),
+                (
+                    "Create Wallet",
                     DesiredAppAction::AddScreenType(ScreenType::AddNewWallet),
                 ),
             ]
         } else {
-            vec![(
-                "Add Wallet",
-                DesiredAppAction::AddScreenType(ScreenType::AddNewWallet),
-            )]
+            vec![
+                (
+                    "Import Wallet",
+                    DesiredAppAction::AddScreenType(ScreenType::ImportWallet),
+                ),
+                (
+                    "Create Wallet",
+                    DesiredAppAction::AddScreenType(ScreenType::AddNewWallet),
+                ),
+            ]
         };
         let mut action = add_top_panel(
             ctx,

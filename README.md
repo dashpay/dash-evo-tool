@@ -13,10 +13,12 @@ The tool supports both Mainnet and Testnet networks. Check out the [documentatio
 
 - [Prerequisites](#prerequisites)
   - [Rust Installation](#rust-installation)
+  - [Dependencies](#dependencies)
   - [Dash Core Wallet Setup](#dash-core-wallet-setup)
 - [Installation](#installation)
 - [Getting Started](#getting-started)
   - [Start the App](#start-the-app)
+  - [Application directory](#application-directory)
   - [Connect to a Network](#connect-to-a-network)
 - [Usage](#usage)
   - [Register a DPNS Username](#register-a-dpns-username)
@@ -45,6 +47,25 @@ Before you begin, ensure you have met the following requirements:
   ``` shell
   rustup update
   ```
+
+### Dependencies
+
+- Install build-essential tools, SSL development libraries, and other required dependencies. On
+Ubuntu, use:
+
+   ``` shell
+   sudo apt install -y build-essential libssl-dev pkg-config unzip
+   ```
+
+   On other Unix-like systems, use the equivalent package management commands.
+
+- Install Protocol Buffers Compiler (protoc). Download the appropriate protoc binary for your
+system, unzip, and install:
+
+   ``` shell
+   wget https://github.com/protocolbuffers/protobuf/releases/download/v26.1/protoc-26.1-linux-x86_64.zip
+   sudo unzip protoc-*-linux-x86_64.zip -d /usr/local
+   ```
 
 ### Dash Core Wallet Setup
 
@@ -185,19 +206,19 @@ Contributions are welcome!
 
 - **Create a Branch**:
 
-  ```
+  ``` shell
   git checkout -b feature/YourFeatureName
   ```
 
 - **Commit Changes**: Make your changes and commit them with descriptive messages.
 
-  ```
+  ``` shell
   git commit -m "Add feature: YourFeatureName"
   ```
 
 - **Push to Branch**:
 
-  ```
+  ``` shell
   git push origin feature/YourFeatureName
   ```
 

@@ -231,15 +231,14 @@ impl KeyInfoScreen {
                 self.error_message = Some("Private key not 32 bytes".to_string());
                 return;
             }
-            Err(_) => {
-                match PrivateKey::from_wif(&self.private_key_input) {
-                    Ok(key) => key.inner.secret_bytes(),
-                    Err(_) => {
-                        self.error_message = Some("Invalid hex string or WIF for private key.".to_string());
-                        return;
-                    }
+            Err(_) => match PrivateKey::from_wif(&self.private_key_input) {
+                Ok(key) => key.inner.secret_bytes(),
+                Err(_) => {
+                    self.error_message =
+                        Some("Invalid hex string or WIF for private key.".to_string());
+                    return;
                 }
-            }
+            },
         };
 
         let validation_result = self
@@ -266,8 +265,7 @@ impl KeyInfoScreen {
                 }
             }
         } else {
-            self.error_message =
-                Some("Private key does not match the public key.".to_string());
+            self.error_message = Some("Private key does not match the public key.".to_string());
         }
     }
 }

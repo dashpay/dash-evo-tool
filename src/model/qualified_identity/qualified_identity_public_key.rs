@@ -34,7 +34,7 @@ impl QualifiedIdentityPublicKey {
     pub fn from_identity_public_key_with_wallets_check(
         value: IdentityPublicKey,
         network: Network,
-        wallets: &[Arc<RwLock<Wallet>>],
+        wallets: &[&Arc<RwLock<Wallet>>],
     ) -> Self {
         // Initialize `in_wallet_at_derivation_path` as `None`
         let mut in_wallet_at_derivation_path = None;

@@ -75,12 +75,12 @@ impl RegisterDpnsNameScreen {
             .collect();
         let selected_qualified_identity = qualified_identities.first().cloned();
 
-        let mut error_message: Option<String> = None;
-        let selected_wallet = get_selected_wallet(
-            &selected_qualified_identity,
-            app_context,
-            &mut error_message,
-        );
+        let selected_wallet =
+            if let Some(wallet) = app_context.wallets.read().unwrap().values().next() {
+                Some(wallet.clone())
+            } else {
+                None
+            };
 
         let show_identity_selector = qualified_identities.len() > 0;
         Self {

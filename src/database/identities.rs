@@ -1,12 +1,12 @@
 use crate::context::AppContext;
 use crate::database::Database;
 use crate::model::qualified_identity::QualifiedIdentity;
-use crate::model::wallet::Wallet;
+use crate::model::wallet::{Wallet, WalletSeedHash};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::platform::Identifier;
 use rusqlite::params;
 use std::collections::BTreeMap;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, RwLock, RwLockReadGuard};
 
 impl Database {
     /// Updates the alias of a specified identity.
@@ -163,7 +163,7 @@ impl Database {
     pub fn get_local_qualified_identities(
         &self,
         app_context: &AppContext,
-        wallets: &[Arc<RwLock<Wallet>>],
+        wallets: &BTreeMap<WalletSeedHash, Arc<RwLock<Wallet>>>,
     ) -> rusqlite::Result<Vec<QualifiedIdentity>> {
         let network = app_context.network_string();
 
@@ -189,10 +189,7 @@ impl Database {
             identity.wallet_index = wallet_index;
 
             // Associate wallets
-            identity.associated_wallets = wallets
-                .iter()
-                .map(|wallet| (wallet.read().unwrap().seed_hash(), wallet.clone()))
-                .collect();
+            identity.associated_wallets = wallets.clone(); //todo: use less wallets
 
             // Retrieve the identity_id as bytes
             let identity_id = identity.identity.id().to_buffer();

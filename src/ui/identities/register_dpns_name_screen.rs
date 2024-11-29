@@ -93,7 +93,7 @@ impl RegisterDpnsNameScreen {
             selected_wallet,
             wallet_password: String::new(),
             show_password: false,
-            error_message,
+            error_message: None,
         }
     }
 

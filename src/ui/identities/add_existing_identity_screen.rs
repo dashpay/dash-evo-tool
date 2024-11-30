@@ -110,7 +110,7 @@ pub struct AddExistingIdentityScreen {
 
 impl AddExistingIdentityScreen {
     pub fn new(app_context: &Arc<AppContext>) -> Self {
-        let selected_wallet = app_context.wallets.read().unwrap().first().cloned();
+        let selected_wallet = app_context.wallets.read().unwrap().values().next().cloned();
         let testnet_loaded_nodes = if app_context.network == Network::Testnet {
             load_testnet_nodes_from_yml(".testnet_nodes.yml")
         } else {
@@ -181,7 +181,7 @@ impl AddExistingIdentityScreen {
             if self.app_context.has_wallet.load(Ordering::Relaxed) {
                 let wallets = &self.app_context.wallets.read().unwrap();
                 let wallet_aliases: Vec<String> = wallets
-                    .iter()
+                    .values()
                     .map(|wallet| {
                         wallet
                             .read()
@@ -202,7 +202,7 @@ impl AddExistingIdentityScreen {
                 ComboBox::from_label("")
                     .selected_text(selected_wallet_alias.clone())
                     .show_ui(ui, |ui| {
-                        for (idx, wallet) in wallets.iter().enumerate() {
+                        for (idx, wallet) in wallets.values().enumerate() {
                             let wallet_alias = wallet_aliases[idx].clone();
 
                             let is_selected = self

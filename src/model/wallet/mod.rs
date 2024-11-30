@@ -329,6 +329,16 @@ impl Wallet {
         Ok(None)
     }
 
+    pub fn private_key_at_derivation_path(
+        &self,
+        derivation_path: &DerivationPath,
+    ) -> Result<PrivateKey, String> {
+        let extended_private_key = derivation_path
+            .derive_priv_ecdsa_for_master_seed(self.seed_bytes()?, Network::Dash)
+            .map_err(|e| e.to_string())?;
+        return Ok(extended_private_key.to_priv());
+    }
+
     pub fn private_key_for_address(
         &self,
         address: &Address,

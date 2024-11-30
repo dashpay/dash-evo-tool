@@ -76,7 +76,7 @@ impl AppContext {
                 QualifiedIdentityPublicKey::from_identity_public_key_with_wallets_check(
                     key,
                     self.network,
-                    wallets.as_slice(),
+                    &wallets.values().collect::<Vec<_>>(),
                 );
             encrypted_private_keys.insert(
                 (PrivateKeyOnMainIdentity, key_id),
@@ -98,7 +98,7 @@ impl AppContext {
                 QualifiedIdentityPublicKey::from_identity_public_key_with_wallets_check(
                     key,
                     self.network,
-                    wallets.as_slice(),
+                    &wallets.values().collect::<Vec<_>>(),
                 );
             encrypted_private_keys.insert(
                 (PrivateKeyOnMainIdentity, key_id),
@@ -138,7 +138,7 @@ impl AppContext {
                     QualifiedIdentityPublicKey::from_identity_public_key_with_wallets_check(
                         key.clone(),
                         self.network,
-                        wallets.as_slice(),
+                        &wallets.values().collect::<Vec<_>>(),
                     );
                 encrypted_private_keys.insert(
                     (PrivateKeyOnVoterIdentity, key.id()),
@@ -194,7 +194,7 @@ impl AppContext {
                     QualifiedIdentityPublicKey::from_identity_public_key_with_wallets_check(
                         public_key.clone(),
                         self.network,
-                        wallets.as_slice(),
+                        &wallets.values().collect::<Vec<_>>(),
                     );
 
                 if let Some(wallet_derivation_path) =
@@ -291,7 +291,7 @@ impl AppContext {
             private_keys: encrypted_private_keys.into(),
             dpns_names: maybe_owned_dpns_names,
             associated_wallets: wallets
-                .iter()
+                .values()
                 .map(|wallet| (wallet.read().unwrap().seed_hash(), wallet.clone()))
                 .collect(),
             wallet_index: None, //todo

@@ -114,7 +114,7 @@ struct AddressData {
 
 impl WalletsBalancesScreen {
     pub fn new(app_context: &Arc<AppContext>) -> Self {
-        let selected_wallet = app_context.wallets.read().unwrap().first().cloned();
+        let selected_wallet = app_context.wallets.read().unwrap().values().next().cloned();
         let mut selected_filters = HashSet::new();
         selected_filters.insert("Funds".to_string()); // "Funds" selected by default
         Self {
@@ -213,7 +213,7 @@ impl WalletsBalancesScreen {
             if self.app_context.has_wallet.load(Ordering::Relaxed) {
                 let wallets = &self.app_context.wallets.read().unwrap();
                 let wallet_aliases: Vec<String> = wallets
-                    .iter()
+                    .values()
                     .map(|wallet| {
                         wallet
                             .read()
@@ -234,7 +234,7 @@ impl WalletsBalancesScreen {
                 ComboBox::from_label("")
                     .selected_text(selected_wallet_alias.clone())
                     .show_ui(ui, |ui| {
-                        for (idx, wallet) in wallets.iter().enumerate() {
+                        for (idx, wallet) in wallets.values().enumerate() {
                             let wallet_alias = wallet_aliases[idx].clone();
 
                             let is_selected = self
@@ -614,15 +614,25 @@ impl ScreenLike for WalletsBalancesScreen {
                     )),
                 ),
                 (
-                    "Add Wallet",
+                    "Import Wallet",
+                    DesiredAppAction::AddScreenType(ScreenType::ImportWallet),
+                ),
+                (
+                    "Create Wallet",
                     DesiredAppAction::AddScreenType(ScreenType::AddNewWallet),
                 ),
             ]
         } else {
-            vec![(
-                "Add Wallet",
-                DesiredAppAction::AddScreenType(ScreenType::AddNewWallet),
-            )]
+            vec![
+                (
+                    "Import Wallet",
+                    DesiredAppAction::AddScreenType(ScreenType::ImportWallet),
+                ),
+                (
+                    "Create Wallet",
+                    DesiredAppAction::AddScreenType(ScreenType::AddNewWallet),
+                ),
+            ]
         };
         let mut action = add_top_panel(
             ctx,

@@ -151,8 +151,8 @@ jobs:
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: dash-evo-tool-${{ matrix.platform }}
-          path: dist/**
+          name: dash-evo-tool-${{ matrix.platform }}.${{ matrix.release-ext }}
+          path: dist/dash-evo-tool-${{ matrix.platform }}.${{ matrix.release-ext }}
 
   release:
     name: Create GitHub Release

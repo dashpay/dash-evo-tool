@@ -188,6 +188,12 @@ jobs:
         if: contains(matrix.target, 'apple-darwin')
         run: codesign --timestamp --sign "$CODE_SIGN_IDENTITY" dist/dash-evo-tool-${{ matrix.platform }}.${{ matrix.release-ext }}
 
+      - name: Verify Code Signing
+        if: contains(matrix.target, 'apple-darwin')
+        run: |
+          codesign --verify --deep --strict --verbose=2 dash-evo-tool/dash-evo-tool${{ matrix.ext }}
+          codesign --verify --deep --strict --verbose=2 dist/dash-evo-tool-${{ matrix.platform }}.${{ matrix.release-ext }}
+
       # Notarize MacOS Release Build using xcrun notarytool
       - name: Notarize MacOS Release Build
         if: contains(matrix.target, 'apple-darwin')

@@ -128,11 +128,6 @@ jobs:
       - name: Package release
         run: "${GITHUB_WORKSPACE}/scripts/pack.sh 0.6.0 ${{ matrix.platform }} ${{ matrix.ext }}"
 
-      - name: Attest
-        uses: actions/attest-build-provenance@v1
-        with:
-          subject-path: 'dash-evo-tool-${{ matrix.platform }}.zip'
-
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:

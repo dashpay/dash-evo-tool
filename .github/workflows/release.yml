@@ -140,6 +140,45 @@ jobs:
           AR_x86_64_pc_windows_gnu: x86_64-w64-mingw32-ar
           CFLAGS_x86_64_pc_windows_gnu: "-O2"
 
+      # Import code signing certificate for macOS
+      - name: Import code signing certificate
+        if: contains(matrix.target, 'apple-darwin')
+        id: import_certs
+        uses: apple-actions/import-codesign-certs@v1
+        with:
+          p12-file-base64: ${{ secrets.APPLE_CERTIFICATE }}
+          p12-password: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          keychain: 'login'
+
+      # Sign the binary for macOS
+      - name: Sign binary
+        if: contains(matrix.target, 'apple-darwin')
+        run: codesign --timestamp --sign "${{ steps.import_certs.outputs.identity }}" dash-evo-tool/dash-evo-tool${{ matrix.ext }}
+
+      - name: Package release
+        run: "${GITHUB_WORKSPACE}/scripts/pack.sh ${{ env.VERSION }} ${{ matrix.platform }} ${{ matrix.ext }}"
+
+      # Sign the .dmg for macOS
+      - name: Sign .dmg
+        if: contains(matrix.target, 'apple-darwin')
+        run: codesign --timestamp --sign "${{ steps.import_certs.outputs.identity }}" dist/dash-evo-tool-${{ matrix.platform }}.${{ matrix.release-ext }}
+
+      # Notarize the .dmg for macOS
+      - name: Notarize .dmg
+        if: contains(matrix.target, 'apple-darwin')
+        uses: apple-actions/macos-notarize@v1
+        with:
+          app-path: dist/dash-evo-tool-${{ matrix.platform }}.${{ matrix.release-ext }}
+          primary-bundle-id: com.yourcompany.dash-evo-tool
+        env:
+          AC_USERNAME: ${{ secrets.APPLE_ID }}
+          AC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+
+      # Staple the notarization ticket to the .dmg for macOS
+      - name: Staple Notarization Ticket
+        if: contains(matrix.target, 'apple-darwin')
+        run: xcrun stapler staple dist/dash-evo-tool-${{ matrix.platform }}.${{ matrix.release-ext }}
+
       - name: Package release
         run: "${GITHUB_WORKSPACE}/scripts/pack.sh ${{ env.VERSION }} ${{ matrix.platform }} ${{ matrix.ext }}"
 

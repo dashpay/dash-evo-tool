@@ -163,25 +163,20 @@ jobs:
         if: contains(matrix.target, 'apple-darwin')
         run: codesign --timestamp --sign "${{ steps.import_certs.outputs.identity }}" dist/dash-evo-tool-${{ matrix.platform }}.${{ matrix.release-ext }}
 
-      # Notarize the .dmg for macOS using samuelmeuli/action-notarize
-      - name: Notarize .dmg
+      # Notarize MacOS Release Build using xcrun notarytool
+      - name: Notarize MacOS Release Build
         if: contains(matrix.target, 'apple-darwin')
-        uses: samuelmeuli/action-notarize@v1
-        with:
-          appPath: dist/dash-evo-tool-${{ matrix.platform }}.${{ matrix.release-ext }}
-          bundleId: dcg.dash-evo-tool
-          #ascProvider: ${{ secrets.APPLE_TEAM_ID }} # Optional, remove if not needed
-        env:
-          NOTARIZE_USERNAME: ${{ secrets.APPLE_ID }}
-          NOTARIZE_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: |
+          xcrun notarytool submit "dist/dash-evo-tool-${{ matrix.platform }}.${{ matrix.release-ext }}" \
+            --apple-id "${{ secrets.APPLE_ID }}" \
+            --team-id "${{ secrets.APPLE_TEAM_ID }}" \
+            --password "${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}" \
+            --wait
 
-      # Stapling is handled by the action-notarize, so this step is optional
-      # - name: Staple Notarization Ticket
-      #   if: contains(matrix.target, 'apple-darwin')
-      #   run: xcrun stapler staple dist/dash-evo-tool-${{ matrix.platform }}.${{ matrix.release-ext }}
-
-      - name: Package release
-        run: "${GITHUB_WORKSPACE}/scripts/pack.sh ${{ env.VERSION }} ${{ matrix.platform }} ${{ matrix.ext }}"
+      # Staple Notarization Ticket
+      - name: Staple Notarization Ticket
+        if: contains(matrix.target, 'apple-darwin')
+        run: xcrun stapler staple "dist/dash-evo-tool-${{ matrix.platform }}.${{ matrix.release-ext }}"
 
       - name: Attest
         uses: actions/attest-build-provenance@v1

@@ -116,6 +116,16 @@ jobs:
         if: ${{ matrix.target == 'x86_64-pc-windows-gnu' }}
         run: curl -OL https://www.sqlite.org/2024/sqlite-dll-win-x64-3460100.zip && sudo unzip -o sqlite-dll-win-x64-3460100.zip -d winlibs && sudo chown -R runner:docker winlibs/ && pwd && ls -lah && cd winlibs && x86_64-w64-mingw32-dlltool -d sqlite3.def -l libsqlite3.a && ls -lah && cd ..
 
+      - name: Set VERSION
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            echo "VERSION=${{ inputs.tag }}" >> $GITHUB_ENV
+          elif [ "${{ github.event_name }}" == "release" ]; then
+            echo "VERSION=${{ github.event.release.tag_name }}" >> $GITHUB_ENV
+          else
+            echo "VERSION=${{ github.ref_name }}" >> $GITHUB_ENV
+          fi
+
       - name: Build project
         run: |
           cargo build --release --target ${{ matrix.target }}
@@ -126,7 +136,7 @@ jobs:
           CFLAGS_x86_64_pc_windows_gnu: "-O2"
 
       - name: Package release
-        run: "${GITHUB_WORKSPACE}/scripts/pack.sh 0.6.0 ${{ matrix.platform }} ${{ matrix.ext }}"
+        run: "${GITHUB_WORKSPACE}/scripts/pack.sh ${{ env.VERSION }} ${{ matrix.platform }} ${{ matrix.ext }}"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
@@ -150,11 +160,11 @@ jobs:
       - name: Download MacOS AMD64 Artifact
         uses: actions/download-artifact@v4
         with:
-          name: dash-evo-tool-x86_64-mac.zip
+          name: dash-evo-tool-x86_64-mac.dmg
       - name: Download MacOS ARM64 Artifact
         uses: actions/download-artifact@v4
         with:
-          name: dash-evo-tool-arm64-mac.zip
+          name: dash-evo-tool-arm64-mac.dmg
       - name: Download Windows Artifact
         uses: actions/download-artifact@v4
         with:
@@ -169,8 +179,8 @@ jobs:
           files: |
             ./dash-evo-tool-x86_64-linux.zip
             ./dash-evo-tool-arm64-linux.zip
-            ./dash-evo-tool-x86_64-mac.zip
-            ./dash-evo-tool-arm64-mac.zip
+            ./dash-evo-tool-x86_64-mac.dmg
+            ./dash-evo-tool-arm64-mac.dmg
             ./dash-evo-tool-windows.zip
           draft: false
           prerelease: true

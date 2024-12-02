@@ -140,28 +140,53 @@ jobs:
           AR_x86_64_pc_windows_gnu: x86_64-w64-mingw32-ar
           CFLAGS_x86_64_pc_windows_gnu: "-O2"
 
-      # Import code signing certificate for macOS
-      - name: Import code signing certificate
+      # Install the Apple certificate
+      - name: Install the Apple certificate
         if: contains(matrix.target, 'apple-darwin')
-        id: import_certs
-        uses: apple-actions/import-codesign-certs@v1
-        with:
-          p12-file-base64: ${{ secrets.APPLE_CERTIFICATE }}
-          p12-password: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          keychain: 'login'
+        env:
+          BUILD_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE }}
+          P12_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.APPLE_KEYCHAIN_PASSWORD }}
+        run: |
+          # create variables
+          CERTIFICATE_PATH=$RUNNER_TEMP/build_certificate.p12
+          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+
+          # import certificate from secrets
+          echo -n "$BUILD_CERTIFICATE_BASE64" | base64 --decode -o $CERTIFICATE_PATH
+
+          # create temporary keychain
+          security create-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+          security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+
+          # import certificate to keychain
+          security import $CERTIFICATE_PATH -P "$P12_PASSWORD" -A -t cert -f pkcs12 -k $KEYCHAIN_PATH
+
+          # List the keychains and set the temporary one as default
+          security list-keychains -d user -s $KEYCHAIN_PATH login.keychain-db
+          security default-keychain -s $KEYCHAIN_PATH
+
+          # Set key partition list to allow codesign to access the key without prompting
+          CODE_SIGN_IDENTITY=$(security find-identity -v -p codesigning $KEYCHAIN_PATH | grep -oE '"(.*)"' | sed 's/"//g')
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+
+          # Export CODE_SIGN_IDENTITY for use in subsequent steps
+          echo "CODE_SIGN_IDENTITY=$CODE_SIGN_IDENTITY" >> $GITHUB_ENV
 
       # Sign the binary for macOS
       - name: Sign binary
         if: contains(matrix.target, 'apple-darwin')
-        run: codesign --timestamp --sign "${{ steps.import_certs.outputs.identity }}" dash-evo-tool/dash-evo-tool${{ matrix.ext }}
+        run: codesign --timestamp --sign "$CODE_SIGN_IDENTITY" dash-evo-tool/dash-evo-tool${{ matrix.ext }}
 
+      # Package release
       - name: Package release
         run: "${GITHUB_WORKSPACE}/scripts/pack.sh ${{ env.VERSION }} ${{ matrix.platform }} ${{ matrix.ext }}"
 
       # Sign the .dmg for macOS
       - name: Sign .dmg
         if: contains(matrix.target, 'apple-darwin')
-        run: codesign --timestamp --sign "${{ steps.import_certs.outputs.identity }}" dist/dash-evo-tool-${{ matrix.platform }}.${{ matrix.release-ext }}
+        run: codesign --timestamp --sign "$CODE_SIGN_IDENTITY" dist/dash-evo-tool-${{ matrix.platform }}.${{ matrix.release-ext }}
 
       # Notarize MacOS Release Build using xcrun notarytool
       - name: Notarize MacOS Release Build
@@ -169,7 +194,6 @@ jobs:
         run: |
           xcrun notarytool submit "dist/dash-evo-tool-${{ matrix.platform }}.${{ matrix.release-ext }}" \
             --apple-id "${{ secrets.APPLE_ID }}" \
-            --team-id "${{ secrets.APPLE_TEAM_ID }}" \
             --password "${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}" \
             --wait
 

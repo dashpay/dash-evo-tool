@@ -18,7 +18,7 @@ use dash_sdk::dpp::dashcore::consensus::Encodable;
 use dash_sdk::dpp::dashcore::hashes::{Hash, HashEngine};
 use dash_sdk::dpp::dashcore::secp256k1::{Message, Secp256k1, SecretKey};
 use dash_sdk::dpp::dashcore::sign_message::signed_msg_hash;
-use dash_sdk::dpp::dashcore::{Address, PubkeyHash, ScriptHash};
+use dash_sdk::dpp::dashcore::{Address, PrivateKey, PubkeyHash, ScriptHash};
 use dash_sdk::dpp::identity::hash::IdentityPublicKeyHashMethodsV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::KeyType;
@@ -351,43 +351,49 @@ impl KeyInfoScreen {
 
     fn validate_and_store_private_key(&mut self) {
         // Convert the input string to bytes (hex decoding)
-        match hex::decode(&self.private_key_input) {
+        let private_key_bytes = match hex::decode(&self.private_key_input) {
             Ok(private_key_bytes_vec) if private_key_bytes_vec.len() == 32 => {
-                let private_key_bytes = private_key_bytes_vec.try_into().unwrap();
-                let validation_result = self
-                    .key
-                    .validate_private_key_bytes(&private_key_bytes, self.app_context.network);
-                if let Err(err) = validation_result {
-                    self.error_message = Some(format!("Issue verifying private key {}", err));
-                } else if validation_result.unwrap() {
-                    // If valid, store the private key in the context and reset the input field
-                    self.private_key_data = Some((PrivateKeyData::Clear(private_key_bytes), None));
-                    self.identity.private_keys.insert_non_encrypted(
-                        (self.key.purpose().into(), self.key.id()),
-                        (self.key.clone().into(), private_key_bytes),
-                    );
-                    match self
-                        .app_context
-                        .insert_local_qualified_identity(&self.identity, None)
-                    {
-                        Ok(_) => {
-                            self.error_message = None;
-                        }
-                        Err(e) => {
-                            self.error_message = Some(format!("Issue saving: {}", e));
-                        }
-                    }
-                } else {
-                    self.error_message =
-                        Some("Private key does not match the public key.".to_string());
-                }
+                private_key_bytes_vec.try_into().unwrap()
             }
             Ok(_) => {
                 self.error_message = Some("Private key not 32 bytes".to_string());
+                return;
             }
-            Err(_) => {
-                self.error_message = Some("Invalid hex string for private key.".to_string());
+            Err(_) => match PrivateKey::from_wif(&self.private_key_input) {
+                Ok(key) => key.inner.secret_bytes(),
+                Err(_) => {
+                    self.error_message =
+                        Some("Invalid hex string or WIF for private key.".to_string());
+                    return;
+                }
+            },
+        };
+
+        let validation_result = self
+            .key
+            .validate_private_key_bytes(&private_key_bytes, self.app_context.network);
+        if let Err(err) = validation_result {
+            self.error_message = Some(format!("Issue verifying private key {}", err));
+        } else if validation_result.unwrap() {
+            // If valid, store the private key in the context and reset the input field
+            self.private_key_data = Some((PrivateKeyData::Clear(private_key_bytes), None));
+            self.identity.private_keys.insert_non_encrypted(
+                (self.key.purpose().into(), self.key.id()),
+                (self.key.clone().into(), private_key_bytes),
+            );
+            match self
+                .app_context
+                .insert_local_qualified_identity(&self.identity, None)
+            {
+                Ok(_) => {
+                    self.error_message = None;
+                }
+                Err(e) => {
+                    self.error_message = Some(format!("Issue saving: {}", e));
+                }
             }
+        } else {
+            self.error_message = Some("Private key does not match the public key.".to_string());
         }
     }
 

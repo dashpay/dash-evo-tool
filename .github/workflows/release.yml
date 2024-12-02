@@ -126,8 +126,7 @@ jobs:
           CFLAGS_x86_64_pc_windows_gnu: "-O2"
 
       - name: Package release
-        run: |
-          zip -r dash-evo-tool-${{ matrix.platform }}.zip dash-evo-tool/
+        run: "${GITHUB_WORKSPACE}/scripts/pack.sh 0.6.0 ${{ matrix.platform }} ${{ matrix.ext }}"
 
       - name: Attest
         uses: actions/attest-build-provenance@v1
@@ -137,8 +136,8 @@ jobs:
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: dash-evo-tool-${{ matrix.platform }}.zip
-          path: dash-evo-tool-${{ matrix.platform }}.zip
+          name: dash-evo-tool
+          path: dist/**
 
   release:
     name: Create GitHub Release

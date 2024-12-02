@@ -195,6 +195,7 @@ jobs:
           xcrun notarytool submit "dist/dash-evo-tool-${{ matrix.platform }}.${{ matrix.release-ext }}" \
             --apple-id "${{ secrets.APPLE_ID }}" \
             --password "${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}" \
+            --team-id "${{ secrets.APPLE_TEAM_ID }}" \
             --wait
 
       # Staple Notarization Ticket

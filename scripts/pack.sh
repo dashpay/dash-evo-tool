@@ -16,6 +16,9 @@ create_zip_package() {
   echo "extention is:$EXT"
 
   zip -r $DIST_DIR/dash-evo-tool-"$PLATFORM".zip $BUILD_DIR
+
+  echo "Finished. Dist folder:"
+  ls "$DIST_DIR"
 }
 
 create_dmg_package() {
@@ -100,6 +103,8 @@ EOF
                  -srcfolder "$DMG_DIR" \
                  -ov -format UDZO \
                  "$DIST_DIR/$APP_NAME-$PLATFORM.dmg"
+   echo "Finished. Dist folder:"
+   ls "$DIST_DIR"
 }
 
 echo "Starting"

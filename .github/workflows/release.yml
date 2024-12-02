@@ -146,7 +146,7 @@ jobs:
       - name: Attest
         uses: actions/attest-build-provenance@v1
         with:
-          subject-path: 'dash-evo-tool-${{ matrix.platform }}.${{ matrix.release-ext }}'
+          subject-path: 'dist/dash-evo-tool-${{ matrix.platform }}.${{ matrix.release-ext }}'
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4

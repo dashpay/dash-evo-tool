@@ -131,7 +131,7 @@ jobs:
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: dash-evo-tool
+          name: dash-evo-tool-${{ matrix.platform }}
           path: dist/**
 
   release:

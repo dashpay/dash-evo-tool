@@ -241,13 +241,7 @@ impl DPNSContestedNamesScreen {
                     app_action |= AppAction::None;
                 } else {
                     match self.dpns_subscreen {
-                        DPNSSubscreen::Active => {
-                            app_action |=
-                                AppAction::BackendTask(BackendTask::ContestedResourceTask(
-                                    ContestedResourceTask::QueryDPNSContestedResources,
-                                ));
-                        }
-                        DPNSSubscreen::Past => {
+                        DPNSSubscreen::Active | DPNSSubscreen::Past => {
                             app_action |=
                                 AppAction::BackendTask(BackendTask::ContestedResourceTask(
                                     ContestedResourceTask::QueryDPNSContestedResources,
@@ -830,13 +824,7 @@ impl ScreenLike for DPNSContestedNamesScreen {
     fn ui(&mut self, ctx: &Context) -> AppAction {
         self.check_error_expiration();
         let mut top_panel_refresh_button = match self.dpns_subscreen {
-            DPNSSubscreen::Active => (
-                "Refresh",
-                DesiredAppAction::BackendTask(BackendTask::ContestedResourceTask(
-                    ContestedResourceTask::QueryDPNSContestedResources,
-                )),
-            ),
-            DPNSSubscreen::Past => (
+            DPNSSubscreen::Active | DPNSSubscreen::Past => (
                 "Refresh",
                 DesiredAppAction::BackendTask(BackendTask::ContestedResourceTask(
                     ContestedResourceTask::QueryDPNSContestedResources,

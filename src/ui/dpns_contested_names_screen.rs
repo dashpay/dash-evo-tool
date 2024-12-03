@@ -97,10 +97,10 @@ impl DPNSContestedNamesScreen {
             .get_local_user_identities(&app_context)
             .unwrap_or_default();
         Self {
-            voting_identities: voting_identities,
-            user_identities: user_identities,
+            voting_identities,
+            user_identities,
             contested_names,
-            local_dpns_names: local_dpns_names,
+            local_dpns_names,
             app_context: app_context.clone(),
             error_message: None,
             sort_column: SortColumn::ContestedName,
@@ -236,10 +236,32 @@ impl DPNSContestedNamesScreen {
             ui.add_space(10.0);
             ui.label("Please check back later or try refreshing the list.");
             ui.add_space(20.0);
-            if ui.button("Refresh").clicked() {
-                app_action |= AppAction::BackendTask(BackendTask::ContestedResourceTask(
-                    ContestedResourceTask::QueryDPNSContestedResources,
-                ));
+            if self.refreshing {
+                if ui.button("Refresh").clicked() {
+                    app_action |= AppAction::None;
+                }
+            } else {
+                if ui.button("Refresh").clicked() {
+                    match self.dpns_subscreen {
+                        DPNSSubscreen::Active => {
+                            app_action |=
+                                AppAction::BackendTask(BackendTask::ContestedResourceTask(
+                                    ContestedResourceTask::QueryDPNSContestedResources,
+                                ));
+                        }
+                        DPNSSubscreen::Past => {
+                            app_action |=
+                                AppAction::BackendTask(BackendTask::ContestedResourceTask(
+                                    ContestedResourceTask::QueryDPNSContestedResources,
+                                ));
+                        }
+                        DPNSSubscreen::Owned => {
+                            app_action |= AppAction::BackendTask(BackendTask::IdentityTask(
+                                IdentityTask::RefreshLoadedIdentitiesOwnedDPNSNames,
+                            ));
+                        }
+                    }
+                }
             }
         });
 
@@ -946,16 +968,21 @@ impl ScreenLike for DPNSContestedNamesScreen {
             }
         });
 
-        if action
-            == AppAction::BackendTask(BackendTask::ContestedResourceTask(
+        match action {
+            AppAction::BackendTask(BackendTask::ContestedResourceTask(
                 ContestedResourceTask::QueryDPNSContestedResources,
-            ))
-            || action
-                == AppAction::BackendTask(BackendTask::IdentityTask(
-                    IdentityTask::RefreshLoadedIdentitiesOwnedDPNSNames,
-                ))
-        {
-            self.refreshing = true;
+            )) => {
+                self.refreshing = true;
+            }
+            AppAction::BackendTask(BackendTask::IdentityTask(
+                IdentityTask::RefreshLoadedIdentitiesOwnedDPNSNames,
+            )) => {
+                self.refreshing = true;
+            }
+            AppAction::SetMainScreen(_) => {
+                self.refreshing = false;
+            }
+            _ => {}
         }
 
         action

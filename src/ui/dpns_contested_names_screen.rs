@@ -957,10 +957,8 @@ impl ScreenLike for DPNSContestedNamesScreen {
         match action {
             AppAction::BackendTask(BackendTask::ContestedResourceTask(
                 ContestedResourceTask::QueryDPNSContestedResources,
-            )) => {
-                self.refreshing = true;
-            }
-            AppAction::BackendTask(BackendTask::IdentityTask(
+            ))
+            | AppAction::BackendTask(BackendTask::IdentityTask(
                 IdentityTask::RefreshLoadedIdentitiesOwnedDPNSNames,
             )) => {
                 self.refreshing = true;

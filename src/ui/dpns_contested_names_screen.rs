@@ -929,12 +929,20 @@ impl ScreenLike for DPNSContestedNamesScreen {
             }
         });
 
-        if action
-            == AppAction::BackendTask(BackendTask::ContestedResourceTask(
+        match action {
+            AppAction::BackendTask(BackendTask::ContestedResourceTask(
                 ContestedResourceTask::QueryDPNSContestedResources,
-            ))
-        {
-            self.refreshing = true;
+            )) => {
+                self.refreshing = true;
+            }
+            AppAction::SetMainScreen(_) => {
+                // If you change screen while refreshing, set this screen's refreshing to false,
+                // even though the query is still occurring.
+                // Otherwise, the screen can get stuck in a refreshing state.
+                // This is not a perfect solution but it's an improvement.
+                self.refreshing = false;
+            }
+            _ => {}
         }
 
         action

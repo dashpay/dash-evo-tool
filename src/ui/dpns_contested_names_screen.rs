@@ -936,10 +936,6 @@ impl ScreenLike for DPNSContestedNamesScreen {
                 self.refreshing = true;
             }
             AppAction::SetMainScreen(_) => {
-                // If you change screen while refreshing, set this screen's refreshing to false,
-                // even though the query is still occurring.
-                // Otherwise, the screen can get stuck in a refreshing state.
-                // This is not a perfect solution but it's an improvement.
                 self.refreshing = false;
             }
             _ => {}

@@ -1,5 +1,4 @@
 use super::components::dpns_subscreen_chooser_panel::add_dpns_subscreen_chooser_panel;
-use super::components::top_panel;
 use super::{Screen, ScreenType};
 use crate::app::{AppAction, DesiredAppAction};
 use crate::backend_task::contested_names::ContestedResourceTask;
@@ -236,10 +235,33 @@ impl DPNSContestedNamesScreen {
             ui.add_space(10.0);
             ui.label("Please check back later or try refreshing the list.");
             ui.add_space(20.0);
-            if ui.button("Refresh").clicked() {
-                app_action |= AppAction::BackendTask(BackendTask::ContestedResourceTask(
-                    ContestedResourceTask::QueryDPNSContestedResources,
-                ));
+            if self.refreshing {
+                if ui.button("Refresh").clicked() {
+                    app_action |= AppAction::None;
+                }
+            } else {
+                if ui.button("Refresh").clicked() {
+                    match self.dpns_subscreen {
+                        DPNSSubscreen::Active => {
+                            app_action |=
+                                AppAction::BackendTask(BackendTask::ContestedResourceTask(
+                                    ContestedResourceTask::QueryDPNSContestedResources,
+                                ));
+                        }
+                        DPNSSubscreen::Past => {
+                            app_action |=
+                                AppAction::BackendTask(BackendTask::ContestedResourceTask(
+                                    ContestedResourceTask::QueryDPNSContestedResources,
+                                ));
+                        }
+                        DPNSSubscreen::Owned => {
+                            app_action |=
+                                AppAction::BackendTask(BackendTask::ContestedResourceTask(
+                                    ContestedResourceTask::QueryDPNSContestedResources, // change this
+                                ));
+                        }
+                    }
+                }
             }
         });
 
@@ -938,7 +960,7 @@ impl ScreenLike for DPNSContestedNamesScreen {
             AppAction::SetMainScreen(_) => {
                 self.refreshing = false;
             }
-            _ => {}
+            _ => {} // add the case for refreshing dpns names
         }
 
         action

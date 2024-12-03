@@ -1,8 +1,8 @@
 use super::components::dpns_subscreen_chooser_panel::add_dpns_subscreen_chooser_panel;
-use super::components::top_panel;
 use super::{Screen, ScreenType};
 use crate::app::{AppAction, DesiredAppAction};
 use crate::backend_task::contested_names::ContestedResourceTask;
+use crate::backend_task::identity::IdentityTask;
 use crate::backend_task::BackendTask;
 use crate::context::AppContext;
 use crate::model::contested_name::{ContestState, ContestedName};
@@ -798,7 +798,9 @@ impl ScreenLike for DPNSContestedNamesScreen {
 
     fn display_message(&mut self, message: &str, message_type: MessageType) {
         if message.contains("Finished querying DPNS contested resources")
+            || message.contains("Successfully refreshed loaded identities dpns names")
             || message.contains("Contested resource query failed")
+            || message.contains("Error refreshing owned DPNS names")
         {
             self.refreshing = false;
         }
@@ -807,12 +809,27 @@ impl ScreenLike for DPNSContestedNamesScreen {
 
     fn ui(&mut self, ctx: &Context) -> AppAction {
         self.check_error_expiration();
-        let mut top_panel_refresh_button = (
-            "Refresh",
-            DesiredAppAction::BackendTask(BackendTask::ContestedResourceTask(
-                ContestedResourceTask::QueryDPNSContestedResources,
-            )),
-        );
+        let mut top_panel_refresh_button = match self.dpns_subscreen {
+            DPNSSubscreen::Active => (
+                "Refresh",
+                DesiredAppAction::BackendTask(BackendTask::ContestedResourceTask(
+                    ContestedResourceTask::QueryDPNSContestedResources,
+                )),
+            ),
+            DPNSSubscreen::Past => (
+                "Refresh",
+                DesiredAppAction::BackendTask(BackendTask::ContestedResourceTask(
+                    ContestedResourceTask::QueryDPNSContestedResources,
+                )),
+            ),
+            DPNSSubscreen::Owned => (
+                "Refresh",
+                DesiredAppAction::BackendTask(BackendTask::IdentityTask(
+                    IdentityTask::RefreshLoadedIdentitiesOwnedDPNSNames,
+                )),
+            ),
+        };
+
         if self.refreshing {
             top_panel_refresh_button = ("Refreshing...", DesiredAppAction::None)
         }
@@ -933,6 +950,10 @@ impl ScreenLike for DPNSContestedNamesScreen {
             == AppAction::BackendTask(BackendTask::ContestedResourceTask(
                 ContestedResourceTask::QueryDPNSContestedResources,
             ))
+            || action
+                == AppAction::BackendTask(BackendTask::IdentityTask(
+                    IdentityTask::RefreshLoadedIdentitiesOwnedDPNSNames,
+                ))
         {
             self.refreshing = true;
         }

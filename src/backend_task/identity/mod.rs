@@ -2,6 +2,7 @@ mod add_key_to_identity;
 mod load_identity;
 mod load_identity_from_wallet;
 mod refresh_identity;
+mod refresh_loaded_identities_dpns_names;
 mod register_dpns_name;
 mod register_identity;
 mod top_up_identity;
@@ -255,6 +256,7 @@ pub(crate) enum IdentityTask {
     Transfer(QualifiedIdentity, Identifier, Credits, Option<KeyID>),
     RegisterDpnsName(RegisterDpnsNameInput),
     RefreshIdentity(QualifiedIdentity),
+    RefreshLoadedIdentitiesOwnedDPNSNames,
 }
 
 fn verify_key_input(
@@ -466,6 +468,9 @@ impl AppContext {
             }
             IdentityTask::TopUpIdentity(top_up_info) => {
                 self.top_up_identity(top_up_info, sender).await
+            }
+            IdentityTask::RefreshLoadedIdentitiesOwnedDPNSNames => {
+                self.refresh_loaded_identities_dpns_names().await
             }
         }
     }

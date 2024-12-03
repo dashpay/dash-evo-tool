@@ -10,12 +10,9 @@ use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
 use crate::ui::ScreenLike;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
-use dash_sdk::dashcore_rpc::dashcore::consensus::encode;
-use dash_sdk::dashcore_rpc::dashcore::hashes::sha256d;
-use dash_sdk::dashcore_rpc::dashcore::PrivateKey;
+use dash_sdk::dashcore_rpc::dashcore::PrivateKey as RPCPrivateKey;
 use dash_sdk::dpp::dashcore::address::Payload;
-use dash_sdk::dpp::dashcore::consensus::Encodable;
-use dash_sdk::dpp::dashcore::hashes::{Hash, HashEngine};
+use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::secp256k1::{Message, Secp256k1, SecretKey};
 use dash_sdk::dpp::dashcore::sign_message::signed_msg_hash;
 use dash_sdk::dpp::dashcore::{Address, PrivateKey, PubkeyHash, ScriptHash};
@@ -33,7 +30,7 @@ pub struct KeyInfoScreen {
     pub identity: QualifiedIdentity,
     pub key: IdentityPublicKey,
     pub private_key_data: Option<(PrivateKeyData, Option<WalletDerivationPath>)>,
-    pub decrypted_private_key: Option<PrivateKey>,
+    pub decrypted_private_key: Option<RPCPrivateKey>,
     pub app_context: Arc<AppContext>,
     private_key_input: String,
     error_message: Option<String>,

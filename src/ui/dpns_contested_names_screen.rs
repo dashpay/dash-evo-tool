@@ -236,12 +236,10 @@ impl DPNSContestedNamesScreen {
             ui.add_space(10.0);
             ui.label("Please check back later or try refreshing the list.");
             ui.add_space(20.0);
-            if self.refreshing {
-                if ui.button("Refresh").clicked() {
+            if ui.button("Refresh").clicked() {
+                if self.refreshing {
                     app_action |= AppAction::None;
-                }
-            } else {
-                if ui.button("Refresh").clicked() {
+                } else {
                     match self.dpns_subscreen {
                         DPNSSubscreen::Active => {
                             app_action |=

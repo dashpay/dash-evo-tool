@@ -12,7 +12,6 @@ use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use dash_sdk::dashcore_rpc::dashcore::consensus::encode;
 use dash_sdk::dashcore_rpc::dashcore::hashes::sha256d;
-use dash_sdk::dashcore_rpc::dashcore::PrivateKey;
 use dash_sdk::dpp::dashcore::address::Payload;
 use dash_sdk::dpp::dashcore::consensus::Encodable;
 use dash_sdk::dpp::dashcore::hashes::{Hash, HashEngine};

@@ -1,3 +1,4 @@
+use std::env;
 use crate::app::{AppAction, DesiredAppAction};
 use crate::backend_task::core::CoreTask;
 use crate::backend_task::BackendTask;
@@ -41,6 +42,11 @@ fn add_location_view(ui: &mut Ui, location: Vec<(&str, AppAction)>) -> AppAction
     });
 
     action
+}
+
+fn show_app_version(ui: &mut Ui) {
+    let version = env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "".to_string());
+    ui.label(version);
 }
 
 fn add_connection_indicator(ui: &mut Ui, app_context: &Arc<AppContext>) -> AppAction {
@@ -145,8 +151,10 @@ pub fn add_top_panel(
         .exact_height(50.0)
         .show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
-                action |= add_connection_indicator(ui, app_context);
-
+                ui.horizontal(|ui| {
+                    action |= add_connection_indicator(ui, app_context);
+                    show_app_version(ui);
+                });
                 // Left-aligned content with location view
                 action |= add_location_view(ui, location);
 

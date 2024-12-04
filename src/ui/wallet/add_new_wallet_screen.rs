@@ -314,7 +314,7 @@ impl ScreenLike for AddNewWalletScreen {
             ctx,
             &self.app_context,
             vec![
-                ("Identities", AppAction::GoToMainScreen),
+                ("Wallets", AppAction::GoToMainScreen),
                 ("Create Wallet", AppAction::None),
             ],
             vec![],

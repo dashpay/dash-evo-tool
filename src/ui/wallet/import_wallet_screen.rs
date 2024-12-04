@@ -215,8 +215,8 @@ impl ScreenLike for ImportWalletScreen {
             ctx,
             &self.app_context,
             vec![
-                ("Identities", AppAction::GoToMainScreen),
-                ("Create Wallet", AppAction::None),
+                ("Wallets", AppAction::GoToMainScreen),
+                ("Import Wallet", AppAction::None),
             ],
             vec![],
         );

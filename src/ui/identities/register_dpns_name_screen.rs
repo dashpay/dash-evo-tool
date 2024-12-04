@@ -228,8 +228,8 @@ impl ScreenLike for RegisterDpnsNameScreen {
             ctx,
             &self.app_context,
             vec![
-                ("Contested Names", AppAction::GoToMainScreen),
-                ("Register DPNS Name", AppAction::None),
+                ("DPNS", AppAction::GoToMainScreen),
+                ("Register Name", AppAction::None),
             ],
             vec![],
         );

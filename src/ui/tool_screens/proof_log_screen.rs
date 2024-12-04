@@ -365,7 +365,7 @@ impl ScreenLike for ProofLogScreen {
         let mut action = add_top_panel(
             ctx,
             &self.app_context,
-            vec![("Proof Viewer", AppAction::None)],
+            vec![("Tools", AppAction::None)],
             vec![],
         );
 

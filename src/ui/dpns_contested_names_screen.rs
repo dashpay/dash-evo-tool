@@ -1,8 +1,8 @@
 use super::components::dpns_subscreen_chooser_panel::add_dpns_subscreen_chooser_panel;
-use super::components::top_panel;
 use super::{Screen, ScreenType};
 use crate::app::{AppAction, DesiredAppAction};
 use crate::backend_task::contested_names::ContestedResourceTask;
+use crate::backend_task::identity::IdentityTask;
 use crate::backend_task::BackendTask;
 use crate::context::AppContext;
 use crate::model::contested_name::{ContestState, ContestedName};
@@ -60,7 +60,7 @@ pub struct DPNSContestedNamesScreen {
     voting_identities: Vec<QualifiedIdentity>,
     user_identities: Vec<QualifiedIdentity>,
     contested_names: Arc<Mutex<Vec<ContestedName>>>,
-    local_dpns_names: Vec<(Identifier, DPNSNameInfo)>,
+    local_dpns_names: Arc<Mutex<Vec<(Identifier, DPNSNameInfo)>>>,
     pub app_context: Arc<AppContext>,
     error_message: Option<(String, MessageType, DateTime<Utc>)>,
     sort_column: SortColumn,
@@ -83,11 +83,11 @@ impl DPNSContestedNamesScreen {
             }),
             DPNSSubscreen::Owned => Vec::new(),
         }));
-        let local_dpns_names = match dpns_subscreen {
+        let local_dpns_names = Arc::new(Mutex::new(match dpns_subscreen {
             DPNSSubscreen::Active => Vec::new(),
             DPNSSubscreen::Past => Vec::new(),
             DPNSSubscreen::Owned => app_context.local_dpns_names().unwrap_or_default(),
-        };
+        }));
         let voting_identities = app_context
             .db
             .get_local_voting_identities(&app_context)
@@ -97,10 +97,10 @@ impl DPNSContestedNamesScreen {
             .get_local_user_identities(&app_context)
             .unwrap_or_default();
         Self {
-            voting_identities: voting_identities,
-            user_identities: user_identities,
+            voting_identities,
+            user_identities,
             contested_names,
-            local_dpns_names: local_dpns_names,
+            local_dpns_names,
             app_context: app_context.clone(),
             error_message: None,
             sort_column: SortColumn::ContestedName,
@@ -184,8 +184,8 @@ impl DPNSContestedNamesScreen {
             let now = Utc::now();
             let elapsed = now.signed_duration_since(*timestamp);
 
-            // Automatically dismiss the error message after 5 seconds
-            if elapsed.num_seconds() > 5 {
+            // Automatically dismiss the error message after 10 seconds
+            if elapsed.num_seconds() > 10 {
                 self.dismiss_error();
             }
         }
@@ -237,9 +237,23 @@ impl DPNSContestedNamesScreen {
             ui.label("Please check back later or try refreshing the list.");
             ui.add_space(20.0);
             if ui.button("Refresh").clicked() {
-                app_action |= AppAction::BackendTask(BackendTask::ContestedResourceTask(
-                    ContestedResourceTask::QueryDPNSContestedResources,
-                ));
+                if self.refreshing {
+                    app_action |= AppAction::None;
+                } else {
+                    match self.dpns_subscreen {
+                        DPNSSubscreen::Active | DPNSSubscreen::Past => {
+                            app_action |=
+                                AppAction::BackendTask(BackendTask::ContestedResourceTask(
+                                    ContestedResourceTask::QueryDPNSContestedResources,
+                                ));
+                        }
+                        DPNSSubscreen::Owned => {
+                            app_action |= AppAction::BackendTask(BackendTask::IdentityTask(
+                                IdentityTask::RefreshLoadedIdentitiesOwnedDPNSNames,
+                            ));
+                        }
+                    }
+                }
             }
         });
 
@@ -579,8 +593,12 @@ impl DPNSContestedNamesScreen {
     }
 
     fn render_table_local_dpns_names(&mut self, ui: &mut Ui) {
-        // Clone and sort a local copy of the `local_dpns_names` vector
-        let mut sorted_names = self.local_dpns_names.clone();
+        let mut sorted_names = {
+            let dpns_names_guard = self.local_dpns_names.lock().unwrap();
+            let dpns_names = dpns_names_guard.clone();
+            dpns_names
+        };
+
         sorted_names.sort_by(|a, b| match self.sort_column {
             SortColumn::ContestedName => {
                 let order = a.1.name.cmp(&b.1.name); // Sort by DPNS Name
@@ -750,6 +768,7 @@ impl DPNSContestedNamesScreen {
 impl ScreenLike for DPNSContestedNamesScreen {
     fn refresh(&mut self) {
         let mut contested_names = self.contested_names.lock().unwrap();
+        let mut dpns_names = self.local_dpns_names.lock().unwrap();
         match self.dpns_subscreen {
             DPNSSubscreen::Active => {
                 *contested_names = self
@@ -761,7 +780,7 @@ impl ScreenLike for DPNSContestedNamesScreen {
                 *contested_names = self.app_context.all_contested_names().unwrap_or_default();
             }
             DPNSSubscreen::Owned => {
-                self.local_dpns_names = self.app_context.local_dpns_names().unwrap_or_default();
+                *dpns_names = self.app_context.local_dpns_names().unwrap_or_default();
             }
         }
     }
@@ -782,6 +801,7 @@ impl ScreenLike for DPNSContestedNamesScreen {
             .into();
 
         let mut contested_names = self.contested_names.lock().unwrap();
+        let mut dpns_names = self.local_dpns_names.lock().unwrap();
         match self.dpns_subscreen {
             DPNSSubscreen::Active => {
                 *contested_names = self
@@ -793,14 +813,16 @@ impl ScreenLike for DPNSContestedNamesScreen {
                 *contested_names = self.app_context.all_contested_names().unwrap_or_default();
             }
             DPNSSubscreen::Owned => {
-                self.local_dpns_names = self.app_context.local_dpns_names().unwrap_or_default();
+                *dpns_names = self.app_context.local_dpns_names().unwrap_or_default();
             }
         }
     }
 
     fn display_message(&mut self, message: &str, message_type: MessageType) {
         if message.contains("Finished querying DPNS contested resources")
+            || message.contains("Successfully refreshed loaded identities dpns names")
             || message.contains("Contested resource query failed")
+            || message.contains("Error refreshing owned DPNS names")
         {
             self.refreshing = false;
         }
@@ -809,12 +831,21 @@ impl ScreenLike for DPNSContestedNamesScreen {
 
     fn ui(&mut self, ctx: &Context) -> AppAction {
         self.check_error_expiration();
-        let mut top_panel_refresh_button = (
-            "Refresh",
-            DesiredAppAction::BackendTask(BackendTask::ContestedResourceTask(
-                ContestedResourceTask::QueryDPNSContestedResources,
-            )),
-        );
+        let mut top_panel_refresh_button = match self.dpns_subscreen {
+            DPNSSubscreen::Active | DPNSSubscreen::Past => (
+                "Refresh",
+                DesiredAppAction::BackendTask(BackendTask::ContestedResourceTask(
+                    ContestedResourceTask::QueryDPNSContestedResources,
+                )),
+            ),
+            DPNSSubscreen::Owned => (
+                "Refresh",
+                DesiredAppAction::BackendTask(BackendTask::IdentityTask(
+                    IdentityTask::RefreshLoadedIdentitiesOwnedDPNSNames,
+                )),
+            ),
+        };
+
         if self.refreshing {
             top_panel_refresh_button = ("Refreshing...", DesiredAppAction::None)
         }
@@ -904,6 +935,11 @@ impl ScreenLike for DPNSContestedNamesScreen {
                 let contested_names = self.contested_names.lock().unwrap();
                 !contested_names.is_empty()
             };
+            // Check if there are any owned dpns names to display
+            let has_dpns_names = {
+                let dpns_names = self.local_dpns_names.lock().unwrap();
+                !dpns_names.is_empty()
+            };
 
             // Render the proper table
             match self.dpns_subscreen {
@@ -922,7 +958,7 @@ impl ScreenLike for DPNSContestedNamesScreen {
                     }
                 }
                 DPNSSubscreen::Owned => {
-                    if !self.local_dpns_names.is_empty() {
+                    if has_dpns_names {
                         self.render_table_local_dpns_names(ui);
                     } else {
                         action |= self.render_no_active_contests_or_owned_names(ui);
@@ -931,12 +967,19 @@ impl ScreenLike for DPNSContestedNamesScreen {
             }
         });
 
-        if action
-            == AppAction::BackendTask(BackendTask::ContestedResourceTask(
+        match action {
+            AppAction::BackendTask(BackendTask::ContestedResourceTask(
                 ContestedResourceTask::QueryDPNSContestedResources,
             ))
-        {
-            self.refreshing = true;
+            | AppAction::BackendTask(BackendTask::IdentityTask(
+                IdentityTask::RefreshLoadedIdentitiesOwnedDPNSNames,
+            )) => {
+                self.refreshing = true;
+            }
+            AppAction::SetMainScreen(_) => {
+                self.refreshing = false;
+            }
+            _ => {}
         }
 
         action

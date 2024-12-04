@@ -831,7 +831,7 @@ impl ScreenLike for DPNSContestedNamesScreen {
         let mut action = add_top_panel(
             ctx,
             &self.app_context,
-            vec![("Dash Evo Tool", AppAction::None)],
+            vec![("DPNS", AppAction::None)],
             right_buttons,
         );
 

@@ -184,8 +184,8 @@ impl DPNSContestedNamesScreen {
             let now = Utc::now();
             let elapsed = now.signed_duration_since(*timestamp);
 
-            // Automatically dismiss the error message after 5 seconds
-            if elapsed.num_seconds() > 5 {
+            // Automatically dismiss the error message after 10 seconds
+            if elapsed.num_seconds() > 10 {
                 self.dismiss_error();
             }
         }

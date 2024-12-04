@@ -470,7 +470,7 @@ impl AppContext {
                 self.top_up_identity(top_up_info, sender).await
             }
             IdentityTask::RefreshLoadedIdentitiesOwnedDPNSNames => {
-                self.refresh_loaded_identities_dpns_names().await
+                self.refresh_loaded_identities_dpns_names(sender).await
             }
         }
     }

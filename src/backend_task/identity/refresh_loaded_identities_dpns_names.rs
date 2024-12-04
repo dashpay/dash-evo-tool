@@ -1,4 +1,5 @@
 use super::BackendTaskSuccessResult;
+use crate::app::TaskResult;
 use crate::context::AppContext;
 use crate::model::qualified_identity::DPNSNameInfo;
 use dash_sdk::dpp::document::DocumentV0Getters;
@@ -6,10 +7,12 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::Value;
 use dash_sdk::drive::query::{WhereClause, WhereOperator};
 use dash_sdk::platform::{Document, DocumentQuery, FetchMany};
+use tokio::sync::mpsc;
 
 impl AppContext {
     pub(super) async fn refresh_loaded_identities_dpns_names(
         &self,
+        sender: mpsc::Sender<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, String> {
         let qualified_identities = self
             .load_local_qualified_identities()
@@ -67,6 +70,13 @@ impl AppContext {
             self.update_local_qualified_identity(&qualified_identity)
                 .map_err(|e| format!("Error refreshing owned DPNS names: Database error: {}", e))?;
         }
+
+        sender.send(TaskResult::Refresh).await.map_err(|e| {
+            format!(
+                "Error refreshing owned DPNS names. Sender failed to send TaskResult: {}",
+                e.to_string()
+            )
+        })?;
 
         Ok(BackendTaskSuccessResult::Message(
             "Successfully refreshed loaded identities dpns names".to_string(),

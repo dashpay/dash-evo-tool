@@ -5,7 +5,7 @@ use dash_sdk::dpp::prelude::{BlockHeight, CoreBlockHeight, Identifier};
 use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
 use std::collections::BTreeMap;
 
-#[derive(Debug, Encode, Decode, Clone)]
+#[derive(Debug, Encode, Decode, Clone, PartialEq)]
 pub enum ContestState {
     Unknown,
     Joinable,

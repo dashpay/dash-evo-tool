@@ -448,7 +448,9 @@ impl DPNSContestedNamesScreen {
         let contested_names = {
             let contested_names_guard = self.contested_names.lock().unwrap();
             let mut contested_names = contested_names_guard.clone();
-            contested_names.retain(|contested_name| contested_name.awarded_to.is_some());
+            contested_names.retain(|contested_name| {
+                contested_name.awarded_to.is_some() || contested_name.state == ContestState::Locked
+            });
             self.sort_contested_names(&mut contested_names);
             contested_names
         };

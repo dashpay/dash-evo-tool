@@ -6,3 +6,4 @@ pub mod keys;
 pub mod register_dpns_name_screen;
 pub mod top_up_identity_screen;
 pub mod withdraw_from_identity_screen;
+pub mod update_identity_payout_address;

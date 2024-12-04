@@ -32,6 +32,7 @@ use egui_extras::{Column, TableBuilder};
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
+use crate::ui::identities::update_identity_payout_address::UpdateIdentityPayoutScreen;
 
 pub struct IdentitiesScreen {
     pub identities: Arc<Mutex<IndexMap<Identifier, QualifiedIdentity>>>,
@@ -449,6 +450,14 @@ impl IdentitiesScreen {
                                         if ui.button("Transfer").clicked() {
                                             action = AppAction::AddScreen(Screen::TransferScreen(
                                                 TransferScreen::new(
+                                                    qualified_identity.clone(),
+                                                    &self.app_context,
+                                                ),
+                                            ));
+                                        }
+                                        if ui.button("Update Payout Address").clicked() {
+                                            action = AppAction::AddScreen(Screen::UpdatePayoutAddressScreen(
+                                                UpdateIdentityPayoutScreen::new(
                                                     qualified_identity.clone(),
                                                     &self.app_context,
                                                 ),

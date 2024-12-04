@@ -29,6 +29,7 @@ use eframe::egui::{self, Context};
 use eframe::emath::Align;
 use egui::{Color32, Frame, Margin, RichText, Ui};
 use egui_extras::{Column, TableBuilder};
+use itertools::Itertools;
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
@@ -325,7 +326,7 @@ impl IdentitiesScreen {
                             });
                         })
                         .body(|mut body| {
-                            for qualified_identity in identities.iter() {
+                            for qualified_identity in identities.iter().sorted_by_key(|qi| qi.identity.id()) {
                                 let identity = &qualified_identity.identity;
                                 let public_keys = identity.public_keys();
                                 let voter_identity_public_keys = qualified_identity

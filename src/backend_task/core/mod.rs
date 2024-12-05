@@ -44,7 +44,6 @@ pub(crate) enum CoreItem {
 
 impl AppContext {
     pub async fn run_core_task(&self, task: CoreTask) -> Result<BackendTaskSuccessResult, String> {
-
         match task {
             CoreTask::GetBestChainLock => self
                 .core_client

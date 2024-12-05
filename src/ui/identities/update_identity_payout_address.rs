@@ -5,23 +5,37 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::{MessageType, Screen, ScreenLike};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use eframe::egui::Context;
-use std::sync::Arc;
-use dash_sdk::dashcore_rpc::dashcore::PrivateKey;
+use std::sync::{Arc, RwLock};
+use std::sync::atomic::Ordering;
+use std::time::{SystemTime, UNIX_EPOCH};
+use dash_sdk::dashcore_rpc::dashcore::{Address, PrivateKey};
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
-use egui::TextBuffer;
+use egui::{ComboBox, TextBuffer, Ui};
+use tracing_subscriber::fmt::format;
+use crate::backend_task::BackendTask;
+use crate::backend_task::identity::IdentityTask;
+use crate::model::wallet::Wallet;
+use crate::ui::identities::add_existing_identity_screen::AddIdentityStatus;
 
 pub struct UpdateIdentityPayoutScreen {
     pub app_context: Arc<AppContext>,
     pub identity: QualifiedIdentity,
+    selected_wallet: Option<Arc<RwLock<Wallet>>>,
     payout_address_private_key_input: String,
     error_message: Option<String>,
+    //selected_address: String,
+    selected_address: Option<Address>,
 }
 
 impl UpdateIdentityPayoutScreen {
     pub fn new(identity: QualifiedIdentity, app_context: &Arc<AppContext>) -> Self {
+        let selected_wallet = None;
         Self {
             app_context: app_context.clone(),
             identity,
+            selected_wallet,
+            //selected_address: String::default(),
+            selected_address: None,
             payout_address_private_key_input: String::new(),
             error_message: None,
         }
@@ -57,6 +71,86 @@ impl UpdateIdentityPayoutScreen {
             _ => Err(format!("{} key is of incorrect size", type_key)),
         }
     }
+
+    fn render_wallet_selection(&mut self, ui: &mut Ui) {
+        ui.horizontal(|ui| {
+            if self.app_context.has_wallet.load(Ordering::Relaxed) {
+                let wallets = &self.app_context.wallets.read().unwrap();
+                let wallet_aliases: Vec<String> = wallets
+                    .values()
+                    .map(|wallet| {
+                        wallet
+                            .read()
+                            .unwrap()
+                            .alias
+                            .clone()
+                            .unwrap_or_else(|| "Unnamed Wallet".to_string())
+                    })
+                    .collect();
+
+                let selected_wallet_alias = self
+                    .selected_wallet
+                    .as_ref()
+                    .and_then(|wallet| wallet.read().ok()?.alias.clone())
+                    .unwrap_or_else(|| "Select".to_string());
+
+                // Display the ComboBox for wallet selection
+                ComboBox::from_label("")
+                    .selected_text(selected_wallet_alias.clone())
+                    .show_ui(ui, |ui| {
+                        for (idx, wallet) in wallets.values().enumerate() {
+                            let wallet_alias = wallet_aliases[idx].clone();
+
+                            let is_selected = self
+                                .selected_wallet
+                                .as_ref()
+                                .map_or(false, |selected| Arc::ptr_eq(selected, wallet));
+
+                            if ui
+                                .selectable_label(is_selected, wallet_alias.clone())
+                                .clicked()
+                            {
+                                // Update the selected wallet
+                                self.selected_wallet = Some(wallet.clone());
+                            }
+                        }
+                    });
+
+                ui.add_space(20.0);
+            } else {
+                ui.label("No wallets available.");
+            }
+        });
+    }
+
+    fn render_selected_wallet_addresses(&mut self, ctx: &Context, ui: &mut Ui) {
+        if let Some(selected_wallet) = &self.selected_wallet {
+            // Acquire a read lock
+            let wallet = selected_wallet.read().unwrap();
+            ui.label("Select an Address:");
+            ComboBox::from_label("")
+                .selected_text(
+                    self.selected_address
+                        .as_ref() // Get a reference to the Option<Address>
+                        .map(|address| address.to_string()) // Convert Address to String
+                        .unwrap_or_else(|| "".to_string()), // Use default "" if None
+                )
+                .show_ui(ui, |ui| {
+                    for (_, address_info) in &wallet.watched_addresses {
+                        if ui.selectable_value(&mut self.selected_address, Some(address_info.clone().address), address_info.clone().address.to_string()).clicked() {
+                        }
+                    }
+                });
+            if let Some(selected_address) = &self.selected_address {
+                ui.label(format!("Selected Address: {} with ", selected_address.to_string()));
+                if let Some(value) = wallet.address_balances.get(&selected_address) {
+                    ui.label(format!("Balance {} DASH", value));
+                } else {
+                    ui.label("Balance NOT FOUND DASH".to_string());
+                }
+            }
+        }
+    }
 }
 
 impl ScreenLike for UpdateIdentityPayoutScreen {
@@ -76,7 +170,7 @@ impl ScreenLike for UpdateIdentityPayoutScreen {
             vec![],
         );
 
-        egui::CentralPanel::default().show(ctx, |ui| {
+        egui::CentralPanel::default().show(ctx, |mut ui| {
             if (self.identity.identity_type == IdentityType::User) {
                 ui.heading("Updating Payout Address for User identities is not allowed.".to_string());
             }
@@ -84,23 +178,32 @@ impl ScreenLike for UpdateIdentityPayoutScreen {
                 ui.heading("Update Payout Address".to_string());
             }
 
-            //let owner_key = self.identity.identity.get_first_public_key_matching(Purpose::OWNER, SecurityLevel::full_range().into(), KeyType::all_key_types().into(), false);
-            let payout_address_private_key_input = &mut self.payout_address_private_key_input;
-            ui.horizontal(|ui| {
-                ui.label("Payout Address Private Key:");
-                ui.text_edit_singleline(payout_address_private_key_input);
-            });
+            let loaded_wallet = self.app_context.has_wallet.load(Ordering::Relaxed);
+            if ( loaded_wallet) {
+                //println!("Loaded wallet");
+                self.render_wallet_selection(&mut ui);
 
+                if self.selected_wallet.is_some() {
+                    self.render_selected_wallet_addresses(ctx, &mut ui);
+                }
+            }
+            else {
+                //print!("No loaded wallet");
+            }
+/*
             if ui.button("Update Payout Address").clicked() {
                 match Self::verify_key_input(payout_address_private_key_input.clone(), "test".as_str()) {
                     Ok(value) => {
-                        println!("Success");
+
+
                     }
                     Err(error) => {
                         eprintln!("Error: {}", error);
                     }
                 }
             }
+
+ */
         });
         
         action

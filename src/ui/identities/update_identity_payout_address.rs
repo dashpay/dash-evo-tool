@@ -1,18 +1,18 @@
 use crate::app::AppAction;
+use crate::backend_task::core::CoreTask;
+use crate::backend_task::BackendTask;
 use crate::context::AppContext;
 use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
+use crate::model::wallet::Wallet;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::{MessageType, ScreenLike};
-use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-use eframe::egui::Context;
-use std::sync::{Arc, RwLock};
-use std::sync::atomic::Ordering;
 use dash_sdk::dashcore_rpc::dashcore::Address;
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+use eframe::egui::Context;
 use egui::{ComboBox, Ui};
-use crate::backend_task::BackendTask;
-use crate::backend_task::core::CoreTask;
-use crate::model::wallet::Wallet;
+use std::sync::atomic::Ordering;
+use std::sync::{Arc, RwLock};
 
 pub struct UpdateIdentityPayoutScreen {
     pub app_context: Arc<AppContext>,
@@ -102,7 +102,14 @@ impl UpdateIdentityPayoutScreen {
                     )
                     .show_ui(ui, |ui| {
                         for (address, _) in &wallet.known_addresses {
-                            if ui.selectable_value(&mut self.selected_payout_address, Some(address.clone()), address.to_string()).clicked() {}
+                            if ui
+                                .selectable_value(
+                                    &mut self.selected_payout_address,
+                                    Some(address.clone()),
+                                    address.to_string(),
+                                )
+                                .clicked()
+                            {}
                         }
                     });
             });
@@ -135,7 +142,14 @@ impl UpdateIdentityPayoutScreen {
                     )
                     .show_ui(ui, |ui| {
                         for (address, _) in &wallet.known_addresses {
-                            if ui.selectable_value(&mut self.selected_funding_address, Some(address.clone()), address.to_string()).clicked() {}
+                            if ui
+                                .selectable_value(
+                                    &mut self.selected_funding_address,
+                                    Some(address.clone()),
+                                    address.to_string(),
+                                )
+                                .clicked()
+                            {}
                         }
                     });
             });
@@ -173,7 +187,9 @@ impl ScreenLike for UpdateIdentityPayoutScreen {
 
         egui::CentralPanel::default().show(ctx, |mut ui| {
             if (self.identity.identity_type == IdentityType::User) {
-                ui.heading("Updating Payout Address for User identities is not allowed.".to_string());
+                ui.heading(
+                    "Updating Payout Address for User identities is not allowed.".to_string(),
+                );
                 //return;
             }
             if (!self.app_context.has_wallet.load(Ordering::Relaxed)) {
@@ -192,26 +208,32 @@ impl ScreenLike for UpdateIdentityPayoutScreen {
                     self.render_selected_wallet_funding_addresses(ctx, &mut ui);
                     if self.selected_funding_address.is_some() {
                         ui.add_space(20.0);
-                        ui.colored_label(egui::Color32::ORANGE, "The owner key of the Masternode/Evonode must be known to your wallet.");
+                        ui.colored_label(
+                            egui::Color32::ORANGE,
+                            "The owner key of the Masternode/Evonode must be known to your wallet.",
+                        );
                         ui.add_space(20.0);
                         if ui.button("Update Payout Address").clicked() {
                             action |= AppAction::BackendTask(BackendTask::CoreTask(
                                 CoreTask::ProRegUpdateTx(
                                     self.identity.identity.id().to_string(Encoding::Hex),
                                     self.selected_payout_address.clone().unwrap(),
-                                    self.selected_funding_address.clone().unwrap()
-                                )
+                                    self.selected_funding_address.clone().unwrap(),
+                                ),
                             ));
                         }
                         if self.error_message.is_some() {
                             ui.add_space(20.0);
-                            ui.colored_label(egui::Color32::RED, self.error_message.as_ref().unwrap());
+                            ui.colored_label(
+                                egui::Color32::RED,
+                                self.error_message.as_ref().unwrap(),
+                            );
                         }
                     }
                 }
             }
         });
-        
+
         action
     }
 }

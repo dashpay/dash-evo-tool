@@ -5,13 +5,13 @@ use crate::backend_task::BackendTaskSuccessResult;
 use crate::config::Config;
 use crate::context::AppContext;
 use crate::model::wallet::Wallet;
+use dash_sdk::dashcore_rpc::dashcore::address::Payload;
+use dash_sdk::dashcore_rpc::dashcore::hashes::{hash160, Hash};
+use dash_sdk::dashcore_rpc::dashcore::PubkeyHash;
 use dash_sdk::dashcore_rpc::{dashcore, RpcApi};
 use dash_sdk::dashcore_rpc::{Auth, Client};
 use dash_sdk::dpp::dashcore::{Address, ChainLock, Network, OutPoint, Transaction, TxOut};
 use std::sync::{Arc, RwLock};
-use dash_sdk::dashcore_rpc::dashcore::address::Payload;
-use dash_sdk::dashcore_rpc::dashcore::hashes::{hash160, Hash};
-use dash_sdk::dashcore_rpc::dashcore::PubkeyHash;
 
 #[derive(Debug, Clone)]
 pub(crate) enum CoreTask {
@@ -81,7 +81,7 @@ impl AppContext {
                             mainnet_config.core_rpc_password.to_string(),
                         ),
                     )
-                        .map_err(|_| "Failed to create mainnet client".to_string())?;
+                    .map_err(|_| "Failed to create mainnet client".to_string())?;
                     mainnet_client.get_best_chain_lock().map_err(|e| {
                         format!(
                             "Failed to get best chain lock for mainnet: {}",
@@ -105,7 +105,7 @@ impl AppContext {
                             testnet_config.core_rpc_password.to_string(),
                         ),
                     )
-                        .map_err(|_| "Failed to create testnet client".to_string())?;
+                    .map_err(|_| "Failed to create testnet client".to_string())?;
                     testnet_client.get_best_chain_lock().map_err(|e| {
                         format!(
                             "Failed to get best chain lock for testnet: {}",
@@ -143,13 +143,19 @@ impl AppContext {
                 .map(|_| BackendTaskSuccessResult::None),
             CoreTask::ProRegUpdateTx(pro_tx_hash, voting_address, payout_address) => self
                 .core_client
-                .get_protx_update_registrar(pro_tx_hash.as_str(), "", payout_address, voting_address, None)
+                .get_protx_update_registrar(
+                    pro_tx_hash.as_str(),
+                    "",
+                    payout_address,
+                    voting_address,
+                    None,
+                )
                 .map(|pro_tx_hash| {
                     BackendTaskSuccessResult::CoreItem(CoreItem::ProRegUpdateTx(
                         pro_tx_hash.to_string(),
                     ))
                 })
-                .map_err(|e| e.to_string())
+                .map_err(|e| e.to_string()),
         }
     }
 }

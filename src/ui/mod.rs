@@ -11,6 +11,7 @@ use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
 use crate::ui::identities::keys::keys_screen::KeysScreen;
 use crate::ui::identities::top_up_identity_screen::TopUpIdentityScreen;
+use crate::ui::identities::update_identity_payout_address::UpdateIdentityPayoutScreen;
 use crate::ui::identities::withdraw_from_identity_screen::WithdrawalScreen;
 use crate::ui::network_chooser_screen::NetworkChooserScreen;
 use crate::ui::tool_screens::proof_log_screen::ProofLogScreen;
@@ -18,6 +19,7 @@ use crate::ui::transfers::TransferScreen;
 use crate::ui::wallet::import_wallet_screen::ImportWalletScreen;
 use crate::ui::wallet::wallets_screen::WalletsBalancesScreen;
 use crate::ui::withdrawal_statuses_screen::WithdrawsStatusScreen;
+use crate::ui::Screen::UpdatePayoutAddressScreen;
 use dash_sdk::dpp::identity::Identity;
 use dash_sdk::dpp::prelude::IdentityPublicKey;
 use dpns_contested_names_screen::DPNSSubscreen;
@@ -31,8 +33,6 @@ use std::hash::Hash;
 use std::sync::Arc;
 use tool_screens::transition_visualizer_screen::TransitionVisualizerScreen;
 use wallet::add_new_wallet_screen::AddNewWalletScreen;
-use crate::ui::identities::update_identity_payout_address::UpdateIdentityPayoutScreen;
-use crate::ui::Screen::UpdatePayoutAddressScreen;
 
 pub mod components;
 pub mod document_query_screen;
@@ -182,9 +182,9 @@ impl ScreenType {
             ScreenType::TransitionVisualizer => {
                 Screen::TransitionVisualizerScreen(TransitionVisualizerScreen::new(app_context))
             }
-            ScreenType::UpdatePayoutAddress(identity) => {
-                Screen::UpdatePayoutAddressScreen(UpdateIdentityPayoutScreen::new(identity.clone(), app_context))
-            }
+            ScreenType::UpdatePayoutAddress(identity) => Screen::UpdatePayoutAddressScreen(
+                UpdateIdentityPayoutScreen::new(identity.clone(), app_context),
+            ),
             ScreenType::WithdrawalScreen(identity) => {
                 Screen::WithdrawalScreen(WithdrawalScreen::new(identity.clone(), app_context))
             }
@@ -341,7 +341,9 @@ impl Screen {
             Screen::TransferScreen(screen) => ScreenType::TransferScreen(screen.identity.clone()),
             Screen::WalletsBalancesScreen(_) => ScreenType::WalletsBalances,
             Screen::WithdrawsStatusScreen(_) => ScreenType::WithdrawsStatus,
-            Screen::UpdatePayoutAddressScreen(screen) => ScreenType::UpdatePayoutAddress(screen.identity.clone()),
+            Screen::UpdatePayoutAddressScreen(screen) => {
+                ScreenType::UpdatePayoutAddress(screen.identity.clone())
+            }
             Screen::ImportWalletScreen(_) => ScreenType::ImportWallet,
             Screen::ProofLogScreen(_) => ScreenType::ProofLog,
         }
@@ -451,7 +453,9 @@ impl ScreenLike for Screen {
             Screen::NetworkChooserScreen(screen) => screen.display_message(message, message_type),
             Screen::WalletsBalancesScreen(screen) => screen.display_message(message, message_type),
             Screen::ProofLogScreen(screen) => screen.display_message(message, message_type),
-            Screen::UpdatePayoutAddressScreen(screen) => screen.display_message(message, message_type),
+            Screen::UpdatePayoutAddressScreen(screen) => {
+                screen.display_message(message, message_type)
+            }
         }
     }
 

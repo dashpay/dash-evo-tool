@@ -1,3 +1,5 @@
+use std::env;
+
 use crate::cpu_compatibility::check_cpu_compatibility;
 
 mod app;
@@ -30,8 +32,9 @@ fn main() -> eframe::Result<()> {
             centered: true,       // Center window on startup if not maximized
             ..Default::default()
         };
+        let version = env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "".to_string());
         eframe::run_native(
-            "Dash Evo Tool",
+            &format!("Dash Evo Tool v{}", version),
             native_options,
             Box::new(|_cc| Ok(Box::new(app::AppState::new()))),
         )

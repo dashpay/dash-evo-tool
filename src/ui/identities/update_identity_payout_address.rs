@@ -190,11 +190,11 @@ impl ScreenLike for UpdateIdentityPayoutScreen {
                 ui.heading(
                     "Updating Payout Address for User identities is not allowed.".to_string(),
                 );
-                //return;
+                return;
             }
             if (!self.app_context.has_wallet.load(Ordering::Relaxed)) {
                 ui.heading("Load a Wallet in order to continue.".to_string());
-                //return;
+                return;
             }
             ui.heading("Update Payout Address".to_string());
             ui.add_space(20.0);

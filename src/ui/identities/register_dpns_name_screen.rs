@@ -76,11 +76,11 @@ impl RegisterDpnsNameScreen {
         let selected_qualified_identity = qualified_identities.first().cloned();
 
         let mut error_message: Option<String> = None;
-        let selected_wallet = get_selected_wallet(
-            &selected_qualified_identity,
-            app_context,
-            &mut error_message,
-        );
+        let selected_wallet = if let Some(ref identity) = selected_qualified_identity {
+            get_selected_wallet(&identity.0, app_context, &mut error_message)
+        } else {
+            None
+        };
 
         let show_identity_selector = qualified_identities.len() > 0;
         Self {
@@ -107,11 +107,8 @@ impl RegisterDpnsNameScreen {
             // Set the selected_qualified_identity to the found identity
             self.selected_qualified_identity = Some(qi.clone());
             // Update the selected wallet
-            self.selected_wallet = get_selected_wallet(
-                &self.selected_qualified_identity,
-                &self.app_context,
-                &mut self.error_message,
-            );
+            self.selected_wallet =
+                get_selected_wallet(&qi.0, &self.app_context, &mut self.error_message);
         } else {
             // If not found, you might want to handle this case
             // For now, we'll set selected_qualified_identity to None
@@ -180,7 +177,7 @@ impl RegisterDpnsNameScreen {
                             {
                                 self.selected_qualified_identity = Some(qualified_identity.clone());
                                 self.selected_wallet = get_selected_wallet(
-                                    &self.selected_qualified_identity,
+                                    &qualified_identity.0,
                                     &self.app_context,
                                     &mut self.error_message,
                                 );
@@ -435,13 +432,11 @@ pub fn is_contested_name(name: &str) -> bool {
     true
 }
 
-pub fn get_selected_wallet<PublicKey>(
-    selected_qualified_identity: &Option<(QualifiedIdentity, Vec<PublicKey>)>,
+pub fn get_selected_wallet(
+    qualified_identity: &QualifiedIdentity,
     app_context: &AppContext,
     error_message: &mut Option<String>,
 ) -> Option<Arc<RwLock<Wallet>>> {
-    let (qualified_identity, _) = selected_qualified_identity.as_ref()?;
-
     let dpns_contract = &app_context.dpns_contract;
 
     let preorder_document_type = match dpns_contract.document_type_for_name("preorder") {

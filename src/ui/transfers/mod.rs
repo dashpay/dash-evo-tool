@@ -3,6 +3,7 @@ use crate::backend_task::identity::IdentityTask;
 use crate::backend_task::BackendTask;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::wallet::Wallet;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
 use crate::ui::{MessageType, Screen, ScreenLike};
@@ -11,33 +12,64 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+use dash_sdk::dpp::prelude::TimestampMillis;
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
 use eframe::egui::{self, Context, Ui};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use super::components::wallet_unlock::ScreenWithWalletUnlock;
+use super::identities::register_dpns_name_screen::get_selected_wallet;
+
+pub enum TransferCreditsStatus {
+    NotStarted,
+    WaitingForResult(TimestampMillis),
+    ErrorMessage(String),
+    Complete,
+}
 
 pub struct TransferScreen {
     pub identity: QualifiedIdentity,
     selected_key: Option<IdentityPublicKey>,
     receiver_identity_id: String,
     amount: String,
+    transfer_credits_status: TransferCreditsStatus,
     error_message: Option<String>,
     max_amount: u64,
     pub app_context: Arc<AppContext>,
     confirmation_popup: bool,
+    selected_wallet: Option<Arc<RwLock<Wallet>>>,
+    wallet_password: String,
+    show_password: bool,
 }
 
 impl TransferScreen {
     pub fn new(identity: QualifiedIdentity, app_context: &Arc<AppContext>) -> Self {
         let max_amount = identity.identity.balance();
+        let selected_key = identity
+            .identity
+            .get_first_public_key_matching(
+                Purpose::TRANSFER,
+                SecurityLevel::full_range().into(),
+                KeyType::all_key_types().into(),
+                false,
+            )
+            .cloned();
+        let mut error_message = None;
+        let selected_wallet = get_selected_wallet(&identity, app_context, &mut error_message);
         Self {
             identity,
-            selected_key: None,
+            selected_key,
             receiver_identity_id: String::new(),
             amount: String::new(),
+            transfer_credits_status: TransferCreditsStatus::NotStarted,
             error_message: None,
             max_amount,
             app_context: app_context.clone(),
             confirmation_popup: false,
+            selected_wallet,
+            wallet_password: String::new(),
+            show_password: false,
         }
     }
 
@@ -80,6 +112,11 @@ impl TransferScreen {
             ui.label("Amount in Dash:");
 
             ui.text_edit_singleline(&mut self.amount);
+
+            if ui.button("Max").clicked() {
+                let amount_in_dash = self.max_amount as f64 / 100_000_000_000.0 - 0.0001; // Subtract a small amount to cover gas fee which is usually around 0.00002 Dash
+                self.amount = format!("{:.8}", amount_in_dash);
+            }
         });
     }
 
@@ -100,6 +137,8 @@ impl TransferScreen {
             .show(ui.ctx(), |ui| {
                 let identifier = if self.receiver_identity_id.is_empty() {
                     self.error_message = Some("Invalid identifier".to_string());
+                    self.transfer_credits_status =
+                        TransferCreditsStatus::ErrorMessage("Invalid identifier".to_string());
                     return;
                 } else {
                     match Identifier::from_string_try_encodings(
@@ -109,6 +148,9 @@ impl TransferScreen {
                         Ok(identifier) => identifier,
                         Err(_) => {
                             self.error_message = Some("Invalid identifier".to_string());
+                            self.transfer_credits_status = TransferCreditsStatus::ErrorMessage(
+                                "Invalid identifier".to_string(),
+                            );
                             return;
                         }
                     }
@@ -116,6 +158,8 @@ impl TransferScreen {
 
                 let Some(selected_key) = self.selected_key.as_ref() else {
                     self.error_message = Some("No selected key".to_string());
+                    self.transfer_credits_status =
+                        TransferCreditsStatus::ErrorMessage("No selected key".to_string());
                     return;
                 };
 
@@ -144,6 +188,11 @@ impl TransferScreen {
 
                 if ui.button("Confirm").clicked() {
                     self.confirmation_popup = false;
+                    let now = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .expect("Time went backwards")
+                        .as_secs();
+                    self.transfer_credits_status = TransferCreditsStatus::WaitingForResult(now);
                     app_action =
                         AppAction::BackendTask(BackendTask::IdentityTask(IdentityTask::Transfer(
                             self.identity.clone(),
@@ -164,8 +213,21 @@ impl TransferScreen {
 }
 
 impl ScreenLike for TransferScreen {
-    fn display_message(&mut self, message: &str, _message_type: MessageType) {
-        self.error_message = Some(message.to_string());
+    fn display_message(&mut self, message: &str, message_type: MessageType) {
+        match message_type {
+            MessageType::Success => {
+                if message == "Successfully transferred credits" {
+                    self.transfer_credits_status = TransferCreditsStatus::Complete;
+                }
+            }
+            MessageType::Info => {}
+            MessageType::Error => {
+                // It's not great because the error message can be coming from somewhere else if there are other processes happening
+                self.transfer_credits_status =
+                    TransferCreditsStatus::ErrorMessage(message.to_string());
+                self.error_message = Some(message.to_string());
+            }
+        }
     }
 
     /// Renders the UI components for the withdrawal screen
@@ -213,6 +275,14 @@ impl ScreenLike for TransferScreen {
             } else {
                 ui.heading("Transfer Funds");
 
+                if self.selected_wallet.is_some() {
+                    let (needed_unlock, just_unlocked) = self.render_wallet_unlock_if_needed(ui);
+
+                    if needed_unlock && !just_unlocked {
+                        return;
+                    }
+                }
+
                 self.render_key_selection(ui);
                 self.render_amount_input(ui);
                 self.render_to_identity_input(ui);
@@ -225,11 +295,80 @@ impl ScreenLike for TransferScreen {
                     action |= self.show_confirmation_popup(ui);
                 }
 
-                if let Some(error_message) = &self.error_message {
-                    ui.label(format!("Error: {}", error_message));
+                // Handle transfer status messages
+                match &self.transfer_credits_status {
+                    TransferCreditsStatus::NotStarted => {
+                        // Do nothing
+                    }
+                    TransferCreditsStatus::WaitingForResult(start_time) => {
+                        let now = SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .expect("Time went backwards")
+                            .as_secs();
+                        let elapsed_seconds = now - start_time;
+
+                        let display_time = if elapsed_seconds < 60 {
+                            format!(
+                                "{} second{}",
+                                elapsed_seconds,
+                                if elapsed_seconds == 1 { "" } else { "s" }
+                            )
+                        } else {
+                            let minutes = elapsed_seconds / 60;
+                            let seconds = elapsed_seconds % 60;
+                            format!(
+                                "{} minute{} and {} second{}",
+                                minutes,
+                                if minutes == 1 { "" } else { "s" },
+                                seconds,
+                                if seconds == 1 { "" } else { "s" }
+                            )
+                        };
+
+                        ui.label(format!(
+                            "Transferring... Time taken so far: {}",
+                            display_time
+                        ));
+                    }
+                    TransferCreditsStatus::ErrorMessage(msg) => {
+                        ui.colored_label(egui::Color32::RED, format!("Error: {}", msg));
+                    }
+                    TransferCreditsStatus::Complete => {
+                        action = AppAction::PopScreenAndRefresh;
+                    }
                 }
             }
         });
         action
+    }
+}
+
+impl ScreenWithWalletUnlock for TransferScreen {
+    fn selected_wallet_ref(&self) -> &Option<Arc<RwLock<Wallet>>> {
+        &self.selected_wallet
+    }
+
+    fn wallet_password_ref(&self) -> &String {
+        &self.wallet_password
+    }
+
+    fn wallet_password_mut(&mut self) -> &mut String {
+        &mut self.wallet_password
+    }
+
+    fn show_password(&self) -> bool {
+        self.show_password
+    }
+
+    fn show_password_mut(&mut self) -> &mut bool {
+        &mut self.show_password
+    }
+
+    fn set_error_message(&mut self, error_message: Option<String>) {
+        self.error_message = error_message;
+    }
+
+    fn error_message(&self) -> Option<&String> {
+        self.error_message.as_ref()
     }
 }

@@ -15,6 +15,7 @@ use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::prelude::TimestampMillis;
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
 use eframe::egui::{self, Context, Ui};
+use egui::{Color32, RichText};
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -210,6 +211,28 @@ impl TransferScreen {
         }
         app_action
     }
+
+    pub fn show_success(&self, ui: &mut Ui) -> AppAction {
+        let mut action = AppAction::None;
+
+        // Center the content vertically and horizontally
+        ui.vertical_centered(|ui| {
+            ui.add_space(50.0);
+
+            ui.heading("🎉");
+            ui.heading("Success!");
+
+            ui.add_space(20.0);
+
+            // Display the "Back to Identities" button
+            if ui.button("Back to Identities").clicked() {
+                // Handle navigation back to the identities screen
+                action = AppAction::PopScreenAndRefresh;
+            }
+        });
+
+        action
+    }
 }
 
 impl ScreenLike for TransferScreen {
@@ -243,6 +266,9 @@ impl ScreenLike for TransferScreen {
         );
 
         egui::CentralPanel::default().show(ctx, |ui| {
+            ui.heading("Transfer Funds");
+            ui.add_space(10.0);
+
             let has_keys = if self.app_context.developer_mode {
                 !self.identity.identity.public_keys().is_empty()
             } else {
@@ -250,10 +276,13 @@ impl ScreenLike for TransferScreen {
             };
 
             if !has_keys {
-                ui.heading(format!(
-                    "You do not have any transfer keys loaded for this {}.",
-                    self.identity.identity_type
-                ));
+                ui.colored_label(
+                    egui::Color32::DARK_RED,
+                    format!(
+                        "You do not have any transfer keys loaded for this {}.",
+                        self.identity.identity_type
+                    ),
+                );
 
                 let key = self.identity.identity.get_first_public_key_matching(
                     Purpose::TRANSFER,
@@ -273,8 +302,6 @@ impl ScreenLike for TransferScreen {
                     }
                 }
             } else {
-                ui.heading("Transfer Funds");
-
                 if self.selected_wallet.is_some() {
                     let (needed_unlock, just_unlocked) = self.render_wallet_unlock_if_needed(ui);
 
@@ -283,11 +310,40 @@ impl ScreenLike for TransferScreen {
                     }
                 }
 
+                // Select the key to sign with
+                ui.heading("1. Select the key to sign with");
+                ui.add_space(5.0);
                 self.render_key_selection(ui);
+
+                ui.add_space(10.0);
+                ui.separator();
+                ui.add_space(10.0);
+
+                // Input the amount to transfer
+                ui.heading("2. Input the amount to transfer");
+                ui.add_space(5.0);
                 self.render_amount_input(ui);
+
+                ui.add_space(10.0);
+                ui.separator();
+                ui.add_space(10.0);
+
+                // Input the ID of the identity to transfer to
+                ui.heading("3. ID of the identity to transfer to");
+                ui.add_space(5.0);
                 self.render_to_identity_input(ui);
 
-                if ui.button("Transfer").clicked() {
+                ui.add_space(10.0);
+
+                // Transfer button
+                let mut new_style = (**ui.style()).clone();
+                new_style.spacing.button_padding = egui::vec2(10.0, 5.0);
+                ui.set_style(new_style);
+                let button = egui::Button::new(RichText::new("Transfer").color(Color32::WHITE))
+                    .fill(Color32::from_rgb(0, 128, 255))
+                    .frame(true)
+                    .rounding(3.0);
+                if ui.add(button).clicked() || ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                     self.confirmation_popup = true;
                 }
 
@@ -334,7 +390,7 @@ impl ScreenLike for TransferScreen {
                         ui.colored_label(egui::Color32::RED, format!("Error: {}", msg));
                     }
                     TransferCreditsStatus::Complete => {
-                        action = AppAction::PopScreenAndRefresh;
+                        action = self.show_success(ui);
                     }
                 }
             }

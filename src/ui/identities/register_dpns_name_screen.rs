@@ -297,12 +297,13 @@ impl ScreenLike for RegisterDpnsNameScreen {
             ui.add_space(10.0);
 
             // Register button
+            let mut new_style = (**ui.style()).clone();
+            new_style.spacing.button_padding = egui::vec2(10.0, 5.0);
+            ui.set_style(new_style);
             let button = egui::Button::new(RichText::new("Register Name").color(Color32::WHITE))
                 .fill(Color32::from_rgb(0, 128, 255))
                 .frame(true)
-                .rounding(3.0)
-                .min_size(egui::vec2(80.0, 30.0));
-
+                .rounding(3.0);
             if ui.add(button).clicked() {
                 // Set the status to waiting and capture the current time
                 let now = SystemTime::now()

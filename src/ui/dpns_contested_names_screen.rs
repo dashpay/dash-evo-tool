@@ -907,7 +907,6 @@ impl ScreenLike for DPNSContestedNamesScreen {
                     ui.add_space(10.0);
                     ui.allocate_ui(egui::Vec2::new(ui.available_width(), 50.0), |ui| {
                         ui.group(|ui| {
-                            ui.set_min_height(50.0);
                             ui.horizontal_wrapped(|ui| {
                                 ui.label(egui::RichText::new(message).color(message_color));
                                 if ui.button("Dismiss").clicked() {

@@ -441,11 +441,11 @@ impl WalletsBalancesScreen {
                                 header.col(|ui| {
                                     let label = if self.sort_column == SortColumn::TotalReceived {
                                         match self.sort_order {
-                                            SortOrder::Ascending => "Total Received (DASH) ^",
-                                            SortOrder::Descending => "Total Received (DASH) v",
+                                            SortOrder::Ascending => "Balance (DASH) ^",
+                                            SortOrder::Descending => "Balance (DASH) v",
                                         }
                                     } else {
-                                        "Total Received (DASH)"
+                                        "Balance (DASH)"
                                     };
                                     if ui.button(label).clicked() {
                                         self.toggle_sort(SortColumn::TotalReceived);

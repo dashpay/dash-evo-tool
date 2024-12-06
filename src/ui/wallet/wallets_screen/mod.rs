@@ -615,7 +615,7 @@ impl WalletsBalancesScreen {
             let elapsed = now.signed_duration_since(*timestamp);
 
             // Automatically dismiss the message after 10 seconds
-            if elapsed.num_seconds() > 10 {
+            if elapsed.num_seconds() >= 10 {
                 self.dismiss_message();
             }
         }
@@ -682,7 +682,7 @@ impl ScreenLike for WalletsBalancesScreen {
 
         egui::CentralPanel::default().show(ctx, |ui| {
             let message = self.message.clone();
-            if let Some((message, message_type, _)) = message {
+            if let Some((message, message_type, timestamp)) = message {
                 let message_color = match message_type {
                     MessageType::Error => egui::Color32::RED,
                     MessageType::Info => egui::Color32::BLACK,
@@ -694,7 +694,12 @@ impl ScreenLike for WalletsBalancesScreen {
                     ui.group(|ui| {
                         ui.horizontal_wrapped(|ui| {
                             ui.label(egui::RichText::new(message).color(message_color));
-                            if ui.button("Dismiss").clicked() {
+                            let now = Utc::now();
+                            let elapsed = now.signed_duration_since(timestamp);
+                            if ui
+                                .button(format!("Dismiss ({})", 10 - elapsed.num_seconds()))
+                                .clicked()
+                            {
                                 // Update the state outside the closure
                                 self.dismiss_message();
                             }

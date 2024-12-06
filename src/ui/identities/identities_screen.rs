@@ -16,6 +16,7 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
 use crate::ui::identities::top_up_identity_screen::TopUpIdentityScreen;
+use crate::ui::identities::update_identity_payout_address::UpdateIdentityPayoutScreen;
 use crate::ui::transfers::TransferScreen;
 use crate::ui::{RootScreenType, Screen, ScreenLike, ScreenType};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -450,6 +451,14 @@ impl IdentitiesScreen {
                                         if ui.button("Transfer").clicked() {
                                             action = AppAction::AddScreen(Screen::TransferScreen(
                                                 TransferScreen::new(
+                                                    qualified_identity.clone(),
+                                                    &self.app_context,
+                                                ),
+                                            ));
+                                        }
+                                        if ui.button("Update Payout Address").clicked() {
+                                            action = AppAction::AddScreen(Screen::UpdatePayoutAddressScreen(
+                                                UpdateIdentityPayoutScreen::new(
                                                     qualified_identity.clone(),
                                                     &self.app_context,
                                                 ),

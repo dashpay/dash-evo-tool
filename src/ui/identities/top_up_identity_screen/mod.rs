@@ -19,13 +19,9 @@ use dash_sdk::dashcore_rpc::dashcore::transaction::special_transaction::Transact
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dpp::balances::credits::Duffs;
 use dash_sdk::dpp::dashcore::{OutPoint, Transaction, TxOut};
-use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::prelude::AssetLockProof;
 use eframe::egui::Context;
-use eframe::epaint::ahash::HashSet;
 use egui::{ComboBox, ScrollArea, Ui};
-use std::cmp::PartialEq;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 
@@ -36,18 +32,15 @@ pub struct TopUpIdentityScreen {
     wallet: Option<Arc<RwLock<Wallet>>>,
     core_has_funding_address: Option<bool>,
     funding_address: Option<Address>,
-    funding_address_balance: Arc<RwLock<Option<Duffs>>>,
     funding_method: Arc<RwLock<FundingMethod>>,
     funding_amount: String,
     funding_amount_exact: Option<Duffs>,
     funding_utxo: Option<(OutPoint, TxOut, Address)>,
-    alias_input: String,
     copied_to_clipboard: Option<Option<String>>,
     error_message: Option<String>,
     show_password: bool,
     wallet_password: String,
     show_pop_up_info: Option<String>,
-    in_key_selection_advanced_mode: bool,
     pub app_context: Arc<AppContext>,
 }
 
@@ -65,18 +58,15 @@ impl TopUpIdentityScreen {
             wallet: selected_wallet,
             core_has_funding_address: None,
             funding_address: None,
-            funding_address_balance: Arc::new(RwLock::new(None)),
             funding_method: Arc::new(RwLock::new(FundingMethod::NoSelection)),
             funding_amount: "0.5".to_string(),
             funding_amount_exact: None,
             funding_utxo: None,
-            alias_input: String::new(),
             copied_to_clipboard: None,
             error_message: None,
             show_password: false,
             wallet_password: "".to_string(),
             show_pop_up_info: None,
-            in_key_selection_advanced_mode: false,
             app_context: app_context.clone(),
         }
     }
@@ -92,9 +82,7 @@ impl TopUpIdentityScreen {
                     .and_then(|wallet| wallet.read().ok()?.alias.clone())
                     .unwrap_or_else(|| "Select".to_string());
 
-                ui.heading(
-                    "1. Choose the wallet to use in which this identities keys will come from.",
-                );
+                ui.heading("1. Choose the wallet to use to top up this identity.");
 
                 ui.add_space(10.0);
 
@@ -183,6 +171,8 @@ impl TopUpIdentityScreen {
                             let wallet = wallet.read().unwrap(); // Read lock on the wallet
                             let max_amount = wallet.max_balance();
                             self.funding_amount = format!("{:.4}", max_amount as f64 * 1e-8);
+                            self.funding_amount_exact =
+                                Some(self.funding_amount.parse::<f64>().unwrap() as u64);
                         }
                         let mut step = self.step.write().unwrap(); // Write lock on step
                         *step = WalletFundedScreenStep::ReadyToCreate;
@@ -286,6 +276,10 @@ impl TopUpIdentityScreen {
                         .desired_width(100.0),
                 )
                 .lost_focus();
+
+            self.funding_amount_exact = self.funding_amount.parse::<f64>().ok().map(|f| {
+                (f * 1e8) as u64 // Convert the amount to Duffs
+            });
 
             let enter_pressed = ui.input(|i| i.key_pressed(egui::Key::Enter));
 
@@ -404,7 +398,7 @@ impl ScreenLike for TopUpIdentityScreen {
                 }
             }
             WalletFundedScreenStep::WaitingForPlatformAcceptance => {
-                if let BackendTaskSuccessResult::ToppedUpIdentity(qualified_identity) =
+                if let BackendTaskSuccessResult::ToppedUpIdentity(_qualified_identity) =
                     backend_task_success_result
                 {
                     *step = WalletFundedScreenStep::Success;
@@ -432,7 +426,7 @@ impl ScreenLike for TopUpIdentityScreen {
                     return;
                 }
                 ui.add_space(10.0);
-                ui.heading("Follow these steps to top up your identity!");
+                ui.heading("Follow these steps to top up your identity:");
                 ui.add_space(15.0);
 
                 let mut step_number = 1;

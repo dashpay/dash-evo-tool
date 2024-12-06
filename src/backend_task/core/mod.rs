@@ -130,7 +130,9 @@ impl AppContext {
                     }
                 }
             }
-            CoreTask::RefreshWalletInfo(wallet) => self.refresh_wallet_info(wallet),
+            CoreTask::RefreshWalletInfo(wallet) => self
+                .refresh_wallet_info(wallet)
+                .map_err(|e| format!("Error refreshing wallet: {}", e.to_string())),
             CoreTask::StartDashQT(network, custom_dash_qt, overwrite_dash_conf) => self
                 .start_dash_qt(network, custom_dash_qt, overwrite_dash_conf)
                 .map_err(|e| e.to_string())

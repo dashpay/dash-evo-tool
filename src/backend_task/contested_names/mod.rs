@@ -1,6 +1,7 @@
 mod query_dpns_contested_resources;
 mod query_dpns_vote_contenders;
 mod query_ending_times;
+mod schedule_dpns_vote;
 mod vote_on_dpns_name;
 
 use crate::app::TaskResult;
@@ -16,6 +17,12 @@ use tokio::sync::mpsc;
 pub(crate) enum ContestedResourceTask {
     QueryDPNSContestedResources,
     QueryDPNSVoteContenders(String),
+    ScheduleDPNSVote(
+        String,
+        ResourceVoteChoice,
+        Vec<QualifiedIdentity>,
+        Vec<(QualifiedIdentity, String)>,
+    ),
     VoteOnDPNSName(String, ResourceVoteChoice, Vec<QualifiedIdentity>),
 }
 
@@ -35,6 +42,15 @@ impl AppContext {
                 .query_dpns_vote_contenders(name, sdk, sender)
                 .await
                 .map(|_| BackendTaskSuccessResult::None),
+            ContestedResourceTask::ScheduleDPNSVote(
+                name,
+                vote_choice,
+                voters,
+                voters_and_names,
+            ) => {
+                self.schedule_dpns_vote(name, *vote_choice, voters, sdk, sender)
+                    .await
+            }
             ContestedResourceTask::VoteOnDPNSName(name, vote_choice, voters) => {
                 self.vote_on_dpns_name(name, *vote_choice, voters, sdk, sender)
                     .await

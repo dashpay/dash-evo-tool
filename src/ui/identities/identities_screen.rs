@@ -430,56 +430,62 @@ impl IdentitiesScreen {
                                         }});
                                     });
                                     row.col(|ui| {
-                                        Self::show_balance(ui, qualified_identity);
-                                        if ui.button("Withdraw").clicked() {
-                                            action = AppAction::AddScreen(
-                                                Screen::WithdrawalScreen(WithdrawalScreen::new(
-                                                    qualified_identity.clone(),
-                                                    &self.app_context,
-                                                )),
-                                            );
-                                        }
-                                        if ui.button("Top up").clicked() {
-                                            action = AppAction::AddScreen(
-                                                Screen::TopUpIdentityScreen(TopUpIdentityScreen::new(
-                                                    qualified_identity.clone(),
-                                                    &self.app_context,
-                                                )),
-                                            );
-                                        }
-                                        if ui.button("Transfer").clicked() {
-                                            action = AppAction::AddScreen(Screen::TransferScreen(
-                                                TransferScreen::new(
-                                                    qualified_identity.clone(),
-                                                    &self.app_context,
-                                                ),
-                                            ));
-                                        }
-                                        if ui.button("Update Payout Address").clicked() {
-                                            action = AppAction::AddScreen(Screen::UpdatePayoutAddressScreen(
-                                                UpdateIdentityPayoutScreen::new(
-                                                    qualified_identity.clone(),
-                                                    &self.app_context,
-                                                ),
-                                            ));
-                                        }
+                                        ui.horizontal(|ui| {
+                                            ui.spacing_mut().item_spacing.x = 10.0;
+                                            Self::show_balance(ui, qualified_identity);
+                                            ui.spacing_mut().item_spacing.x = 3.0;
+                                            if ui.button("Withdraw").clicked() {
+                                                action = AppAction::AddScreen(
+                                                    Screen::WithdrawalScreen(WithdrawalScreen::new(
+                                                        qualified_identity.clone(),
+                                                        &self.app_context,
+                                                    )),
+                                                );
+                                            }
+                                            if ui.button("Top up").clicked() {
+                                                action = AppAction::AddScreen(
+                                                    Screen::TopUpIdentityScreen(TopUpIdentityScreen::new(
+                                                        qualified_identity.clone(),
+                                                        &self.app_context,
+                                                    )),
+                                                );
+                                            }
+                                            if ui.button("Transfer").clicked() {
+                                                action = AppAction::AddScreen(Screen::TransferScreen(
+                                                    TransferScreen::new(
+                                                        qualified_identity.clone(),
+                                                        &self.app_context,
+                                                    ),
+                                                ));
+                                            }
+                                        });
                                     });
                                     row.col(|ui| {
                                         ui.horizontal(|ui| {
                                             ui.spacing_mut().item_spacing.x = 3.0;
-
-                                        if ui.button("Refresh").clicked() {
-                                            action =
-                                                AppAction::BackendTask(BackendTask::IdentityTask(
-                                                    IdentityTask::RefreshIdentity(
-                                                        qualified_identity.clone(),
-                                                    ),
-                                                ));
-                                        }
-                                        if ui.button("Remove").clicked() {
-                                            self.identity_to_remove =
-                                                Some(qualified_identity.clone());
-                                        }});
+                                            if ui.button("Refresh").clicked() {
+                                                action =
+                                                    AppAction::BackendTask(BackendTask::IdentityTask(
+                                                        IdentityTask::RefreshIdentity(
+                                                            qualified_identity.clone(),
+                                                        ),
+                                                    ));
+                                            }
+                                            if ui.button("Remove").clicked() {
+                                                self.identity_to_remove =
+                                                    Some(qualified_identity.clone());
+                                            }
+                                            if qualified_identity.identity_type != IdentityType::User {
+                                                if ui.button("Update Payout Address").clicked() {
+                                                    action = AppAction::AddScreen(Screen::UpdatePayoutAddressScreen(
+                                                        UpdateIdentityPayoutScreen::new(
+                                                            qualified_identity.clone(),
+                                                            &self.app_context,
+                                                        ),
+                                                    ));
+                                                }
+                                            }
+                                        });
                                     });
                                 });
                             }

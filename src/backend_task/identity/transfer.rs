@@ -28,7 +28,7 @@ impl AppContext {
                 None,
             )
             .await
-            .map_err(|e| format!("Withdrawal error: {}", e))?;
+            .map_err(|e| format!("Transfer error: {}", e))?;
         qualified_identity.identity.set_balance(remaining_balance);
         self.update_local_qualified_identity(&qualified_identity)
             .map(|_| {

@@ -2,6 +2,7 @@ use super::components::dpns_subscreen_chooser_panel::add_dpns_subscreen_chooser_
 use super::dpns_vote_scheduling_screen::ScheduleVoteScreen;
 use super::{Screen, ScreenType};
 use crate::app::{AppAction, DesiredAppAction};
+use crate::backend_task::contested_names::schedule_dpns_vote::ScheduledDPNSVote;
 use crate::backend_task::contested_names::ContestedResourceTask;
 use crate::backend_task::identity::IdentityTask;
 use crate::backend_task::BackendTask;
@@ -44,6 +45,7 @@ pub enum DPNSSubscreen {
     Active,
     Past,
     Owned,
+    ScheduledVotes,
 }
 
 impl DPNSSubscreen {
@@ -52,6 +54,7 @@ impl DPNSSubscreen {
             Self::Active => "Active contests",
             Self::Past => "Past contests",
             Self::Owned => "My usernames",
+            Self::ScheduledVotes => "Scheduled votes",
         }
     }
 }
@@ -62,6 +65,7 @@ pub struct DPNSContestedNamesScreen {
     user_identities: Vec<QualifiedIdentity>,
     contested_names: Arc<Mutex<Vec<ContestedName>>>,
     local_dpns_names: Arc<Mutex<Vec<(Identifier, DPNSNameInfo)>>>,
+    scheduled_votes: Arc<Mutex<Vec<ScheduledDPNSVote>>>,
     pub app_context: Arc<AppContext>,
     error_message: Option<(String, MessageType, DateTime<Utc>)>,
     sort_column: SortColumn,
@@ -84,12 +88,18 @@ impl DPNSContestedNamesScreen {
                 Vec::new()
             }),
             DPNSSubscreen::Owned => Vec::new(),
+            DPNSSubscreen::ScheduledVotes => Vec::new(),
         }));
         let local_dpns_names = Arc::new(Mutex::new(match dpns_subscreen {
             DPNSSubscreen::Active => Vec::new(),
             DPNSSubscreen::Past => Vec::new(),
             DPNSSubscreen::Owned => app_context.local_dpns_names().unwrap_or_default(),
+            DPNSSubscreen::ScheduledVotes => Vec::new(),
         }));
+        let scheduled_votes = Arc::new(Mutex::new(
+            app_context.get_scheduled_votes().unwrap_or_default(),
+        ));
+        tracing::info!("Scheduled votes: {:?}", scheduled_votes);
         let voting_identities = app_context
             .db
             .get_local_voting_identities(&app_context)
@@ -103,6 +113,7 @@ impl DPNSContestedNamesScreen {
             user_identities,
             contested_names,
             local_dpns_names,
+            scheduled_votes,
             app_context: app_context.clone(),
             error_message: None,
             sort_column: SortColumn::ContestedName,
@@ -235,6 +246,14 @@ impl DPNSContestedNamesScreen {
                             .color(egui::Color32::GRAY),
                     );
                 }
+                DPNSSubscreen::ScheduledVotes => {
+                    ui.label(
+                        egui::RichText::new("No scheduled votes.")
+                            .heading()
+                            .strong()
+                            .color(egui::Color32::GRAY),
+                    );
+                }
             }
             ui.add_space(10.0);
             ui.label("Please check back later or try refreshing the list.");
@@ -254,6 +273,10 @@ impl DPNSContestedNamesScreen {
                             app_action |= AppAction::BackendTask(BackendTask::IdentityTask(
                                 IdentityTask::RefreshLoadedIdentitiesOwnedDPNSNames,
                             ));
+                        }
+                        _ => {
+                            // To Do: Some kind of refresh for scheduled votes maybe
+                            app_action |= AppAction::None;
                         }
                     }
                 }
@@ -691,6 +714,95 @@ impl DPNSContestedNamesScreen {
         });
     }
 
+    fn render_table_scheduled_votes(&mut self, ui: &mut Ui) {
+        let mut sorted_votes = {
+            let scheduled_votes_guard = self.scheduled_votes.lock().unwrap();
+            let scheduled_votes = scheduled_votes_guard.clone();
+            scheduled_votes
+        };
+
+        sorted_votes.sort_by(|a, b| match self.sort_column {
+            SortColumn::ContestedName => {
+                let order = a.contested_name.cmp(&b.contested_name); // Sort by DPNS Name
+                if self.sort_order == SortOrder::Descending {
+                    order.reverse()
+                } else {
+                    order
+                }
+            }
+            SortColumn::EndingTime => {
+                let order = a.time.cmp(&b.time); // Sort by Vote Time
+                if self.sort_order == SortOrder::Descending {
+                    order.reverse()
+                } else {
+                    order
+                }
+            }
+            _ => std::cmp::Ordering::Equal,
+        });
+
+        // Render table UI
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            Frame::group(ui.style())
+                .fill(ui.visuals().panel_fill)
+                .stroke(egui::Stroke::new(
+                    1.0,
+                    ui.visuals().widgets.inactive.bg_stroke.color,
+                ))
+                .inner_margin(Margin::same(8.0))
+                .show(ui, |ui| {
+                    TableBuilder::new(ui)
+                        .striped(true)
+                        .resizable(true)
+                        .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                        .column(Column::initial(200.0).resizable(true)) // DPNS Name
+                        .column(Column::initial(200.0).resizable(true)) // Voter ID
+                        .column(Column::initial(300.0).resizable(true)) // Choice
+                        .column(Column::initial(300.0).resizable(true)) // Scheduled vote time
+                        .header(30.0, |mut header| {
+                            header.col(|ui| {
+                                if ui.button("Name").clicked() {
+                                    self.toggle_sort(SortColumn::ContestedName);
+                                }
+                            });
+                            header.col(|ui| {
+                                if ui.button("Voter").clicked() {
+                                    self.toggle_sort(SortColumn::ContestedName);
+                                }
+                            });
+                            header.col(|ui| {
+                                if ui.button("Vote").clicked() {
+                                    self.toggle_sort(SortColumn::ContestedName);
+                                }
+                            });
+                            header.col(|ui| {
+                                if ui.button("Scheduled Time").clicked() {
+                                    self.toggle_sort(SortColumn::ContestedName);
+                                }
+                            });
+                        })
+                        .body(|mut body| {
+                            for vote in sorted_votes {
+                                body.row(25.0, |mut row| {
+                                    row.col(|ui| {
+                                        ui.label(vote.contested_name);
+                                    });
+                                    row.col(|ui| {
+                                        ui.label(vote.voter_id.to_string(Encoding::Base58));
+                                    });
+                                    row.col(|ui| {
+                                        ui.label(vote.choice.to_string());
+                                    });
+                                    row.col(|ui| {
+                                        ui.label(vote.time.to_string());
+                                    });
+                                });
+                            }
+                        });
+                });
+        });
+    }
+
     fn show_vote_popup(&mut self, ui: &mut Ui) -> AppAction {
         let mut app_action = AppAction::None;
         if self.voting_identities.is_empty() {
@@ -709,7 +821,6 @@ impl DPNSContestedNamesScreen {
             ui.label(message);
 
             ui.horizontal(|ui| {
-                // Only modify `voters` if `action` is `VoteOnDPNSName`
                 if let ContestedResourceTask::VoteOnDPNSName(
                     contested_name,
                     vote_choice,
@@ -820,6 +931,9 @@ impl ScreenLike for DPNSContestedNamesScreen {
             DPNSSubscreen::Owned => {
                 *dpns_names = self.app_context.local_dpns_names().unwrap_or_default();
             }
+            DPNSSubscreen::ScheduledVotes => {
+                // To Do: Implement scheduled votes
+            }
         }
     }
 
@@ -840,6 +954,7 @@ impl ScreenLike for DPNSContestedNamesScreen {
 
         let mut contested_names = self.contested_names.lock().unwrap();
         let mut dpns_names = self.local_dpns_names.lock().unwrap();
+        let mut scheduled_votes = self.scheduled_votes.lock().unwrap();
         match self.dpns_subscreen {
             DPNSSubscreen::Active => {
                 *contested_names = self
@@ -852,6 +967,9 @@ impl ScreenLike for DPNSContestedNamesScreen {
             }
             DPNSSubscreen::Owned => {
                 *dpns_names = self.app_context.local_dpns_names().unwrap_or_default();
+            }
+            DPNSSubscreen::ScheduledVotes => {
+                *scheduled_votes = self.app_context.get_scheduled_votes().unwrap_or_default();
             }
         }
     }
@@ -882,6 +1000,7 @@ impl ScreenLike for DPNSContestedNamesScreen {
                     IdentityTask::RefreshLoadedIdentitiesOwnedDPNSNames,
                 )),
             ),
+            DPNSSubscreen::ScheduledVotes => ("Refresh", DesiredAppAction::None), // To Do
         };
 
         if self.refreshing {
@@ -926,6 +1045,13 @@ impl ScreenLike for DPNSContestedNamesScreen {
                     ctx,
                     &self.app_context,
                     RootScreenType::RootScreenDPNSOwnedNames,
+                );
+            }
+            DPNSSubscreen::ScheduledVotes => {
+                action |= add_left_panel(
+                    ctx,
+                    &self.app_context,
+                    RootScreenType::RootScreenDPNSScheduledVotes,
                 );
             }
         }
@@ -978,6 +1104,11 @@ impl ScreenLike for DPNSContestedNamesScreen {
                 let dpns_names = self.local_dpns_names.lock().unwrap();
                 !dpns_names.is_empty()
             };
+            // Check if there are any scheduled votes to display
+            let has_scheduled_votes = {
+                let scheduled_votes = self.scheduled_votes.lock().unwrap();
+                !scheduled_votes.is_empty()
+            };
 
             // Render the proper table
             match self.dpns_subscreen {
@@ -998,6 +1129,13 @@ impl ScreenLike for DPNSContestedNamesScreen {
                 DPNSSubscreen::Owned => {
                     if has_dpns_names {
                         self.render_table_local_dpns_names(ui);
+                    } else {
+                        action |= self.render_no_active_contests_or_owned_names(ui);
+                    }
+                }
+                DPNSSubscreen::ScheduledVotes => {
+                    if has_scheduled_votes {
+                        self.render_table_scheduled_votes(ui);
                     } else {
                         action |= self.render_no_active_contests_or_owned_names(ui);
                     }

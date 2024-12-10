@@ -145,6 +145,8 @@ impl AppState {
             DPNSContestedNamesScreen::new(&mainnet_app_context, DPNSSubscreen::Past);
         let mut dpns_my_usernames_screen =
             DPNSContestedNamesScreen::new(&mainnet_app_context, DPNSSubscreen::Owned);
+        let mut dpns_scheduled_votes_screen =
+            DPNSContestedNamesScreen::new(&mainnet_app_context, DPNSSubscreen::ScheduledVotes);
         let mut transition_visualizer_screen =
             TransitionVisualizerScreen::new(&mainnet_app_context);
         let mut proof_log_screen = ProofLogScreen::new(&mainnet_app_context);
@@ -187,6 +189,10 @@ impl AppState {
                     DPNSContestedNamesScreen::new(&testnet_app_context, DPNSSubscreen::Past);
                 dpns_my_usernames_screen =
                     DPNSContestedNamesScreen::new(&testnet_app_context, DPNSSubscreen::Owned);
+                dpns_scheduled_votes_screen = DPNSContestedNamesScreen::new(
+                    &testnet_app_context,
+                    DPNSSubscreen::ScheduledVotes,
+                );
                 transition_visualizer_screen = TransitionVisualizerScreen::new(testnet_app_context);
                 document_query_screen = DocumentQueryScreen::new(testnet_app_context);
                 wallets_balances_screen = WalletsBalancesScreen::new(testnet_app_context);
@@ -243,6 +249,10 @@ impl AppState {
                 (
                     RootScreenType::RootScreenDPNSOwnedNames,
                     Screen::DPNSContestedNamesScreen(dpns_my_usernames_screen),
+                ),
+                (
+                    RootScreenType::RootScreenDPNSScheduledVotes,
+                    Screen::DPNSContestedNamesScreen(dpns_scheduled_votes_screen),
                 ),
                 (
                     RootScreenType::RootScreenWalletsBalances,

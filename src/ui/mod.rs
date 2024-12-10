@@ -51,6 +51,7 @@ pub enum RootScreenType {
     RootScreenDPNSActiveContests,
     RootScreenDPNSPastContests,
     RootScreenDPNSOwnedNames,
+    RootScreenDPNSScheduledVotes,
     RootScreenDocumentQuery,
     RootScreenWalletsBalances,
     RootScreenToolsProofLogScreen,
@@ -73,6 +74,7 @@ impl RootScreenType {
             RootScreenType::RootScreenNetworkChooser => 7,
             RootScreenType::RootScreenWithdrawsStatus => 8,
             RootScreenType::RootScreenToolsProofLogScreen => 9,
+            RootScreenType::RootScreenDPNSScheduledVotes => 10,
         }
     }
 
@@ -89,6 +91,7 @@ impl RootScreenType {
             7 => Some(RootScreenType::RootScreenNetworkChooser),
             8 => Some(RootScreenType::RootScreenWithdrawsStatus),
             9 => Some(RootScreenType::RootScreenToolsProofLogScreen),
+            10 => Some(RootScreenType::RootScreenDPNSScheduledVotes),
             _ => None,
         }
     }
@@ -109,6 +112,7 @@ impl From<RootScreenType> for ScreenType {
             RootScreenType::RootScreenNetworkChooser => ScreenType::NetworkChooser,
             RootScreenType::RootScreenWalletsBalances => ScreenType::WalletsBalances,
             RootScreenType::RootScreenToolsProofLogScreen => ScreenType::ProofLog,
+            RootScreenType::RootScreenDPNSScheduledVotes => ScreenType::ScheduledVotes,
         }
     }
 }
@@ -142,6 +146,7 @@ pub enum ScreenType {
     ProofLog,
     TopUpIdentity(QualifiedIdentity),
     ScheduleVoteScreen(String, u64, Vec<QualifiedIdentity>, ResourceVoteChoice),
+    ScheduledVotes,
 }
 
 impl ScreenType {
@@ -223,6 +228,9 @@ impl ScreenType {
                 identities.clone(),
                 vote_choice.clone(),
             )),
+            ScreenType::ScheduledVotes => Screen::DPNSContestedNamesScreen(
+                DPNSContestedNamesScreen::new(app_context, DPNSSubscreen::ScheduledVotes),
+            ),
         }
     }
 }
@@ -335,6 +343,10 @@ impl Screen {
                 dpns_subscreen: DPNSSubscreen::Owned,
                 ..
             }) => ScreenType::DPNSMyUsernames,
+            Screen::DPNSContestedNamesScreen(DPNSContestedNamesScreen {
+                dpns_subscreen: DPNSSubscreen::ScheduledVotes,
+                ..
+            }) => ScreenType::ScheduledVotes,
             Screen::TransitionVisualizerScreen(_) => ScreenType::TransitionVisualizer,
             Screen::WithdrawalScreen(screen) => {
                 ScreenType::WithdrawalScreen(screen.identity.clone())

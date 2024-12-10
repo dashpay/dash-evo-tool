@@ -152,8 +152,10 @@ pub fn add_top_panel(
 
                 // Right-aligned content with buttons
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.add_space(5.0);
+
                     for (text, right_button_action) in right_buttons.into_iter().rev() {
-                        ui.add_space(8.0);
+                        ui.add_space(3.0);
 
                         let font_id = egui::FontId::proportional(16.0); // Adjust font size as needed
                         let color = Color32::WHITE;

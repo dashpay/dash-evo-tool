@@ -18,7 +18,7 @@ use chrono_humanize::HumanTime;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
 use dash_sdk::platform::Identifier;
-use egui::{Context, Frame, Margin, Ui};
+use egui::{Color32, Context, Frame, Margin, Ui};
 use egui_extras::{Column, TableBuilder};
 use itertools::Itertools;
 use std::sync::{Arc, Mutex};
@@ -96,9 +96,6 @@ impl DPNSContestedNamesScreen {
             DPNSSubscreen::Owned => app_context.local_dpns_names().unwrap_or_default(),
             DPNSSubscreen::ScheduledVotes => Vec::new(),
         }));
-        let _ = app_context
-            .db
-            .clear_executed_past_scheduled_votes(app_context);
         let scheduled_votes = Arc::new(Mutex::new(
             app_context.get_scheduled_votes().unwrap_or_default(),
         ));
@@ -258,27 +255,29 @@ impl DPNSContestedNamesScreen {
                 }
             }
             ui.add_space(10.0);
-            ui.label("Please check back later or try refreshing the list.");
-            ui.add_space(20.0);
-            if ui.button("Refresh").clicked() {
-                if self.refreshing {
-                    app_action |= AppAction::None;
-                } else {
-                    match self.dpns_subscreen {
-                        DPNSSubscreen::Active | DPNSSubscreen::Past => {
-                            app_action |=
-                                AppAction::BackendTask(BackendTask::ContestedResourceTask(
-                                    ContestedResourceTask::QueryDPNSContestedResources,
+            if self.dpns_subscreen != DPNSSubscreen::ScheduledVotes {
+                ui.label("Please check back later or try refreshing the list.");
+                ui.add_space(20.0);
+                if ui.button("Refresh").clicked() {
+                    if self.refreshing {
+                        app_action |= AppAction::None;
+                    } else {
+                        match self.dpns_subscreen {
+                            DPNSSubscreen::Active | DPNSSubscreen::Past => {
+                                app_action |=
+                                    AppAction::BackendTask(BackendTask::ContestedResourceTask(
+                                        ContestedResourceTask::QueryDPNSContestedResources,
+                                    ));
+                            }
+                            DPNSSubscreen::Owned => {
+                                app_action |= AppAction::BackendTask(BackendTask::IdentityTask(
+                                    IdentityTask::RefreshLoadedIdentitiesOwnedDPNSNames,
                                 ));
-                        }
-                        DPNSSubscreen::Owned => {
-                            app_action |= AppAction::BackendTask(BackendTask::IdentityTask(
-                                IdentityTask::RefreshLoadedIdentitiesOwnedDPNSNames,
-                            ));
-                        }
-                        _ => {
-                            // To Do: Some kind of refresh for scheduled votes maybe
-                            app_action |= AppAction::None;
+                            }
+                            _ => {
+                                // To Do: Some kind of refresh for scheduled votes maybe
+                                app_action |= AppAction::None;
+                            }
                         }
                     }
                 }
@@ -761,6 +760,7 @@ impl DPNSContestedNamesScreen {
                         .column(Column::initial(200.0).resizable(true)) // Voter ID
                         .column(Column::initial(300.0).resizable(true)) // Choice
                         .column(Column::initial(300.0).resizable(true)) // Scheduled vote time
+                        .column(Column::initial(200.0).resizable(true)) // Executed?
                         .header(30.0, |mut header| {
                             header.col(|ui| {
                                 if ui.button("Name").clicked() {
@@ -782,18 +782,34 @@ impl DPNSContestedNamesScreen {
                                     self.toggle_sort(SortColumn::ContestedName);
                                 }
                             });
+                            header.col(|ui| {
+                                if ui.button("Executed").clicked() {
+                                    self.toggle_sort(SortColumn::ContestedName);
+                                }
+                            });
                         })
                         .body(|mut body| {
                             for vote in sorted_votes {
                                 body.row(25.0, |mut row| {
                                     row.col(|ui| {
-                                        ui.label(vote.contested_name);
+                                        ui.add(egui::Label::new(vote.contested_name).truncate());
                                     });
                                     row.col(|ui| {
-                                        ui.label(vote.voter_id.to_string(Encoding::Base58));
+                                        ui.add(
+                                            egui::Label::new(
+                                                vote.voter_id.to_string(Encoding::Hex),
+                                            )
+                                            .truncate(),
+                                        );
                                     });
                                     row.col(|ui| {
-                                        ui.label(vote.choice.to_string());
+                                        let display_text = match &vote.choice {
+                                            ResourceVoteChoice::TowardsIdentity(identifier) => {
+                                                identifier.to_string(Encoding::Base58)
+                                            }
+                                            other => other.to_string(),
+                                        };
+                                        ui.add(egui::Label::new(display_text).truncate());
                                     });
                                     row.col(|ui| {
                                         // Assuming `scheduled_vote.unix_timestamp` is a u64 storing milliseconds since UNIX epoch:
@@ -812,10 +828,18 @@ impl DPNSContestedNamesScreen {
                                             let display_text =
                                                 format!("{} ({})", iso_date, relative_time);
 
-                                            ui.label(display_text);
+                                            ui.add(egui::Label::new(display_text).truncate());
                                         } else {
                                             // Handle case where the timestamp is invalid
                                             ui.label("Invalid timestamp");
+                                        }
+                                    });
+                                    row.col(|ui| match vote.executed_successfully {
+                                        true => {
+                                            ui.colored_label(Color32::DARK_GREEN, "Yes");
+                                        }
+                                        false => {
+                                            ui.label("");
                                         }
                                     });
                                 });
@@ -976,10 +1000,6 @@ impl ScreenLike for DPNSContestedNamesScreen {
 
         let mut contested_names = self.contested_names.lock().unwrap();
         let mut dpns_names = self.local_dpns_names.lock().unwrap();
-        let _ = self
-            .app_context
-            .db
-            .clear_executed_past_scheduled_votes(&self.app_context);
         let mut scheduled_votes = self.scheduled_votes.lock().unwrap();
         match self.dpns_subscreen {
             DPNSSubscreen::Active => {
@@ -1013,42 +1033,125 @@ impl ScreenLike for DPNSContestedNamesScreen {
 
     fn ui(&mut self, ctx: &Context) -> AppAction {
         self.check_error_expiration();
-        let mut top_panel_refresh_button = match self.dpns_subscreen {
-            DPNSSubscreen::Active | DPNSSubscreen::Past => (
-                "Refresh",
-                DesiredAppAction::BackendTask(BackendTask::ContestedResourceTask(
-                    ContestedResourceTask::QueryDPNSContestedResources,
-                )),
-            ),
-            DPNSSubscreen::Owned => (
-                "Refresh",
-                DesiredAppAction::BackendTask(BackendTask::IdentityTask(
-                    IdentityTask::RefreshLoadedIdentitiesOwnedDPNSNames,
-                )),
-            ),
-            DPNSSubscreen::ScheduledVotes => (
-                "Clear All",
-                DesiredAppAction::BackendTask(BackendTask::ContestedResourceTask(
-                    ContestedResourceTask::ClearAllScheduledVotes,
-                )),
-            ),
+
+        let has_identity_that_can_register = !self.user_identities.is_empty();
+
+        // Determine the right-side buttons based on the current DPNSSubscreen
+        let right_buttons = match self.dpns_subscreen {
+            DPNSSubscreen::Active => {
+                // Active contests: show refresh or refreshing
+                let refresh_button = if self.refreshing {
+                    ("Refreshing...", DesiredAppAction::None)
+                } else {
+                    (
+                        "Refresh",
+                        DesiredAppAction::BackendTask(BackendTask::ContestedResourceTask(
+                            ContestedResourceTask::QueryDPNSContestedResources,
+                        )),
+                    )
+                };
+
+                let mut buttons = vec![refresh_button];
+                if has_identity_that_can_register {
+                    buttons.insert(
+                        0,
+                        (
+                            "Register Name",
+                            DesiredAppAction::AddScreenType(ScreenType::RegisterDpnsName),
+                        ),
+                    );
+                }
+                buttons
+            }
+
+            DPNSSubscreen::Past => {
+                // Past contests: similar to Active
+                let refresh_button = if self.refreshing {
+                    ("Refreshing...", DesiredAppAction::None)
+                } else {
+                    (
+                        "Refresh",
+                        DesiredAppAction::BackendTask(BackendTask::ContestedResourceTask(
+                            ContestedResourceTask::QueryDPNSContestedResources,
+                        )),
+                    )
+                };
+
+                let mut buttons = vec![refresh_button];
+                if has_identity_that_can_register {
+                    buttons.insert(
+                        0,
+                        (
+                            "Register Name",
+                            DesiredAppAction::AddScreenType(ScreenType::RegisterDpnsName),
+                        ),
+                    );
+                }
+                buttons
+            }
+
+            DPNSSubscreen::Owned => {
+                // Owned names: refresh or refreshing
+                let refresh_button = if self.refreshing {
+                    ("Refreshing...", DesiredAppAction::None)
+                } else {
+                    (
+                        "Refresh",
+                        DesiredAppAction::BackendTask(BackendTask::IdentityTask(
+                            IdentityTask::RefreshLoadedIdentitiesOwnedDPNSNames,
+                        )),
+                    )
+                };
+
+                let mut buttons = vec![refresh_button];
+                if has_identity_that_can_register {
+                    buttons.insert(
+                        0,
+                        (
+                            "Register Name",
+                            DesiredAppAction::AddScreenType(ScreenType::RegisterDpnsName),
+                        ),
+                    );
+                }
+                buttons
+            }
+
+            DPNSSubscreen::ScheduledVotes => {
+                // Scheduled votes: "Clear All" and "Clear Executed" instead of refresh
+                // If refreshing is happening, you might want to show "Refreshing..." (optional)
+                let mut buttons = vec![
+                    (
+                        "Clear All",
+                        DesiredAppAction::BackendTask(BackendTask::ContestedResourceTask(
+                            ContestedResourceTask::ClearAllScheduledVotes,
+                        )),
+                    ),
+                    (
+                        "Clear Executed",
+                        DesiredAppAction::BackendTask(BackendTask::ContestedResourceTask(
+                            ContestedResourceTask::ClearExecutedScheduledVotes,
+                        )),
+                    ),
+                ];
+
+                if self.refreshing {
+                    // Optionally replace the first button if you want to show a refreshing state
+                    buttons[0] = ("Refreshing...", DesiredAppAction::None);
+                }
+
+                if has_identity_that_can_register {
+                    buttons.insert(
+                        0,
+                        (
+                            "Register Name",
+                            DesiredAppAction::AddScreenType(ScreenType::RegisterDpnsName),
+                        ),
+                    );
+                }
+                buttons
+            }
         };
 
-        if self.refreshing {
-            top_panel_refresh_button = ("Refreshing...", DesiredAppAction::None)
-        }
-        let has_identity_that_can_register = !self.user_identities.is_empty();
-        let right_buttons = if has_identity_that_can_register {
-            vec![
-                (
-                    "Register Name",
-                    DesiredAppAction::AddScreenType(ScreenType::RegisterDpnsName),
-                ),
-                top_panel_refresh_button,
-            ]
-        } else {
-            vec![top_panel_refresh_button]
-        };
         let mut action = add_top_panel(
             ctx,
             &self.app_context,

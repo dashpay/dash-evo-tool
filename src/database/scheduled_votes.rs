@@ -41,7 +41,7 @@ impl Database {
         let network = app_context.network_string();
         let vote_choice_string = vote_choice.to_string();
         self.execute(
-            "INSERT OR REPLACE INTO scheduled_votes (identity_id, contested_name, vote_choice, time, 0, network) VALUES (?, ?, ?, ?, ?)",
+            "INSERT OR REPLACE INTO scheduled_votes (identity_id, contested_name, vote_choice, time, executed, network) VALUES (?, ?, ?, ?, 0, ?)",
             params![identity_id, contested_name, vote_choice_string, time, network],
         )?;
         Ok(())
@@ -74,6 +74,11 @@ impl Database {
             let contested_name: String = row.get(1)?;
             let vote_choice_string: String = row.get(2)?;
             let time: u64 = row.get(3)?;
+            let executed_successfully: bool = match row.get(4)? {
+                0 => false,
+                1 => true,
+                _ => unreachable!(),
+            };
             let vote_choice = match vote_choice_string.as_str() {
                 "Abstain" => ResourceVoteChoice::Abstain,
                 "Lock" => ResourceVoteChoice::Lock,
@@ -99,6 +104,7 @@ impl Database {
                 contested_name,
                 choice: vote_choice,
                 unix_timestamp: time,
+                executed_successfully,
             };
 
             Ok(scheduled_vote)

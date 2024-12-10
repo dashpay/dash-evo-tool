@@ -10,6 +10,7 @@ pub struct ScheduledDPNSVote {
     pub voter_id: Identifier,
     pub choice: ResourceVoteChoice,
     pub unix_timestamp: u64,
+    pub executed_successfully: bool,
 }
 
 impl AppContext {

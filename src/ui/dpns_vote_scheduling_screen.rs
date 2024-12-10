@@ -4,6 +4,9 @@ use crate::backend_task::{contested_names::ContestedResourceTask, BackendTask};
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::{MessageType, ScreenLike};
+use chrono::offset::LocalResult;
+use chrono::{Duration, TimeZone, Utc};
+use chrono_humanize::HumanTime;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
@@ -17,7 +20,7 @@ use super::components::top_panel::add_top_panel;
 enum VoteOption {
     None,
     VoteNow,
-    Scheduled(String),
+    Scheduled { days: u32, hours: u32, minutes: u32 },
 }
 
 pub struct ScheduleVoteScreen {
@@ -42,6 +45,8 @@ impl ScheduleVoteScreen {
             .iter()
             .map(|_| VoteOption::None)
             .collect();
+
+        // Default everything to 0 (i.e., "now")
         Self {
             app_context: app_context.clone(),
             contested_name,
@@ -54,13 +59,28 @@ impl ScheduleVoteScreen {
     }
 
     fn display_identity_options(&mut self, ui: &mut Ui) {
-        ui.heading("Schedule Votes for Identities");
-        ui.add_space(10.0);
+        // Convert the timestamp to a DateTime object using timestamp_millis_opt
+        if let LocalResult::Single(datetime) = Utc.timestamp_millis_opt(self.ending_time as i64) {
+            // Format the ISO date up to seconds
+            let iso_date = datetime.format("%Y-%m-%d %H:%M:%S").to_string();
 
-        ui.label(format!(
-            "Contest for name {} ends at {}",
-            self.contested_name, self.ending_time
-        ));
+            // Use chrono-humanize to get the relative time
+            let relative_time = HumanTime::from(datetime).to_string();
+
+            // Combine both the ISO date and relative time
+            let display_text = format!(
+                "Contest for name {} ends at {} ({})",
+                self.contested_name, iso_date, relative_time
+            );
+
+            ui.label(display_text);
+        } else {
+            // Handle case where the timestamp is invalid
+            ui.colored_label(
+                Color32::DARK_RED,
+                "Error getting contest ending time".to_string(),
+            );
+        }
         ui.add_space(10.0);
 
         // For each identity, show a row with their alias/ID and voting options
@@ -75,14 +95,13 @@ impl ScheduleVoteScreen {
                         .unwrap_or(identity.identity.id().to_string(Encoding::Base58));
                     ui.label(format!("Identity: {}", identity_label));
 
-                    // Dropdown or Radio buttons for None/VoteNow/Scheduled
-                    // For simplicity, let's use a ComboBox:
+                    // Dropdown for None/VoteNow/Scheduled
                     let current_option = &mut self.identity_options[i];
-                    egui::ComboBox::from_label(identity_label)
+                    egui::ComboBox::from_id_salt(format!("combo_for_identity_{}", i))
                         .selected_text(match current_option {
                             VoteOption::None => "None".to_string(),
                             VoteOption::VoteNow => "Vote Now".to_string(),
-                            VoteOption::Scheduled(_) => "Scheduled".to_string(),
+                            VoteOption::Scheduled { .. } => "Scheduled".to_string(),
                         })
                         .show_ui(ui, |ui| {
                             if ui
@@ -105,25 +124,41 @@ impl ScheduleVoteScreen {
                             }
                             if ui
                                 .selectable_label(
-                                    matches!(current_option, VoteOption::Scheduled(_)),
+                                    matches!(current_option, VoteOption::Scheduled { .. }),
                                     "Scheduled",
                                 )
                                 .clicked()
                             {
-                                // If we had a previous schedule time, keep it. Otherwise, empty string.
-                                let old_time = match current_option {
-                                    VoteOption::Scheduled(s) => s.clone(),
-                                    _ => String::new(),
+                                // If we had a previous scheduled option, keep the old values. Otherwise, default to 0.
+                                let (days, hours, minutes) = match current_option {
+                                    VoteOption::Scheduled {
+                                        days,
+                                        hours,
+                                        minutes,
+                                    } => (*days, *hours, *minutes),
+                                    _ => (0, 0, 0),
                                 };
-                                *current_option = VoteOption::Scheduled(old_time);
+                                *current_option = VoteOption::Scheduled {
+                                    days,
+                                    hours,
+                                    minutes,
+                                };
                             }
                         });
 
-                    // If Scheduled is chosen, display a text field for the schedule time
-                    // To Do: This should be a date time selector rather than text input.
-                    if let VoteOption::Scheduled(ref mut time_str) = current_option {
-                        ui.label("Schedule Time (UNIX timestamp):");
-                        ui.text_edit_singleline(time_str);
+                    // If Scheduled is chosen, let the user pick how far in the future
+                    if let VoteOption::Scheduled {
+                        days,
+                        hours,
+                        minutes,
+                    } = current_option
+                    {
+                        ui.label("Schedule Vote In:");
+                        ui.horizontal(|ui| {
+                            ui.add(egui::DragValue::new(days).range(0..=14).prefix("Days: "));
+                            ui.add(egui::DragValue::new(hours).range(0..=23).prefix("Hours: "));
+                            ui.add(egui::DragValue::new(minutes).range(0..=59).prefix("Min: "));
+                        });
                     }
                 });
             });
@@ -133,48 +168,53 @@ impl ScheduleVoteScreen {
     }
 
     fn cast_votes_button(&mut self) -> AppAction {
-        // Gather the voter identities and their chosen times
-        // For simplicity, let's assume the backend can handle a structure where:
-        // - If VoteNow, we submit immediately.
-        // - If Scheduled(time), we submit the schedule.
-        // - If None, we do not include that identity as a voter.
-
-        // Filter only those with VoteNow or Scheduled
         let mut voters = Vec::new();
         let mut scheduled_votes = Vec::new();
 
+        // (Optional) Check if chosen_time is before ending_time, if ending_time is in the same units (ms).
+        // If ending_time is a UNIX ms timestamp, you can ensure:
+        // if chosen_time > ending_time {
+        //     self.message = Some((MessageType::Error, "Scheduled time is after contest end time.".to_string()));
+        //     return AppAction::None;
+        // }
+
         for (identity, option) in self.identities.iter().zip(self.identity_options.iter()) {
             match option {
-                VoteOption::None => {
-                    // Skip this identity
-                }
+                VoteOption::None => {}
                 VoteOption::VoteNow => {
-                    // Immediate vote
                     voters.push(identity.clone());
                 }
-                VoteOption::Scheduled(time_str) => {
-                    // Collect scheduled votes separately
-                    // The backend task might need a structure that allows scheduling.
-                    // If such a structure doesn’t exist yet, we might need to define one.
+                VoteOption::Scheduled {
+                    days,
+                    hours,
+                    minutes,
+                } => {
+                    let now = chrono::Utc::now();
+                    let offset = Duration::days((*days).into())
+                        + Duration::hours((*hours).into())
+                        + Duration::minutes((*minutes).into());
+
+                    let scheduled_time = now + offset;
+                    let chosen_time = scheduled_time.timestamp_millis() as u64;
+
                     let scheduled_vote = ScheduledDPNSVote {
                         contested_name: self.contested_name.clone(),
                         voter_id: identity.identity.id().clone(),
                         choice: self.vote_choice,
-                        unix_timestamp: time_str.parse().unwrap_or(0),
+                        unix_timestamp: chosen_time,
+                        executed_successfully: false,
                     };
                     scheduled_votes.push(scheduled_vote);
                 }
             }
         }
 
-        // If no voters and no scheduled, return None to indicate nothing to do.
         if voters.is_empty() && scheduled_votes.is_empty() {
             self.message = Some((MessageType::Error, "No votes selected.".to_string()));
             return AppAction::None;
         }
 
         let updated_action = ContestedResourceTask::ScheduleDPNSVote(scheduled_votes);
-
         AppAction::BackendTask(BackendTask::ContestedResourceTask(updated_action))
     }
 }
@@ -199,14 +239,10 @@ impl ScreenLike for ScheduleVoteScreen {
             ui.heading("Schedule Votes");
             ui.add_space(10.0);
 
-            // Display the identity options and scheduling fields
             self.display_identity_options(ui);
 
             ui.add_space(10.0);
-            ui.separator();
-            ui.add_space(10.0);
 
-            // Button to cast votes (now or scheduled)
             let button = egui::Button::new(RichText::new("Cast Votes").color(Color32::WHITE))
                 .fill(Color32::from_rgb(0, 128, 255))
                 .rounding(3.0);
@@ -214,6 +250,8 @@ impl ScreenLike for ScheduleVoteScreen {
             if ui.add(button).clicked() {
                 action = self.cast_votes_button();
             }
+
+            ui.add_space(10.0);
 
             if let Some(message) = &self.message {
                 match message.0 {

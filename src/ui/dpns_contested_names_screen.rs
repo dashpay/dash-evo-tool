@@ -1,4 +1,5 @@
 use super::components::dpns_subscreen_chooser_panel::add_dpns_subscreen_chooser_panel;
+use super::dpns_vote_scheduling_screen::ScheduleVoteScreen;
 use super::{Screen, ScreenType};
 use crate::app::{AppAction, DesiredAppAction};
 use crate::backend_task::contested_names::ContestedResourceTask;
@@ -66,6 +67,7 @@ pub struct DPNSContestedNamesScreen {
     sort_column: SortColumn,
     sort_order: SortOrder,
     show_vote_popup_info: Option<(String, ContestedResourceTask)>,
+    pending_vote_action: Option<ContestedResourceTask>,
     pub dpns_subscreen: DPNSSubscreen,
     refreshing: bool,
 }
@@ -106,6 +108,7 @@ impl DPNSContestedNamesScreen {
             sort_column: SortColumn::ContestedName,
             sort_order: SortOrder::Ascending,
             show_vote_popup_info: None,
+            pending_vote_action: None,
             dpns_subscreen,
             refreshing: false,
         }
@@ -700,6 +703,7 @@ impl DPNSContestedNamesScreen {
             }
             if ui.button("Cancel").clicked() {
                 self.show_vote_popup_info = None;
+                self.pending_vote_action = None;
             }
         } else if let Some((message, action)) = self.show_vote_popup_info.clone() {
             ui.label(message);
@@ -712,51 +716,85 @@ impl DPNSContestedNamesScreen {
                     mut voters,
                 ) = action
                 {
-                    // Iterate over the voting identities and create a button for each one
-                    for identity in self.voting_identities.iter() {
-                        if ui.button(identity.display_short_string()).clicked() {
-                            // Add the selected identity to the `voters` field
-                            voters.push(identity.clone());
+                    // If we haven't yet chosen any voters (pending_vote_action is None), we show the identities
+                    if self.pending_vote_action.is_none() {
+                        // Iterate over the voting identities and create a button for each one
+                        for identity in self.voting_identities.iter() {
+                            if ui.button(identity.display_short_string()).clicked() {
+                                // Add the selected identity to the `voters` field
+                                voters.push(identity.clone());
 
-                            // Create a new `VoteOnDPNSName` task with updated voters
+                                // Store the updated action, but don't finalize yet
+                                let updated_action = ContestedResourceTask::VoteOnDPNSName(
+                                    contested_name.clone(),
+                                    vote_choice.clone(),
+                                    voters.clone(),
+                                );
+                                self.pending_vote_action = Some(updated_action);
+                            }
+                        }
+
+                        // Vote with all identities
+                        if ui.button("All").clicked() {
+                            voters.extend(self.voting_identities.iter().cloned());
                             let updated_action = ContestedResourceTask::VoteOnDPNSName(
                                 contested_name.clone(),
                                 vote_choice.clone(),
-                                voters.clone(), // Updated voters
+                                voters.clone(),
                             );
-
-                            // Pass updated action to BackendTask
-                            app_action = AppAction::BackendTask(
-                                BackendTask::ContestedResourceTask(updated_action),
-                            );
+                            self.pending_vote_action = Some(updated_action);
+                        }
+                    } else {
+                        // If we have a pending vote action, ask whether to vote now or schedule
+                        ui.label("Would you like to vote now or schedule your votes?");
+                        if ui.button("Vote Now").clicked() {
+                            // Finalize the vote now
+                            app_action =
+                                AppAction::BackendTask(BackendTask::ContestedResourceTask(
+                                    self.pending_vote_action.take().unwrap(),
+                                ));
                             self.show_vote_popup_info = None;
                         }
-                    }
+                        if ui.button("Schedule").clicked() {
+                            // Move to a scheduling screen instead
+                            // Assume we have a ScheduleVoteScreen that takes the pending action data
+                            let pending = self.pending_vote_action.take().unwrap();
+                            if let ContestedResourceTask::VoteOnDPNSName(
+                                name_string,
+                                vote_choice,
+                                voters,
+                            ) = pending
+                            {
+                                // Lock and get a reference to the contested names
+                                let contested_names = self.contested_names.lock().unwrap();
 
-                    // Vote with all identities
-                    if ui.button("All").clicked() {
-                        for identity in self.voting_identities.iter() {
-                            voters.push(identity.clone());
+                                // Find the contested name that matches the given name_string
+                                let ending_time = contested_names
+                                    .iter()
+                                    .find(|cn| cn.normalized_contested_name == name_string)
+                                    .and_then(|cn| cn.end_time)
+                                    .unwrap_or_default();
+                                let contested_name = name_string.clone();
+                                let schedule_screen = ScheduleVoteScreen::new(
+                                    &self.app_context,
+                                    contested_name,
+                                    ending_time,
+                                    voters,
+                                    vote_choice,
+                                );
+                                app_action = AppAction::AddScreen(Screen::ScheduleVoteScreen(
+                                    schedule_screen,
+                                ));
+                            }
+                            self.show_vote_popup_info = None;
                         }
-
-                        // Create a new `VoteOnDPNSName` task with all voters
-                        let updated_action = ContestedResourceTask::VoteOnDPNSName(
-                            contested_name.clone(),
-                            vote_choice.clone(),
-                            voters.clone(), // Updated voters
-                        );
-
-                        // Pass updated action to BackendTask
-                        app_action = AppAction::BackendTask(BackendTask::ContestedResourceTask(
-                            updated_action,
-                        ));
-                        self.show_vote_popup_info = None;
                     }
                 }
 
                 // Add the "Cancel" button
                 if ui.button("Cancel").clicked() {
                     self.show_vote_popup_info = None;
+                    self.pending_vote_action = None;
                 }
             });
         }

@@ -756,11 +756,11 @@ impl DPNSContestedNamesScreen {
                         .striped(true)
                         .resizable(true)
                         .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                        .column(Column::initial(200.0).resizable(true)) // DPNS Name
+                        .column(Column::initial(100.0).resizable(true)) // DPNS Name
                         .column(Column::initial(200.0).resizable(true)) // Voter ID
-                        .column(Column::initial(300.0).resizable(true)) // Choice
-                        .column(Column::initial(300.0).resizable(true)) // Scheduled vote time
-                        .column(Column::initial(200.0).resizable(true)) // Executed?
+                        .column(Column::initial(200.0).resizable(true)) // Choice
+                        .column(Column::initial(200.0).resizable(true)) // Scheduled vote time
+                        .column(Column::initial(100.0).resizable(true)) // Executed?
                         .header(30.0, |mut header| {
                             header.col(|ui| {
                                 if ui.button("Name").clicked() {

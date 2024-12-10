@@ -19,7 +19,6 @@ use super::components::top_panel::add_top_panel;
 /// The voting option a user can choose for each identity.
 enum VoteOption {
     None,
-    VoteNow,
     Scheduled { days: u32, hours: u32, minutes: u32 },
 }
 
@@ -100,7 +99,6 @@ impl ScheduleVoteScreen {
                     egui::ComboBox::from_id_salt(format!("combo_for_identity_{}", i))
                         .selected_text(match current_option {
                             VoteOption::None => "None".to_string(),
-                            VoteOption::VoteNow => "Vote Now".to_string(),
                             VoteOption::Scheduled { .. } => "Scheduled".to_string(),
                         })
                         .show_ui(ui, |ui| {
@@ -112,15 +110,6 @@ impl ScheduleVoteScreen {
                                 .clicked()
                             {
                                 *current_option = VoteOption::None;
-                            }
-                            if ui
-                                .selectable_label(
-                                    matches!(current_option, VoteOption::VoteNow),
-                                    "Vote Now",
-                                )
-                                .clicked()
-                            {
-                                *current_option = VoteOption::VoteNow;
                             }
                             if ui
                                 .selectable_label(
@@ -168,7 +157,6 @@ impl ScheduleVoteScreen {
     }
 
     fn cast_votes_button(&mut self) -> AppAction {
-        let mut voters = Vec::new();
         let mut scheduled_votes = Vec::new();
 
         // (Optional) Check if chosen_time is before ending_time, if ending_time is in the same units (ms).
@@ -181,9 +169,6 @@ impl ScheduleVoteScreen {
         for (identity, option) in self.identities.iter().zip(self.identity_options.iter()) {
             match option {
                 VoteOption::None => {}
-                VoteOption::VoteNow => {
-                    voters.push(identity.clone());
-                }
                 VoteOption::Scheduled {
                     days,
                     hours,
@@ -209,7 +194,7 @@ impl ScheduleVoteScreen {
             }
         }
 
-        if voters.is_empty() && scheduled_votes.is_empty() {
+        if scheduled_votes.is_empty() {
             self.message = Some((MessageType::Error, "No votes selected.".to_string()));
             return AppAction::None;
         }

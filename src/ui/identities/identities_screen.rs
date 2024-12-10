@@ -378,10 +378,10 @@ impl IdentitiesScreen {
                                         }
 
                                         // If we have not reached max keys, show keys from voter identity
-                                        if total_keys_shown < max_keys_to_show {
-                                            if let Some(voting_identity_public_keys) =
-                                                voter_identity_public_keys
-                                            {
+                                        if let Some(voting_identity_public_keys) =
+                                            voter_identity_public_keys
+                                        {
+                                            if total_keys_shown < max_keys_to_show {
                                                 let voter_public_keys_vec: Vec<_> =
                                                     voting_identity_public_keys.iter().collect();
                                                 for (key_id, key) in voter_public_keys_vec.iter() {
@@ -405,9 +405,9 @@ impl IdentitiesScreen {
                                                         break;
                                                     }
                                                 }
+                                            } else {
+                                                more_keys_available = true;
                                             }
-                                        } else {
-                                            more_keys_available = true;
                                         }
 
                                         // If there are more keys, show "View More" button

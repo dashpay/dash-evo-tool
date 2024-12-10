@@ -13,6 +13,16 @@ use eframe::egui::Context;
 use egui::{ComboBox, Ui};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
+use std::time::{SystemTime, UNIX_EPOCH};
+use dash_sdk::dpp::identity::TimestampMillis;
+use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
+
+pub enum UpdateIdentityPayoutStatus {
+    NotStarted,
+    WaitingForResult(TimestampMillis),
+    ErrorMessage(String),
+    Complete,
+}
 
 pub struct UpdateIdentityPayoutScreen {
     pub app_context: Arc<AppContext>,
@@ -20,6 +30,9 @@ pub struct UpdateIdentityPayoutScreen {
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     selected_payout_address: Option<Address>,
     selected_funding_address: Option<Address>,
+    update_payout_status: UpdateIdentityPayoutStatus,
+    wallet_password: String,
+    show_password: bool,
     error_message: Option<String>,
 }
 
@@ -33,6 +46,9 @@ impl UpdateIdentityPayoutScreen {
             selected_payout_address: None,
             selected_funding_address: None,
             error_message: None,
+            update_payout_status: UpdateIdentityPayoutStatus::NotStarted,
+            wallet_password: String::new(),
+            show_password: false,
         }
     }
 
@@ -85,7 +101,7 @@ impl UpdateIdentityPayoutScreen {
         });
     }
 
-    fn render_selected_wallet_payout_addresses(&mut self, ctx: &Context, ui: &mut Ui) {
+    fn render_selected_wallet_payout_addresses(&mut self, ui: &mut Ui) {
         if let Some(selected_wallet) = &self.selected_wallet {
             // Acquire a read lock
             let wallet = selected_wallet.read().unwrap();
@@ -125,7 +141,7 @@ impl UpdateIdentityPayoutScreen {
         }
     }
 
-    fn render_selected_wallet_funding_addresses(&mut self, ctx: &Context, ui: &mut Ui) {
+    fn render_selected_wallet_funding_addresses(&mut self, ui: &mut Ui) {
         if let Some(selected_wallet) = &self.selected_wallet {
             // Acquire a read lock
             let wallet = selected_wallet.read().unwrap();
@@ -167,9 +183,15 @@ impl UpdateIdentityPayoutScreen {
 }
 
 impl ScreenLike for UpdateIdentityPayoutScreen {
-    fn display_message(&mut self, message: &str, _message_type: MessageType) {
-        if _message_type == MessageType::Error {
-            self.error_message = Some(message.to_string());
+    fn display_message(&mut self, message: &str, message_type: MessageType) {
+        match message_type {
+            MessageType::Success => {
+                self.update_payout_status = UpdateIdentityPayoutStatus::Complete;
+            }
+            MessageType::Info => {}
+            MessageType::Error => {
+                self.update_payout_status = UpdateIdentityPayoutStatus::ErrorMessage(message.to_string());
+            }
         }
     }
 
@@ -186,13 +208,13 @@ impl ScreenLike for UpdateIdentityPayoutScreen {
         );
 
         egui::CentralPanel::default().show(ctx, |mut ui| {
-            if (self.identity.identity_type == IdentityType::User) {
+            if self.identity.identity_type == IdentityType::User {
                 ui.heading(
                     "Updating Payout Address for User identities is not allowed.".to_string(),
                 );
                 return;
             }
-            if (!self.app_context.has_wallet.load(Ordering::Relaxed)) {
+            if !self.app_context.has_wallet.load(Ordering::Relaxed) {
                 ui.heading("Load a Wallet in order to continue.".to_string());
                 return;
             }
@@ -202,10 +224,16 @@ impl ScreenLike for UpdateIdentityPayoutScreen {
             ui.heading("Load Address from wallet".to_string());
             self.render_wallet_selection(&mut ui);
 
+            let (needed_unlock, just_unlocked) = self.render_wallet_unlock_if_needed(ui);
+
+            if needed_unlock && !just_unlocked {
+                return;
+            }
+
             if self.selected_wallet.is_some() {
-                self.render_selected_wallet_payout_addresses(ctx, &mut ui);
+                self.render_selected_wallet_payout_addresses(&mut ui);
                 if self.selected_payout_address.is_some() {
-                    self.render_selected_wallet_funding_addresses(ctx, &mut ui);
+                    self.render_selected_wallet_funding_addresses(&mut ui);
                     if self.selected_funding_address.is_some() {
                         ui.add_space(20.0);
                         ui.colored_label(
@@ -214,6 +242,12 @@ impl ScreenLike for UpdateIdentityPayoutScreen {
                         );
                         ui.add_space(20.0);
                         if ui.button("Update Payout Address").clicked() {
+                            // Set the status to waiting and capture the current time
+                            let now = SystemTime::now()
+                                .duration_since(UNIX_EPOCH)
+                                .expect("Time went backwards")
+                                .as_secs();
+                            self.update_payout_status = UpdateIdentityPayoutStatus::WaitingForResult(now);
                             action |= AppAction::BackendTask(BackendTask::CoreTask(
                                 CoreTask::ProRegUpdateTx(
                                     self.identity.identity.id().to_string(Encoding::Hex),
@@ -222,12 +256,50 @@ impl ScreenLike for UpdateIdentityPayoutScreen {
                                 ),
                             ));
                         }
-                        if self.error_message.is_some() {
-                            ui.add_space(20.0);
-                            ui.colored_label(
-                                egui::Color32::RED,
-                                self.error_message.as_ref().unwrap(),
-                            );
+
+                        // Handle registration status messages
+                        match &self.update_payout_status {
+                            UpdateIdentityPayoutStatus::NotStarted => {
+                                // Do nothing
+                            }
+                            UpdateIdentityPayoutStatus::WaitingForResult(start_time) => {
+                                let now = SystemTime::now()
+                                    .duration_since(UNIX_EPOCH)
+                                    .expect("Time went backwards")
+                                    .as_secs();
+                                let elapsed_seconds = now - start_time;
+
+                                let display_time = if elapsed_seconds < 60 {
+                                    format!(
+                                        "{} second{}",
+                                        elapsed_seconds,
+                                        if elapsed_seconds == 1 { "" } else { "s" }
+                                    )
+                                } else {
+                                    let minutes = elapsed_seconds / 60;
+                                    let seconds = elapsed_seconds % 60;
+                                    format!(
+                                        "{} minute{} and {} second{}",
+                                        minutes,
+                                        if minutes == 1 { "" } else { "s" },
+                                        seconds,
+                                        if seconds == 1 { "" } else { "s" }
+                                    )
+                                };
+
+                                ui.add_space(20.0);
+                                ui.label(format!(
+                                    "Waiting... Time taken so far: {}",
+                                    display_time
+                                ));
+                            }
+                            UpdateIdentityPayoutStatus::ErrorMessage(msg) => {
+                                ui.add_space(20.0);
+                                ui.colored_label(egui::Color32::RED, format!("Error: {}", msg));
+                            }
+                            UpdateIdentityPayoutStatus::Complete => {
+                                action = AppAction::PopScreenAndRefresh;
+                            }
                         }
                     }
                 }
@@ -235,5 +307,35 @@ impl ScreenLike for UpdateIdentityPayoutScreen {
         });
 
         action
+    }
+}
+
+impl ScreenWithWalletUnlock for UpdateIdentityPayoutScreen {
+    fn selected_wallet_ref(&self) -> &Option<Arc<RwLock<Wallet>>> {
+        &self.selected_wallet
+    }
+
+    fn wallet_password_ref(&self) -> &String {
+        &self.wallet_password
+    }
+
+    fn wallet_password_mut(&mut self) -> &mut String {
+        &mut self.wallet_password
+    }
+
+    fn show_password(&self) -> bool {
+        self.show_password
+    }
+
+    fn show_password_mut(&mut self) -> &mut bool {
+        &mut self.show_password
+    }
+
+    fn set_error_message(&mut self, error_message: Option<String>) {
+        self.error_message = error_message;
+    }
+
+    fn error_message(&self) -> Option<&String> {
+        self.error_message.as_ref()
     }
 }

@@ -47,6 +47,21 @@ impl Database {
         Ok(())
     }
 
+    pub fn delete_scheduled_vote(
+        &self,
+        identity_id: &[u8],
+        contested_name: &str,
+        app_context: &AppContext,
+    ) -> rusqlite::Result<()> {
+        let network = app_context.network_string();
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "DELETE FROM scheduled_votes WHERE identity_id = ? AND contested_name = ? AND network = ?",
+            params![identity_id, contested_name, network],
+        )?;
+        Ok(())
+    }
+
     pub fn mark_vote_executed(
         &self,
         identity_id: &[u8],
@@ -127,19 +142,6 @@ impl Database {
         Ok(())
     }
 
-    /// Clear all past scheduled votes from the db
-    pub fn clear_all_past_scheduled_votes(&self, app_context: &AppContext) -> rusqlite::Result<()> {
-        let network = app_context.network_string();
-        let conn = self.conn.lock().unwrap();
-
-        conn.execute(
-            "DELETE FROM scheduled_votes WHERE time < CAST(strftime('%s', 'now') AS INTEGER) * 1000 AND network = ?",
-            params![network],
-        )?;
-
-        Ok(())
-    }
-
     pub fn clear_executed_past_scheduled_votes(
         &self,
         app_context: &AppContext,
@@ -148,7 +150,7 @@ impl Database {
         let conn = self.conn.lock().unwrap();
 
         conn.execute(
-            "DELETE FROM scheduled_votes WHERE executed = 1 AND time < CAST(strftime('%s', 'now') AS INTEGER) * 1000 AND network = ?",
+            "DELETE FROM scheduled_votes WHERE executed = 1 AND network = ?",
             params![network],
         )?;
 

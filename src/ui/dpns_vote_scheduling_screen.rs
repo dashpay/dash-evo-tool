@@ -42,7 +42,11 @@ impl ScheduleVoteScreen {
     ) -> Self {
         let identity_options = potential_voting_identities
             .iter()
-            .map(|_| VoteOption::None)
+            .map(|_| VoteOption::Scheduled {
+                days: 0,
+                hours: 0,
+                minutes: 0,
+            })
             .collect();
 
         // Default everything to 0 (i.e., "now")
@@ -110,6 +114,7 @@ impl ScheduleVoteScreen {
                                 .clicked()
                             {
                                 *current_option = VoteOption::None;
+                                self.message = None;
                             }
                             if ui
                                 .selectable_label(
@@ -132,6 +137,7 @@ impl ScheduleVoteScreen {
                                     hours,
                                     minutes,
                                 };
+                                self.message = None;
                             }
                         });
 
@@ -159,13 +165,6 @@ impl ScheduleVoteScreen {
     fn cast_votes_button(&mut self) -> AppAction {
         let mut scheduled_votes = Vec::new();
 
-        // (Optional) Check if chosen_time is before ending_time, if ending_time is in the same units (ms).
-        // If ending_time is a UNIX ms timestamp, you can ensure:
-        // if chosen_time > ending_time {
-        //     self.message = Some((MessageType::Error, "Scheduled time is after contest end time.".to_string()));
-        //     return AppAction::None;
-        // }
-
         for (identity, option) in self.identities.iter().zip(self.identity_options.iter()) {
             match option {
                 VoteOption::None => {}
@@ -181,6 +180,14 @@ impl ScheduleVoteScreen {
 
                     let scheduled_time = now + offset;
                     let chosen_time = scheduled_time.timestamp_millis() as u64;
+
+                    if chosen_time > self.ending_time {
+                        self.message = Some((
+                            MessageType::Error,
+                            "Scheduled time is after contest end time.".to_string(),
+                        ));
+                        return AppAction::None;
+                    }
 
                     let scheduled_vote = ScheduledDPNSVote {
                         contested_name: self.contested_name.clone(),

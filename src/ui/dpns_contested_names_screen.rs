@@ -15,6 +15,7 @@ use crate::ui::identities::add_existing_identity_screen::AddExistingIdentityScre
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use chrono::{DateTime, LocalResult, TimeZone, Utc};
 use chrono_humanize::HumanTime;
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
 use dash_sdk::platform::Identifier;
@@ -154,12 +155,13 @@ impl DPNSContestedNamesScreen {
                 if ui.button(text).clicked() {
                     self.show_vote_popup_info = Some((
                         format!(
-                            "Confirm Voting for Contestant {} for name \"{}\".\n\nSelect the identity to vote with:",
+                            "Confirm Voting for Contestant {} for name \"{}\".",
                             contestant.id, contestant.name
                         ),
                         ContestedResourceTask::VoteOnDPNSName(
                             contested_name.normalized_contested_name.clone(),
-                            ResourceVoteChoice::TowardsIdentity(contestant.id),vec![]
+                            ResourceVoteChoice::TowardsIdentity(contestant.id),
+                            vec![],
                         ),
                     ));
                 }
@@ -402,7 +404,7 @@ impl DPNSContestedNamesScreen {
                                         };
                                         // Vote button logic for locked votes
                                         if ui.button(label_text).clicked() {
-                                            self.show_vote_popup_info = Some((format!("Confirm Voting to Lock the name \"{}\".\n\nSelect the identity to vote with:", contested_name.normalized_contested_name.clone()), ContestedResourceTask::VoteOnDPNSName(contested_name.normalized_contested_name.clone(), ResourceVoteChoice::Lock, vec![])));
+                                            self.show_vote_popup_info = Some((format!("Confirm Voting to Lock the name \"{}\".", contested_name.normalized_contested_name.clone()), ContestedResourceTask::VoteOnDPNSName(contested_name.normalized_contested_name.clone(), ResourceVoteChoice::Lock, vec![])));
                                         }
                                     });
                                     row.col(|ui| {
@@ -414,7 +416,7 @@ impl DPNSContestedNamesScreen {
                                             "Fetching".to_string()
                                         };
                                         if ui.button(label_text).clicked() {
-                                            self.show_vote_popup_info = Some((format!("Confirm Voting to Abstain on distribution of \"{}\".\n\nSelect the identity to vote with:", contested_name.normalized_contested_name.clone()), ContestedResourceTask::VoteOnDPNSName(contested_name.normalized_contested_name.clone(), ResourceVoteChoice::Abstain, vec![])));
+                                            self.show_vote_popup_info = Some((format!("Confirm Voting to Abstain on distribution of \"{}\".", contested_name.normalized_contested_name.clone()), ContestedResourceTask::VoteOnDPNSName(contested_name.normalized_contested_name.clone(), ResourceVoteChoice::Abstain, vec![])));
                                         }
                                     });
                                     row.col(|ui| {
@@ -715,7 +717,8 @@ impl DPNSContestedNamesScreen {
         });
     }
 
-    fn render_table_scheduled_votes(&mut self, ui: &mut Ui) {
+    fn render_table_scheduled_votes(&mut self, ui: &mut Ui) -> AppAction {
+        let mut action = AppAction::None;
         let mut sorted_votes = {
             let scheduled_votes_guard = self.scheduled_votes.lock().unwrap();
             let scheduled_votes = scheduled_votes_guard.clone();
@@ -761,6 +764,7 @@ impl DPNSContestedNamesScreen {
                         .column(Column::initial(200.0).resizable(true)) // Choice
                         .column(Column::initial(200.0).resizable(true)) // Scheduled vote time
                         .column(Column::initial(100.0).resizable(true)) // Executed?
+                        .column(Column::initial(100.0).resizable(true)) // Actions
                         .header(30.0, |mut header| {
                             header.col(|ui| {
                                 if ui.button("Name").clicked() {
@@ -787,12 +791,20 @@ impl DPNSContestedNamesScreen {
                                     self.toggle_sort(SortColumn::ContestedName);
                                 }
                             });
+                            header.col(|ui| {
+                                if ui.button("Actions").clicked() {
+                                    self.toggle_sort(SortColumn::ContestedName);
+                                }
+                            });
                         })
                         .body(|mut body| {
                             for vote in sorted_votes {
                                 body.row(25.0, |mut row| {
                                     row.col(|ui| {
-                                        ui.add(egui::Label::new(vote.contested_name).truncate());
+                                        ui.add(
+                                            egui::Label::new(vote.contested_name.clone())
+                                                .truncate(),
+                                        );
                                     });
                                     row.col(|ui| {
                                         ui.add(
@@ -812,25 +824,17 @@ impl DPNSContestedNamesScreen {
                                         ui.add(egui::Label::new(display_text).truncate());
                                     });
                                     row.col(|ui| {
-                                        // Assuming `scheduled_vote.unix_timestamp` is a u64 storing milliseconds since UNIX epoch:
                                         if let LocalResult::Single(datetime) =
                                             Utc.timestamp_millis_opt(vote.unix_timestamp as i64)
                                         {
-                                            // Format the ISO date up to seconds
                                             let iso_date =
                                                 datetime.format("%Y-%m-%d %H:%M:%S").to_string();
-
-                                            // Use chrono-humanize to get the relative time
                                             let relative_time =
                                                 HumanTime::from(datetime).to_string();
-
-                                            // Combine both the ISO date and relative time
                                             let display_text =
                                                 format!("{} ({})", iso_date, relative_time);
-
                                             ui.add(egui::Label::new(display_text).truncate());
                                         } else {
-                                            // Handle case where the timestamp is invalid
                                             ui.label("Invalid timestamp");
                                         }
                                     });
@@ -842,11 +846,47 @@ impl DPNSContestedNamesScreen {
                                             ui.label("");
                                         }
                                     });
+                                    row.col(|ui| {
+                                        if ui.button("Remove").clicked() {
+                                            let identity_id_bytes =
+                                                vote.voter_id.as_bytes().to_vec();
+                                            action = AppAction::BackendTask(
+                                                BackendTask::ContestedResourceTask(
+                                                    ContestedResourceTask::DeleteScheduledVote(
+                                                        identity_id_bytes,
+                                                        vote.contested_name.clone(),
+                                                    ),
+                                                ),
+                                            );
+                                        }
+                                        if ui.button("Cast Now").clicked() {
+                                            let local_identities =
+                                                match self.app_context.db.get_local_voting_identities(&self.app_context) {
+                                                    Ok(identities) => identities,
+                                                    Err(e) => {
+                                                        eprintln!("Error querying local voting identities: {}", e);
+                                                        return;
+                                                    }
+                                                };
+                                            if let Some(voter) = local_identities
+                                                .iter()
+                                                .find(|i| i.identity.id() == vote.voter_id)
+                                            {
+                                                action = AppAction::BackendTask(
+                                                    BackendTask::ContestedResourceTask(
+                                                        ContestedResourceTask::ExecuteScheduledVote(vote, voter.clone()),
+                                                    ),
+                                                );
+                                            }
+                                        }
+                                    });
                                 });
                             }
                         });
                 });
         });
+
+        action
     }
 
     fn show_vote_popup(&mut self, ui: &mut Ui) -> AppAction {
@@ -865,6 +905,16 @@ impl DPNSContestedNamesScreen {
             }
         } else if let Some((message, action)) = self.show_vote_popup_info.clone() {
             ui.label(message);
+
+            ui.add_space(10.0);
+
+            if self.pending_vote_action.is_none() {
+                ui.label("Select the identity to vote with:");
+            } else {
+                ui.label("Would you like to vote now or schedule your votes?");
+            }
+
+            ui.add_space(10.0);
 
             ui.horizontal(|ui| {
                 if let ContestedResourceTask::VoteOnDPNSName(
@@ -903,7 +953,6 @@ impl DPNSContestedNamesScreen {
                         }
                     } else {
                         // If we have a pending vote action, ask whether to vote now or schedule
-                        ui.label("Would you like to vote now or schedule your votes?");
                         if ui.button("Vote Now").clicked() {
                             // Finalize the vote now
                             app_action =
@@ -1269,7 +1318,7 @@ impl ScreenLike for DPNSContestedNamesScreen {
                 }
                 DPNSSubscreen::ScheduledVotes => {
                     if has_scheduled_votes {
-                        self.render_table_scheduled_votes(ui);
+                        action |= self.render_table_scheduled_votes(ui);
                     } else {
                         action |= self.render_no_active_contests_or_owned_names(ui);
                     }

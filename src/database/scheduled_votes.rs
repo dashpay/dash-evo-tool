@@ -108,6 +108,19 @@ impl Database {
         scheduled_votes
     }
 
+    /// Clear all scheduled votes from the db
+    pub fn clear_all_scheduled_votes(&self, app_context: &AppContext) -> rusqlite::Result<()> {
+        let network = app_context.network_string();
+        let conn = self.conn.lock().unwrap();
+
+        conn.execute(
+            "DELETE FROM scheduled_votes WHERE network = ?",
+            params![network],
+        )?;
+
+        Ok(())
+    }
+
     /// Clear all past scheduled votes from the db
     pub fn clear_all_past_scheduled_votes(&self, app_context: &AppContext) -> rusqlite::Result<()> {
         let network = app_context.network_string();

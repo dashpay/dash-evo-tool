@@ -1026,7 +1026,12 @@ impl ScreenLike for DPNSContestedNamesScreen {
                     IdentityTask::RefreshLoadedIdentitiesOwnedDPNSNames,
                 )),
             ),
-            DPNSSubscreen::ScheduledVotes => ("Refresh", DesiredAppAction::None), // To Do
+            DPNSSubscreen::ScheduledVotes => (
+                "Clear All",
+                DesiredAppAction::BackendTask(BackendTask::ContestedResourceTask(
+                    ContestedResourceTask::ClearAllScheduledVotes,
+                )),
+            ),
         };
 
         if self.refreshing {

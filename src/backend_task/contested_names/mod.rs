@@ -21,6 +21,7 @@ pub(crate) enum ContestedResourceTask {
     ScheduleDPNSVote(Vec<ScheduledDPNSVote>),
     ExecuteScheduledVote(ScheduledDPNSVote, QualifiedIdentity),
     VoteOnDPNSName(String, ResourceVoteChoice, Vec<QualifiedIdentity>),
+    ClearAllScheduledVotes,
 }
 
 impl AppContext {
@@ -58,6 +59,11 @@ impl AppContext {
                     _ => BackendTaskSuccessResult::CastScheduledVote(scheduled_vote.clone()),
                 })
                 .map_err(|e| format!("Error casting scheduled vote: {}", e.to_string())),
+            ContestedResourceTask::ClearAllScheduledVotes => self
+                .db
+                .clear_all_scheduled_votes(self)
+                .map(|_| BackendTaskSuccessResult::SuccessfulVotes(vec![])) // this one refreshes
+                .map_err(|e| format!("Error clearing all scheduled votes: {}", e.to_string())),
             ContestedResourceTask::VoteOnDPNSName(name, vote_choice, voters) => {
                 self.vote_on_dpns_name(name, *vote_choice, voters, sdk, sender)
                     .await

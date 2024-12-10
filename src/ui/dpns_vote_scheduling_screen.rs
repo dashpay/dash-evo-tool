@@ -11,6 +11,8 @@ use eframe::egui::Context;
 use eframe::egui::{self, Color32, RichText, Ui};
 use std::sync::Arc;
 
+use super::components::top_panel::add_top_panel;
+
 /// The voting option a user can choose for each identity.
 enum VoteOption {
     None,
@@ -25,7 +27,7 @@ pub struct ScheduleVoteScreen {
     pub identities: Vec<QualifiedIdentity>,
     pub vote_choice: ResourceVoteChoice,
     identity_options: Vec<VoteOption>,
-    error_message: Option<String>,
+    message: Option<(MessageType, String)>,
 }
 
 impl ScheduleVoteScreen {
@@ -47,7 +49,7 @@ impl ScheduleVoteScreen {
             identities: potential_voting_identities,
             vote_choice,
             identity_options,
-            error_message: None,
+            message: None,
         }
     }
 
@@ -167,7 +169,7 @@ impl ScheduleVoteScreen {
 
         // If no voters and no scheduled, return None to indicate nothing to do.
         if voters.is_empty() && scheduled_votes.is_empty() {
-            self.error_message = Some("No votes selected.".to_string());
+            self.message = Some((MessageType::Error, "No votes selected.".to_string()));
             return AppAction::None;
         }
 
@@ -179,41 +181,23 @@ impl ScheduleVoteScreen {
 
 impl ScreenLike for ScheduleVoteScreen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
-        match message_type {
-            MessageType::Success => {
-                self.error_message = Some(message.to_string());
-            }
-            MessageType::Info => {
-                // Informational messages
-            }
-            MessageType::Error => {
-                self.error_message = Some(message.to_string());
-            }
-        }
+        self.message = Some((message_type, message.to_string()));
     }
 
     fn ui(&mut self, ctx: &Context) -> AppAction {
-        let mut action = AppAction::None;
-
-        // A top panel or breadcrumb could be added similarly to the original code.
-        // For brevity, let's just add a simple label at the top.
-        egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                if ui.button("Back").clicked() {
-                    action = AppAction::PopScreen;
-                }
-                ui.label("Schedule Votes");
-            });
-        });
+        let mut action = add_top_panel(
+            ctx,
+            &self.app_context,
+            vec![
+                ("DPNS", AppAction::GoToMainScreen),
+                ("Schedule Votes", AppAction::None),
+            ],
+            vec![],
+        );
 
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("Schedule Votes");
             ui.add_space(10.0);
-
-            if let Some(err) = &self.error_message {
-                ui.colored_label(Color32::RED, format!("Error: {}", err));
-                ui.add_space(10.0);
-            }
 
             // Display the identity options and scheduling fields
             self.display_identity_options(ui);
@@ -229,6 +213,21 @@ impl ScreenLike for ScheduleVoteScreen {
 
             if ui.add(button).clicked() {
                 action = self.cast_votes_button();
+            }
+
+            if let Some(message) = &self.message {
+                match message.0 {
+                    MessageType::Error => {
+                        ui.colored_label(Color32::DARK_RED, message.1.clone());
+                    }
+                    MessageType::Success => {
+                        ui.colored_label(Color32::DARK_GREEN, message.1.clone());
+                    }
+                    MessageType::Info => {
+                        ui.colored_label(Color32::DARK_BLUE, message.1.clone());
+                    }
+                }
+                ui.add_space(10.0);
             }
         });
 

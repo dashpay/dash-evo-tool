@@ -76,7 +76,7 @@ impl ScheduleVoteScreen {
                     // Dropdown or Radio buttons for None/VoteNow/Scheduled
                     // For simplicity, let's use a ComboBox:
                     let current_option = &mut self.identity_options[i];
-                    egui::ComboBox::from_label("")
+                    egui::ComboBox::from_label(identity_label)
                         .selected_text(match current_option {
                             VoteOption::None => "None".to_string(),
                             VoteOption::VoteNow => "Vote Now".to_string(),
@@ -120,7 +120,7 @@ impl ScheduleVoteScreen {
                     // If Scheduled is chosen, display a text field for the schedule time
                     // To Do: This should be a date time selector rather than text input.
                     if let VoteOption::Scheduled(ref mut time_str) = current_option {
-                        ui.label("Schedule Time (e.g. UNIX timestamp):");
+                        ui.label("Schedule Time (UNIX timestamp):");
                         ui.text_edit_singleline(time_str);
                     }
                 });
@@ -158,7 +158,7 @@ impl ScheduleVoteScreen {
                         contested_name: self.contested_name.clone(),
                         voter_id: identity.identity.id().clone(),
                         choice: self.vote_choice,
-                        time: time_str.parse().unwrap_or(0),
+                        unix_timestamp: time_str.parse().unwrap_or(0),
                     };
                     scheduled_votes.push(scheduled_vote);
                 }
@@ -181,7 +181,7 @@ impl ScreenLike for ScheduleVoteScreen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
         match message_type {
             MessageType::Success => {
-                // Maybe nothing special here
+                self.error_message = Some(message.to_string());
             }
             MessageType::Info => {
                 // Informational messages
@@ -225,8 +225,7 @@ impl ScreenLike for ScheduleVoteScreen {
             // Button to cast votes (now or scheduled)
             let button = egui::Button::new(RichText::new("Cast Votes").color(Color32::WHITE))
                 .fill(Color32::from_rgb(0, 128, 255))
-                .rounding(3.0)
-                .min_size(egui::vec2(80.0, 30.0));
+                .rounding(3.0);
 
             if ui.add(button).clicked() {
                 action = self.cast_votes_button();

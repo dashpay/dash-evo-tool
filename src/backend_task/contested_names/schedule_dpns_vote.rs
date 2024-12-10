@@ -9,7 +9,7 @@ pub struct ScheduledDPNSVote {
     pub contested_name: String,
     pub voter_id: Identifier,
     pub choice: ResourceVoteChoice,
-    pub time: u64,
+    pub unix_timestamp: u64,
 }
 
 impl AppContext {
@@ -24,7 +24,7 @@ impl AppContext {
                     vote.voter_id.as_slice(),
                     vote.contested_name.clone(),
                     vote.choice,
-                    vote.time,
+                    vote.unix_timestamp,
                     self,
                 )
                 .map_err(|e| format!("Failed to insert scheduled vote: {}", e))?;

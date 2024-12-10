@@ -20,6 +20,7 @@ impl Database {
                 contested_name TEXT NOT NULL,
                 vote_choice TEXT NOT NULL,
                 time INTEGER NOT NULL,
+                executed INTEGER NOT NULL DEFAULT 0,
                 network TEXT NOT NULL,
                 PRIMARY KEY (identity_id, contested_name),
                 FOREIGN KEY (identity_id) REFERENCES identity(id) ON DELETE CASCADE
@@ -40,8 +41,22 @@ impl Database {
         let network = app_context.network_string();
         let vote_choice_string = vote_choice.to_string();
         self.execute(
-            "INSERT INTO scheduled_votes (identity_id, contested_name, vote_choice, time, network) VALUES (?, ?, ?, ?, ?)",
+            "INSERT OR REPLACE INTO scheduled_votes (identity_id, contested_name, vote_choice, time, 0, network) VALUES (?, ?, ?, ?, ?)",
             params![identity_id, contested_name, vote_choice_string, time, network],
+        )?;
+        Ok(())
+    }
+
+    pub fn mark_vote_executed(
+        &self,
+        identity_id: &[u8],
+        contested_name: String,
+        app_context: &AppContext,
+    ) -> rusqlite::Result<()> {
+        let network = app_context.network_string();
+        self.execute(
+            "UPDATE scheduled_votes SET executed = 1 WHERE identity_id = ? AND contested_name = ? AND network = ?",
+            params![identity_id, contested_name, network],
         )?;
         Ok(())
     }
@@ -83,7 +98,7 @@ impl Database {
                     .expect("Expected valid identifier"),
                 contested_name,
                 choice: vote_choice,
-                time,
+                unix_timestamp: time,
             };
 
             Ok(scheduled_vote)
@@ -91,5 +106,33 @@ impl Database {
 
         let scheduled_votes: rusqlite::Result<Vec<ScheduledDPNSVote>> = votes_iter.collect();
         scheduled_votes
+    }
+
+    /// Clear all past scheduled votes from the db
+    pub fn clear_all_past_scheduled_votes(&self, app_context: &AppContext) -> rusqlite::Result<()> {
+        let network = app_context.network_string();
+        let conn = self.conn.lock().unwrap();
+
+        conn.execute(
+            "DELETE FROM scheduled_votes WHERE time < CAST(strftime('%s', 'now') AS INTEGER) * 1000 AND network = ?",
+            params![network],
+        )?;
+
+        Ok(())
+    }
+
+    pub fn clear_executed_past_scheduled_votes(
+        &self,
+        app_context: &AppContext,
+    ) -> rusqlite::Result<()> {
+        let network = app_context.network_string();
+        let conn = self.conn.lock().unwrap();
+
+        conn.execute(
+            "DELETE FROM scheduled_votes WHERE executed = 1 AND time < CAST(strftime('%s', 'now') AS INTEGER) * 1000 AND network = ?",
+            params![network],
+        )?;
+
+        Ok(())
     }
 }

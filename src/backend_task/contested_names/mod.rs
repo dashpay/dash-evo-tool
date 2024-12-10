@@ -19,6 +19,7 @@ pub(crate) enum ContestedResourceTask {
     QueryDPNSContestedResources,
     QueryDPNSVoteContenders(String),
     ScheduleDPNSVote(Vec<ScheduledDPNSVote>),
+    ExecuteScheduledVote(ScheduledDPNSVote, QualifiedIdentity),
     VoteOnDPNSName(String, ResourceVoteChoice, Vec<QualifiedIdentity>),
 }
 
@@ -41,6 +42,22 @@ impl AppContext {
             ContestedResourceTask::ScheduleDPNSVote(scheduled_votes) => {
                 self.schedule_dpns_vote(scheduled_votes).await
             }
+            ContestedResourceTask::ExecuteScheduledVote(scheduled_vote, voter) => self
+                .vote_on_dpns_name(
+                    &scheduled_vote.contested_name,
+                    scheduled_vote.choice,
+                    &vec![voter.clone()],
+                    sdk,
+                    sender,
+                )
+                .await
+                .map(|result| match result {
+                    BackendTaskSuccessResult::SuccessfulVotes(_) => {
+                        BackendTaskSuccessResult::CastScheduledVote(scheduled_vote.clone())
+                    }
+                    _ => BackendTaskSuccessResult::CastScheduledVote(scheduled_vote.clone()),
+                })
+                .map_err(|e| format!("Error casting scheduled vote: {}", e.to_string())),
             ContestedResourceTask::VoteOnDPNSName(name, vote_choice, voters) => {
                 self.vote_on_dpns_name(name, *vote_choice, voters, sdk, sender)
                     .await

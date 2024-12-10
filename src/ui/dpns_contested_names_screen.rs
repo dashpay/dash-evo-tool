@@ -96,10 +96,12 @@ impl DPNSContestedNamesScreen {
             DPNSSubscreen::Owned => app_context.local_dpns_names().unwrap_or_default(),
             DPNSSubscreen::ScheduledVotes => Vec::new(),
         }));
+        let _ = app_context
+            .db
+            .clear_executed_past_scheduled_votes(app_context);
         let scheduled_votes = Arc::new(Mutex::new(
             app_context.get_scheduled_votes().unwrap_or_default(),
         ));
-        tracing::info!("Scheduled votes: {:?}", scheduled_votes);
         let voting_identities = app_context
             .db
             .get_local_voting_identities(&app_context)
@@ -731,7 +733,7 @@ impl DPNSContestedNamesScreen {
                 }
             }
             SortColumn::EndingTime => {
-                let order = a.time.cmp(&b.time); // Sort by Vote Time
+                let order = a.unix_timestamp.cmp(&b.unix_timestamp); // Sort by Vote Time
                 if self.sort_order == SortOrder::Descending {
                     order.reverse()
                 } else {
@@ -794,7 +796,27 @@ impl DPNSContestedNamesScreen {
                                         ui.label(vote.choice.to_string());
                                     });
                                     row.col(|ui| {
-                                        ui.label(vote.time.to_string());
+                                        // Assuming `scheduled_vote.unix_timestamp` is a u64 storing milliseconds since UNIX epoch:
+                                        if let LocalResult::Single(datetime) =
+                                            Utc.timestamp_millis_opt(vote.unix_timestamp as i64)
+                                        {
+                                            // Format the ISO date up to seconds
+                                            let iso_date =
+                                                datetime.format("%Y-%m-%d %H:%M:%S").to_string();
+
+                                            // Use chrono-humanize to get the relative time
+                                            let relative_time =
+                                                HumanTime::from(datetime).to_string();
+
+                                            // Combine both the ISO date and relative time
+                                            let display_text =
+                                                format!("{} ({})", iso_date, relative_time);
+
+                                            ui.label(display_text);
+                                        } else {
+                                            // Handle case where the timestamp is invalid
+                                            ui.label("Invalid timestamp");
+                                        }
                                     });
                                 });
                             }
@@ -954,6 +976,10 @@ impl ScreenLike for DPNSContestedNamesScreen {
 
         let mut contested_names = self.contested_names.lock().unwrap();
         let mut dpns_names = self.local_dpns_names.lock().unwrap();
+        let _ = self
+            .app_context
+            .db
+            .clear_executed_past_scheduled_votes(&self.app_context);
         let mut scheduled_votes = self.scheduled_votes.lock().unwrap();
         match self.dpns_subscreen {
             DPNSSubscreen::Active => {

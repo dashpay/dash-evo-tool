@@ -25,6 +25,7 @@ impl AppContext {
                     vote.contested_name.clone(),
                     vote.choice,
                     vote.time,
+                    self,
                 )
                 .map_err(|e| format!("Failed to insert scheduled vote: {}", e))?;
         }

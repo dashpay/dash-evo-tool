@@ -1,5 +1,5 @@
 use crate::{
-    backend_task::contested_names::schedule_dpns_vote::ScheduledDPNSVote, context::AppContext,
+    app, backend_task::contested_names::schedule_dpns_vote::ScheduledDPNSVote, context::AppContext,
     database::Database,
 };
 use dash_sdk::{
@@ -17,10 +17,11 @@ impl Database {
         self.execute(
             "CREATE TABLE IF NOT EXISTS scheduled_votes (
                 identity_id BLOB NOT NULL,
-                contested_name STRING NOT NULL,
-                vote_choice BLOB NOT NULL,
+                contested_name TEXT NOT NULL,
+                vote_choice TEXT NOT NULL,
                 time INTEGER NOT NULL,
-                PRIMARY KEY (identity_id),
+                network TEXT NOT NULL,
+                PRIMARY KEY (identity_id, contested_name),
                 FOREIGN KEY (identity_id) REFERENCES identity(id) ON DELETE CASCADE
             )",
             [],
@@ -34,11 +35,13 @@ impl Database {
         contested_name: String,
         vote_choice: ResourceVoteChoice,
         time: u64,
+        app_context: &AppContext,
     ) -> rusqlite::Result<()> {
+        let network = app_context.network_string();
         let vote_choice_string = vote_choice.to_string();
         self.execute(
-            "INSERT INTO scheduled_votes (identity_id, contested_name, vote_choice, time) VALUES (?, ?, ?, ?)",
-            params![identity_id, contested_name, vote_choice_string, time],
+            "INSERT INTO scheduled_votes (identity_id, contested_name, vote_choice, time, network) VALUES (?, ?, ?, ?, ?)",
+            params![identity_id, contested_name, vote_choice_string, time, network],
         )?;
         Ok(())
     }

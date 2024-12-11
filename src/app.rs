@@ -64,6 +64,7 @@ pub struct AppState {
 #[derive(Debug, Clone, PartialEq)]
 pub enum DesiredAppAction {
     None,
+    Refresh,
     PopScreen,
     GoToMainScreen,
     SwitchNetwork(Network),
@@ -75,6 +76,7 @@ impl DesiredAppAction {
     pub fn create_action(&self, app_context: &Arc<AppContext>) -> AppAction {
         match self {
             DesiredAppAction::None => AppAction::None,
+            DesiredAppAction::Refresh => AppAction::Refresh,
             DesiredAppAction::PopScreen => AppAction::PopScreen,
             DesiredAppAction::GoToMainScreen => AppAction::GoToMainScreen,
             DesiredAppAction::AddScreenType(screen_type) => {
@@ -91,11 +93,13 @@ impl DesiredAppAction {
 #[derive(Debug, PartialEq)]
 pub enum AppAction {
     None,
+    Refresh,
     PopScreen,
     PopScreenAndRefresh,
     GoToMainScreen,
     SwitchNetwork(Network),
     SetMainScreen(RootScreenType),
+    SetMainScreenThenPop(RootScreenType),
     AddScreen(Screen),
     PopThenAddScreenToMainScreen(RootScreenType, Screen),
     BackendTask(BackendTask),
@@ -562,6 +566,7 @@ impl App for AppState {
         match action {
             AppAction::AddScreen(screen) => self.screen_stack.push(screen),
             AppAction::None => {}
+            AppAction::Refresh => self.visible_screen_mut().refresh(),
             AppAction::PopScreen => {
                 if !self.screen_stack.is_empty() {
                     self.screen_stack.pop();
@@ -590,6 +595,16 @@ impl App for AppState {
                 self.current_app_context()
                     .update_settings(root_screen_type)
                     .ok();
+            }
+            AppAction::SetMainScreenThenPop(root_screen_type) => {
+                self.selected_main_screen = root_screen_type;
+                self.active_root_screen_mut().refresh();
+                self.current_app_context()
+                    .update_settings(root_screen_type)
+                    .ok();
+                if !self.screen_stack.is_empty() {
+                    self.screen_stack.pop();
+                }
             }
             AppAction::SwitchNetwork(network) => {
                 self.change_network(network);

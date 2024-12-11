@@ -283,6 +283,8 @@ impl DPNSContestedNamesScreen {
                         }
                     }
                 }
+            } else {
+                ui.label("Go to the Active Contests subscreen to schedule votes.");
             }
         });
 
@@ -1013,6 +1015,7 @@ impl ScreenLike for DPNSContestedNamesScreen {
     fn refresh(&mut self) {
         let mut contested_names = self.contested_names.lock().unwrap();
         let mut dpns_names = self.local_dpns_names.lock().unwrap();
+        let mut scheduled_votes = self.scheduled_votes.lock().unwrap();
         match self.dpns_subscreen {
             DPNSSubscreen::Active => {
                 *contested_names = self
@@ -1027,7 +1030,7 @@ impl ScreenLike for DPNSContestedNamesScreen {
                 *dpns_names = self.app_context.local_dpns_names().unwrap_or_default();
             }
             DPNSSubscreen::ScheduledVotes => {
-                // To Do: Implement scheduled votes
+                *scheduled_votes = self.app_context.get_scheduled_votes().unwrap_or_default();
             }
         }
     }
@@ -1167,8 +1170,8 @@ impl ScreenLike for DPNSContestedNamesScreen {
 
             DPNSSubscreen::ScheduledVotes => {
                 // Scheduled votes: "Clear All" and "Clear Executed" instead of refresh
-                // If refreshing is happening, you might want to show "Refreshing..." (optional)
                 let mut buttons = vec![
+                    ("Refresh", DesiredAppAction::Refresh),
                     (
                         "Clear All",
                         DesiredAppAction::BackendTask(BackendTask::ContestedResourceTask(
@@ -1182,11 +1185,6 @@ impl ScreenLike for DPNSContestedNamesScreen {
                         )),
                     ),
                 ];
-
-                if self.refreshing {
-                    // Optionally replace the first button if you want to show a refreshing state
-                    buttons[0] = ("Refreshing...", DesiredAppAction::None);
-                }
 
                 if has_identity_that_can_register {
                     buttons.insert(

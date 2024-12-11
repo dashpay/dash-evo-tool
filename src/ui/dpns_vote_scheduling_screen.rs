@@ -15,6 +15,7 @@ use eframe::egui::{self, Color32, RichText, Ui};
 use std::sync::Arc;
 
 use super::components::top_panel::add_top_panel;
+use super::{RootScreenType, ScreenType};
 
 /// The voting option a user can choose for each identity.
 enum VoteOption {
@@ -62,30 +63,6 @@ impl ScheduleVoteScreen {
     }
 
     fn display_identity_options(&mut self, ui: &mut Ui) {
-        // Convert the timestamp to a DateTime object using timestamp_millis_opt
-        if let LocalResult::Single(datetime) = Utc.timestamp_millis_opt(self.ending_time as i64) {
-            // Format the ISO date up to seconds
-            let iso_date = datetime.format("%Y-%m-%d %H:%M:%S").to_string();
-
-            // Use chrono-humanize to get the relative time
-            let relative_time = HumanTime::from(datetime).to_string();
-
-            // Combine both the ISO date and relative time
-            let display_text = format!(
-                "Contest for name {} ends at {} ({})",
-                self.contested_name, iso_date, relative_time
-            );
-
-            ui.label(display_text);
-        } else {
-            // Handle case where the timestamp is invalid
-            ui.colored_label(
-                Color32::DARK_RED,
-                "Error getting contest ending time".to_string(),
-            );
-        }
-        ui.add_space(10.0);
-
         // For each identity, show a row with their alias/ID and voting options
         for (i, identity) in self.identities.iter().enumerate() {
             ui.group(|ui| {
@@ -209,6 +186,35 @@ impl ScheduleVoteScreen {
         let updated_action = ContestedResourceTask::ScheduleDPNSVote(scheduled_votes);
         AppAction::BackendTask(BackendTask::ContestedResourceTask(updated_action))
     }
+
+    fn show_success(&self, ui: &mut Ui) -> AppAction {
+        let mut action = AppAction::None;
+
+        // Center the content vertically and horizontally
+        ui.vertical_centered(|ui| {
+            ui.add_space(50.0);
+
+            ui.heading("🎉");
+            ui.heading("Successfully scheduled votes.");
+
+            ui.add_space(20.0);
+
+            if ui.button("Go to Scheduled Votes Screen").clicked() {
+                // Handle navigation back to the identities screen
+                action =
+                    AppAction::SetMainScreenThenPop(RootScreenType::RootScreenDPNSScheduledVotes);
+            }
+
+            ui.add_space(10.0);
+
+            if ui.button("Go back to Active Contests").clicked() {
+                // Handle navigation back to the identities screen
+                action = AppAction::PopScreenAndRefresh;
+            }
+        });
+
+        action
+    }
 }
 
 impl ScreenLike for ScheduleVoteScreen {
@@ -231,18 +237,35 @@ impl ScreenLike for ScheduleVoteScreen {
             ui.heading("Schedule Votes");
             ui.add_space(10.0);
 
-            self.display_identity_options(ui);
-
+            ui.label("Please note that Dash Evo Tool must be running and connected to Platform in order for scheduled votes to execute at the specified time.");
             ui.add_space(10.0);
 
-            let button = egui::Button::new(RichText::new("Cast Votes").color(Color32::WHITE))
+            // Convert the timestamp to a DateTime object using timestamp_millis_opt
+            if let LocalResult::Single(datetime) = Utc.timestamp_millis_opt(self.ending_time as i64) {
+                let iso_date = datetime.format("%Y-%m-%d %H:%M:%S").to_string();
+                let relative_time = HumanTime::from(datetime).to_string();
+                let display_text = format!(
+                    "Contest for name {} ends at {} ({})",
+                    self.contested_name, iso_date, relative_time
+                );
+                ui.label(display_text);
+            } else {
+                ui.colored_label(
+                    Color32::DARK_RED,
+                    "Error getting contest ending time".to_string(),
+                );
+            }
+            ui.add_space(10.0);
+
+            self.display_identity_options(ui);
+            ui.add_space(10.0);
+
+            let button = egui::Button::new(RichText::new("Schedule Votes").color(Color32::WHITE))
                 .fill(Color32::from_rgb(0, 128, 255))
                 .rounding(3.0);
-
             if ui.add(button).clicked() {
                 action = self.cast_votes_button();
             }
-
             ui.add_space(10.0);
 
             if let Some(message) = &self.message {
@@ -251,7 +274,7 @@ impl ScreenLike for ScheduleVoteScreen {
                         ui.colored_label(Color32::DARK_RED, message.1.clone());
                     }
                     MessageType::Success => {
-                        ui.colored_label(Color32::DARK_GREEN, message.1.clone());
+                        action = self.show_success(ui);
                     }
                     MessageType::Info => {
                         ui.colored_label(Color32::DARK_BLUE, message.1.clone());

@@ -1,6 +1,5 @@
 use crate::{
-    app, backend_task::contested_names::schedule_dpns_vote::ScheduledDPNSVote, context::AppContext,
-    database::Database,
+    backend_task::contested_names::ScheduledDPNSVote, context::AppContext, database::Database,
 };
 use dash_sdk::{
     dpp::{
@@ -30,20 +29,19 @@ impl Database {
         Ok(())
     }
 
-    pub fn insert_scheduled_vote(
+    pub fn insert_scheduled_votes(
         &self,
-        identity_id: &[u8],
-        contested_name: String,
-        vote_choice: ResourceVoteChoice,
-        time: u64,
         app_context: &AppContext,
+        votes: &Vec<ScheduledDPNSVote>,
     ) -> rusqlite::Result<()> {
         let network = app_context.network_string();
-        let vote_choice_string = vote_choice.to_string();
-        self.execute(
-            "INSERT OR REPLACE INTO scheduled_votes (identity_id, contested_name, vote_choice, time, executed, network) VALUES (?, ?, ?, ?, 0, ?)",
-            params![identity_id, contested_name, vote_choice_string, time, network],
-        )?;
+        for vote in votes {
+            let vote_choice = vote.choice.to_string();
+            self.execute(
+                "INSERT OR REPLACE INTO scheduled_votes (identity_id, contested_name, vote_choice, time, executed, network) VALUES (?, ?, ?, ?, 0, ?)",
+                params![vote.voter_id.as_slice(), vote.contested_name, vote_choice, vote.unix_timestamp, network],
+            )?;
+        }
         Ok(())
     }
 

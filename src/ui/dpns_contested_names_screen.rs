@@ -2,8 +2,8 @@ use super::components::dpns_subscreen_chooser_panel::add_dpns_subscreen_chooser_
 use super::dpns_vote_scheduling_screen::ScheduleVoteScreen;
 use super::{Screen, ScreenType};
 use crate::app::{AppAction, DesiredAppAction};
-use crate::backend_task::contested_names::schedule_dpns_vote::ScheduledDPNSVote;
 use crate::backend_task::contested_names::ContestedResourceTask;
+use crate::backend_task::contested_names::ScheduledDPNSVote;
 use crate::backend_task::identity::IdentityTask;
 use crate::backend_task::BackendTask;
 use crate::context::AppContext;
@@ -876,7 +876,7 @@ impl DPNSContestedNamesScreen {
                                             {
                                                 action = AppAction::BackendTask(
                                                     BackendTask::ContestedResourceTask(
-                                                        ContestedResourceTask::ExecuteScheduledVote(vote, voter.clone()),
+                                                        ContestedResourceTask::CastScheduledVote(vote, voter.clone()),
                                                     ),
                                                 );
                                             }

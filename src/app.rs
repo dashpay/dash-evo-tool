@@ -58,7 +58,7 @@ pub struct AppState {
     pub task_result_sender: tokiompsc::Sender<TaskResult>, // Channel sender for sending task results
     pub task_result_receiver: tokiompsc::Receiver<TaskResult>, // Channel receiver for receiving task results
     last_repaint: Instant, // Track the last time we requested a repaint
-    last_scheduled_vote_check: Instant,
+    last_scheduled_vote_check: Instant, // Last time we checked if there are scheduled masternode votes to cast
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -99,7 +99,7 @@ pub enum AppAction {
     GoToMainScreen,
     SwitchNetwork(Network),
     SetMainScreen(RootScreenType),
-    SetMainScreenThenPop(RootScreenType),
+    SetMainScreenThenPopScreen(RootScreenType),
     AddScreen(Screen),
     PopThenAddScreenToMainScreen(RootScreenType, Screen),
     BackendTask(BackendTask),
@@ -423,6 +423,9 @@ impl App for AppState {
                     BackendTaskSuccessResult::None => {
                         self.visible_screen_mut().pop_on_success();
                     }
+                    BackendTaskSuccessResult::Refresh => {
+                        self.visible_screen_mut().refresh();
+                    }
                     BackendTaskSuccessResult::Message(message) => {
                         self.visible_screen_mut()
                             .display_message(&message, MessageType::Success);
@@ -505,13 +508,13 @@ impl App for AppState {
             }
         }
 
-        // Check if a minute has passed
+        // Check if there are scheduled masternode votes to cast and if so, cast them
         let now = Instant::now();
         if now.duration_since(self.last_scheduled_vote_check) > Duration::from_secs(60) {
             self.last_scheduled_vote_check = now;
-            let app_context = self.current_app_context().clone();
+            let app_context = self.current_app_context();
 
-            // Query the database synchronously here
+            // Query the database
             let db_votes = match app_context.db.get_scheduled_votes(&app_context) {
                 Ok(votes) => votes,
                 Err(e) => {
@@ -547,9 +550,8 @@ impl App for AppState {
                         .find(|i| i.identity.id() == vote.voter_id)
                     {
                         let task = BackendTask::ContestedResourceTask(
-                            ContestedResourceTask::ExecuteScheduledVote(vote, voter.clone()),
+                            ContestedResourceTask::CastScheduledVote(vote, voter.clone()),
                         );
-                        // Run the task directly:
                         self.handle_backend_task(task);
                     } else {
                         eprintln!("Voter not found for scheduled vote: {:?}", vote);
@@ -596,9 +598,9 @@ impl App for AppState {
                     .update_settings(root_screen_type)
                     .ok();
             }
-            AppAction::SetMainScreenThenPop(root_screen_type) => {
+            AppAction::SetMainScreenThenPopScreen(root_screen_type) => {
                 self.selected_main_screen = root_screen_type;
-                self.active_root_screen_mut().refresh();
+                self.active_root_screen_mut().refresh_on_arrival();
                 self.current_app_context()
                     .update_settings(root_screen_type)
                     .ok();

@@ -1,5 +1,5 @@
 use crate::app::AppAction;
-use crate::backend_task::contested_names::schedule_dpns_vote::ScheduledDPNSVote;
+use crate::backend_task::contested_names::ScheduledDPNSVote;
 use crate::backend_task::{contested_names::ContestedResourceTask, BackendTask};
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
@@ -15,7 +15,7 @@ use eframe::egui::{self, Color32, RichText, Ui};
 use std::sync::Arc;
 
 use super::components::top_panel::add_top_panel;
-use super::{RootScreenType, ScreenType};
+use super::RootScreenType;
 
 /// The voting option a user can choose for each identity.
 enum VoteOption {
@@ -183,7 +183,7 @@ impl ScheduleVoteScreen {
             return AppAction::None;
         }
 
-        let updated_action = ContestedResourceTask::ScheduleDPNSVote(scheduled_votes);
+        let updated_action = ContestedResourceTask::ScheduleDPNSVotes(scheduled_votes);
         AppAction::BackendTask(BackendTask::ContestedResourceTask(updated_action))
     }
 
@@ -201,8 +201,9 @@ impl ScheduleVoteScreen {
 
             if ui.button("Go to Scheduled Votes Screen").clicked() {
                 // Handle navigation back to the identities screen
-                action =
-                    AppAction::SetMainScreenThenPop(RootScreenType::RootScreenDPNSScheduledVotes);
+                action = AppAction::SetMainScreenThenPopScreen(
+                    RootScreenType::RootScreenDPNSScheduledVotes,
+                );
             }
 
             ui.add_space(10.0);

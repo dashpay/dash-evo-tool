@@ -177,8 +177,10 @@ impl Signer for QualifiedIdentity {
             )
             .map_err(|e| ProtocolError::Generic(e))?
             .ok_or(ProtocolError::Generic(format!(
-                "{:?} not found in {:?}",
-                identity_public_key, self
+                "Key {} ({}) not found in identity {:?}",
+                identity_public_key.id(),
+                identity_public_key.purpose(),
+                self.identity.id().to_string(Encoding::Base58)
             )))?;
         match identity_public_key.key_type() {
             KeyType::ECDSA_SECP256K1 | KeyType::ECDSA_HASH160 => {

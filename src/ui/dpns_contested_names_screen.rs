@@ -200,7 +200,7 @@ impl DPNSContestedNamesScreen {
             let elapsed = now.signed_duration_since(*timestamp);
 
             // Automatically dismiss the error message after 10 seconds
-            if elapsed.num_seconds() > 10 {
+            if elapsed.num_seconds() >= 10 {
                 self.dismiss_error();
             }
         }
@@ -1243,7 +1243,7 @@ impl ScreenLike for DPNSContestedNamesScreen {
         // Render the UI with the cloned contested_names vector
         egui::CentralPanel::default().show(ctx, |ui| {
             let error_message = self.error_message.clone();
-            if let Some((message, message_type, _)) = error_message {
+            if let Some((message, message_type, timestamp)) = error_message {
                 if message_type != MessageType::Success {
                     let message_color = match message_type {
                         MessageType::Error => egui::Color32::RED,
@@ -1254,10 +1254,14 @@ impl ScreenLike for DPNSContestedNamesScreen {
                     ui.add_space(10.0);
                     ui.allocate_ui(egui::Vec2::new(ui.available_width(), 50.0), |ui| {
                         ui.group(|ui| {
-                            ui.set_min_height(50.0);
                             ui.horizontal_wrapped(|ui| {
                                 ui.label(egui::RichText::new(message).color(message_color));
-                                if ui.button("Dismiss").clicked() {
+                                let now = Utc::now();
+                                let elapsed = now.signed_duration_since(timestamp);
+                                if ui
+                                    .button(format!("Dismiss ({})", 10 - elapsed.num_seconds()))
+                                    .clicked()
+                                {
                                     // Update the state outside the closure
                                     self.dismiss_error();
                                 }

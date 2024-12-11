@@ -72,7 +72,7 @@ impl AppContext {
                 .map_err(|e| format!("Error clearing all scheduled votes: {}", e.to_string())),
             ContestedResourceTask::ClearExecutedScheduledVotes => self
                 .db
-                .clear_executed_past_scheduled_votes(self)
+                .clear_executed_scheduled_votes(self)
                 .map(|_| BackendTaskSuccessResult::Refresh)
                 .map_err(|e| format!("Error clearing executed scheduled votes: {}", e.to_string())),
             ContestedResourceTask::DeleteScheduledVote(voter_id, contested_name) => self

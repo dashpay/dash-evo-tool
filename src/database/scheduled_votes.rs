@@ -92,6 +92,7 @@ impl Database {
                 1 => true,
                 _ => unreachable!(),
             };
+
             let vote_choice = match vote_choice_string.as_str() {
                 "Abstain" => ResourceVoteChoice::Abstain,
                 "Lock" => ResourceVoteChoice::Lock,
@@ -111,6 +112,7 @@ impl Database {
                     }
                 }
             };
+
             let scheduled_vote = ScheduledDPNSVote {
                 voter_id: Identifier::from_bytes(&voter_id_bytes)
                     .expect("Expected valid identifier"),
@@ -140,10 +142,7 @@ impl Database {
         Ok(())
     }
 
-    pub fn clear_executed_past_scheduled_votes(
-        &self,
-        app_context: &AppContext,
-    ) -> rusqlite::Result<()> {
+    pub fn clear_executed_scheduled_votes(&self, app_context: &AppContext) -> rusqlite::Result<()> {
         let network = app_context.network_string();
         let conn = self.conn.lock().unwrap();
 

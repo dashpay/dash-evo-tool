@@ -850,12 +850,10 @@ impl DPNSContestedNamesScreen {
                                     });
                                     row.col(|ui| {
                                         if ui.button("Remove").clicked() {
-                                            let identity_id_bytes =
-                                                vote.voter_id.as_bytes().to_vec();
                                             action = AppAction::BackendTask(
                                                 BackendTask::ContestedResourceTask(
                                                     ContestedResourceTask::DeleteScheduledVote(
-                                                        identity_id_bytes,
+                                                        vote.voter_id,
                                                         vote.contested_name.clone(),
                                                     ),
                                                 ),

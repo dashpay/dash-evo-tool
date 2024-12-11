@@ -11,6 +11,7 @@ pub fn add_dpns_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext)
         DPNSSubscreen::Active,
         DPNSSubscreen::Past,
         DPNSSubscreen::Owned,
+        DPNSSubscreen::ScheduledVotes,
     ];
 
     let active_screen = match app_context.get_settings() {
@@ -18,6 +19,7 @@ pub fn add_dpns_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext)
             ui::RootScreenType::RootScreenDPNSActiveContests => DPNSSubscreen::Active,
             ui::RootScreenType::RootScreenDPNSPastContests => DPNSSubscreen::Past,
             ui::RootScreenType::RootScreenDPNSOwnedNames => DPNSSubscreen::Owned,
+            ui::RootScreenType::RootScreenDPNSScheduledVotes => DPNSSubscreen::ScheduledVotes,
             _ => DPNSSubscreen::Active,
         },
         _ => DPNSSubscreen::Active, // Fallback to Active screen if settings unavailable
@@ -64,6 +66,11 @@ pub fn add_dpns_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext)
                             DPNSSubscreen::Owned => {
                                 action = AppAction::SetMainScreen(
                                     RootScreenType::RootScreenDPNSOwnedNames,
+                                )
+                            }
+                            DPNSSubscreen::ScheduledVotes => {
+                                action = AppAction::SetMainScreen(
+                                    RootScreenType::RootScreenDPNSScheduledVotes,
                                 )
                             }
                         }

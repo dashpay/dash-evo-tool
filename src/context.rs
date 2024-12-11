@@ -1,3 +1,4 @@
+use crate::backend_task::contested_names::schedule_dpns_vote::ScheduledDPNSVote;
 use crate::components::core_zmq_listener::ZMQConnectionEvent;
 use crate::config::{Config, NetworkConfig};
 use crate::context_provider::Provider;
@@ -255,6 +256,12 @@ impl AppContext {
 
         Ok(contracts)
     }
+
+    /// Get scheduled votes
+    pub fn get_scheduled_votes(&self) -> Result<Vec<ScheduledDPNSVote>> {
+        self.db.get_scheduled_votes(&self)
+    }
+
     pub(crate) fn received_transaction_finality(
         &self,
         tx: &Transaction,

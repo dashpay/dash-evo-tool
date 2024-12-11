@@ -2,6 +2,7 @@ use crate::app_dir::{
     app_user_data_file_path, copy_env_file_if_not_exists,
     create_app_user_data_directory_if_not_exists,
 };
+use crate::backend_task::contested_names::ContestedResourceTask;
 use crate::backend_task::core::CoreItem;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::components::core_zmq_listener::{CoreZMQListener, ZMQMessage};
@@ -18,12 +19,13 @@ use crate::ui::wallet::wallets_screen::WalletsBalancesScreen;
 use crate::ui::withdrawal_statuses_screen::WithdrawsStatusScreen;
 use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike, ScreenType};
 use dash_sdk::dpp::dashcore::Network;
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use derive_more::From;
 use eframe::{egui, App};
 use std::collections::BTreeMap;
 use std::ops::BitOrAssign;
 use std::sync::{mpsc, Arc};
-use std::time::Instant;
+use std::time::{Duration, Instant, SystemTime};
 use std::vec;
 use tokio::sync::mpsc as tokiompsc;
 
@@ -56,6 +58,7 @@ pub struct AppState {
     pub task_result_sender: tokiompsc::Sender<TaskResult>, // Channel sender for sending task results
     pub task_result_receiver: tokiompsc::Receiver<TaskResult>, // Channel receiver for receiving task results
     last_repaint: Instant, // Track the last time we requested a repaint
+    last_scheduled_vote_check: Instant,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -145,6 +148,8 @@ impl AppState {
             DPNSContestedNamesScreen::new(&mainnet_app_context, DPNSSubscreen::Past);
         let mut dpns_my_usernames_screen =
             DPNSContestedNamesScreen::new(&mainnet_app_context, DPNSSubscreen::Owned);
+        let mut dpns_scheduled_votes_screen =
+            DPNSContestedNamesScreen::new(&mainnet_app_context, DPNSSubscreen::ScheduledVotes);
         let mut transition_visualizer_screen =
             TransitionVisualizerScreen::new(&mainnet_app_context);
         let mut proof_log_screen = ProofLogScreen::new(&mainnet_app_context);
@@ -187,6 +192,10 @@ impl AppState {
                     DPNSContestedNamesScreen::new(&testnet_app_context, DPNSSubscreen::Past);
                 dpns_my_usernames_screen =
                     DPNSContestedNamesScreen::new(&testnet_app_context, DPNSSubscreen::Owned);
+                dpns_scheduled_votes_screen = DPNSContestedNamesScreen::new(
+                    &testnet_app_context,
+                    DPNSSubscreen::ScheduledVotes,
+                );
                 transition_visualizer_screen = TransitionVisualizerScreen::new(testnet_app_context);
                 document_query_screen = DocumentQueryScreen::new(testnet_app_context);
                 wallets_balances_screen = WalletsBalancesScreen::new(testnet_app_context);
@@ -245,6 +254,10 @@ impl AppState {
                     Screen::DPNSContestedNamesScreen(dpns_my_usernames_screen),
                 ),
                 (
+                    RootScreenType::RootScreenDPNSScheduledVotes,
+                    Screen::DPNSContestedNamesScreen(dpns_scheduled_votes_screen),
+                ),
+                (
                     RootScreenType::RootScreenWalletsBalances,
                     Screen::WalletsBalancesScreen(wallets_balances_screen),
                 ),
@@ -281,6 +294,7 @@ impl AppState {
             task_result_sender,
             task_result_receiver,
             last_repaint,
+            last_scheduled_vote_check: Instant::now(),
         }
     }
 
@@ -396,6 +410,7 @@ impl App for AppState {
                 *status = event;
             }
         }
+
         // Poll the receiver for any new task results
         while let Ok(task_result) = self.task_result_receiver.try_recv() {
             // Handle the result on the main thread
@@ -415,6 +430,14 @@ impl App for AppState {
                         self.visible_screen_mut().display_task_result(message);
                     }
                     BackendTaskSuccessResult::SuccessfulVotes(_) => {
+                        self.visible_screen_mut().refresh();
+                    }
+                    BackendTaskSuccessResult::CastScheduledVote(vote) => {
+                        let _ = self.current_app_context().db.mark_vote_executed(
+                            vote.voter_id.as_slice(),
+                            vote.contested_name,
+                            self.current_app_context(),
+                        );
                         self.visible_screen_mut().refresh();
                     }
                     BackendTaskSuccessResult::WithdrawalStatus(_) => {
@@ -475,6 +498,59 @@ impl App for AppState {
                     }
                 }
                 ZMQMessage::ChainLockedBlock(_) => {}
+            }
+        }
+
+        // Check if a minute has passed
+        let now = Instant::now();
+        if now.duration_since(self.last_scheduled_vote_check) > Duration::from_secs(60) {
+            self.last_scheduled_vote_check = now;
+            let app_context = self.current_app_context().clone();
+
+            // Query the database synchronously here
+            let db_votes = match app_context.db.get_scheduled_votes(&app_context) {
+                Ok(votes) => votes,
+                Err(e) => {
+                    eprintln!("Error querying scheduled votes: {}", e);
+                    return;
+                }
+            };
+
+            // Filter due votes
+            let current_time = SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64;
+            let due_votes: Vec<_> = db_votes
+                .into_iter()
+                .filter(|v| v.unix_timestamp <= current_time)
+                .collect();
+
+            // For each due vote, construct a BackendTask and handle it
+            if !due_votes.is_empty() {
+                let local_identities =
+                    match app_context.db.get_local_voting_identities(&app_context) {
+                        Ok(identities) => identities,
+                        Err(e) => {
+                            eprintln!("Error querying local voting identities: {}", e);
+                            return;
+                        }
+                    };
+
+                for vote in due_votes {
+                    if let Some(voter) = local_identities
+                        .iter()
+                        .find(|i| i.identity.id() == vote.voter_id)
+                    {
+                        let task = BackendTask::ContestedResourceTask(
+                            ContestedResourceTask::ExecuteScheduledVote(vote, voter.clone()),
+                        );
+                        // Run the task directly:
+                        self.handle_backend_task(task);
+                    } else {
+                        eprintln!("Voter not found for scheduled vote: {:?}", vote);
+                    }
+                }
             }
         }
 

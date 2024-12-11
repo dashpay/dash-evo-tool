@@ -1,6 +1,8 @@
 use super::components::dpns_subscreen_chooser_panel::add_dpns_subscreen_chooser_panel;
+use super::dpns_vote_scheduling_screen::ScheduleVoteScreen;
 use super::{Screen, ScreenType};
 use crate::app::{AppAction, DesiredAppAction};
+use crate::backend_task::contested_names::schedule_dpns_vote::ScheduledDPNSVote;
 use crate::backend_task::contested_names::ContestedResourceTask;
 use crate::backend_task::identity::IdentityTask;
 use crate::backend_task::BackendTask;
@@ -13,10 +15,11 @@ use crate::ui::identities::add_existing_identity_screen::AddExistingIdentityScre
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use chrono::{DateTime, LocalResult, TimeZone, Utc};
 use chrono_humanize::HumanTime;
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
 use dash_sdk::platform::Identifier;
-use egui::{Context, Frame, Margin, Ui};
+use egui::{Color32, Context, Frame, Margin, Ui};
 use egui_extras::{Column, TableBuilder};
 use itertools::Itertools;
 use std::sync::{Arc, Mutex};
@@ -43,6 +46,7 @@ pub enum DPNSSubscreen {
     Active,
     Past,
     Owned,
+    ScheduledVotes,
 }
 
 impl DPNSSubscreen {
@@ -51,6 +55,7 @@ impl DPNSSubscreen {
             Self::Active => "Active contests",
             Self::Past => "Past contests",
             Self::Owned => "My usernames",
+            Self::ScheduledVotes => "Scheduled votes",
         }
     }
 }
@@ -61,11 +66,13 @@ pub struct DPNSContestedNamesScreen {
     user_identities: Vec<QualifiedIdentity>,
     contested_names: Arc<Mutex<Vec<ContestedName>>>,
     local_dpns_names: Arc<Mutex<Vec<(Identifier, DPNSNameInfo)>>>,
+    scheduled_votes: Arc<Mutex<Vec<ScheduledDPNSVote>>>,
     pub app_context: Arc<AppContext>,
     error_message: Option<(String, MessageType, DateTime<Utc>)>,
     sort_column: SortColumn,
     sort_order: SortOrder,
     show_vote_popup_info: Option<(String, ContestedResourceTask)>,
+    pending_vote_action: Option<ContestedResourceTask>,
     pub dpns_subscreen: DPNSSubscreen,
     refreshing: bool,
 }
@@ -82,12 +89,17 @@ impl DPNSContestedNamesScreen {
                 Vec::new()
             }),
             DPNSSubscreen::Owned => Vec::new(),
+            DPNSSubscreen::ScheduledVotes => Vec::new(),
         }));
         let local_dpns_names = Arc::new(Mutex::new(match dpns_subscreen {
             DPNSSubscreen::Active => Vec::new(),
             DPNSSubscreen::Past => Vec::new(),
             DPNSSubscreen::Owned => app_context.local_dpns_names().unwrap_or_default(),
+            DPNSSubscreen::ScheduledVotes => Vec::new(),
         }));
+        let scheduled_votes = Arc::new(Mutex::new(
+            app_context.get_scheduled_votes().unwrap_or_default(),
+        ));
         let voting_identities = app_context
             .db
             .get_local_voting_identities(&app_context)
@@ -101,11 +113,13 @@ impl DPNSContestedNamesScreen {
             user_identities,
             contested_names,
             local_dpns_names,
+            scheduled_votes,
             app_context: app_context.clone(),
             error_message: None,
             sort_column: SortColumn::ContestedName,
             sort_order: SortOrder::Ascending,
             show_vote_popup_info: None,
+            pending_vote_action: None,
             dpns_subscreen,
             refreshing: false,
         }
@@ -141,12 +155,13 @@ impl DPNSContestedNamesScreen {
                 if ui.button(text).clicked() {
                     self.show_vote_popup_info = Some((
                         format!(
-                            "Confirm Voting for Contestant {} for name \"{}\".\n\nSelect the identity to vote with:",
+                            "Confirm Voting for Contestant {} for name \"{}\".",
                             contestant.id, contestant.name
                         ),
                         ContestedResourceTask::VoteOnDPNSName(
                             contested_name.normalized_contested_name.clone(),
-                            ResourceVoteChoice::TowardsIdentity(contestant.id),vec![]
+                            ResourceVoteChoice::TowardsIdentity(contestant.id),
+                            vec![],
                         ),
                     ));
                 }
@@ -232,25 +247,39 @@ impl DPNSContestedNamesScreen {
                             .color(egui::Color32::GRAY),
                     );
                 }
+                DPNSSubscreen::ScheduledVotes => {
+                    ui.label(
+                        egui::RichText::new("No scheduled votes.")
+                            .heading()
+                            .strong()
+                            .color(egui::Color32::GRAY),
+                    );
+                }
             }
             ui.add_space(10.0);
-            ui.label("Please check back later or try refreshing the list.");
-            ui.add_space(20.0);
-            if ui.button("Refresh").clicked() {
-                if self.refreshing {
-                    app_action |= AppAction::None;
-                } else {
-                    match self.dpns_subscreen {
-                        DPNSSubscreen::Active | DPNSSubscreen::Past => {
-                            app_action |=
-                                AppAction::BackendTask(BackendTask::ContestedResourceTask(
-                                    ContestedResourceTask::QueryDPNSContestedResources,
+            if self.dpns_subscreen != DPNSSubscreen::ScheduledVotes {
+                ui.label("Please check back later or try refreshing the list.");
+                ui.add_space(20.0);
+                if ui.button("Refresh").clicked() {
+                    if self.refreshing {
+                        app_action |= AppAction::None;
+                    } else {
+                        match self.dpns_subscreen {
+                            DPNSSubscreen::Active | DPNSSubscreen::Past => {
+                                app_action |=
+                                    AppAction::BackendTask(BackendTask::ContestedResourceTask(
+                                        ContestedResourceTask::QueryDPNSContestedResources,
+                                    ));
+                            }
+                            DPNSSubscreen::Owned => {
+                                app_action |= AppAction::BackendTask(BackendTask::IdentityTask(
+                                    IdentityTask::RefreshLoadedIdentitiesOwnedDPNSNames,
                                 ));
-                        }
-                        DPNSSubscreen::Owned => {
-                            app_action |= AppAction::BackendTask(BackendTask::IdentityTask(
-                                IdentityTask::RefreshLoadedIdentitiesOwnedDPNSNames,
-                            ));
+                            }
+                            _ => {
+                                // To Do: Some kind of refresh for scheduled votes maybe
+                                app_action |= AppAction::None;
+                            }
                         }
                     }
                 }
@@ -375,7 +404,7 @@ impl DPNSContestedNamesScreen {
                                         };
                                         // Vote button logic for locked votes
                                         if ui.button(label_text).clicked() {
-                                            self.show_vote_popup_info = Some((format!("Confirm Voting to Lock the name \"{}\".\n\nSelect the identity to vote with:", contested_name.normalized_contested_name.clone()), ContestedResourceTask::VoteOnDPNSName(contested_name.normalized_contested_name.clone(), ResourceVoteChoice::Lock, vec![])));
+                                            self.show_vote_popup_info = Some((format!("Confirm Voting to Lock the name \"{}\".", contested_name.normalized_contested_name.clone()), ContestedResourceTask::VoteOnDPNSName(contested_name.normalized_contested_name.clone(), ResourceVoteChoice::Lock, vec![])));
                                         }
                                     });
                                     row.col(|ui| {
@@ -387,7 +416,7 @@ impl DPNSContestedNamesScreen {
                                             "Fetching".to_string()
                                         };
                                         if ui.button(label_text).clicked() {
-                                            self.show_vote_popup_info = Some((format!("Confirm Voting to Abstain on distribution of \"{}\".\n\nSelect the identity to vote with:", contested_name.normalized_contested_name.clone()), ContestedResourceTask::VoteOnDPNSName(contested_name.normalized_contested_name.clone(), ResourceVoteChoice::Abstain, vec![])));
+                                            self.show_vote_popup_info = Some((format!("Confirm Voting to Abstain on distribution of \"{}\".", contested_name.normalized_contested_name.clone()), ContestedResourceTask::VoteOnDPNSName(contested_name.normalized_contested_name.clone(), ResourceVoteChoice::Abstain, vec![])));
                                         }
                                     });
                                     row.col(|ui| {
@@ -688,6 +717,178 @@ impl DPNSContestedNamesScreen {
         });
     }
 
+    fn render_table_scheduled_votes(&mut self, ui: &mut Ui) -> AppAction {
+        let mut action = AppAction::None;
+        let mut sorted_votes = {
+            let scheduled_votes_guard = self.scheduled_votes.lock().unwrap();
+            let scheduled_votes = scheduled_votes_guard.clone();
+            scheduled_votes
+        };
+
+        sorted_votes.sort_by(|a, b| match self.sort_column {
+            SortColumn::ContestedName => {
+                let order = a.contested_name.cmp(&b.contested_name); // Sort by DPNS Name
+                if self.sort_order == SortOrder::Descending {
+                    order.reverse()
+                } else {
+                    order
+                }
+            }
+            SortColumn::EndingTime => {
+                let order = a.unix_timestamp.cmp(&b.unix_timestamp); // Sort by Vote Time
+                if self.sort_order == SortOrder::Descending {
+                    order.reverse()
+                } else {
+                    order
+                }
+            }
+            _ => std::cmp::Ordering::Equal,
+        });
+
+        // Render table UI
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            Frame::group(ui.style())
+                .fill(ui.visuals().panel_fill)
+                .stroke(egui::Stroke::new(
+                    1.0,
+                    ui.visuals().widgets.inactive.bg_stroke.color,
+                ))
+                .inner_margin(Margin::same(8.0))
+                .show(ui, |ui| {
+                    TableBuilder::new(ui)
+                        .striped(true)
+                        .resizable(true)
+                        .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                        .column(Column::initial(100.0).resizable(true)) // DPNS Name
+                        .column(Column::initial(200.0).resizable(true)) // Voter ID
+                        .column(Column::initial(200.0).resizable(true)) // Choice
+                        .column(Column::initial(200.0).resizable(true)) // Scheduled vote time
+                        .column(Column::initial(100.0).resizable(true)) // Executed?
+                        .column(Column::initial(100.0).resizable(true)) // Actions
+                        .header(30.0, |mut header| {
+                            header.col(|ui| {
+                                if ui.button("Name").clicked() {
+                                    self.toggle_sort(SortColumn::ContestedName);
+                                }
+                            });
+                            header.col(|ui| {
+                                if ui.button("Voter").clicked() {
+                                    self.toggle_sort(SortColumn::ContestedName);
+                                }
+                            });
+                            header.col(|ui| {
+                                if ui.button("Vote").clicked() {
+                                    self.toggle_sort(SortColumn::ContestedName);
+                                }
+                            });
+                            header.col(|ui| {
+                                if ui.button("Scheduled Time").clicked() {
+                                    self.toggle_sort(SortColumn::ContestedName);
+                                }
+                            });
+                            header.col(|ui| {
+                                if ui.button("Executed").clicked() {
+                                    self.toggle_sort(SortColumn::ContestedName);
+                                }
+                            });
+                            header.col(|ui| {
+                                if ui.button("Actions").clicked() {
+                                    self.toggle_sort(SortColumn::ContestedName);
+                                }
+                            });
+                        })
+                        .body(|mut body| {
+                            for vote in sorted_votes {
+                                body.row(25.0, |mut row| {
+                                    row.col(|ui| {
+                                        ui.add(
+                                            egui::Label::new(vote.contested_name.clone())
+                                                .truncate(),
+                                        );
+                                    });
+                                    row.col(|ui| {
+                                        ui.add(
+                                            egui::Label::new(
+                                                vote.voter_id.to_string(Encoding::Hex),
+                                            )
+                                            .truncate(),
+                                        );
+                                    });
+                                    row.col(|ui| {
+                                        let display_text = match &vote.choice {
+                                            ResourceVoteChoice::TowardsIdentity(identifier) => {
+                                                identifier.to_string(Encoding::Base58)
+                                            }
+                                            other => other.to_string(),
+                                        };
+                                        ui.add(egui::Label::new(display_text).truncate());
+                                    });
+                                    row.col(|ui| {
+                                        if let LocalResult::Single(datetime) =
+                                            Utc.timestamp_millis_opt(vote.unix_timestamp as i64)
+                                        {
+                                            let iso_date =
+                                                datetime.format("%Y-%m-%d %H:%M:%S").to_string();
+                                            let relative_time =
+                                                HumanTime::from(datetime).to_string();
+                                            let display_text =
+                                                format!("{} ({})", iso_date, relative_time);
+                                            ui.add(egui::Label::new(display_text).truncate());
+                                        } else {
+                                            ui.label("Invalid timestamp");
+                                        }
+                                    });
+                                    row.col(|ui| match vote.executed_successfully {
+                                        true => {
+                                            ui.colored_label(Color32::DARK_GREEN, "Yes");
+                                        }
+                                        false => {
+                                            ui.label("");
+                                        }
+                                    });
+                                    row.col(|ui| {
+                                        if ui.button("Remove").clicked() {
+                                            let identity_id_bytes =
+                                                vote.voter_id.as_bytes().to_vec();
+                                            action = AppAction::BackendTask(
+                                                BackendTask::ContestedResourceTask(
+                                                    ContestedResourceTask::DeleteScheduledVote(
+                                                        identity_id_bytes,
+                                                        vote.contested_name.clone(),
+                                                    ),
+                                                ),
+                                            );
+                                        }
+                                        if ui.button("Cast Now").clicked() {
+                                            let local_identities =
+                                                match self.app_context.db.get_local_voting_identities(&self.app_context) {
+                                                    Ok(identities) => identities,
+                                                    Err(e) => {
+                                                        eprintln!("Error querying local voting identities: {}", e);
+                                                        return;
+                                                    }
+                                                };
+                                            if let Some(voter) = local_identities
+                                                .iter()
+                                                .find(|i| i.identity.id() == vote.voter_id)
+                                            {
+                                                action = AppAction::BackendTask(
+                                                    BackendTask::ContestedResourceTask(
+                                                        ContestedResourceTask::ExecuteScheduledVote(vote, voter.clone()),
+                                                    ),
+                                                );
+                                            }
+                                        }
+                                    });
+                                });
+                            }
+                        });
+                });
+        });
+
+        action
+    }
+
     fn show_vote_popup(&mut self, ui: &mut Ui) -> AppAction {
         let mut app_action = AppAction::None;
         if self.voting_identities.is_empty() {
@@ -700,63 +901,106 @@ impl DPNSContestedNamesScreen {
             }
             if ui.button("Cancel").clicked() {
                 self.show_vote_popup_info = None;
+                self.pending_vote_action = None;
             }
         } else if let Some((message, action)) = self.show_vote_popup_info.clone() {
             ui.label(message);
 
+            ui.add_space(10.0);
+
+            if self.pending_vote_action.is_none() {
+                ui.label("Select the identity to vote with:");
+            } else {
+                ui.label("Would you like to vote now or schedule your votes?");
+            }
+
+            ui.add_space(10.0);
+
             ui.horizontal(|ui| {
-                // Only modify `voters` if `action` is `VoteOnDPNSName`
                 if let ContestedResourceTask::VoteOnDPNSName(
                     contested_name,
                     vote_choice,
                     mut voters,
                 ) = action
                 {
-                    // Iterate over the voting identities and create a button for each one
-                    for identity in self.voting_identities.iter() {
-                        if ui.button(identity.display_short_string()).clicked() {
-                            // Add the selected identity to the `voters` field
-                            voters.push(identity.clone());
+                    // If we haven't yet chosen any voters (pending_vote_action is None), we show the identities
+                    if self.pending_vote_action.is_none() {
+                        // Iterate over the voting identities and create a button for each one
+                        for identity in self.voting_identities.iter() {
+                            if ui.button(identity.display_short_string()).clicked() {
+                                // Add the selected identity to the `voters` field
+                                voters.push(identity.clone());
 
-                            // Create a new `VoteOnDPNSName` task with updated voters
+                                // Store the updated action, but don't finalize yet
+                                let updated_action = ContestedResourceTask::VoteOnDPNSName(
+                                    contested_name.clone(),
+                                    vote_choice.clone(),
+                                    voters.clone(),
+                                );
+                                self.pending_vote_action = Some(updated_action);
+                            }
+                        }
+
+                        // Vote with all identities
+                        if ui.button("All").clicked() {
+                            voters.extend(self.voting_identities.iter().cloned());
                             let updated_action = ContestedResourceTask::VoteOnDPNSName(
                                 contested_name.clone(),
                                 vote_choice.clone(),
-                                voters.clone(), // Updated voters
+                                voters.clone(),
                             );
-
-                            // Pass updated action to BackendTask
-                            app_action = AppAction::BackendTask(
-                                BackendTask::ContestedResourceTask(updated_action),
-                            );
+                            self.pending_vote_action = Some(updated_action);
+                        }
+                    } else {
+                        // If we have a pending vote action, ask whether to vote now or schedule
+                        if ui.button("Vote Now").clicked() {
+                            // Finalize the vote now
+                            app_action =
+                                AppAction::BackendTask(BackendTask::ContestedResourceTask(
+                                    self.pending_vote_action.take().unwrap(),
+                                ));
                             self.show_vote_popup_info = None;
                         }
-                    }
+                        if ui.button("Schedule").clicked() {
+                            // Move to a scheduling screen instead
+                            // Assume we have a ScheduleVoteScreen that takes the pending action data
+                            let pending = self.pending_vote_action.take().unwrap();
+                            if let ContestedResourceTask::VoteOnDPNSName(
+                                name_string,
+                                vote_choice,
+                                voters,
+                            ) = pending
+                            {
+                                // Lock and get a reference to the contested names
+                                let contested_names = self.contested_names.lock().unwrap();
 
-                    // Vote with all identities
-                    if ui.button("All").clicked() {
-                        for identity in self.voting_identities.iter() {
-                            voters.push(identity.clone());
+                                // Find the contested name that matches the given name_string
+                                let ending_time = contested_names
+                                    .iter()
+                                    .find(|cn| cn.normalized_contested_name == name_string)
+                                    .and_then(|cn| cn.end_time)
+                                    .unwrap_or_default();
+                                let contested_name = name_string.clone();
+                                let schedule_screen = ScheduleVoteScreen::new(
+                                    &self.app_context,
+                                    contested_name,
+                                    ending_time,
+                                    voters,
+                                    vote_choice,
+                                );
+                                app_action = AppAction::AddScreen(Screen::ScheduleVoteScreen(
+                                    schedule_screen,
+                                ));
+                            }
+                            self.show_vote_popup_info = None;
                         }
-
-                        // Create a new `VoteOnDPNSName` task with all voters
-                        let updated_action = ContestedResourceTask::VoteOnDPNSName(
-                            contested_name.clone(),
-                            vote_choice.clone(),
-                            voters.clone(), // Updated voters
-                        );
-
-                        // Pass updated action to BackendTask
-                        app_action = AppAction::BackendTask(BackendTask::ContestedResourceTask(
-                            updated_action,
-                        ));
-                        self.show_vote_popup_info = None;
                     }
                 }
 
                 // Add the "Cancel" button
                 if ui.button("Cancel").clicked() {
                     self.show_vote_popup_info = None;
+                    self.pending_vote_action = None;
                 }
             });
         }
@@ -782,6 +1026,9 @@ impl ScreenLike for DPNSContestedNamesScreen {
             DPNSSubscreen::Owned => {
                 *dpns_names = self.app_context.local_dpns_names().unwrap_or_default();
             }
+            DPNSSubscreen::ScheduledVotes => {
+                // To Do: Implement scheduled votes
+            }
         }
     }
 
@@ -802,6 +1049,7 @@ impl ScreenLike for DPNSContestedNamesScreen {
 
         let mut contested_names = self.contested_names.lock().unwrap();
         let mut dpns_names = self.local_dpns_names.lock().unwrap();
+        let mut scheduled_votes = self.scheduled_votes.lock().unwrap();
         match self.dpns_subscreen {
             DPNSSubscreen::Active => {
                 *contested_names = self
@@ -814,6 +1062,9 @@ impl ScreenLike for DPNSContestedNamesScreen {
             }
             DPNSSubscreen::Owned => {
                 *dpns_names = self.app_context.local_dpns_names().unwrap_or_default();
+            }
+            DPNSSubscreen::ScheduledVotes => {
+                *scheduled_votes = self.app_context.get_scheduled_votes().unwrap_or_default();
             }
         }
     }
@@ -831,36 +1082,125 @@ impl ScreenLike for DPNSContestedNamesScreen {
 
     fn ui(&mut self, ctx: &Context) -> AppAction {
         self.check_error_expiration();
-        let mut top_panel_refresh_button = match self.dpns_subscreen {
-            DPNSSubscreen::Active | DPNSSubscreen::Past => (
-                "Refresh",
-                DesiredAppAction::BackendTask(BackendTask::ContestedResourceTask(
-                    ContestedResourceTask::QueryDPNSContestedResources,
-                )),
-            ),
-            DPNSSubscreen::Owned => (
-                "Refresh",
-                DesiredAppAction::BackendTask(BackendTask::IdentityTask(
-                    IdentityTask::RefreshLoadedIdentitiesOwnedDPNSNames,
-                )),
-            ),
+
+        let has_identity_that_can_register = !self.user_identities.is_empty();
+
+        // Determine the right-side buttons based on the current DPNSSubscreen
+        let right_buttons = match self.dpns_subscreen {
+            DPNSSubscreen::Active => {
+                // Active contests: show refresh or refreshing
+                let refresh_button = if self.refreshing {
+                    ("Refreshing...", DesiredAppAction::None)
+                } else {
+                    (
+                        "Refresh",
+                        DesiredAppAction::BackendTask(BackendTask::ContestedResourceTask(
+                            ContestedResourceTask::QueryDPNSContestedResources,
+                        )),
+                    )
+                };
+
+                let mut buttons = vec![refresh_button];
+                if has_identity_that_can_register {
+                    buttons.insert(
+                        0,
+                        (
+                            "Register Name",
+                            DesiredAppAction::AddScreenType(ScreenType::RegisterDpnsName),
+                        ),
+                    );
+                }
+                buttons
+            }
+
+            DPNSSubscreen::Past => {
+                // Past contests: similar to Active
+                let refresh_button = if self.refreshing {
+                    ("Refreshing...", DesiredAppAction::None)
+                } else {
+                    (
+                        "Refresh",
+                        DesiredAppAction::BackendTask(BackendTask::ContestedResourceTask(
+                            ContestedResourceTask::QueryDPNSContestedResources,
+                        )),
+                    )
+                };
+
+                let mut buttons = vec![refresh_button];
+                if has_identity_that_can_register {
+                    buttons.insert(
+                        0,
+                        (
+                            "Register Name",
+                            DesiredAppAction::AddScreenType(ScreenType::RegisterDpnsName),
+                        ),
+                    );
+                }
+                buttons
+            }
+
+            DPNSSubscreen::Owned => {
+                // Owned names: refresh or refreshing
+                let refresh_button = if self.refreshing {
+                    ("Refreshing...", DesiredAppAction::None)
+                } else {
+                    (
+                        "Refresh",
+                        DesiredAppAction::BackendTask(BackendTask::IdentityTask(
+                            IdentityTask::RefreshLoadedIdentitiesOwnedDPNSNames,
+                        )),
+                    )
+                };
+
+                let mut buttons = vec![refresh_button];
+                if has_identity_that_can_register {
+                    buttons.insert(
+                        0,
+                        (
+                            "Register Name",
+                            DesiredAppAction::AddScreenType(ScreenType::RegisterDpnsName),
+                        ),
+                    );
+                }
+                buttons
+            }
+
+            DPNSSubscreen::ScheduledVotes => {
+                // Scheduled votes: "Clear All" and "Clear Executed" instead of refresh
+                // If refreshing is happening, you might want to show "Refreshing..." (optional)
+                let mut buttons = vec![
+                    (
+                        "Clear All",
+                        DesiredAppAction::BackendTask(BackendTask::ContestedResourceTask(
+                            ContestedResourceTask::ClearAllScheduledVotes,
+                        )),
+                    ),
+                    (
+                        "Clear Executed",
+                        DesiredAppAction::BackendTask(BackendTask::ContestedResourceTask(
+                            ContestedResourceTask::ClearExecutedScheduledVotes,
+                        )),
+                    ),
+                ];
+
+                if self.refreshing {
+                    // Optionally replace the first button if you want to show a refreshing state
+                    buttons[0] = ("Refreshing...", DesiredAppAction::None);
+                }
+
+                if has_identity_that_can_register {
+                    buttons.insert(
+                        0,
+                        (
+                            "Register Name",
+                            DesiredAppAction::AddScreenType(ScreenType::RegisterDpnsName),
+                        ),
+                    );
+                }
+                buttons
+            }
         };
 
-        if self.refreshing {
-            top_panel_refresh_button = ("Refreshing...", DesiredAppAction::None)
-        }
-        let has_identity_that_can_register = !self.user_identities.is_empty();
-        let right_buttons = if has_identity_that_can_register {
-            vec![
-                (
-                    "Register Name",
-                    DesiredAppAction::AddScreenType(ScreenType::RegisterDpnsName),
-                ),
-                top_panel_refresh_button,
-            ]
-        } else {
-            vec![top_panel_refresh_button]
-        };
         let mut action = add_top_panel(
             ctx,
             &self.app_context,
@@ -888,6 +1228,13 @@ impl ScreenLike for DPNSContestedNamesScreen {
                     ctx,
                     &self.app_context,
                     RootScreenType::RootScreenDPNSOwnedNames,
+                );
+            }
+            DPNSSubscreen::ScheduledVotes => {
+                action |= add_left_panel(
+                    ctx,
+                    &self.app_context,
+                    RootScreenType::RootScreenDPNSScheduledVotes,
                 );
             }
         }
@@ -944,6 +1291,11 @@ impl ScreenLike for DPNSContestedNamesScreen {
                 let dpns_names = self.local_dpns_names.lock().unwrap();
                 !dpns_names.is_empty()
             };
+            // Check if there are any scheduled votes to display
+            let has_scheduled_votes = {
+                let scheduled_votes = self.scheduled_votes.lock().unwrap();
+                !scheduled_votes.is_empty()
+            };
 
             // Render the proper table
             match self.dpns_subscreen {
@@ -964,6 +1316,13 @@ impl ScreenLike for DPNSContestedNamesScreen {
                 DPNSSubscreen::Owned => {
                     if has_dpns_names {
                         self.render_table_local_dpns_names(ui);
+                    } else {
+                        action |= self.render_no_active_contests_or_owned_names(ui);
+                    }
+                }
+                DPNSSubscreen::ScheduledVotes => {
+                    if has_scheduled_votes {
+                        action |= self.render_table_scheduled_votes(ui);
                     } else {
                         action |= self.render_no_active_contests_or_owned_names(ui);
                     }

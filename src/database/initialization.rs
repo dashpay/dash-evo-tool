@@ -4,7 +4,7 @@ use rusqlite::{params, Connection};
 use std::fs;
 use std::path::Path;
 
-pub const DEFAULT_DB_VERSION: u16 = 4;
+pub const DEFAULT_DB_VERSION: u16 = 5;
 
 pub const DEFAULT_NETWORK: &str = "dash";
 
@@ -34,6 +34,9 @@ impl Database {
 
     fn apply_version_changes(&self, version: u16) -> rusqlite::Result<()> {
         match version {
+            5 => {
+                self.initialize_scheduled_votes_table()?;
+            }
             4 => {
                 self.initialize_top_up_table()?;
             }
@@ -347,8 +350,8 @@ impl Database {
         )?;
 
         self.initialize_proof_log_table()?;
-
         self.initialize_top_up_table()?;
+        self.initialize_scheduled_votes_table()?;
 
         Ok(())
     }

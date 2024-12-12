@@ -797,7 +797,7 @@ impl DPNSContestedNamesScreen {
                             });
                             header.col(|ui| {
                                 if ui.button("Scheduled Time").clicked() {
-                                    self.toggle_sort(SortColumn::ContestedName);
+                                    self.toggle_sort(SortColumn::EndingTime);
                                 }
                             });
                             header.col(|ui| {

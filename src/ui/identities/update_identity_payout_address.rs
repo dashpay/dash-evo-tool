@@ -5,17 +5,17 @@ use crate::context::AppContext;
 use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
 use crate::model::wallet::Wallet;
 use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
 use crate::ui::{MessageType, ScreenLike};
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::dpp::identity::TimestampMillis;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use eframe::egui::Context;
 use egui::{ComboBox, Ui};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
-use dash_sdk::dpp::identity::TimestampMillis;
-use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
 
 pub enum UpdateIdentityPayoutStatus {
     NotStarted,
@@ -180,6 +180,27 @@ impl UpdateIdentityPayoutScreen {
             }
         }
     }
+
+    fn show_success(&self, ui: &mut Ui) -> AppAction {
+        let mut action = AppAction::None;
+
+        // Center the content vertically and horizontally
+        ui.vertical_centered(|ui| {
+            ui.add_space(50.0);
+
+            ui.heading("🎉");
+            ui.heading("Successfully updated payout address.");
+
+            ui.add_space(20.0);
+
+            if ui.button("Go back to Identities Screen").clicked() {
+                // Handle navigation back to the identities screen
+                action = AppAction::PopScreenAndRefresh;
+            }
+        });
+
+        action
+    }
 }
 
 impl ScreenLike for UpdateIdentityPayoutScreen {
@@ -190,7 +211,8 @@ impl ScreenLike for UpdateIdentityPayoutScreen {
             }
             MessageType::Info => {}
             MessageType::Error => {
-                self.update_payout_status = UpdateIdentityPayoutStatus::ErrorMessage(message.to_string());
+                self.update_payout_status =
+                    UpdateIdentityPayoutStatus::ErrorMessage(message.to_string());
             }
         }
     }
@@ -247,7 +269,8 @@ impl ScreenLike for UpdateIdentityPayoutScreen {
                                 .duration_since(UNIX_EPOCH)
                                 .expect("Time went backwards")
                                 .as_secs();
-                            self.update_payout_status = UpdateIdentityPayoutStatus::WaitingForResult(now);
+                            self.update_payout_status =
+                                UpdateIdentityPayoutStatus::WaitingForResult(now);
                             action |= AppAction::BackendTask(BackendTask::CoreTask(
                                 CoreTask::ProRegUpdateTx(
                                     self.identity.identity.id().to_string(Encoding::Hex),
@@ -288,17 +311,14 @@ impl ScreenLike for UpdateIdentityPayoutScreen {
                                 };
 
                                 ui.add_space(20.0);
-                                ui.label(format!(
-                                    "Waiting... Time taken so far: {}",
-                                    display_time
-                                ));
+                                ui.label(format!("Waiting... Time taken so far: {}", display_time));
                             }
                             UpdateIdentityPayoutStatus::ErrorMessage(msg) => {
                                 ui.add_space(20.0);
                                 ui.colored_label(egui::Color32::RED, format!("Error: {}", msg));
                             }
                             UpdateIdentityPayoutStatus::Complete => {
-                                action = AppAction::PopScreenAndRefresh;
+                                action = self.show_success(ui);
                             }
                         }
                     }

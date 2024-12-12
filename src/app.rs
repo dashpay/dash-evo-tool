@@ -541,14 +541,13 @@ impl App for AppState {
 
             // For each due vote, construct a BackendTask and handle it
             if !due_votes.is_empty() {
-                let local_identities =
-                    match app_context.db.get_local_voting_identities(&app_context) {
-                        Ok(identities) => identities,
-                        Err(e) => {
-                            eprintln!("Error querying local voting identities: {}", e);
-                            return;
-                        }
-                    };
+                let local_identities = match app_context.load_local_voting_identities() {
+                    Ok(identities) => identities,
+                    Err(e) => {
+                        eprintln!("Error querying local voting identities: {}", e);
+                        return;
+                    }
+                };
 
                 for vote in due_votes {
                     if let Some(voter) = local_identities

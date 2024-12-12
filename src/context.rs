@@ -203,6 +203,10 @@ impl AppContext {
         self.db.insert_scheduled_votes(self, &scheduled_votes)
     }
 
+    pub fn get_scheduled_votes(&self) -> Result<Vec<ScheduledDPNSVote>> {
+        self.db.get_scheduled_votes(&self)
+    }
+
     pub fn clear_all_scheduled_votes(&self) -> Result<()> {
         self.db.clear_all_scheduled_votes(self)
     }
@@ -285,11 +289,6 @@ impl AppContext {
         contracts.insert(0, dpns_contract);
 
         Ok(contracts)
-    }
-
-    /// Get scheduled votes
-    pub fn get_scheduled_votes(&self) -> Result<Vec<ScheduledDPNSVote>> {
-        self.db.get_scheduled_votes(&self)
     }
 
     pub(crate) fn received_transaction_finality(

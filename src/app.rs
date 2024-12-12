@@ -10,7 +10,9 @@ use crate::context::AppContext;
 use crate::database::Database;
 use crate::logging::initialize_logger;
 use crate::ui::document_query_screen::DocumentQueryScreen;
-use crate::ui::dpns_contested_names_screen::{DPNSContestedNamesScreen, DPNSSubscreen};
+use crate::ui::dpns_contested_names_screen::{
+    DPNSContestedNamesScreen, DPNSSubscreen, IndividualVoteCastingStatus,
+};
 use crate::ui::identities::identities_screen::IdentitiesScreen;
 use crate::ui::network_chooser_screen::NetworkChooserScreen;
 use crate::ui::tool_screens::proof_log_screen::ProofLogScreen;
@@ -554,6 +556,20 @@ impl App for AppState {
                         .iter()
                         .find(|i| i.identity.id() == vote.voter_id)
                     {
+                        let dpns_screen = self
+                            .main_screens
+                            .get_mut(&RootScreenType::RootScreenDPNSScheduledVotes)
+                            .unwrap();
+                        if let Screen::DPNSContestedNamesScreen(screen) = dpns_screen {
+                            screen.vote_cast_in_progress = true;
+                            screen
+                                .scheduled_votes
+                                .lock()
+                                .unwrap()
+                                .iter_mut()
+                                .find(|(v, _)| v == &vote)
+                                .map(|(_, s)| *s = IndividualVoteCastingStatus::InProgress);
+                        }
                         let task = BackendTask::ContestedResourceTask(
                             ContestedResourceTask::CastScheduledVote(vote, voter.clone()),
                         );

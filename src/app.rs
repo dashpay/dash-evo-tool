@@ -535,7 +535,7 @@ impl App for AppState {
                 .filter(|v| {
                     v.unix_timestamp <= current_time
                         && !v.executed_successfully
-                        && !(v.unix_timestamp + 120000 < current_time)
+                        && !(v.unix_timestamp + 120000 < current_time) // Don't cast votes more than 2 minutes behind current time
                 })
                 .collect();
 

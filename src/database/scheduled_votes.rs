@@ -21,8 +21,7 @@ impl Database {
                 time INTEGER NOT NULL,
                 executed INTEGER NOT NULL DEFAULT 0,
                 network TEXT NOT NULL,
-                PRIMARY KEY (identity_id, contested_name),
-                FOREIGN KEY (identity_id) REFERENCES identity(id) ON DELETE CASCADE
+                PRIMARY KEY (identity_id, contested_name)
             )",
             [],
         )?;

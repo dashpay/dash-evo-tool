@@ -1050,6 +1050,7 @@ impl DPNSContestedNamesScreen {
 
 impl ScreenLike for DPNSContestedNamesScreen {
     fn refresh(&mut self) {
+        self.screen_casting_vote_in_progress = false;
         let mut contested_names = self.contested_names.lock().unwrap();
         let mut dpns_names = self.local_dpns_names.lock().unwrap();
         let mut scheduled_votes = self.scheduled_votes.lock().unwrap();

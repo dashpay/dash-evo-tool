@@ -23,8 +23,15 @@ impl AppContext {
         vote_choice: ResourceVoteChoice,
         voters: &Vec<QualifiedIdentity>,
         sdk: &Sdk,
-        _sender: mpsc::Sender<TaskResult>,
+        sender: mpsc::Sender<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, String> {
+        // Send a refresh task to the frontend
+        // In particular, use this to show the cast is in progress on Scheduled Votes Screen
+        sender
+            .send(TaskResult::Refresh)
+            .await
+            .map_err(|e| format!("Error voting: {}", e.to_string()))?;
+
         // Fetch DPNS contract and document type information
         let data_contract = self.dpns_contract.as_ref();
         let document_type = data_contract
@@ -32,7 +39,7 @@ impl AppContext {
             .expect("expected document type");
 
         let Some(contested_index) = document_type.find_contested_index() else {
-            return Err("No contested index on dpns domains".to_string());
+            return Err("Error voting: No contested index on dpns domains".to_string());
         };
 
         // Hardcoded values for DPNS
@@ -75,12 +82,13 @@ impl AppContext {
                 vote_results.push(result);
             } else {
                 return Err(format!(
-                    "No associated voter identity for qualified identity: {:?}",
+                    "Error voting: No associated voter identity for qualified identity: {:?}",
                     qualified_identity.identity.id()
                 ));
             }
         }
 
+        // To do: if the voter already voted previously, the previous vote count should be removed
         self.db
             .update_vote_count(
                 name,
@@ -88,7 +96,7 @@ impl AppContext {
                 strength,
                 vote_choice,
             )
-            .map_err(|e| format!("error updating ending time: {}", e))?;
+            .map_err(|e| format!("Error voting: Error updating vote count: {}", e))?;
 
         Ok(BackendTaskSuccessResult::SuccessfulVotes(vote_results))
     }

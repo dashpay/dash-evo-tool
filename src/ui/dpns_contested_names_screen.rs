@@ -49,6 +49,14 @@ pub enum DPNSSubscreen {
     ScheduledVotes,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum IndividualVoteCastingStatus {
+    NotStarted,
+    InProgress,
+    Failed,
+    Completed,
+}
+
 impl DPNSSubscreen {
     pub fn display_name(&self) -> &'static str {
         match self {
@@ -66,13 +74,14 @@ pub struct DPNSContestedNamesScreen {
     user_identities: Vec<QualifiedIdentity>,
     contested_names: Arc<Mutex<Vec<ContestedName>>>,
     local_dpns_names: Arc<Mutex<Vec<(Identifier, DPNSNameInfo)>>>,
-    scheduled_votes: Arc<Mutex<Vec<ScheduledDPNSVote>>>,
+    scheduled_votes: Arc<Mutex<Vec<(ScheduledDPNSVote, IndividualVoteCastingStatus)>>>,
     pub app_context: Arc<AppContext>,
     error_message: Option<(String, MessageType, DateTime<Utc>)>,
     sort_column: SortColumn,
     sort_order: SortOrder,
     show_vote_popup_info: Option<(String, ContestedResourceTask)>,
     pending_vote_action: Option<ContestedResourceTask>,
+    screen_casting_vote_in_progress: bool,
     pub dpns_subscreen: DPNSSubscreen,
     refreshing: bool,
 }
@@ -97,8 +106,15 @@ impl DPNSContestedNamesScreen {
             DPNSSubscreen::Owned => app_context.local_dpns_names().unwrap_or_default(),
             DPNSSubscreen::ScheduledVotes => Vec::new(),
         }));
-        let scheduled_votes = Arc::new(Mutex::new(
-            app_context.get_scheduled_votes().unwrap_or_default(),
+        let scheduled_votes = app_context.get_scheduled_votes().unwrap_or_default();
+        let scheduled_votes_with_status = Arc::new(Mutex::new(
+            scheduled_votes
+                .iter()
+                .map(|vote| match vote.executed_successfully {
+                    true => (vote.clone(), IndividualVoteCastingStatus::Completed),
+                    false => (vote.clone(), IndividualVoteCastingStatus::NotStarted),
+                })
+                .collect::<Vec<_>>(),
         ));
         let voting_identities = app_context
             .db
@@ -113,13 +129,14 @@ impl DPNSContestedNamesScreen {
             user_identities,
             contested_names,
             local_dpns_names,
-            scheduled_votes,
+            scheduled_votes: scheduled_votes_with_status,
             app_context: app_context.clone(),
             error_message: None,
             sort_column: SortColumn::ContestedName,
             sort_order: SortOrder::Ascending,
             show_vote_popup_info: None,
             pending_vote_action: None,
+            screen_casting_vote_in_progress: false,
             dpns_subscreen,
             refreshing: false,
         }
@@ -728,7 +745,7 @@ impl DPNSContestedNamesScreen {
 
         sorted_votes.sort_by(|a, b| match self.sort_column {
             SortColumn::ContestedName => {
-                let order = a.contested_name.cmp(&b.contested_name); // Sort by DPNS Name
+                let order = a.0.contested_name.cmp(&b.0.contested_name); // Sort by DPNS Name
                 if self.sort_order == SortOrder::Descending {
                     order.reverse()
                 } else {
@@ -736,7 +753,7 @@ impl DPNSContestedNamesScreen {
                 }
             }
             SortColumn::EndingTime => {
-                let order = a.unix_timestamp.cmp(&b.unix_timestamp); // Sort by Vote Time
+                let order = a.0.unix_timestamp.cmp(&b.0.unix_timestamp); // Sort by Vote Time
                 if self.sort_order == SortOrder::Descending {
                     order.reverse()
                 } else {
@@ -768,7 +785,7 @@ impl DPNSContestedNamesScreen {
                         .column(Column::initial(100.0).resizable(true)) // Actions
                         .header(30.0, |mut header| {
                             header.col(|ui| {
-                                if ui.button("Name").clicked() {
+                                if ui.button("Contested Name").clicked() {
                                     self.toggle_sort(SortColumn::ContestedName);
                                 }
                             });
@@ -788,35 +805,33 @@ impl DPNSContestedNamesScreen {
                                 }
                             });
                             header.col(|ui| {
-                                if ui.button("Executed").clicked() {
+                                if ui.button("Status").clicked() {
                                     self.toggle_sort(SortColumn::ContestedName);
                                 }
                             });
                             header.col(|ui| {
-                                if ui.button("Actions").clicked() {
-                                    self.toggle_sort(SortColumn::ContestedName);
-                                }
+                                ui.label("Actions");
                             });
                         })
                         .body(|mut body| {
-                            for vote in sorted_votes {
+                            for vote in sorted_votes.iter_mut() {
                                 body.row(25.0, |mut row| {
                                     row.col(|ui| {
                                         ui.add(
-                                            egui::Label::new(vote.contested_name.clone())
+                                            egui::Label::new(vote.0.contested_name.clone())
                                                 .truncate(),
                                         );
                                     });
                                     row.col(|ui| {
                                         ui.add(
                                             egui::Label::new(
-                                                vote.voter_id.to_string(Encoding::Hex),
+                                                vote.0.voter_id.to_string(Encoding::Hex),
                                             )
                                             .truncate(),
                                         );
                                     });
                                     row.col(|ui| {
-                                        let display_text = match &vote.choice {
+                                        let display_text = match &vote.0.choice {
                                             ResourceVoteChoice::TowardsIdentity(identifier) => {
                                                 identifier.to_string(Encoding::Base58)
                                             }
@@ -826,7 +841,7 @@ impl DPNSContestedNamesScreen {
                                     });
                                     row.col(|ui| {
                                         if let LocalResult::Single(datetime) =
-                                            Utc.timestamp_millis_opt(vote.unix_timestamp as i64)
+                                            Utc.timestamp_millis_opt(vote.0.unix_timestamp as i64)
                                         {
                                             let iso_date =
                                                 datetime.format("%Y-%m-%d %H:%M:%S").to_string();
@@ -839,12 +854,18 @@ impl DPNSContestedNamesScreen {
                                             ui.label("Invalid timestamp");
                                         }
                                     });
-                                    row.col(|ui| match vote.executed_successfully {
-                                        true => {
-                                            ui.colored_label(Color32::DARK_GREEN, "Yes");
+                                    row.col(|ui| match vote.1 {
+                                        IndividualVoteCastingStatus::NotStarted => {
+                                            ui.label("Pending");
                                         }
-                                        false => {
-                                            ui.label("");
+                                        IndividualVoteCastingStatus::InProgress => {
+                                            ui.label("Casting...");
+                                        }
+                                        IndividualVoteCastingStatus::Failed => {
+                                            ui.colored_label(Color32::DARK_RED, "Failed");
+                                        }
+                                        IndividualVoteCastingStatus::Completed => {
+                                            ui.colored_label(Color32::DARK_GREEN, "Complete");
                                         }
                                     });
                                     row.col(|ui| {
@@ -852,30 +873,56 @@ impl DPNSContestedNamesScreen {
                                             action = AppAction::BackendTask(
                                                 BackendTask::ContestedResourceTask(
                                                     ContestedResourceTask::DeleteScheduledVote(
-                                                        vote.voter_id,
-                                                        vote.contested_name.clone(),
+                                                        vote.0.voter_id.clone(),
+                                                        vote.0.contested_name.clone(),
                                                     ),
                                                 ),
                                             );
                                         }
-                                        if ui.button("Cast Now").clicked() {
-                                            let local_identities =
-                                                match self.app_context.db.get_local_voting_identities(&self.app_context) {
-                                                    Ok(identities) => identities,
-                                                    Err(e) => {
-                                                        eprintln!("Error querying local voting identities: {}", e);
-                                                        return;
+
+                                        let cast_button = match vote.1 {
+                                            IndividualVoteCastingStatus::NotStarted => egui::Button::new("Cast Now"),
+                                            IndividualVoteCastingStatus::InProgress => egui::Button::new("Casting..."),
+                                            IndividualVoteCastingStatus::Failed => egui::Button::new("Cast Now"),
+                                            IndividualVoteCastingStatus::Completed => egui::Button::new("Completed"),
+                                        };
+
+                                        if !self.screen_casting_vote_in_progress && (vote.1 == IndividualVoteCastingStatus::NotStarted || vote.1 == IndividualVoteCastingStatus::Failed) {
+                                            if ui.add(cast_button).clicked() {
+                                                self.screen_casting_vote_in_progress = true;
+
+                                                // Update the local vote
+                                                vote.1 = IndividualVoteCastingStatus::InProgress;
+
+                                                // Now also update self.scheduled_votes
+                                                if let Ok(mut scheduled_guard) = self.scheduled_votes.lock() {
+                                                    if let Some(sched_vote) = scheduled_guard.iter_mut().find(|(sv, _)| {
+                                                        sv.voter_id == vote.0.voter_id && sv.contested_name == vote.0.contested_name
+                                                    }) {
+                                                        sched_vote.1 = IndividualVoteCastingStatus::InProgress;
                                                     }
-                                                };
-                                            if let Some(voter) = local_identities
-                                                .iter()
-                                                .find(|i| i.identity.id() == vote.voter_id)
-                                            {
-                                                action = AppAction::BackendTask(
-                                                    BackendTask::ContestedResourceTask(
-                                                        ContestedResourceTask::CastScheduledVote(vote, voter.clone()),
-                                                    ),
-                                                );
+                                                }
+
+                                                // Trigger the CastScheduledVote task
+                                                let local_identities =
+                                                    match self.app_context.load_local_voting_identities() {
+                                                        Ok(identities) => identities,
+                                                        Err(e) => {
+                                                            eprintln!("Error querying local voting identities: {}", e);
+                                                            return;
+                                                        }
+                                                    };
+
+                                                if let Some(voter) = local_identities
+                                                    .iter()
+                                                    .find(|i| i.identity.id() == vote.0.voter_id)
+                                                {
+                                                    action = AppAction::BackendTask(
+                                                        BackendTask::ContestedResourceTask(
+                                                            ContestedResourceTask::CastScheduledVote(vote.0.clone(), voter.clone()),
+                                                        ),
+                                                    );
+                                                }
                                             }
                                         }
                                     });
@@ -1026,7 +1073,32 @@ impl ScreenLike for DPNSContestedNamesScreen {
                 *dpns_names = self.app_context.local_dpns_names().unwrap_or_default();
             }
             DPNSSubscreen::ScheduledVotes => {
-                *scheduled_votes = self.app_context.get_scheduled_votes().unwrap_or_default();
+                *scheduled_votes = {
+                    let new_scheduled_votes =
+                        self.app_context.get_scheduled_votes().unwrap_or_default();
+                    new_scheduled_votes
+                        .iter()
+                        .map(|new_vote| match new_vote.executed_successfully {
+                            true => (new_vote.clone(), IndividualVoteCastingStatus::Completed),
+                            false => scheduled_votes
+                                .iter()
+                                .find(|(old_vote, _)| {
+                                    old_vote.contested_name == new_vote.contested_name
+                                        && old_vote.voter_id == new_vote.voter_id
+                                })
+                                .map(|(_, status)| {
+                                    if status == &IndividualVoteCastingStatus::InProgress {
+                                        (new_vote.clone(), IndividualVoteCastingStatus::InProgress)
+                                    } else {
+                                        (new_vote.clone(), IndividualVoteCastingStatus::NotStarted)
+                                    }
+                                })
+                                .unwrap_or_else(|| {
+                                    (new_vote.clone(), IndividualVoteCastingStatus::NotStarted)
+                                }),
+                        })
+                        .collect::<Vec<_>>()
+                }
             }
         }
     }
@@ -1063,7 +1135,36 @@ impl ScreenLike for DPNSContestedNamesScreen {
                 *dpns_names = self.app_context.local_dpns_names().unwrap_or_default();
             }
             DPNSSubscreen::ScheduledVotes => {
-                *scheduled_votes = self.app_context.get_scheduled_votes().unwrap_or_default();
+                *scheduled_votes = {
+                    let new_scheduled_votes =
+                        self.app_context.get_scheduled_votes().unwrap_or_default();
+                    new_scheduled_votes
+                        .iter()
+                        .map(|new_vote| match new_vote.executed_successfully {
+                            true => (new_vote.clone(), IndividualVoteCastingStatus::Completed),
+                            // If false, it could be failed, in progress, or not started
+                            // Check screen state to see if vote is in progress
+                            false => scheduled_votes
+                                .iter()
+                                .find(|(old_vote, _)| {
+                                    old_vote.contested_name == new_vote.contested_name
+                                        && old_vote.voter_id == new_vote.voter_id
+                                })
+                                .map(|(_, status)| {
+                                    if status == &IndividualVoteCastingStatus::InProgress {
+                                        (new_vote.clone(), IndividualVoteCastingStatus::InProgress)
+                                    } else if status == &IndividualVoteCastingStatus::Failed {
+                                        (new_vote.clone(), IndividualVoteCastingStatus::Failed)
+                                    } else {
+                                        (new_vote.clone(), IndividualVoteCastingStatus::NotStarted)
+                                    }
+                                })
+                                .unwrap_or_else(|| {
+                                    (new_vote.clone(), IndividualVoteCastingStatus::NotStarted)
+                                }),
+                        })
+                        .collect::<Vec<_>>()
+                }
             }
         }
     }
@@ -1075,6 +1176,18 @@ impl ScreenLike for DPNSContestedNamesScreen {
             || message.contains("Error refreshing owned DPNS names")
         {
             self.refreshing = false;
+        }
+        if message.contains("Error casting scheduled vote") {
+            self.screen_casting_vote_in_progress = false;
+            let mut scheduled_votes = self.scheduled_votes.lock().unwrap();
+            for vote in scheduled_votes.iter_mut() {
+                if vote.1 == IndividualVoteCastingStatus::InProgress {
+                    vote.1 = IndividualVoteCastingStatus::Failed;
+                }
+            }
+        }
+        if message.contains("Successfully cast scheduled vote") {
+            self.screen_casting_vote_in_progress = false;
         }
         self.error_message = Some((message.to_string(), message_type, Utc::now()));
     }

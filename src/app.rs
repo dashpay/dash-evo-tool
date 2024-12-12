@@ -445,6 +445,10 @@ impl App for AppState {
                             vote.contested_name,
                             self.current_app_context(),
                         );
+                        self.visible_screen_mut().display_message(
+                            "Successfully cast scheduled vote",
+                            MessageType::Success,
+                        );
                         self.visible_screen_mut().refresh();
                     }
                     BackendTaskSuccessResult::WithdrawalStatus(_) => {
@@ -530,7 +534,11 @@ impl App for AppState {
                 .as_millis() as u64;
             let due_votes: Vec<_> = db_votes
                 .into_iter()
-                .filter(|v| v.unix_timestamp <= current_time)
+                .filter(|v| {
+                    v.unix_timestamp <= current_time
+                        && !v.executed_successfully
+                        && !(v.unix_timestamp + 120000 < current_time)
+                })
                 .collect();
 
             // For each due vote, construct a BackendTask and handle it

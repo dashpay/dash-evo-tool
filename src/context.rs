@@ -163,6 +163,10 @@ impl AppContext {
             .update_local_qualified_identity(qualified_identity, self)
     }
 
+    pub fn set_alias(&self, identifier: &Identifier, new_alias: Option<&str>) -> Result<()> {
+        self.db.set_alias(identifier, new_alias)
+    }
+
     /// This is for before we know if Platform will accept the identity
     pub fn insert_local_qualified_identity_in_creation(
         &self,
@@ -181,6 +185,10 @@ impl AppContext {
     pub fn load_local_qualified_identities(&self) -> Result<Vec<QualifiedIdentity>> {
         let wallets = self.wallets.read().unwrap();
         self.db.get_local_qualified_identities(self, &wallets)
+    }
+
+    pub fn load_local_voting_identities(&self) -> Result<Vec<QualifiedIdentity>> {
+        self.db.get_local_voting_identities(self)
     }
 
     pub fn all_contested_names(&self) -> Result<Vec<ContestedName>> {

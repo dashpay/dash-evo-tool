@@ -80,8 +80,8 @@ pub struct DPNSContestedNamesScreen {
     sort_column: SortColumn,
     sort_order: SortOrder,
     show_vote_popup_info: Option<(String, ContestedResourceTask)>,
-    pending_vote_action: Option<ContestedResourceTask>,
-    screen_casting_vote_in_progress: bool,
+    popup_pending_vote_action: Option<ContestedResourceTask>,
+    vote_cast_in_progress: bool,
     pub dpns_subscreen: DPNSSubscreen,
     refreshing: bool,
 }
@@ -135,8 +135,8 @@ impl DPNSContestedNamesScreen {
             sort_column: SortColumn::ContestedName,
             sort_order: SortOrder::Ascending,
             show_vote_popup_info: None,
-            pending_vote_action: None,
-            screen_casting_vote_in_progress: false,
+            popup_pending_vote_action: None,
+            vote_cast_in_progress: false,
             dpns_subscreen,
             refreshing: false,
         }
@@ -881,9 +881,9 @@ impl DPNSContestedNamesScreen {
                                             IndividualVoteCastingStatus::Completed => egui::Button::new("Completed"),
                                         };
 
-                                        if !self.screen_casting_vote_in_progress && (vote.1 == IndividualVoteCastingStatus::NotStarted || vote.1 == IndividualVoteCastingStatus::Failed) {
+                                        if !self.vote_cast_in_progress && (vote.1 == IndividualVoteCastingStatus::NotStarted || vote.1 == IndividualVoteCastingStatus::Failed) {
                                             if ui.add(cast_button).clicked() {
-                                                self.screen_casting_vote_in_progress = true;
+                                                self.vote_cast_in_progress = true;
 
                                                 // Update the local vote
                                                 vote.1 = IndividualVoteCastingStatus::InProgress;
@@ -941,14 +941,14 @@ impl DPNSContestedNamesScreen {
             }
             if ui.button("Cancel").clicked() {
                 self.show_vote_popup_info = None;
-                self.pending_vote_action = None;
+                self.popup_pending_vote_action = None;
             }
         } else if let Some((message, action)) = self.show_vote_popup_info.clone() {
             ui.label(message);
 
             ui.add_space(10.0);
 
-            if self.pending_vote_action.is_none() {
+            if self.popup_pending_vote_action.is_none() {
                 ui.label("Select the identity to vote with:");
             } else {
                 ui.label("Would you like to vote now or schedule your votes?");
@@ -964,7 +964,7 @@ impl DPNSContestedNamesScreen {
                 ) = action
                 {
                     // If we haven't yet chosen any voters (pending_vote_action is None), we show the identities
-                    if self.pending_vote_action.is_none() {
+                    if self.popup_pending_vote_action.is_none() {
                         // Iterate over the voting identities and create a button for each one
                         for identity in self.voting_identities.iter() {
                             if ui.button(identity.display_short_string()).clicked() {
@@ -977,7 +977,7 @@ impl DPNSContestedNamesScreen {
                                     vote_choice.clone(),
                                     voters.clone(),
                                 );
-                                self.pending_vote_action = Some(updated_action);
+                                self.popup_pending_vote_action = Some(updated_action);
                             }
                         }
 
@@ -989,7 +989,7 @@ impl DPNSContestedNamesScreen {
                                 vote_choice.clone(),
                                 voters.clone(),
                             );
-                            self.pending_vote_action = Some(updated_action);
+                            self.popup_pending_vote_action = Some(updated_action);
                         }
                     } else {
                         // If we have a pending vote action, ask whether to vote now or schedule
@@ -997,13 +997,13 @@ impl DPNSContestedNamesScreen {
                             // Finalize the vote now
                             app_action =
                                 AppAction::BackendTask(BackendTask::ContestedResourceTask(
-                                    self.pending_vote_action.take().unwrap(),
+                                    self.popup_pending_vote_action.take().unwrap(),
                                 ));
                             self.show_vote_popup_info = None;
                         }
                         if ui.button("Schedule").clicked() {
                             // Move to a scheduling screen instead
-                            let pending = self.pending_vote_action.take().unwrap();
+                            let pending = self.popup_pending_vote_action.take().unwrap();
                             if let ContestedResourceTask::VoteOnDPNSName(
                                 name_string,
                                 vote_choice,
@@ -1039,7 +1039,7 @@ impl DPNSContestedNamesScreen {
                 // Add the "Cancel" button
                 if ui.button("Cancel").clicked() {
                     self.show_vote_popup_info = None;
-                    self.pending_vote_action = None;
+                    self.popup_pending_vote_action = None;
                 }
             });
         }
@@ -1050,7 +1050,7 @@ impl DPNSContestedNamesScreen {
 
 impl ScreenLike for DPNSContestedNamesScreen {
     fn refresh(&mut self) {
-        self.screen_casting_vote_in_progress = false;
+        self.vote_cast_in_progress = false;
         let mut contested_names = self.contested_names.lock().unwrap();
         let mut dpns_names = self.local_dpns_names.lock().unwrap();
         let mut scheduled_votes = self.scheduled_votes.lock().unwrap();
@@ -1175,7 +1175,7 @@ impl ScreenLike for DPNSContestedNamesScreen {
             self.refreshing = false;
         }
         if message.contains("Error casting scheduled vote") {
-            self.screen_casting_vote_in_progress = false;
+            self.vote_cast_in_progress = false;
             let mut scheduled_votes = self.scheduled_votes.lock().unwrap();
             for vote in scheduled_votes.iter_mut() {
                 if vote.1 == IndividualVoteCastingStatus::InProgress {
@@ -1184,7 +1184,7 @@ impl ScreenLike for DPNSContestedNamesScreen {
             }
         }
         if message.contains("Successfully cast scheduled vote") {
-            self.screen_casting_vote_in_progress = false;
+            self.vote_cast_in_progress = false;
         }
         self.error_message = Some((message.to_string(), message_type, Utc::now()));
     }

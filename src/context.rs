@@ -199,6 +199,11 @@ impl AppContext {
         self.db.get_ongoing_contested_names(self)
     }
 
+    pub fn mark_vote_executed(&self, identity_id: &[u8], contested_name: String) -> Result<()> {
+        self.db
+            .mark_vote_executed(self, identity_id, contested_name)
+    }
+
     /// Fetches the local identities from the database and then maps them to their DPNS names.
     pub fn local_dpns_names(&self) -> Result<Vec<(Identifier, DPNSNameInfo)>> {
         let wallets = self.wallets.read().unwrap();

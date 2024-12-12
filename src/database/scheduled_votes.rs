@@ -62,9 +62,9 @@ impl Database {
 
     pub fn mark_vote_executed(
         &self,
+        app_context: &AppContext,
         identity_id: &[u8],
         contested_name: String,
-        app_context: &AppContext,
     ) -> rusqlite::Result<()> {
         let network = app_context.network_string();
         self.execute(

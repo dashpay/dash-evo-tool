@@ -440,11 +440,9 @@ impl App for AppState {
                         self.visible_screen_mut().refresh();
                     }
                     BackendTaskSuccessResult::CastScheduledVote(vote) => {
-                        let _ = self.current_app_context().db.mark_vote_executed(
-                            vote.voter_id.as_slice(),
-                            vote.contested_name,
-                            self.current_app_context(),
-                        );
+                        let _ = self
+                            .current_app_context()
+                            .mark_vote_executed(vote.voter_id.as_slice(), vote.contested_name);
                         self.visible_screen_mut().display_message(
                             "Successfully cast scheduled vote",
                             MessageType::Success,

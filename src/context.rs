@@ -199,6 +199,23 @@ impl AppContext {
         self.db.get_ongoing_contested_names(self)
     }
 
+    pub fn insert_scheduled_votes(&self, scheduled_votes: &Vec<ScheduledDPNSVote>) -> Result<()> {
+        self.db.insert_scheduled_votes(self, &scheduled_votes)
+    }
+
+    pub fn clear_all_scheduled_votes(&self) -> Result<()> {
+        self.db.clear_all_scheduled_votes(self)
+    }
+
+    pub fn clear_executed_scheduled_votes(&self) -> Result<()> {
+        self.db.clear_executed_scheduled_votes(self)
+    }
+
+    pub fn delete_scheduled_vote(&self, identity_id: &[u8], contested_name: &String) -> Result<()> {
+        self.db
+            .delete_scheduled_vote(self, identity_id, &contested_name)
+    }
+
     pub fn mark_vote_executed(&self, identity_id: &[u8], contested_name: String) -> Result<()> {
         self.db
             .mark_vote_executed(self, identity_id, contested_name)

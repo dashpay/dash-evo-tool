@@ -46,9 +46,9 @@ impl Database {
 
     pub fn delete_scheduled_vote(
         &self,
+        app_context: &AppContext,
         identity_id: &[u8],
         contested_name: &str,
-        app_context: &AppContext,
     ) -> rusqlite::Result<()> {
         let network = app_context.network_string();
         let conn = self.conn.lock().unwrap();

@@ -50,8 +50,7 @@ impl AppContext {
                     .await
             }
             ContestedResourceTask::ScheduleDPNSVotes(scheduled_votes) => self
-                .db
-                .insert_scheduled_votes(self, scheduled_votes)
+                .insert_scheduled_votes(scheduled_votes)
                 .map(|_| BackendTaskSuccessResult::Message("Votes scheduled".to_string()))
                 .map_err(|e| format!("Error inserting scheduled votes: {}", e.to_string())),
             ContestedResourceTask::CastScheduledVote(scheduled_vote, voter) => self
@@ -66,18 +65,15 @@ impl AppContext {
                 .map(|_| BackendTaskSuccessResult::CastScheduledVote(scheduled_vote.clone()))
                 .map_err(|e| format!("Error casting scheduled vote: {}", e.to_string())),
             ContestedResourceTask::ClearAllScheduledVotes => self
-                .db
-                .clear_all_scheduled_votes(self)
+                .clear_all_scheduled_votes()
                 .map(|_| BackendTaskSuccessResult::Refresh)
                 .map_err(|e| format!("Error clearing all scheduled votes: {}", e.to_string())),
             ContestedResourceTask::ClearExecutedScheduledVotes => self
-                .db
-                .clear_executed_scheduled_votes(self)
+                .clear_executed_scheduled_votes()
                 .map(|_| BackendTaskSuccessResult::Refresh)
                 .map_err(|e| format!("Error clearing executed scheduled votes: {}", e.to_string())),
             ContestedResourceTask::DeleteScheduledVote(voter_id, contested_name) => self
-                .db
-                .delete_scheduled_vote(voter_id.as_slice(), contested_name, self)
+                .delete_scheduled_vote(voter_id.as_slice(), contested_name)
                 .map(|_| BackendTaskSuccessResult::Refresh)
                 .map_err(|e| format!("Error clearing scheduled vote: {}", e.to_string())),
         }

@@ -517,7 +517,7 @@ impl App for AppState {
             let app_context = self.current_app_context();
 
             // Query the database
-            let db_votes = match app_context.db.get_scheduled_votes(&app_context) {
+            let db_votes = match app_context.get_scheduled_votes() {
                 Ok(votes) => votes,
                 Err(e) => {
                     eprintln!("Error querying scheduled votes: {}", e);

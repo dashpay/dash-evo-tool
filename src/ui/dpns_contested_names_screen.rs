@@ -859,7 +859,7 @@ impl DPNSContestedNamesScreen {
                                             ui.colored_label(Color32::DARK_RED, "Failed");
                                         }
                                         IndividualVoteCastingStatus::Completed => {
-                                            ui.colored_label(Color32::DARK_GREEN, "Complete");
+                                            ui.colored_label(Color32::DARK_GREEN, "Casted");
                                         }
                                     });
                                     row.col(|ui| {
@@ -1084,6 +1084,8 @@ impl ScreenLike for DPNSContestedNamesScreen {
                                 .map(|(_, status)| {
                                     if status == &IndividualVoteCastingStatus::InProgress {
                                         (new_vote.clone(), IndividualVoteCastingStatus::InProgress)
+                                    } else if status == &IndividualVoteCastingStatus::Failed {
+                                        (new_vote.clone(), IndividualVoteCastingStatus::Failed)
                                     } else {
                                         (new_vote.clone(), IndividualVoteCastingStatus::NotStarted)
                                     }

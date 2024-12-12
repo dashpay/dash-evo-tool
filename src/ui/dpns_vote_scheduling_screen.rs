@@ -17,7 +17,6 @@ use std::sync::Arc;
 use super::components::top_panel::add_top_panel;
 use super::RootScreenType;
 
-/// The voting option a user can choose for each identity.
 enum VoteOption {
     None,
     Scheduled { days: u32, hours: u32, minutes: u32 },

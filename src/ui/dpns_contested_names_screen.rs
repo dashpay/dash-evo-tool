@@ -277,8 +277,7 @@ impl DPNSContestedNamesScreen {
                                 ));
                             }
                             _ => {
-                                // To Do: Some kind of refresh for scheduled votes maybe
-                                app_action |= AppAction::None;
+                                app_action |= AppAction::Refresh;
                             }
                         }
                     }
@@ -963,7 +962,6 @@ impl DPNSContestedNamesScreen {
                         }
                         if ui.button("Schedule").clicked() {
                             // Move to a scheduling screen instead
-                            // Assume we have a ScheduleVoteScreen that takes the pending action data
                             let pending = self.pending_vote_action.take().unwrap();
                             if let ContestedResourceTask::VoteOnDPNSName(
                                 name_string,
@@ -1087,9 +1085,8 @@ impl ScreenLike for DPNSContestedNamesScreen {
         let has_identity_that_can_register = !self.user_identities.is_empty();
 
         // Determine the right-side buttons based on the current DPNSSubscreen
-        let right_buttons = match self.dpns_subscreen {
+        let mut right_buttons = match self.dpns_subscreen {
             DPNSSubscreen::Active => {
-                // Active contests: show refresh or refreshing
                 let refresh_button = if self.refreshing {
                     ("Refreshing...", DesiredAppAction::None)
                 } else {
@@ -1101,17 +1098,7 @@ impl ScreenLike for DPNSContestedNamesScreen {
                     )
                 };
 
-                let mut buttons = vec![refresh_button];
-                if has_identity_that_can_register {
-                    buttons.insert(
-                        0,
-                        (
-                            "Register Name",
-                            DesiredAppAction::AddScreenType(ScreenType::RegisterDpnsName),
-                        ),
-                    );
-                }
-                buttons
+                vec![refresh_button]
             }
 
             DPNSSubscreen::Past => {
@@ -1127,17 +1114,7 @@ impl ScreenLike for DPNSContestedNamesScreen {
                     )
                 };
 
-                let mut buttons = vec![refresh_button];
-                if has_identity_that_can_register {
-                    buttons.insert(
-                        0,
-                        (
-                            "Register Name",
-                            DesiredAppAction::AddScreenType(ScreenType::RegisterDpnsName),
-                        ),
-                    );
-                }
-                buttons
+                vec![refresh_button]
             }
 
             DPNSSubscreen::Owned => {
@@ -1153,22 +1130,12 @@ impl ScreenLike for DPNSContestedNamesScreen {
                     )
                 };
 
-                let mut buttons = vec![refresh_button];
-                if has_identity_that_can_register {
-                    buttons.insert(
-                        0,
-                        (
-                            "Register Name",
-                            DesiredAppAction::AddScreenType(ScreenType::RegisterDpnsName),
-                        ),
-                    );
-                }
-                buttons
+                vec![refresh_button]
             }
 
             DPNSSubscreen::ScheduledVotes => {
-                // Scheduled votes: "Clear All" and "Clear Executed" instead of refresh
-                let mut buttons = vec![
+                // Scheduled votes: "Refresh", "Clear All", and "Clear Executed"
+                vec![
                     ("Refresh", DesiredAppAction::Refresh),
                     (
                         "Clear All",
@@ -1182,20 +1149,19 @@ impl ScreenLike for DPNSContestedNamesScreen {
                             ContestedResourceTask::ClearExecutedScheduledVotes,
                         )),
                     ),
-                ];
-
-                if has_identity_that_can_register {
-                    buttons.insert(
-                        0,
-                        (
-                            "Register Name",
-                            DesiredAppAction::AddScreenType(ScreenType::RegisterDpnsName),
-                        ),
-                    );
-                }
-                buttons
+                ]
             }
         };
+
+        if has_identity_that_can_register {
+            right_buttons.insert(
+                0,
+                (
+                    "Register Name",
+                    DesiredAppAction::AddScreenType(ScreenType::RegisterDpnsName),
+                ),
+            );
+        }
 
         let mut action = add_top_panel(
             ctx,

@@ -790,14 +790,10 @@ impl DPNSContestedNamesScreen {
                                 }
                             });
                             header.col(|ui| {
-                                if ui.button("Voter").clicked() {
-                                    self.toggle_sort(SortColumn::ContestedName);
-                                }
+                                ui.label("Voter");
                             });
                             header.col(|ui| {
-                                if ui.button("Vote").clicked() {
-                                    self.toggle_sort(SortColumn::ContestedName);
-                                }
+                                ui.label("Vote Choice");
                             });
                             header.col(|ui| {
                                 if ui.button("Scheduled Time").clicked() {
@@ -805,9 +801,7 @@ impl DPNSContestedNamesScreen {
                                 }
                             });
                             header.col(|ui| {
-                                if ui.button("Status").clicked() {
-                                    self.toggle_sort(SortColumn::ContestedName);
-                                }
+                                ui.label("Status");
                             });
                             header.col(|ui| {
                                 ui.label("Actions");

@@ -34,13 +34,16 @@ impl Database {
         votes: &Vec<ScheduledDPNSVote>,
     ) -> rusqlite::Result<()> {
         let network = app_context.network_string();
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
         for vote in votes {
             let vote_choice = vote.choice.to_string();
-            self.execute(
+            tx.execute(
                 "INSERT OR REPLACE INTO scheduled_votes (identity_id, contested_name, vote_choice, time, executed, network) VALUES (?, ?, ?, ?, 0, ?)",
                 params![vote.voter_id.as_slice(), vote.contested_name, vote_choice, vote.unix_timestamp, network],
             )?;
         }
+        tx.commit()?;
         Ok(())
     }
 
@@ -100,8 +103,15 @@ impl Database {
                         if let Some(inner) = inner.strip_suffix(')') {
                             let towards_id = inner.to_string();
                             ResourceVoteChoice::TowardsIdentity(
-                                Identifier::from_string(&towards_id, Encoding::Base58)
-                                    .expect("Expected valid identifier"),
+                                Identifier::from_string(&towards_id, Encoding::Base58).map_err(
+                                    |e| {
+                                        rusqlite::Error::FromSqlConversionFailure(
+                                            0,
+                                            rusqlite::types::Type::Blob,
+                                            Box::new(e),
+                                        )
+                                    },
+                                )?,
                             )
                         } else {
                             return Err(rusqlite::Error::InvalidQuery);
@@ -113,8 +123,13 @@ impl Database {
             };
 
             let scheduled_vote = ScheduledDPNSVote {
-                voter_id: Identifier::from_bytes(&voter_id_bytes)
-                    .expect("Expected valid identifier"),
+                voter_id: Identifier::from_bytes(&voter_id_bytes).map_err(|e| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        0,
+                        rusqlite::types::Type::Blob,
+                        Box::new(e),
+                    )
+                })?,
                 contested_name,
                 choice: vote_choice,
                 unix_timestamp: time,

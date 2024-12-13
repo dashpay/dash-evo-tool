@@ -7,6 +7,7 @@ use crate::backend_task::identity::IdentityTask;
 use crate::backend_task::withdrawal_statuses::{WithdrawStatusPartialData, WithdrawalsTask};
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
+use contested_names::ScheduledDPNSVote;
 use dash_sdk::dpp::voting::votes::Vote;
 use dash_sdk::query_types::Documents;
 use std::sync::Arc;
@@ -32,12 +33,14 @@ pub(crate) enum BackendTask {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum BackendTaskSuccessResult {
     None,
+    Refresh,
     Message(String),
     Documents(Documents),
     CoreItem(CoreItem),
     RegisteredIdentity(QualifiedIdentity),
     ToppedUpIdentity(QualifiedIdentity),
     SuccessfulVotes(Vec<Vote>),
+    CastScheduledVote(ScheduledDPNSVote),
     WithdrawalStatus(WithdrawStatusPartialData),
 }
 

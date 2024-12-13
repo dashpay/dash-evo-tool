@@ -1,3 +1,4 @@
+use crate::backend_task::contested_names::ScheduledDPNSVote;
 use crate::components::core_zmq_listener::ZMQConnectionEvent;
 use crate::config::{Config, NetworkConfig};
 use crate::context_provider::Provider;
@@ -6,7 +7,7 @@ use crate::model::contested_name::ContestedName;
 use crate::model::password_info::PasswordInfo;
 use crate::model::qualified_contract::QualifiedContract;
 use crate::model::qualified_identity::{DPNSNameInfo, QualifiedIdentity};
-use crate::model::wallet::Wallet;
+use crate::model::wallet::{Wallet, WalletSeedHash};
 use crate::sdk_wrapper::initialize_sdk;
 use crate::ui::RootScreenType;
 use crossbeam_channel::{Receiver, Sender};
@@ -44,7 +45,7 @@ pub struct AppContext {
     pub(crate) withdraws_contract: Arc<DataContract>,
     pub(crate) core_client: Client,
     pub(crate) has_wallet: AtomicBool,
-    pub(crate) wallets: RwLock<Vec<Arc<RwLock<Wallet>>>>,
+    pub(crate) wallets: RwLock<BTreeMap<WalletSeedHash, Arc<RwLock<Wallet>>>>,
     pub(crate) password_info: Option<PasswordInfo>,
     pub(crate) transactions_waiting_for_finality: Mutex<BTreeMap<Txid, Option<AssetLockProof>>>,
     pub(crate) platform_version: &'static PlatformVersion,
@@ -94,11 +95,11 @@ impl AppContext {
         )
         .ok()?;
 
-        let wallets: Vec<_> = db
+        let wallets: BTreeMap<_, _> = db
             .get_wallets(&network)
             .expect("expected to get wallets")
             .into_iter()
-            .map(|w| Arc::new(RwLock::new(w)))
+            .map(|w| (w.seed_hash(), Arc::new(RwLock::new(w))))
             .collect();
 
         let app_context = AppContext {
@@ -162,6 +163,10 @@ impl AppContext {
             .update_local_qualified_identity(qualified_identity, self)
     }
 
+    pub fn set_alias(&self, identifier: &Identifier, new_alias: Option<&str>) -> Result<()> {
+        self.db.set_alias(identifier, new_alias)
+    }
+
     /// This is for before we know if Platform will accept the identity
     pub fn insert_local_qualified_identity_in_creation(
         &self,
@@ -182,12 +187,42 @@ impl AppContext {
         self.db.get_local_qualified_identities(self, &wallets)
     }
 
+    pub fn load_local_voting_identities(&self) -> Result<Vec<QualifiedIdentity>> {
+        self.db.get_local_voting_identities(self)
+    }
+
     pub fn all_contested_names(&self) -> Result<Vec<ContestedName>> {
         self.db.get_all_contested_names(self)
     }
 
     pub fn ongoing_contested_names(&self) -> Result<Vec<ContestedName>> {
         self.db.get_ongoing_contested_names(self)
+    }
+
+    pub fn insert_scheduled_votes(&self, scheduled_votes: &Vec<ScheduledDPNSVote>) -> Result<()> {
+        self.db.insert_scheduled_votes(self, &scheduled_votes)
+    }
+
+    pub fn get_scheduled_votes(&self) -> Result<Vec<ScheduledDPNSVote>> {
+        self.db.get_scheduled_votes(&self)
+    }
+
+    pub fn clear_all_scheduled_votes(&self) -> Result<()> {
+        self.db.clear_all_scheduled_votes(self)
+    }
+
+    pub fn clear_executed_scheduled_votes(&self) -> Result<()> {
+        self.db.clear_executed_scheduled_votes(self)
+    }
+
+    pub fn delete_scheduled_vote(&self, identity_id: &[u8], contested_name: &String) -> Result<()> {
+        self.db
+            .delete_scheduled_vote(self, identity_id, &contested_name)
+    }
+
+    pub fn mark_vote_executed(&self, identity_id: &[u8], contested_name: String) -> Result<()> {
+        self.db
+            .mark_vote_executed(self, identity_id, contested_name)
     }
 
     /// Fetches the local identities from the database and then maps them to their DPNS names.
@@ -255,6 +290,7 @@ impl AppContext {
 
         Ok(contracts)
     }
+
     pub(crate) fn received_transaction_finality(
         &self,
         tx: &Transaction,
@@ -266,7 +302,7 @@ impl AppContext {
 
         // Identify the wallets associated with the transaction
         let wallets = self.wallets.read().unwrap();
-        for wallet_arc in wallets.iter() {
+        for wallet_arc in wallets.values() {
             let mut wallet = wallet_arc.write().unwrap();
             for (vout, tx_out) in tx.output.iter().enumerate() {
                 let address = if let Ok(output_addr) =
@@ -356,7 +392,7 @@ impl AppContext {
 
         // Identify the wallet associated with the transaction
         let wallets = self.wallets.read().unwrap();
-        for wallet_arc in wallets.iter() {
+        for wallet_arc in wallets.values() {
             let mut wallet = wallet_arc.write().unwrap();
 
             // Check if any of the addresses in the transaction outputs match the wallet's known addresses

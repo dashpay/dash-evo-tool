@@ -1,11 +1,12 @@
 use crate::app::{AppAction, DesiredAppAction};
 use crate::backend_task::core::CoreTask;
-use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
+use crate::backend_task::BackendTask;
 use crate::context::AppContext;
 use crate::model::wallet::Wallet;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::{MessageType, RootScreenType, ScreenLike, ScreenType};
+use chrono::{DateTime, Utc};
 use dash_sdk::dashcore_rpc::dashcore::{Address, Network};
 use dash_sdk::dpp::dashcore::bip32::{ChildNumber, DerivationPath};
 use eframe::egui::{self, ComboBox, Context, Ui};
@@ -34,10 +35,11 @@ enum SortOrder {
 pub struct WalletsBalancesScreen {
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     pub(crate) app_context: Arc<AppContext>,
-    error_message: Option<(String, MessageType)>,
+    message: Option<(String, MessageType, DateTime<Utc>)>,
     sort_column: SortColumn,
     sort_order: SortOrder,
     selected_filters: HashSet<String>,
+    refreshing: bool,
 }
 
 pub trait DerivationPathHelpers {
@@ -114,16 +116,17 @@ struct AddressData {
 
 impl WalletsBalancesScreen {
     pub fn new(app_context: &Arc<AppContext>) -> Self {
-        let selected_wallet = app_context.wallets.read().unwrap().first().cloned();
+        let selected_wallet = app_context.wallets.read().unwrap().values().next().cloned();
         let mut selected_filters = HashSet::new();
         selected_filters.insert("Funds".to_string()); // "Funds" selected by default
         Self {
             selected_wallet,
             app_context: app_context.clone(),
-            error_message: None,
+            message: None,
             sort_column: SortColumn::Index,
             sort_order: SortOrder::Ascending,
             selected_filters,
+            refreshing: false,
         }
     }
 
@@ -213,7 +216,7 @@ impl WalletsBalancesScreen {
             if self.app_context.has_wallet.load(Ordering::Relaxed) {
                 let wallets = &self.app_context.wallets.read().unwrap();
                 let wallet_aliases: Vec<String> = wallets
-                    .iter()
+                    .values()
                     .map(|wallet| {
                         wallet
                             .read()
@@ -234,7 +237,7 @@ impl WalletsBalancesScreen {
                 ComboBox::from_label("")
                     .selected_text(selected_wallet_alias.clone())
                     .show_ui(ui, |ui| {
-                        for (idx, wallet) in wallets.iter().enumerate() {
+                        for (idx, wallet) in wallets.values().enumerate() {
                             let wallet_alias = wallet_aliases[idx].clone();
 
                             let is_selected = self
@@ -441,11 +444,11 @@ impl WalletsBalancesScreen {
                                 header.col(|ui| {
                                     let label = if self.sort_column == SortColumn::TotalReceived {
                                         match self.sort_order {
-                                            SortOrder::Ascending => "Total Received (DASH) ^",
-                                            SortOrder::Descending => "Total Received (DASH) v",
+                                            SortOrder::Ascending => "Balance (DASH) ^",
+                                            SortOrder::Descending => "Balance (DASH) v",
                                         }
                                     } else {
-                                        "Total Received (DASH)"
+                                        "Balance (DASH)"
                                     };
                                     if ui.button(label).clicked() {
                                         self.toggle_sort(SortColumn::TotalReceived);
@@ -601,33 +604,73 @@ impl WalletsBalancesScreen {
             ui.label("No wallet selected.");
         }
     }
+
+    fn dismiss_message(&mut self) {
+        self.message = None;
+    }
+
+    fn check_message_expiration(&mut self) {
+        if let Some((_, _, timestamp)) = &self.message {
+            let now = Utc::now();
+            let elapsed = now.signed_duration_since(*timestamp);
+
+            // Automatically dismiss the message after 10 seconds
+            if elapsed.num_seconds() >= 10 {
+                self.dismiss_message();
+            }
+        }
+    }
 }
 
 impl ScreenLike for WalletsBalancesScreen {
     fn ui(&mut self, ctx: &Context) -> AppAction {
+        self.check_message_expiration();
         let right_buttons = if let Some(wallet) = self.selected_wallet.as_ref() {
+            match self.refreshing {
+                true => vec![
+                    ("Refreshing...", DesiredAppAction::None),
+                    (
+                        "Import Wallet",
+                        DesiredAppAction::AddScreenType(ScreenType::ImportWallet),
+                    ),
+                    (
+                        "Create Wallet",
+                        DesiredAppAction::AddScreenType(ScreenType::AddNewWallet),
+                    ),
+                ],
+                false => vec![
+                    (
+                        "Refresh",
+                        DesiredAppAction::BackendTask(BackendTask::CoreTask(
+                            CoreTask::RefreshWalletInfo(wallet.clone()),
+                        )),
+                    ),
+                    (
+                        "Import Wallet",
+                        DesiredAppAction::AddScreenType(ScreenType::ImportWallet),
+                    ),
+                    (
+                        "Create Wallet",
+                        DesiredAppAction::AddScreenType(ScreenType::AddNewWallet),
+                    ),
+                ],
+            }
+        } else {
             vec![
                 (
-                    "Refresh",
-                    DesiredAppAction::BackendTask(BackendTask::CoreTask(
-                        CoreTask::RefreshWalletInfo(wallet.clone()),
-                    )),
+                    "Import Wallet",
+                    DesiredAppAction::AddScreenType(ScreenType::ImportWallet),
                 ),
                 (
-                    "Add Wallet",
+                    "Create Wallet",
                     DesiredAppAction::AddScreenType(ScreenType::AddNewWallet),
                 ),
             ]
-        } else {
-            vec![(
-                "Add Wallet",
-                DesiredAppAction::AddScreenType(ScreenType::AddNewWallet),
-            )]
         };
         let mut action = add_top_panel(
             ctx,
             &self.app_context,
-            vec![("Dash Evo Tool", AppAction::None)],
+            vec![("Wallets", AppAction::None)],
             right_buttons,
         );
 
@@ -638,6 +681,34 @@ impl ScreenLike for WalletsBalancesScreen {
         );
 
         egui::CentralPanel::default().show(ctx, |ui| {
+            let message = self.message.clone();
+            if let Some((message, message_type, timestamp)) = message {
+                let message_color = match message_type {
+                    MessageType::Error => egui::Color32::RED,
+                    MessageType::Info => egui::Color32::BLACK,
+                    MessageType::Success => egui::Color32::DARK_GREEN,
+                };
+
+                ui.add_space(10.0);
+                ui.allocate_ui(egui::Vec2::new(ui.available_width(), 30.0), |ui| {
+                    ui.group(|ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(egui::RichText::new(message).color(message_color));
+                            let now = Utc::now();
+                            let elapsed = now.signed_duration_since(timestamp);
+                            if ui
+                                .button(format!("Dismiss ({})", 10 - elapsed.num_seconds()))
+                                .clicked()
+                            {
+                                // Update the state outside the closure
+                                self.dismiss_message();
+                            }
+                        });
+                    });
+                });
+                ui.add_space(10.0);
+            }
+
             ui.add_space(10.0);
             self.render_wallet_selection(ui);
             ui.add_space(10.0);
@@ -669,33 +740,28 @@ impl ScreenLike for WalletsBalancesScreen {
             } else {
                 ui.label("No wallet selected.");
             }
-
-            // Display error message if any
-            if let Some((message, message_type)) = &self.error_message {
-                ui.add_space(10.0);
-                let color = match message_type {
-                    MessageType::Error => egui::Color32::RED,
-                    MessageType::Info => egui::Color32::BLACK,
-                    MessageType::Success => egui::Color32::GREEN,
-                };
-                ui.colored_label(color, message);
-            }
         });
+
+        match action {
+            AppAction::BackendTask(BackendTask::CoreTask(CoreTask::RefreshWalletInfo(_))) => {
+                self.refreshing = true;
+            }
+            _ => {}
+        }
 
         action
     }
 
-    fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
-        // println!("{:?}", backend_task_success_result)
-    }
-
     fn display_message(&mut self, message: &str, message_type: MessageType) {
-        self.error_message = Some((message.to_string(), message_type));
+        if message.contains("Successfully refreshed wallet")
+            || message.contains("Error refreshing wallet")
+        {
+            self.refreshing = false;
+        }
+        self.message = Some((message.to_string(), message_type, Utc::now()))
     }
 
-    fn refresh_on_arrival(&mut self) {
-        // Optionally implement if needed
-    }
+    fn refresh_on_arrival(&mut self) {}
 
     fn refresh(&mut self) {}
 }

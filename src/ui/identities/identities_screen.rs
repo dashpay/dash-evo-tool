@@ -29,6 +29,7 @@ use eframe::egui::{self, Context};
 use eframe::emath::Align;
 use egui::{Color32, Frame, Margin, RichText, Ui};
 use egui_extras::{Column, TableBuilder};
+use itertools::Itertools;
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
@@ -87,7 +88,7 @@ impl IdentitiesScreen {
             } else {
                 identity_to_update.alias = Some(alias);
             }
-            match self.app_context.db.set_alias(
+            match self.app_context.set_alias(
                 &identity_to_update.identity.id(),
                 identity_to_update.alias.as_ref().map(|s| s.as_str()),
             ) {
@@ -120,7 +121,7 @@ impl IdentitiesScreen {
             return Some(in_wallet_text.clone());
         }
         let wallets = self.app_context.wallets.read().unwrap();
-        for wallet in wallets.iter() {
+        for wallet in wallets.values() {
             let wallet_guard = wallet.read().unwrap();
             if &wallet_guard.seed_hash() == wallet_seed_hash {
                 let in_wallet_text = if let Some(alias) = wallet_guard.alias.as_ref() {
@@ -325,7 +326,7 @@ impl IdentitiesScreen {
                             });
                         })
                         .body(|mut body| {
-                            for qualified_identity in identities.iter() {
+                            for qualified_identity in identities.iter().sorted_by_key(|qi| qi.identity.id()) {
                                 let identity = &qualified_identity.identity;
                                 let public_keys = identity.public_keys();
                                 let voter_identity_public_keys = qualified_identity
@@ -377,10 +378,10 @@ impl IdentitiesScreen {
                                         }
 
                                         // If we have not reached max keys, show keys from voter identity
-                                        if total_keys_shown < max_keys_to_show {
-                                            if let Some(voting_identity_public_keys) =
-                                                voter_identity_public_keys
-                                            {
+                                        if let Some(voting_identity_public_keys) =
+                                            voter_identity_public_keys
+                                        {
+                                            if total_keys_shown < max_keys_to_show {
                                                 let voter_public_keys_vec: Vec<_> =
                                                     voting_identity_public_keys.iter().collect();
                                                 for (key_id, key) in voter_public_keys_vec.iter() {
@@ -404,9 +405,9 @@ impl IdentitiesScreen {
                                                         break;
                                                     }
                                                 }
+                                            } else {
+                                                more_keys_available = true;
                                             }
-                                        } else {
-                                            more_keys_available = true;
                                         }
 
                                         // If there are more keys, show "View More" button
@@ -610,10 +611,10 @@ impl ScreenLike for IdentitiesScreen {
     fn ui(&mut self, ctx: &Context) -> AppAction {
         let mut right_buttons = if !self.app_context.has_wallet.load(Ordering::Relaxed) {
             [
-                // (
-                //     "Import Wallet",
-                //     DesiredAppAction::AddScreenType(ScreenType::ImportWallet),
-                // ),
+                (
+                    "Import Wallet",
+                    DesiredAppAction::AddScreenType(ScreenType::ImportWallet),
+                ),
                 (
                     "Create Wallet",
                     DesiredAppAction::AddScreenType(ScreenType::AddNewWallet),
@@ -634,7 +635,7 @@ impl ScreenLike for IdentitiesScreen {
         let mut action = add_top_panel(
             ctx,
             &self.app_context,
-            vec![("Dash Evo Tool", AppAction::None)],
+            vec![("Identities", AppAction::None)],
             right_buttons,
         );
 

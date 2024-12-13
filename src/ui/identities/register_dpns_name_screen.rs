@@ -42,21 +42,6 @@ pub struct RegisterDpnsNameScreen {
 }
 
 impl RegisterDpnsNameScreen {
-    pub fn select_identity(&mut self, identity_id: Identifier) {
-        // Find the qualified identity with the matching identity_id
-        if let Some(qi) = self
-            .qualified_identities
-            .iter()
-            .find(|(qi, _)| qi.identity.id() == &identity_id)
-        {
-            // Set the selected_qualified_identity to the found identity
-            self.selected_qualified_identity = Some(qi.clone());
-        } else {
-            // If not found, you might want to handle this case
-            // For now, we'll set selected_qualified_identity to None
-            self.selected_qualified_identity = None;
-        }
-    }
     pub fn new(app_context: &Arc<AppContext>) -> Self {
         let security_level_of_contract = app_context
             .dpns_contract
@@ -89,11 +74,14 @@ impl RegisterDpnsNameScreen {
             })
             .collect();
         let selected_qualified_identity = qualified_identities.first().cloned();
-        let selected_wallet = if let Some(wallet) = app_context.wallets.read().unwrap().first() {
-            Some(wallet.clone())
+
+        let mut error_message: Option<String> = None;
+        let selected_wallet = if let Some(ref identity) = selected_qualified_identity {
+            get_selected_wallet(&identity.0, app_context, &mut error_message)
         } else {
             None
         };
+
         let show_identity_selector = qualified_identities.len() > 0;
         Self {
             show_identity_selector,
@@ -105,7 +93,27 @@ impl RegisterDpnsNameScreen {
             selected_wallet,
             wallet_password: String::new(),
             show_password: false,
-            error_message: None,
+            error_message,
+        }
+    }
+
+    pub fn select_identity(&mut self, identity_id: Identifier) {
+        // Find the qualified identity with the matching identity_id
+        if let Some(qi) = self
+            .qualified_identities
+            .iter()
+            .find(|(qi, _)| qi.identity.id() == &identity_id)
+        {
+            // Set the selected_qualified_identity to the found identity
+            self.selected_qualified_identity = Some(qi.clone());
+            // Update the selected wallet
+            self.selected_wallet =
+                get_selected_wallet(&qi.0, &self.app_context, &mut self.error_message);
+        } else {
+            // If not found, you might want to handle this case
+            // For now, we'll set selected_qualified_identity to None
+            self.selected_qualified_identity = None;
+            self.selected_wallet = None;
         }
     }
 
@@ -168,31 +176,11 @@ impl RegisterDpnsNameScreen {
                                 .clicked()
                             {
                                 self.selected_qualified_identity = Some(qualified_identity.clone());
-
-                                if let Some((qualified_identity, _)) =  self.selected_qualified_identity.as_ref() {
-                                    let dpns_contract = &self.app_context.dpns_contract;
-
-                                    let preorder_document_type = dpns_contract
-                                        .document_type_for_name("preorder")
-                                        .expect("DPNS preorder document type not found");
-
-                                    let public_key = match qualified_identity
-                                        .document_signing_key(&preorder_document_type)
-                                        .ok_or(
-                                            "Identity doesn't have an authentication key for signing document transitions"
-                                                .to_string(),
-                                        ) {
-                                        Ok(public_key) => public_key,
-                                        Err(e) => {
-                                            self.error_message = Some(e);
-                                            return;
-                                        }
-                                    };
-
-                                    if let Some((_, PrivateKeyData::AtWalletDerivationPath(wallet_derivation_path))) = qualified_identity.private_keys.private_keys.get(&(PrivateKeyTarget::PrivateKeyOnMainIdentity, public_key.id())) {
-                                        self.selected_wallet = qualified_identity.associated_wallets.get(&wallet_derivation_path.wallet_seed_hash).cloned()
-                                    }
-                                }
+                                self.selected_wallet = get_selected_wallet(
+                                    &qualified_identity.0,
+                                    &self.app_context,
+                                    &mut self.error_message,
+                                );
                             }
                         }
                     });
@@ -237,8 +225,8 @@ impl ScreenLike for RegisterDpnsNameScreen {
             ctx,
             &self.app_context,
             vec![
-                ("Contested Names", AppAction::GoToMainScreen),
-                ("Register DPNS Name", AppAction::None),
+                ("DPNS", AppAction::GoToMainScreen),
+                ("Register Name", AppAction::None),
             ],
             vec![],
         );
@@ -309,12 +297,13 @@ impl ScreenLike for RegisterDpnsNameScreen {
             ui.add_space(10.0);
 
             // Register button
+            let mut new_style = (**ui.style()).clone();
+            new_style.spacing.button_padding = egui::vec2(10.0, 5.0);
+            ui.set_style(new_style);
             let button = egui::Button::new(RichText::new("Register Name").color(Color32::WHITE))
                 .fill(Color32::from_rgb(0, 128, 255))
                 .frame(true)
-                .rounding(3.0)
-                .min_size(egui::vec2(80.0, 30.0));
-
+                .rounding(3.0);
             if ui.add(button).clicked() {
                 // Set the status to waiting and capture the current time
                 let now = SystemTime::now()
@@ -442,4 +431,44 @@ pub fn is_contested_name(name: &str) -> bool {
         }
     }
     true
+}
+
+pub fn get_selected_wallet(
+    qualified_identity: &QualifiedIdentity,
+    app_context: &AppContext,
+    error_message: &mut Option<String>,
+) -> Option<Arc<RwLock<Wallet>>> {
+    let dpns_contract = &app_context.dpns_contract;
+
+    let preorder_document_type = match dpns_contract.document_type_for_name("preorder") {
+        Ok(doc_type) => doc_type,
+        Err(e) => {
+            *error_message = Some(format!("DPNS preorder document type not found: {}", e));
+            return None;
+        }
+    };
+
+    let public_key = match qualified_identity.document_signing_key(&preorder_document_type) {
+        Some(key) => key,
+        None => {
+            *error_message = Some(
+                "Identity doesn't have an authentication key for signing document transitions"
+                    .to_string(),
+            );
+            return None;
+        }
+    };
+
+    let key = (PrivateKeyTarget::PrivateKeyOnMainIdentity, public_key.id());
+
+    if let Some((_, PrivateKeyData::AtWalletDerivationPath(wallet_derivation_path))) =
+        qualified_identity.private_keys.private_keys.get(&key)
+    {
+        qualified_identity
+            .associated_wallets
+            .get(&wallet_derivation_path.wallet_seed_hash)
+            .cloned()
+    } else {
+        None
+    }
 }

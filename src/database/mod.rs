@@ -4,6 +4,7 @@ mod contracts;
 mod identities;
 mod initialization;
 mod proof_log;
+mod scheduled_votes;
 mod settings;
 mod top_ups;
 mod utxo;

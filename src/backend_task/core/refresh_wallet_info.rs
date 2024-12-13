@@ -74,6 +74,8 @@ impl AppContext {
         }
 
         // Step 5: Return a success result
-        Ok(BackendTaskSuccessResult::None)
+        Ok(BackendTaskSuccessResult::Message(
+            "Successfully refreshed wallet".to_string(),
+        ))
     }
 }

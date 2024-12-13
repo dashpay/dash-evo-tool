@@ -1,7 +1,7 @@
 use crate::app::AppAction;
 use crate::context::AppContext;
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::ScreenLike;
+use crate::ui::{wallet, ScreenLike};
 use eframe::egui::Context;
 
 use crate::model::wallet::encryption::{encrypt_message, DASH_SECRET_MESSAGE};
@@ -156,7 +156,7 @@ impl AddNewWalletScreen {
 
             // Acquire a write lock and add the new wallet
             if let Ok(mut wallets) = self.app_context.wallets.write() {
-                wallets.push(Arc::new(RwLock::new(wallet)));
+                wallets.insert(wallet.seed_hash(), Arc::new(RwLock::new(wallet)));
                 self.app_context.has_wallet.store(true, Ordering::Relaxed);
             } else {
                 eprintln!("Failed to acquire write lock on wallets");
@@ -314,7 +314,7 @@ impl ScreenLike for AddNewWalletScreen {
             ctx,
             &self.app_context,
             vec![
-                ("Identities", AppAction::GoToMainScreen),
+                ("Wallets", AppAction::GoToMainScreen),
                 ("Create Wallet", AppAction::None),
             ],
             vec![],

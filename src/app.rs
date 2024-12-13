@@ -2,6 +2,7 @@ use crate::app_dir::{
     app_user_data_file_path, copy_env_file_if_not_exists,
     create_app_user_data_directory_if_not_exists,
 };
+use crate::backend_task::contested_names::ContestedResourceTask;
 use crate::backend_task::core::CoreItem;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::components::core_zmq_listener::{CoreZMQListener, ZMQMessage};
@@ -9,7 +10,9 @@ use crate::context::AppContext;
 use crate::database::Database;
 use crate::logging::initialize_logger;
 use crate::ui::document_query_screen::DocumentQueryScreen;
-use crate::ui::dpns_contested_names_screen::{DPNSContestedNamesScreen, DPNSSubscreen};
+use crate::ui::dpns_contested_names_screen::{
+    DPNSContestedNamesScreen, DPNSSubscreen, IndividualVoteCastingStatus,
+};
 use crate::ui::identities::identities_screen::IdentitiesScreen;
 use crate::ui::network_chooser_screen::NetworkChooserScreen;
 use crate::ui::tool_screens::proof_log_screen::ProofLogScreen;
@@ -18,12 +21,13 @@ use crate::ui::wallet::wallets_screen::WalletsBalancesScreen;
 use crate::ui::withdrawal_statuses_screen::WithdrawsStatusScreen;
 use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike, ScreenType};
 use dash_sdk::dpp::dashcore::Network;
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use derive_more::From;
 use eframe::{egui, App};
 use std::collections::BTreeMap;
 use std::ops::BitOrAssign;
 use std::sync::{mpsc, Arc};
-use std::time::Instant;
+use std::time::{Duration, Instant, SystemTime};
 use std::vec;
 use tokio::sync::mpsc as tokiompsc;
 
@@ -56,11 +60,13 @@ pub struct AppState {
     pub task_result_sender: tokiompsc::Sender<TaskResult>, // Channel sender for sending task results
     pub task_result_receiver: tokiompsc::Receiver<TaskResult>, // Channel receiver for receiving task results
     last_repaint: Instant, // Track the last time we requested a repaint
+    last_scheduled_vote_check: Instant, // Last time we checked if there are scheduled masternode votes to cast
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum DesiredAppAction {
     None,
+    Refresh,
     PopScreen,
     GoToMainScreen,
     SwitchNetwork(Network),
@@ -72,6 +78,7 @@ impl DesiredAppAction {
     pub fn create_action(&self, app_context: &Arc<AppContext>) -> AppAction {
         match self {
             DesiredAppAction::None => AppAction::None,
+            DesiredAppAction::Refresh => AppAction::Refresh,
             DesiredAppAction::PopScreen => AppAction::PopScreen,
             DesiredAppAction::GoToMainScreen => AppAction::GoToMainScreen,
             DesiredAppAction::AddScreenType(screen_type) => {
@@ -88,11 +95,13 @@ impl DesiredAppAction {
 #[derive(Debug, PartialEq)]
 pub enum AppAction {
     None,
+    Refresh,
     PopScreen,
     PopScreenAndRefresh,
     GoToMainScreen,
     SwitchNetwork(Network),
     SetMainScreen(RootScreenType),
+    SetMainScreenThenPopScreen(RootScreenType),
     AddScreen(Screen),
     PopThenAddScreenToMainScreen(RootScreenType, Screen),
     BackendTask(BackendTask),
@@ -145,6 +154,8 @@ impl AppState {
             DPNSContestedNamesScreen::new(&mainnet_app_context, DPNSSubscreen::Past);
         let mut dpns_my_usernames_screen =
             DPNSContestedNamesScreen::new(&mainnet_app_context, DPNSSubscreen::Owned);
+        let mut dpns_scheduled_votes_screen =
+            DPNSContestedNamesScreen::new(&mainnet_app_context, DPNSSubscreen::ScheduledVotes);
         let mut transition_visualizer_screen =
             TransitionVisualizerScreen::new(&mainnet_app_context);
         let mut proof_log_screen = ProofLogScreen::new(&mainnet_app_context);
@@ -187,6 +198,10 @@ impl AppState {
                     DPNSContestedNamesScreen::new(&testnet_app_context, DPNSSubscreen::Past);
                 dpns_my_usernames_screen =
                     DPNSContestedNamesScreen::new(&testnet_app_context, DPNSSubscreen::Owned);
+                dpns_scheduled_votes_screen = DPNSContestedNamesScreen::new(
+                    &testnet_app_context,
+                    DPNSSubscreen::ScheduledVotes,
+                );
                 transition_visualizer_screen = TransitionVisualizerScreen::new(testnet_app_context);
                 document_query_screen = DocumentQueryScreen::new(testnet_app_context);
                 wallets_balances_screen = WalletsBalancesScreen::new(testnet_app_context);
@@ -245,6 +260,10 @@ impl AppState {
                     Screen::DPNSContestedNamesScreen(dpns_my_usernames_screen),
                 ),
                 (
+                    RootScreenType::RootScreenDPNSScheduledVotes,
+                    Screen::DPNSContestedNamesScreen(dpns_scheduled_votes_screen),
+                ),
+                (
                     RootScreenType::RootScreenWalletsBalances,
                     Screen::WalletsBalancesScreen(wallets_balances_screen),
                 ),
@@ -281,6 +300,7 @@ impl AppState {
             task_result_sender,
             task_result_receiver,
             last_repaint,
+            last_scheduled_vote_check: Instant::now(),
         }
     }
 
@@ -396,6 +416,7 @@ impl App for AppState {
                 *status = event;
             }
         }
+
         // Poll the receiver for any new task results
         while let Ok(task_result) = self.task_result_receiver.try_recv() {
             // Handle the result on the main thread
@@ -403,6 +424,9 @@ impl App for AppState {
                 TaskResult::Success(message) => match message {
                     BackendTaskSuccessResult::None => {
                         self.visible_screen_mut().pop_on_success();
+                    }
+                    BackendTaskSuccessResult::Refresh => {
+                        self.visible_screen_mut().refresh();
                     }
                     BackendTaskSuccessResult::Message(message) => {
                         self.visible_screen_mut()
@@ -415,6 +439,16 @@ impl App for AppState {
                         self.visible_screen_mut().display_task_result(message);
                     }
                     BackendTaskSuccessResult::SuccessfulVotes(_) => {
+                        self.visible_screen_mut().refresh();
+                    }
+                    BackendTaskSuccessResult::CastScheduledVote(vote) => {
+                        let _ = self
+                            .current_app_context()
+                            .mark_vote_executed(vote.voter_id.as_slice(), vote.contested_name);
+                        self.visible_screen_mut().display_message(
+                            "Successfully cast scheduled vote",
+                            MessageType::Success,
+                        );
                         self.visible_screen_mut().refresh();
                     }
                     BackendTaskSuccessResult::WithdrawalStatus(_) => {
@@ -478,6 +512,75 @@ impl App for AppState {
             }
         }
 
+        // Check if there are scheduled masternode votes to cast and if so, cast them
+        let now = Instant::now();
+        if now.duration_since(self.last_scheduled_vote_check) > Duration::from_secs(60) {
+            self.last_scheduled_vote_check = now;
+            let app_context = self.current_app_context();
+
+            // Query the database
+            let db_votes = match app_context.get_scheduled_votes() {
+                Ok(votes) => votes,
+                Err(e) => {
+                    eprintln!("Error querying scheduled votes: {}", e);
+                    return;
+                }
+            };
+
+            // Filter due votes
+            let current_time = SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64;
+            let due_votes: Vec<_> = db_votes
+                .into_iter()
+                .filter(|v| {
+                    v.unix_timestamp <= current_time
+                        && !v.executed_successfully
+                        && !(v.unix_timestamp + 120000 < current_time) // Don't cast votes more than 2 minutes behind current time
+                })
+                .collect();
+
+            // For each due vote, construct a BackendTask and handle it
+            if !due_votes.is_empty() {
+                let local_identities = match app_context.load_local_voting_identities() {
+                    Ok(identities) => identities,
+                    Err(e) => {
+                        eprintln!("Error querying local voting identities: {}", e);
+                        return;
+                    }
+                };
+
+                for vote in due_votes {
+                    if let Some(voter) = local_identities
+                        .iter()
+                        .find(|i| i.identity.id() == vote.voter_id)
+                    {
+                        let dpns_screen = self
+                            .main_screens
+                            .get_mut(&RootScreenType::RootScreenDPNSScheduledVotes)
+                            .unwrap();
+                        if let Screen::DPNSContestedNamesScreen(screen) = dpns_screen {
+                            screen.vote_cast_in_progress = true;
+                            screen
+                                .scheduled_votes
+                                .lock()
+                                .unwrap()
+                                .iter_mut()
+                                .find(|(v, _)| v == &vote)
+                                .map(|(_, s)| *s = IndividualVoteCastingStatus::InProgress);
+                        }
+                        let task = BackendTask::ContestedResourceTask(
+                            ContestedResourceTask::CastScheduledVote(vote, voter.clone()),
+                        );
+                        self.handle_backend_task(task);
+                    } else {
+                        eprintln!("Voter not found for scheduled vote: {:?}", vote);
+                    }
+                }
+            }
+        }
+
         // Use a timer to repaint the UI every 0.05 seconds
         ctx.request_repaint_after(std::time::Duration::from_millis(50));
 
@@ -486,6 +589,7 @@ impl App for AppState {
         match action {
             AppAction::AddScreen(screen) => self.screen_stack.push(screen),
             AppAction::None => {}
+            AppAction::Refresh => self.visible_screen_mut().refresh(),
             AppAction::PopScreen => {
                 if !self.screen_stack.is_empty() {
                     self.screen_stack.pop();
@@ -514,6 +618,16 @@ impl App for AppState {
                 self.current_app_context()
                     .update_settings(root_screen_type)
                     .ok();
+            }
+            AppAction::SetMainScreenThenPopScreen(root_screen_type) => {
+                self.selected_main_screen = root_screen_type;
+                self.active_root_screen_mut().refresh_on_arrival();
+                self.current_app_context()
+                    .update_settings(root_screen_type)
+                    .ok();
+                if !self.screen_stack.is_empty() {
+                    self.screen_stack.pop();
+                }
             }
             AppAction::SwitchNetwork(network) => {
                 self.change_network(network);

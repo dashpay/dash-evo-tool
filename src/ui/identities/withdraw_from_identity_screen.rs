@@ -114,8 +114,6 @@ impl WithdrawalScreen {
                 self.withdrawal_amount = format!("{:.4}", floored_amount);
             }
         });
-
-        tracing::info!("Withdrawal amount: {}", self.withdrawal_amount);
     }
 
     fn render_address_input(&mut self, ui: &mut Ui) {

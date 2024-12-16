@@ -160,7 +160,7 @@ impl ScheduleVoteScreen {
                     if chosen_time > self.ending_time {
                         self.message = Some((
                             MessageType::Error,
-                            "Scheduled time is after contest end time.".to_string(),
+                            "Error inserting scheduled votes: Scheduled time is after contest end time.".to_string(),
                         ));
                         return AppAction::None;
                     }
@@ -178,7 +178,10 @@ impl ScheduleVoteScreen {
         }
 
         if scheduled_votes.is_empty() {
-            self.message = Some((MessageType::Error, "No votes selected.".to_string()));
+            self.message = Some((
+                MessageType::Error,
+                "Error inserting scheduled votes: No votes selected.".to_string(),
+            ));
             return AppAction::None;
         }
 
@@ -271,7 +274,9 @@ impl ScreenLike for ScheduleVoteScreen {
             if let Some(message) = &self.message {
                 match message.0 {
                     MessageType::Error => {
-                        ui.colored_label(Color32::DARK_RED, message.1.clone());
+                        if message.1.contains("Error inserting scheduled votes") {
+                            ui.colored_label(Color32::DARK_RED, message.1.clone());
+                        }
                     }
                     MessageType::Success => {
                         if message.1.contains("Votes scheduled") {

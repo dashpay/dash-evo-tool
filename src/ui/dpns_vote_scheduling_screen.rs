@@ -274,7 +274,9 @@ impl ScreenLike for ScheduleVoteScreen {
                         ui.colored_label(Color32::DARK_RED, message.1.clone());
                     }
                     MessageType::Success => {
-                        action = self.show_success(ui);
+                        if message.1.contains("Votes scheduled") {
+                            action = self.show_success(ui);
+                        }
                     }
                     MessageType::Info => {
                         ui.colored_label(Color32::DARK_BLUE, message.1.clone());

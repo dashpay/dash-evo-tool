@@ -280,6 +280,10 @@ impl ScreenLike for RegisterDpnsNameScreen {
             ui.heading("1. Select Identity");
             ui.add_space(5.0);
             self.render_identity_id_selection(ui);
+            ui.add_space(5.0);
+            if let Some(identity) = &self.selected_qualified_identity {
+                ui.label(format!("Identity balance: {:.6}", identity.0.identity.balance() as f64 * 1e-11));
+            }
 
             ui.add_space(10.0);
             ui.separator();

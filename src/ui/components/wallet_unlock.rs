@@ -46,7 +46,7 @@ pub trait ScreenWithWalletUnlock {
 
             // Only render the unlock prompt if the wallet requires a password and is locked
             if wallet.uses_password && !wallet.is_open() {
-                ui.add_space(10.0);
+                ui.add_space(20.0);
                 if let Some(alias) = &wallet.alias {
                     ui.label(format!(
                         "This wallet ({}) is locked. Please enter the password to unlock it:",
@@ -55,6 +55,8 @@ pub trait ScreenWithWalletUnlock {
                 } else {
                     ui.label("This wallet is locked. Please enter the password to unlock it:");
                 }
+
+                ui.add_space(5.0);
 
                 let mut unlocked = false;
 

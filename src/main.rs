@@ -16,7 +16,10 @@ mod model;
 mod sdk_wrapper;
 mod ui;
 
+include!(concat!(env!("OUT_DIR"), "/version.rs"));
+
 fn main() -> eframe::Result<()> {
+    println!("running v{}", VERSION);
     check_cpu_compatibility();
     // Initialize the Tokio runtime
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -32,9 +35,8 @@ fn main() -> eframe::Result<()> {
             centered: true,       // Center window on startup if not maximized
             ..Default::default()
         };
-        let version = env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "".to_string());
         eframe::run_native(
-            &format!("Dash Evo Tool v{}", version),
+            &format!("Dash Evo Tool v{}", VERSION),
             native_options,
             Box::new(|_cc| Ok(Box::new(app::AppState::new()))),
         )

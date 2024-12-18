@@ -1,12 +1,13 @@
 use crate::context::AppContext;
 use dash_sdk::dpp::system_data_contracts::dpns_contract;
-use dash_sdk::platform::{DataContract, Fetch, Identifier};
+use dash_sdk::platform::{DataContract, Fetch, FetchMany, Identifier};
 use dash_sdk::Sdk;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum ContractTask {
     FetchDPNSContract,
     FetchContract(Identifier, Option<String>),
+    FetchContracts(Vec<Identifier>),
 }
 
 impl AppContext {
@@ -19,6 +20,21 @@ impl AppContext {
                         .insert_contract_if_not_exists(&data_contract, name.as_deref(), self)
                         .map_err(|e| e.to_string()),
                     Ok(None) => Ok(()),
+                    Err(e) => Err(e.to_string()),
+                }
+            }
+            ContractTask::FetchContracts(identifiers) => {
+                match DataContract::fetch_many(sdk, identifiers).await {
+                    Ok(data_contracts) => {
+                        for data_contract in data_contracts {
+                            if let Some(contract) = &data_contract.1 {
+                                self.db
+                                    .insert_contract_if_not_exists(contract, None, self)
+                                    .map_err(|e| e.to_string())?;
+                            }
+                        }
+                        Ok(())
+                    }
                     Err(e) => Err(e.to_string()),
                 }
             }

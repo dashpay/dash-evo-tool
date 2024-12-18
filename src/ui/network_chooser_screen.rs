@@ -4,7 +4,7 @@ use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::wallet::add_new_wallet_screen::AddNewWalletScreen;
+use crate::ui::wallets::add_new_wallet_screen::AddNewWalletScreen;
 use crate::ui::{RootScreenType, Screen, ScreenLike};
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::TimestampMillis;

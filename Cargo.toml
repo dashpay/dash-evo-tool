@@ -5,6 +5,7 @@ license = "MIT"
 edition = "2021"
 default-run = "dash-evo-tool"
 rust-version = "1.81"
+build = "build.rs"
 
 [build]
 rustflags = [

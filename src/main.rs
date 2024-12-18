@@ -16,11 +16,14 @@ mod model;
 mod sdk_wrapper;
 mod ui;
 
+include!(concat!(env!("OUT_DIR"), "/version.rs"));
+
 fn main() -> eframe::Result<()> {
     create_app_user_data_directory_if_not_exists()
         .expect("Failed to create app user_data directory");
     let app_data_dir = app_user_data_dir_path()
         .expect("Failed to get app user_data directory path");
+    println!("running v{}", VERSION);
     check_cpu_compatibility();
     // Initialize the Tokio runtime
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -37,9 +40,8 @@ fn main() -> eframe::Result<()> {
             persistence_path: Some(app_data_dir.join("app.ron")),
             ..Default::default()
         };
-        let version = env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "".to_string());
         eframe::run_native(
-            &format!("Dash Evo Tool v{}", version),
+            &format!("Dash Evo Tool v{}", VERSION),
             native_options,
             Box::new(|_cc| Ok(Box::new(app::AppState::new()))),
         )

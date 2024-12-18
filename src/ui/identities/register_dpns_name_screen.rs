@@ -16,11 +16,12 @@ use dash_sdk::dpp::identity::{Purpose, SecurityLevel, TimestampMillis};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
 use eframe::egui::Context;
-use egui::{Color32, RichText};
+use egui::{Color32, RichText, Ui};
 use std::sync::Arc;
 use std::sync::RwLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[derive(PartialEq)]
 pub enum RegisterDpnsNameStatus {
     NotStarted,
     WaitingForResult(TimestampMillis),
@@ -201,6 +202,32 @@ impl RegisterDpnsNameScreen {
             dpns_name_input,
         )))
     }
+
+    pub fn show_success(&mut self, ui: &mut Ui) -> AppAction {
+        let mut action = AppAction::None;
+
+        // Center the content vertically and horizontally
+        ui.vertical_centered(|ui| {
+            ui.add_space(50.0);
+
+            ui.heading("🎉");
+            ui.heading("Successfully registered dpns name.");
+
+            ui.add_space(20.0);
+
+            if ui.button("Back to DPNS screen").clicked() {
+                action = AppAction::PopScreenAndRefresh;
+            }
+            ui.add_space(5.0);
+
+            if ui.button("Register another name").clicked() {
+                self.name_input = String::new();
+                self.register_dpns_name_status = RegisterDpnsNameStatus::NotStarted;
+            }
+        });
+
+        action
+    }
 }
 
 impl ScreenLike for RegisterDpnsNameScreen {
@@ -232,6 +259,11 @@ impl ScreenLike for RegisterDpnsNameScreen {
         );
 
         egui::CentralPanel::default().show(ctx, |ui| {
+            if self.register_dpns_name_status == RegisterDpnsNameStatus::Complete {
+                action |= self.show_success(ui);
+                return;
+            }
+
             ui.heading("Register DPNS Name");
             ui.add_space(10.0);
 
@@ -248,6 +280,10 @@ impl ScreenLike for RegisterDpnsNameScreen {
             ui.heading("1. Select Identity");
             ui.add_space(5.0);
             self.render_identity_id_selection(ui);
+            ui.add_space(5.0);
+            if let Some(identity) = &self.selected_qualified_identity {
+                ui.label(format!("Identity balance: {:.6}", identity.0.identity.balance() as f64 * 1e-11));
+            }
 
             ui.add_space(10.0);
             ui.separator();
@@ -352,9 +388,7 @@ impl ScreenLike for RegisterDpnsNameScreen {
                 RegisterDpnsNameStatus::ErrorMessage(msg) => {
                     ui.colored_label(egui::Color32::RED, format!("Error: {}", msg));
                 }
-                RegisterDpnsNameStatus::Complete => {
-                    action = AppAction::PopScreenAndRefresh;
-                }
+                RegisterDpnsNameStatus::Complete => {}
             }
 
             ui.add_space(10.0);

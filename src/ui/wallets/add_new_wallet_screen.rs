@@ -1,7 +1,7 @@
 use crate::app::AppAction;
 use crate::context::AppContext;
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::{wallet, ScreenLike};
+use crate::ui::{wallets, ScreenLike};
 use eframe::egui::Context;
 
 use crate::model::wallet::encryption::{encrypt_message, DASH_SECRET_MESSAGE};

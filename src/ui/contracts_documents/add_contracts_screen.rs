@@ -3,9 +3,11 @@ use crate::backend_task::contract::ContractTask;
 use crate::backend_task::BackendTask;
 use crate::context::AppContext;
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::{MessageType, ScreenLike};
+use crate::ui::{BackendTaskSuccessResult, MessageType, ScreenLike};
+use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::identifier::Identifier;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+use dash_sdk::dpp::prelude::DataContract;
 use dash_sdk::dpp::prelude::TimestampMillis;
 use eframe::egui::{self, Color32, Context, RichText, Ui};
 use std::sync::Arc;
@@ -16,7 +18,7 @@ const MAX_CONTRACTS: usize = 10;
 enum AddContractsStatus {
     NotStarted,
     WaitingForResult(TimestampMillis),
-    Complete(Vec<(String, Result<(), String>)>),
+    Complete(Vec<String>), // Vec of tuples: original input contract id and option if it was fetched from platform
     ErrorMessage(String),
 }
 
@@ -109,21 +111,11 @@ impl AddContractsScreen {
         ui.add_space(10.0);
 
         if let AddContractsStatus::Complete(results) = &self.add_contracts_status {
-            for (original_input, result) in results {
-                match result {
-                    Ok(_) => {
-                        ui.colored_label(
-                            Color32::DARK_GREEN,
-                            format!("Contract {}: Successfully Added", original_input),
-                        );
-                    }
-                    Err(err) => {
-                        ui.colored_label(
-                            Color32::RED,
-                            format!("Contract {}: Failed to Add - {}", original_input, err),
-                        );
-                    }
-                }
+            for id_string in results {
+                ui.colored_label(
+                    Color32::DARK_GREEN,
+                    format!("Contract {}: Successfully Added", id_string),
+                );
                 ui.add_space(5.0);
             }
         }
@@ -147,37 +139,42 @@ impl ScreenLike for AddContractsScreen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
         match message_type {
             MessageType::Success => {
-                // Assume we get something like "AddContractsComplete" along with the contract results
-                // You would parse the backend result here and store in Complete state
-                // For demonstration, let's say the backend returns a success/fail result for each entered ID.
-                // We’ll simulate it with a placeholder. In real code, you'd store the actual results from the backend.
-
-                // Example:
-                // self.add_contracts_status = AddContractsStatus::Complete(results_from_backend);
-
-                // If you only got a single message, you might need to implement a channel or another mechanism
-                // to store the actual results. For now, let's assume results were handled elsewhere
-                // and that this message indicates completion.
-
-                // If we have no mechanism, let's just set complete with a success message for each.
-                let results = self
-                    .contract_ids
-                    .iter()
-                    .map(|id| {
-                        if !id.trim().is_empty() {
-                            (id.clone(), Ok(()))
-                        } else {
-                            (id.clone(), Err("Empty input".to_string()))
-                        }
-                    })
-                    .collect();
-                self.add_contracts_status = AddContractsStatus::Complete(results);
+                // Not used
             }
             MessageType::Error => {
                 self.add_contracts_status = AddContractsStatus::ErrorMessage(message.to_string());
             }
             MessageType::Info => {
-                // Not used in this scenario
+                // Not used
+            }
+        }
+    }
+
+    fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
+        match backend_task_success_result {
+            BackendTaskSuccessResult::FetchedContracts(contract_options) => {
+                let options = self
+                    .contract_ids
+                    .clone()
+                    .into_iter()
+                    .filter_map(|input_id| {
+                        if contract_options.iter().any(|option| {
+                            if let Some(contract) = option {
+                                contract.id().to_string(Encoding::Base58) == input_id.trim()
+                            } else {
+                                false
+                            }
+                        }) {
+                            Some(input_id)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                self.add_contracts_status = AddContractsStatus::Complete(options);
+            }
+            _ => {
+                // Nothing
             }
         }
     }

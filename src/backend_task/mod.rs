@@ -8,6 +8,7 @@ use crate::backend_task::withdrawal_statuses::{WithdrawStatusPartialData, Withdr
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use contested_names::ScheduledDPNSVote;
+use dash_sdk::dpp::prelude::DataContract;
 use dash_sdk::dpp::voting::votes::Vote;
 use dash_sdk::query_types::Documents;
 use std::sync::Arc;
@@ -42,6 +43,8 @@ pub(crate) enum BackendTaskSuccessResult {
     SuccessfulVotes(Vec<Vote>),
     CastScheduledVote(ScheduledDPNSVote),
     WithdrawalStatus(WithdrawStatusPartialData),
+    FetchedContract(DataContract),
+    FetchedContracts(Vec<Option<DataContract>>),
 }
 
 impl BackendTaskSuccessResult {}
@@ -65,10 +68,9 @@ impl AppContext {
     ) -> Result<BackendTaskSuccessResult, String> {
         let sdk = self.sdk.clone();
         match task {
-            BackendTask::ContractTask(contract_task) => self
-                .run_contract_task(contract_task, &sdk)
-                .await
-                .map(|_| BackendTaskSuccessResult::None),
+            BackendTask::ContractTask(contract_task) => {
+                self.run_contract_task(contract_task, &sdk).await
+            }
             BackendTask::ContestedResourceTask(contested_resource_task) => {
                 self.run_contested_resource_task(contested_resource_task, &sdk, sender)
                     .await

@@ -460,6 +460,12 @@ impl App for AppState {
                     BackendTaskSuccessResult::ToppedUpIdentity(_) => {
                         self.visible_screen_mut().display_task_result(message);
                     }
+                    BackendTaskSuccessResult::FetchedContract(_) => {
+                        self.visible_screen_mut().display_task_result(message);
+                    }
+                    BackendTaskSuccessResult::FetchedContracts(_) => {
+                        self.visible_screen_mut().display_task_result(message);
+                    }
                 },
                 TaskResult::Error(message) => {
                     self.visible_screen_mut()

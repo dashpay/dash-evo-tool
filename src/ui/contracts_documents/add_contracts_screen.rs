@@ -110,12 +110,20 @@ impl AddContractsScreen {
         ui.heading("Contracts Added");
         ui.add_space(10.0);
 
-        if let AddContractsStatus::Complete(results) = &self.add_contracts_status {
-            for id_string in results {
-                ui.colored_label(
-                    Color32::DARK_GREEN,
-                    format!("Contract {}: Successfully Added", id_string),
-                );
+        if let AddContractsStatus::Complete(options) = &self.add_contracts_status {
+            for id_string in self.contract_ids.clone() {
+                let trimmed_id_string = id_string.trim();
+                if options.contains(&trimmed_id_string.to_string()) {
+                    ui.colored_label(
+                        Color32::DARK_GREEN,
+                        format!("Contract {}: Successfully Added", trimmed_id_string),
+                    );
+                } else {
+                    ui.colored_label(
+                        Color32::RED,
+                        format!("Contract {}: Not Found", trimmed_id_string),
+                    );
+                }
                 ui.add_space(5.0);
             }
         }
@@ -155,8 +163,7 @@ impl ScreenLike for AddContractsScreen {
             BackendTaskSuccessResult::FetchedContracts(contract_options) => {
                 let options = self
                     .contract_ids
-                    .clone()
-                    .into_iter()
+                    .iter()
                     .filter_map(|input_id| {
                         if contract_options.iter().any(|option| {
                             if let Some(contract) = option {
@@ -170,6 +177,7 @@ impl ScreenLike for AddContractsScreen {
                             None
                         }
                     })
+                    .cloned()
                     .collect();
                 self.add_contracts_status = AddContractsStatus::Complete(options);
             }

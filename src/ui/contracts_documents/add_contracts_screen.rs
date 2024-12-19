@@ -7,7 +7,6 @@ use crate::ui::{BackendTaskSuccessResult, MessageType, ScreenLike};
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::identifier::Identifier;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
-use dash_sdk::dpp::prelude::DataContract;
 use dash_sdk::dpp::prelude::TimestampMillis;
 use eframe::egui::{self, Color32, Context, RichText, Ui};
 use std::sync::Arc;
@@ -18,13 +17,13 @@ const MAX_CONTRACTS: usize = 10;
 enum AddContractsStatus {
     NotStarted,
     WaitingForResult(TimestampMillis),
-    Complete(Vec<String>), // Vec of tuples: original input contract id and option if it was fetched from platform
+    Complete(Vec<String>),
     ErrorMessage(String),
 }
 
 pub struct AddContractsScreen {
     pub app_context: Arc<AppContext>,
-    contract_ids: Vec<String>,
+    contract_ids_input: Vec<String>,
     add_contracts_status: AddContractsStatus,
 }
 
@@ -32,20 +31,20 @@ impl AddContractsScreen {
     pub fn new(app_context: &Arc<AppContext>) -> Self {
         Self {
             app_context: app_context.clone(),
-            contract_ids: vec!["".to_string()],
+            contract_ids_input: vec!["".to_string()],
             add_contracts_status: AddContractsStatus::NotStarted,
         }
     }
 
     fn add_contract_field(&mut self) {
-        if self.contract_ids.len() < MAX_CONTRACTS {
-            self.contract_ids.push("".to_string());
+        if self.contract_ids_input.len() < MAX_CONTRACTS {
+            self.contract_ids_input.push("".to_string());
         }
     }
 
     fn parse_identifiers(&self) -> Result<Vec<Identifier>, String> {
         let mut identifiers = Vec::new();
-        for (i, input) in self.contract_ids.iter().enumerate() {
+        for (i, input) in self.contract_ids_input.iter().enumerate() {
             let trimmed = input.trim();
             if trimmed.is_empty() {
                 continue; // Empty fields are ignored
@@ -91,7 +90,7 @@ impl AddContractsScreen {
         ui.heading("Enter Contract Identifiers:");
         ui.add_space(5.0);
 
-        for (i, contract_id) in self.contract_ids.iter_mut().enumerate() {
+        for (i, contract_id) in self.contract_ids_input.iter_mut().enumerate() {
             ui.horizontal(|ui| {
                 ui.label(format!("Contract {}:", i + 1));
                 ui.text_edit_singleline(contract_id);
@@ -99,7 +98,7 @@ impl AddContractsScreen {
             ui.add_space(5.0);
         }
 
-        if self.contract_ids.len() < MAX_CONTRACTS {
+        if self.contract_ids_input.len() < MAX_CONTRACTS {
             if ui.button("Add Another Contract Field").clicked() {
                 self.add_contract_field();
             }
@@ -107,39 +106,40 @@ impl AddContractsScreen {
     }
 
     fn show_success_screen(&mut self, ui: &mut Ui) -> AppAction {
-        ui.heading("Contracts Added");
-        ui.add_space(10.0);
+        let mut action = AppAction::None;
 
-        if let AddContractsStatus::Complete(options) = &self.add_contracts_status {
-            for id_string in self.contract_ids.clone() {
-                let trimmed_id_string = id_string.trim();
-                if options.contains(&trimmed_id_string.to_string()) {
-                    ui.colored_label(
-                        Color32::DARK_GREEN,
-                        format!("Contract {}: Successfully Added", trimmed_id_string),
-                    );
-                } else {
-                    ui.colored_label(
-                        Color32::RED,
-                        format!("Contract {}: Not Found", trimmed_id_string),
-                    );
+        ui.vertical_centered(|ui| {
+            ui.add_space(50.0);
+
+            ui.heading("🎉");
+            ui.heading("Successfully added contracts");
+            ui.add_space(10.0);
+
+            if let AddContractsStatus::Complete(options) = &self.add_contracts_status {
+                for id_string in self.contract_ids_input.clone() {
+                    let trimmed_id_string = id_string.trim();
+                    if options.contains(&trimmed_id_string.to_string()) {
+                        ui.colored_label(Color32::DARK_GREEN, format!("{} ✅", trimmed_id_string));
+                    } else {
+                        ui.colored_label(Color32::RED, format!("{} ❌", trimmed_id_string));
+                    }
+                    ui.add_space(5.0);
                 }
-                ui.add_space(5.0);
             }
-        }
 
-        ui.add_space(20.0);
-        let button =
-            egui::Button::new(RichText::new("Go back to Contracts Screen").color(Color32::WHITE))
-                .fill(Color32::from_rgb(0, 128, 255))
-                .frame(true)
-                .rounding(3.0);
-        if ui.add(button).clicked() {
-            // Return to previous screen
-            return AppAction::PopScreenAndRefresh;
-        }
+            ui.add_space(20.0);
+            let button =
+                egui::Button::new(RichText::new("Back to Contracts").color(Color32::WHITE))
+                    .fill(Color32::from_rgb(0, 128, 255))
+                    .frame(true)
+                    .rounding(3.0);
+            if ui.add(button).clicked() {
+                // Return to previous screen
+                action = AppAction::PopScreenAndRefresh;
+            }
+        });
 
-        AppAction::None
+        action
     }
 }
 
@@ -160,14 +160,15 @@ impl ScreenLike for AddContractsScreen {
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         match backend_task_success_result {
-            BackendTaskSuccessResult::FetchedContracts(contract_options) => {
-                let options = self
-                    .contract_ids
+            BackendTaskSuccessResult::FetchedContracts(maybe_found_contracts) => {
+                let maybe_contracts = self
+                    .contract_ids_input
                     .iter()
                     .filter_map(|input_id| {
-                        if contract_options.iter().any(|option| {
+                        if maybe_found_contracts.iter().any(|option| {
                             if let Some(contract) = option {
                                 contract.id().to_string(Encoding::Base58) == input_id.trim()
+                                    || hex::encode(contract.id()) == input_id.trim()
                             } else {
                                 false
                             }
@@ -179,7 +180,7 @@ impl ScreenLike for AddContractsScreen {
                     })
                     .cloned()
                     .collect();
-                self.add_contracts_status = AddContractsStatus::Complete(options);
+                self.add_contracts_status = AddContractsStatus::Complete(maybe_contracts);
             }
             _ => {
                 // Nothing
@@ -188,22 +189,18 @@ impl ScreenLike for AddContractsScreen {
     }
 
     fn ui(&mut self, ctx: &Context) -> AppAction {
-        let add_contract_button = (
-            "Add Contracts",
-            DesiredAppAction::AddScreenType(crate::ui::ScreenType::AddContracts),
-        );
         let mut action = add_top_panel(
             ctx,
             &self.app_context,
             vec![
-                ("Document Queries", AppAction::GoToMainScreen),
+                ("Contracts", AppAction::GoToMainScreen),
                 ("Add Contracts", AppAction::None),
             ],
-            vec![add_contract_button],
+            vec![],
         );
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("Add Contracts to Query");
+            ui.heading("Add Contracts");
             ui.add_space(10.0);
 
             match &self.add_contracts_status {
@@ -253,7 +250,7 @@ impl ScreenLike for AddContractsScreen {
                     };
 
                     ui.label(format!(
-                        "Adding contracts... Time taken so far: {}",
+                        "Fetching contracts... Time taken so far: {}",
                         display_time
                     ));
                 }

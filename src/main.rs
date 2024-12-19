@@ -15,6 +15,7 @@ mod logging;
 mod model;
 mod sdk_wrapper;
 mod ui;
+mod utils;
 
 fn main() -> eframe::Result<()> {
     check_cpu_compatibility();

@@ -95,7 +95,7 @@ pub fn add_contract_chooser_panel(
                                     let index_resp = ui.collapsing(index_header_text, |ui| {
                                         // Show index properties if expanded
                                         for prop in &index.properties {
-                                            ui.label(format!("Property: {:?}", prop));
+                                            ui.label(format!("{:?}", prop));
                                         }
                                     });
 

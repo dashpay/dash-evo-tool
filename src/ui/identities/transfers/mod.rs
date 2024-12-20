@@ -19,8 +19,8 @@ use egui::{Color32, RichText};
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use super::components::wallet_unlock::ScreenWithWalletUnlock;
-use super::identities::register_dpns_name_screen::get_selected_wallet;
+use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
+use crate::ui::identities::register_dpns_name_screen::get_selected_wallet;
 
 pub enum TransferCreditsStatus {
     NotStarted,

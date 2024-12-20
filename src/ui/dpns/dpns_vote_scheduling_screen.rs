@@ -14,8 +14,8 @@ use eframe::egui::Context;
 use eframe::egui::{self, Color32, RichText, Ui};
 use std::sync::Arc;
 
-use super::components::top_panel::add_top_panel;
-use super::RootScreenType;
+use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::RootScreenType;
 
 enum VoteOption {
     None,

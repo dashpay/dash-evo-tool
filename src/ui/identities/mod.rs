@@ -5,4 +5,5 @@ pub mod identities_screen;
 pub mod keys;
 pub mod register_dpns_name_screen;
 pub mod top_up_identity_screen;
+pub mod transfers;
 pub mod withdraw_from_identity_screen;

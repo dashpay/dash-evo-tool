@@ -100,39 +100,56 @@ pub fn add_contract_chooser_panel(
                                     });
 
                                     // Handle toggling of index
-                                    if index_resp.header_response.clicked() {
-                                        if index_resp.body_response.is_some() {
-                                            // Index opened (expanded)
-                                            *selected_index = Some(index.clone());
-                                            if let Ok(new_doc_type) = contract
-                                                .contract
-                                                .document_type_cloned_for_name(&doc_name)
-                                            {
-                                                *selected_document_type = new_doc_type;
-                                                *selected_data_contract = contract.clone();
-                                                // Rebuild the query with the selected index
-                                                *document_query = format!(
-                                                    "SELECT * FROM {} WHERE `{}` = 'INSERT {} HERE'",
-                                                    selected_document_type.name(),
-                                                    index.property_names().first().expect("Expected the index to have at least one property name"),
-                                                    index.property_names().first().expect("Expected the index to have at least one property name")
-                                                );
-                                            }
-                                        } else {
-                                            // Index closed (collapsed)
-                                            *selected_index = None;
-                                            // Rebuild the query without index constraint
+                                    // If the index is selected (expanded), build a WHERE clause for all properties:
+                                    if index_resp.header_response.clicked()
+                                        && index_resp.body_response.is_some()
+                                    {
+                                        *selected_index = Some(index.clone());
+                                        if let Ok(new_doc_type) = contract
+                                            .contract
+                                            .document_type_cloned_for_name(&doc_name)
+                                        {
+                                            *selected_document_type = new_doc_type;
+                                            *selected_data_contract = contract.clone();
+
+                                            // Build the WHERE clause using all property names
+                                            let conditions: Vec<String> = index
+                                                .property_names()
+                                                .iter()
+                                                .map(|property_name| {
+                                                    format!("`{}` = '___'", property_name)
+                                                })
+                                                .collect();
+
+                                            let where_clause = if conditions.is_empty() {
+                                                String::new()
+                                            } else {
+                                                format!(" WHERE {}", conditions.join(" AND "))
+                                            };
+
                                             *document_query = format!(
-                                                "SELECT * FROM {}",
-                                                selected_document_type.name()
+                                                "SELECT * FROM {}{}",
+                                                selected_document_type.name(),
+                                                where_clause
                                             );
                                         }
+                                    } else if index_resp.header_response.clicked()
+                                        && index_resp.body_response.is_none()
+                                    {
+                                        // Index closed (collapsed)
+                                        *selected_index = None;
+                                        // Rebuild the query without index constraint
+                                        *document_query = format!(
+                                            "SELECT * FROM {}",
+                                            selected_document_type.name()
+                                        );
                                     }
                                 }
                             });
 
                             // Check doc type toggling
-                            if doc_resp.header_response.clicked() && doc_resp.body_response.is_some()
+                            if doc_resp.header_response.clicked()
+                                && doc_resp.body_response.is_some()
                             {
                                 if let Ok(new_doc_type) =
                                     contract.contract.document_type_cloned_for_name(&doc_name)
@@ -140,10 +157,8 @@ pub fn add_contract_chooser_panel(
                                     *selected_document_type = new_doc_type;
                                     *selected_data_contract = contract.clone();
                                     *selected_index = None;
-                                    *document_query = format!(
-                                        "SELECT * FROM {}",
-                                        selected_document_type.name()
-                                    );
+                                    *document_query =
+                                        format!("SELECT * FROM {}", selected_document_type.name());
                                 }
                             } else if doc_resp.header_response.clicked()
                                 && doc_resp.body_response.is_none()
@@ -151,10 +166,8 @@ pub fn add_contract_chooser_panel(
                                 // Doc type collapsed again: still have doc type & contract
                                 // required, so do not clear them. Just clear index if any.
                                 *selected_index = None;
-                                *document_query = format!(
-                                    "SELECT * FROM {}",
-                                    selected_document_type.name()
-                                );
+                                *document_query =
+                                    format!("SELECT * FROM {}", selected_document_type.name());
                             }
                         }
                     });

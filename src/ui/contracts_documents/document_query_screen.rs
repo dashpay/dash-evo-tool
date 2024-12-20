@@ -81,11 +81,17 @@ impl DocumentQueryScreen {
     fn show_input_field(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
         ui.horizontal(|ui| {
-            ui.text_edit_singleline(&mut self.document_query);
-            let button = egui::Button::new(RichText::new("Fetch Documents").color(Color32::WHITE))
-                .fill(Color32::from_rgb(0, 128, 255))
-                .frame(true)
-                .rounding(3.0);
+            let button_width = 120.0;
+            let text_width = ui.available_width() - button_width;
+
+            ui.add(egui::TextEdit::singleline(&mut self.document_query).desired_width(text_width));
+
+            let button = egui::Button::new(
+                egui::RichText::new("Fetch Documents").color(egui::Color32::WHITE),
+            )
+            .fill(egui::Color32::from_rgb(0, 128, 255))
+            .frame(true)
+            .rounding(3.0);
             if ui.add(button).clicked() {
                 let parser =
                     DocumentQueryTextInputParser::new(self.selected_data_contract.contract.clone());

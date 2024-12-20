@@ -1,13 +1,21 @@
 use crate::app::{AppAction, DesiredAppAction};
+use crate::backend_task::document::DocumentTask::FetchDocuments;
+use crate::backend_task::BackendTask;
 use crate::context::AppContext;
 use crate::ui::components::contract_chooser_panel::add_contract_chooser_panel;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::{BackendTaskSuccessResult, MessageType, RootScreenType, ScreenLike, ScreenType};
+use crate::utils::parsers::{DocumentQueryTextInputParser, TextInputParser};
 use chrono::{DateTime, Utc};
-use dash_sdk::dpp::prelude::DocumentType;
-use egui::Context;
+use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
+use dash_sdk::dpp::data_contract::document_type::DocumentType;
+use dash_sdk::dpp::prelude::TimestampMillis;
+use dash_sdk::platform::{DataContract, Document};
+use egui::{Color32, Context, RichText, ScrollArea, TextEdit, Ui};
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub struct DocumentQueryScreen {
     pub app_context: Arc<AppContext>,
@@ -16,20 +24,32 @@ pub struct DocumentQueryScreen {
     document_query: String,
     selected_data_contract: DataContract,
     selected_document_type: DocumentType,
-    matching_documents: Vec<String>,
+    matching_documents: Vec<Document>,
+    document_query_status: DocumentQueryStatus,
+}
+
+pub enum DocumentQueryStatus {
+    NotStarted,
+    WaitingForResult(TimestampMillis),
+    Complete,
+    ErrorMessage(String),
 }
 
 impl DocumentQueryScreen {
     pub fn new(app_context: &Arc<AppContext>) -> Self {
-        let selected_document_type = app_context.dpns_contract.document_type_for_name("domain");
+        let selected_document_type = app_context
+            .dpns_contract
+            .document_type_cloned_for_name("domain")
+            .expect("Expected to find domain document type in DPNS contract");
         Self {
             app_context: app_context.clone(),
             error_message: None,
             contract_search_term: String::new(),
-            document_query: format!("SELECT * FROM {}", selected_document_type),
-            selected_data_contract: app_context.dpns_contract,
+            document_query: format!("SELECT * FROM {}", selected_document_type.name()),
+            selected_data_contract: (*app_context.dpns_contract).clone(),
             selected_document_type,
             matching_documents: vec![],
+            document_query_status: DocumentQueryStatus::NotStarted,
         }
     }
 
@@ -42,53 +62,100 @@ impl DocumentQueryScreen {
             let now = Utc::now();
             let elapsed = now.signed_duration_since(*timestamp);
 
-            // Automatically dismiss the error message after 5 seconds
-            if elapsed.num_seconds() > 5 {
+            // Automatically dismiss the error message after 10 seconds
+            if elapsed.num_seconds() > 10 {
                 self.dismiss_error();
             }
         }
     }
 
-    fn show_input_field(&mut self, ui: &mut Ui) {
-        ui.label("Document SQL query:");
+    fn show_input_field(&mut self, ui: &mut Ui) -> AppAction {
+        let mut action = AppAction::None;
         ui.horizontal(|ui| {
-            ui.text_edit_singleline(self.document_query);
+            ui.label("Document SQL query: ");
+            ui.text_edit_singleline(&mut self.document_query);
             let button = egui::Button::new(RichText::new("Go").color(Color32::WHITE))
                 .fill(Color32::from_rgb(0, 128, 255))
                 .frame(true)
                 .rounding(3.0);
             if ui.add(button).clicked() {
-                // Set the status to waiting and capture the current time
-                let now = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .expect("Time went backwards")
-                    .as_secs();
-                self.register_dpns_name_status = DocumentQueryStatus::WaitingForResult(now);
-                action = AppAction::BackendTask(BackendTask::DocumentTask(FetchDocuments(
-                    self.document_query,
-                )));
+                let parser = DocumentQueryTextInputParser::new(self.selected_data_contract.clone());
+                match parser.parse_input(&self.document_query) {
+                    Ok(parsed_query) => {
+                        // Set the status to waiting and capture the current time
+                        let now = SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .expect("Time went backwards")
+                            .as_secs();
+                        self.document_query_status = DocumentQueryStatus::WaitingForResult(now);
+                        action = AppAction::BackendTask(BackendTask::DocumentTask(FetchDocuments(
+                            parsed_query,
+                        )));
+                    }
+                    Err(e) => {
+                        self.document_query_status = DocumentQueryStatus::ErrorMessage(format!(
+                            "Failed to parse query properly: {}",
+                            e
+                        ));
+                        self.error_message = Some((
+                            format!("Failed to parse query properly: {}", e),
+                            MessageType::Error,
+                            Utc::now(),
+                        ));
+                    }
+                }
             }
         });
+
+        action
     }
 
-    fn show_output(&self, ui: &mut Ui) {
+    fn show_output(&mut self, ui: &mut Ui) {
         ui.separator();
         ui.label("Matching documents:");
+        ui.add_space(10.0);
 
         ScrollArea::vertical().show(ui, |ui| {
-            ui.set_width(ui.available_width()); // Make the scroll area take the entire width
+            ui.set_width(ui.available_width());
 
-            if let Some(ref json) = self.matching_documents {
-                ui.add(
-                    TextEdit::multiline(&mut json.clone())
-                        .desired_rows(10)
-                        .desired_width(ui.available_width()) // Make the output take the entire width
-                        .font(egui::TextStyle::Monospace), // Use a monospace font for JSON
-                );
-            } else if let Some(ref error) = self.error_message {
-                ui.colored_label(egui::Color32::RED, error.0);
-            } else {
-                ui.label("No valid documents parsed yet.");
+            match self.document_query_status {
+                DocumentQueryStatus::WaitingForResult(start_time) => {
+                    let time_elapsed = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .expect("Time went backwards")
+                        .as_secs()
+                        - start_time;
+                    ui.label(format!(
+                        "Fetching documents... Time taken so far: {}",
+                        time_elapsed
+                    ));
+                }
+                DocumentQueryStatus::Complete => {
+                    // Display fetched documents in JSON format (stored in self.matching_documents)
+                    // First, convert documents to JSON strings
+                    let mut json_string_documents =
+                        self.matching_documents
+                            .iter()
+                            .fold(String::new(), |acc, doc| {
+                                let doc_json = serde_json::to_string_pretty(doc).unwrap();
+                                format!("{}\n{}", acc, doc_json)
+                            });
+
+                    ui.add(
+                        TextEdit::multiline(&mut json_string_documents)
+                            .desired_rows(10)
+                            .desired_width(ui.available_width())
+                            .font(egui::TextStyle::Monospace),
+                    );
+                }
+                DocumentQueryStatus::ErrorMessage(ref message) => {
+                    self.error_message =
+                        Some((message.to_string(), MessageType::Error, Utc::now()));
+                    ui.colored_label(egui::Color32::DARK_RED, message);
+                }
+                _ => {
+                    // Nothing
+                }
             }
         });
     }
@@ -98,12 +165,22 @@ impl ScreenLike for DocumentQueryScreen {
     fn refresh(&mut self) {}
 
     fn display_message(&mut self, message: &str, message_type: MessageType) {
-        self.error_message = Some((message.to_string(), message_type, Utc::now()));
+        // Only display the error message resulting from FetchDocuments backend task
+        if message.contains("Error fetching documents") {
+            self.document_query_status = DocumentQueryStatus::ErrorMessage(message.to_string());
+            self.error_message = Some((message.to_string(), message_type, Utc::now()));
+        }
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         match backend_task_success_result {
-            BackendTaskSuccessResult::Documents(documents) => self.matching_documents = documents,
+            BackendTaskSuccessResult::Documents(documents) => {
+                self.matching_documents = documents
+                    .iter()
+                    .filter_map(|(_, doc)| doc.clone())
+                    .collect();
+                self.document_query_status = DocumentQueryStatus::Complete;
+            }
             _ => {
                 // Nothing
             }
@@ -133,22 +210,7 @@ impl ScreenLike for DocumentQueryScreen {
             add_contract_chooser_panel(ctx, &mut self.contract_search_term, &self.app_context);
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            self.show_input_field(ui);
-
-            let parser = DocumentQueryTextInputParser::new(self.selected_data_contract);
-            match parser.parse_input(&query) {
-                Ok(drive_document_query) => {
-                    // BackendTask to query documents
-                }
-                Err(e) => {
-                    self.error_message = Some((
-                        format!("Failed to parse query properly: {}", e),
-                        MessageType::Error,
-                        Utc::now(),
-                    ));
-                }
-            }
-
+            action |= self.show_input_field(ui);
             self.show_output(ui);
         });
 

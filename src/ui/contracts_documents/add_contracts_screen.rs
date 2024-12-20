@@ -1,4 +1,4 @@
-use crate::app::{AppAction, DesiredAppAction};
+use crate::app::AppAction;
 use crate::backend_task::contract::ContractTask;
 use crate::backend_task::BackendTask;
 use crate::context::AppContext;
@@ -161,22 +161,15 @@ impl ScreenLike for AddContractsScreen {
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         match backend_task_success_result {
             BackendTaskSuccessResult::FetchedContracts(maybe_found_contracts) => {
-                let maybe_contracts = self
+                let maybe_contracts: Vec<_> = self
                     .contract_ids_input
                     .iter()
-                    .filter_map(|input_id| {
-                        if maybe_found_contracts.iter().any(|option| {
-                            if let Some(contract) = option {
-                                contract.id().to_string(Encoding::Base58) == input_id.trim()
-                                    || hex::encode(contract.id()) == input_id.trim()
-                            } else {
-                                false
-                            }
-                        }) {
-                            Some(input_id)
-                        } else {
-                            None
-                        }
+                    .filter(|input_id| {
+                        maybe_found_contracts.iter().flatten().any(|contract| {
+                            let trimmed = input_id.trim();
+                            contract.id().to_string(Encoding::Base58) == trimmed
+                                || hex::encode(contract.id()) == trimmed
+                        })
                     })
                     .cloned()
                     .collect();

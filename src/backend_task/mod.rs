@@ -17,7 +17,7 @@ use tokio::sync::mpsc;
 pub mod contested_names;
 pub mod contract;
 pub mod core;
-mod document;
+pub mod document;
 pub mod identity;
 pub mod withdrawal_statuses;
 

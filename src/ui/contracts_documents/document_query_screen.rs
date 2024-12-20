@@ -14,7 +14,7 @@ use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getter
 use dash_sdk::dpp::data_contract::document_type::{DocumentType, Index};
 use dash_sdk::dpp::prelude::TimestampMillis;
 use dash_sdk::platform::Document;
-use egui::{Color32, Context, Frame, Margin, RichText, ScrollArea, TextEdit, Ui};
+use egui::{Context, Frame, Margin, ScrollArea, TextEdit, Ui};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -22,6 +22,7 @@ pub struct DocumentQueryScreen {
     pub app_context: Arc<AppContext>,
     error_message: Option<(String, MessageType, DateTime<Utc>)>,
     contract_search_term: String,
+    document_search_term: String,
     document_query: String,
     selected_data_contract: QualifiedContract,
     selected_document_type: DocumentType,
@@ -53,6 +54,7 @@ impl DocumentQueryScreen {
             app_context: app_context.clone(),
             error_message: None,
             contract_search_term: String::new(),
+            document_search_term: String::new(),
             document_query: format!("SELECT * FROM {}", selected_document_type.name()),
             selected_data_contract: dpns_contract,
             selected_document_type,
@@ -129,6 +131,15 @@ impl DocumentQueryScreen {
         ui.separator();
         ui.add_space(10.0);
 
+        if !self.matching_documents.is_empty() {
+            ui.horizontal(|ui| {
+                ui.label("Filter documents:");
+                ui.text_edit_singleline(&mut self.document_search_term);
+            });
+        }
+
+        ui.add_space(5.0);
+
         ScrollArea::vertical().show(ui, |ui| {
             ui.set_width(ui.available_width());
 
@@ -145,13 +156,31 @@ impl DocumentQueryScreen {
                     ));
                 }
                 DocumentQueryStatus::Complete => {
+                    // Convert docs to JSON strings
                     let docs: Vec<String> = self
                         .matching_documents
                         .iter()
                         .map(|doc| serde_json::to_string_pretty(doc).unwrap())
                         .collect();
 
-                    let mut json_string_documents = docs.join("\n\n");
+                    // Filter documents based on the document_search_term
+                    let filtered_docs: Vec<&String> = if self.document_search_term.is_empty() {
+                        docs.iter().collect()
+                    } else {
+                        docs.iter()
+                            .filter(|doc_str| {
+                                doc_str
+                                    .to_lowercase()
+                                    .contains(&self.document_search_term.to_lowercase())
+                            })
+                            .collect()
+                    };
+
+                    let mut json_string_documents = filtered_docs
+                        .iter()
+                        .map(|s| s.to_string())
+                        .collect::<Vec<String>>()
+                        .join("\n\n");
 
                     ui.add(
                         TextEdit::multiline(&mut json_string_documents)

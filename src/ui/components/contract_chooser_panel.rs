@@ -48,7 +48,7 @@ pub fn add_contract_chooser_panel(
         )
         .show(ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.label("Search:");
+                ui.label("Filter contracts:");
                 ui.text_edit_singleline(current_search_term);
             });
 

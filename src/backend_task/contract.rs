@@ -10,6 +10,7 @@ pub(crate) enum ContractTask {
     FetchDPNSContract,
     FetchContract(Identifier, Option<String>),
     FetchContracts(Vec<Identifier>),
+    RemoveContract(Identifier),
 }
 
 impl AppContext {
@@ -62,6 +63,12 @@ impl AppContext {
                     Err(e) => Err(format!("Error fetching DPNS contract: {}", e.to_string())),
                 }
             }
+            ContractTask::RemoveContract(identifier) => self
+                .remove_contract(&identifier)
+                .map(|_| {
+                    BackendTaskSuccessResult::Message("Successfully removed contract".to_string())
+                })
+                .map_err(|e| format!("Error removing contract: {}", e.to_string())),
         }
     }
 }

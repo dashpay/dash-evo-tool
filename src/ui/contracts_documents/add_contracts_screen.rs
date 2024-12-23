@@ -112,18 +112,30 @@ impl AddContractsScreen {
             ui.add_space(50.0);
 
             ui.heading("🎉");
-            ui.heading("Successfully added contracts");
+            ui.heading("Successfully queried contracts");
             ui.add_space(10.0);
+            ui.label("Found and added the following contracts:");
+            ui.add_space(10.0);
+            let mut not_found = vec![];
 
             if let AddContractsStatus::Complete(options) = &self.add_contracts_status {
                 for id_string in self.contract_ids_input.clone() {
-                    let trimmed_id_string = id_string.trim();
+                    let trimmed_id_string = id_string.trim().to_string();
                     if options.contains(&trimmed_id_string.to_string()) {
-                        ui.colored_label(Color32::DARK_GREEN, format!("{} ✅", trimmed_id_string));
+                        ui.colored_label(Color32::DARK_GREEN, trimmed_id_string);
                     } else {
-                        ui.colored_label(Color32::RED, format!("{} ❌", trimmed_id_string));
+                        not_found.push(trimmed_id_string);
                     }
-                    ui.add_space(5.0);
+                }
+            }
+
+            ui.add_space(20.0);
+
+            if !not_found.is_empty() {
+                ui.label("The following contracts were not found:");
+                ui.add_space(10.0);
+                for trimmed_id_string in not_found {
+                    ui.colored_label(Color32::RED, trimmed_id_string);
                 }
             }
 

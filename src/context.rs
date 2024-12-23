@@ -304,6 +304,11 @@ impl AppContext {
         Ok(contracts)
     }
 
+    // Remove contract from the database by ID
+    pub fn remove_contract(&self, contract_id: &Identifier) -> Result<()> {
+        self.db.remove_contract(contract_id.as_bytes(), &self)
+    }
+
     pub(crate) fn received_transaction_finality(
         &self,
         tx: &Transaction,

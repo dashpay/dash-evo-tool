@@ -1,4 +1,5 @@
 use crate::app::{AppAction, DesiredAppAction};
+use crate::backend_task::contract::ContractTask;
 use crate::backend_task::document::DocumentTask::FetchDocuments;
 use crate::backend_task::BackendTask;
 use crate::context::AppContext;
@@ -13,10 +14,29 @@ use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
 use dash_sdk::dpp::data_contract::document_type::{DocumentType, Index};
 use dash_sdk::dpp::prelude::TimestampMillis;
-use dash_sdk::platform::Document;
-use egui::{Context, Frame, Margin, ScrollArea, TextEdit, Ui};
+use dash_sdk::platform::{Document, Identifier};
+use egui::{Context, Frame, Margin, ScrollArea, Ui};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+/// A list of Dash-specific fields that do not appear in the
+/// normal document_type properties.
+pub const DOCUMENT_PRIVATE_FIELDS: &[&str] = &[
+    "$id",
+    "$ownerId",
+    "$version",
+    "$revision",
+    "$createdAt",
+    "$updatedAt",
+    "$transferredAt",
+    "$createdAtBlockHeight",
+    "$updatedAtBlockHeight",
+    "$transferredAtBlockHeight",
+    "$createdAtCoreBlockHeight",
+    "$updatedAtCoreBlockHeight",
+    "$transferredAtCoreBlockHeight",
+];
 
 pub struct DocumentQueryScreen {
     pub app_context: Arc<AppContext>,
@@ -24,11 +44,18 @@ pub struct DocumentQueryScreen {
     contract_search_term: String,
     document_search_term: String,
     document_query: String,
+    document_display_mode: DocumentDisplayMode,
+    document_fields_selection: HashMap<String, bool>,
+    show_fields_dropdown: bool,
     selected_data_contract: QualifiedContract,
     selected_document_type: DocumentType,
     selected_index: Option<Index>,
     matching_documents: Vec<Document>,
     document_query_status: DocumentQueryStatus,
+    confirm_remove_contract_popup: bool,
+    contract_to_remove: Option<Identifier>,
+    pending_document_type: DocumentType,
+    pending_fields_selection: HashMap<String, bool>,
 }
 
 pub enum DocumentQueryStatus {
@@ -36,6 +63,12 @@ pub enum DocumentQueryStatus {
     WaitingForResult(TimestampMillis),
     Complete,
     ErrorMessage(String),
+}
+
+#[derive(PartialEq, Eq, Clone)]
+pub enum DocumentDisplayMode {
+    Json,
+    Yaml,
 }
 
 impl DocumentQueryScreen {
@@ -50,17 +83,35 @@ impl DocumentQueryScreen {
             .document_type_cloned_for_name("domain")
             .expect("Expected to find domain document type in DPNS contract");
 
+        let mut document_fields_selection = HashMap::new();
+        for (field_name, _schema) in selected_document_type.properties().iter() {
+            document_fields_selection.insert(field_name.clone(), true);
+        }
+        for dash_field in DOCUMENT_PRIVATE_FIELDS {
+            document_fields_selection.insert((*dash_field).to_string(), false);
+        }
+
+        let pending_document_type = selected_document_type.clone();
+        let pending_fields_selection = document_fields_selection.clone();
+
         Self {
             app_context: app_context.clone(),
             error_message: None,
             contract_search_term: String::new(),
             document_search_term: String::new(),
             document_query: format!("SELECT * FROM {}", selected_document_type.name()),
+            document_display_mode: DocumentDisplayMode::Yaml,
+            document_fields_selection,
+            show_fields_dropdown: false,
             selected_data_contract: dpns_contract,
             selected_document_type,
             selected_index: None,
             matching_documents: vec![],
             document_query_status: DocumentQueryStatus::NotStarted,
+            confirm_remove_contract_popup: false,
+            contract_to_remove: None,
+            pending_document_type,
+            pending_fields_selection,
         }
     }
 
@@ -95,6 +146,9 @@ impl DocumentQueryScreen {
             .frame(true)
             .rounding(3.0);
             if ui.add(button).clicked() {
+                self.selected_document_type = self.pending_document_type.clone();
+                self.document_fields_selection = self.pending_fields_selection.clone();
+
                 let parser =
                     DocumentQueryTextInputParser::new(self.selected_data_contract.contract.clone());
                 match parser.parse_input(&self.document_query) {
@@ -135,7 +189,53 @@ impl DocumentQueryScreen {
             ui.horizontal(|ui| {
                 ui.label("Filter documents:");
                 ui.text_edit_singleline(&mut self.document_search_term);
+
+                // Display mode toggle
+                ui.label("Display as:");
+                if ui
+                    .selectable_label(
+                        self.document_display_mode == DocumentDisplayMode::Yaml,
+                        "YAML",
+                    )
+                    .clicked()
+                {
+                    self.document_display_mode = DocumentDisplayMode::Yaml;
+                }
+                if ui
+                    .selectable_label(
+                        self.document_display_mode == DocumentDisplayMode::Json,
+                        "JSON",
+                    )
+                    .clicked()
+                {
+                    self.document_display_mode = DocumentDisplayMode::Json;
+                }
             });
+
+            if ui.button("Select Properties").clicked() {
+                self.show_fields_dropdown = !self.show_fields_dropdown;
+            }
+
+            if self.show_fields_dropdown {
+                egui::Window::new("Select Properties")
+                    .collapsible(false)
+                    .resizable(false)
+                    .title_bar(false)
+                    .show(ui.ctx(), |ui| {
+                        ui.label("Check the fields to display:");
+
+                        // For each field in the doc type’s properties
+                        for (field_name, is_checked) in &mut self.document_fields_selection {
+                            let text = format!("{}", field_name);
+                            ui.checkbox(is_checked, text);
+                        }
+
+                        ui.separator();
+                        if ui.button("Close").clicked() {
+                            self.show_fields_dropdown = false;
+                        }
+                    });
+            }
         }
 
         ui.add_space(5.0);
@@ -155,40 +255,14 @@ impl DocumentQueryScreen {
                         time_elapsed
                     ));
                 }
-                DocumentQueryStatus::Complete => {
-                    // Convert docs to JSON strings
-                    let docs: Vec<String> = self
-                        .matching_documents
-                        .iter()
-                        .map(|doc| serde_json::to_string_pretty(doc).unwrap())
-                        .collect();
-
-                    // Filter documents based on the document_search_term
-                    let filtered_docs: Vec<&String> = if self.document_search_term.is_empty() {
-                        docs.iter().collect()
-                    } else {
-                        docs.iter()
-                            .filter(|doc_str| {
-                                doc_str
-                                    .to_lowercase()
-                                    .contains(&self.document_search_term.to_lowercase())
-                            })
-                            .collect()
-                    };
-
-                    let mut json_string_documents = filtered_docs
-                        .iter()
-                        .map(|s| s.to_string())
-                        .collect::<Vec<String>>()
-                        .join("\n\n");
-
-                    ui.add(
-                        TextEdit::multiline(&mut json_string_documents)
-                            .desired_rows(10)
-                            .desired_width(ui.available_width())
-                            .font(egui::TextStyle::Monospace),
-                    );
-                }
+                DocumentQueryStatus::Complete => match self.document_display_mode {
+                    DocumentDisplayMode::Json => {
+                        self.show_filtered_docs(ui, DocumentDisplayMode::Json);
+                    }
+                    DocumentDisplayMode::Yaml => {
+                        self.show_filtered_docs(ui, DocumentDisplayMode::Yaml);
+                    }
+                },
 
                 DocumentQueryStatus::ErrorMessage(ref message) => {
                     self.error_message =
@@ -200,6 +274,85 @@ impl DocumentQueryScreen {
                 }
             }
         });
+    }
+
+    fn show_filtered_docs(&mut self, ui: &mut egui::Ui, display_mode: DocumentDisplayMode) {
+        // 1) Convert each Document to a filtered string
+        let mut doc_strings = Vec::new();
+
+        for doc in &self.matching_documents {
+            if let Some(stringed) = doc_to_filtered_string(
+                doc,
+                &self.document_fields_selection, // or the user’s selected fields
+                display_mode.clone(),
+            ) {
+                // Optionally also filter by `document_search_term` here
+                if self.document_search_term.is_empty()
+                    || stringed
+                        .to_lowercase()
+                        .contains(&self.document_search_term.to_lowercase())
+                {
+                    doc_strings.push(stringed);
+                }
+            }
+        }
+
+        // 2) Concatenate them all with spacing
+        let mut combined_string = doc_strings.join("\n\n");
+
+        // 3) Display in multiline text
+        ui.add(
+            egui::TextEdit::multiline(&mut combined_string)
+                .desired_rows(10)
+                .desired_width(ui.available_width())
+                .font(egui::TextStyle::Monospace),
+        );
+    }
+
+    fn show_remove_contract_popup(&mut self, ui: &mut egui::Ui) -> AppAction {
+        // If no contract is set, nothing to confirm
+        let contract_to_remove = match &self.contract_to_remove {
+            Some(contract) => contract.clone(),
+            None => {
+                self.confirm_remove_contract_popup = false;
+                return AppAction::None;
+            }
+        };
+
+        let mut app_action = AppAction::None;
+        let mut is_open = true;
+
+        egui::Window::new("Confirm Remove Contract")
+            .collapsible(false)
+            .open(&mut is_open)
+            .show(ui.ctx(), |ui| {
+                ui.label(format!(
+                    "Are you sure you want to remove contract \"{}\"?",
+                    contract_to_remove
+                ));
+
+                // Confirm button
+                if ui.button("Confirm").clicked() {
+                    app_action = AppAction::BackendTask(BackendTask::ContractTask(
+                        ContractTask::RemoveContract(contract_to_remove),
+                    ));
+                    self.confirm_remove_contract_popup = false;
+                    self.contract_to_remove = None;
+                }
+
+                // Cancel button
+                if ui.button("Cancel").clicked() {
+                    self.confirm_remove_contract_popup = false;
+                    self.contract_to_remove = None;
+                }
+            });
+
+        // If user closes the popup window (the [x] button), also reset state
+        if !is_open {
+            self.confirm_remove_contract_popup = false;
+            self.contract_to_remove = None;
+        }
+        app_action
     }
 }
 
@@ -256,7 +409,18 @@ impl ScreenLike for DocumentQueryScreen {
             &mut self.selected_document_type,
             &mut self.selected_index,
             &mut self.document_query,
+            &mut self.pending_document_type,
+            &mut self.pending_fields_selection,
         );
+
+        if let AppAction::BackendTask(BackendTask::ContractTask(ContractTask::RemoveContract(
+            contract_id,
+        ))) = action
+        {
+            action = AppAction::None;
+            self.confirm_remove_contract_popup = true;
+            self.contract_to_remove = Some(contract_id);
+        }
 
         egui::CentralPanel::default()
             .frame(
@@ -267,8 +431,45 @@ impl ScreenLike for DocumentQueryScreen {
             .show(ctx, |ui| {
                 action |= self.show_input_field(ui);
                 self.show_output(ui);
+
+                if self.confirm_remove_contract_popup {
+                    action |= self.show_remove_contract_popup(ui);
+                }
             });
 
         action
     }
+}
+
+/// Convert a `Document` to a `serde_json::Value`, then filter out unselected fields,
+/// then serialize the result to JSON/YAML.
+fn doc_to_filtered_string(
+    doc: &Document,
+    selected_fields: &std::collections::HashMap<String, bool>,
+    display_mode: DocumentDisplayMode,
+) -> Option<String> {
+    // 1) Convert doc to a serde_json Value
+    let value = serde_json::to_value(doc).ok()?;
+    let obj = value.as_object()?;
+
+    // 2) Build a new JSON object containing only the selected fields
+    let mut filtered_map = serde_json::Map::new();
+
+    for (field_name, &is_checked) in selected_fields {
+        if is_checked {
+            if let Some(field_value) = obj.get(field_name) {
+                filtered_map.insert(field_name.clone(), field_value.clone());
+            }
+        }
+    }
+
+    let filtered_value = serde_json::Value::Object(filtered_map);
+
+    // 3) Convert filtered_value to the chosen format
+    let final_string = match display_mode {
+        DocumentDisplayMode::Json => serde_json::to_string_pretty(&filtered_value).ok()?,
+        DocumentDisplayMode::Yaml => serde_yaml::to_string(&filtered_value).ok()?,
+    };
+
+    Some(final_string)
 }

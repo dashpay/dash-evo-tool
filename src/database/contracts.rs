@@ -184,4 +184,18 @@ impl Database {
 
         Ok(contracts)
     }
+
+    pub fn remove_contract(
+        &self,
+        contract_id: &[u8],
+        app_context: &AppContext,
+    ) -> rusqlite::Result<()> {
+        let network = app_context.network_string();
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "DELETE FROM contract WHERE contract_id = ? AND network = ?",
+            rusqlite::params![contract_id, network],
+        )?;
+        Ok(())
+    }
 }

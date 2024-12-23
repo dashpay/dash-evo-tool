@@ -217,18 +217,43 @@ impl DocumentQueryScreen {
             }
 
             if self.show_fields_dropdown {
-                egui::Window::new("Select Properties")
+                // 1) Partition fields into doc-type vs. dash
+                let dash_field_set: std::collections::HashSet<&str> =
+                    DOCUMENT_PRIVATE_FIELDS.iter().cloned().collect();
+
+                let mut doc_type_fields = Vec::new();
+                let mut dash_fields = Vec::new();
+
+                for (field_name, is_checked) in &mut self.document_fields_selection {
+                    if dash_field_set.contains(field_name.as_str()) {
+                        dash_fields.push((field_name, is_checked));
+                    } else {
+                        doc_type_fields.push((field_name, is_checked));
+                    }
+                }
+
+                egui::Window::new("Select Fields")
                     .collapsible(false)
-                    .resizable(false)
+                    .resizable(true)
+                    .min_width(300.0)
                     .title_bar(false)
                     .show(ui.ctx(), |ui| {
                         ui.label("Check the fields to display:");
+                        ui.add_space(10.0);
 
-                        // For each field in the doc type’s properties
-                        for (field_name, is_checked) in &mut self.document_fields_selection {
-                            let text = format!("{}", field_name);
-                            ui.checkbox(is_checked, text);
-                        }
+                        ui.columns(2, |columns| {
+                            columns[0].heading("Document Fields");
+                            columns[0].add_space(5.0);
+                            for (field_name, is_checked) in &mut doc_type_fields {
+                                columns[0].checkbox(is_checked, field_name.clone());
+                            }
+
+                            columns[1].heading("Universal Fields");
+                            columns[1].add_space(5.0);
+                            for (field_name, is_checked) in &mut dash_fields {
+                                columns[1].checkbox(is_checked, field_name.clone());
+                            }
+                        });
 
                         ui.separator();
                         if ui.button("Close").clicked() {

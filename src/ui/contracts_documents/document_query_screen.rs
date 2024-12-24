@@ -1,6 +1,6 @@
 use crate::app::{AppAction, DesiredAppAction};
 use crate::backend_task::contract::ContractTask;
-use crate::backend_task::document::DocumentTask::FetchDocuments;
+use crate::backend_task::document::DocumentTask::FetchAllDocuments;
 use crate::backend_task::BackendTask;
 use crate::context::AppContext;
 use crate::model::qualified_contract::QualifiedContract;
@@ -159,9 +159,9 @@ impl DocumentQueryScreen {
                             .expect("Time went backwards")
                             .as_secs();
                         self.document_query_status = DocumentQueryStatus::WaitingForResult(now);
-                        action = AppAction::BackendTask(BackendTask::DocumentTask(FetchDocuments(
-                            parsed_query,
-                        )));
+                        action = AppAction::BackendTask(BackendTask::DocumentTask(
+                            FetchAllDocuments(parsed_query),
+                        ));
                     }
                     Err(e) => {
                         self.document_query_status = DocumentQueryStatus::ErrorMessage(format!(

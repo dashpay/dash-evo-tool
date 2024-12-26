@@ -235,7 +235,7 @@ impl DocumentQueryScreen {
                 egui::Window::new("Select Properties")
                     .collapsible(false)
                     .resizable(true)
-                    .min_width(300.0)
+                    .min_width(400.0)
                     .title_bar(false)
                     .show(ui.ctx(), |ui| {
                         ui.label("Check the properties to display:");

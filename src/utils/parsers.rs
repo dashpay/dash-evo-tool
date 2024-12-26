@@ -2,31 +2,10 @@
 
 use dash_sdk::dpp::prelude::DataContract;
 use dash_sdk::platform::{DocumentQuery, DriveDocumentQuery};
-use std::{marker::PhantomData, str::FromStr};
 
 pub(crate) trait TextInputParser {
     type Output;
     fn parse_input(&self, input: &str) -> Result<Self::Output, String>;
-}
-
-pub(crate) struct DefaultTextInputParser<T: FromStr> {
-    _t: PhantomData<T>,
-}
-
-impl<T: FromStr> DefaultTextInputParser<T> {
-    pub(crate) fn new() -> Self {
-        DefaultTextInputParser { _t: PhantomData }
-    }
-}
-
-impl<T: FromStr> TextInputParser for DefaultTextInputParser<T> {
-    type Output = T;
-
-    fn parse_input(&self, input: &str) -> Result<Self::Output, String> {
-        input
-            .parse()
-            .map_err(|_| format!("Cannot parse as a {}", std::any::type_name::<T>()))
-    }
 }
 
 pub(crate) struct DocumentQueryTextInputParser {

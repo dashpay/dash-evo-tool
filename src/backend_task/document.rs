@@ -1,6 +1,5 @@
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::context::AppContext;
-use dash_sdk::drive::query::OrderClause;
 use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::Start;
 use dash_sdk::platform::{Document, DocumentQuery, FetchMany, Identifier};
 use dash_sdk::query_types::IndexMap;
@@ -24,22 +23,10 @@ impl AppContext {
                 .map(BackendTaskSuccessResult::Documents)
                 .map_err(|e| format!("Error fetching documents: {}", e.to_string())),
             DocumentTask::FetchAllDocuments(mut document_query) => {
-                // Force limit to 100
-                document_query.limit = 100;
-                document_query.order_by_clauses = vec![OrderClause {
-                    field: "$id".to_string(),
-                    ascending: false,
-                }];
-
                 // Initialize an empty IndexMap to accumulate documents
                 let mut all_docs: IndexMap<Identifier, Option<Document>> = IndexMap::new();
 
-                let mut index = 1;
-
                 loop {
-                    println!("Fetching documents batch {}", index);
-                    println!("Query: {:?}", document_query);
-
                     // Fetch a batch
                     let docs_batch_result = Document::fetch_many(sdk, document_query.clone())
                         .await
@@ -63,11 +50,8 @@ impl AppContext {
                         let id_bytes = last_doc_id.to_buffer();
                         document_query.start = Some(Start::StartAfter(id_bytes.to_vec()));
                     } else {
-                        eprintln!("No documents fetched in the batch.");
                         break;
                     }
-
-                    index += 1;
                 }
 
                 // Return all accumulated documents

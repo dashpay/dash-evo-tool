@@ -373,7 +373,8 @@ impl DocumentQueryScreen {
                                     .as_secs(),
                             );
                             self.current_page = 1;
-                            let next_cursor = self.get_next_cursor().unwrap();
+                            let next_cursor =
+                                self.get_next_cursor().unwrap_or(Start::StartAfter(vec![])); // Doesn't matter what the value is
                             let parsed_query = self.build_document_query_with_cursor(&next_cursor);
                             action = AppAction::BackendTask(BackendTask::DocumentTask(
                                 DocumentTask::FetchDocumentsPage(parsed_query),
@@ -398,7 +399,7 @@ impl DocumentQueryScreen {
                                 self.previous_cursors.push(
                                     self.next_cursors
                                         .get(self.next_cursors.len() - 2)
-                                        .unwrap()
+                                        .expect("Expected a previous cursor")
                                         .clone(),
                                 );
                             }

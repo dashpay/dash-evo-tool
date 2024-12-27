@@ -466,6 +466,9 @@ impl App for AppState {
                     BackendTaskSuccessResult::FetchedContracts(_) => {
                         self.visible_screen_mut().display_task_result(message);
                     }
+                    BackendTaskSuccessResult::PageDocuments(_, _) => {
+                        self.visible_screen_mut().display_task_result(message);
+                    }
                 },
                 TaskResult::Error(message) => {
                     self.visible_screen_mut()

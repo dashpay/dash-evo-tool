@@ -1,6 +1,6 @@
 use crate::app::{AppAction, DesiredAppAction};
 use crate::backend_task::contract::ContractTask;
-use crate::backend_task::document::DocumentTask::FetchAllDocuments;
+use crate::backend_task::document::DocumentTask::{self, FetchDocumentsPage}; // Updated import
 use crate::backend_task::BackendTask;
 use crate::context::AppContext;
 use crate::model::qualified_contract::QualifiedContract;
@@ -14,7 +14,8 @@ use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
 use dash_sdk::dpp::data_contract::document_type::{DocumentType, Index};
 use dash_sdk::dpp::prelude::TimestampMillis;
-use dash_sdk::platform::{Document, Identifier};
+use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::Start;
+use dash_sdk::platform::{Document, DocumentQuery, Identifier};
 use egui::{Context, Frame, Margin, ScrollArea, Ui};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -35,7 +36,6 @@ pub const DOCUMENT_PRIVATE_FIELDS: &[&str] = &[
     "$transferredAtBlockHeight",
     "$createdAtCoreBlockHeight",
     "$updatedAtCoreBlockHeight",
-    "$transferredAtCoreBlockHeight",
 ];
 
 pub struct DocumentQueryScreen {
@@ -50,14 +50,20 @@ pub struct DocumentQueryScreen {
     selected_data_contract: QualifiedContract,
     selected_document_type: DocumentType,
     selected_index: Option<Index>,
-    matching_documents: Vec<Document>,
+    pub matching_documents: Vec<Document>,
     document_query_status: DocumentQueryStatus,
     confirm_remove_contract_popup: bool,
     contract_to_remove: Option<Identifier>,
     pending_document_type: DocumentType,
     pending_fields_selection: HashMap<String, bool>,
+    // Pagination fields
+    current_page: usize,
+    pub next_cursors: Vec<Start>,
+    has_next_page: bool,
+    previous_cursors: Vec<Start>,
 }
 
+#[derive(PartialEq, Eq, Clone)]
 pub enum DocumentQueryStatus {
     NotStarted,
     WaitingForResult(TimestampMillis),
@@ -112,6 +118,11 @@ impl DocumentQueryScreen {
             contract_to_remove: None,
             pending_document_type,
             pending_fields_selection,
+            // Initialize pagination fields
+            current_page: 1,
+            next_cursors: vec![],
+            has_next_page: false,
+            previous_cursors: Vec::new(),
         }
     }
 
@@ -129,6 +140,28 @@ impl DocumentQueryScreen {
                 self.dismiss_error();
             }
         }
+    }
+
+    fn build_document_query_with_cursor(&self, cursor: &Start) -> DocumentQuery {
+        let mut query = DocumentQuery::new(
+            self.selected_data_contract.contract.clone(),
+            self.selected_document_type.name(),
+        )
+        .expect("Expected to create a new DocumentQuery");
+        if self.current_page == 1 {
+            query.start = None;
+        } else {
+            query.start = Some(cursor.clone());
+        }
+        query
+    }
+
+    fn get_previous_cursor(&mut self) -> Option<Start> {
+        self.previous_cursors.pop()
+    }
+
+    fn get_next_cursor(&mut self) -> Option<Start> {
+        self.next_cursors.last().cloned()
     }
 
     fn show_input_field(&mut self, ui: &mut Ui) -> AppAction {
@@ -159,8 +192,11 @@ impl DocumentQueryScreen {
                             .expect("Time went backwards")
                             .as_secs();
                         self.document_query_status = DocumentQueryStatus::WaitingForResult(now);
+                        self.current_page = 1; // Reset to first page
+                        self.next_cursors = vec![]; // Reset cursor
+                        self.previous_cursors.clear(); // Clear previous cursors
                         action = AppAction::BackendTask(BackendTask::DocumentTask(
-                            FetchAllDocuments(parsed_query),
+                            FetchDocumentsPage(parsed_query),
                         ));
                     }
                     Err(e) => {
@@ -181,7 +217,8 @@ impl DocumentQueryScreen {
         action
     }
 
-    fn show_output(&mut self, ui: &mut Ui) {
+    fn show_output(&mut self, ui: &mut Ui) -> AppAction {
+        let mut action = AppAction::None;
         ui.separator();
         ui.add_space(10.0);
 
@@ -265,40 +302,118 @@ impl DocumentQueryScreen {
 
         ui.add_space(5.0);
 
-        ScrollArea::vertical().show(ui, |ui| {
-            ui.set_width(ui.available_width());
+        let pagination_height = 30.0;
+        let max_scroll_height = ui.available_height() - pagination_height;
 
-            match self.document_query_status {
-                DocumentQueryStatus::WaitingForResult(start_time) => {
-                    let time_elapsed = SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .expect("Time went backwards")
-                        .as_secs()
-                        - start_time;
-                    ui.label(format!(
-                        "Fetching documents... Time taken so far: {}",
-                        time_elapsed
-                    ));
-                }
-                DocumentQueryStatus::Complete => match self.document_display_mode {
-                    DocumentDisplayMode::Json => {
-                        self.show_filtered_docs(ui, DocumentDisplayMode::Json);
-                    }
-                    DocumentDisplayMode::Yaml => {
-                        self.show_filtered_docs(ui, DocumentDisplayMode::Yaml);
-                    }
-                },
+        ScrollArea::vertical()
+            .max_height(max_scroll_height)
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
 
-                DocumentQueryStatus::ErrorMessage(ref message) => {
-                    self.error_message =
-                        Some((message.to_string(), MessageType::Error, Utc::now()));
-                    ui.colored_label(egui::Color32::DARK_RED, message);
+                match self.document_query_status {
+                    DocumentQueryStatus::WaitingForResult(start_time) => {
+                        let time_elapsed = SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .expect("Time went backwards")
+                            .as_secs()
+                            - start_time;
+                        ui.horizontal(|ui| {
+                            ui.label(format!(
+                                "Fetching documents... Time taken so far: {} seconds",
+                                time_elapsed
+                            ));
+                            ui.spinner();
+                        });
+                    }
+                    DocumentQueryStatus::Complete => match self.document_display_mode {
+                        DocumentDisplayMode::Json => {
+                            self.show_filtered_docs(ui, DocumentDisplayMode::Json);
+                        }
+                        DocumentDisplayMode::Yaml => {
+                            self.show_filtered_docs(ui, DocumentDisplayMode::Yaml);
+                        }
+                    },
+
+                    DocumentQueryStatus::ErrorMessage(ref message) => {
+                        self.error_message =
+                            Some((message.to_string(), MessageType::Error, Utc::now()));
+                        ui.colored_label(egui::Color32::DARK_RED, message);
+                    }
+                    _ => {
+                        // Nothing
+                    }
                 }
-                _ => {
-                    // Nothing
+            });
+
+        ui.add_space(10.0);
+
+        if self.document_query_status == DocumentQueryStatus::Complete {
+            ui.horizontal(|ui| {
+                if self.current_page > 1 {
+                    if ui.button("Previous Page").clicked() {
+                        // Handle Previous Page
+                        if let Some(prev_cursor) = self.get_previous_cursor() {
+                            self.document_query_status = DocumentQueryStatus::WaitingForResult(
+                                SystemTime::now()
+                                    .duration_since(UNIX_EPOCH)
+                                    .expect("Time went backwards")
+                                    .as_secs(),
+                            );
+                            self.current_page -= 1;
+                            self.next_cursors.pop();
+                            let parsed_query = self.build_document_query_with_cursor(&prev_cursor);
+                            action = AppAction::BackendTask(BackendTask::DocumentTask(
+                                DocumentTask::FetchDocumentsPage(parsed_query),
+                            ));
+                        } else {
+                            self.document_query_status = DocumentQueryStatus::WaitingForResult(
+                                SystemTime::now()
+                                    .duration_since(UNIX_EPOCH)
+                                    .expect("Time went backwards")
+                                    .as_secs(),
+                            );
+                            self.current_page = 1;
+                            let next_cursor = self.get_next_cursor().unwrap();
+                            let parsed_query = self.build_document_query_with_cursor(&next_cursor);
+                            action = AppAction::BackendTask(BackendTask::DocumentTask(
+                                DocumentTask::FetchDocumentsPage(parsed_query),
+                            ));
+                        }
+                    }
                 }
-            }
-        });
+
+                ui.label(format!("Page {}", self.current_page));
+
+                if self.has_next_page {
+                    if ui.button("Next Page").clicked() {
+                        // Handle Next Page
+                        if let Some(next_cursor) = &self.get_next_cursor() {
+                            self.document_query_status = DocumentQueryStatus::WaitingForResult(
+                                SystemTime::now()
+                                    .duration_since(UNIX_EPOCH)
+                                    .expect("Time went backwards")
+                                    .as_secs(),
+                            );
+                            if self.current_page > 1 {
+                                self.previous_cursors.push(
+                                    self.next_cursors
+                                        .get(self.next_cursors.len() - 2)
+                                        .unwrap()
+                                        .clone(),
+                                );
+                            }
+                            self.current_page += 1;
+                            let parsed_query = self.build_document_query_with_cursor(next_cursor);
+                            action = AppAction::BackendTask(BackendTask::DocumentTask(
+                                DocumentTask::FetchDocumentsPage(parsed_query),
+                            ));
+                        }
+                    }
+                }
+            });
+        }
+
+        action
     }
 
     fn show_filtered_docs(&mut self, ui: &mut egui::Ui, display_mode: DocumentDisplayMode) {
@@ -401,8 +516,19 @@ impl ScreenLike for DocumentQueryScreen {
                     .collect();
                 self.document_query_status = DocumentQueryStatus::Complete;
             }
+            BackendTaskSuccessResult::PageDocuments(page_docs, next_cursor) => {
+                self.matching_documents = page_docs
+                    .iter()
+                    .filter_map(|(_, doc)| doc.clone())
+                    .collect();
+                self.has_next_page = next_cursor.is_some();
+                if let Some(cursor) = next_cursor {
+                    self.next_cursors.push(cursor.clone());
+                }
+                self.document_query_status = DocumentQueryStatus::Complete;
+            }
             _ => {
-                // Nothing
+                // Handle other variants
             }
         }
     }
@@ -455,7 +581,7 @@ impl ScreenLike for DocumentQueryScreen {
             )
             .show(ctx, |ui| {
                 action |= self.show_input_field(ui);
-                self.show_output(ui);
+                action |= self.show_output(ui);
 
                 if self.confirm_remove_contract_popup {
                     action |= self.show_remove_contract_popup(ui);

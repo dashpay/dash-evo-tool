@@ -10,7 +10,9 @@ use crate::model::qualified_identity::QualifiedIdentity;
 use contested_names::ScheduledDPNSVote;
 use dash_sdk::dpp::prelude::DataContract;
 use dash_sdk::dpp::voting::votes::Vote;
-use dash_sdk::query_types::Documents;
+use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::Start;
+use dash_sdk::platform::{Document, Identifier};
+use dash_sdk::query_types::{Documents, IndexMap};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
@@ -45,6 +47,7 @@ pub(crate) enum BackendTaskSuccessResult {
     WithdrawalStatus(WithdrawStatusPartialData),
     FetchedContract(DataContract),
     FetchedContracts(Vec<Option<DataContract>>),
+    PageDocuments(IndexMap<Identifier, Option<Document>>, Option<Start>),
 }
 
 impl BackendTaskSuccessResult {}

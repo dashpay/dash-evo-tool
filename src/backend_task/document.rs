@@ -8,7 +8,7 @@ use dash_sdk::Sdk;
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum DocumentTask {
     FetchDocuments(DocumentQuery),
-    FetchAllDocuments(DocumentQuery),
+    FetchDocumentsPage(DocumentQuery),
 }
 
 impl AppContext {
@@ -18,44 +18,48 @@ impl AppContext {
         sdk: &Sdk,
     ) -> Result<BackendTaskSuccessResult, String> {
         match task {
-            DocumentTask::FetchDocuments(drive_query) => Document::fetch_many(sdk, drive_query)
-                .await
-                .map(BackendTaskSuccessResult::Documents)
-                .map_err(|e| format!("Error fetching documents: {}", e.to_string())),
-            DocumentTask::FetchAllDocuments(mut document_query) => {
-                // Initialize an empty IndexMap to accumulate documents
-                let mut all_docs: IndexMap<Identifier, Option<Document>> = IndexMap::new();
+            DocumentTask::FetchDocuments(document_query) => {
+                Document::fetch_many(sdk, document_query)
+                    .await
+                    .map(BackendTaskSuccessResult::Documents)
+                    .map_err(|e| format!("Error fetching documents: {}", e.to_string()))
+            }
+            DocumentTask::FetchDocumentsPage(mut document_query) => {
+                // Set the limit for each page
+                document_query.limit = 100;
 
-                loop {
-                    // Fetch a batch
-                    let docs_batch_result = Document::fetch_many(sdk, document_query.clone())
-                        .await
-                        .map_err(|e| format!("Error fetching documents: {}", e))?;
+                // Initialize an empty IndexMap to accumulate documents for this page
+                let mut page_docs: IndexMap<Identifier, Option<Document>> = IndexMap::new();
 
-                    let batch_len = docs_batch_result.len();
+                // Fetch a single page
+                let docs_batch_result = Document::fetch_many(sdk, document_query.clone())
+                    .await
+                    .map_err(|e| format!("Error fetching documents: {}", e))?;
 
-                    // Insert the batch into our master map
-                    for (id, doc_opt) in docs_batch_result {
-                        all_docs.insert(id, doc_opt);
-                    }
+                let batch_len = docs_batch_result.len();
 
-                    // If fewer than 100 results, we're done
-                    if batch_len < 100 {
-                        break;
-                    }
-
-                    // Otherwise, set 'start' to the last document's identifier bytes
-                    if let Some(last_doc_id) = all_docs.keys().last().cloned() {
-                        // Convert the Identifier to bytes
-                        let id_bytes = last_doc_id.to_buffer();
-                        document_query.start = Some(Start::StartAfter(id_bytes.to_vec()));
-                    } else {
-                        break;
-                    }
+                // Insert the batch into the page map
+                for (id, doc_opt) in docs_batch_result {
+                    page_docs.insert(id, doc_opt);
                 }
 
-                // Return all accumulated documents
-                Ok(BackendTaskSuccessResult::Documents(all_docs))
+                // Determine if there's a next page
+                let has_next_page = batch_len == 100;
+
+                // If there's a next page, set the 'start' parameter for the next cursor
+                let next_cursor = if has_next_page {
+                    page_docs.keys().last().cloned().map(|last_doc_id| {
+                        let id_bytes = last_doc_id.to_buffer();
+                        Start::StartAfter(id_bytes.to_vec())
+                    })
+                } else {
+                    None
+                };
+
+                Ok(BackendTaskSuccessResult::PageDocuments(
+                    page_docs,
+                    next_cursor,
+                ))
             }
         }
     }

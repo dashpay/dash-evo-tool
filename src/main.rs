@@ -15,6 +15,7 @@ mod logging;
 mod model;
 mod sdk_wrapper;
 mod ui;
+mod utils;
 
 include!(concat!(env!("OUT_DIR"), "/version.rs"));
 

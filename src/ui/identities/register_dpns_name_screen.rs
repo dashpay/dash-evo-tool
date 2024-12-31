@@ -467,7 +467,43 @@ pub fn is_contested_name(name: &str) -> bool {
     true
 }
 
-pub fn get_selected_wallet(
+/// Attempts to retrieve the wallet associated with a `QualifiedIdentity` that can sign
+/// the "preorder" document type defined in the DPNS contract.
+///
+/// # Parameters
+///
+/// * `qualified_identity` - The qualified identity containing public keys and
+///   associated wallets from which we want to retrieve a wallet.
+/// * `app_context` - Provides the DPNS contract that defines the "preorder" document type.
+/// * `error_message` - A mutable reference to an optional error message that will be
+///   populated if the function fails to find the required document type or an
+///   appropriate signing key.
+///
+/// # Returns
+///
+/// Returns `Some(Arc<RwLock<Wallet>>)` containing the selected wallet if a matching
+/// public key is found and it corresponds to a known wallet derivation path. Otherwise,
+/// returns `None`, and an explanatory error message is set in `error_message`.
+///
+/// # Errors
+///
+/// This function sets an error message (and returns `None`) in the following cases:
+///
+/// * The DPNS contract does not define a document type named "preorder".
+/// * The `QualifiedIdentity` does not have a suitable public key for signing document transitions.
+///
+/// # Example
+///
+/// ```ignore
+/// let mut error_msg = None;
+/// let maybe_wallet = get_selected_wallet(&qualified_identity, &app_context, &mut error_msg);
+/// if let Some(wallet) = maybe_wallet {
+///     // Use the wallet ...
+/// } else {
+///     eprintln!("Could not get wallet: {:?}", error_msg);
+/// }
+/// ```
+fn get_selected_wallet(
     qualified_identity: &QualifiedIdentity,
     app_context: &AppContext,
     error_message: &mut Option<String>,

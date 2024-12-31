@@ -2,7 +2,8 @@ use crate::app::AppAction;
 use crate::backend_task::identity::IdentityTask;
 use crate::backend_task::BackendTask;
 use crate::context::AppContext;
-use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::qualified_identity::encrypted_key_storage::PrivateKeyData;
+use crate::model::qualified_identity::{PrivateKeyTarget, QualifiedIdentity};
 use crate::model::wallet::Wallet;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
@@ -20,7 +21,6 @@ use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
-use crate::ui::identities::register_dpns_name_screen::get_selected_wallet;
 
 pub enum TransferCreditsStatus {
     NotStarted,
@@ -57,7 +57,7 @@ impl TransferScreen {
             )
             .cloned();
         let mut error_message = None;
-        let selected_wallet = get_selected_wallet(&identity, app_context, &mut error_message);
+        let selected_wallet = get_selected_wallet(&identity, &selected_key, &mut error_message);
         Self {
             identity,
             selected_key,
@@ -426,5 +426,34 @@ impl ScreenWithWalletUnlock for TransferScreen {
 
     fn error_message(&self) -> Option<&String> {
         self.error_message.as_ref()
+    }
+}
+
+fn get_selected_wallet(
+    qualified_identity: &QualifiedIdentity,
+    selected_key: &Option<IdentityPublicKey>,
+    error_message: &mut Option<String>,
+) -> Option<Arc<RwLock<Wallet>>> {
+    let public_key = match selected_key {
+        Some(key) => key,
+        None => {
+            *error_message = Some(
+                "Identity doesn't have a transfer key for signing transfer transitions".to_string(),
+            );
+            return None;
+        }
+    };
+
+    let key = (PrivateKeyTarget::PrivateKeyOnMainIdentity, public_key.id());
+
+    if let Some((_, PrivateKeyData::AtWalletDerivationPath(wallet_derivation_path))) =
+        qualified_identity.private_keys.private_keys.get(&key)
+    {
+        qualified_identity
+            .associated_wallets
+            .get(&wallet_derivation_path.wallet_seed_hash)
+            .cloned()
+    } else {
+        None
     }
 }

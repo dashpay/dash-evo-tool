@@ -48,19 +48,30 @@ pub struct WithdrawalScreen {
 impl WithdrawalScreen {
     pub fn new(identity: QualifiedIdentity, app_context: &Arc<AppContext>) -> Self {
         let max_amount = identity.identity.balance();
+        let selected_key = identity
+            .identity
+            .get_first_public_key_matching(
+                Purpose::TRANSFER,
+                SecurityLevel::full_range().into(),
+                KeyType::all_key_types().into(),
+                false,
+            )
+            .cloned();
+        let mut error_message = None;
+        let selected_wallet = get_selected_wallet(&identity, &selected_key, &mut error_message);
         Self {
             identity,
-            selected_key: None,
+            selected_key,
             withdrawal_address: String::new(),
             withdrawal_amount: String::new(),
             max_amount,
             app_context: app_context.clone(),
             confirmation_popup: false,
             withdraw_from_identity_status: WithdrawFromIdentityStatus::NotStarted,
-            selected_wallet: None,
+            selected_wallet,
             wallet_password: String::new(),
             show_password: false,
-            error_message: None,
+            error_message,
         }
     }
 
@@ -430,5 +441,35 @@ impl ScreenWithWalletUnlock for WithdrawalScreen {
 
     fn error_message(&self) -> Option<&String> {
         self.error_message.as_ref()
+    }
+}
+
+fn get_selected_wallet(
+    qualified_identity: &QualifiedIdentity,
+    selected_key: &Option<IdentityPublicKey>,
+    error_message: &mut Option<String>,
+) -> Option<Arc<RwLock<Wallet>>> {
+    let public_key = match selected_key {
+        Some(key) => key,
+        None => {
+            *error_message = Some(
+                "Identity doesn't have a transfer key for signing withdrawal transitions"
+                    .to_string(),
+            );
+            return None;
+        }
+    };
+
+    let key = (PrivateKeyTarget::PrivateKeyOnMainIdentity, public_key.id());
+
+    if let Some((_, PrivateKeyData::AtWalletDerivationPath(wallet_derivation_path))) =
+        qualified_identity.private_keys.private_keys.get(&key)
+    {
+        qualified_identity
+            .associated_wallets
+            .get(&wallet_derivation_path.wallet_seed_hash)
+            .cloned()
+    } else {
+        None
     }
 }

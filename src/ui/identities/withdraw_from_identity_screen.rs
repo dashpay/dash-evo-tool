@@ -21,6 +21,7 @@ use std::str::FromStr;
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use super::identities_screen::get_selected_wallet;
 use super::keys::key_info_screen::KeyInfoScreen;
 
 pub enum WithdrawFromIdentityStatus {
@@ -48,6 +49,8 @@ pub struct WithdrawalScreen {
 impl WithdrawalScreen {
     pub fn new(identity: QualifiedIdentity, app_context: &Arc<AppContext>) -> Self {
         let max_amount = identity.identity.balance();
+        let mut error_message = None;
+        let selected_wallet = get_selected_wallet(&identity, app_context, &mut error_message);
         Self {
             identity,
             selected_key: None,
@@ -57,16 +60,16 @@ impl WithdrawalScreen {
             app_context: app_context.clone(),
             confirmation_popup: false,
             withdraw_from_identity_status: WithdrawFromIdentityStatus::NotStarted,
-            selected_wallet: None,
+            selected_wallet,
             wallet_password: String::new(),
             show_password: false,
-            error_message: None,
+            error_message,
         }
     }
 
     fn render_key_selection(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
-            ui.label("Select Key:");
+            ui.label("Select a key to use for the withdrawal:");
 
             egui::ComboBox::from_id_salt("key_selector")
                 .selected_text(match &self.selected_key {

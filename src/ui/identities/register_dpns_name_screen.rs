@@ -2,8 +2,7 @@ use crate::app::AppAction;
 use crate::backend_task::identity::{IdentityTask, RegisterDpnsNameInput};
 use crate::backend_task::BackendTask;
 use crate::context::AppContext;
-use crate::model::qualified_identity::encrypted_key_storage::PrivateKeyData;
-use crate::model::qualified_identity::{PrivateKeyTarget, QualifiedIdentity};
+use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
@@ -20,6 +19,8 @@ use egui::{Color32, RichText, Ui};
 use std::sync::Arc;
 use std::sync::RwLock;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+use super::identities_screen::get_selected_wallet;
 
 #[derive(PartialEq)]
 pub enum RegisterDpnsNameStatus {
@@ -465,44 +466,4 @@ pub fn is_contested_name(name: &str) -> bool {
         }
     }
     true
-}
-
-pub fn get_selected_wallet(
-    qualified_identity: &QualifiedIdentity,
-    app_context: &AppContext,
-    error_message: &mut Option<String>,
-) -> Option<Arc<RwLock<Wallet>>> {
-    let dpns_contract = &app_context.dpns_contract;
-
-    let preorder_document_type = match dpns_contract.document_type_for_name("preorder") {
-        Ok(doc_type) => doc_type,
-        Err(e) => {
-            *error_message = Some(format!("DPNS preorder document type not found: {}", e));
-            return None;
-        }
-    };
-
-    let public_key = match qualified_identity.document_signing_key(&preorder_document_type) {
-        Some(key) => key,
-        None => {
-            *error_message = Some(
-                "Identity doesn't have an authentication key for signing document transitions"
-                    .to_string(),
-            );
-            return None;
-        }
-    };
-
-    let key = (PrivateKeyTarget::PrivateKeyOnMainIdentity, public_key.id());
-
-    if let Some((_, PrivateKeyData::AtWalletDerivationPath(wallet_derivation_path))) =
-        qualified_identity.private_keys.private_keys.get(&key)
-    {
-        qualified_identity
-            .associated_wallets
-            .get(&wallet_derivation_path.wallet_seed_hash)
-            .cloned()
-    } else {
-        None
-    }
 }

@@ -7,10 +7,10 @@ use crate::model::qualified_identity::encrypted_key_storage::{
     PrivateKeyData, WalletDerivationPath,
 };
 use crate::model::qualified_identity::PrivateKeyTarget::{
-    PrivateKeyOnMainIdentity, PrivateKeyOnVoterIdentity,
+    self, PrivateKeyOnMainIdentity, PrivateKeyOnVoterIdentity,
 };
 use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
-use crate::model::wallet::WalletSeedHash;
+use crate::model::wallet::{Wallet, WalletSeedHash};
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
@@ -18,6 +18,7 @@ use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
 use crate::ui::identities::top_up_identity_screen::TopUpIdentityScreen;
 use crate::ui::identities::transfers::TransferScreen;
 use crate::ui::{RootScreenType, Screen, ScreenLike, ScreenType};
+use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::Purpose;
@@ -32,7 +33,7 @@ use egui_extras::{Column, TableBuilder};
 use itertools::Itertools;
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 pub struct IdentitiesScreen {
     pub identities: Arc<Mutex<IndexMap<Identifier, QualifiedIdentity>>>,
@@ -671,5 +672,45 @@ impl ScreenLike for IdentitiesScreen {
         }
 
         action
+    }
+}
+
+pub fn get_selected_wallet(
+    qualified_identity: &QualifiedIdentity,
+    app_context: &AppContext,
+    error_message: &mut Option<String>,
+) -> Option<Arc<RwLock<Wallet>>> {
+    let dpns_contract = &app_context.dpns_contract;
+
+    let preorder_document_type = match dpns_contract.document_type_for_name("preorder") {
+        Ok(doc_type) => doc_type,
+        Err(e) => {
+            *error_message = Some(format!("DPNS preorder document type not found: {}", e));
+            return None;
+        }
+    };
+
+    let public_key = match qualified_identity.document_signing_key(&preorder_document_type) {
+        Some(key) => key,
+        None => {
+            *error_message = Some(
+                "Identity doesn't have an authentication key for signing document transitions"
+                    .to_string(),
+            );
+            return None;
+        }
+    };
+
+    let key = (PrivateKeyTarget::PrivateKeyOnMainIdentity, public_key.id());
+
+    if let Some((_, PrivateKeyData::AtWalletDerivationPath(wallet_derivation_path))) =
+        qualified_identity.private_keys.private_keys.get(&key)
+    {
+        qualified_identity
+            .associated_wallets
+            .get(&wallet_derivation_path.wallet_seed_hash)
+            .cloned()
+    } else {
+        None
     }
 }

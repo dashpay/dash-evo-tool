@@ -21,6 +21,7 @@ use std::str::FromStr;
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use super::get_selected_wallet;
 use super::keys::key_info_screen::KeyInfoScreen;
 
 pub enum WithdrawFromIdentityStatus {
@@ -48,20 +49,19 @@ pub struct WithdrawalScreen {
 impl WithdrawalScreen {
     pub fn new(identity: QualifiedIdentity, app_context: &Arc<AppContext>) -> Self {
         let max_amount = identity.identity.balance();
-        let selected_key = identity
-            .identity
-            .get_first_public_key_matching(
-                Purpose::TRANSFER,
-                SecurityLevel::full_range().into(),
-                KeyType::all_key_types().into(),
-                false,
-            )
-            .cloned();
+        let identity_clone = identity.identity.clone();
+        let selected_key = identity_clone.get_first_public_key_matching(
+            Purpose::TRANSFER,
+            SecurityLevel::full_range().into(),
+            KeyType::all_key_types().into(),
+            false,
+        );
         let mut error_message = None;
-        let selected_wallet = get_selected_wallet(&identity, &selected_key, &mut error_message);
+        let selected_wallet =
+            get_selected_wallet(&identity, None, selected_key, &mut error_message);
         Self {
             identity,
-            selected_key,
+            selected_key: selected_key.cloned(),
             withdrawal_address: String::new(),
             withdrawal_amount: String::new(),
             max_amount,
@@ -441,35 +441,5 @@ impl ScreenWithWalletUnlock for WithdrawalScreen {
 
     fn error_message(&self) -> Option<&String> {
         self.error_message.as_ref()
-    }
-}
-
-fn get_selected_wallet(
-    qualified_identity: &QualifiedIdentity,
-    selected_key: &Option<IdentityPublicKey>,
-    error_message: &mut Option<String>,
-) -> Option<Arc<RwLock<Wallet>>> {
-    let public_key = match selected_key {
-        Some(key) => key,
-        None => {
-            *error_message = Some(
-                "Identity doesn't have a transfer key for signing withdrawal transitions"
-                    .to_string(),
-            );
-            return None;
-        }
-    };
-
-    let key = (PrivateKeyTarget::PrivateKeyOnMainIdentity, public_key.id());
-
-    if let Some((_, PrivateKeyData::AtWalletDerivationPath(wallet_derivation_path))) =
-        qualified_identity.private_keys.private_keys.get(&key)
-    {
-        qualified_identity
-            .associated_wallets
-            .get(&wallet_derivation_path.wallet_seed_hash)
-            .cloned()
-    } else {
-        None
     }
 }

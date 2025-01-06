@@ -2,8 +2,7 @@ use crate::app::AppAction;
 use crate::backend_task::identity::IdentityTask;
 use crate::backend_task::BackendTask;
 use crate::context::AppContext;
-use crate::model::qualified_identity::encrypted_key_storage::PrivateKeyData;
-use crate::model::qualified_identity::{PrivateKeyTarget, QualifiedIdentity};
+use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
@@ -21,6 +20,8 @@ use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
+
+use super::get_selected_wallet;
 
 pub enum TransferCreditsStatus {
     NotStarted,
@@ -47,20 +48,19 @@ pub struct TransferScreen {
 impl TransferScreen {
     pub fn new(identity: QualifiedIdentity, app_context: &Arc<AppContext>) -> Self {
         let max_amount = identity.identity.balance();
-        let selected_key = identity
-            .identity
-            .get_first_public_key_matching(
-                Purpose::TRANSFER,
-                SecurityLevel::full_range().into(),
-                KeyType::all_key_types().into(),
-                false,
-            )
-            .cloned();
+        let identity_clone = identity.identity.clone();
+        let selected_key = identity_clone.get_first_public_key_matching(
+            Purpose::TRANSFER,
+            SecurityLevel::full_range().into(),
+            KeyType::all_key_types().into(),
+            false,
+        );
         let mut error_message = None;
-        let selected_wallet = get_selected_wallet(&identity, &selected_key, &mut error_message);
+        let selected_wallet =
+            get_selected_wallet(&identity, None, selected_key, &mut error_message);
         Self {
             identity,
-            selected_key,
+            selected_key: selected_key.cloned(),
             receiver_identity_id: String::new(),
             amount: String::new(),
             transfer_credits_status: TransferCreditsStatus::NotStarted,
@@ -426,34 +426,5 @@ impl ScreenWithWalletUnlock for TransferScreen {
 
     fn error_message(&self) -> Option<&String> {
         self.error_message.as_ref()
-    }
-}
-
-fn get_selected_wallet(
-    qualified_identity: &QualifiedIdentity,
-    selected_key: &Option<IdentityPublicKey>,
-    error_message: &mut Option<String>,
-) -> Option<Arc<RwLock<Wallet>>> {
-    let public_key = match selected_key {
-        Some(key) => key,
-        None => {
-            *error_message = Some(
-                "Identity doesn't have a transfer key for signing transfer transitions".to_string(),
-            );
-            return None;
-        }
-    };
-
-    let key = (PrivateKeyTarget::PrivateKeyOnMainIdentity, public_key.id());
-
-    if let Some((_, PrivateKeyData::AtWalletDerivationPath(wallet_derivation_path))) =
-        qualified_identity.private_keys.private_keys.get(&key)
-    {
-        qualified_identity
-            .associated_wallets
-            .get(&wallet_derivation_path.wallet_seed_hash)
-            .cloned()
-    } else {
-        None
     }
 }

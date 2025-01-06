@@ -2,8 +2,7 @@ use crate::app::AppAction;
 use crate::backend_task::identity::{IdentityTask, RegisterDpnsNameInput};
 use crate::backend_task::BackendTask;
 use crate::context::AppContext;
-use crate::model::qualified_identity::encrypted_key_storage::PrivateKeyData;
-use crate::model::qualified_identity::{PrivateKeyTarget, QualifiedIdentity};
+use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
@@ -20,6 +19,8 @@ use egui::{Color32, RichText, Ui};
 use std::sync::Arc;
 use std::sync::RwLock;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+use super::get_selected_wallet;
 
 #[derive(PartialEq)]
 pub enum RegisterDpnsNameStatus {
@@ -78,7 +79,7 @@ impl RegisterDpnsNameScreen {
 
         let mut error_message: Option<String> = None;
         let selected_wallet = if let Some(ref identity) = selected_qualified_identity {
-            get_selected_wallet(&identity.0, app_context, &mut error_message)
+            get_selected_wallet(&identity.0, Some(app_context), None, &mut error_message)
         } else {
             None
         };
@@ -108,8 +109,12 @@ impl RegisterDpnsNameScreen {
             // Set the selected_qualified_identity to the found identity
             self.selected_qualified_identity = Some(qi.clone());
             // Update the selected wallet
-            self.selected_wallet =
-                get_selected_wallet(&qi.0, &self.app_context, &mut self.error_message);
+            self.selected_wallet = get_selected_wallet(
+                &qi.0,
+                Some(&self.app_context),
+                None,
+                &mut self.error_message,
+            );
         } else {
             // If not found, you might want to handle this case
             // For now, we'll set selected_qualified_identity to None
@@ -179,7 +184,8 @@ impl RegisterDpnsNameScreen {
                                 self.selected_qualified_identity = Some(qualified_identity.clone());
                                 self.selected_wallet = get_selected_wallet(
                                     &qualified_identity.0,
-                                    &self.app_context,
+                                    Some(&self.app_context),
+                                    None,
                                     &mut self.error_message,
                                 );
                             }
@@ -465,80 +471,4 @@ pub fn is_contested_name(name: &str) -> bool {
         }
     }
     true
-}
-
-/// Attempts to retrieve the wallet associated with a `QualifiedIdentity` that can sign
-/// the "preorder" document type defined in the DPNS contract.
-///
-/// # Parameters
-///
-/// * `qualified_identity` - The qualified identity containing public keys and
-///   associated wallets from which we want to retrieve a wallet.
-/// * `app_context` - Provides the DPNS contract that defines the "preorder" document type.
-/// * `error_message` - A mutable reference to an optional error message that will be
-///   populated if the function fails to find the required document type or an
-///   appropriate signing key.
-///
-/// # Returns
-///
-/// Returns `Some(Arc<RwLock<Wallet>>)` containing the selected wallet if a matching
-/// public key is found and it corresponds to a known wallet derivation path. Otherwise,
-/// returns `None`, and an explanatory error message is set in `error_message`.
-///
-/// # Errors
-///
-/// This function sets an error message (and returns `None`) in the following cases:
-///
-/// * The DPNS contract does not define a document type named "preorder".
-/// * The `QualifiedIdentity` does not have a suitable public key for signing document transitions.
-///
-/// # Example
-///
-/// ```ignore
-/// let mut error_msg = None;
-/// let maybe_wallet = get_selected_wallet(&qualified_identity, &app_context, &mut error_msg);
-/// if let Some(wallet) = maybe_wallet {
-///     // Use the wallet ...
-/// } else {
-///     eprintln!("Could not get wallet: {:?}", error_msg);
-/// }
-/// ```
-fn get_selected_wallet(
-    qualified_identity: &QualifiedIdentity,
-    app_context: &AppContext,
-    error_message: &mut Option<String>,
-) -> Option<Arc<RwLock<Wallet>>> {
-    let dpns_contract = &app_context.dpns_contract;
-
-    let preorder_document_type = match dpns_contract.document_type_for_name("preorder") {
-        Ok(doc_type) => doc_type,
-        Err(e) => {
-            *error_message = Some(format!("DPNS preorder document type not found: {}", e));
-            return None;
-        }
-    };
-
-    let public_key = match qualified_identity.document_signing_key(&preorder_document_type) {
-        Some(key) => key,
-        None => {
-            *error_message = Some(
-                "Identity doesn't have an authentication key for signing document transitions"
-                    .to_string(),
-            );
-            return None;
-        }
-    };
-
-    let key = (PrivateKeyTarget::PrivateKeyOnMainIdentity, public_key.id());
-
-    if let Some((_, PrivateKeyData::AtWalletDerivationPath(wallet_derivation_path))) =
-        qualified_identity.private_keys.private_keys.get(&key)
-    {
-        qualified_identity
-            .associated_wallets
-            .get(&wallet_derivation_path.wallet_seed_hash)
-            .cloned()
-    } else {
-        None
-    }
 }

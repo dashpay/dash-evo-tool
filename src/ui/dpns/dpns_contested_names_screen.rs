@@ -61,6 +61,7 @@ pub enum IndividualVoteCastingStatus {
 pub struct SelectedVote {
     pub contested_name: String,
     pub vote_choice: ResourceVoteChoice,
+    pub end_time: Option<u64>,
 }
 
 impl DPNSSubscreen {
@@ -177,13 +178,56 @@ impl DPNSContestedNamesScreen {
                     egui::RichText::new(button_text)
                 };
 
-                if ui.button(text).clicked() {
+                // Check if this specific vote is already in selected_votes_for_scheduling
+                let is_selected = self.selected_votes_for_scheduling.iter().any(|sv| {
+                    sv.contested_name == contested_name.normalized_contested_name
+                        && sv.vote_choice == ResourceVoteChoice::TowardsIdentity(contestant.id)
+                });
+
+                // If is_selected, we change the button color
+                let button = if is_selected {
+                    egui::Button::new(text).fill(Color32::from_rgb(0, 150, 255))
+                } else {
+                    egui::Button::new(text)
+                };
+
+                let response = ui.add(button);
+                if response.clicked() {
                     let shift_held = ui.input(|i| i.modifiers.shift_only());
                     if shift_held {
-                        self.selected_votes_for_scheduling.push(SelectedVote {
-                            contested_name: contested_name.normalized_contested_name.clone(),
-                            vote_choice: ResourceVoteChoice::TowardsIdentity(contestant.id),
-                        });
+                        // ADDED LOGIC
+                        if let Some(pos) =
+                            self.selected_votes_for_scheduling.iter().position(|sv| {
+                                sv.contested_name == contested_name.normalized_contested_name
+                            })
+                        {
+                            // Already have a selection for this name
+                            let existing_choice =
+                                &self.selected_votes_for_scheduling[pos].vote_choice;
+                            let new_choice = ResourceVoteChoice::TowardsIdentity(contestant.id);
+
+                            if *existing_choice == new_choice {
+                                // SHIFT-clicked same => remove
+                                self.selected_votes_for_scheduling.remove(pos);
+                            } else {
+                                // SHIFT-clicked different => remove old + add new
+                                self.selected_votes_for_scheduling.remove(pos);
+                                self.selected_votes_for_scheduling.push(SelectedVote {
+                                    contested_name: contested_name
+                                        .normalized_contested_name
+                                        .clone(),
+                                    vote_choice: new_choice,
+                                    end_time: contested_name.end_time,
+                                });
+                            }
+                        } else {
+                            // No existing => add
+                            self.selected_votes_for_scheduling.push(SelectedVote {
+                                contested_name: contested_name.normalized_contested_name.clone(),
+                                vote_choice: ResourceVoteChoice::TowardsIdentity(contestant.id),
+                                end_time: contested_name.end_time,
+                            });
+                        }
                     } else {
                         self.show_vote_popup_info = Some((
                             format!(
@@ -316,7 +360,7 @@ impl DPNSContestedNamesScreen {
                     }
                 }
             } else {
-                ui.label("Go to the Active Contests subscreen to schedule votes.");
+                ui.label("To schedule votes, go to the Active Contests subscreen, shift-click your choices, and then click the Schedule Votes button in the top-right.");
             }
         });
 
@@ -436,18 +480,52 @@ impl DPNSContestedNamesScreen {
                                         } else {
                                             egui::RichText::new("Fetching".to_string())
                                         };
-                                        // Vote button logic for locked votes
-                                        if ui.button(label_text).clicked() {
+
+                                        // Check if this specific vote is already in selected_votes_for_scheduling
+                                        let is_selected = self.selected_votes_for_scheduling.iter().any(|sv| {
+                                            sv.contested_name == contested_name.normalized_contested_name
+                                                && sv.vote_choice == ResourceVoteChoice::Lock
+                                        });
+
+                                        // If is_selected, we change the button color
+                                        let button = if is_selected {
+                                            egui::Button::new(label_text).fill(Color32::from_rgb(0, 150, 255))
+                                        } else {
+                                            egui::Button::new(label_text)
+                                        };
+
+                                        let response = ui.add(button);
+                                        if response.clicked() {
                                             // Check if SHIFT is held
                                             let shift_held = ui.input(|i| i.modifiers.shift_only());
 
                                             if shift_held {
-                                                // SHIFT-click => Add to our selected_votes_for_scheduling
-                                                // We do NOT pop up the immediate vote confirmation.
-                                                self.selected_votes_for_scheduling.push(SelectedVote {
-                                                    contested_name: contested_name.normalized_contested_name.clone(),
-                                                    vote_choice: ResourceVoteChoice::Lock,
-                                                });
+                                                // ADDED LOGIC FOR "ONLY ONE CHOICE PER NAME"
+                                                // 1) Find if there's already a selection for this contested_name
+                                                if let Some(pos) = self.selected_votes_for_scheduling.iter().position(|sv| {
+                                                    sv.contested_name == contested_name.normalized_contested_name
+                                                }) {
+                                                    // There's already a selected choice for this contested name
+                                                    if self.selected_votes_for_scheduling[pos].vote_choice == ResourceVoteChoice::Lock {
+                                                        // SHIFT-clicked the same choice => remove it (toggle off)
+                                                        self.selected_votes_for_scheduling.remove(pos);
+                                                    } else {
+                                                        // SHIFT-clicked a different choice => remove old, then add new
+                                                        self.selected_votes_for_scheduling.remove(pos);
+                                                        self.selected_votes_for_scheduling.push(SelectedVote {
+                                                            contested_name: contested_name.normalized_contested_name.clone(),
+                                                            vote_choice: ResourceVoteChoice::Lock,
+                                                            end_time: contested_name.end_time,
+                                                        });
+                                                    }
+                                                } else {
+                                                    // No existing selection for this contested name => add it
+                                                    self.selected_votes_for_scheduling.push(SelectedVote {
+                                                        contested_name: contested_name.normalized_contested_name.clone(),
+                                                        vote_choice: ResourceVoteChoice::Lock,
+                                                        end_time: contested_name.end_time,
+                                                    });
+                                                }
                                             } else {
                                                 // Normal click => existing immediate-vote popup
                                                 self.show_vote_popup_info = Some((
@@ -458,7 +536,7 @@ impl DPNSContestedNamesScreen {
                                                         vec![],
                                                     ),
                                                 ));
-                                            }                                        
+                                            }
                                         }
                                     });
                                     row.col(|ui| {
@@ -469,13 +547,49 @@ impl DPNSContestedNamesScreen {
                                         } else {
                                             "Fetching".to_string()
                                         };
-                                        if ui.button(label_text).clicked() {
+
+                                        // Check if this specific vote is already in selected_votes_for_scheduling
+                                        let is_selected = self.selected_votes_for_scheduling.iter().any(|sv| {
+                                            sv.contested_name == contested_name.normalized_contested_name
+                                                && sv.vote_choice == ResourceVoteChoice::Abstain
+                                        });
+
+                                        // If is_selected, we change the button color
+                                        let button = if is_selected {
+                                            egui::Button::new(label_text).fill(Color32::from_rgb(0, 150, 255))
+                                        } else {
+                                            egui::Button::new(label_text)
+                                        };
+
+                                        let response = ui.add(button);
+                                        if response.clicked() {
                                             let shift_held = ui.input(|i| i.modifiers.shift_only());
                                             if shift_held {
-                                                self.selected_votes_for_scheduling.push(SelectedVote {
-                                                    contested_name: contested_name.normalized_contested_name.clone(),
-                                                    vote_choice: ResourceVoteChoice::Abstain,
-                                                });
+                                                // ADDED LOGIC FOR "ONLY ONE CHOICE PER NAME"
+                                                if let Some(pos) = self.selected_votes_for_scheduling.iter().position(|sv| {
+                                                    sv.contested_name == contested_name.normalized_contested_name
+                                                }) {
+                                                    if self.selected_votes_for_scheduling[pos].vote_choice == ResourceVoteChoice::Abstain
+                                                    {
+                                                        // Same => unselect
+                                                        self.selected_votes_for_scheduling.remove(pos);
+                                                    } else {
+                                                        // Different => remove old, add new
+                                                        self.selected_votes_for_scheduling.remove(pos);
+                                                        self.selected_votes_for_scheduling.push(SelectedVote {
+                                                            contested_name: contested_name.normalized_contested_name.clone(),
+                                                            vote_choice: ResourceVoteChoice::Abstain,
+                                                            end_time: contested_name.end_time,
+                                                        });
+                                                    }
+                                                } else {
+                                                    // No existing => add
+                                                    self.selected_votes_for_scheduling.push(SelectedVote {
+                                                        contested_name: contested_name.normalized_contested_name.clone(),
+                                                        vote_choice: ResourceVoteChoice::Abstain,
+                                                        end_time: contested_name.end_time,
+                                                    });
+                                                }
                                             } else {
                                                 self.show_vote_popup_info = Some((format!("Confirm Voting to Abstain on distribution of \"{}\".", contested_name.normalized_contested_name.clone()), ContestedResourceTask::VoteOnDPNSName(contested_name.normalized_contested_name.clone(), ResourceVoteChoice::Abstain, vec![])));
                                             }
@@ -1237,6 +1351,7 @@ impl ScreenLike for DPNSContestedNamesScreen {
         self.check_error_expiration();
 
         let has_identity_that_can_register = !self.user_identities.is_empty();
+        let has_selected_votes = self.selected_votes_for_scheduling.len() > 0;
 
         // Determine the right-side buttons based on the current DPNSSubscreen
         let mut right_buttons = match self.dpns_subscreen {
@@ -1252,11 +1367,19 @@ impl ScreenLike for DPNSContestedNamesScreen {
                     )
                 };
 
-                vec![
-                    // Possibly "Register Name" if you have that
-                    ("Schedule Votes", DesiredAppAction::AddScreenType(ScreenType::BulkScheduleVoteScreen(self.selected_votes_for_scheduling.clone()))),
-                    refresh_button
-                ]
+                if has_selected_votes {
+                    vec![
+                        refresh_button,
+                        (
+                            "Schedule Votes",
+                            DesiredAppAction::AddScreenType(ScreenType::BulkScheduleVoteScreen(
+                                self.selected_votes_for_scheduling.clone(),
+                            )),
+                        ),
+                    ]
+                } else {
+                    vec![refresh_button]
+                }
             }
 
             DPNSSubscreen::Past => {

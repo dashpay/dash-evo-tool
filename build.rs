@@ -12,5 +12,6 @@ fn main() {
     fs::write(
         dest_path,
         format!(r#"pub const VERSION: &str = "{}";"#, version),
-    ).expect("Failed to write version.rs");
+    )
+    .expect("Failed to write version.rs");
 }

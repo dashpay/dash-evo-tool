@@ -10,6 +10,7 @@ use crate::model::qualified_identity::{DPNSNameInfo, IdentityType, QualifiedIden
 use crate::ui::components::dpns_subscreen_chooser_panel::add_dpns_subscreen_chooser_panel;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::dpns::dpns_bulk_vote_schedule_screen::BulkScheduleVoteScreen;
 use crate::ui::identities::add_existing_identity_screen::AddExistingIdentityScreen;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use crate::ui::{Screen, ScreenType};
@@ -57,6 +58,12 @@ pub enum IndividualVoteCastingStatus {
     Completed,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct SelectedVote {
+    pub contested_name: String,
+    pub vote_choice: ResourceVoteChoice,
+}
+
 impl DPNSSubscreen {
     pub fn display_name(&self) -> &'static str {
         match self {
@@ -75,6 +82,7 @@ pub struct DPNSContestedNamesScreen {
     contested_names: Arc<Mutex<Vec<ContestedName>>>,
     local_dpns_names: Arc<Mutex<Vec<(Identifier, DPNSNameInfo)>>>,
     pub scheduled_votes: Arc<Mutex<Vec<(ScheduledDPNSVote, IndividualVoteCastingStatus)>>>,
+    pub selected_votes_for_scheduling: Vec<SelectedVote>,
     pub app_context: Arc<AppContext>,
     error_message: Option<(String, MessageType, DateTime<Utc>)>,
     sort_column: SortColumn,
@@ -130,6 +138,7 @@ impl DPNSContestedNamesScreen {
             contested_names,
             local_dpns_names,
             scheduled_votes: scheduled_votes_with_status,
+            selected_votes_for_scheduling: Vec::new(),
             app_context: app_context.clone(),
             error_message: None,
             sort_column: SortColumn::ContestedName,
@@ -170,17 +179,25 @@ impl DPNSContestedNamesScreen {
                 };
 
                 if ui.button(text).clicked() {
-                    self.show_vote_popup_info = Some((
-                        format!(
-                            "Confirm Voting for Contestant {} for name \"{}\".",
-                            contestant.id, contestant.name
-                        ),
-                        ContestedResourceTask::VoteOnDPNSName(
-                            contested_name.normalized_contested_name.clone(),
-                            ResourceVoteChoice::TowardsIdentity(contestant.id),
-                            vec![],
-                        ),
-                    ));
+                    let shift_held = ui.input(|i| i.modifiers.shift_only());
+                    if shift_held {
+                        self.selected_votes_for_scheduling.push(SelectedVote {
+                            contested_name: contested_name.normalized_contested_name.clone(),
+                            vote_choice: ResourceVoteChoice::TowardsIdentity(contestant.id),
+                        });
+                    } else {
+                        self.show_vote_popup_info = Some((
+                            format!(
+                                "Confirm Voting for Contestant {} for name \"{}\".",
+                                contestant.id, contestant.name
+                            ),
+                            ContestedResourceTask::VoteOnDPNSName(
+                                contested_name.normalized_contested_name.clone(),
+                                ResourceVoteChoice::TowardsIdentity(contestant.id),
+                                vec![],
+                            ),
+                        ));
+                    }
                 }
             }
         }
@@ -422,7 +439,27 @@ impl DPNSContestedNamesScreen {
                                         };
                                         // Vote button logic for locked votes
                                         if ui.button(label_text).clicked() {
-                                            self.show_vote_popup_info = Some((format!("Confirm Voting to Lock the name \"{}\".", contested_name.normalized_contested_name.clone()), ContestedResourceTask::VoteOnDPNSName(contested_name.normalized_contested_name.clone(), ResourceVoteChoice::Lock, vec![])));
+                                            // Check if SHIFT is held
+                                            let shift_held = ui.input(|i| i.modifiers.shift_only());
+
+                                            if shift_held {
+                                                // SHIFT-click => Add to our selected_votes_for_scheduling
+                                                // We do NOT pop up the immediate vote confirmation.
+                                                self.selected_votes_for_scheduling.push(SelectedVote {
+                                                    contested_name: contested_name.normalized_contested_name.clone(),
+                                                    vote_choice: ResourceVoteChoice::Lock,
+                                                });
+                                            } else {
+                                                // Normal click => existing immediate-vote popup
+                                                self.show_vote_popup_info = Some((
+                                                    format!("Confirm Voting to Lock the name \"{}\".", contested_name.normalized_contested_name.clone()),
+                                                    ContestedResourceTask::VoteOnDPNSName(
+                                                        contested_name.normalized_contested_name.clone(),
+                                                        ResourceVoteChoice::Lock,
+                                                        vec![],
+                                                    ),
+                                                ));
+                                            }                                        
                                         }
                                     });
                                     row.col(|ui| {
@@ -434,7 +471,15 @@ impl DPNSContestedNamesScreen {
                                             "Fetching".to_string()
                                         };
                                         if ui.button(label_text).clicked() {
-                                            self.show_vote_popup_info = Some((format!("Confirm Voting to Abstain on distribution of \"{}\".", contested_name.normalized_contested_name.clone()), ContestedResourceTask::VoteOnDPNSName(contested_name.normalized_contested_name.clone(), ResourceVoteChoice::Abstain, vec![])));
+                                            let shift_held = ui.input(|i| i.modifiers.shift_only());
+                                            if shift_held {
+                                                self.selected_votes_for_scheduling.push(SelectedVote {
+                                                    contested_name: contested_name.normalized_contested_name.clone(),
+                                                    vote_choice: ResourceVoteChoice::Abstain,
+                                                });
+                                            } else {
+                                                self.show_vote_popup_info = Some((format!("Confirm Voting to Abstain on distribution of \"{}\".", contested_name.normalized_contested_name.clone()), ContestedResourceTask::VoteOnDPNSName(contested_name.normalized_contested_name.clone(), ResourceVoteChoice::Abstain, vec![])));
+                                            }
                                         }
                                     });
                                     row.col(|ui| {
@@ -1194,6 +1239,8 @@ impl ScreenLike for DPNSContestedNamesScreen {
 
         let has_identity_that_can_register = !self.user_identities.is_empty();
 
+        let schedule_button = egui::Button::new("Schedule Votes").sense(if self.selected_votes_for_scheduling.is_empty() { egui::Sense::hover() } else { egui::Sense::click() });
+
         // Determine the right-side buttons based on the current DPNSSubscreen
         let mut right_buttons = match self.dpns_subscreen {
             DPNSSubscreen::Active => {
@@ -1208,7 +1255,11 @@ impl ScreenLike for DPNSContestedNamesScreen {
                     )
                 };
 
-                vec![refresh_button]
+                vec![
+                    // Possibly "Register Name" if you have that
+                    ("Schedule Votes", DesiredAppAction::AddScreenType(ScreenType::BulkScheduleVoteScreen(self.selected_votes_for_scheduling.clone()))),
+                    refresh_button
+                ]
             }
 
             DPNSSubscreen::Past => {
@@ -1413,6 +1464,9 @@ impl ScreenLike for DPNSContestedNamesScreen {
             }
             AppAction::SetMainScreen(_) => {
                 self.refreshing = false;
+            }
+            AppAction::AddScreen(Screen::BulkScheduleVoteScreen(_)) => {
+                self.selected_votes_for_scheduling.clear();
             }
             _ => {}
         }

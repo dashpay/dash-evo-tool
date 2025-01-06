@@ -17,7 +17,7 @@ use std::sync::Arc;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::RootScreenType;
 
-enum VoteOption {
+pub enum VoteOption {
     None,
     Scheduled { days: u32, hours: u32, minutes: u32 },
 }

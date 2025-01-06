@@ -22,7 +22,8 @@ use contracts_documents::add_contracts_screen::AddContractsScreen;
 use dash_sdk::dpp::identity::Identity;
 use dash_sdk::dpp::prelude::IdentityPublicKey;
 use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
-use dpns::dpns_contested_names_screen::DPNSSubscreen;
+use dpns::dpns_bulk_vote_schedule_screen::BulkScheduleVoteScreen;
+use dpns::dpns_contested_names_screen::{DPNSSubscreen, SelectedVote};
 use dpns::dpns_vote_scheduling_screen::ScheduleVoteScreen;
 use egui::Context;
 use identities::add_existing_identity_screen::AddExistingIdentityScreen;
@@ -145,6 +146,7 @@ pub enum ScreenType {
     ProofLog,
     TopUpIdentity(QualifiedIdentity),
     ScheduleVoteScreen(String, u64, Vec<QualifiedIdentity>, ResourceVoteChoice),
+    BulkScheduleVoteScreen(Vec<SelectedVote>),
     ScheduledVotes,
     AddContracts,
 }
@@ -228,6 +230,9 @@ impl ScreenType {
                 identities.clone(),
                 vote_choice.clone(),
             )),
+            ScreenType::BulkScheduleVoteScreen(selected_votes) => Screen::BulkScheduleVoteScreen(
+                BulkScheduleVoteScreen::new(app_context, selected_votes.clone()),
+            ),
             ScreenType::ScheduledVotes => Screen::DPNSContestedNamesScreen(
                 DPNSContestedNamesScreen::new(app_context, DPNSSubscreen::ScheduledVotes),
             ),
@@ -259,6 +264,7 @@ pub enum Screen {
     NetworkChooserScreen(NetworkChooserScreen),
     WalletsBalancesScreen(WalletsBalancesScreen),
     ScheduleVoteScreen(ScheduleVoteScreen),
+    BulkScheduleVoteScreen(BulkScheduleVoteScreen),
     AddContractsScreen(AddContractsScreen),
 }
 
@@ -285,6 +291,7 @@ impl Screen {
             Screen::ImportWalletScreen(screen) => screen.app_context = app_context,
             Screen::ProofLogScreen(screen) => screen.app_context = app_context,
             Screen::ScheduleVoteScreen(screen) => screen.app_context = app_context,
+            Screen::BulkScheduleVoteScreen(screen) => screen.app_context = app_context,
             Screen::AddContractsScreen(screen) => screen.app_context = app_context,
         }
     }
@@ -376,6 +383,9 @@ impl Screen {
                 screen.identities.clone(),
                 screen.vote_choice.clone(),
             ),
+            Screen::BulkScheduleVoteScreen(screen) => {
+                ScreenType::BulkScheduleVoteScreen(screen.selected_votes.clone())
+            }
             Screen::AddContractsScreen(_) => ScreenType::AddContracts,
         }
     }
@@ -404,6 +414,7 @@ impl ScreenLike for Screen {
             Screen::WalletsBalancesScreen(screen) => screen.refresh(),
             Screen::ProofLogScreen(screen) => screen.refresh(),
             Screen::ScheduleVoteScreen(screen) => screen.refresh(),
+            Screen::BulkScheduleVoteScreen(screen) => screen.refresh(),
             Screen::AddContractsScreen(screen) => screen.refresh(),
         }
     }
@@ -430,6 +441,7 @@ impl ScreenLike for Screen {
             Screen::WalletsBalancesScreen(screen) => screen.refresh_on_arrival(),
             Screen::ProofLogScreen(screen) => screen.refresh_on_arrival(),
             Screen::ScheduleVoteScreen(screen) => screen.refresh_on_arrival(),
+            Screen::BulkScheduleVoteScreen(screen) => screen.refresh_on_arrival(),
             Screen::AddContractsScreen(screen) => screen.refresh_on_arrival(),
         }
     }
@@ -456,6 +468,7 @@ impl ScreenLike for Screen {
             Screen::WalletsBalancesScreen(screen) => screen.ui(ctx),
             Screen::ProofLogScreen(screen) => screen.ui(ctx),
             Screen::ScheduleVoteScreen(screen) => screen.ui(ctx),
+            Screen::BulkScheduleVoteScreen(screen) => screen.ui(ctx),
             Screen::AddContractsScreen(screen) => screen.ui(ctx),
         }
     }
@@ -488,6 +501,7 @@ impl ScreenLike for Screen {
             Screen::WalletsBalancesScreen(screen) => screen.display_message(message, message_type),
             Screen::ProofLogScreen(screen) => screen.display_message(message, message_type),
             Screen::ScheduleVoteScreen(screen) => screen.display_message(message, message_type),
+            Screen::BulkScheduleVoteScreen(screen) => screen.display_message(message, message_type),
             Screen::AddContractsScreen(screen) => screen.display_message(message, message_type),
         }
     }
@@ -554,6 +568,9 @@ impl ScreenLike for Screen {
             Screen::ScheduleVoteScreen(screen) => {
                 screen.display_task_result(backend_task_success_result)
             }
+            Screen::BulkScheduleVoteScreen(screen) => {
+                screen.display_task_result(backend_task_success_result)
+            }
             Screen::AddContractsScreen(screen) => {
                 screen.display_task_result(backend_task_success_result)
             }
@@ -582,6 +599,7 @@ impl ScreenLike for Screen {
             Screen::WalletsBalancesScreen(screen) => screen.pop_on_success(),
             Screen::ProofLogScreen(screen) => screen.pop_on_success(),
             Screen::ScheduleVoteScreen(screen) => screen.pop_on_success(),
+            Screen::BulkScheduleVoteScreen(screen) => screen.pop_on_success(),
             Screen::AddContractsScreen(screen) => screen.pop_on_success(),
         }
     }

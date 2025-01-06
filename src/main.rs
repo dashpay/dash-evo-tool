@@ -1,6 +1,6 @@
-use std::env;
 use crate::app_dir::{app_user_data_dir_path, create_app_user_data_directory_if_not_exists};
 use crate::cpu_compatibility::check_cpu_compatibility;
+use std::env;
 
 mod app;
 mod app_dir;
@@ -22,8 +22,8 @@ include!(concat!(env!("OUT_DIR"), "/version.rs"));
 fn main() -> eframe::Result<()> {
     create_app_user_data_directory_if_not_exists()
         .expect("Failed to create app user_data directory");
-    let app_data_dir = app_user_data_dir_path()
-        .expect("Failed to get app user_data directory path");
+    let app_data_dir =
+        app_user_data_dir_path().expect("Failed to get app user_data directory path");
     println!("running v{}", VERSION);
     check_cpu_compatibility();
     // Initialize the Tokio runtime

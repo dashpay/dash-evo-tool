@@ -9,6 +9,7 @@ use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use contested_names::ScheduledDPNSVote;
 use dash_sdk::dpp::prelude::DataContract;
+use dash_sdk::dpp::state_transition::StateTransition;
 use dash_sdk::dpp::voting::votes::Vote;
 use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::Start;
 use dash_sdk::platform::{Document, Identifier};
@@ -16,6 +17,7 @@ use dash_sdk::query_types::{Documents, IndexMap};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
+pub mod broadcast_state_transition;
 pub mod contested_names;
 pub mod contract;
 pub mod core;
@@ -31,6 +33,7 @@ pub(crate) enum BackendTask {
     ContestedResourceTask(ContestedResourceTask),
     CoreTask(CoreTask),
     WithdrawalTask(WithdrawalsTask),
+    BroadcastStateTransition(StateTransition),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -87,6 +90,10 @@ impl AppContext {
             BackendTask::CoreTask(core_task) => self.run_core_task(core_task).await,
             BackendTask::WithdrawalTask(withdrawal_task) => {
                 self.run_withdraws_task(withdrawal_task, &sdk).await
+            }
+            BackendTask::BroadcastStateTransition(state_transition) => {
+                self.broadcast_state_transition(state_transition, &sdk)
+                    .await
             }
         }
     }

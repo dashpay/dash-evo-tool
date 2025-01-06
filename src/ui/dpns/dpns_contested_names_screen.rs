@@ -10,7 +10,6 @@ use crate::model::qualified_identity::{DPNSNameInfo, IdentityType, QualifiedIden
 use crate::ui::components::dpns_subscreen_chooser_panel::add_dpns_subscreen_chooser_panel;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::dpns::dpns_bulk_vote_schedule_screen::BulkScheduleVoteScreen;
 use crate::ui::identities::add_existing_identity_screen::AddExistingIdentityScreen;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use crate::ui::{Screen, ScreenType};
@@ -1238,8 +1237,6 @@ impl ScreenLike for DPNSContestedNamesScreen {
         self.check_error_expiration();
 
         let has_identity_that_can_register = !self.user_identities.is_empty();
-
-        let schedule_button = egui::Button::new("Schedule Votes").sense(if self.selected_votes_for_scheduling.is_empty() { egui::Sense::hover() } else { egui::Sense::click() });
 
         // Determine the right-side buttons based on the current DPNSSubscreen
         let mut right_buttons = match self.dpns_subscreen {

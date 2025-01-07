@@ -8,15 +8,20 @@ use crate::backend_task::withdrawal_statuses::{WithdrawStatusPartialData, Withdr
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use contested_names::ScheduledDPNSVote;
+use dash_sdk::dpp::prelude::DataContract;
+use dash_sdk::dpp::state_transition::StateTransition;
 use dash_sdk::dpp::voting::votes::Vote;
-use dash_sdk::query_types::Documents;
+use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::Start;
+use dash_sdk::platform::{Document, Identifier};
+use dash_sdk::query_types::{Documents, IndexMap};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
+pub mod broadcast_state_transition;
 pub mod contested_names;
 pub mod contract;
 pub mod core;
-mod document;
+pub mod document;
 pub mod identity;
 pub mod withdrawal_statuses;
 
@@ -28,6 +33,7 @@ pub(crate) enum BackendTask {
     ContestedResourceTask(ContestedResourceTask),
     CoreTask(CoreTask),
     WithdrawalTask(WithdrawalsTask),
+    BroadcastStateTransition(StateTransition),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -42,6 +48,9 @@ pub(crate) enum BackendTaskSuccessResult {
     SuccessfulVotes(Vec<Vote>),
     CastScheduledVote(ScheduledDPNSVote),
     WithdrawalStatus(WithdrawStatusPartialData),
+    FetchedContract(DataContract),
+    FetchedContracts(Vec<Option<DataContract>>),
+    PageDocuments(IndexMap<Identifier, Option<Document>>, Option<Start>),
 }
 
 impl BackendTaskSuccessResult {}
@@ -65,10 +74,9 @@ impl AppContext {
     ) -> Result<BackendTaskSuccessResult, String> {
         let sdk = self.sdk.clone();
         match task {
-            BackendTask::ContractTask(contract_task) => self
-                .run_contract_task(contract_task, &sdk)
-                .await
-                .map(|_| BackendTaskSuccessResult::None),
+            BackendTask::ContractTask(contract_task) => {
+                self.run_contract_task(contract_task, &sdk).await
+            }
             BackendTask::ContestedResourceTask(contested_resource_task) => {
                 self.run_contested_resource_task(contested_resource_task, &sdk, sender)
                     .await
@@ -82,6 +90,10 @@ impl AppContext {
             BackendTask::CoreTask(core_task) => self.run_core_task(core_task).await,
             BackendTask::WithdrawalTask(withdrawal_task) => {
                 self.run_withdraws_task(withdrawal_task, &sdk).await
+            }
+            BackendTask::BroadcastStateTransition(state_transition) => {
+                self.broadcast_state_transition(state_transition, &sdk)
+                    .await
             }
         }
     }

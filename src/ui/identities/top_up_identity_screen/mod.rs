@@ -82,10 +82,6 @@ impl TopUpIdentityScreen {
                     .and_then(|wallet| wallet.read().ok()?.alias.clone())
                     .unwrap_or_else(|| "Select".to_string());
 
-                ui.heading("1. Choose the wallet to use to top up this identity.");
-
-                ui.add_space(10.0);
-
                 // Display the ComboBox for wallet selection
                 ComboBox::from_label("Select Wallet")
                     .selected_text(selected_wallet_alias)
@@ -108,7 +104,6 @@ impl TopUpIdentityScreen {
                             }
                         }
                     });
-                ui.add_space(10.0);
                 true
             } else if let Some(wallet) = wallets.values().next() {
                 if self.wallet.is_none() {
@@ -425,40 +420,54 @@ impl ScreenLike for TopUpIdentityScreen {
                     action |= self.show_success(ui);
                     return;
                 }
+
                 ui.add_space(10.0);
                 ui.heading("Follow these steps to top up your identity:");
                 ui.add_space(15.0);
 
                 let mut step_number = 1;
-
-                if self.render_wallet_selection(ui) {
-                    // We had more than 1 wallet
-                    step_number += 1;
-                }
-
-                if self.wallet.is_none() {
-                    return;
-                };
-
-                let (needed_unlock, just_unlocked) = self.render_wallet_unlock_if_needed(ui);
-
-                if needed_unlock && !just_unlocked {
-                    return;
-                }
-
-                ui.add_space(10.0);
-
                 ui.heading(format!("{}. Choose your funding method.", step_number).as_str());
                 step_number += 1;
-
                 ui.add_space(10.0);
+
                 self.render_funding_method(ui);
+
+                ui.add_space(20.0);
+                ui.separator();
+                ui.add_space(20.0);
 
                 // Extract the funding method from the RwLock to minimize borrow scope
                 let funding_method = self.funding_method.read().unwrap().clone();
-
                 if funding_method == FundingMethod::NoSelection {
                     return;
+                }
+
+                if funding_method == FundingMethod::UseWalletBalance
+                    || funding_method == FundingMethod::UseUnusedAssetLock
+                {
+                    ui.heading(format!(
+                        "{}. Choose the wallet to use to top up this identity.",
+                        step_number
+                    ));
+                    step_number += 1;
+
+                    ui.add_space(10.0);
+
+                    self.render_wallet_selection(ui);
+
+                    if self.wallet.is_none() {
+                        return;
+                    };
+
+                    let (needed_unlock, just_unlocked) = self.render_wallet_unlock_if_needed(ui);
+
+                    if needed_unlock && !just_unlocked {
+                        return;
+                    }
+
+                    ui.add_space(20.0);
+                    ui.separator();
+                    ui.add_space(20.0);
                 }
 
                 match funding_method {

@@ -1,5 +1,5 @@
 use crate::context::AppContext;
-use crate::ui::dpns_contested_names_screen::DPNSSubscreen;
+use crate::ui::dpns::dpns_contested_names_screen::DPNSSubscreen;
 use crate::ui::RootScreenType;
 use crate::{app::AppAction, ui};
 use egui::{Color32, Context, Frame, Margin, RichText, SidePanel};

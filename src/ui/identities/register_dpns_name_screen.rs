@@ -2,8 +2,7 @@ use crate::app::AppAction;
 use crate::backend_task::identity::{IdentityTask, RegisterDpnsNameInput};
 use crate::backend_task::BackendTask;
 use crate::context::AppContext;
-use crate::model::qualified_identity::encrypted_key_storage::PrivateKeyData;
-use crate::model::qualified_identity::{PrivateKeyTarget, QualifiedIdentity};
+use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
@@ -16,11 +15,14 @@ use dash_sdk::dpp::identity::{Purpose, SecurityLevel, TimestampMillis};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
 use eframe::egui::Context;
-use egui::{Color32, RichText};
+use egui::{Color32, RichText, Ui};
 use std::sync::Arc;
 use std::sync::RwLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use super::get_selected_wallet;
+
+#[derive(PartialEq)]
 pub enum RegisterDpnsNameStatus {
     NotStarted,
     WaitingForResult(TimestampMillis),
@@ -77,7 +79,7 @@ impl RegisterDpnsNameScreen {
 
         let mut error_message: Option<String> = None;
         let selected_wallet = if let Some(ref identity) = selected_qualified_identity {
-            get_selected_wallet(&identity.0, app_context, &mut error_message)
+            get_selected_wallet(&identity.0, Some(app_context), None, &mut error_message)
         } else {
             None
         };
@@ -107,8 +109,12 @@ impl RegisterDpnsNameScreen {
             // Set the selected_qualified_identity to the found identity
             self.selected_qualified_identity = Some(qi.clone());
             // Update the selected wallet
-            self.selected_wallet =
-                get_selected_wallet(&qi.0, &self.app_context, &mut self.error_message);
+            self.selected_wallet = get_selected_wallet(
+                &qi.0,
+                Some(&self.app_context),
+                None,
+                &mut self.error_message,
+            );
         } else {
             // If not found, you might want to handle this case
             // For now, we'll set selected_qualified_identity to None
@@ -178,7 +184,8 @@ impl RegisterDpnsNameScreen {
                                 self.selected_qualified_identity = Some(qualified_identity.clone());
                                 self.selected_wallet = get_selected_wallet(
                                     &qualified_identity.0,
-                                    &self.app_context,
+                                    Some(&self.app_context),
+                                    None,
                                     &mut self.error_message,
                                 );
                             }
@@ -200,6 +207,32 @@ impl RegisterDpnsNameScreen {
         AppAction::BackendTask(BackendTask::IdentityTask(IdentityTask::RegisterDpnsName(
             dpns_name_input,
         )))
+    }
+
+    pub fn show_success(&mut self, ui: &mut Ui) -> AppAction {
+        let mut action = AppAction::None;
+
+        // Center the content vertically and horizontally
+        ui.vertical_centered(|ui| {
+            ui.add_space(50.0);
+
+            ui.heading("🎉");
+            ui.heading("Successfully registered dpns name.");
+
+            ui.add_space(20.0);
+
+            if ui.button("Back to DPNS screen").clicked() {
+                action = AppAction::PopScreenAndRefresh;
+            }
+            ui.add_space(5.0);
+
+            if ui.button("Register another name").clicked() {
+                self.name_input = String::new();
+                self.register_dpns_name_status = RegisterDpnsNameStatus::NotStarted;
+            }
+        });
+
+        action
     }
 }
 
@@ -232,6 +265,11 @@ impl ScreenLike for RegisterDpnsNameScreen {
         );
 
         egui::CentralPanel::default().show(ctx, |ui| {
+            if self.register_dpns_name_status == RegisterDpnsNameStatus::Complete {
+                action |= self.show_success(ui);
+                return;
+            }
+
             ui.heading("Register DPNS Name");
             ui.add_space(10.0);
 
@@ -248,6 +286,10 @@ impl ScreenLike for RegisterDpnsNameScreen {
             ui.heading("1. Select Identity");
             ui.add_space(5.0);
             self.render_identity_id_selection(ui);
+            ui.add_space(5.0);
+            if let Some(identity) = &self.selected_qualified_identity {
+                ui.label(format!("Identity balance: {:.6}", identity.0.identity.balance() as f64 * 1e-11));
+            }
 
             ui.add_space(10.0);
             ui.separator();
@@ -352,9 +394,7 @@ impl ScreenLike for RegisterDpnsNameScreen {
                 RegisterDpnsNameStatus::ErrorMessage(msg) => {
                     ui.colored_label(egui::Color32::RED, format!("Error: {}", msg));
                 }
-                RegisterDpnsNameStatus::Complete => {
-                    action = AppAction::PopScreenAndRefresh;
-                }
+                RegisterDpnsNameStatus::Complete => {}
             }
 
             ui.add_space(10.0);
@@ -431,44 +471,4 @@ pub fn is_contested_name(name: &str) -> bool {
         }
     }
     true
-}
-
-pub fn get_selected_wallet(
-    qualified_identity: &QualifiedIdentity,
-    app_context: &AppContext,
-    error_message: &mut Option<String>,
-) -> Option<Arc<RwLock<Wallet>>> {
-    let dpns_contract = &app_context.dpns_contract;
-
-    let preorder_document_type = match dpns_contract.document_type_for_name("preorder") {
-        Ok(doc_type) => doc_type,
-        Err(e) => {
-            *error_message = Some(format!("DPNS preorder document type not found: {}", e));
-            return None;
-        }
-    };
-
-    let public_key = match qualified_identity.document_signing_key(&preorder_document_type) {
-        Some(key) => key,
-        None => {
-            *error_message = Some(
-                "Identity doesn't have an authentication key for signing document transitions"
-                    .to_string(),
-            );
-            return None;
-        }
-    };
-
-    let key = (PrivateKeyTarget::PrivateKeyOnMainIdentity, public_key.id());
-
-    if let Some((_, PrivateKeyData::AtWalletDerivationPath(wallet_derivation_path))) =
-        qualified_identity.private_keys.private_keys.get(&key)
-    {
-        qualified_identity
-            .associated_wallets
-            .get(&wallet_derivation_path.wallet_seed_hash)
-            .cloned()
-    } else {
-        None
-    }
 }

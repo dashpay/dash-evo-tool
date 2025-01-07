@@ -6,7 +6,7 @@ use eframe::egui::Context;
 
 use crate::model::wallet::encryption::{encrypt_message, DASH_SECRET_MESSAGE};
 use crate::model::wallet::{ClosedKeyItem, OpenWalletSeed, Wallet, WalletSeed};
-use crate::ui::wallet::add_new_wallet_screen::{
+use crate::ui::wallets::add_new_wallet_screen::{
     DASH_BIP44_ACCOUNT_0_PATH_MAINNET, DASH_BIP44_ACCOUNT_0_PATH_TESTNET,
 };
 use bip39::Mnemonic;

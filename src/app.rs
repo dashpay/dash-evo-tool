@@ -9,15 +9,15 @@ use crate::components::core_zmq_listener::{CoreZMQListener, ZMQMessage};
 use crate::context::AppContext;
 use crate::database::Database;
 use crate::logging::initialize_logger;
-use crate::ui::document_query_screen::DocumentQueryScreen;
-use crate::ui::dpns_contested_names_screen::{
+use crate::ui::contracts_documents::document_query_screen::DocumentQueryScreen;
+use crate::ui::dpns::dpns_contested_names_screen::{
     DPNSContestedNamesScreen, DPNSSubscreen, IndividualVoteCastingStatus,
 };
 use crate::ui::identities::identities_screen::IdentitiesScreen;
 use crate::ui::network_chooser_screen::NetworkChooserScreen;
-use crate::ui::tool_screens::proof_log_screen::ProofLogScreen;
-use crate::ui::tool_screens::transition_visualizer_screen::TransitionVisualizerScreen;
-use crate::ui::wallet::wallets_screen::WalletsBalancesScreen;
+use crate::ui::tools::proof_log_screen::ProofLogScreen;
+use crate::ui::tools::transition_visualizer_screen::TransitionVisualizerScreen;
+use crate::ui::wallets::wallets_screen::WalletsBalancesScreen;
 use crate::ui::withdrawal_statuses_screen::WithdrawsStatusScreen;
 use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike, ScreenType};
 use dash_sdk::dpp::dashcore::Network;
@@ -458,6 +458,15 @@ impl App for AppState {
                         self.visible_screen_mut().display_task_result(message);
                     }
                     BackendTaskSuccessResult::ToppedUpIdentity(_) => {
+                        self.visible_screen_mut().display_task_result(message);
+                    }
+                    BackendTaskSuccessResult::FetchedContract(_) => {
+                        self.visible_screen_mut().display_task_result(message);
+                    }
+                    BackendTaskSuccessResult::FetchedContracts(_) => {
+                        self.visible_screen_mut().display_task_result(message);
+                    }
+                    BackendTaskSuccessResult::PageDocuments(_, _) => {
                         self.visible_screen_mut().display_task_result(message);
                     }
                 },

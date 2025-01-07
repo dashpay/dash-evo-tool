@@ -114,8 +114,6 @@ impl TopUpIdentityScreen {
             return action;
         };
 
-        ui.add_space(10.0);
-
         ui.heading(
             format!(
                 "{}. Select how much you would like to transfer?",

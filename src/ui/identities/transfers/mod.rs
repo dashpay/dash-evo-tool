@@ -20,7 +20,8 @@ use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
-use crate::ui::identities::register_dpns_name_screen::get_selected_wallet;
+
+use super::get_selected_wallet;
 
 pub enum TransferCreditsStatus {
     NotStarted,
@@ -47,20 +48,19 @@ pub struct TransferScreen {
 impl TransferScreen {
     pub fn new(identity: QualifiedIdentity, app_context: &Arc<AppContext>) -> Self {
         let max_amount = identity.identity.balance();
-        let selected_key = identity
-            .identity
-            .get_first_public_key_matching(
-                Purpose::TRANSFER,
-                SecurityLevel::full_range().into(),
-                KeyType::all_key_types().into(),
-                false,
-            )
-            .cloned();
+        let identity_clone = identity.identity.clone();
+        let selected_key = identity_clone.get_first_public_key_matching(
+            Purpose::TRANSFER,
+            SecurityLevel::full_range().into(),
+            KeyType::all_key_types().into(),
+            false,
+        );
         let mut error_message = None;
-        let selected_wallet = get_selected_wallet(&identity, app_context, &mut error_message);
+        let selected_wallet =
+            get_selected_wallet(&identity, None, selected_key, &mut error_message);
         Self {
             identity,
-            selected_key,
+            selected_key: selected_key.cloned(),
             receiver_identity_id: String::new(),
             amount: String::new(),
             transfer_credits_status: TransferCreditsStatus::NotStarted,

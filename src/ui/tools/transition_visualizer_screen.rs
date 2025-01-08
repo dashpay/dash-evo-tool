@@ -145,19 +145,11 @@ impl TransitionVisualizerScreen {
                             .as_secs();
                         self.broadcast_status = TransitionBroadcastStatus::Submitting(now);
 
-                        match StateTransition::deserialize_from_bytes(
-                            &hex::decode(&self.input_data).unwrap(),
-                        ) {
-                            Ok(state_transition) => {
+                        if let Some(json) = &self.parsed_json {
+                            if let Ok(state_transition) = serde_json::from_str(json) {
                                 app_action = AppAction::BackendTask(
                                     BackendTask::BroadcastStateTransition(state_transition),
                                 );
-                            }
-                            Err(e) => {
-                                self.broadcast_status = TransitionBroadcastStatus::Error(format!(
-                                    "Failed to parse state transition: {}",
-                                    e
-                                ));
                             }
                         }
                     }

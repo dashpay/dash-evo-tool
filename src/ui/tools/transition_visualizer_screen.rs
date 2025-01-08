@@ -119,43 +119,43 @@ impl TransitionVisualizerScreen {
 
                 ui.add_space(10.0);
 
-                // If we’re not done or not in the middle of broadcasting, we can show the button
+                // if we are NotStarted or in an Error state, show the button
                 if matches!(
                     self.broadcast_status,
                     TransitionBroadcastStatus::NotStarted | TransitionBroadcastStatus::Error(_)
                 ) {
-                    if let TransitionBroadcastStatus::Submitting(_) = self.broadcast_status {
-                        // Broadcast button
-                        let mut new_style = (**ui.style()).clone();
-                        new_style.spacing.button_padding = egui::vec2(10.0, 5.0);
-                        ui.set_style(new_style);
-                        let button = egui::Button::new(
-                            RichText::new("Broadcast Transition to Platform").color(Color32::WHITE),
-                        )
-                        .fill(Color32::from_rgb(0, 128, 255))
-                        .frame(true)
-                        .rounding(3.0);
-                        if ui.add(button).clicked() {
-                            // Mark as submitting
-                            let now = SystemTime::now()
-                                .duration_since(UNIX_EPOCH)
-                                .expect("Time went backwards")
-                                .as_secs();
-                            self.broadcast_status = TransitionBroadcastStatus::Submitting(now);
-                            // Kick off the backend task
-                            match StateTransition::deserialize_from_bytes(
-                                &hex::decode(&self.input_data).unwrap(),
-                            ) {
-                                Ok(state_transition) => {
-                                    app_action = AppAction::BackendTask(
-                                        BackendTask::BroadcastStateTransition(state_transition),
-                                    );
-                                }
-                                Err(e) => {
-                                    self.broadcast_status = TransitionBroadcastStatus::Error(
-                                        format!("Failed to parse state transition: {}", e),
-                                    );
-                                }
+                    let mut new_style = (**ui.style()).clone();
+                    new_style.spacing.button_padding = egui::vec2(10.0, 5.0);
+                    ui.set_style(new_style);
+
+                    let button = egui::Button::new(
+                        RichText::new("Broadcast Transition to Platform").color(Color32::WHITE),
+                    )
+                    .fill(Color32::from_rgb(0, 128, 255))
+                    .frame(true)
+                    .rounding(3.0);
+
+                    if ui.add(button).clicked() {
+                        // Mark as submitting
+                        let now = SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .expect("Time went backwards")
+                            .as_secs();
+                        self.broadcast_status = TransitionBroadcastStatus::Submitting(now);
+
+                        match StateTransition::deserialize_from_bytes(
+                            &hex::decode(&self.input_data).unwrap(),
+                        ) {
+                            Ok(state_transition) => {
+                                app_action = AppAction::BackendTask(
+                                    BackendTask::BroadcastStateTransition(state_transition),
+                                );
+                            }
+                            Err(e) => {
+                                self.broadcast_status = TransitionBroadcastStatus::Error(format!(
+                                    "Failed to parse state transition: {}",
+                                    e
+                                ));
                             }
                         }
                     }

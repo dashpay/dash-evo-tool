@@ -41,8 +41,12 @@ impl TransitionVisualizerScreen {
     }
 
     fn parse_input(&mut self) {
-        // Clear previous parse results, but let's not overwrite broadcast_status
+        // Clear previous parse results...
         self.parsed_json = None;
+
+        // Reset the broadcast status so we no longer show old errors
+        // or "Submitting" states from a previous parse/broadcast.
+        self.broadcast_status = TransitionBroadcastStatus::NotStarted;
 
         // Try to decode the input as hex first
         let decoded_bytes = hex::decode(&self.input_data).or_else(|_| {
@@ -56,7 +60,7 @@ impl TransitionVisualizerScreen {
                 // Try to deserialize into a StateTransition
                 match StateTransition::deserialize_from_bytes(&bytes) {
                     Ok(state_transition) => {
-                        // Convert state transition to JSON
+                        // Convert to JSON
                         match serde_json::to_string_pretty(&state_transition) {
                             Ok(json) => self.parsed_json = Some(json),
                             Err(e) => {
@@ -68,10 +72,8 @@ impl TransitionVisualizerScreen {
                         }
                     }
                     Err(e) => {
-                        self.broadcast_status = TransitionBroadcastStatus::Error(format!(
-                            "Failed to parse state transition: {}",
-                            e
-                        ));
+                        self.broadcast_status =
+                            TransitionBroadcastStatus::Error(format!("Failed to parse: {}", e));
                     }
                 }
             }

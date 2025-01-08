@@ -29,10 +29,24 @@ use eframe::egui::{self, Context};
 use eframe::emath::Align;
 use egui::{Color32, Frame, Margin, RichText, Ui};
 use egui_extras::{Column, TableBuilder};
-use itertools::Itertools;
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum IdentitiesSortColumn {
+    Alias,
+    IdentityID,
+    InWallet,
+    Type,
+    Balance,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum IdentitiesSortOrder {
+    Ascending,
+    Descending,
+}
 
 pub struct IdentitiesScreen {
     pub identities: Arc<Mutex<IndexMap<Identifier, QualifiedIdentity>>>,
@@ -40,6 +54,8 @@ pub struct IdentitiesScreen {
     pub show_more_keys_popup: Option<QualifiedIdentity>,
     pub identity_to_remove: Option<QualifiedIdentity>,
     pub wallet_seed_hash_cache: HashMap<WalletSeedHash, String>,
+    sort_column: IdentitiesSortColumn,
+    sort_order: IdentitiesSortOrder,
 }
 
 impl IdentitiesScreen {
@@ -58,7 +74,90 @@ impl IdentitiesScreen {
             show_more_keys_popup: None,
             identity_to_remove: None,
             wallet_seed_hash_cache: Default::default(),
+            sort_column: IdentitiesSortColumn::Alias,
+            sort_order: IdentitiesSortOrder::Ascending,
         }
+    }
+
+    fn toggle_sort(&mut self, column: IdentitiesSortColumn) {
+        if self.sort_column == column {
+            // If user clicked the same column again, flip ascending/descending
+            self.sort_order = match self.sort_order {
+                IdentitiesSortOrder::Ascending => IdentitiesSortOrder::Descending,
+                IdentitiesSortOrder::Descending => IdentitiesSortOrder::Ascending,
+            };
+        } else {
+            // If user clicked a new column, set that column & reset to ascending
+            self.sort_column = column;
+            self.sort_order = IdentitiesSortOrder::Ascending;
+        }
+    }
+
+    fn sort_identities(&self, identities: &mut [QualifiedIdentity]) {
+        identities.sort_by(|a, b| {
+            let ordering = match self.sort_column {
+                IdentitiesSortColumn::Alias => {
+                    let alias_a = a.alias.as_deref().unwrap_or("");
+                    let alias_b = b.alias.as_deref().unwrap_or("");
+                    alias_a.cmp(alias_b)
+                }
+                IdentitiesSortColumn::IdentityID => {
+                    // Compare only the first 6 characters of each ID string
+                    let short_a: String = a
+                        .identity
+                        .id()
+                        // Convert to a string based on the IdentityType
+                        .to_string(a.identity_type.default_encoding())
+                        .chars()
+                        .take(6)
+                        .collect();
+
+                    let short_b: String = b
+                        .identity
+                        .id()
+                        .to_string(b.identity_type.default_encoding())
+                        .chars()
+                        .take(6)
+                        .collect();
+
+                    short_a.cmp(&short_b)
+                }
+                IdentitiesSortColumn::InWallet => {
+                    let wallet_a = self.wallet_name_for(a);
+                    let wallet_b = self.wallet_name_for(b);
+                    wallet_a.cmp(&wallet_b)
+                }
+                IdentitiesSortColumn::Type => a
+                    .identity_type
+                    .to_string()
+                    .cmp(&b.identity_type.to_string()),
+                IdentitiesSortColumn::Balance => a.identity.balance().cmp(&b.identity.balance()),
+            };
+            // If descending, flip the ordering
+            match self.sort_order {
+                IdentitiesSortOrder::Ascending => ordering,
+                IdentitiesSortOrder::Descending => ordering.reverse(),
+            }
+        });
+    }
+
+    /// Helper to get "in wallet" text for sorting
+    fn wallet_name_for(&self, qi: &QualifiedIdentity) -> String {
+        // Reuse your `find_wallet(...)` logic or get the text from the cache
+        if let Some(master_identity_public_key) = qi.private_keys.find_master_key() {
+            if let Some(wallet_derivation_path) =
+                &master_identity_public_key.in_wallet_at_derivation_path
+            {
+                if let Some(alias) = self
+                    .wallet_seed_hash_cache
+                    .get(&wallet_derivation_path.wallet_seed_hash)
+                {
+                    return alias.clone();
+                }
+            }
+        }
+        // If no wallet found, return empty string or something
+        "".to_owned()
     }
 
     fn show_alias(&self, ui: &mut Ui, qualified_identity: &QualifiedIdentity) {
@@ -279,6 +378,11 @@ impl IdentitiesScreen {
     ) -> AppAction {
         let mut action = AppAction::None;
 
+        // Copy the identities into a local Vec
+        let mut local_identities = identities.to_vec();
+        // Sort them
+        self.sort_identities(&mut local_identities);
+
         egui::ScrollArea::vertical().show(ui, |ui| {
             // Define a frame with custom background color and border
             Frame::group(ui.style())
@@ -304,29 +408,45 @@ impl IdentitiesScreen {
                         .column(Column::initial(80.0).resizable(true)) // Actions
                         .header(30.0, |mut header| {
                             header.col(|ui| {
-                                ui.heading("Name");
+                                // Name
+                                if ui.button("Name").clicked() {
+                                    self.toggle_sort(IdentitiesSortColumn::Alias);
+                                }
                             });
                             header.col(|ui| {
-                                ui.heading("Identity ID");
+                                // Identity ID
+                                if ui.button("Identity ID").clicked() {
+                                    self.toggle_sort(IdentitiesSortColumn::IdentityID);
+                                }
                             });
                             header.col(|ui| {
-                                ui.heading("In Wallet");
+                                // In Wallet
+                                if ui.button("In Wallet").clicked() {
+                                    self.toggle_sort(IdentitiesSortColumn::InWallet);
+                                }
                             });
                             header.col(|ui| {
-                                ui.heading("Type");
+                                // Type
+                                if ui.button("Type").clicked() {
+                                    self.toggle_sort(IdentitiesSortColumn::Type);
+                                }
                             });
                             header.col(|ui| {
+                                // Keys
                                 ui.heading("Keys");
                             });
                             header.col(|ui| {
-                                ui.heading("Balance");
+                                // Balance
+                                if ui.button("Balance").clicked() {
+                                    self.toggle_sort(IdentitiesSortColumn::Balance);
+                                }
                             });
                             header.col(|ui| {
                                 ui.heading("Actions");
                             });
                         })
                         .body(|mut body| {
-                            for qualified_identity in identities.iter().sorted_by_key(|qi| qi.identity.id()) {
+                            for qualified_identity in &local_identities {
                                 let identity = &qualified_identity.identity;
                                 let public_keys = identity.public_keys();
                                 let voter_identity_public_keys = qualified_identity

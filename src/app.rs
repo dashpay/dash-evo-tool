@@ -186,7 +186,7 @@ impl AppState {
 
         let mut chosen_network = Network::Dash;
 
-        if let Some((network, screen_type, password_info, _, _)) = settings {
+        if let Some((network, screen_type, _, _, _)) = settings {
             selected_main_screen = screen_type;
             chosen_network = network;
             if chosen_network == Network::Testnet && testnet_app_context.is_some() {
@@ -440,6 +440,9 @@ impl App for AppState {
                     }
                     BackendTaskSuccessResult::SuccessfulVotes(_) => {
                         self.visible_screen_mut().refresh();
+                    }
+                    BackendTaskSuccessResult::MultipleDPNSVotesCast(_) => {
+                        self.visible_screen_mut().display_task_result(message);
                     }
                     BackendTaskSuccessResult::CastScheduledVote(vote) => {
                         let _ = self

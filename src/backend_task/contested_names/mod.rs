@@ -17,6 +17,7 @@ use tokio::sync::mpsc;
 pub(crate) enum ContestedResourceTask {
     QueryDPNSContestedResources,
     VoteOnDPNSName(String, ResourceVoteChoice, Vec<QualifiedIdentity>),
+    VoteOnMultipleDPNSNames(Vec<(String, ResourceVoteChoice)>, Vec<QualifiedIdentity>),
     ScheduleDPNSVotes(Vec<ScheduledDPNSVote>),
     CastScheduledVote(ScheduledDPNSVote, QualifiedIdentity),
     ClearAllScheduledVotes,
@@ -48,6 +49,28 @@ impl AppContext {
             ContestedResourceTask::VoteOnDPNSName(name, vote_choice, voters) => {
                 self.vote_on_dpns_name(name, *vote_choice, voters, sdk, sender)
                     .await
+            }
+            ContestedResourceTask::VoteOnMultipleDPNSNames(votes, all_voters) => {
+                let mut results = Vec::new();
+
+                for (name, choice) in votes {
+                    // We'll do partial success: each name either Ok(()) or Err(String)
+                    let cloned_sender = sender.clone();
+                    let result = self
+                        .vote_on_dpns_name(&name, *choice, all_voters, sdk, cloned_sender)
+                        .await;
+
+                    match result {
+                        Ok(_) => {
+                            results.push((name.clone(), *choice, Ok(())));
+                        }
+                        Err(err_msg) => {
+                            results.push((name.clone(), *choice, Err(err_msg)));
+                        }
+                    }
+                }
+
+                Ok(BackendTaskSuccessResult::MultipleDPNSVotesCast(results))
             }
             ContestedResourceTask::ScheduleDPNSVotes(scheduled_votes) => self
                 .insert_scheduled_votes(scheduled_votes)

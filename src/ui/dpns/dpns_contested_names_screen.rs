@@ -11,7 +11,7 @@ use crate::ui::components::dpns_subscreen_chooser_panel::add_dpns_subscreen_choo
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::identities::add_existing_identity_screen::AddExistingIdentityScreen;
-use crate::ui::{MessageType, RootScreenType, ScreenLike};
+use crate::ui::{BackendTaskSuccessResult, MessageType, RootScreenType, ScreenLike};
 use crate::ui::{Screen, ScreenType};
 use chrono::{DateTime, LocalResult, TimeZone, Utc};
 use chrono_humanize::HumanTime;
@@ -57,6 +57,13 @@ pub enum IndividualVoteCastingStatus {
     Completed,
 }
 
+#[derive(PartialEq)]
+enum CastAllNowStatus {
+    NotStarted,
+    InProgress,
+    Done(Vec<(String, ResourceVoteChoice, Result<(), String>)>),
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct SelectedVote {
     pub contested_name: String,
@@ -90,6 +97,7 @@ pub struct DPNSContestedNamesScreen {
     show_vote_popup_info: Option<(String, ContestedResourceTask)>,
     popup_pending_vote_action: Option<ContestedResourceTask>,
     pub vote_cast_in_progress: bool,
+    cast_all_now_status: CastAllNowStatus,
     pub dpns_subscreen: DPNSSubscreen,
     refreshing: bool,
 }
@@ -146,6 +154,7 @@ impl DPNSContestedNamesScreen {
             show_vote_popup_info: None,
             popup_pending_vote_action: None,
             vote_cast_in_progress: false,
+            cast_all_now_status: CastAllNowStatus::NotStarted,
             dpns_subscreen,
             refreshing: false,
         }
@@ -1204,6 +1213,73 @@ impl DPNSContestedNamesScreen {
 
         app_action
     }
+
+    fn show_bulk_cast_success_screen(
+        &mut self,
+        ui: &mut egui::Ui,
+        results: &Vec<(String, ResourceVoteChoice, Result<(), String>)>,
+    ) -> AppAction {
+        let mut action = AppAction::None;
+
+        ui.vertical_centered(|ui| {
+            ui.add_space(20.0);
+            ui.heading("Bulk Voting Results");
+            ui.separator();
+
+            let mut any_failures = false;
+
+            // List each vote result
+            for (name, choice, result) in results {
+                ui.horizontal(|ui| {
+                    // Show the contested name and choice
+                    let desc = format!("{} => {:?}", name, choice);
+                    match result {
+                        Ok(()) => {
+                            ui.colored_label(egui::Color32::DARK_GREEN, format!("{}", desc));
+                        }
+                        Err(err_msg) => {
+                            any_failures = true;
+                            ui.colored_label(
+                                egui::Color32::RED,
+                                format!("✗ {} ({})", desc, err_msg),
+                            );
+
+                            // Retry button
+                            if ui.button("Retry").clicked() {
+                                // Just cast this one again with all identities?
+                                action =
+                                    AppAction::BackendTask(BackendTask::ContestedResourceTask(
+                                        ContestedResourceTask::VoteOnDPNSName(
+                                            name.clone(),
+                                            *choice,
+                                            self.voting_identities.clone(),
+                                        ),
+                                    ));
+                            }
+                        }
+                    }
+                });
+            }
+
+            ui.add_space(20.0);
+
+            if any_failures {
+                ui.label("Some votes failed. You can retry individually, or return.");
+            } else {
+                ui.colored_label(egui::Color32::DARK_GREEN, "All votes succeeded.");
+            }
+
+            ui.add_space(10.0);
+
+            // "Back to Active Contests" button
+            if ui.button("Back to Active Contests").clicked() {
+                // E.g. go back to Active screen forcibly:
+                action = AppAction::SetMainScreen(RootScreenType::RootScreenDPNSActiveContests);
+            }
+        });
+
+        action
+    }
 }
 
 impl ScreenLike for DPNSContestedNamesScreen {
@@ -1347,13 +1423,22 @@ impl ScreenLike for DPNSContestedNamesScreen {
         self.error_message = Some((message.to_string(), message_type, Utc::now()));
     }
 
+    fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
+        match backend_task_success_result {
+            BackendTaskSuccessResult::MultipleDPNSVotesCast(results) => {
+                self.cast_all_now_status = CastAllNowStatus::Done(results);
+            }
+            _ => {}
+        }
+    }
+
     fn ui(&mut self, ctx: &Context) -> AppAction {
-        self.check_error_expiration();
-
         let has_identity_that_can_register = !self.user_identities.is_empty();
-        let has_selected_votes = self.selected_votes_for_scheduling.len() > 0;
+        let has_selected_votes = !self.selected_votes_for_scheduling.is_empty();
+        let has_or_in_progress =
+            has_selected_votes || self.cast_all_now_status == CastAllNowStatus::InProgress;
 
-        // Determine the right-side buttons based on the current DPNSSubscreen
+        // Build top-right buttons
         let mut right_buttons = match self.dpns_subscreen {
             DPNSSubscreen::Active => {
                 let refresh_button = if self.refreshing {
@@ -1367,7 +1452,12 @@ impl ScreenLike for DPNSContestedNamesScreen {
                     )
                 };
 
-                if has_selected_votes {
+                if has_or_in_progress {
+                    let cast_all_label = match self.cast_all_now_status {
+                        CastAllNowStatus::InProgress => "Casting...",
+                        _ => "Cast All Now",
+                    };
+
                     vec![
                         refresh_button,
                         (
@@ -1375,6 +1465,26 @@ impl ScreenLike for DPNSContestedNamesScreen {
                             DesiredAppAction::AddScreenType(ScreenType::BulkScheduleVoteScreen(
                                 self.selected_votes_for_scheduling.clone(),
                             )),
+                        ),
+                        (
+                            cast_all_label,
+                            if self.cast_all_now_status == CastAllNowStatus::InProgress {
+                                DesiredAppAction::None
+                            } else {
+                                // Bulk vote backend task
+                                let votes: Vec<(String, ResourceVoteChoice)> = self
+                                    .selected_votes_for_scheduling
+                                    .iter()
+                                    .map(|sv| (sv.contested_name.clone(), sv.vote_choice))
+                                    .collect();
+
+                                DesiredAppAction::BackendTask(BackendTask::ContestedResourceTask(
+                                    ContestedResourceTask::VoteOnMultipleDPNSNames(
+                                        votes,
+                                        self.voting_identities.clone(),
+                                    ),
+                                ))
+                            },
                         ),
                     ]
                 } else {
@@ -1540,34 +1650,39 @@ impl ScreenLike for DPNSContestedNamesScreen {
                 !scheduled_votes.is_empty()
             };
 
-            // Render the proper table
-            match self.dpns_subscreen {
-                DPNSSubscreen::Active => {
-                    if has_contested_names {
-                        self.render_table_active_contests(ui);
-                    } else {
-                        action |= self.render_no_active_contests_or_owned_names(ui);
+            if let CastAllNowStatus::Done(results) = &self.cast_all_now_status {
+                // If done, show success screen only.
+                let results_clone = results.clone();
+                action |= self.show_bulk_cast_success_screen(ui, &results_clone);
+            } else {
+                match self.dpns_subscreen {
+                    DPNSSubscreen::Active => {
+                        if has_contested_names {
+                            self.render_table_active_contests(ui);
+                        } else {
+                            action |= self.render_no_active_contests_or_owned_names(ui);
+                        }
                     }
-                }
-                DPNSSubscreen::Past => {
-                    if has_contested_names {
-                        self.render_table_past_contests(ui);
-                    } else {
-                        action |= self.render_no_active_contests_or_owned_names(ui);
+                    DPNSSubscreen::Past => {
+                        if has_contested_names {
+                            self.render_table_past_contests(ui);
+                        } else {
+                            action |= self.render_no_active_contests_or_owned_names(ui);
+                        }
                     }
-                }
-                DPNSSubscreen::Owned => {
-                    if has_dpns_names {
-                        self.render_table_local_dpns_names(ui);
-                    } else {
-                        action |= self.render_no_active_contests_or_owned_names(ui);
+                    DPNSSubscreen::Owned => {
+                        if has_dpns_names {
+                            self.render_table_local_dpns_names(ui);
+                        } else {
+                            action |= self.render_no_active_contests_or_owned_names(ui);
+                        }
                     }
-                }
-                DPNSSubscreen::ScheduledVotes => {
-                    if has_scheduled_votes {
-                        action |= self.render_table_scheduled_votes(ui);
-                    } else {
-                        action |= self.render_no_active_contests_or_owned_names(ui);
+                    DPNSSubscreen::ScheduledVotes => {
+                        if has_scheduled_votes {
+                            action |= self.render_table_scheduled_votes(ui);
+                        } else {
+                            action |= self.render_no_active_contests_or_owned_names(ui);
+                        }
                     }
                 }
             }
@@ -1586,6 +1701,12 @@ impl ScreenLike for DPNSContestedNamesScreen {
                 self.refreshing = false;
             }
             AppAction::AddScreen(Screen::BulkScheduleVoteScreen(_)) => {
+                self.selected_votes_for_scheduling.clear();
+            }
+            AppAction::BackendTask(BackendTask::ContestedResourceTask(
+                ContestedResourceTask::VoteOnMultipleDPNSNames(..),
+            )) => {
+                self.cast_all_now_status = CastAllNowStatus::InProgress;
                 self.selected_votes_for_scheduling.clear();
             }
             _ => {}

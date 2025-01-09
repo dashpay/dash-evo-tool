@@ -56,19 +56,21 @@ pub struct IdentitiesScreen {
     pub wallet_seed_hash_cache: HashMap<WalletSeedHash, String>,
     sort_column: IdentitiesSortColumn,
     sort_order: IdentitiesSortOrder,
+    use_custom_order: bool,
 }
 
 impl IdentitiesScreen {
     pub fn new(app_context: &Arc<AppContext>) -> Self {
-        let identities = Arc::new(Mutex::new(
-            app_context
-                .load_local_qualified_identities()
-                .unwrap_or_default()
-                .into_iter()
-                .map(|qualified_identity| (qualified_identity.identity.id(), qualified_identity))
-                .collect(),
-        ));
-        Self {
+        let initial_map: IndexMap<Identifier, QualifiedIdentity> = app_context
+            .load_local_qualified_identities()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|qi| (qi.identity.id(), qi))
+            .collect();
+
+        let identities = Arc::new(Mutex::new(initial_map));
+
+        let mut screen = Self {
             identities,
             app_context: app_context.clone(),
             show_more_keys_popup: None,
@@ -76,25 +78,46 @@ impl IdentitiesScreen {
             wallet_seed_hash_cache: Default::default(),
             sort_column: IdentitiesSortColumn::Alias,
             sort_order: IdentitiesSortOrder::Ascending,
+            use_custom_order: true,
+        };
+
+        if let Ok(saved_ids) = screen.app_context.db.load_identity_order() {
+            // reorder the IndexMap
+            screen.reorder_map_to(saved_ids);
+            screen.use_custom_order = true;
+        }
+
+        screen
+    }
+
+    /// Reorder the underlying IndexMap to match a list of IDs
+    fn reorder_map_to(&self, new_order: Vec<Identifier>) {
+        let mut lock = self.identities.lock().unwrap();
+        for (desired_idx, id) in new_order.iter().enumerate() {
+            if let Some(current_idx) = lock.get_index_of(id) {
+                if current_idx != desired_idx && current_idx < lock.len() {
+                    lock.swap_indices(current_idx, desired_idx);
+                }
+            }
         }
     }
 
     fn toggle_sort(&mut self, column: IdentitiesSortColumn) {
+        self.use_custom_order = false;
         if self.sort_column == column {
-            // If user clicked the same column again, flip ascending/descending
             self.sort_order = match self.sort_order {
                 IdentitiesSortOrder::Ascending => IdentitiesSortOrder::Descending,
                 IdentitiesSortOrder::Descending => IdentitiesSortOrder::Ascending,
             };
         } else {
-            // If user clicked a new column, set that column & reset to ascending
             self.sort_column = column;
             self.sort_order = IdentitiesSortOrder::Ascending;
         }
     }
 
-    fn sort_identities(&self, identities: &mut [QualifiedIdentity]) {
-        identities.sort_by(|a, b| {
+    /// Sorts a list of QIs
+    fn sort_vec(&self, list: &mut [QualifiedIdentity]) {
+        list.sort_by(|a, b| {
             let ordering = match self.sort_column {
                 IdentitiesSortColumn::Alias => {
                     let alias_a = a.alias.as_deref().unwrap_or("");
@@ -102,16 +125,13 @@ impl IdentitiesScreen {
                     alias_a.cmp(alias_b)
                 }
                 IdentitiesSortColumn::IdentityID => {
-                    // Compare only the first 6 characters of each ID string
                     let short_a: String = a
                         .identity
                         .id()
-                        // Convert to a string based on the IdentityType
                         .to_string(a.identity_type.default_encoding())
                         .chars()
                         .take(6)
                         .collect();
-
                     let short_b: String = b
                         .identity
                         .id()
@@ -119,10 +139,10 @@ impl IdentitiesScreen {
                         .chars()
                         .take(6)
                         .collect();
-
                     short_a.cmp(&short_b)
                 }
                 IdentitiesSortColumn::InWallet => {
+                    // We'll just do a dummy for now
                     let wallet_a = self.wallet_name_for(a);
                     let wallet_b = self.wallet_name_for(b);
                     wallet_a.cmp(&wallet_b)
@@ -133,7 +153,6 @@ impl IdentitiesScreen {
                     .cmp(&b.identity_type.to_string()),
                 IdentitiesSortColumn::Balance => a.identity.balance().cmp(&b.identity.balance()),
             };
-            // If descending, flip the ordering
             match self.sort_order {
                 IdentitiesSortOrder::Ascending => ordering,
                 IdentitiesSortOrder::Descending => ordering.reverse(),
@@ -141,9 +160,7 @@ impl IdentitiesScreen {
         });
     }
 
-    /// Helper to get "in wallet" text for sorting
     fn wallet_name_for(&self, qi: &QualifiedIdentity) -> String {
-        // Reuse your `find_wallet(...)` logic or get the text from the cache
         if let Some(master_identity_public_key) = qi.private_keys.find_master_key() {
             if let Some(wallet_derivation_path) =
                 &master_identity_public_key.in_wallet_at_derivation_path
@@ -156,7 +173,6 @@ impl IdentitiesScreen {
                 }
             }
         }
-        // If no wallet found, return empty string or something
         "".to_owned()
     }
 
@@ -167,22 +183,21 @@ impl IdentitiesScreen {
             IdentityType::User => "An Identity",
         };
 
-        // Check if alias is set, otherwise use placeholder text
         let mut alias = qualified_identity.alias.clone().unwrap_or_default();
 
-        // Render the text field with placeholder functionality
         let text_edit = egui::TextEdit::singleline(&mut alias)
             .hint_text(placeholder_text)
-            .desired_width(100.0); // Adjust width as needed
+            .desired_width(100.0);
 
         if ui.add(text_edit).changed() {
+            // If user edits alias, we do not necessarily turn on "custom order."
+            // This is a separate property. But we do update the stored alias.
             let mut identities = self.identities.lock().unwrap();
             let identity_to_update = identities
                 .get_mut(&qualified_identity.identity.id())
                 .unwrap();
 
-            // Update the alias if the user changed the text
-            if alias == placeholder_text || alias == "" {
+            if alias == placeholder_text || alias.is_empty() {
                 identity_to_update.alias = None;
             } else {
                 identity_to_update.alias = Some(alias);
@@ -193,7 +208,7 @@ impl IdentitiesScreen {
             ) {
                 Ok(_) => {}
                 Err(e) => {
-                    eprintln!("{}", e)
+                    eprintln!("{}", e);
                 }
             }
         }
@@ -213,6 +228,53 @@ impl IdentitiesScreen {
                 .truncate(),
         )
         .on_hover_text(helper);
+    }
+
+    // Up/down reorder methods
+    fn move_identity_up(&mut self, identity_id: &Identifier) {
+        let mut lock = self.identities.lock().unwrap();
+        if let Some(idx) = lock.get_index_of(identity_id) {
+            if idx > 0 {
+                lock.swap_indices(idx, idx - 1);
+            }
+        }
+        drop(lock);
+        self.save_current_order();
+    }
+
+    // arrow down
+    fn move_identity_down(&mut self, identity_id: &Identifier) {
+        let mut lock = self.identities.lock().unwrap();
+        if let Some(idx) = lock.get_index_of(identity_id) {
+            if idx + 1 < lock.len() {
+                lock.swap_indices(idx, idx + 1);
+            }
+        }
+        drop(lock);
+        self.save_current_order();
+    }
+
+    // Save the current index order to DB
+    fn save_current_order(&self) {
+        let lock = self.identities.lock().unwrap();
+        let all_ids = lock.keys().cloned().collect::<Vec<_>>();
+        drop(lock);
+        self.app_context.db.save_identity_order(all_ids).ok();
+    }
+
+    /// This method merges the ephemeral-sorted `Vec` back into the IndexMap
+    /// so the IndexMap is updated to the user’s currently displayed order.
+    fn update_index_map_to_current_ephemeral(&self, ephemeral_list: Vec<QualifiedIdentity>) {
+        let mut lock = self.identities.lock().unwrap();
+        // basically reorder the underlying IndexMap to match ephemeral_list
+        for (desired_idx, qi) in ephemeral_list.into_iter().enumerate() {
+            let id = qi.identity.id();
+            if let Some(current_idx) = lock.get_index_of(&id) {
+                if current_idx != desired_idx {
+                    lock.swap_indices(current_idx, desired_idx);
+                }
+            }
+        }
     }
 
     fn find_wallet(&mut self, wallet_seed_hash: &WalletSeedHash) -> Option<String> {
@@ -236,7 +298,7 @@ impl IdentitiesScreen {
                 return Some(in_wallet_text);
             }
         }
-        return None;
+        None
     }
 
     fn show_in_wallet(&mut self, ui: &mut Ui, qualified_identity: &QualifiedIdentity) {
@@ -257,19 +319,13 @@ impl IdentitiesScreen {
             }
         };
 
-        // Add the label with hover text
         ui.add(egui::Label::new(message).sense(egui::Sense::hover()))
             .on_hover_text(format!("{}", qualified_identity.identity.balance()));
     }
 
     fn show_balance(ui: &mut Ui, qualified_identity: &QualifiedIdentity) {
-        // Calculate the balance in DASH (10^-11 conversion)
         let balance_in_dash = qualified_identity.identity.balance() as f64 * 1e-11;
-
-        // Format the balance with 4 decimal places
         let formatted_balance = format!("{:.4} DASH", balance_in_dash);
-
-        // Add the label with hover text
         ui.add(egui::Label::new(formatted_balance).sense(egui::Sense::hover()))
             .on_hover_text(format!("{}", qualified_identity.identity.balance()));
     }
@@ -283,10 +339,8 @@ impl IdentitiesScreen {
     ) -> AppAction {
         let button_color = if encrypted_private_key.is_some() {
             Color32::from_rgb(167, 232, 232)
-            // Light green-blue color if private key exists
         } else {
             Color32::from_rgb(169, 169, 169)
-            // Gray if no private key
         };
 
         let name = match key.purpose() {
@@ -319,49 +373,36 @@ impl IdentitiesScreen {
 
     fn render_no_identities_view(&self, ui: &mut Ui) {
         ui.vertical_centered(|ui| {
-            ui.add_space(20.0); // Add some space from the top
-
-            // Use a larger font for the heading
+            ui.add_space(20.0);
             ui.label(
                 RichText::new("Not Tracking Any Identities")
                     .heading()
-                    .size(30.0), // Larger size for heading
+                    .size(30.0),
             );
-
             ui.add_space(10.0);
-
-            // Use larger text for the labels
             ui.label(
                 RichText::new(
                     "It looks like you are not tracking any Identities, Evonodes or Masternodes yet.",
                 )
                 .size(20.0),
             );
-
             ui.add_space(30.0);
-
             ui.label(
                 RichText::new(
                     "* You can load an Evonode/Masternode/Identity by clicking on \"Load Identity\" on the top right of the screen.",
                 )
                 .size(18.0),
             );
-
             ui.add_space(10.0);
-
-            ui.label(RichText::new("Or").size(22.0).strong()); // Emphasized text
-
+            ui.label(RichText::new("Or").size(22.0).strong());
             ui.add_space(10.0);
-
             ui.label(
                 RichText::new(
                     "* You can create a wallet and then register an Identity on Dash Evo.",
                 )
                 .size(18.0),
             );
-
             ui.add_space(30.0);
-
             ui.label(
                 RichText::new(
                     "(Make sure Dash Core is running, you can check in the settings tab on the left)",
@@ -378,65 +419,56 @@ impl IdentitiesScreen {
     ) -> AppAction {
         let mut action = AppAction::None;
 
-        // Copy the identities into a local Vec
         let mut local_identities = identities.to_vec();
-        // Sort them
-        self.sort_identities(&mut local_identities);
+        if !self.use_custom_order {
+            self.sort_vec(&mut local_identities);
+        }
 
         egui::ScrollArea::vertical().show(ui, |ui| {
-            // Define a frame with custom background color and border
             Frame::group(ui.style())
-                .fill(ui.visuals().panel_fill) // Use panel fill color
+                .fill(ui.visuals().panel_fill)
                 .stroke(egui::Stroke::new(
                     1.0,
                     ui.visuals().widgets.inactive.bg_stroke.color,
                 ))
                 .inner_margin(Margin::same(8.0))
                 .show(ui, |ui| {
-                    // Build the table
                     TableBuilder::new(ui)
                         .striped(true)
                         .resizable(true)
                         .cell_layout(egui::Layout::left_to_right(Align::Center))
-                        // Define columns with resizing and alignment
-                        .column(Column::initial(80.0).resizable(true)) // Name
-                        .column(Column::initial(330.0).resizable(true)) // Identity ID
-                        .column(Column::initial(60.0).resizable(true)) // In Wallet
-                        .column(Column::initial(80.0).resizable(true)) // Type
-                        .column(Column::initial(80.0).resizable(true)) // Keys
-                        .column(Column::initial(140.0).resizable(true)) // Balance
-                        .column(Column::initial(80.0).resizable(true)) // Actions
+                        .column(Column::initial(80.0).resizable(true))   // Name
+                        .column(Column::initial(330.0).resizable(true))  // Identity ID
+                        .column(Column::initial(60.0).resizable(true))   // In Wallet
+                        .column(Column::initial(80.0).resizable(true))   // Type
+                        .column(Column::initial(80.0).resizable(true))   // Keys
+                        .column(Column::initial(140.0).resizable(true))  // Balance
+                        .column(Column::initial(120.0).resizable(true))  // Actions (wider for up/down)
                         .header(30.0, |mut header| {
                             header.col(|ui| {
-                                // Name
                                 if ui.button("Name").clicked() {
                                     self.toggle_sort(IdentitiesSortColumn::Alias);
                                 }
                             });
                             header.col(|ui| {
-                                // Identity ID
                                 if ui.button("Identity ID").clicked() {
                                     self.toggle_sort(IdentitiesSortColumn::IdentityID);
                                 }
                             });
                             header.col(|ui| {
-                                // In Wallet
                                 if ui.button("In Wallet").clicked() {
                                     self.toggle_sort(IdentitiesSortColumn::InWallet);
                                 }
                             });
                             header.col(|ui| {
-                                // Type
                                 if ui.button("Type").clicked() {
                                     self.toggle_sort(IdentitiesSortColumn::Type);
                                 }
                             });
                             header.col(|ui| {
-                                // Keys
                                 ui.heading("Keys");
                             });
                             header.col(|ui| {
-                                // Balance
                                 if ui.button("Balance").clicked() {
                                     self.toggle_sort(IdentitiesSortColumn::Balance);
                                 }
@@ -452,7 +484,8 @@ impl IdentitiesScreen {
                                 let voter_identity_public_keys = qualified_identity
                                     .associated_voter_identity
                                     .as_ref()
-                                    .map(|(identity, _)| identity.public_keys());
+                                    .map(|(id, _)| id.public_keys());
+
                                 body.row(25.0, |mut row| {
                                     row.col(|ui| {
                                         self.show_alias(ui, qualified_identity);
@@ -470,87 +503,87 @@ impl IdentitiesScreen {
                                         ui.horizontal(|ui| {
                                             ui.spacing_mut().item_spacing.x = 3.0;
 
-                                        let mut total_keys_shown = 0;
-                                        let max_keys_to_show = 3;
-                                        let mut more_keys_available = false;
+                                            let mut total_keys_shown = 0;
+                                            let max_keys_to_show = 3;
+                                            let mut more_keys_available = false;
 
-                                        // Show keys from main identity
-                                        let public_keys_vec: Vec<_> = public_keys.iter().collect();
-                                        for (key_id, key) in public_keys_vec.iter() {
-                                            if total_keys_shown < max_keys_to_show {
-                                                let holding_private_key = qualified_identity
-                                                    .private_keys
-                                                    .get_cloned_private_key_data_and_wallet_info(&(
-                                                        PrivateKeyOnMainIdentity,
-                                                        **key_id,
-                                                    ));
-                                                action |= self.show_public_key(
-                                                    ui,
-                                                    qualified_identity,
-                                                    *key,
-                                                    holding_private_key,
-                                                );
-                                                total_keys_shown += 1;
-                                            } else {
-                                                more_keys_available = true;
-                                                break;
-                                            }
-                                        }
-
-                                        // If we have not reached max keys, show keys from voter identity
-                                        if let Some(voting_identity_public_keys) =
-                                            voter_identity_public_keys
-                                        {
-                                            if total_keys_shown < max_keys_to_show {
-                                                let voter_public_keys_vec: Vec<_> =
-                                                    voting_identity_public_keys.iter().collect();
-                                                for (key_id, key) in voter_public_keys_vec.iter() {
-                                                    if total_keys_shown < max_keys_to_show {
-                                                        let holding_private_key =
-                                                            qualified_identity
-                                                                .private_keys
-                                                                .get_cloned_private_key_data_and_wallet_info(&(
-                                                                    PrivateKeyOnVoterIdentity,
-                                                                    **key_id,
-                                                                ));
-                                                        action |= self.show_public_key(
-                                                            ui,
-                                                            qualified_identity,
-                                                            *key,
-                                                            holding_private_key,
-                                                        );
-                                                        total_keys_shown += 1;
-                                                    } else {
-                                                        more_keys_available = true;
-                                                        break;
-                                                    }
+                                            let public_keys_vec: Vec<_> = public_keys.iter().collect();
+                                            for (key_id, key) in public_keys_vec.iter() {
+                                                if total_keys_shown < max_keys_to_show {
+                                                    let holding_private_key = qualified_identity
+                                                        .private_keys
+                                                        .get_cloned_private_key_data_and_wallet_info(&(
+                                                            PrivateKeyOnMainIdentity,
+                                                            **key_id,
+                                                        ));
+                                                    action |= self.show_public_key(
+                                                        ui,
+                                                        qualified_identity,
+                                                        *key,
+                                                        holding_private_key,
+                                                    );
+                                                    total_keys_shown += 1;
+                                                } else {
+                                                    more_keys_available = true;
+                                                    break;
                                                 }
-                                            } else {
-                                                more_keys_available = true;
                                             }
-                                        }
 
-                                        // If there are more keys, show "View More" button
-                                        if more_keys_available {
-                                            if ui.button("...").clicked() {
-                                                self.show_more_keys_popup =
-                                                    Some(qualified_identity.clone());
+                                            if let Some(voting_identity_public_keys) =
+                                                voter_identity_public_keys
+                                            {
+                                                if total_keys_shown < max_keys_to_show {
+                                                    let voter_vec: Vec<_> = voting_identity_public_keys.iter().collect();
+                                                    for (key_id, key) in voter_vec.iter() {
+                                                        if total_keys_shown < max_keys_to_show {
+                                                            let holding_private_key =
+                                                                qualified_identity
+                                                                    .private_keys
+                                                                    .get_cloned_private_key_data_and_wallet_info(&(
+                                                                        PrivateKeyOnVoterIdentity,
+                                                                        **key_id,
+                                                                    ));
+                                                            action |= self.show_public_key(
+                                                                ui,
+                                                                qualified_identity,
+                                                                *key,
+                                                                holding_private_key,
+                                                            );
+                                                            total_keys_shown += 1;
+                                                        } else {
+                                                            more_keys_available = true;
+                                                            break;
+                                                        }
+                                                    }
+                                                } else {
+                                                    more_keys_available = true;
+                                                }
                                             }
-                                        }
 
-                                        if qualified_identity.can_sign_with_master_key().is_some()
-                                            && ui.button("Add Key").clicked()
-                                        {
-                                            action = AppAction::AddScreen(Screen::AddKeyScreen(
-                                                AddKeyScreen::new(
-                                                    qualified_identity.clone(),
-                                                    &self.app_context,
-                                                ),
-                                            ));
-                                        }});
+                                            if more_keys_available {
+                                                if ui.button("...").clicked() {
+                                                    self.show_more_keys_popup =
+                                                        Some(qualified_identity.clone());
+                                                }
+                                            }
+
+                                            if qualified_identity.can_sign_with_master_key().is_some()
+                                                && ui.button("Add Key").clicked()
+                                            {
+                                                action = AppAction::AddScreen(Screen::AddKeyScreen(
+                                                    AddKeyScreen::new(
+                                                        qualified_identity.clone(),
+                                                        &self.app_context,
+                                                    ),
+                                                ));
+                                            }
+                                        });
                                     });
                                     row.col(|ui| {
                                         Self::show_balance(ui, qualified_identity);
+
+                                        ui.spacing_mut().item_spacing.x = 3.0;
+
                                         if ui.button("Withdraw").clicked() {
                                             action = AppAction::AddScreen(
                                                 Screen::WithdrawalScreen(WithdrawalScreen::new(
@@ -568,30 +601,60 @@ impl IdentitiesScreen {
                                             );
                                         }
                                         if ui.button("Transfer").clicked() {
-                                            action = AppAction::AddScreen(Screen::TransferScreen(
-                                                TransferScreen::new(
+                                            action = AppAction::AddScreen(
+                                                Screen::TransferScreen(TransferScreen::new(
                                                     qualified_identity.clone(),
                                                     &self.app_context,
-                                                ),
-                                            ));
+                                                )),
+                                            );
                                         }
                                     });
                                     row.col(|ui| {
-                                        ui.horizontal(|ui| {
-                                            ui.spacing_mut().item_spacing.x = 3.0;
+                                        ui.spacing_mut().item_spacing.x = 3.0;
 
-                                        if ui.button("Refresh").clicked() {
-                                            action =
-                                                AppAction::BackendTask(BackendTask::IdentityTask(
-                                                    IdentityTask::RefreshIdentity(
-                                                        qualified_identity.clone(),
+                                        ui.horizontal(|ui| {
+                                            // Refresh
+                                            if ui.button("Refresh").clicked() {
+                                                action = AppAction::BackendTask(
+                                                    BackendTask::IdentityTask(
+                                                        IdentityTask::RefreshIdentity(
+                                                            qualified_identity.clone(),
+                                                        ),
                                                     ),
-                                                ));
-                                        }
-                                        if ui.button("Remove").clicked() {
-                                            self.identity_to_remove =
-                                                Some(qualified_identity.clone());
-                                        }});
+                                                );
+                                            }
+
+                                            // Remove
+                                            if ui.button("Remove").clicked() {
+                                                self.identity_to_remove =
+                                                    Some(qualified_identity.clone());
+                                            }
+                                        });
+
+                                        ui.horizontal(|ui| {
+                                            // Up arrow
+                                            let up_btn = ui.button("⬆");
+                                            // Down arrow
+                                            let down_btn = ui.button("⬇");
+
+                                            if up_btn.clicked() {
+                                                // If we are currently sorted (not custom),
+                                                // unify the IndexMap to reflect that ephemeral sort
+                                                if !self.use_custom_order {
+                                                    self.update_index_map_to_current_ephemeral(local_identities.clone());
+                                                }
+                                                // Now do the swap
+                                                self.use_custom_order = true;
+                                                self.move_identity_up(&identity.id());
+                                            }
+                                            if down_btn.clicked() {
+                                                if !self.use_custom_order {
+                                                    self.update_index_map_to_current_ephemeral(local_identities.clone());
+                                                }
+                                                self.use_custom_order = true;
+                                                self.move_identity_down(&identity.id());
+                                            }
+                                        });
                                     });
                                 });
                             }
@@ -603,13 +666,15 @@ impl IdentitiesScreen {
     }
 
     fn show_identity_to_remove(&mut self, ctx: &Context) {
-        // Check if we need to show the confirmation dialog
         if let Some(identity_to_remove) = self.identity_to_remove.clone() {
             egui::Window::new("Confirm Removal")
                 .collapsible(false)
                 .resizable(false)
                 .show(ctx, |ui| {
-                    ui.label(format!("Are you sure you want to no longer track this {} identity? It will still be on the blockchain.", identity_to_remove.identity_type));
+                    ui.label(format!(
+                        "Are you sure you want to no longer track this {} identity?",
+                        identity_to_remove.identity_type
+                    ));
                     ui.label(format!(
                         "Identity ID: {}",
                         identity_to_remove
@@ -619,37 +684,31 @@ impl IdentitiesScreen {
                     ));
                     ui.horizontal(|ui| {
                         if ui.button("Yes").clicked() {
-                            // Remove the identity
                             let identity_id = identity_to_remove.identity.id();
+                            let mut lock = self.identities.lock().unwrap();
+                            lock.shift_remove(&identity_id);
 
-                            // Remove from in-memory identities
-                            {
-                                let mut identities_lock = self.identities.lock().unwrap();
-                                identities_lock.shift_remove(&identity_id);
-                            }
-
-                            // Remove from persistent storage
                             self.app_context
                                 .db
-                                .delete_local_qualified_identity(&identity_id, &self.app_context).ok();
+                                .delete_local_qualified_identity(&identity_id, &self.app_context)
+                                .ok();
 
-                            // Also remove associated voter identity, if any
                             if let Some((voter_identity, _)) =
                                 &identity_to_remove.associated_voter_identity
                             {
                                 let voter_identity_id = voter_identity.id();
-
                                 self.app_context
                                     .db
-                                    .delete_local_qualified_identity(&voter_identity_id, &self.app_context)
+                                    .delete_local_qualified_identity(
+                                        &voter_identity_id,
+                                        &self.app_context,
+                                    )
                                     .ok();
                             }
 
-                            // Clear the identity_to_remove
                             self.identity_to_remove = None;
                         }
                         if ui.button("No").clicked() {
-                            // Cancel the removal
                             self.identity_to_remove = None;
                         }
                     });
@@ -663,12 +722,9 @@ impl IdentitiesScreen {
             return action;
         };
 
-        // Get keys from main identity
         let identity = &qualified_identity.identity;
         let public_keys = identity.public_keys();
         let public_keys_vec: Vec<_> = public_keys.iter().collect();
-
-        // Skip the first three keys
         let main_identity_rest_keys = public_keys_vec.iter().skip(3);
 
         ui.label(format!(
@@ -687,12 +743,10 @@ impl IdentitiesScreen {
             action |= self.show_public_key(ui, qualified_identity, *key, holding_private_key);
         }
 
-        // Get keys from voter identity
         if let Some((voter_identity, _)) = qualified_identity.associated_voter_identity.as_ref() {
             let voter_public_keys = voter_identity.public_keys();
             let voter_public_keys_vec: Vec<_> = voter_public_keys.iter().collect();
 
-            // Assuming we want to show all keys from voter identity
             ui.label("Voter Identity Keys:");
             for (key_id, key) in voter_public_keys_vec.iter() {
                 let holding_private_key = qualified_identity
@@ -705,7 +759,6 @@ impl IdentitiesScreen {
             }
         }
 
-        // Close button
         if ui.button("Close").clicked() {
             self.show_more_keys_popup = None;
         }
@@ -722,7 +775,7 @@ impl ScreenLike for IdentitiesScreen {
             .load_local_qualified_identities()
             .unwrap_or_default()
             .into_iter()
-            .map(|qualified_identity| (qualified_identity.identity.id(), qualified_identity))
+            .map(|qi| (qi.identity.id(), qi))
             .collect();
 
         self.show_more_keys_popup = None;
@@ -730,7 +783,7 @@ impl ScreenLike for IdentitiesScreen {
 
     fn ui(&mut self, ctx: &Context) -> AppAction {
         let mut right_buttons = if !self.app_context.has_wallet.load(Ordering::Relaxed) {
-            [
+            vec![
                 (
                     "Import Wallet",
                     DesiredAppAction::AddScreenType(ScreenType::ImportWallet),
@@ -740,18 +793,17 @@ impl ScreenLike for IdentitiesScreen {
                     DesiredAppAction::AddScreenType(ScreenType::AddNewWallet),
                 ),
             ]
-            .to_vec()
         } else {
-            [(
+            vec![(
                 "Create Identity",
                 DesiredAppAction::AddScreenType(ScreenType::AddNewIdentity),
             )]
-            .to_vec()
         };
         right_buttons.push((
             "Load Identity",
             DesiredAppAction::AddScreenType(ScreenType::AddExistingIdentity),
         ));
+
         let mut action = add_top_panel(
             ctx,
             &self.app_context,
@@ -761,22 +813,19 @@ impl ScreenLike for IdentitiesScreen {
 
         action |= add_left_panel(ctx, &self.app_context, RootScreenType::RootScreenIdentities);
 
-        // Limit the scope of the MutexGuard by enclosing in a block
-        let identities = {
-            let identities_guard = self.identities.lock().unwrap();
-            identities_guard.values().cloned().collect::<Vec<_>>()
+        let identities_vec = {
+            let guard = self.identities.lock().unwrap();
+            guard.values().cloned().collect::<Vec<_>>()
         };
 
-        // Main content
         egui::CentralPanel::default().show(ctx, |ui| {
-            if identities.is_empty() {
+            if identities_vec.is_empty() {
                 self.render_no_identities_view(ui);
             } else {
-                action |= self.render_identities_view(ui, identities.as_slice());
+                action |= self.render_identities_view(ui, &identities_vec);
             }
         });
 
-        // Check if we need to show the pop-up
         if self.show_more_keys_popup.is_some() {
             egui::Window::new("More Keys")
                 .collapsible(false)
@@ -785,7 +834,6 @@ impl ScreenLike for IdentitiesScreen {
                 });
         }
 
-        // Check if we need to show the confirmation dialog
         if self.identity_to_remove.is_some() {
             self.show_identity_to_remove(ctx);
         }

@@ -1465,6 +1465,8 @@ impl ScreenLike for DPNSContestedNamesScreen {
     }
 
     fn ui(&mut self, ctx: &Context) -> AppAction {
+        self.check_error_expiration();
+
         let has_identity_that_can_register = !self.user_identities.is_empty();
         let has_selected_votes = !self.selected_votes_for_scheduling.is_empty();
         let has_or_in_progress =

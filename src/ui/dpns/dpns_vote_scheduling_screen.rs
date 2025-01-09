@@ -19,6 +19,7 @@ use crate::ui::RootScreenType;
 
 pub enum VoteOption {
     None,
+    Immediate,
     Scheduled { days: u32, hours: u32, minutes: u32 },
 }
 
@@ -79,6 +80,7 @@ impl ScheduleVoteScreen {
                     egui::ComboBox::from_id_salt(format!("combo_for_identity_{}", i))
                         .selected_text(match current_option {
                             VoteOption::None => "None".to_string(),
+                            VoteOption::Immediate => "Immediate".to_string(),
                             VoteOption::Scheduled { .. } => "Scheduled".to_string(),
                         })
                         .show_ui(ui, |ui| {
@@ -144,6 +146,16 @@ impl ScheduleVoteScreen {
         for (identity, option) in self.identities.iter().zip(self.identity_options.iter()) {
             match option {
                 VoteOption::None => {}
+                VoteOption::Immediate => {
+                    let immediate_vote = ScheduledDPNSVote {
+                        contested_name: self.contested_name.clone(),
+                        voter_id: identity.identity.id().clone(),
+                        choice: self.vote_choice,
+                        unix_timestamp: Utc::now().timestamp_millis() as u64,
+                        executed_successfully: false,
+                    };
+                    scheduled_votes.push(immediate_vote);
+                }
                 VoteOption::Scheduled {
                     days,
                     hours,

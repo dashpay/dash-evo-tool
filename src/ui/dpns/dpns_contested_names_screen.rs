@@ -57,10 +57,10 @@ pub enum IndividualVoteCastingStatus {
     Completed,
 }
 
-#[derive(PartialEq)]
+#[derive(PartialEq, Clone)]
 enum CastAllNowStatus {
     NotStarted,
-    InProgress,
+    Casting(u64),
     Done(Vec<(String, ResourceVoteChoice, Result<(), String>)>),
 }
 
@@ -98,6 +98,7 @@ pub struct DPNSContestedNamesScreen {
     popup_pending_vote_action: Option<ContestedResourceTask>,
     pub vote_cast_in_progress: bool,
     cast_all_now_status: CastAllNowStatus,
+    pending_backend_task: Option<BackendTask>,
     pub dpns_subscreen: DPNSSubscreen,
     refreshing: bool,
 }
@@ -155,6 +156,7 @@ impl DPNSContestedNamesScreen {
             popup_pending_vote_action: None,
             vote_cast_in_progress: false,
             cast_all_now_status: CastAllNowStatus::NotStarted,
+            pending_backend_task: None,
             dpns_subscreen,
             refreshing: false,
         }
@@ -1214,69 +1216,94 @@ impl DPNSContestedNamesScreen {
         app_action
     }
 
-    fn show_bulk_cast_success_screen(
+    fn show_casting_or_results_screen(
         &mut self,
         ui: &mut egui::Ui,
-        results: &Vec<(String, ResourceVoteChoice, Result<(), String>)>,
+        cast_status: &CastAllNowStatus,
     ) -> AppAction {
         let mut action = AppAction::None;
 
-        ui.vertical_centered(|ui| {
-            ui.add_space(20.0);
-            ui.heading("Bulk Voting Results");
-            ui.separator();
+        match cast_status {
+            // 1) If we are still casting, show a "casting" screen with a time-elapsed counter
+            CastAllNowStatus::Casting(start_time) => {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
 
-            let mut any_failures = false;
+                let elapsed = now.saturating_sub(*start_time);
 
-            // List each vote result
-            for (name, choice, result) in results {
-                ui.horizontal(|ui| {
-                    // Show the contested name and choice
-                    let desc = format!("{} => {:?}", name, choice);
-                    match result {
-                        Ok(()) => {
-                            ui.colored_label(egui::Color32::DARK_GREEN, format!("{}", desc));
-                        }
-                        Err(err_msg) => {
-                            any_failures = true;
-                            ui.colored_label(
-                                egui::Color32::RED,
-                                format!("✗ {} ({})", desc, err_msg),
-                            );
+                ui.vertical_centered(|ui| {
+                    ui.add_space(20.0);
+                    ui.heading("Voting Results");
+                    ui.separator();
 
-                            // Retry button
-                            if ui.button("Retry").clicked() {
-                                // Just cast this one again with all identities?
-                                action =
-                                    AppAction::BackendTask(BackendTask::ContestedResourceTask(
-                                        ContestedResourceTask::VoteOnDPNSName(
-                                            name.clone(),
-                                            *choice,
-                                            self.voting_identities.clone(),
-                                        ),
-                                    ));
+                    ui.add_space(10.0);
+                    ui.label(format!("Casting... time taken so far: {} seconds", elapsed));
+                    ui.add_space(10.0);
+                });
+            }
+
+            // 2) If we are done, show final results (like your old show_bulk_cast_success_screen)
+            CastAllNowStatus::Done(results) => {
+                let mut any_failures = false;
+
+                ui.vertical_centered(|ui| {
+                    ui.add_space(20.0);
+                    ui.heading("Voting Results");
+                    ui.separator();
+
+                    for (name, choice, result) in results {
+                        let desc = format!("{} => {:?}", name, choice);
+                        match result {
+                            Ok(()) => {
+                                ui.colored_label(egui::Color32::DARK_GREEN, desc);
                             }
-                        }
+                            Err(err_msg) => {
+                                any_failures = true;
+                                ui.horizontal(|ui| {
+                                    ui.colored_label(
+                                        egui::Color32::DARK_RED,
+                                        format!("{} ({})", desc, err_msg),
+                                    );
+
+                                    // Retry button (optional):
+                                    if ui.button("Retry").clicked() {
+                                        action = AppAction::BackendTask(
+                                            BackendTask::ContestedResourceTask(
+                                                ContestedResourceTask::VoteOnDPNSName(
+                                                    name.clone(),
+                                                    *choice,
+                                                    self.voting_identities.clone(),
+                                                ),
+                                            ),
+                                        );
+                                    }
+                                });
+                            }
+                        };
+                    }
+
+                    ui.add_space(20.0);
+
+                    if any_failures {
+                        ui.label("Some votes failed. You can retry individually, or return.");
+                    } else {
+                        ui.colored_label(egui::Color32::DARK_GREEN, "All votes succeeded.");
+                    }
+
+                    ui.add_space(10.0);
+                    if ui.button("Back to Active Contests").clicked() {
+                        self.cast_all_now_status = CastAllNowStatus::NotStarted;
+                        self.refresh();
                     }
                 });
             }
 
-            ui.add_space(20.0);
-
-            if any_failures {
-                ui.label("Some votes failed. You can retry individually, or return.");
-            } else {
-                ui.colored_label(egui::Color32::DARK_GREEN, "All votes succeeded.");
+            CastAllNowStatus::NotStarted => {
+                // This case shouldn't happen if we only call show_casting_or_results_screen in those 2 states
             }
-
-            ui.add_space(10.0);
-
-            // "Back to Active Contests" button
-            if ui.button("Back to Active Contests").clicked() {
-                // E.g. go back to Active screen forcibly:
-                action = AppAction::SetMainScreen(RootScreenType::RootScreenDPNSActiveContests);
-            }
-        });
+        }
 
         action
     }
@@ -1427,6 +1454,11 @@ impl ScreenLike for DPNSContestedNamesScreen {
         match backend_task_success_result {
             BackendTaskSuccessResult::MultipleDPNSVotesCast(results) => {
                 self.cast_all_now_status = CastAllNowStatus::Done(results);
+
+                // Query the DPNS contested resources again
+                self.pending_backend_task = Some(BackendTask::ContestedResourceTask(
+                    ContestedResourceTask::QueryDPNSContestedResources,
+                ));
             }
             _ => {}
         }
@@ -1436,7 +1468,7 @@ impl ScreenLike for DPNSContestedNamesScreen {
         let has_identity_that_can_register = !self.user_identities.is_empty();
         let has_selected_votes = !self.selected_votes_for_scheduling.is_empty();
         let has_or_in_progress =
-            has_selected_votes || self.cast_all_now_status == CastAllNowStatus::InProgress;
+            has_selected_votes || matches!(self.cast_all_now_status, CastAllNowStatus::Casting(_));
 
         // Build top-right buttons
         let mut right_buttons = match self.dpns_subscreen {
@@ -1454,7 +1486,7 @@ impl ScreenLike for DPNSContestedNamesScreen {
 
                 if has_or_in_progress {
                     let cast_all_label = match self.cast_all_now_status {
-                        CastAllNowStatus::InProgress => "Casting...",
+                        CastAllNowStatus::Casting(_) => "Casting...",
                         _ => "Cast All Now",
                     };
 
@@ -1468,7 +1500,7 @@ impl ScreenLike for DPNSContestedNamesScreen {
                         ),
                         (
                             cast_all_label,
-                            if self.cast_all_now_status == CastAllNowStatus::InProgress {
+                            if matches!(self.cast_all_now_status, CastAllNowStatus::Casting(_)) {
                                 DesiredAppAction::None
                             } else {
                                 // Bulk vote backend task
@@ -1650,12 +1682,12 @@ impl ScreenLike for DPNSContestedNamesScreen {
                 !scheduled_votes.is_empty()
             };
 
-            if let CastAllNowStatus::Done(results) = &self.cast_all_now_status {
-                // If done, show success screen only.
-                let results_clone = results.clone();
-                action |= self.show_bulk_cast_success_screen(ui, &results_clone);
-            } else {
-                match self.dpns_subscreen {
+            match self.cast_all_now_status {
+                CastAllNowStatus::Casting(_) | CastAllNowStatus::Done(_) => {
+                    action |=
+                        self.show_casting_or_results_screen(ui, &self.cast_all_now_status.clone());
+                }
+                CastAllNowStatus::NotStarted => match self.dpns_subscreen {
                     DPNSSubscreen::Active => {
                         if has_contested_names {
                             self.render_table_active_contests(ui);
@@ -1684,7 +1716,7 @@ impl ScreenLike for DPNSContestedNamesScreen {
                             action |= self.render_no_active_contests_or_owned_names(ui);
                         }
                     }
-                }
+                },
             }
         });
 
@@ -1706,10 +1738,20 @@ impl ScreenLike for DPNSContestedNamesScreen {
             AppAction::BackendTask(BackendTask::ContestedResourceTask(
                 ContestedResourceTask::VoteOnMultipleDPNSNames(..),
             )) => {
-                self.cast_all_now_status = CastAllNowStatus::InProgress;
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                self.cast_all_now_status = CastAllNowStatus::Casting(now);
                 self.selected_votes_for_scheduling.clear();
             }
             _ => {}
+        }
+
+        if action == AppAction::None {
+            if let Some(backend_task) = self.pending_backend_task.take() {
+                action = AppAction::BackendTask(backend_task);
+            }
         }
 
         action

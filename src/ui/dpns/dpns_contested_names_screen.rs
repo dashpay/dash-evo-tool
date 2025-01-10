@@ -1194,7 +1194,7 @@ impl DPNSScreen {
 
         if self.selected_votes.is_empty() {
             ui.add_space(5.0);
-            ui.colored_label(Color32::DARK_RED, "No votes selected. Please shift-click the votes you want to schedule in the Active Contests screen.");
+            ui.colored_label(Color32::DARK_RED, "No votes selected. Please shift-click the votes you want to cast or schedule in the Active Contests screen.");
             ui.add_space(10.0);
             if ui.button("Close").clicked() {
                 self.show_bulk_schedule_popup = false;
@@ -1202,7 +1202,7 @@ impl DPNSScreen {
             return action;
         }
 
-        ui.label("NOTE: Dash Evo Tool must remain running and connected for scheduled votes to execute on time.");
+        ui.colored_label(Color32::DARK_RED, "NOTE: Dash Evo Tool must remain running and connected for scheduled votes to execute on time.");
         ui.add_space(10.0);
 
         egui::ScrollArea::vertical().show(ui, |ui| {
@@ -1431,15 +1431,23 @@ impl DPNSScreen {
                 .collect();
             let now = Utc::now().timestamp() as u64;
             self.bulk_vote_handling_status = BulkVoteHandlingStatus::CastingVotes(now);
-            return AppAction::BackendTasks(vec![
-                BackendTask::ContestedResourceTask(ContestedResourceTask::VoteOnMultipleDPNSNames(
-                    votes_for_all,
-                    immediate_list,
-                )),
-                BackendTask::ContestedResourceTask(ContestedResourceTask::ScheduleDPNSVotes(
-                    scheduled_list,
-                )),
-            ]);
+            if !scheduled_list.is_empty() {
+                return AppAction::BackendTasks(vec![
+                    BackendTask::ContestedResourceTask(
+                        ContestedResourceTask::VoteOnMultipleDPNSNames(
+                            votes_for_all,
+                            immediate_list,
+                        ),
+                    ),
+                    BackendTask::ContestedResourceTask(ContestedResourceTask::ScheduleDPNSVotes(
+                        scheduled_list,
+                    )),
+                ]);
+            } else {
+                return AppAction::BackendTask(BackendTask::ContestedResourceTask(
+                    ContestedResourceTask::VoteOnMultipleDPNSNames(votes_for_all, immediate_list),
+                ));
+            }
         } else {
             // 2) Otherwise just schedule them
             self.bulk_vote_handling_status = BulkVoteHandlingStatus::SchedulingVotes;
@@ -2220,9 +2228,8 @@ impl ScreenLike for DPNSScreen {
                 }
             }
 
-            // If we are refreshing, show a spinner aligned to the center
+            // If we are refreshing, show a spinner in the bottom right corner
             if self.refreshing {
-                ui.add_space(20.0);
                 ui.vertical_centered(|ui| {
                     ui.add(egui::widgets::Spinner::default().color(Color32::from_rgb(0, 128, 255)));
                 });

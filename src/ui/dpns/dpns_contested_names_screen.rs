@@ -11,6 +11,7 @@ use eframe::egui::{
 };
 use egui_extras::{Column, TableBuilder};
 use itertools::Itertools;
+use tokio::time::error::Elapsed;
 
 use crate::app::{AppAction, DesiredAppAction};
 use crate::backend_task::contested_names::{ContestedResourceTask, ScheduledDPNSVote};
@@ -71,6 +72,14 @@ pub enum IndividualVoteCastingStatus {
     Completed,
 }
 
+pub enum BulkVoteHandlingStatus {
+    NotStarted,
+    CastingVotes(u64),
+    SchedulingVotes,
+    Completed,
+    Failed,
+}
+
 /// The main, combined DPNSScreen:
 /// - Displays active/past/owned DPNS contests
 /// - Allows SHIFT-click selection of votes (bulk scheduling)
@@ -100,17 +109,14 @@ pub struct DPNSScreen {
     pub dpns_subscreen: DPNSSubscreen,
     refreshing: bool,
 
-    /// True if we should display the ephemeral Bulk Scheduling UI (replaces the old separate screen).
+    /// Multiple contest vote handling
     show_bulk_schedule_popup: bool,
-    /// The "VoteOption" (None, Immediate, Scheduled) for each identity in the ephemeral UI.
     bulk_identity_options: Vec<VoteOption>,
-    /// Any message from the ephemeral scheduling process
     bulk_schedule_message: Option<(MessageType, String)>,
-    /// If immediate casting finishes and we still have scheduled votes to add, store them here
     bulk_pending_scheduled: Option<Vec<ScheduledDPNSVote>>,
+    bulk_vote_handling_status: BulkVoteHandlingStatus,
 
-    /// If the user wants to schedule exactly 1 name+choice with multiple identities,
-    /// store that ephemeral UI state here:
+    /// Single contest vote handling
     show_single_schedule_popup: bool,
     single_schedule_contested_name: String,
     single_schedule_ending_time: u64,
@@ -205,6 +211,7 @@ impl DPNSScreen {
             bulk_identity_options,
             bulk_schedule_message: None,
             bulk_pending_scheduled: None,
+            bulk_vote_handling_status: BulkVoteHandlingStatus::NotStarted,
 
             // Single-schedule
             show_single_schedule_popup: false,
@@ -1178,16 +1185,17 @@ impl DPNSScreen {
         ui.heading("Cast or Schedule Votes");
         ui.add_space(10.0);
 
-        if self.selected_votes.is_empty() {
-            ui.colored_label(
-                Color32::DARK_RED,
-                "No votes selected. SHIFT-click on vote choices in the Active Contests table first.",
-            );
-            return action;
-        }
-
         ui.label("NOTE: Dash Evo Tool must remain running and connected for scheduled votes to execute on time.");
         ui.add_space(10.0);
+
+        // If self.bulk_vote_handling_status is Complete, show completed message
+        match self.bulk_vote_handling_status {
+            BulkVoteHandlingStatus::Completed => {
+                action |= self.show_bulk_vote_handling_complete(ui);
+                return action;
+            }
+            _ => {}
+        }
 
         egui::ScrollArea::vertical().show(ui, |ui| {
             // Define a frame with custom background color and border
@@ -1224,7 +1232,7 @@ impl DPNSScreen {
                                 other => other.to_string(),
                             };
                             ui.label(format!(
-                                "{}   =>   {}, ends at {}",
+                                "{}   =>   {}   |   Contest ends at {}",
                                 sv.contested_name, display_text, end_str
                             ));
                         }
@@ -1324,41 +1332,41 @@ impl DPNSScreen {
             .fill(Color32::from_rgb(0, 128, 255))
             .rounding(3.0);
         if ui.add(button).clicked() {
-            action = self.bulk_schedule_votes();
+            action = self.bulk_apply_votes();
         }
 
-        // Show any message
-        if let Some((msg_type, msg_str)) = &self.bulk_schedule_message {
-            ui.add_space(10.0);
-            match msg_type {
-                MessageType::Error => {
-                    ui.colored_label(Color32::RED, msg_str);
-                }
-                MessageType::Success => {
-                    if msg_str.contains("Votes scheduled") {
-                        // Show success screen
-                        action |= self.show_bulk_schedule_success(ui);
-                    } else {
-                        ui.colored_label(Color32::DARK_GREEN, msg_str);
-                    }
-                }
-                MessageType::Info => {
-                    ui.colored_label(Color32::YELLOW, msg_str);
-                }
-            }
-        }
-
-        ui.separator();
+        ui.add_space(5.0);
         if ui.button("Cancel").clicked() {
+            self.selected_votes.clear();
             self.show_bulk_schedule_popup = false;
             self.bulk_schedule_message = None;
+        }
+
+        // Handle status
+        ui.add_space(10.0);
+        match self.bulk_vote_handling_status {
+            BulkVoteHandlingStatus::NotStarted => {}
+            BulkVoteHandlingStatus::CastingVotes(start_time) => {
+                let now = Utc::now().timestamp() as u64;
+                let elapsed = now - start_time;
+                ui.label(format!("Casting votes... Time taken so far: {}", elapsed));
+            }
+            BulkVoteHandlingStatus::SchedulingVotes => {
+                ui.label("Scheduling votes...");
+            }
+            BulkVoteHandlingStatus::Completed => {
+                // handled above
+            }
+            BulkVoteHandlingStatus::Failed => {
+                ui.colored_label(Color32::RED, "Error casting/scheduling votes");
+            }
         }
 
         action
     }
 
     /// The logic that was in BulkScheduleVoteScreen::schedule_votes
-    fn bulk_schedule_votes(&mut self) -> AppAction {
+    fn bulk_apply_votes(&mut self) -> AppAction {
         // Partition immediate vs scheduled
         let mut immediate_list = Vec::new();
         let mut scheduled_list = Vec::new();
@@ -1406,35 +1414,54 @@ impl DPNSScreen {
             return AppAction::None;
         }
 
-        // 1) If immediate_list is not empty, vote now
+        // 1) If immediate_list is not empty, vote now, possibly scheduling votes as well
         if !immediate_list.is_empty() {
             let votes_for_all: Vec<(String, ResourceVoteChoice)> = self
                 .selected_votes
                 .iter()
                 .map(|sv| (sv.contested_name.clone(), sv.vote_choice))
                 .collect();
-            if !scheduled_list.is_empty() {
-                // store scheduled for after immediate completes
-                self.bulk_pending_scheduled = Some(scheduled_list);
-            }
-            return AppAction::BackendTask(BackendTask::ContestedResourceTask(
-                ContestedResourceTask::VoteOnMultipleDPNSNames(votes_for_all, immediate_list),
-            ));
+            let now = Utc::now().timestamp() as u64;
+            self.bulk_vote_handling_status = BulkVoteHandlingStatus::CastingVotes(now);
+            return AppAction::BackendTasks(vec![
+                BackendTask::ContestedResourceTask(ContestedResourceTask::VoteOnMultipleDPNSNames(
+                    votes_for_all,
+                    immediate_list,
+                )),
+                BackendTask::ContestedResourceTask(ContestedResourceTask::ScheduleDPNSVotes(
+                    scheduled_list,
+                )),
+            ]);
         } else {
             // 2) Otherwise just schedule them
+            self.bulk_vote_handling_status = BulkVoteHandlingStatus::SchedulingVotes;
             return AppAction::BackendTask(BackendTask::ContestedResourceTask(
                 ContestedResourceTask::ScheduleDPNSVotes(scheduled_list),
             ));
         }
     }
 
-    /// If scheduling is successful, show success message with link to go to Scheduled
-    fn show_bulk_schedule_success(&self, ui: &mut Ui) -> AppAction {
+    /// If voting/scheduling is successful, show success message
+    fn show_bulk_vote_handling_complete(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
+
+        self.selected_votes.clear();
 
         ui.vertical_centered(|ui| {
             ui.add_space(20.0);
-            ui.heading("🎉 Successfully scheduled votes.");
+            match self.bulk_vote_handling_status {
+                BulkVoteHandlingStatus::Completed => {
+                    ui.heading("🎉");
+                    ui.heading("Successfully cast and scheduled all votes");
+                }
+                BulkVoteHandlingStatus::Failed => {
+                    ui.heading("❌");
+                    ui.heading("Error casting and scheduling votes");
+                }
+                _ => {
+                    // this should not occur
+                }
+            }
 
             ui.add_space(20.0);
             if ui.button("Go to Scheduled Votes Screen").clicked() {
@@ -1444,7 +1471,7 @@ impl DPNSScreen {
             }
             ui.add_space(10.0);
             if ui.button("Go back to Active Contests").clicked() {
-                action = AppAction::PopScreenAndRefresh;
+                self.show_bulk_schedule_popup = false;
             }
         });
 
@@ -1902,12 +1929,6 @@ impl ScreenLike for DPNSScreen {
             self.refreshing = false;
         }
 
-        // If from BulkSchedule or single schedule
-        if let Some((_, m)) = &self.bulk_schedule_message {
-            if m.contains("Votes scheduled") {
-                // already success
-            }
-        }
         // Save into general error_message for top-of-screen
         self.message = Some((message.to_string(), message_type, Utc::now()));
     }
@@ -1915,26 +1936,54 @@ impl ScreenLike for DPNSScreen {
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         match backend_task_success_result {
             // If immediate cast finished, see if we have pending to schedule next
-            BackendTaskSuccessResult::MultipleDPNSVotesCast(_results) => {
-                if let Some(pending) = self.bulk_pending_scheduled.take() {
-                    self.pending_backend_task = Some(BackendTask::ContestedResourceTask(
-                        ContestedResourceTask::ScheduleDPNSVotes(pending),
-                    ));
-                    self.bulk_schedule_message = Some((
-                        MessageType::Info,
-                        "Immediate votes cast. Scheduling the remainder...".to_string(),
-                    ));
+            BackendTaskSuccessResult::MultipleDPNSVotesCast(results) => {
+                let errors = results
+                    .iter()
+                    .filter_map(|(_, _, r)| r.as_ref().err().cloned())
+                    .collect::<Vec<_>>();
+                let successes = results
+                    .iter()
+                    .filter_map(|(_, _, r)| r.as_ref().ok().cloned())
+                    .collect::<Vec<_>>();
+                // If there are errors
+                if !errors.is_empty() {
+                    // And successes
+                    if !successes.is_empty() {
+                        self.bulk_schedule_message = Some((
+                            MessageType::Error,
+                            format!("Only some votes succeeded. Errors: {:?}", errors),
+                        ));
+                    } else {
+                        // All errors. We'll just display the first
+                        self.bulk_schedule_message = Some((
+                            MessageType::Error,
+                            format!(
+                                "Error casting votes. No votes succeeded. The first error returned was: {:?}",
+                                errors.first()
+                            ),
+                        ));
+                    }
                 } else {
-                    // Done
-                    self.bulk_schedule_message = Some((
-                        MessageType::Success,
-                        "All votes cast immediately.".to_string(),
-                    ));
+                    // There were no errors.
+                    // If there were successful votes...
+                    if !successes.is_empty() {
+                        self.bulk_schedule_message = Some((
+                            MessageType::Success,
+                            format!("Votes all cast successfully."),
+                        ));
+                    } else {
+                        // No errors no successes
+                        self.bulk_schedule_message = Some((
+                            MessageType::Error,
+                            "No votes cast. Something went wrong.".to_string(),
+                        ));
+                    }
                 }
+
+                self.bulk_vote_handling_status = BulkVoteHandlingStatus::Completed;
             }
             // If scheduling succeeded
             BackendTaskSuccessResult::Message(msg) => {
-                // Could be "Votes scheduled" or something else
                 if msg.contains("Votes scheduled") {
                     self.bulk_schedule_message =
                         Some((MessageType::Success, "Votes scheduled".to_string()));
@@ -2151,13 +2200,11 @@ impl ScreenLike for DPNSScreen {
                 }
             }
 
-            // If we are refreshing, show a message and spinner
+            // If we are refreshing, show a spinner aligned to the center
             if self.refreshing {
-                ui.add_space(10.0);
-                ui.horizontal(|ui| {
-                    ui.label("Refreshing. Please wait... ");
-                    // Loading spinner
-                    ui.add(egui::widgets::Spinner::default());
+                ui.add_space(20.0);
+                ui.vertical_centered(|ui| {
+                    ui.add(egui::widgets::Spinner::default().color(Color32::from_rgb(0, 128, 255)));
                 });
             }
 
@@ -2199,6 +2246,9 @@ impl ScreenLike for DPNSScreen {
                 IdentityTask::RefreshLoadedIdentitiesOwnedDPNSNames,
             )) => {
                 self.refreshing = true;
+            }
+            AppAction::SetMainScreen(_) => {
+                self.refreshing = false;
             }
             _ => {}
         }

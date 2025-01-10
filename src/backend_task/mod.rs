@@ -58,15 +58,20 @@ pub(crate) enum BackendTaskSuccessResult {
 impl BackendTaskSuccessResult {}
 
 impl AppContext {
+    /// Run backend tasks sequentially
     pub async fn run_backend_tasks(
         self: &Arc<Self>,
         tasks: Vec<BackendTask>,
         sender: mpsc::Sender<TaskResult>,
-    ) -> Result<(), String> {
+    ) -> Vec<Result<BackendTaskSuccessResult, String>> {
+        let mut results = Vec::new();
         for task in tasks {
-            self.run_backend_task(task, sender.clone()).await?;
+            match self.run_backend_task(task, sender.clone()).await {
+                Ok(result) => results.push(Ok(result)),
+                Err(e) => results.push(Err(e)),
+            };
         }
-        Ok(())
+        results
     }
 
     pub async fn run_backend_task(

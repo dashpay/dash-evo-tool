@@ -108,6 +108,7 @@ pub enum AppAction {
     AddScreen(Screen),
     PopThenAddScreenToMainScreen(RootScreenType, Screen),
     BackendTask(BackendTask),
+    BackendTasks(Vec<BackendTask>),
 }
 
 impl BitOrAssign for AppAction {
@@ -326,6 +327,23 @@ impl AppState {
             // Send the result back to the main thread
             if let Err(e) = sender.send(result.into()).await {
                 eprintln!("Failed to send task result: {}", e);
+            }
+        });
+    }
+
+    /// Handle the backend tasks sequentially and send the results through the channel
+    pub fn handle_backend_tasks(&self, tasks: Vec<BackendTask>) {
+        let sender = self.task_result_sender.clone();
+        let app_context = self.current_app_context().clone();
+
+        tokio::spawn(async move {
+            let results = app_context.run_backend_tasks(tasks, sender.clone()).await;
+
+            // Send the results back to the main thread
+            for result in results {
+                if let Err(e) = sender.send(result.into()).await {
+                    eprintln!("Failed to send task result: {}", e);
+                }
             }
         });
     }
@@ -625,6 +643,9 @@ impl App for AppState {
             }
             AppAction::BackendTask(task) => {
                 self.handle_backend_task(task);
+            }
+            AppAction::BackendTasks(tasks) => {
+                self.handle_backend_tasks(tasks);
             }
             AppAction::SetMainScreen(root_screen_type) => {
                 self.selected_main_screen = root_screen_type;

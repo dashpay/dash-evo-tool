@@ -11,7 +11,7 @@ use crate::database::Database;
 use crate::logging::initialize_logger;
 use crate::ui::contracts_documents::document_query_screen::DocumentQueryScreen;
 use crate::ui::dpns::dpns_contested_names_screen::{
-    DPNSContestedNamesScreen, DPNSSubscreen, IndividualVoteCastingStatus,
+    DPNSScreen, DPNSSubscreen, IndividualVoteCastingStatus,
 };
 use crate::ui::identities::identities_screen::IdentitiesScreen;
 use crate::ui::network_chooser_screen::NetworkChooserScreen;
@@ -67,6 +67,7 @@ pub struct AppState {
 pub enum DesiredAppAction {
     None,
     Refresh,
+    Custom(String),
     PopScreen,
     GoToMainScreen,
     SwitchNetwork(Network),
@@ -79,6 +80,7 @@ impl DesiredAppAction {
         match self {
             DesiredAppAction::None => AppAction::None,
             DesiredAppAction::Refresh => AppAction::Refresh,
+            DesiredAppAction::Custom(message) => AppAction::Custom(message.clone()),
             DesiredAppAction::PopScreen => AppAction::PopScreen,
             DesiredAppAction::GoToMainScreen => AppAction::GoToMainScreen,
             DesiredAppAction::AddScreenType(screen_type) => {
@@ -95,6 +97,7 @@ impl DesiredAppAction {
 #[derive(Debug, PartialEq)]
 pub enum AppAction {
     None,
+    Custom(String),
     Refresh,
     PopScreen,
     PopScreenAndRefresh,
@@ -149,13 +152,13 @@ impl AppState {
 
         let mut identities_screen = IdentitiesScreen::new(&mainnet_app_context);
         let mut dpns_active_contests_screen =
-            DPNSContestedNamesScreen::new(&mainnet_app_context, DPNSSubscreen::Active);
+            DPNSScreen::new(&mainnet_app_context, DPNSSubscreen::Active);
         let mut dpns_past_contests_screen =
-            DPNSContestedNamesScreen::new(&mainnet_app_context, DPNSSubscreen::Past);
+            DPNSScreen::new(&mainnet_app_context, DPNSSubscreen::Past);
         let mut dpns_my_usernames_screen =
-            DPNSContestedNamesScreen::new(&mainnet_app_context, DPNSSubscreen::Owned);
+            DPNSScreen::new(&mainnet_app_context, DPNSSubscreen::Owned);
         let mut dpns_scheduled_votes_screen =
-            DPNSContestedNamesScreen::new(&mainnet_app_context, DPNSSubscreen::ScheduledVotes);
+            DPNSScreen::new(&mainnet_app_context, DPNSSubscreen::ScheduledVotes);
         let mut transition_visualizer_screen =
             TransitionVisualizerScreen::new(&mainnet_app_context);
         let mut proof_log_screen = ProofLogScreen::new(&mainnet_app_context);
@@ -193,15 +196,13 @@ impl AppState {
                 let testnet_app_context = testnet_app_context.as_ref().unwrap();
                 identities_screen = IdentitiesScreen::new(testnet_app_context);
                 dpns_active_contests_screen =
-                    DPNSContestedNamesScreen::new(&testnet_app_context, DPNSSubscreen::Active);
+                    DPNSScreen::new(&testnet_app_context, DPNSSubscreen::Active);
                 dpns_past_contests_screen =
-                    DPNSContestedNamesScreen::new(&testnet_app_context, DPNSSubscreen::Past);
+                    DPNSScreen::new(&testnet_app_context, DPNSSubscreen::Past);
                 dpns_my_usernames_screen =
-                    DPNSContestedNamesScreen::new(&testnet_app_context, DPNSSubscreen::Owned);
-                dpns_scheduled_votes_screen = DPNSContestedNamesScreen::new(
-                    &testnet_app_context,
-                    DPNSSubscreen::ScheduledVotes,
-                );
+                    DPNSScreen::new(&testnet_app_context, DPNSSubscreen::Owned);
+                dpns_scheduled_votes_screen =
+                    DPNSScreen::new(&testnet_app_context, DPNSSubscreen::ScheduledVotes);
                 transition_visualizer_screen = TransitionVisualizerScreen::new(testnet_app_context);
                 document_query_screen = DocumentQueryScreen::new(testnet_app_context);
                 wallets_balances_screen = WalletsBalancesScreen::new(testnet_app_context);
@@ -601,6 +602,7 @@ impl App for AppState {
         match action {
             AppAction::AddScreen(screen) => self.screen_stack.push(screen),
             AppAction::None => {}
+            AppAction::Custom(_) => {}
             AppAction::Refresh => self.visible_screen_mut().refresh(),
             AppAction::PopScreen => {
                 if !self.screen_stack.is_empty() {

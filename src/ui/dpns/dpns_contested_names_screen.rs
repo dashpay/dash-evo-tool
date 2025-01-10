@@ -11,7 +11,6 @@ use eframe::egui::{
 };
 use egui_extras::{Column, TableBuilder};
 use itertools::Itertools;
-use tokio::time::error::Elapsed;
 
 use crate::app::{AppAction, DesiredAppAction};
 use crate::backend_task::contested_names::{ContestedResourceTask, ScheduledDPNSVote};
@@ -72,6 +71,7 @@ pub enum IndividualVoteCastingStatus {
     Completed,
 }
 
+#[derive(PartialEq)]
 pub enum BulkVoteHandlingStatus {
     NotStarted,
     CastingVotes(u64),
@@ -113,7 +113,6 @@ pub struct DPNSScreen {
     show_bulk_schedule_popup: bool,
     bulk_identity_options: Vec<VoteOption>,
     bulk_schedule_message: Option<(MessageType, String)>,
-    bulk_pending_scheduled: Option<Vec<ScheduledDPNSVote>>,
     bulk_vote_handling_status: BulkVoteHandlingStatus,
 
     /// Single contest vote handling
@@ -210,7 +209,6 @@ impl DPNSScreen {
             show_bulk_schedule_popup: false,
             bulk_identity_options,
             bulk_schedule_message: None,
-            bulk_pending_scheduled: None,
             bulk_vote_handling_status: BulkVoteHandlingStatus::NotStarted,
 
             // Single-schedule
@@ -1185,9 +1183,6 @@ impl DPNSScreen {
         ui.heading("Cast or Schedule Votes");
         ui.add_space(10.0);
 
-        ui.label("NOTE: Dash Evo Tool must remain running and connected for scheduled votes to execute on time.");
-        ui.add_space(10.0);
-
         // If self.bulk_vote_handling_status is Complete, show completed message
         match self.bulk_vote_handling_status {
             BulkVoteHandlingStatus::Completed => {
@@ -1196,6 +1191,19 @@ impl DPNSScreen {
             }
             _ => {}
         }
+
+        if self.selected_votes.is_empty() {
+            ui.add_space(5.0);
+            ui.colored_label(Color32::DARK_RED, "No votes selected. Please shift-click the votes you want to schedule in the Active Contests screen.");
+            ui.add_space(10.0);
+            if ui.button("Close").clicked() {
+                self.show_bulk_schedule_popup = false;
+            }
+            return action;
+        }
+
+        ui.label("NOTE: Dash Evo Tool must remain running and connected for scheduled votes to execute on time.");
+        ui.add_space(10.0);
 
         egui::ScrollArea::vertical().show(ui, |ui| {
             // Define a frame with custom background color and border
@@ -1465,12 +1473,15 @@ impl DPNSScreen {
 
             ui.add_space(20.0);
             if ui.button("Go to Scheduled Votes Screen").clicked() {
+                self.show_bulk_schedule_popup = false;
+                self.bulk_vote_handling_status = BulkVoteHandlingStatus::NotStarted;
                 action = AppAction::SetMainScreenThenPopScreen(
                     RootScreenType::RootScreenDPNSScheduledVotes,
                 );
             }
-            ui.add_space(10.0);
+            ui.add_space(5.0);
             if ui.button("Go back to Active Contests").clicked() {
+                self.bulk_vote_handling_status = BulkVoteHandlingStatus::NotStarted;
                 self.show_bulk_schedule_popup = false;
             }
         });
@@ -1929,6 +1940,12 @@ impl ScreenLike for DPNSScreen {
             self.refreshing = false;
         }
 
+        if message.contains("Votes scheduled") {
+            if self.bulk_vote_handling_status == BulkVoteHandlingStatus::SchedulingVotes {
+                self.bulk_vote_handling_status = BulkVoteHandlingStatus::Completed;
+            }
+        }
+
         // Save into general error_message for top-of-screen
         self.message = Some((message.to_string(), message_type, Utc::now()));
     }
@@ -1985,10 +2002,22 @@ impl ScreenLike for DPNSScreen {
             // If scheduling succeeded
             BackendTaskSuccessResult::Message(msg) => {
                 if msg.contains("Votes scheduled") {
+                    if self.bulk_vote_handling_status == BulkVoteHandlingStatus::SchedulingVotes {
+                        self.bulk_vote_handling_status = BulkVoteHandlingStatus::Completed;
+                    }
                     self.bulk_schedule_message =
                         Some((MessageType::Success, "Votes scheduled".to_string()));
                     self.single_schedule_message =
                         Some((MessageType::Success, "Votes scheduled".to_string()));
+                }
+            }
+            BackendTaskSuccessResult::CastScheduledVote(vote) => {
+                if let Ok(mut guard) = self.scheduled_votes.lock() {
+                    if let Some((_, status)) = guard.iter_mut().find(|(v, _)| {
+                        v.contested_name == vote.contested_name && v.voter_id == vote.voter_id
+                    }) {
+                        *status = IndividualVoteCastingStatus::Completed;
+                    }
                 }
             }
             _ => {}
@@ -1998,7 +2027,6 @@ impl ScreenLike for DPNSScreen {
     fn ui(&mut self, ctx: &Context) -> AppAction {
         self.check_error_expiration();
         let has_identity_that_can_register = !self.user_identities.is_empty();
-        let has_selected_votes = !self.selected_votes.is_empty();
 
         // Build top-right buttons
         let mut right_buttons = match self.dpns_subscreen {
@@ -2009,18 +2037,10 @@ impl ScreenLike for DPNSScreen {
                         ContestedResourceTask::QueryDPNSContests,
                     )),
                 );
-                // If we have selected SHIFT-click votes, show "Apply Votes"
-                if has_selected_votes {
-                    vec![
-                        refresh_button,
-                        (
-                            "Apply Votes",
-                            DesiredAppAction::Custom("Apply Votes".to_string()),
-                        ), // We'll open our ephemeral bulk UI
-                    ]
-                } else {
-                    vec![refresh_button]
-                }
+                vec![
+                    refresh_button,
+                    ("Vote", DesiredAppAction::Custom("Apply Votes".to_string())),
+                ]
             }
             DPNSSubscreen::Past => {
                 let refresh_button = (

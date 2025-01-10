@@ -150,15 +150,14 @@ impl ScreenType {
     pub fn create_screen(&self, app_context: &Arc<AppContext>) -> Screen {
         match self {
             ScreenType::Identities => Screen::IdentitiesScreen(IdentitiesScreen::new(app_context)),
-            ScreenType::DPNSActiveContests => Screen::DPNSContestedNamesScreen(DPNSScreen::new(
-                app_context,
-                DPNSSubscreen::Active,
-            )),
+            ScreenType::DPNSActiveContests => {
+                Screen::DPNSScreen(DPNSScreen::new(app_context, DPNSSubscreen::Active))
+            }
             ScreenType::DPNSPastContests => {
-                Screen::DPNSContestedNamesScreen(DPNSScreen::new(app_context, DPNSSubscreen::Past))
+                Screen::DPNSScreen(DPNSScreen::new(app_context, DPNSSubscreen::Past))
             }
             ScreenType::DPNSMyUsernames => {
-                Screen::DPNSContestedNamesScreen(DPNSScreen::new(app_context, DPNSSubscreen::Owned))
+                Screen::DPNSScreen(DPNSScreen::new(app_context, DPNSSubscreen::Owned))
             }
             ScreenType::AddNewIdentity => {
                 Screen::AddNewIdentityScreen(AddNewIdentityScreen::new(app_context))
@@ -214,10 +213,9 @@ impl ScreenType {
                 Screen::ImportWalletScreen(ImportWalletScreen::new(app_context))
             }
             ScreenType::ProofLog => Screen::ProofLogScreen(ProofLogScreen::new(app_context)),
-            ScreenType::ScheduledVotes => Screen::DPNSContestedNamesScreen(DPNSScreen::new(
-                app_context,
-                DPNSSubscreen::ScheduledVotes,
-            )),
+            ScreenType::ScheduledVotes => {
+                Screen::DPNSScreen(DPNSScreen::new(app_context, DPNSSubscreen::ScheduledVotes))
+            }
             ScreenType::AddContracts => {
                 Screen::AddContractsScreen(AddContractsScreen::new(app_context))
             }
@@ -227,7 +225,7 @@ impl ScreenType {
 
 pub enum Screen {
     IdentitiesScreen(IdentitiesScreen),
-    DPNSContestedNamesScreen(DPNSScreen),
+    DPNSScreen(DPNSScreen),
     DocumentQueryScreen(DocumentQueryScreen),
     AddNewWalletScreen(AddNewWalletScreen),
     ImportWalletScreen(ImportWalletScreen),
@@ -252,7 +250,7 @@ impl Screen {
     pub fn change_context(&mut self, app_context: Arc<AppContext>) {
         match self {
             Screen::IdentitiesScreen(screen) => screen.app_context = app_context,
-            Screen::DPNSContestedNamesScreen(screen) => screen.app_context = app_context,
+            Screen::DPNSScreen(screen) => screen.app_context = app_context,
             Screen::AddExistingIdentityScreen(screen) => screen.app_context = app_context,
             Screen::KeyInfoScreen(screen) => screen.app_context = app_context,
             Screen::KeysScreen(screen) => screen.app_context = app_context,
@@ -321,19 +319,19 @@ impl Screen {
                 screen.private_key_data.clone(),
             ),
             Screen::IdentitiesScreen(_) => ScreenType::Identities,
-            Screen::DPNSContestedNamesScreen(DPNSScreen {
+            Screen::DPNSScreen(DPNSScreen {
                 dpns_subscreen: DPNSSubscreen::Active,
                 ..
             }) => ScreenType::DPNSActiveContests,
-            Screen::DPNSContestedNamesScreen(DPNSScreen {
+            Screen::DPNSScreen(DPNSScreen {
                 dpns_subscreen: DPNSSubscreen::Past,
                 ..
             }) => ScreenType::DPNSPastContests,
-            Screen::DPNSContestedNamesScreen(DPNSScreen {
+            Screen::DPNSScreen(DPNSScreen {
                 dpns_subscreen: DPNSSubscreen::Owned,
                 ..
             }) => ScreenType::DPNSMyUsernames,
-            Screen::DPNSContestedNamesScreen(DPNSScreen {
+            Screen::DPNSScreen(DPNSScreen {
                 dpns_subscreen: DPNSSubscreen::ScheduledVotes,
                 ..
             }) => ScreenType::ScheduledVotes,
@@ -364,7 +362,7 @@ impl ScreenLike for Screen {
     fn refresh(&mut self) {
         match self {
             Screen::IdentitiesScreen(screen) => screen.refresh(),
-            Screen::DPNSContestedNamesScreen(screen) => screen.refresh(),
+            Screen::DPNSScreen(screen) => screen.refresh(),
             Screen::DocumentQueryScreen(screen) => screen.refresh(),
             Screen::AddNewWalletScreen(screen) => screen.refresh(),
             Screen::ImportWalletScreen(screen) => screen.refresh(),
@@ -389,7 +387,7 @@ impl ScreenLike for Screen {
     fn refresh_on_arrival(&mut self) {
         match self {
             Screen::IdentitiesScreen(screen) => screen.refresh_on_arrival(),
-            Screen::DPNSContestedNamesScreen(screen) => screen.refresh_on_arrival(),
+            Screen::DPNSScreen(screen) => screen.refresh_on_arrival(),
             Screen::DocumentQueryScreen(screen) => screen.refresh_on_arrival(),
             Screen::AddNewWalletScreen(screen) => screen.refresh_on_arrival(),
             Screen::ImportWalletScreen(screen) => screen.refresh_on_arrival(),
@@ -414,7 +412,7 @@ impl ScreenLike for Screen {
     fn ui(&mut self, ctx: &Context) -> AppAction {
         match self {
             Screen::IdentitiesScreen(screen) => screen.ui(ctx),
-            Screen::DPNSContestedNamesScreen(screen) => screen.ui(ctx),
+            Screen::DPNSScreen(screen) => screen.ui(ctx),
             Screen::DocumentQueryScreen(screen) => screen.ui(ctx),
             Screen::AddNewWalletScreen(screen) => screen.ui(ctx),
             Screen::ImportWalletScreen(screen) => screen.ui(ctx),
@@ -439,9 +437,7 @@ impl ScreenLike for Screen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
         match self {
             Screen::IdentitiesScreen(screen) => screen.display_message(message, message_type),
-            Screen::DPNSContestedNamesScreen(screen) => {
-                screen.display_message(message, message_type)
-            }
+            Screen::DPNSScreen(screen) => screen.display_message(message, message_type),
             Screen::DocumentQueryScreen(screen) => screen.display_message(message, message_type),
             Screen::AddNewWalletScreen(screen) => screen.display_message(message, message_type),
             Screen::ImportWalletScreen(screen) => screen.display_message(message, message_type),
@@ -472,7 +468,7 @@ impl ScreenLike for Screen {
             Screen::IdentitiesScreen(screen) => {
                 screen.display_task_result(backend_task_success_result.clone())
             }
-            Screen::DPNSContestedNamesScreen(screen) => {
+            Screen::DPNSScreen(screen) => {
                 screen.display_task_result(backend_task_success_result.clone())
             }
             Screen::DocumentQueryScreen(screen) => {
@@ -535,7 +531,7 @@ impl ScreenLike for Screen {
     fn pop_on_success(&mut self) {
         match self {
             Screen::IdentitiesScreen(screen) => screen.pop_on_success(),
-            Screen::DPNSContestedNamesScreen(screen) => screen.pop_on_success(),
+            Screen::DPNSScreen(screen) => screen.pop_on_success(),
             Screen::DocumentQueryScreen(screen) => screen.pop_on_success(),
             Screen::AddNewWalletScreen(screen) => screen.pop_on_success(),
             Screen::ImportWalletScreen(screen) => screen.pop_on_success(),

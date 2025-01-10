@@ -250,19 +250,19 @@ impl AppState {
                 ),
                 (
                     RootScreenType::RootScreenDPNSActiveContests,
-                    Screen::DPNSContestedNamesScreen(dpns_active_contests_screen),
+                    Screen::DPNSScreen(dpns_active_contests_screen),
                 ),
                 (
                     RootScreenType::RootScreenDPNSPastContests,
-                    Screen::DPNSContestedNamesScreen(dpns_past_contests_screen),
+                    Screen::DPNSScreen(dpns_past_contests_screen),
                 ),
                 (
                     RootScreenType::RootScreenDPNSOwnedNames,
-                    Screen::DPNSContestedNamesScreen(dpns_my_usernames_screen),
+                    Screen::DPNSScreen(dpns_my_usernames_screen),
                 ),
                 (
                     RootScreenType::RootScreenDPNSScheduledVotes,
-                    Screen::DPNSContestedNamesScreen(dpns_scheduled_votes_screen),
+                    Screen::DPNSScreen(dpns_scheduled_votes_screen),
                 ),
                 (
                     RootScreenType::RootScreenWalletsBalances,
@@ -573,7 +573,7 @@ impl App for AppState {
                             .main_screens
                             .get_mut(&RootScreenType::RootScreenDPNSScheduledVotes)
                             .unwrap();
-                        if let Screen::DPNSContestedNamesScreen(screen) = dpns_screen {
+                        if let Screen::DPNSScreen(screen) = dpns_screen {
                             screen.vote_cast_in_progress = true;
                             screen
                                 .scheduled_votes

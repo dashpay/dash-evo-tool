@@ -323,7 +323,7 @@ impl DPNSScreen {
                         match self.dpns_subscreen {
                             DPNSSubscreen::Active | DPNSSubscreen::Past => {
                                 app_action = AppAction::BackendTask(BackendTask::ContestedResourceTask(
-                                    ContestedResourceTask::QueryDPNSContestedResources,
+                                    ContestedResourceTask::QueryDPNSContests,
                                 ));
                             }
                             DPNSSubscreen::Owned => {
@@ -1957,7 +1957,7 @@ impl ScreenLike for DPNSScreen {
                 let refresh_button = (
                     "Refresh",
                     DesiredAppAction::BackendTask(BackendTask::ContestedResourceTask(
-                        ContestedResourceTask::QueryDPNSContestedResources,
+                        ContestedResourceTask::QueryDPNSContests,
                     )),
                 );
                 // If we have selected SHIFT-click votes, show "Apply Votes"
@@ -1977,7 +1977,7 @@ impl ScreenLike for DPNSScreen {
                 let refresh_button = (
                     "Refresh",
                     DesiredAppAction::BackendTask(BackendTask::ContestedResourceTask(
-                        ContestedResourceTask::QueryDPNSContestedResources,
+                        ContestedResourceTask::QueryDPNSContests,
                     )),
                 );
                 vec![refresh_button]
@@ -2190,7 +2190,7 @@ impl ScreenLike for DPNSScreen {
         match action {
             // If refreshing contested names, set self.refreshing = true
             AppAction::BackendTask(BackendTask::ContestedResourceTask(
-                ContestedResourceTask::QueryDPNSContestedResources,
+                ContestedResourceTask::QueryDPNSContests,
             )) => {
                 self.refreshing = true;
             }

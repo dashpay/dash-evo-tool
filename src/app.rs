@@ -609,7 +609,7 @@ impl App for AppState {
                             .get_mut(&RootScreenType::RootScreenDPNSScheduledVotes)
                             .unwrap();
                         if let Screen::DPNSScreen(screen) = dpns_screen {
-                            screen.vote_cast_in_progress = true;
+                            screen.scheduled_vote_cast_in_progress = true;
                             screen
                                 .scheduled_votes
                                 .lock()

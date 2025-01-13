@@ -17,8 +17,7 @@ use tokio::sync::mpsc;
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum ContestedResourceTask {
     QueryDPNSContests,
-    VoteOnDPNSName(String, ResourceVoteChoice, Vec<QualifiedIdentity>),
-    VoteOnMultipleDPNSNames(Vec<(String, ResourceVoteChoice)>, Vec<QualifiedIdentity>),
+    VoteOnDPNSNames(Vec<(String, ResourceVoteChoice)>, Vec<QualifiedIdentity>),
     ScheduleDPNSVotes(Vec<ScheduledDPNSVote>),
     CastScheduledVote(ScheduledDPNSVote, QualifiedIdentity),
     ClearAllScheduledVotes,
@@ -47,11 +46,7 @@ impl AppContext {
                 .query_dpns_contested_resources(sdk, sender)
                 .await
                 .map(|_| BackendTaskSuccessResult::None),
-            ContestedResourceTask::VoteOnDPNSName(name, vote_choice, voters) => {
-                self.vote_on_dpns_name(name, *vote_choice, voters, sdk, sender)
-                    .await
-            }
-            ContestedResourceTask::VoteOnMultipleDPNSNames(votes, all_voters) => {
+            ContestedResourceTask::VoteOnDPNSNames(votes, all_voters) => {
                 // Create a vector of async closures that will vote on each name concurrently
                 let futures = votes
                     .into_iter()

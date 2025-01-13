@@ -11,7 +11,7 @@ use crate::database::Database;
 use crate::logging::initialize_logger;
 use crate::ui::contracts_documents::document_query_screen::DocumentQueryScreen;
 use crate::ui::dpns::dpns_contested_names_screen::{
-    DPNSScreen, DPNSSubscreen, IndividualVoteCastingStatus,
+    DPNSScreen, DPNSSubscreen, ScheduledVoteCastingStatus,
 };
 use crate::ui::identities::identities_screen::IdentitiesScreen;
 use crate::ui::network_chooser_screen::NetworkChooserScreen;
@@ -616,7 +616,7 @@ impl App for AppState {
                                 .unwrap()
                                 .iter_mut()
                                 .find(|(v, _)| v == &vote)
-                                .map(|(_, s)| *s = IndividualVoteCastingStatus::InProgress);
+                                .map(|(_, s)| *s = ScheduledVoteCastingStatus::InProgress);
                         }
                         let task = BackendTask::ContestedResourceTask(
                             ContestedResourceTask::CastScheduledVote(vote, voter.clone()),

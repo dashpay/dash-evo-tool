@@ -54,14 +54,14 @@ pub struct SelectedVote {
 
 #[derive(Clone)]
 pub enum VoteOption {
-    None,
-    Immediate,
+    NoVote,
+    CastNow,
     Scheduled { days: u32, hours: u32, minutes: u32 },
 }
 
 /// Tracks the casting status for each scheduled vote item.
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub enum IndividualVoteCastingStatus {
+pub enum ScheduledVoteCastingStatus {
     NotStarted,
     InProgress,
     Failed,
@@ -69,7 +69,7 @@ pub enum IndividualVoteCastingStatus {
 }
 
 #[derive(PartialEq)]
-pub enum BulkVoteHandlingStatus {
+pub enum VoteHandlingStatus {
     NotStarted,
     CastingVotes(u64),
     SchedulingVotes,
@@ -77,36 +77,10 @@ pub enum BulkVoteHandlingStatus {
     Failed(String),
 }
 
-/// The main, combined DPNSScreen:
-/// - Displays active/past/owned DPNS contests
-/// - Allows clicking selection of votes (bulk scheduling)
-/// - Allows single immediate vote or single schedule
-/// - Shows scheduled votes listing
-pub struct DPNSScreen {
-    voting_identities: Vec<QualifiedIdentity>,
-    user_identities: Vec<QualifiedIdentity>,
-    contested_names: Arc<Mutex<Vec<ContestedName>>>,
-    local_dpns_names: Arc<Mutex<Vec<(Identifier, DPNSNameInfo)>>>,
-    pub scheduled_votes: Arc<Mutex<Vec<(ScheduledDPNSVote, IndividualVoteCastingStatus)>>>,
-    pub scheduled_vote_cast_in_progress: bool,
-    pub selected_votes: Vec<SelectedVote>,
-    pub app_context: Arc<AppContext>,
-    message: Option<(String, MessageType, DateTime<Utc>)>,
-    pending_backend_task: Option<BackendTask>,
-
-    /// Sorting
-    sort_column: SortColumn,
-    sort_order: SortOrder,
-
-    /// Which sub-screen is active: Active contests, Past, Owned, or Scheduled
-    pub dpns_subscreen: DPNSSubscreen,
-    refreshing: bool,
-
-    /// Selected vote handling
-    show_bulk_schedule_popup: bool,
-    bulk_identity_options: Vec<VoteOption>,
-    bulk_schedule_message: Option<(MessageType, String)>,
-    bulk_vote_handling_status: BulkVoteHandlingStatus,
+#[derive(PartialEq)]
+pub enum RefreshingStatus {
+    Refreshing(u64),
+    NotRefreshing,
 }
 
 /// Sorting columns
@@ -124,6 +98,38 @@ enum SortColumn {
 enum SortOrder {
     Ascending,
     Descending,
+}
+
+/// The main, combined DPNSScreen:
+/// - Displays active/past/owned DPNS contests
+/// - Allows clicking selection of votes (bulk scheduling)
+/// - Allows single immediate vote or single schedule
+/// - Shows scheduled votes listing
+pub struct DPNSScreen {
+    voting_identities: Vec<QualifiedIdentity>,
+    user_identities: Vec<QualifiedIdentity>,
+    contested_names: Arc<Mutex<Vec<ContestedName>>>,
+    local_dpns_names: Arc<Mutex<Vec<(Identifier, DPNSNameInfo)>>>,
+    pub scheduled_votes: Arc<Mutex<Vec<(ScheduledDPNSVote, ScheduledVoteCastingStatus)>>>,
+    pub scheduled_vote_cast_in_progress: bool,
+    pub selected_votes: Vec<SelectedVote>,
+    pub app_context: Arc<AppContext>,
+    message: Option<(String, MessageType, DateTime<Utc>)>,
+    pending_backend_task: Option<BackendTask>,
+
+    /// Sorting
+    sort_column: SortColumn,
+    sort_order: SortOrder,
+
+    /// Which sub-screen is active: Active contests, Past, Owned, or Scheduled
+    pub dpns_subscreen: DPNSSubscreen,
+    refreshing_status: RefreshingStatus,
+
+    /// Selected vote handling
+    show_bulk_schedule_popup: bool,
+    bulk_identity_options: Vec<VoteOption>,
+    bulk_schedule_message: Option<(MessageType, String)>,
+    bulk_vote_handling_status: VoteHandlingStatus,
 }
 
 impl DPNSScreen {
@@ -149,9 +155,9 @@ impl DPNSScreen {
                 .iter()
                 .map(|vote| {
                     if vote.executed_successfully {
-                        (vote.clone(), IndividualVoteCastingStatus::Completed)
+                        (vote.clone(), ScheduledVoteCastingStatus::Completed)
                     } else {
-                        (vote.clone(), IndividualVoteCastingStatus::NotStarted)
+                        (vote.clone(), ScheduledVoteCastingStatus::NotStarted)
                     }
                 })
                 .collect::<Vec<_>>(),
@@ -168,7 +174,7 @@ impl DPNSScreen {
 
         // Initialize vote handling pop-up state to hidden
         let identity_count = voting_identities.len();
-        let bulk_identity_options = vec![VoteOption::Immediate; identity_count];
+        let bulk_identity_options = vec![VoteOption::CastNow; identity_count];
 
         Self {
             voting_identities,
@@ -184,13 +190,13 @@ impl DPNSScreen {
             scheduled_vote_cast_in_progress: false,
             pending_backend_task: None,
             dpns_subscreen,
-            refreshing: false,
+            refreshing_status: RefreshingStatus::NotRefreshing,
 
             // Vote handling
             show_bulk_schedule_popup: false,
             bulk_identity_options,
             bulk_schedule_message: None,
-            bulk_vote_handling_status: BulkVoteHandlingStatus::NotStarted,
+            bulk_vote_handling_status: VoteHandlingStatus::NotStarted,
         }
     }
 
@@ -293,10 +299,11 @@ impl DPNSScreen {
                 ui.label("Please check back later or try refreshing the list.");
                 ui.add_space(20.0);
                 if ui.button("Refresh").clicked() {
-                    if self.refreshing {
+                    if let RefreshingStatus::Refreshing(_) = self.refreshing_status {
                         app_action = AppAction::None;
                     } else {
-                        self.refreshing = true;
+                        let now = Utc::now().timestamp() as u64;
+                        self.refreshing_status = RefreshingStatus::Refreshing(now);
                         match self.dpns_subscreen {
                             DPNSSubscreen::Active | DPNSSubscreen::Past => {
                                 app_action = AppAction::BackendTask(BackendTask::ContestedResourceTask(
@@ -338,7 +345,7 @@ impl DPNSScreen {
         };
 
         let refreshing_height = 33.0;
-        let max_scroll_height = if self.refreshing {
+        let max_scroll_height = if let RefreshingStatus::Refreshing(_) = self.refreshing_status {
             ui.available_height() - refreshing_height
         } else {
             ui.available_height()
@@ -659,12 +666,20 @@ impl DPNSScreen {
             cn
         };
 
+        // Allocate space for refreshing indicator
         let refreshing_height = 33.0;
-        let max_scroll_height = if self.refreshing {
+        let mut max_scroll_height = if let RefreshingStatus::Refreshing(_) = self.refreshing_status
+        {
             ui.available_height() - refreshing_height
         } else {
             ui.available_height()
         };
+
+        // Allocate space for backend message
+        let backend_message_height = 40.0;
+        if let Some((_, _, _)) = self.message.clone() {
+            max_scroll_height -= backend_message_height;
+        }
 
         egui::ScrollArea::vertical()
             .max_height(max_scroll_height)
@@ -970,16 +985,16 @@ impl DPNSScreen {
                                     });
                                     // Status
                                     row.col(|ui| match vote.1 {
-                                        IndividualVoteCastingStatus::NotStarted => {
+                                        ScheduledVoteCastingStatus::NotStarted => {
                                             ui.label("Pending");
                                         }
-                                        IndividualVoteCastingStatus::InProgress => {
+                                        ScheduledVoteCastingStatus::InProgress => {
                                             ui.label("Casting...");
                                         }
-                                        IndividualVoteCastingStatus::Failed => {
+                                        ScheduledVoteCastingStatus::Failed => {
                                             ui.colored_label(Color32::DARK_RED, "Failed");
                                         }
-                                        IndividualVoteCastingStatus::Completed => {
+                                        ScheduledVoteCastingStatus::Completed => {
                                             ui.colored_label(Color32::DARK_GREEN, "Casted");
                                         }
                                     });
@@ -999,8 +1014,8 @@ impl DPNSScreen {
                                         // if NotStarted or Failed. If in progress or done, disabled.
                                         let cast_button_enabled = matches!(
                                             vote.1,
-                                            IndividualVoteCastingStatus::NotStarted
-                                                | IndividualVoteCastingStatus::Failed
+                                            ScheduledVoteCastingStatus::NotStarted
+                                                | ScheduledVoteCastingStatus::Failed
                                         ) && !self
                                             .scheduled_vote_cast_in_progress;
 
@@ -1012,7 +1027,7 @@ impl DPNSScreen {
 
                                         if ui.add(cast_button).clicked() && cast_button_enabled {
                                             self.scheduled_vote_cast_in_progress = true;
-                                            vote.1 = IndividualVoteCastingStatus::InProgress;
+                                            vote.1 = ScheduledVoteCastingStatus::InProgress;
 
                                             // Mark in our Arc as well
                                             if let Ok(mut sched_guard) = self.scheduled_votes.lock()
@@ -1024,7 +1039,7 @@ impl DPNSScreen {
                                                                 == vote.0.contested_name
                                                     })
                                                 {
-                                                    t.1 = IndividualVoteCastingStatus::InProgress;
+                                                    t.1 = ScheduledVoteCastingStatus::InProgress;
                                                 }
                                             }
                                             // dispatch the actual cast
@@ -1141,7 +1156,7 @@ impl DPNSScreen {
 
         // If self.bulk_vote_handling_status is Complete, show completed message
         match self.bulk_vote_handling_status {
-            BulkVoteHandlingStatus::Completed => {
+            VoteHandlingStatus::Completed => {
                 action |= self.show_bulk_vote_handling_complete(ui);
                 return action;
             }
@@ -1226,35 +1241,35 @@ impl DPNSScreen {
                                     // Initialize ephemeral bulk-schedule state to hidden
                                     let identity_count = voting_identities.len();
                                     self.bulk_identity_options =
-                                        vec![VoteOption::Immediate; identity_count];
+                                        vec![VoteOption::CastNow; identity_count];
                                 }
 
                                 let current_option = &mut self.bulk_identity_options[i];
                                 ComboBox::from_id_salt(format!("combo_bulk_identity_{}", i))
                                     .width(120.0)
                                     .selected_text(match current_option {
-                                        VoteOption::None => "No Vote".to_string(),
-                                        VoteOption::Immediate => "Cast Now".to_string(),
+                                        VoteOption::NoVote => "No Vote".to_string(),
+                                        VoteOption::CastNow => "Cast Now".to_string(),
                                         VoteOption::Scheduled { .. } => "Schedule".to_string(),
                                     })
                                     .show_ui(ui, |ui| {
                                         if ui
                                             .selectable_label(
-                                                matches!(current_option, VoteOption::None),
+                                                matches!(current_option, VoteOption::NoVote),
                                                 "No Vote",
                                             )
                                             .clicked()
                                         {
-                                            *current_option = VoteOption::None;
+                                            *current_option = VoteOption::NoVote;
                                         }
                                         if ui
                                             .selectable_label(
-                                                matches!(current_option, VoteOption::Immediate),
+                                                matches!(current_option, VoteOption::CastNow),
                                                 "Cast Now",
                                             )
                                             .clicked()
                                         {
-                                            *current_option = VoteOption::Immediate;
+                                            *current_option = VoteOption::CastNow;
                                         }
                                         if ui
                                             .selectable_label(
@@ -1319,25 +1334,25 @@ impl DPNSScreen {
             self.selected_votes.clear();
             self.show_bulk_schedule_popup = false;
             self.bulk_schedule_message = None;
-            self.bulk_vote_handling_status = BulkVoteHandlingStatus::NotStarted;
+            self.bulk_vote_handling_status = VoteHandlingStatus::NotStarted;
         }
 
         // Handle status
         ui.add_space(10.0);
         match &self.bulk_vote_handling_status {
-            BulkVoteHandlingStatus::NotStarted => {}
-            BulkVoteHandlingStatus::CastingVotes(start_time) => {
+            VoteHandlingStatus::NotStarted => {}
+            VoteHandlingStatus::CastingVotes(start_time) => {
                 let now = Utc::now().timestamp() as u64;
                 let elapsed = now - start_time;
                 ui.label(format!("Casting votes... Time taken so far: {}", elapsed));
             }
-            BulkVoteHandlingStatus::SchedulingVotes => {
+            VoteHandlingStatus::SchedulingVotes => {
                 ui.label("Scheduling votes...");
             }
-            BulkVoteHandlingStatus::Completed => {
+            VoteHandlingStatus::Completed => {
                 // handled above
             }
-            BulkVoteHandlingStatus::Failed(message) => {
+            VoteHandlingStatus::Failed(message) => {
                 ui.colored_label(
                     Color32::RED,
                     format!("Error casting/scheduling votes: {}", message),
@@ -1360,8 +1375,8 @@ impl DPNSScreen {
             .zip(&self.bulk_identity_options)
         {
             match option {
-                VoteOption::None => {}
-                VoteOption::Immediate => {
+                VoteOption::NoVote => {}
+                VoteOption::CastNow => {
                     immediate_list.push(identity.clone());
                 }
                 VoteOption::Scheduled {
@@ -1390,7 +1405,7 @@ impl DPNSScreen {
         }
 
         if immediate_list.is_empty() && scheduled_list.is_empty() {
-            self.bulk_vote_handling_status = BulkVoteHandlingStatus::Failed(
+            self.bulk_vote_handling_status = VoteHandlingStatus::Failed(
                 "No votes selected. Please select votes to cast or schedule.".to_string(),
             );
             return AppAction::None;
@@ -1404,7 +1419,7 @@ impl DPNSScreen {
                 .map(|sv| (sv.contested_name.clone(), sv.vote_choice))
                 .collect();
             let now = Utc::now().timestamp() as u64;
-            self.bulk_vote_handling_status = BulkVoteHandlingStatus::CastingVotes(now);
+            self.bulk_vote_handling_status = VoteHandlingStatus::CastingVotes(now);
             if !scheduled_list.is_empty() {
                 return AppAction::BackendTasks(
                     vec![
@@ -1425,7 +1440,7 @@ impl DPNSScreen {
             }
         } else {
             // 2) Otherwise just schedule them
-            self.bulk_vote_handling_status = BulkVoteHandlingStatus::SchedulingVotes;
+            self.bulk_vote_handling_status = VoteHandlingStatus::SchedulingVotes;
             return AppAction::BackendTask(BackendTask::ContestedResourceTask(
                 ContestedResourceTask::ScheduleDPNSVotes(scheduled_list),
             ));
@@ -1441,11 +1456,11 @@ impl DPNSScreen {
         ui.vertical_centered(|ui| {
             ui.add_space(20.0);
             match &self.bulk_vote_handling_status {
-                BulkVoteHandlingStatus::Completed => {
+                VoteHandlingStatus::Completed => {
                     ui.heading("🎉");
                     ui.heading("Successfully cast and scheduled all votes");
                 }
-                BulkVoteHandlingStatus::Failed(message) => {
+                VoteHandlingStatus::Failed(message) => {
                     ui.heading("❌");
                     ui.heading(format!("Error casting and scheduling votes: {}", message));
                 }
@@ -1457,14 +1472,14 @@ impl DPNSScreen {
             ui.add_space(20.0);
             if ui.button("Go to Scheduled Votes Screen").clicked() {
                 self.show_bulk_schedule_popup = false;
-                self.bulk_vote_handling_status = BulkVoteHandlingStatus::NotStarted;
+                self.bulk_vote_handling_status = VoteHandlingStatus::NotStarted;
                 action = AppAction::SetMainScreenThenPopScreen(
                     RootScreenType::RootScreenDPNSScheduledVotes,
                 );
             }
             ui.add_space(5.0);
             if ui.button("Go back to Active Contests").clicked() {
-                self.bulk_vote_handling_status = BulkVoteHandlingStatus::NotStarted;
+                self.bulk_vote_handling_status = VoteHandlingStatus::NotStarted;
                 self.show_bulk_schedule_popup = false;
                 action = AppAction::BackendTask(BackendTask::ContestedResourceTask(
                     ContestedResourceTask::QueryDPNSContests,
@@ -1505,23 +1520,23 @@ impl ScreenLike for DPNSScreen {
                     .iter()
                     .map(|newv| {
                         if newv.executed_successfully {
-                            (newv.clone(), IndividualVoteCastingStatus::Completed)
+                            (newv.clone(), ScheduledVoteCastingStatus::Completed)
                         } else if let Some(existing) = scheduled_votes.iter().find(|(old, _)| {
                             old.contested_name == newv.contested_name
                                 && old.voter_id == newv.voter_id
                         }) {
                             // preserve old status if InProgress/Failed
                             match existing.1 {
-                                IndividualVoteCastingStatus::InProgress => {
-                                    (newv.clone(), IndividualVoteCastingStatus::InProgress)
+                                ScheduledVoteCastingStatus::InProgress => {
+                                    (newv.clone(), ScheduledVoteCastingStatus::InProgress)
                                 }
-                                IndividualVoteCastingStatus::Failed => {
-                                    (newv.clone(), IndividualVoteCastingStatus::Failed)
+                                ScheduledVoteCastingStatus::Failed => {
+                                    (newv.clone(), ScheduledVoteCastingStatus::Failed)
                                 }
-                                _ => (newv.clone(), IndividualVoteCastingStatus::NotStarted),
+                                _ => (newv.clone(), ScheduledVoteCastingStatus::NotStarted),
                             }
                         } else {
-                            (newv.clone(), IndividualVoteCastingStatus::NotStarted)
+                            (newv.clone(), ScheduledVoteCastingStatus::NotStarted)
                         }
                     })
                     .collect();
@@ -1549,8 +1564,8 @@ impl ScreenLike for DPNSScreen {
             self.scheduled_vote_cast_in_progress = false;
             if let Ok(mut guard) = self.scheduled_votes.lock() {
                 for vote in guard.iter_mut() {
-                    if vote.1 == IndividualVoteCastingStatus::InProgress {
-                        vote.1 = IndividualVoteCastingStatus::Failed;
+                    if vote.1 == ScheduledVoteCastingStatus::InProgress {
+                        vote.1 = ScheduledVoteCastingStatus::Failed;
                     }
                 }
             }
@@ -1559,17 +1574,17 @@ impl ScreenLike for DPNSScreen {
             self.scheduled_vote_cast_in_progress = false;
         }
         // If it's from a DPNS query or identity refresh, remove refreshing state
-        if message.contains("Finished querying DPNS contested resources")
+        if message.contains("Successfully refreshed DPNS contests")
             || message.contains("Successfully refreshed loaded identities dpns names")
             || message.contains("Contested resource query failed")
             || message.contains("Error refreshing owned DPNS names")
         {
-            self.refreshing = false;
+            self.refreshing_status = RefreshingStatus::NotRefreshing;
         }
 
         if message.contains("Votes scheduled") {
-            if self.bulk_vote_handling_status == BulkVoteHandlingStatus::SchedulingVotes {
-                self.bulk_vote_handling_status = BulkVoteHandlingStatus::Completed;
+            if self.bulk_vote_handling_status == VoteHandlingStatus::SchedulingVotes {
+                self.bulk_vote_handling_status = VoteHandlingStatus::Completed;
             }
         }
 
@@ -1624,13 +1639,13 @@ impl ScreenLike for DPNSScreen {
                     }
                 }
 
-                self.bulk_vote_handling_status = BulkVoteHandlingStatus::Completed;
+                self.bulk_vote_handling_status = VoteHandlingStatus::Completed;
             }
             // If scheduling succeeded
             BackendTaskSuccessResult::Message(msg) => {
                 if msg.contains("Votes scheduled") {
-                    if self.bulk_vote_handling_status == BulkVoteHandlingStatus::SchedulingVotes {
-                        self.bulk_vote_handling_status = BulkVoteHandlingStatus::Completed;
+                    if self.bulk_vote_handling_status == VoteHandlingStatus::SchedulingVotes {
+                        self.bulk_vote_handling_status = VoteHandlingStatus::Completed;
                     }
                     self.bulk_schedule_message =
                         Some((MessageType::Success, "Votes scheduled".to_string()));
@@ -1641,7 +1656,7 @@ impl ScreenLike for DPNSScreen {
                     if let Some((_, status)) = guard.iter_mut().find(|(v, _)| {
                         v.contested_name == vote.contested_name && v.voter_id == vote.voter_id
                     }) {
-                        *status = IndividualVoteCastingStatus::Completed;
+                        *status = ScheduledVoteCastingStatus::Completed;
                     }
                 }
             }
@@ -1652,6 +1667,10 @@ impl ScreenLike for DPNSScreen {
     fn ui(&mut self, ctx: &Context) -> AppAction {
         self.check_error_expiration();
         let has_identity_that_can_register = !self.user_identities.is_empty();
+        let has_active_contests = {
+            let guard = self.contested_names.lock().unwrap();
+            !guard.is_empty()
+        };
 
         // Build top-right buttons
         let mut right_buttons = match self.dpns_subscreen {
@@ -1662,13 +1681,17 @@ impl ScreenLike for DPNSScreen {
                         ContestedResourceTask::QueryDPNSContests,
                     )),
                 );
-                vec![
-                    refresh_button,
-                    (
-                        "Cast/Schedule Votes",
-                        DesiredAppAction::Custom("Vote".to_string()),
-                    ),
-                ]
+                if has_active_contests {
+                    vec![
+                        refresh_button,
+                        (
+                            "Cast/Schedule Votes",
+                            DesiredAppAction::Custom("Vote".to_string()),
+                        ),
+                    ]
+                } else {
+                    vec![refresh_button]
+                }
             }
             DPNSSubscreen::Past => {
                 let refresh_button = (
@@ -1706,7 +1729,7 @@ impl ScreenLike for DPNSScreen {
             }
         };
 
-        if has_identity_that_can_register {
+        if has_identity_that_can_register && self.dpns_subscreen != DPNSSubscreen::ScheduledVotes {
             // "Register Name" button on the left
             right_buttons.insert(
                 0,
@@ -1828,24 +1851,24 @@ impl ScreenLike for DPNSScreen {
             }
 
             // If we are refreshing, show a spinner at the bottom
-            if self.refreshing {
+            if let RefreshingStatus::Refreshing(start_time) = self.refreshing_status {
                 ui.add_space(5.0);
+                let now = Utc::now().timestamp() as u64;
+                let elapsed = now - start_time;
                 ui.horizontal(|ui| {
                     ui.add_space(10.0);
-                    ui.label(format!("Refreshing...")); // Can add "time taken so far" later
+                    ui.label(format!("Refreshing... Time taken so far: {}", elapsed)); // Can add "time taken so far" later
                     ui.add(egui::widgets::Spinner::default().color(Color32::from_rgb(0, 128, 255)));
                 });
             }
 
             // If there's a backend message, show it at the bottom
             if let Some((msg, msg_type, timestamp)) = self.message.clone() {
-                ui.add_space(10.0);
                 let color = match msg_type {
                     MessageType::Error => Color32::DARK_RED,
                     MessageType::Info => Color32::BLACK,
                     MessageType::Success => Color32::DARK_GREEN,
                 };
-                ui.add_space(10.0);
                 ui.group(|ui| {
                     ui.horizontal_wrapped(|ui| {
                         ui.colored_label(color, &msg);
@@ -1868,16 +1891,18 @@ impl ScreenLike for DPNSScreen {
             AppAction::BackendTask(BackendTask::ContestedResourceTask(
                 ContestedResourceTask::QueryDPNSContests,
             )) => {
-                self.refreshing = true;
+                self.refreshing_status =
+                    RefreshingStatus::Refreshing(Utc::now().timestamp() as u64);
             }
             // If refreshing owned names, set self.refreshing = true
             AppAction::BackendTask(BackendTask::IdentityTask(
                 IdentityTask::RefreshLoadedIdentitiesOwnedDPNSNames,
             )) => {
-                self.refreshing = true;
+                self.refreshing_status =
+                    RefreshingStatus::Refreshing(Utc::now().timestamp() as u64);
             }
             AppAction::SetMainScreen(_) => {
-                self.refreshing = false;
+                self.refreshing_status = RefreshingStatus::NotRefreshing;
             }
             _ => {}
         }

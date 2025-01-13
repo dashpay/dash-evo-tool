@@ -12,7 +12,7 @@ use eframe::egui::{
 use egui_extras::{Column, TableBuilder};
 use itertools::Itertools;
 
-use crate::app::{AppAction, BackendTaskExecutionMode, DesiredAppAction};
+use crate::app::{AppAction, BackendTasksExecutionMode, DesiredAppAction};
 use crate::backend_task::contested_names::{ContestedResourceTask, ScheduledDPNSVote};
 use crate::backend_task::identity::IdentityTask;
 use crate::backend_task::BackendTask;
@@ -1416,7 +1416,7 @@ impl DPNSScreen {
                             ContestedResourceTask::ScheduleDPNSVotes(scheduled_list),
                         ),
                     ],
-                    BackendTaskExecutionMode::Concurrent,
+                    BackendTasksExecutionMode::Concurrent,
                 );
             } else {
                 return AppAction::BackendTask(BackendTask::ContestedResourceTask(

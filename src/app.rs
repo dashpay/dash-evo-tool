@@ -67,12 +67,12 @@ pub struct AppState {
 pub enum DesiredAppAction {
     None,
     Refresh,
-    Custom(String),
     PopScreen,
     GoToMainScreen,
     SwitchNetwork(Network),
     AddScreenType(ScreenType),
     BackendTask(BackendTask),
+    Custom(String),
 }
 
 impl DesiredAppAction {
@@ -95,7 +95,7 @@ impl DesiredAppAction {
 }
 
 #[derive(Debug, PartialEq)]
-pub enum BackendTaskExecutionMode {
+pub enum BackendTasksExecutionMode {
     Sequential,
     Concurrent,
 }
@@ -103,7 +103,6 @@ pub enum BackendTaskExecutionMode {
 #[derive(Debug, PartialEq)]
 pub enum AppAction {
     None,
-    Custom(String),
     Refresh,
     PopScreen,
     PopScreenAndRefresh,
@@ -114,7 +113,8 @@ pub enum AppAction {
     AddScreen(Screen),
     PopThenAddScreenToMainScreen(RootScreenType, Screen),
     BackendTask(BackendTask),
-    BackendTasks(Vec<BackendTask>, BackendTaskExecutionMode),
+    BackendTasks(Vec<BackendTask>, BackendTasksExecutionMode),
+    Custom(String),
 }
 
 impl BitOrAssign for AppAction {
@@ -338,18 +338,18 @@ impl AppState {
     }
 
     /// Handle the backend tasks and send the results through the channel
-    pub fn handle_backend_tasks(&self, tasks: Vec<BackendTask>, mode: BackendTaskExecutionMode) {
+    pub fn handle_backend_tasks(&self, tasks: Vec<BackendTask>, mode: BackendTasksExecutionMode) {
         let sender = self.task_result_sender.clone();
         let app_context = self.current_app_context().clone();
 
         tokio::spawn(async move {
             let results = match mode {
-                BackendTaskExecutionMode::Sequential => {
+                BackendTasksExecutionMode::Sequential => {
                     app_context
                         .run_backend_tasks_sequential(tasks, sender.clone())
                         .await
                 }
-                BackendTaskExecutionMode::Concurrent => {
+                BackendTasksExecutionMode::Concurrent => {
                     app_context
                         .run_backend_tasks_concurrent(tasks, sender.clone())
                         .await
@@ -637,7 +637,6 @@ impl App for AppState {
         match action {
             AppAction::AddScreen(screen) => self.screen_stack.push(screen),
             AppAction::None => {}
-            AppAction::Custom(_) => {}
             AppAction::Refresh => self.visible_screen_mut().refresh(),
             AppAction::PopScreen => {
                 if !self.screen_stack.is_empty() {
@@ -695,6 +694,7 @@ impl App for AppState {
                     .update_settings(root_screen_type)
                     .ok();
             }
+            AppAction::Custom(_) => {}
         }
     }
 }

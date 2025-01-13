@@ -70,7 +70,7 @@ impl AppContext {
                     }
                 }
 
-                Ok(BackendTaskSuccessResult::MultipleDPNSVotesCast(results))
+                Ok(BackendTaskSuccessResult::DPNSVoteResults(results))
             }
             ContestedResourceTask::ScheduleDPNSVotes(scheduled_votes) => self
                 .insert_scheduled_votes(scheduled_votes)

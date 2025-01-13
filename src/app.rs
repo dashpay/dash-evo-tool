@@ -460,7 +460,7 @@ impl App for AppState {
                     BackendTaskSuccessResult::SuccessfulVotes(_) => {
                         self.visible_screen_mut().refresh();
                     }
-                    BackendTaskSuccessResult::MultipleDPNSVotesCast(_) => {
+                    BackendTaskSuccessResult::DPNSVoteResults(_) => {
                         self.visible_screen_mut().display_task_result(message);
                     }
                     BackendTaskSuccessResult::CastScheduledVote(vote) => {

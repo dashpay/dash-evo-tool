@@ -47,7 +47,7 @@ pub(crate) enum BackendTaskSuccessResult {
     RegisteredIdentity(QualifiedIdentity),
     ToppedUpIdentity(QualifiedIdentity),
     SuccessfulVotes(Vec<Vote>),
-    MultipleDPNSVotesCast(Vec<(String, ResourceVoteChoice, Result<(), String>)>),
+    DPNSVoteResults(Vec<(String, ResourceVoteChoice, Result<(), String>)>),
     CastScheduledVote(ScheduledDPNSVote),
     WithdrawalStatus(WithdrawStatusPartialData),
     FetchedContract(DataContract),

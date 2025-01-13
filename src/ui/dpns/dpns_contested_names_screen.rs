@@ -2021,7 +2021,7 @@ impl ScreenLike for DPNSScreen {
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         match backend_task_success_result {
             // If immediate cast finished, see if we have pending to schedule next
-            BackendTaskSuccessResult::MultipleDPNSVotesCast(results) => {
+            BackendTaskSuccessResult::DPNSVoteResults(results) => {
                 let errors = results
                     .iter()
                     .filter_map(|(_, _, r)| r.as_ref().err().cloned())
@@ -2107,7 +2107,7 @@ impl ScreenLike for DPNSScreen {
                 );
                 vec![
                     refresh_button,
-                    ("Vote", DesiredAppAction::Custom("Apply Votes".to_string())),
+                    ("Vote", DesiredAppAction::Custom("Vote".to_string())),
                 ]
             }
             DPNSSubscreen::Past => {
@@ -2165,7 +2165,7 @@ impl ScreenLike for DPNSScreen {
         );
 
         // If user clicked "Apply Votes" in the top bar
-        if action == AppAction::Custom("Apply Votes".to_string()) {
+        if action == AppAction::Custom("Vote".to_string()) {
             // That means the user clicked "Apply Votes"
             self.show_bulk_schedule_popup = true;
             action = AppAction::None; // clear it out so we don't re-trigger

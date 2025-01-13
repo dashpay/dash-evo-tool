@@ -331,7 +331,7 @@ impl AppState {
         });
     }
 
-    /// Handle the backend tasks sequentially and send the results through the channel
+    /// Handle the backend tasks and send the results through the channel
     pub fn handle_backend_tasks(&self, tasks: Vec<BackendTask>) {
         let sender = self.task_result_sender.clone();
         let app_context = self.current_app_context().clone();

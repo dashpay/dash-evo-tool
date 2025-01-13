@@ -58,7 +58,7 @@ pub(crate) enum BackendTaskSuccessResult {
 impl BackendTaskSuccessResult {}
 
 impl AppContext {
-    /// Run backend tasks sequentially
+    /// Run backend tasks
     pub async fn run_backend_tasks(
         self: &Arc<Self>,
         tasks: Vec<BackendTask>,

@@ -77,7 +77,7 @@ pub enum BulkVoteHandlingStatus {
     CastingVotes(u64),
     SchedulingVotes,
     Completed,
-    Failed,
+    Failed(String),
 }
 
 /// The main, combined DPNSScreen:
@@ -344,7 +344,7 @@ impl DPNSScreen {
                 }
             } else {
                 ui.label(
-                    "To schedule votes, go to the Active Contests subscreen, shift-click your choices, and then click the 'Apply Votes' button in the top-right.",
+                    "To schedule votes, go to the Active Contests subscreen, shift-click your choices, and then click the 'Vote' button in the top-right.",
                 );
             }
         });
@@ -365,166 +365,205 @@ impl DPNSScreen {
             cn
         };
 
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            Frame::group(ui.style())
-                .fill(ui.visuals().panel_fill)
-                .stroke(egui::Stroke::new(
-                    1.0,
-                    ui.visuals().widgets.inactive.bg_stroke.color,
-                ))
-                .inner_margin(Margin::same(8.0))
-                .show(ui, |ui| {
-                    TableBuilder::new(ui)
-                        .striped(true)
-                        .resizable(true)
-                        .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                        .column(Column::initial(200.0).resizable(true)) // Contested Name
-                        .column(Column::initial(100.0).resizable(true)) // Locked
-                        .column(Column::initial(100.0).resizable(true)) // Abstain
-                        .column(Column::initial(200.0).resizable(true)) // Ending Time
-                        .column(Column::initial(200.0).resizable(true)) // Last Updated
-                        .column(Column::remainder()) // Contestants
-                        .header(30.0, |mut header| {
-                            header.col(|ui| {
-                                if ui.button("Contested Name").clicked() {
-                                    self.toggle_sort(SortColumn::ContestedName);
-                                }
-                            });
-                            header.col(|ui| {
-                                if ui.button("Locked Votes").clicked() {
-                                    self.toggle_sort(SortColumn::LockedVotes);
-                                }
-                            });
-                            header.col(|ui| {
-                                if ui.button("Abstain Votes").clicked() {
-                                    self.toggle_sort(SortColumn::AbstainVotes);
-                                }
-                            });
-                            header.col(|ui| {
-                                if ui.button("Ending Time").clicked() {
-                                    self.toggle_sort(SortColumn::EndingTime);
-                                }
-                            });
-                            header.col(|ui| {
-                                if ui.button("Last Updated").clicked() {
-                                    self.toggle_sort(SortColumn::LastUpdated);
-                                }
-                            });
-                            header.col(|ui| {
-                                ui.heading("Contestants");
-                            });
-                        })
-                        .body(|mut body| {
-                            for contested_name in &contested_names {
-                                body.row(25.0, |mut row| {
-                                    let locked_votes = contested_name.locked_votes.unwrap_or(0);
-                                    let max_contestant_votes = contested_name
-                                        .contestants
-                                        .as_ref()
-                                        .map(|contestants| {
-                                            contestants.iter().map(|c| c.votes).max().unwrap_or(0)
-                                        })
-                                        .unwrap_or(0);
-                                    let is_locked_votes_bold = locked_votes > max_contestant_votes;
+        let refreshing_height = 33.0;
+        let max_scroll_height = if self.refreshing {
+            ui.available_height() - refreshing_height
+        } else {
+            ui.available_height()
+        };
 
-                                    // Contested Name
-                                    row.col(|ui| {
-                                        let (used_name, highlighted) = if let Some(contestants) =
-                                            &contested_name.contestants
-                                        {
-                                            if let Some(first) = contestants.first() {
-                                                if contestants.iter().all(|c| c.name == first.name)
+        egui::ScrollArea::vertical()
+            .max_height(max_scroll_height)
+            .show(ui, |ui| {
+                Frame::group(ui.style())
+                    .fill(ui.visuals().panel_fill)
+                    .stroke(egui::Stroke::new(
+                        1.0,
+                        ui.visuals().widgets.inactive.bg_stroke.color,
+                    ))
+                    .inner_margin(Margin::same(8.0))
+                    .show(ui, |ui| {
+                        TableBuilder::new(ui)
+                            .striped(true)
+                            .resizable(true)
+                            .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                            .column(Column::initial(200.0).resizable(true)) // Contested Name
+                            .column(Column::initial(100.0).resizable(true)) // Locked
+                            .column(Column::initial(100.0).resizable(true)) // Abstain
+                            .column(Column::initial(200.0).resizable(true)) // Ending Time
+                            .column(Column::initial(200.0).resizable(true)) // Last Updated
+                            .column(Column::remainder()) // Contestants
+                            .header(30.0, |mut header| {
+                                header.col(|ui| {
+                                    if ui.button("Contested Name").clicked() {
+                                        self.toggle_sort(SortColumn::ContestedName);
+                                    }
+                                });
+                                header.col(|ui| {
+                                    if ui.button("Locked Votes").clicked() {
+                                        self.toggle_sort(SortColumn::LockedVotes);
+                                    }
+                                });
+                                header.col(|ui| {
+                                    if ui.button("Abstain Votes").clicked() {
+                                        self.toggle_sort(SortColumn::AbstainVotes);
+                                    }
+                                });
+                                header.col(|ui| {
+                                    if ui.button("Ending Time").clicked() {
+                                        self.toggle_sort(SortColumn::EndingTime);
+                                    }
+                                });
+                                header.col(|ui| {
+                                    if ui.button("Last Updated").clicked() {
+                                        self.toggle_sort(SortColumn::LastUpdated);
+                                    }
+                                });
+                                header.col(|ui| {
+                                    ui.heading("Contestants");
+                                });
+                            })
+                            .body(|mut body| {
+                                for contested_name in &contested_names {
+                                    body.row(25.0, |mut row| {
+                                        let locked_votes = contested_name.locked_votes.unwrap_or(0);
+                                        let max_contestant_votes = contested_name
+                                            .contestants
+                                            .as_ref()
+                                            .map(|contestants| {
+                                                contestants
+                                                    .iter()
+                                                    .map(|c| c.votes)
+                                                    .max()
+                                                    .unwrap_or(0)
+                                            })
+                                            .unwrap_or(0);
+                                        let is_locked_votes_bold =
+                                            locked_votes > max_contestant_votes;
+
+                                        // Contested Name
+                                        row.col(|ui| {
+                                            let (used_name, highlighted) =
+                                                if let Some(contestants) =
+                                                    &contested_name.contestants
                                                 {
-                                                    // Everyone has same name
-                                                    (
-                                                        first.name.clone(),
-                                                        Some(
-                                                            contested_name
-                                                                .normalized_contested_name
-                                                                .clone(),
-                                                        ),
-                                                    )
-                                                } else {
-                                                    // Multiple different names
-                                                    (
-                                                        contestants
+                                                    if let Some(first) = contestants.first() {
+                                                        if contestants
                                                             .iter()
-                                                            .map(|c| c.name.clone())
-                                                            .join(" or "),
-                                                        Some(
-                                                            contestants
-                                                                .iter()
-                                                                .map(|c| {
-                                                                    format!(
+                                                            .all(|c| c.name == first.name)
+                                                        {
+                                                            // Everyone has same name
+                                                            (
+                                                                first.name.clone(),
+                                                                Some(
+                                                                    contested_name
+                                                                        .normalized_contested_name
+                                                                        .clone(),
+                                                                ),
+                                                            )
+                                                        } else {
+                                                            // Multiple different names
+                                                            (
+                                                                contestants
+                                                                    .iter()
+                                                                    .map(|c| c.name.clone())
+                                                                    .join(" or "),
+                                                                Some(
+                                                                    contestants
+                                                                        .iter()
+                                                                        .map(|c| {
+                                                                            format!(
                                                                         "{} trying to get {}",
                                                                         c.id,
                                                                         c.name.clone()
                                                                     )
-                                                                })
-                                                                .join(" and "),
-                                                        ),
+                                                                        })
+                                                                        .join(" and "),
+                                                                ),
+                                                            )
+                                                        }
+                                                    } else {
+                                                        (
+                                                            contested_name
+                                                                .normalized_contested_name
+                                                                .clone(),
+                                                            None,
+                                                        )
+                                                    }
+                                                } else {
+                                                    (
+                                                        contested_name
+                                                            .normalized_contested_name
+                                                            .clone(),
+                                                        None,
                                                     )
-                                                }
-                                            } else {
-                                                (
-                                                    contested_name
-                                                        .normalized_contested_name
-                                                        .clone(),
-                                                    None,
-                                                )
+                                                };
+
+                                            let label_response = ui.label(used_name);
+                                            if let Some(tooltip) = highlighted {
+                                                label_response.on_hover_text(tooltip);
                                             }
-                                        } else {
-                                            (contested_name.normalized_contested_name.clone(), None)
-                                        };
-
-                                        let label_response = ui.label(used_name);
-                                        if let Some(tooltip) = highlighted {
-                                            label_response.on_hover_text(tooltip);
-                                        }
-                                    });
-
-                                    // LOCK button
-                                    row.col(|ui| {
-                                        let label_text = format!("{}", locked_votes);
-                                        let text_widget = if is_locked_votes_bold {
-                                            RichText::new(label_text).strong()
-                                        } else {
-                                            RichText::new(label_text)
-                                        };
-
-                                        // See if this (LOCK) is selected
-                                        let is_selected = self.selected_votes.iter().any(|sv| {
-                                            sv.contested_name
-                                                == contested_name.normalized_contested_name
-                                                && sv.vote_choice == ResourceVoteChoice::Lock
                                         });
 
-                                        let button = if is_selected {
-                                            Button::new(text_widget)
-                                                .fill(Color32::from_rgb(0, 150, 255))
-                                        } else {
-                                            Button::new(text_widget)
-                                        };
-                                        let resp = ui.add(button);
-                                        if resp.clicked() {
-                                            let shift_held = ui.input(|i| i.modifiers.shift_only());
-                                            if shift_held {
-                                                // SHIFT logic => toggle or replace
-                                                if let Some(pos) =
-                                                    self.selected_votes.iter().position(|sv| {
-                                                        sv.contested_name
-                                                            == contested_name
-                                                                .normalized_contested_name
-                                                    })
-                                                {
-                                                    if self.selected_votes[pos].vote_choice
-                                                        == ResourceVoteChoice::Lock
+                                        // LOCK button
+                                        row.col(|ui| {
+                                            let label_text = format!("{}", locked_votes);
+                                            let text_widget = if is_locked_votes_bold {
+                                                RichText::new(label_text).strong()
+                                            } else {
+                                                RichText::new(label_text)
+                                            };
+
+                                            // See if this (LOCK) is selected
+                                            let is_selected =
+                                                self.selected_votes.iter().any(|sv| {
+                                                    sv.contested_name
+                                                        == contested_name.normalized_contested_name
+                                                        && sv.vote_choice
+                                                            == ResourceVoteChoice::Lock
+                                                });
+
+                                            let button = if is_selected {
+                                                Button::new(text_widget)
+                                                    .fill(Color32::from_rgb(0, 150, 255))
+                                            } else {
+                                                Button::new(text_widget)
+                                            };
+                                            let resp = ui.add(button);
+                                            if resp.clicked() {
+                                                let shift_held =
+                                                    ui.input(|i| i.modifiers.shift_only());
+                                                if shift_held {
+                                                    // SHIFT logic => toggle or replace
+                                                    if let Some(pos) =
+                                                        self.selected_votes.iter().position(|sv| {
+                                                            sv.contested_name
+                                                                == contested_name
+                                                                    .normalized_contested_name
+                                                        })
                                                     {
-                                                        // same => remove
-                                                        self.selected_votes.remove(pos);
+                                                        if self.selected_votes[pos].vote_choice
+                                                            == ResourceVoteChoice::Lock
+                                                        {
+                                                            // same => remove
+                                                            self.selected_votes.remove(pos);
+                                                        } else {
+                                                            // different => remove old, add new
+                                                            self.selected_votes.remove(pos);
+                                                            self.selected_votes.push(
+                                                                SelectedVote {
+                                                                    contested_name: contested_name
+                                                                        .normalized_contested_name
+                                                                        .clone(),
+                                                                    vote_choice:
+                                                                        ResourceVoteChoice::Lock,
+                                                                    end_time: contested_name
+                                                                        .end_time,
+                                                                },
+                                                            );
+                                                        }
                                                     } else {
-                                                        // different => remove old, add new
-                                                        self.selected_votes.remove(pos);
+                                                        // no existing => add
                                                         self.selected_votes.push(SelectedVote {
                                                             contested_name: contested_name
                                                                 .normalized_contested_name
@@ -534,69 +573,75 @@ impl DPNSScreen {
                                                         });
                                                     }
                                                 } else {
-                                                    // no existing => add
-                                                    self.selected_votes.push(SelectedVote {
-                                                        contested_name: contested_name
-                                                            .normalized_contested_name
-                                                            .clone(),
-                                                        vote_choice: ResourceVoteChoice::Lock,
-                                                        end_time: contested_name.end_time,
-                                                    });
-                                                }
-                                            } else {
-                                                // immediate vote
-                                                self.show_vote_popup_info = Some((
-                                                    format!(
+                                                    // immediate vote
+                                                    self.show_vote_popup_info = Some((
+                                                        format!(
                                                         "Confirm Voting to Lock the name \"{}\".",
                                                         contested_name.normalized_contested_name
                                                     ),
-                                                    ContestedResourceTask::VoteOnDPNSName(
-                                                        contested_name
-                                                            .normalized_contested_name
-                                                            .clone(),
-                                                        ResourceVoteChoice::Lock,
-                                                        vec![],
-                                                    ),
-                                                ));
+                                                        ContestedResourceTask::VoteOnDPNSName(
+                                                            contested_name
+                                                                .normalized_contested_name
+                                                                .clone(),
+                                                            ResourceVoteChoice::Lock,
+                                                            vec![],
+                                                        ),
+                                                    ));
+                                                }
                                             }
-                                        }
-                                    });
-
-                                    // ABSTAIN button
-                                    row.col(|ui| {
-                                        let abstain_votes =
-                                            contested_name.abstain_votes.unwrap_or(0);
-                                        let label_text = format!("{}", abstain_votes);
-
-                                        let is_selected = self.selected_votes.iter().any(|sv| {
-                                            sv.contested_name
-                                                == contested_name.normalized_contested_name
-                                                && sv.vote_choice == ResourceVoteChoice::Abstain
                                         });
 
-                                        let button = if is_selected {
-                                            Button::new(label_text)
-                                                .fill(Color32::from_rgb(0, 150, 255))
-                                        } else {
-                                            Button::new(label_text)
-                                        };
-                                        let resp = ui.add(button);
-                                        if resp.clicked() {
-                                            let shift_held = ui.input(|i| i.modifiers.shift_only());
-                                            if shift_held {
-                                                if let Some(pos) =
-                                                    self.selected_votes.iter().position(|sv| {
-                                                        sv.contested_name
-                                                            == contested_name
-                                                                .normalized_contested_name
-                                                    })
-                                                {
-                                                    if self.selected_votes[pos].vote_choice
-                                                        == ResourceVoteChoice::Abstain
+                                        // ABSTAIN button
+                                        row.col(|ui| {
+                                            let abstain_votes =
+                                                contested_name.abstain_votes.unwrap_or(0);
+                                            let label_text = format!("{}", abstain_votes);
+
+                                            let is_selected =
+                                                self.selected_votes.iter().any(|sv| {
+                                                    sv.contested_name
+                                                        == contested_name.normalized_contested_name
+                                                        && sv.vote_choice
+                                                            == ResourceVoteChoice::Abstain
+                                                });
+
+                                            let button = if is_selected {
+                                                Button::new(label_text)
+                                                    .fill(Color32::from_rgb(0, 150, 255))
+                                            } else {
+                                                Button::new(label_text)
+                                            };
+                                            let resp = ui.add(button);
+                                            if resp.clicked() {
+                                                let shift_held =
+                                                    ui.input(|i| i.modifiers.shift_only());
+                                                if shift_held {
+                                                    if let Some(pos) =
+                                                        self.selected_votes.iter().position(|sv| {
+                                                            sv.contested_name
+                                                                == contested_name
+                                                                    .normalized_contested_name
+                                                        })
                                                     {
-                                                        self.selected_votes.remove(pos);
+                                                        if self.selected_votes[pos].vote_choice
+                                                            == ResourceVoteChoice::Abstain
+                                                        {
+                                                            self.selected_votes.remove(pos);
+                                                        } else {
+                                                            self.selected_votes.remove(pos);
+                                                            self.selected_votes.push(
+                                                                SelectedVote {
+                                                                    contested_name: contested_name
+                                                                        .normalized_contested_name
+                                                                        .clone(),
+                                                                    vote_choice:
+                                                                        ResourceVoteChoice::Abstain,
+                                                                    end_time: contested_name
+                                                                        .end_time,
+                                                                },
+                                                            );
+                                                        }
                                                     } else {
-                                                        self.selected_votes.remove(pos);
                                                         self.selected_votes.push(SelectedVote {
                                                             contested_name: contested_name
                                                                 .normalized_contested_name
@@ -607,85 +652,79 @@ impl DPNSScreen {
                                                         });
                                                     }
                                                 } else {
-                                                    self.selected_votes.push(SelectedVote {
-                                                        contested_name: contested_name
-                                                            .normalized_contested_name
-                                                            .clone(),
-                                                        vote_choice: ResourceVoteChoice::Abstain,
-                                                        end_time: contested_name.end_time,
-                                                    });
+                                                    self.show_vote_popup_info = Some((
+                                                        format!(
+                                                            "Confirm Voting to Abstain on \"{}\".",
+                                                            contested_name
+                                                                .normalized_contested_name
+                                                        ),
+                                                        ContestedResourceTask::VoteOnDPNSName(
+                                                            contested_name
+                                                                .normalized_contested_name
+                                                                .clone(),
+                                                            ResourceVoteChoice::Abstain,
+                                                            vec![],
+                                                        ),
+                                                    ));
                                                 }
-                                            } else {
-                                                self.show_vote_popup_info = Some((
-                                                    format!(
-                                                        "Confirm Voting to Abstain on \"{}\".",
-                                                        contested_name.normalized_contested_name
-                                                    ),
-                                                    ContestedResourceTask::VoteOnDPNSName(
-                                                        contested_name
-                                                            .normalized_contested_name
-                                                            .clone(),
-                                                        ResourceVoteChoice::Abstain,
-                                                        vec![],
-                                                    ),
-                                                ));
                                             }
-                                        }
-                                    });
+                                        });
 
-                                    // Ending Time
-                                    row.col(|ui| {
-                                        if let Some(ending_time) = contested_name.end_time {
-                                            if let LocalResult::Single(dt) =
-                                                Utc.timestamp_millis_opt(ending_time as i64)
-                                            {
-                                                let iso_date = dt.format("%Y-%m-%d %H:%M:%S");
-                                                let relative_time = HumanTime::from(dt).to_string();
-                                                let text =
-                                                    format!("{} ({})", iso_date, relative_time);
-                                                ui.label(text);
-                                            } else {
-                                                ui.label("Invalid timestamp");
-                                            }
-                                        } else {
-                                            ui.label("Fetching");
-                                        }
-                                    });
-
-                                    // Last Updated
-                                    row.col(|ui| {
-                                        if let Some(last_updated) = contested_name.last_updated {
-                                            if let LocalResult::Single(dt) =
-                                                Utc.timestamp_opt(last_updated as i64, 0)
-                                            {
-                                                let rel_time = HumanTime::from(dt).to_string();
-                                                if rel_time.contains("seconds") {
-                                                    ui.label("now");
+                                        // Ending Time
+                                        row.col(|ui| {
+                                            if let Some(ending_time) = contested_name.end_time {
+                                                if let LocalResult::Single(dt) =
+                                                    Utc.timestamp_millis_opt(ending_time as i64)
+                                                {
+                                                    let iso_date = dt.format("%Y-%m-%d %H:%M:%S");
+                                                    let relative_time =
+                                                        HumanTime::from(dt).to_string();
+                                                    let text =
+                                                        format!("{} ({})", iso_date, relative_time);
+                                                    ui.label(text);
                                                 } else {
-                                                    ui.label(rel_time);
+                                                    ui.label("Invalid timestamp");
                                                 }
                                             } else {
-                                                ui.label("Invalid timestamp");
+                                                ui.label("Fetching");
                                             }
-                                        } else {
-                                            ui.label("Fetching");
-                                        }
-                                    });
+                                        });
 
-                                    // Contestants
-                                    row.col(|ui| {
-                                        self.show_contestants_for_contested_name(
-                                            ui,
-                                            contested_name,
-                                            is_locked_votes_bold,
-                                            max_contestant_votes,
-                                        );
+                                        // Last Updated
+                                        row.col(|ui| {
+                                            if let Some(last_updated) = contested_name.last_updated
+                                            {
+                                                if let LocalResult::Single(dt) =
+                                                    Utc.timestamp_opt(last_updated as i64, 0)
+                                                {
+                                                    let rel_time = HumanTime::from(dt).to_string();
+                                                    if rel_time.contains("seconds") {
+                                                        ui.label("now");
+                                                    } else {
+                                                        ui.label(rel_time);
+                                                    }
+                                                } else {
+                                                    ui.label("Invalid timestamp");
+                                                }
+                                            } else {
+                                                ui.label("Fetching");
+                                            }
+                                        });
+
+                                        // Contestants
+                                        row.col(|ui| {
+                                            self.show_contestants_for_contested_name(
+                                                ui,
+                                                contested_name,
+                                                is_locked_votes_bold,
+                                                max_contestant_votes,
+                                            );
+                                        });
                                     });
-                                });
-                            }
-                        });
-                });
-        });
+                                }
+                            });
+                    });
+            });
     }
 
     /// Show a Past Contests table
@@ -698,108 +737,118 @@ impl DPNSScreen {
             cn
         };
 
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            Frame::group(ui.style())
-                .fill(ui.visuals().panel_fill)
-                .stroke(egui::Stroke::new(
-                    1.0,
-                    ui.visuals().widgets.inactive.bg_stroke.color,
-                ))
-                .inner_margin(Margin::same(8.0))
-                .show(ui, |ui| {
-                    TableBuilder::new(ui)
-                        .striped(true)
-                        .resizable(true)
-                        .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                        .column(Column::initial(200.0).resizable(true)) // Name
-                        .column(Column::initial(200.0).resizable(true)) // Ended Time
-                        .column(Column::initial(200.0).resizable(true)) // Last Updated
-                        .column(Column::initial(200.0).resizable(true)) // Awarded To
-                        .header(30.0, |mut header| {
-                            header.col(|ui| {
-                                if ui.button("Contested Name").clicked() {
-                                    self.toggle_sort(SortColumn::ContestedName);
-                                }
-                            });
-                            header.col(|ui| {
-                                if ui.button("Ended Time").clicked() {
-                                    self.toggle_sort(SortColumn::EndingTime);
-                                }
-                            });
-                            header.col(|ui| {
-                                if ui.button("Last Updated").clicked() {
-                                    self.toggle_sort(SortColumn::LastUpdated);
-                                }
-                            });
-                            header.col(|ui| {
-                                if ui.button("Awarded To").clicked() {
-                                    self.toggle_sort(SortColumn::AwardedTo);
-                                }
-                            });
-                        })
-                        .body(|mut body| {
-                            for contested_name in &contested_names {
-                                body.row(25.0, |mut row| {
-                                    // Name
-                                    row.col(|ui| {
-                                        ui.label(&contested_name.normalized_contested_name);
-                                    });
-                                    // Ended Time
-                                    row.col(|ui| {
-                                        if let Some(ended_time) = contested_name.end_time {
-                                            if let LocalResult::Single(dt) =
-                                                Utc.timestamp_millis_opt(ended_time as i64)
-                                            {
-                                                let iso =
-                                                    dt.format("%Y-%m-%d %H:%M:%S").to_string();
-                                                let relative = HumanTime::from(dt).to_string();
-                                                ui.label(format!("{} ({})", iso, relative));
-                                            } else {
-                                                ui.label("Invalid timestamp");
-                                            }
-                                        } else {
-                                            ui.label("Fetching");
-                                        }
-                                    });
-                                    // Last Updated
-                                    row.col(|ui| {
-                                        if let Some(last_updated) = contested_name.last_updated {
-                                            if let LocalResult::Single(dt) =
-                                                Utc.timestamp_opt(last_updated as i64, 0)
-                                            {
-                                                let rel = HumanTime::from(dt).to_string();
-                                                if rel.contains("seconds") {
-                                                    ui.label("now");
+        let refreshing_height = 33.0;
+        let max_scroll_height = if self.refreshing {
+            ui.available_height() - refreshing_height
+        } else {
+            ui.available_height()
+        };
+
+        egui::ScrollArea::vertical()
+            .max_height(max_scroll_height)
+            .show(ui, |ui| {
+                Frame::group(ui.style())
+                    .fill(ui.visuals().panel_fill)
+                    .stroke(egui::Stroke::new(
+                        1.0,
+                        ui.visuals().widgets.inactive.bg_stroke.color,
+                    ))
+                    .inner_margin(Margin::same(8.0))
+                    .show(ui, |ui| {
+                        TableBuilder::new(ui)
+                            .striped(true)
+                            .resizable(true)
+                            .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                            .column(Column::initial(200.0).resizable(true)) // Name
+                            .column(Column::initial(200.0).resizable(true)) // Ended Time
+                            .column(Column::initial(200.0).resizable(true)) // Last Updated
+                            .column(Column::initial(200.0).resizable(true)) // Awarded To
+                            .header(30.0, |mut header| {
+                                header.col(|ui| {
+                                    if ui.button("Contested Name").clicked() {
+                                        self.toggle_sort(SortColumn::ContestedName);
+                                    }
+                                });
+                                header.col(|ui| {
+                                    if ui.button("Ended Time").clicked() {
+                                        self.toggle_sort(SortColumn::EndingTime);
+                                    }
+                                });
+                                header.col(|ui| {
+                                    if ui.button("Last Updated").clicked() {
+                                        self.toggle_sort(SortColumn::LastUpdated);
+                                    }
+                                });
+                                header.col(|ui| {
+                                    if ui.button("Awarded To").clicked() {
+                                        self.toggle_sort(SortColumn::AwardedTo);
+                                    }
+                                });
+                            })
+                            .body(|mut body| {
+                                for contested_name in &contested_names {
+                                    body.row(25.0, |mut row| {
+                                        // Name
+                                        row.col(|ui| {
+                                            ui.label(&contested_name.normalized_contested_name);
+                                        });
+                                        // Ended Time
+                                        row.col(|ui| {
+                                            if let Some(ended_time) = contested_name.end_time {
+                                                if let LocalResult::Single(dt) =
+                                                    Utc.timestamp_millis_opt(ended_time as i64)
+                                                {
+                                                    let iso =
+                                                        dt.format("%Y-%m-%d %H:%M:%S").to_string();
+                                                    let relative = HumanTime::from(dt).to_string();
+                                                    ui.label(format!("{} ({})", iso, relative));
                                                 } else {
-                                                    ui.label(rel);
+                                                    ui.label("Invalid timestamp");
                                                 }
                                             } else {
-                                                ui.label("Invalid timestamp");
+                                                ui.label("Fetching");
                                             }
-                                        } else {
-                                            ui.label("Fetching");
-                                        }
+                                        });
+                                        // Last Updated
+                                        row.col(|ui| {
+                                            if let Some(last_updated) = contested_name.last_updated
+                                            {
+                                                if let LocalResult::Single(dt) =
+                                                    Utc.timestamp_opt(last_updated as i64, 0)
+                                                {
+                                                    let rel = HumanTime::from(dt).to_string();
+                                                    if rel.contains("seconds") {
+                                                        ui.label("now");
+                                                    } else {
+                                                        ui.label(rel);
+                                                    }
+                                                } else {
+                                                    ui.label("Invalid timestamp");
+                                                }
+                                            } else {
+                                                ui.label("Fetching");
+                                            }
+                                        });
+                                        // Awarded To
+                                        row.col(|ui| match contested_name.state {
+                                            ContestState::Unknown => {
+                                                ui.label("Fetching");
+                                            }
+                                            ContestState::Joinable | ContestState::Ongoing => {
+                                                ui.label("Active");
+                                            }
+                                            ContestState::WonBy(identifier) => {
+                                                ui.label(identifier.to_string(Encoding::Base58));
+                                            }
+                                            ContestState::Locked => {
+                                                ui.label("Locked");
+                                            }
+                                        });
                                     });
-                                    // Awarded To
-                                    row.col(|ui| match contested_name.state {
-                                        ContestState::Unknown => {
-                                            ui.label("Fetching");
-                                        }
-                                        ContestState::Joinable | ContestState::Ongoing => {
-                                            ui.label("Active");
-                                        }
-                                        ContestState::WonBy(identifier) => {
-                                            ui.label(identifier.to_string(Encoding::Base58));
-                                        }
-                                        ContestState::Locked => {
-                                            ui.label("Locked");
-                                        }
-                                    });
-                                });
-                            }
-                        });
-                });
-        });
+                                }
+                            });
+                    });
+            });
     }
 
     /// Show the Owned DPNS names table
@@ -985,7 +1034,12 @@ impl DPNSScreen {
                                             Utc.timestamp_millis_opt(vote.0.unix_timestamp as i64)
                                         {
                                             let iso = dt.format("%Y-%m-%d %H:%M:%S").to_string();
-                                            let relative = HumanTime::from(dt).to_string();
+                                            let rel_time = HumanTime::from(dt).to_string();
+                                            let relative = if rel_time.contains("seconds") {
+                                                "now".to_string()
+                                            } else {
+                                                rel_time
+                                            };
                                             let text = format!("{} ({})", iso, relative);
                                             ui.label(text);
                                         } else {
@@ -1348,11 +1402,12 @@ impl DPNSScreen {
             self.selected_votes.clear();
             self.show_bulk_schedule_popup = false;
             self.bulk_schedule_message = None;
+            self.bulk_vote_handling_status = BulkVoteHandlingStatus::NotStarted;
         }
 
         // Handle status
         ui.add_space(10.0);
-        match self.bulk_vote_handling_status {
+        match &self.bulk_vote_handling_status {
             BulkVoteHandlingStatus::NotStarted => {}
             BulkVoteHandlingStatus::CastingVotes(start_time) => {
                 let now = Utc::now().timestamp() as u64;
@@ -1365,8 +1420,11 @@ impl DPNSScreen {
             BulkVoteHandlingStatus::Completed => {
                 // handled above
             }
-            BulkVoteHandlingStatus::Failed => {
-                ui.colored_label(Color32::RED, "Error casting/scheduling votes");
+            BulkVoteHandlingStatus::Failed(message) => {
+                ui.colored_label(
+                    Color32::RED,
+                    format!("Error casting/scheduling votes: {}", message),
+                );
             }
         }
 
@@ -1415,10 +1473,9 @@ impl DPNSScreen {
         }
 
         if immediate_list.is_empty() && scheduled_list.is_empty() {
-            self.bulk_schedule_message = Some((
-                MessageType::Error,
-                "No votes selected (or all set to None).".to_string(),
-            ));
+            self.bulk_vote_handling_status = BulkVoteHandlingStatus::Failed(
+                "No votes selected. Please select votes to cast or schedule.".to_string(),
+            );
             return AppAction::None;
         }
 
@@ -1465,14 +1522,14 @@ impl DPNSScreen {
 
         ui.vertical_centered(|ui| {
             ui.add_space(20.0);
-            match self.bulk_vote_handling_status {
+            match &self.bulk_vote_handling_status {
                 BulkVoteHandlingStatus::Completed => {
                     ui.heading("🎉");
                     ui.heading("Successfully cast and scheduled all votes");
                 }
-                BulkVoteHandlingStatus::Failed => {
+                BulkVoteHandlingStatus::Failed(message) => {
                     ui.heading("❌");
-                    ui.heading("Error casting and scheduling votes");
+                    ui.heading(format!("Error casting and scheduling votes: {}", message));
                 }
                 _ => {
                     // this should not occur
@@ -1491,6 +1548,9 @@ impl DPNSScreen {
             if ui.button("Go back to Active Contests").clicked() {
                 self.bulk_vote_handling_status = BulkVoteHandlingStatus::NotStarted;
                 self.show_bulk_schedule_popup = false;
+                action = AppAction::BackendTask(BackendTask::ContestedResourceTask(
+                    ContestedResourceTask::QueryDPNSContests,
+                ))
             }
         });
 
@@ -2070,7 +2130,6 @@ impl ScreenLike for DPNSScreen {
             }
             DPNSSubscreen::ScheduledVotes => {
                 vec![
-                    ("Refresh", DesiredAppAction::Refresh),
                     (
                         "Clear All",
                         DesiredAppAction::BackendTask(BackendTask::ContestedResourceTask(
@@ -2078,7 +2137,7 @@ impl ScreenLike for DPNSScreen {
                         )),
                     ),
                     (
-                        "Clear Executed",
+                        "Clear Casted",
                         DesiredAppAction::BackendTask(BackendTask::ContestedResourceTask(
                             ContestedResourceTask::ClearExecutedScheduledVotes,
                         )),
@@ -2228,9 +2287,12 @@ impl ScreenLike for DPNSScreen {
                 }
             }
 
-            // If we are refreshing, show a spinner in the bottom right corner
+            // If we are refreshing, show a spinner at the bottom
             if self.refreshing {
-                ui.vertical_centered(|ui| {
+                ui.add_space(5.0);
+                ui.horizontal(|ui| {
+                    ui.add_space(10.0);
+                    ui.label(format!("Refreshing...")); // Can add "time taken so far" later
                     ui.add(egui::widgets::Spinner::default().color(Color32::from_rgb(0, 128, 255)));
                 });
             }

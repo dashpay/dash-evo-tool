@@ -95,6 +95,12 @@ impl DesiredAppAction {
 }
 
 #[derive(Debug, PartialEq)]
+pub enum BackendTaskExecutionMode {
+    Sequential,
+    Concurrent,
+}
+
+#[derive(Debug, PartialEq)]
 pub enum AppAction {
     None,
     Custom(String),
@@ -108,7 +114,7 @@ pub enum AppAction {
     AddScreen(Screen),
     PopThenAddScreenToMainScreen(RootScreenType, Screen),
     BackendTask(BackendTask),
-    BackendTasks(Vec<BackendTask>),
+    BackendTasks(Vec<BackendTask>, BackendTaskExecutionMode),
 }
 
 impl BitOrAssign for AppAction {
@@ -332,12 +338,23 @@ impl AppState {
     }
 
     /// Handle the backend tasks and send the results through the channel
-    pub fn handle_backend_tasks(&self, tasks: Vec<BackendTask>) {
+    pub fn handle_backend_tasks(&self, tasks: Vec<BackendTask>, mode: BackendTaskExecutionMode) {
         let sender = self.task_result_sender.clone();
         let app_context = self.current_app_context().clone();
 
         tokio::spawn(async move {
-            let results = app_context.run_backend_tasks(tasks, sender.clone()).await;
+            let results = match mode {
+                BackendTaskExecutionMode::Sequential => {
+                    app_context
+                        .run_backend_tasks_sequential(tasks, sender.clone())
+                        .await
+                }
+                BackendTaskExecutionMode::Concurrent => {
+                    app_context
+                        .run_backend_tasks_concurrent(tasks, sender.clone())
+                        .await
+                }
+            };
 
             // Send the results back to the main thread
             for result in results {
@@ -644,8 +661,8 @@ impl App for AppState {
             AppAction::BackendTask(task) => {
                 self.handle_backend_task(task);
             }
-            AppAction::BackendTasks(tasks) => {
-                self.handle_backend_tasks(tasks);
+            AppAction::BackendTasks(tasks, mode) => {
+                self.handle_backend_tasks(tasks, mode);
             }
             AppAction::SetMainScreen(root_screen_type) => {
                 self.selected_main_screen = root_screen_type;

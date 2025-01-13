@@ -15,6 +15,7 @@ use dash_sdk::dpp::voting::votes::Vote;
 use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::Start;
 use dash_sdk::platform::{Document, Identifier};
 use dash_sdk::query_types::{Documents, IndexMap};
+use futures::future::join_all;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
@@ -58,8 +59,8 @@ pub(crate) enum BackendTaskSuccessResult {
 impl BackendTaskSuccessResult {}
 
 impl AppContext {
-    /// Run backend tasks
-    pub async fn run_backend_tasks(
+    /// Run backend tasks sequentially
+    pub async fn run_backend_tasks_sequential(
         self: &Arc<Self>,
         tasks: Vec<BackendTask>,
         sender: mpsc::Sender<TaskResult>,
@@ -72,6 +73,25 @@ impl AppContext {
             };
         }
         results
+    }
+
+    /// Run backend tasks concurrently
+    pub async fn run_backend_tasks_concurrent(
+        self: &Arc<Self>,
+        tasks: Vec<BackendTask>,
+        sender: mpsc::Sender<TaskResult>,
+    ) -> Vec<Result<BackendTaskSuccessResult, String>> {
+        let futures = tasks
+            .into_iter()
+            .map(|task| {
+                let cloned_self = Arc::clone(self);
+                let cloned_sender = sender.clone();
+                async move { cloned_self.run_backend_task(task, cloned_sender).await }
+            })
+            .collect::<Vec<_>>();
+
+        // Wait for all to finish before returning
+        join_all(futures).await
     }
 
     pub async fn run_backend_task(

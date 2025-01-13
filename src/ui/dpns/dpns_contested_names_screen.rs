@@ -12,7 +12,7 @@ use eframe::egui::{
 use egui_extras::{Column, TableBuilder};
 use itertools::Itertools;
 
-use crate::app::{AppAction, DesiredAppAction};
+use crate::app::{AppAction, BackendTaskExecutionMode, DesiredAppAction};
 use crate::backend_task::contested_names::{ContestedResourceTask, ScheduledDPNSVote};
 use crate::backend_task::identity::IdentityTask;
 use crate::backend_task::BackendTask;
@@ -1504,17 +1504,20 @@ impl DPNSScreen {
             let now = Utc::now().timestamp() as u64;
             self.bulk_vote_handling_status = BulkVoteHandlingStatus::CastingVotes(now);
             if !scheduled_list.is_empty() {
-                return AppAction::BackendTasks(vec![
-                    BackendTask::ContestedResourceTask(
-                        ContestedResourceTask::VoteOnMultipleDPNSNames(
-                            votes_for_all,
-                            immediate_list,
+                return AppAction::BackendTasks(
+                    vec![
+                        BackendTask::ContestedResourceTask(
+                            ContestedResourceTask::VoteOnMultipleDPNSNames(
+                                votes_for_all,
+                                immediate_list,
+                            ),
                         ),
-                    ),
-                    BackendTask::ContestedResourceTask(ContestedResourceTask::ScheduleDPNSVotes(
-                        scheduled_list,
-                    )),
-                ]);
+                        BackendTask::ContestedResourceTask(
+                            ContestedResourceTask::ScheduleDPNSVotes(scheduled_list),
+                        ),
+                    ],
+                    BackendTaskExecutionMode::Concurrent,
+                );
             } else {
                 return AppAction::BackendTask(BackendTask::ContestedResourceTask(
                     ContestedResourceTask::VoteOnMultipleDPNSNames(votes_for_all, immediate_list),

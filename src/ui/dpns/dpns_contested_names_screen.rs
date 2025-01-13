@@ -1312,6 +1312,21 @@ impl DPNSScreen {
                                 });
                                 ui.label(format!("Identity: {}", label));
 
+                                // This is a hack
+                                // I'm seeing a panic if I load the app in mainnet context where I have no voting identities,
+                                // and then switch to testnet and pressed "Vote".
+                                if self.bulk_identity_options.len() <= i {
+                                    let voting_identities = self
+                                        .app_context
+                                        .db
+                                        .get_local_voting_identities(&self.app_context)
+                                        .unwrap_or_default();
+                                    // Initialize ephemeral bulk-schedule state to hidden
+                                    let identity_count = voting_identities.len();
+                                    self.bulk_identity_options =
+                                        vec![VoteOption::Immediate; identity_count];
+                                }
+
                                 let current_option = &mut self.bulk_identity_options[i];
                                 ComboBox::from_id_salt(format!("combo_bulk_identity_{}", i))
                                     .width(120.0)

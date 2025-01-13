@@ -10,6 +10,7 @@ use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
 use dash_sdk::platform::Identifier;
 use dash_sdk::Sdk;
+use futures::future::join_all;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
@@ -51,26 +52,36 @@ impl AppContext {
                     .await
             }
             ContestedResourceTask::VoteOnMultipleDPNSNames(votes, all_voters) => {
-                let mut results = Vec::new();
+                // Create a vector of async closures that will vote on each name concurrently
+                let futures = votes
+                    .into_iter()
+                    .map(|(name, choice)| {
+                        let cloned_sender = sender.clone();
+                        let app_context = self.clone();
 
-                for (name, choice) in votes {
-                    // We'll do partial success: each name either Ok(()) or Err(String)
-                    let cloned_sender = sender.clone();
-                    let result = self
-                        .vote_on_dpns_name(&name, *choice, all_voters, sdk, cloned_sender)
-                        .await;
+                        async move {
+                            let result = app_context
+                                .vote_on_dpns_name(&name, *choice, all_voters, sdk, cloned_sender)
+                                .await;
 
-                    match result {
-                        Ok(_) => {
-                            results.push((name.clone(), *choice, Ok(())));
+                            (name, choice, result)
                         }
-                        Err(err_msg) => {
-                            results.push((name.clone(), *choice, Err(err_msg)));
-                        }
-                    }
-                }
+                    })
+                    .collect::<Vec<_>>();
 
-                Ok(BackendTaskSuccessResult::DPNSVoteResults(results))
+                // Run all futures concurrently
+                let results = join_all(futures).await;
+
+                // Map them into (name, choice, Ok(())) or (name, choice, Err(String)) tuples
+                let final_results = results
+                    .into_iter()
+                    .map(|(name, choice, result)| match result {
+                        Ok(_) => (name.clone(), choice.clone(), Ok(())),
+                        Err(err_msg) => (name.clone(), choice.clone(), Err(err_msg)),
+                    })
+                    .collect::<Vec<_>>();
+
+                Ok(BackendTaskSuccessResult::DPNSVoteResults(final_results))
             }
             ContestedResourceTask::ScheduleDPNSVotes(scheduled_votes) => self
                 .insert_scheduled_votes(scheduled_votes)

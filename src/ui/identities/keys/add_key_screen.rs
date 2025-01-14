@@ -4,7 +4,10 @@ use crate::backend_task::BackendTask;
 use crate::context::AppContext;
 use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::wallet::Wallet;
 use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
+use crate::ui::identities::get_selected_wallet;
 use crate::ui::{MessageType, ScreenLike};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::hash::IdentityPublicKeyHashMethodsV0;
@@ -12,11 +15,13 @@ use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::prelude::TimestampMillis;
 use eframe::egui::{self, Context};
+use egui::Ui;
 use rand::rngs::StdRng;
 use rand::SeedableRng;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[derive(PartialEq)]
 pub enum AddKeyStatus {
     NotStarted,
     WaitingForResult(TimestampMillis),
@@ -32,10 +37,26 @@ pub struct AddKeyScreen {
     purpose: Purpose,
     security_level: SecurityLevel,
     add_key_status: AddKeyStatus,
+
+    // Wallet unlock stuff
+    selected_wallet: Option<Arc<RwLock<Wallet>>>,
+    wallet_password: String,
+    show_password: bool,
+    error_message: Option<String>,
 }
 
 impl AddKeyScreen {
     pub fn new(identity: QualifiedIdentity, app_context: &Arc<AppContext>) -> Self {
+        let selected_key = identity.identity.get_first_public_key_matching(
+            Purpose::AUTHENTICATION,
+            [SecurityLevel::MASTER, SecurityLevel::CRITICAL].into(),
+            KeyType::all_key_types().into(),
+            false,
+        );
+        let mut error_message = None;
+        let selected_wallet =
+            get_selected_wallet(&identity, None, selected_key, &mut error_message);
+
         Self {
             identity,
             app_context: app_context.clone(),
@@ -44,6 +65,10 @@ impl AddKeyScreen {
             purpose: Purpose::AUTHENTICATION,
             security_level: SecurityLevel::HIGH,
             add_key_status: AddKeyStatus::NotStarted,
+            selected_wallet,
+            wallet_password: String::new(),
+            show_password: false,
+            error_message,
         }
     }
 
@@ -126,6 +151,28 @@ impl AddKeyScreen {
                 AddKeyStatus::ErrorMessage("Failed to generate a random private key.".to_string());
         }
     }
+
+    pub fn show_success(&self, ui: &mut Ui) -> AppAction {
+        let mut action = AppAction::None;
+
+        // Center the content vertically and horizontally
+        ui.vertical_centered(|ui| {
+            ui.add_space(50.0);
+
+            ui.heading("🎉");
+            ui.heading("Successfully added key to identity");
+
+            ui.add_space(20.0);
+
+            // Display the "Back" button
+            if ui.button("Back").clicked() {
+                // Handle navigation back to the previous screen
+                action = AppAction::PopScreenAndRefresh;
+            }
+        });
+
+        action
+    }
 }
 
 impl ScreenLike for AddKeyScreen {
@@ -156,7 +203,22 @@ impl ScreenLike for AddKeyScreen {
         );
 
         egui::CentralPanel::default().show(ctx, |ui| {
+            // Show the success screen if the key was added successfully
+            if self.add_key_status == AddKeyStatus::Complete {
+                action = self.show_success(ui);
+                return;
+            }
+
             ui.heading("Add New Key");
+            ui.add_space(10.0);
+
+            // Wallet unlock
+            if self.selected_wallet.is_some() {
+                let (needed_unlock, just_unlocked) = self.render_wallet_unlock_if_needed(ui);
+                if needed_unlock && !just_unlocked {
+                    return;
+                }
+            }
 
             egui::Grid::new("add_key_grid")
                 .num_columns(2)
@@ -250,7 +312,7 @@ impl ScreenLike for AddKeyScreen {
                     ui.end_row();
                 });
 
-            ui.separator();
+            ui.add_space(10.0);
 
             if ui.button("Add Key").clicked() {
                 // Set the status to waiting and capture the current time
@@ -261,6 +323,7 @@ impl ScreenLike for AddKeyScreen {
                 self.add_key_status = AddKeyStatus::WaitingForResult(now);
                 action |= self.validate_and_add_key();
             }
+            ui.add_space(5.0);
 
             match &self.add_key_status {
                 AddKeyStatus::NotStarted => {
@@ -297,11 +360,41 @@ impl ScreenLike for AddKeyScreen {
                     ui.colored_label(egui::Color32::RED, format!("Error: {}", msg));
                 }
                 AddKeyStatus::Complete => {
-                    action = AppAction::PopScreenAndRefresh;
+                    // Handled above
                 }
             }
         });
 
         action
+    }
+}
+
+impl ScreenWithWalletUnlock for AddKeyScreen {
+    fn selected_wallet_ref(&self) -> &Option<Arc<RwLock<Wallet>>> {
+        &self.selected_wallet
+    }
+
+    fn wallet_password_ref(&self) -> &String {
+        &self.wallet_password
+    }
+
+    fn wallet_password_mut(&mut self) -> &mut String {
+        &mut self.wallet_password
+    }
+
+    fn show_password(&self) -> bool {
+        self.show_password
+    }
+
+    fn show_password_mut(&mut self) -> &mut bool {
+        &mut self.show_password
+    }
+
+    fn set_error_message(&mut self, error_message: Option<String>) {
+        self.error_message = error_message;
+    }
+
+    fn error_message(&self) -> Option<&String> {
+        self.error_message.as_ref()
     }
 }

@@ -1860,6 +1860,7 @@ impl ScreenLike for DPNSScreen {
                     ui.label(format!("Refreshing... Time taken so far: {}", elapsed)); // Can add "time taken so far" later
                     ui.add(egui::widgets::Spinner::default().color(Color32::from_rgb(0, 128, 255)));
                 });
+                ui.add_space(10.0);
             }
 
             // If there's a backend message, show it at the bottom

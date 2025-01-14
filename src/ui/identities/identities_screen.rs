@@ -784,6 +784,13 @@ impl ScreenLike for IdentitiesScreen {
             .into_iter()
             .map(|qi| (qi.identity.id(), qi))
             .collect();
+        drop(identities);
+
+        // Keep order after refreshing
+        if let Ok(saved_ids) = self.app_context.db.load_identity_order() {
+            self.reorder_map_to(saved_ids);
+            self.use_custom_order = true;
+        }
 
         self.show_more_keys_popup = None;
     }

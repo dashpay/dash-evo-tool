@@ -2,51 +2,52 @@ use crate::app::AppAction;
 use crate::backend_task::identity::IdentityTask;
 use crate::backend_task::BackendTask;
 use crate::context::AppContext;
-use crate::model::qualified_identity::encrypted_key_storage::PrivateKeyData;
-use crate::model::qualified_identity::{IdentityType, PrivateKeyTarget, QualifiedIdentity};
+use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
+use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
 use crate::ui::{MessageType, Screen, ScreenLike};
-use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
+use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::prelude::TimestampMillis;
-use dash_sdk::platform::IdentityPublicKey;
+use dash_sdk::platform::{Identifier, IdentityPublicKey};
 use eframe::egui::{self, Context, Ui};
 use egui::{Color32, RichText};
-use std::str::FromStr;
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use super::get_selected_wallet;
-use super::keys::key_info_screen::KeyInfoScreen;
+use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
 
-pub enum WithdrawFromIdentityStatus {
+use super::get_selected_wallet;
+use super::keys::add_key_screen::AddKeyScreen;
+
+#[derive(PartialEq)]
+pub enum TransferCreditsStatus {
     NotStarted,
     WaitingForResult(TimestampMillis),
     ErrorMessage(String),
     Complete,
 }
 
-pub struct WithdrawalScreen {
+pub struct TransferScreen {
     pub identity: QualifiedIdentity,
     selected_key: Option<IdentityPublicKey>,
-    withdrawal_address: String,
-    withdrawal_amount: String,
+    receiver_identity_id: String,
+    amount: String,
+    transfer_credits_status: TransferCreditsStatus,
+    error_message: Option<String>,
     max_amount: u64,
     pub app_context: Arc<AppContext>,
     confirmation_popup: bool,
-    withdraw_from_identity_status: WithdrawFromIdentityStatus,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     wallet_password: String,
     show_password: bool,
-    error_message: Option<String>,
 }
 
-impl WithdrawalScreen {
+impl TransferScreen {
     pub fn new(identity: QualifiedIdentity, app_context: &Arc<AppContext>) -> Self {
         let max_amount = identity.identity.balance();
         let identity_clone = identity.identity.clone();
@@ -62,16 +63,16 @@ impl WithdrawalScreen {
         Self {
             identity,
             selected_key: selected_key.cloned(),
-            withdrawal_address: String::new(),
-            withdrawal_amount: String::new(),
+            receiver_identity_id: String::new(),
+            amount: String::new(),
+            transfer_credits_status: TransferCreditsStatus::NotStarted,
+            error_message: None,
             max_amount,
             app_context: app_context.clone(),
             confirmation_popup: false,
-            withdraw_from_identity_status: WithdrawFromIdentityStatus::NotStarted,
             selected_wallet,
             wallet_password: String::new(),
             show_password: false,
-            error_message,
         }
     }
 
@@ -92,7 +93,7 @@ impl WithdrawalScreen {
                             ui.selectable_value(&mut self.selected_key, Some(key.clone()), label);
                         }
                     } else {
-                        for key in self.identity.available_withdrawal_keys() {
+                        for key in self.identity.available_transfer_keys() {
                             let label = format!(
                                 "Key ID: {} (Purpose: {:?})",
                                 key.identity_public_key.id(),
@@ -111,86 +112,65 @@ impl WithdrawalScreen {
 
     fn render_amount_input(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
-            ui.label("Amount (dash):");
+            ui.label("Amount in Dash:");
 
-            ui.text_edit_singleline(&mut self.withdrawal_amount);
+            ui.text_edit_singleline(&mut self.amount);
 
             if ui.button("Max").clicked() {
-                let expected_max_amount = self.max_amount.saturating_sub(500000000) as f64 * 1e-11;
-
-                // Use flooring and format the result with 4 decimal places
-                let floored_amount = (expected_max_amount * 10_000.0).floor() / 10_000.0;
-
-                // Set the withdrawal amount to the floored value formatted as a string
-                self.withdrawal_amount = format!("{:.4}", floored_amount);
+                let amount_in_dash = self.max_amount as f64 / 100_000_000_000.0 - 0.0001; // Subtract a small amount to cover gas fee which is usually around 0.00002 Dash
+                self.amount = format!("{:.8}", amount_in_dash);
             }
         });
     }
 
-    fn render_address_input(&mut self, ui: &mut Ui) {
-        let can_have_withdrawal_address = if let Some(key) = self.selected_key.as_ref() {
-            key.purpose() != Purpose::OWNER
-        } else {
-            true
-        };
-        if can_have_withdrawal_address || self.app_context.developer_mode {
-            ui.horizontal(|ui| {
-                ui.label("Address:");
+    fn render_to_identity_input(&mut self, ui: &mut Ui) {
+        ui.horizontal(|ui| {
+            ui.label("Receiver Identity Id:");
 
-                ui.text_edit_singleline(&mut self.withdrawal_address);
-            });
-        }
+            ui.text_edit_singleline(&mut self.receiver_identity_id);
+        });
     }
 
     fn show_confirmation_popup(&mut self, ui: &mut Ui) -> AppAction {
         let mut app_action = AppAction::None;
         let mut is_open = true;
-        egui::Window::new("Confirm Withdrawal")
+        egui::Window::new("Confirm Transfer")
             .collapsible(false)
             .open(&mut is_open)
             .show(ui.ctx(), |ui| {
-                let address = if self.withdrawal_address.is_empty() {
-                    None
+                let identifier = if self.receiver_identity_id.is_empty() {
+                    self.error_message = Some("Invalid identifier".to_string());
+                    self.transfer_credits_status =
+                        TransferCreditsStatus::ErrorMessage("Invalid identifier".to_string());
+                    return;
                 } else {
-                    match Address::from_str(&self.withdrawal_address) {
-                        Ok(address) => Some(address.assume_checked()),
+                    match Identifier::from_string_try_encodings(
+                        &self.receiver_identity_id,
+                        &[Encoding::Base58, Encoding::Hex],
+                    ) {
+                        Ok(identifier) => identifier,
                         Err(_) => {
-                            self.withdraw_from_identity_status =
-                                WithdrawFromIdentityStatus::ErrorMessage(
-                                    "Invalid withdrawal address".to_string(),
-                                );
-                            None
+                            self.error_message = Some("Invalid identifier".to_string());
+                            self.transfer_credits_status = TransferCreditsStatus::ErrorMessage(
+                                "Invalid identifier".to_string(),
+                            );
+                            return;
                         }
                     }
                 };
 
-                let message_address = if address.is_some() {
-                    self.withdrawal_address.clone()
-                } else if let Some(payout_address) = self
-                    .identity
-                    .masternode_payout_address(self.app_context.network)
-                {
-                    format!("masternode payout address {}", payout_address)
-                } else if !self.app_context.developer_mode {
-                    self.withdraw_from_identity_status = WithdrawFromIdentityStatus::ErrorMessage(
-                        "No masternode payout address".to_string(),
-                    );
-                    return;
-                } else {
-                    "to default address".to_string()
-                };
-
                 let Some(selected_key) = self.selected_key.as_ref() else {
-                    self.withdraw_from_identity_status =
-                        WithdrawFromIdentityStatus::ErrorMessage("No selected key".to_string());
+                    self.error_message = Some("No selected key".to_string());
+                    self.transfer_credits_status =
+                        TransferCreditsStatus::ErrorMessage("No selected key".to_string());
                     return;
                 };
 
                 ui.label(format!(
-                    "Are you sure you want to withdraw {} Dash to {}",
-                    self.withdrawal_amount, message_address
+                    "Are you sure you want to transfer {} Dash to {}",
+                    self.amount, self.receiver_identity_id
                 ));
-                let parts: Vec<&str> = self.withdrawal_amount.split('.').collect();
+                let parts: Vec<&str> = self.amount.split('.').collect();
                 let mut credits: u128 = 0;
 
                 // Process the whole number part if it exists.
@@ -215,16 +195,14 @@ impl WithdrawalScreen {
                         .duration_since(UNIX_EPOCH)
                         .expect("Time went backwards")
                         .as_secs();
-                    self.withdraw_from_identity_status =
-                        WithdrawFromIdentityStatus::WaitingForResult(now);
-                    app_action = AppAction::BackendTask(BackendTask::IdentityTask(
-                        IdentityTask::WithdrawFromIdentity(
+                    self.transfer_credits_status = TransferCreditsStatus::WaitingForResult(now);
+                    app_action =
+                        AppAction::BackendTask(BackendTask::IdentityTask(IdentityTask::Transfer(
                             self.identity.clone(),
-                            address,
+                            identifier,
                             credits as Credits,
                             Some(selected_key.id()),
-                        ),
-                    ));
+                        )));
                 }
                 if ui.button("Cancel").clicked() {
                     self.confirmation_popup = false;
@@ -235,23 +213,58 @@ impl WithdrawalScreen {
         }
         app_action
     }
+
+    pub fn show_success(&self, ui: &mut Ui) -> AppAction {
+        let mut action = AppAction::None;
+
+        // Center the content vertically and horizontally
+        ui.vertical_centered(|ui| {
+            ui.add_space(50.0);
+
+            ui.heading("🎉");
+            ui.heading("Success!");
+
+            ui.add_space(20.0);
+
+            // Display the "Back to Identities" button
+            if ui.button("Back to Identities").clicked() {
+                // Handle navigation back to the identities screen
+                action = AppAction::PopScreenAndRefresh;
+            }
+        });
+
+        action
+    }
 }
 
-impl ScreenLike for WithdrawalScreen {
+impl ScreenLike for TransferScreen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
         match message_type {
             MessageType::Success => {
-                if message == "Successfully withdrew from identity" {
-                    self.withdraw_from_identity_status = WithdrawFromIdentityStatus::Complete;
+                if message == "Successfully transferred credits" {
+                    self.transfer_credits_status = TransferCreditsStatus::Complete;
                 }
             }
             MessageType::Info => {}
             MessageType::Error => {
                 // It's not great because the error message can be coming from somewhere else if there are other processes happening
-                self.withdraw_from_identity_status =
-                    WithdrawFromIdentityStatus::ErrorMessage(message.to_string());
+                self.transfer_credits_status =
+                    TransferCreditsStatus::ErrorMessage(message.to_string());
+                self.error_message = Some(message.to_string());
             }
         }
+    }
+
+    fn refresh(&mut self) {
+        // Refresh the identity because there might be new keys
+        self.identity = self
+            .app_context
+            .load_local_qualified_identities()
+            .unwrap()
+            .into_iter()
+            .find(|identity| identity.identity.id() == self.identity.identity.id())
+            .unwrap();
+        self.max_amount = self.identity.identity.balance();
     }
 
     /// Renders the UI components for the withdrawal screen
@@ -261,98 +274,105 @@ impl ScreenLike for WithdrawalScreen {
             &self.app_context,
             vec![
                 ("Identities", AppAction::GoToMainScreen),
-                ("Withdraw", AppAction::None),
+                ("Transfer", AppAction::None),
             ],
             vec![],
         );
 
         egui::CentralPanel::default().show(ctx, |ui| {
+            // Show the success screen if the transfer was successful
+            if self.transfer_credits_status == TransferCreditsStatus::Complete {
+                action = self.show_success(ui);
+                return;
+            }
+
+            ui.heading("Transfer Funds");
+            ui.add_space(10.0);
+
             let has_keys = if self.app_context.developer_mode {
                 !self.identity.identity.public_keys().is_empty()
             } else {
-                !self.identity.available_withdrawal_keys().is_empty()
+                !self.identity.available_transfer_keys().is_empty()
             };
 
             if !has_keys {
-                ui.heading(format!("You do not have any withdrawal keys loaded for this {} identity.", self.identity.identity_type));
-
+                ui.colored_label(
+                    egui::Color32::DARK_RED,
+                    format!(
+                        "You do not have any transfer keys loaded for this {} identity.",
+                        self.identity.identity_type
+                    ),
+                );
                 ui.add_space(10.0);
 
-                if self.identity.identity_type != IdentityType::User {
-                    ui.heading("An evonode can withdraw with the payout address private key or the owner key.".to_string());
-                    ui.heading("If the owner key is used you can only withdraw to the Dash Core payout address (where you get your Core rewards).".to_string());
-                }
+                let key = self.identity.identity.get_first_public_key_matching(
+                    Purpose::TRANSFER,
+                    SecurityLevel::full_range().into(),
+                    KeyType::all_key_types().into(),
+                    false,
+                );
 
-                let owner_key = self.identity.identity.get_first_public_key_matching(Purpose::OWNER, SecurityLevel::full_range().into(), KeyType::all_key_types().into(), false);
-
-                let transfer_key = self.identity.identity.get_first_public_key_matching(Purpose::TRANSFER, SecurityLevel::full_range().into(), KeyType::all_key_types().into(), false);
-
-                if let Some(owner_key) = owner_key {
-                    if ui.button("Check Owner Key").clicked() {
+                if let Some(key) = key {
+                    if ui.button("Check Transfer Key").clicked() {
                         action |= AppAction::AddScreen(Screen::KeyInfoScreen(KeyInfoScreen::new(
                             self.identity.clone(),
-                            owner_key.clone(),
+                            key.clone(),
                             None,
                             &self.app_context,
                         )));
                     }
+                    ui.add_space(5.0);
                 }
 
-                if let Some(transfer_key) = transfer_key {
-                    let key_type_name = match self.identity.identity_type {
-                        IdentityType::User => "Transfer",
-                        IdentityType::Masternode => "Payout",
-                        IdentityType::Evonode => "Payout",
-                    };
-                    if ui.button(format!("Check {} Address Key", key_type_name)).clicked() {
-                        action |= AppAction::AddScreen(Screen::KeyInfoScreen(KeyInfoScreen::new(
-                            self.identity.clone(),
-                            transfer_key.clone(),
-                            None,
-                            &self.app_context,
-                        )));
-                    }
+                if ui.button("Add key").clicked() {
+                    action |= AppAction::AddScreen(Screen::AddKeyScreen(AddKeyScreen::new(
+                        self.identity.clone(),
+                        &self.app_context,
+                    )));
                 }
             } else {
-                ui.heading("Withdraw Funds");
+                if self.selected_wallet.is_some() {
+                    let (needed_unlock, just_unlocked) = self.render_wallet_unlock_if_needed(ui);
 
-                ui.add_space(10.0);
+                    if needed_unlock && !just_unlocked {
+                        return;
+                    }
+                }
 
+                // Select the key to sign with
+                ui.heading("1. Select the key to sign with");
+                ui.add_space(5.0);
                 self.render_key_selection(ui);
 
                 ui.add_space(10.0);
+                ui.separator();
+                ui.add_space(10.0);
 
-                if let Some(selected_key) = self.selected_key.as_ref() {
-                    // If there is an associated wallet then render the wallet unlock component for it if its locked
-                    if let Some((_, PrivateKeyData::AtWalletDerivationPath(wallet_derivation_path))) = self.identity.private_keys.private_keys.get(&(PrivateKeyTarget::PrivateKeyOnMainIdentity, selected_key.id())) {
-                        self.selected_wallet = self.identity.associated_wallets.get(&wallet_derivation_path.wallet_seed_hash).cloned();
-
-                        let (needed_unlock, just_unlocked) = self.render_wallet_unlock_if_needed(ui);
-
-                        if needed_unlock && !just_unlocked {
-                            return;
-                        }
-                    }
-                } else {
-                    return;
-                }
-
+                // Input the amount to transfer
+                ui.heading("2. Input the amount to transfer");
+                ui.add_space(5.0);
                 self.render_amount_input(ui);
 
                 ui.add_space(10.0);
+                ui.separator();
+                ui.add_space(10.0);
 
-                self.render_address_input(ui);
+                // Input the ID of the identity to transfer to
+                ui.heading("3. ID of the identity to transfer to");
+                ui.add_space(5.0);
+                self.render_to_identity_input(ui);
 
-                ui.add_space(20.0);
+                ui.add_space(10.0);
 
-                // Withdraw button
-                let button = egui::Button::new(RichText::new("Withdraw").color(Color32::WHITE))
+                // Transfer button
+                let mut new_style = (**ui.style()).clone();
+                new_style.spacing.button_padding = egui::vec2(10.0, 5.0);
+                ui.set_style(new_style);
+                let button = egui::Button::new(RichText::new("Transfer").color(Color32::WHITE))
                     .fill(Color32::from_rgb(0, 128, 255))
                     .frame(true)
-                    .rounding(3.0)
-                    .min_size(egui::vec2(60.0, 30.0));
-
-                if ui.add(button).clicked() {
+                    .rounding(3.0);
+                if ui.add(button).clicked() || ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                     self.confirmation_popup = true;
                 }
 
@@ -360,14 +380,12 @@ impl ScreenLike for WithdrawalScreen {
                     action |= self.show_confirmation_popup(ui);
                 }
 
-                ui.add_space(10.0);
-
-                // Handle withdrawal status messages
-                match &self.withdraw_from_identity_status {
-                    WithdrawFromIdentityStatus::NotStarted => {
+                // Handle transfer status messages
+                match &self.transfer_credits_status {
+                    TransferCreditsStatus::NotStarted => {
                         // Do nothing
                     }
-                    WithdrawFromIdentityStatus::WaitingForResult(start_time) => {
+                    TransferCreditsStatus::WaitingForResult(start_time) => {
                         let now = SystemTime::now()
                             .duration_since(UNIX_EPOCH)
                             .expect("Time went backwards")
@@ -393,20 +411,16 @@ impl ScreenLike for WithdrawalScreen {
                         };
 
                         ui.label(format!(
-                            "Withdrawing... Time taken so far: {}",
+                            "Transferring... Time taken so far: {}",
                             display_time
                         ));
                     }
-                    WithdrawFromIdentityStatus::ErrorMessage(msg) => {
+                    TransferCreditsStatus::ErrorMessage(msg) => {
                         ui.colored_label(egui::Color32::RED, format!("Error: {}", msg));
                     }
-                    WithdrawFromIdentityStatus::Complete => {
-                        ui.colored_label(egui::Color32::DARK_GREEN, format!("Successfully withdrew from identity"));
+                    TransferCreditsStatus::Complete => {
+                        // Handled above
                     }
-                }
-
-                if let WithdrawFromIdentityStatus::ErrorMessage(ref error_message) = self.withdraw_from_identity_status {
-                    ui.label(format!("Error: {}", error_message));
                 }
             }
         });
@@ -414,7 +428,7 @@ impl ScreenLike for WithdrawalScreen {
     }
 }
 
-impl ScreenWithWalletUnlock for WithdrawalScreen {
+impl ScreenWithWalletUnlock for TransferScreen {
     fn selected_wallet_ref(&self) -> &Option<Arc<RwLock<Wallet>>> {
         &self.selected_wallet
     }

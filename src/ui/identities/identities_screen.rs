@@ -1,4 +1,4 @@
-use super::withdraw_from_identity_screen::WithdrawalScreen;
+use super::withdraw_screen::WithdrawalScreen;
 use crate::app::{AppAction, DesiredAppAction};
 use crate::backend_task::identity::IdentityTask;
 use crate::backend_task::BackendTask;
@@ -16,7 +16,7 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
 use crate::ui::identities::top_up_identity_screen::TopUpIdentityScreen;
-use crate::ui::identities::transfers::TransferScreen;
+use crate::ui::identities::transfer_screen::TransferScreen;
 use crate::ui::{RootScreenType, Screen, ScreenLike, ScreenType};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;

@@ -158,6 +158,13 @@ impl IdentitiesScreen {
                 IdentitiesSortOrder::Descending => ordering.reverse(),
             }
         });
+        let mut lock = self.identities.lock().unwrap();
+        *lock = list
+            .iter()
+            .map(|qi| (qi.identity.id(), qi.clone()))
+            .collect();
+        drop(lock);
+        self.save_current_order();
     }
 
     fn wallet_name_for(&self, qi: &QualifiedIdentity) -> String {

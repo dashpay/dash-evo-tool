@@ -396,7 +396,7 @@ impl AddNewIdentityScreen {
                 ui.add_space(10.0);
 
                 // Display the ComboBox for wallet selection
-                ComboBox::from_label("Select Wallet")
+                ComboBox::from_id_salt("select_wallet")
                     .selected_text(selected_wallet_alias)
                     .show_ui(ui, |ui| {
                         for wallet in wallets.values() {
@@ -445,7 +445,7 @@ impl AddNewIdentityScreen {
         let funding_method_arc = self.funding_method.clone();
         let mut funding_method = funding_method_arc.write().unwrap(); // Write lock on funding_method
 
-        ComboBox::from_label("Funding Method")
+        ComboBox::from_id_salt("funding_method")
             .selected_text(format!("{}", *funding_method))
             .show_ui(ui, |ui| {
                 ui.selectable_value(
@@ -799,7 +799,7 @@ impl AddNewIdentityScreen {
             ui.label("Master Private Key:");
             ui.label(key.to_wif());
 
-            ComboBox::from_label("Master Key Type")
+            ComboBox::from_id_salt("master_key_type")
                 .selected_text(format!("{:?}", self.identity_keys.master_private_key_type))
                 .show_ui(ui, |ui| {
                     ui.selectable_value(

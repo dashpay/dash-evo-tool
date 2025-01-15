@@ -25,7 +25,7 @@ use dash_sdk::dpp::prelude::AssetLockProof;
 use dash_sdk::platform::Identifier;
 use eframe::egui::Context;
 use egui::ahash::HashSet;
-use egui::{ComboBox, ScrollArea, Ui};
+use egui::{Color32, ComboBox, ScrollArea, Ui};
 use std::cmp::PartialEq;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
@@ -555,7 +555,7 @@ impl AddNewIdentityScreen {
             // Render additional keys input (if any) and allow adding more keys
             self.render_keys_input(ui);
         } else {
-            ui.label("Default allows updating the identity, interacting with data contracts, transferring credits to other identities and to the Core payment chain.".to_string());
+            ui.colored_label(Color32::DARK_GREEN, "Default allows for most operations on Platform: updating the identity, interacting with data contracts, transferring credits to other identities, and withdrawing to the Core payment chain. More keys can always be added later.".to_string());
         }
     }
 
@@ -565,8 +565,9 @@ impl AddNewIdentityScreen {
         for (i, ((key, _), key_type, purpose, security_level)) in
             self.identity_keys.keys_input.iter_mut().enumerate()
         {
+            ui.add_space(5.0);
             ui.horizontal(|ui| {
-                ui.label(format!("Key {}:", i + 1));
+                ui.label(format!(" • Key {}:", i + 1));
                 ui.label(key.to_wif());
 
                 // Purpose selection
@@ -623,6 +624,7 @@ impl AddNewIdentityScreen {
         }
 
         // Add new key input entry
+        ui.add_space(15.0);
         if ui.button("+ Add Key").clicked() {
             self.add_identity_key();
         }
@@ -729,7 +731,10 @@ impl AddNewIdentityScreen {
                 }
             }
         });
+
+        ui.add_space(10.0);
     }
+
     fn update_identity_key(&mut self) {
         if let Some(wallet_guard) = self.selected_wallet.as_ref() {
             let mut wallet = wallet_guard.write().unwrap();
@@ -796,7 +801,7 @@ impl AddNewIdentityScreen {
 
     fn render_master_key(&mut self, ui: &mut egui::Ui, key: PrivateKey) {
         ui.horizontal(|ui| {
-            ui.label("Master Private Key:");
+            ui.label(" • Master Private Key:");
             ui.label(key.to_wif());
 
             ComboBox::from_id_salt("master_key_type")
@@ -1006,6 +1011,9 @@ impl ScreenLike for AddNewIdentityScreen {
                     }
                 }
 
+                ui.separator();
+                ui.add_space(10.0);
+
                 // Display the heading with an info icon that shows a tooltip on hover
                 ui.horizontal(|ui| {
                     let wallet_guard = self.selected_wallet.as_ref().unwrap();
@@ -1042,6 +1050,8 @@ impl ScreenLike for AddNewIdentityScreen {
                 self.render_identity_index_input(ui);
 
                 ui.add_space(10.0);
+                ui.separator();
+                ui.add_space(10.0);
 
                 // Display the heading with an info icon that shows a tooltip on hover
                 ui.horizontal(|ui| {
@@ -1068,6 +1078,8 @@ impl ScreenLike for AddNewIdentityScreen {
                 self.render_key_selection(ui);
 
                 ui.add_space(10.0);
+                ui.separator();
+                ui.add_space(10.0);
 
                 ui.heading(
                     format!("{}. Choose your funding method.", step_number).as_str()
@@ -1076,6 +1088,8 @@ impl ScreenLike for AddNewIdentityScreen {
 
                 ui.add_space(10.0);
                 self.render_funding_method(ui);
+                ui.add_space(10.0);
+                ui.separator();
 
                 // Extract the funding method from the RwLock to minimize borrow scope
                 let funding_method = self.funding_method.read().unwrap().clone();

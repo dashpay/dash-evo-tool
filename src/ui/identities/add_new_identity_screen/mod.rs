@@ -555,7 +555,7 @@ impl AddNewIdentityScreen {
             // Render additional keys input (if any) and allow adding more keys
             self.render_keys_input(ui);
         } else {
-            ui.colored_label(Color32::DARK_GREEN, "Default allows updating the identity, interacting with data contracts, transferring credits to other identities, and withdrawing to the Core payment chain.".to_string());
+            ui.colored_label(Color32::DARK_GREEN, "Default allows for most operations on Platform: updating the identity, interacting with data contracts, transferring credits to other identities, and withdrawing to the Core payment chain. More keys can always be added later.".to_string());
         }
     }
 
@@ -567,7 +567,7 @@ impl AddNewIdentityScreen {
         {
             ui.add_space(5.0);
             ui.horizontal(|ui| {
-                ui.label(format!(" - Key {}:", i + 1));
+                ui.label(format!(" • Key {}:", i + 1));
                 ui.label(key.to_wif());
 
                 // Purpose selection
@@ -582,15 +582,14 @@ impl AddNewIdentityScreen {
                 ComboBox::from_id_salt(format!("key_type_combo_{}", i))
                     .selected_text(format!("{:?}", key_type))
                     .show_ui(ui, |ui| {
-                        // ui.selectable_value(key_type, KeyType::ECDSA_HASH160, "ECDSA_HASH160");
-                        // ui.selectable_value(key_type, KeyType::ECDSA_SECP256K1, "ECDSA_SECP256K1");
+                        ui.selectable_value(key_type, KeyType::ECDSA_HASH160, "ECDSA_HASH160");
+                        ui.selectable_value(key_type, KeyType::ECDSA_SECP256K1, "ECDSA_SECP256K1");
                         // ui.selectable_value(key_type, KeyType::BLS12_381, "BLS12_381");
                         // ui.selectable_value(
                         //     key_type,
                         //     KeyType::EDDSA_25519_HASH160,
                         //     "EDDSA_25519_HASH160",
                         // );
-                        ui.label("Locked to ECDSA_HASH160");
                     });
 
                 // Security Level selection with conditional filtering
@@ -625,7 +624,7 @@ impl AddNewIdentityScreen {
         }
 
         // Add new key input entry
-        ui.add_space(10.0);
+        ui.add_space(15.0);
         if ui.button("+ Add Key").clicked() {
             self.add_identity_key();
         }
@@ -802,23 +801,22 @@ impl AddNewIdentityScreen {
 
     fn render_master_key(&mut self, ui: &mut egui::Ui, key: PrivateKey) {
         ui.horizontal(|ui| {
-            ui.label(" - Master Private Key:");
+            ui.label(" • Master Private Key:");
             ui.label(key.to_wif());
 
             ComboBox::from_id_salt("master_key_type")
                 .selected_text(format!("{:?}", self.identity_keys.master_private_key_type))
                 .show_ui(ui, |ui| {
-                    // ui.selectable_value(
-                    //     &mut self.identity_keys.master_private_key_type,
-                    //     KeyType::ECDSA_SECP256K1,
-                    //     "ECDSA_SECP256K1",
-                    // );
-                    // ui.selectable_value(
-                    //     &mut self.identity_keys.master_private_key_type,
-                    //     KeyType::ECDSA_HASH160,
-                    //     "ECDSA_HASH160",
-                    // );
-                    ui.label("Locked to ECDSA_HASH160");
+                    ui.selectable_value(
+                        &mut self.identity_keys.master_private_key_type,
+                        KeyType::ECDSA_SECP256K1,
+                        "ECDSA_SECP256K1",
+                    );
+                    ui.selectable_value(
+                        &mut self.identity_keys.master_private_key_type,
+                        KeyType::ECDSA_HASH160,
+                        "ECDSA_HASH160",
+                    );
                 });
         });
     }

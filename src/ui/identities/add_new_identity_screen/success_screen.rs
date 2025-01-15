@@ -23,8 +23,8 @@ impl AddNewIdentityScreen {
                 action = AppAction::PopScreenAndRefresh;
             }
 
-            // Display the "Register Name" button
-            if ui.button("Register Name").clicked() {
+            // Display the "Register DPNS Name" button
+            if ui.button("Register DPNS Name").clicked() {
                 let mut screen = RegisterDpnsNameScreen::new(&self.app_context);
                 if let Some(identity_id) = self.successful_qualified_identity_id {
                     screen.select_identity(identity_id);

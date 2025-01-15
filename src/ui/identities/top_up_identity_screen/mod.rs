@@ -83,7 +83,7 @@ impl TopUpIdentityScreen {
                     .unwrap_or_else(|| "Select".to_string());
 
                 // Display the ComboBox for wallet selection
-                ComboBox::from_label("Select Wallet")
+                ComboBox::from_id_salt("select_wallet")
                     .selected_text(selected_wallet_alias)
                     .show_ui(ui, |ui| {
                         for wallet in wallets.values() {
@@ -126,7 +126,7 @@ impl TopUpIdentityScreen {
         let funding_method_arc = self.funding_method.clone();
         let mut funding_method = funding_method_arc.write().unwrap(); // Write lock on funding_method
 
-        ComboBox::from_label("Funding Method")
+        ComboBox::from_id_salt("funding_method")
             .selected_text(format!("{}", *funding_method))
             .show_ui(ui, |ui| {
                 ui.selectable_value(
@@ -261,7 +261,7 @@ impl TopUpIdentityScreen {
         let funding_method = self.funding_method.read().unwrap(); // Read lock on funding_method
 
         ui.horizontal(|ui| {
-            ui.label("Funding Amount (DASH):");
+            ui.label("Amount (DASH):");
 
             // Render the text input field for the funding amount
             let amount_input = ui
@@ -298,6 +298,8 @@ impl TopUpIdentityScreen {
                 }
             }
         });
+
+        ui.add_space(10.0);
     }
 }
 
@@ -432,9 +434,9 @@ impl ScreenLike for TopUpIdentityScreen {
 
                 self.render_funding_method(ui);
 
-                ui.add_space(20.0);
+                ui.add_space(10.0);
                 ui.separator();
-                ui.add_space(20.0);
+                ui.add_space(10.0);
 
                 // Extract the funding method from the RwLock to minimize borrow scope
                 let funding_method = self.funding_method.read().unwrap().clone();
@@ -465,9 +467,9 @@ impl ScreenLike for TopUpIdentityScreen {
                         return;
                     }
 
-                    ui.add_space(20.0);
+                    ui.add_space(10.0);
                     ui.separator();
-                    ui.add_space(20.0);
+                    ui.add_space(10.0);
                 }
 
                 match funding_method {

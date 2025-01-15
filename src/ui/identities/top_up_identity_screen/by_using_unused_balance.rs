@@ -23,7 +23,7 @@ impl TopUpIdentityScreen {
     pub fn render_ui_by_using_unused_balance(
         &mut self,
         ui: &mut Ui,
-        mut step_number: u32,
+        step_number: u32,
     ) -> AppAction {
         let mut action = AppAction::None;
 
@@ -33,12 +33,8 @@ impl TopUpIdentityScreen {
         ));
 
         ui.add_space(10.0);
-
         self.show_wallet_balance(ui);
-
-        ui.add_space(10.0);
-
-        step_number += 1;
+        ui.add_space(5.0);
 
         self.top_up_funding_amount_input(ui);
 
@@ -48,8 +44,6 @@ impl TopUpIdentityScreen {
         let Ok(_) = self.funding_amount.parse::<f64>() else {
             return action;
         };
-
-        ui.add_space(10.0);
 
         // Top up button
         let mut new_style = (**ui.style()).clone();
@@ -66,23 +60,31 @@ impl TopUpIdentityScreen {
 
         ui.add_space(20.0);
 
-        match step {
-            WalletFundedScreenStep::WaitingForAssetLock => {
-                ui.heading("Waiting for Core Chain to produce proof of transfer of funds.");
-            }
-            WalletFundedScreenStep::WaitingForPlatformAcceptance => {
-                ui.heading("Waiting for Platform acknowledgement");
-            }
-            WalletFundedScreenStep::Success => {
-                ui.heading("...Success...");
-            }
-            _ => {}
-        }
-
         if let Some(error_message) = self.error_message.as_ref() {
-            ui.heading(error_message);
+            ui.colored_label(Color32::DARK_RED, error_message);
+            ui.add_space(20.0);
         }
 
+        ui.vertical_centered(|ui| {
+            match step {
+                WalletFundedScreenStep::WaitingForAssetLock => {
+                    ui.heading("=> Waiting for Core Chain to produce proof of transfer of funds. <=");
+                    ui.add_space(20.0);
+                    ui.label("NOTE: If this gets stuck, the funds were likely either transferred to the wallet or asset locked,\nand you can use the funding method selector in step 1 to change the method and use those funds to complete the process.");
+                }
+                WalletFundedScreenStep::WaitingForPlatformAcceptance => {
+                    ui.heading("=> Waiting for Platform acknowledgement <=");
+                    ui.add_space(20.0);
+                    ui.label("NOTE: If this gets stuck, the funds were likely either transferred to the wallet or asset locked,\nand you can use the funding method selector in step 1 to change the method and use those funds to complete the process.");
+                }
+                WalletFundedScreenStep::Success => {
+                    ui.heading("...Success...");
+                }
+                _ => {}
+            };
+        });
+
+        ui.add_space(40.0);
         action
     }
 }

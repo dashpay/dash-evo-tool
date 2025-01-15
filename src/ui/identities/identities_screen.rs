@@ -624,17 +624,6 @@ impl IdentitiesScreen {
                                         ui.spacing_mut().item_spacing.x = 3.0;
 
                                         ui.horizontal(|ui| {
-                                            // Refresh
-                                            if ui.button("Refresh").clicked() {
-                                                action = AppAction::BackendTask(
-                                                    BackendTask::IdentityTask(
-                                                        IdentityTask::RefreshIdentity(
-                                                            qualified_identity.clone(),
-                                                        ),
-                                                    ),
-                                                );
-                                            }
-
                                             // Remove
                                             if ui.button("Remove").clicked() {
                                                 self.identity_to_remove =
@@ -818,6 +807,8 @@ impl ScreenLike for IdentitiesScreen {
     }
 
     fn ui(&mut self, ctx: &Context) -> AppAction {
+        self.check_message_expiration();
+
         let mut right_buttons = if !self.app_context.has_wallet.load(Ordering::Relaxed) {
             vec![
                 (
@@ -849,7 +840,7 @@ impl ScreenLike for IdentitiesScreen {
                 .map(|qi| BackendTask::IdentityTask(IdentityTask::RefreshIdentity(qi.clone())))
                 .collect();
             right_buttons.push((
-                "Refresh All",
+                "Refresh",
                 DesiredAppAction::BackendTasks(
                     backend_tasks,
                     BackendTasksExecutionMode::Concurrent,

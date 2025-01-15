@@ -30,6 +30,21 @@ impl AppContext {
             .await
             .map_err(|e| format!("Transfer error: {}", e))?;
         qualified_identity.identity.set_balance(remaining_balance);
+
+        // If the receiver is a local qualified identity, update its balance too
+        if let Some(receiver) = self
+            .load_local_qualified_identities()
+            .map_err(|e| format!("Transfer error: {}", e))?
+            .iter_mut()
+            .find(|qi| qi.identity.id() == to_identifier)
+        {
+            receiver
+                .identity
+                .set_balance(receiver.identity.balance() + credits);
+            self.update_local_qualified_identity(receiver)
+                .map_err(|e| format!("Transfer error: {}", e))?;
+        }
+
         self.update_local_qualified_identity(&qualified_identity)
             .map(|_| {
                 BackendTaskSuccessResult::Message("Successfully transferred credits".to_string())

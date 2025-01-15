@@ -23,7 +23,7 @@ impl TopUpIdentityScreen {
     pub fn render_ui_by_using_unused_balance(
         &mut self,
         ui: &mut Ui,
-        mut step_number: u32,
+        step_number: u32,
     ) -> AppAction {
         let mut action = AppAction::None;
 
@@ -33,12 +33,8 @@ impl TopUpIdentityScreen {
         ));
 
         ui.add_space(10.0);
-
         self.show_wallet_balance(ui);
-
-        ui.add_space(10.0);
-
-        step_number += 1;
+        ui.add_space(5.0);
 
         self.top_up_funding_amount_input(ui);
 
@@ -48,8 +44,6 @@ impl TopUpIdentityScreen {
         let Ok(_) = self.funding_amount.parse::<f64>() else {
             return action;
         };
-
-        ui.add_space(10.0);
 
         // Top up button
         let mut new_style = (**ui.style()).clone();

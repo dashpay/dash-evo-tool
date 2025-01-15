@@ -93,7 +93,7 @@ impl AddNewIdentityScreen {
         ui.label(&pay_uri);
         ui.add_space(5.0);
 
-        if ui.button("Copy").clicked() {
+        if ui.button("Copy Address").clicked() {
             if let Err(e) = copy_to_clipboard(pay_uri.as_str()) {
                 self.copied_to_clipboard = Some(Some(e));
             } else {

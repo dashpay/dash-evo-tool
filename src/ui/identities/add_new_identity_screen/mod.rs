@@ -393,8 +393,6 @@ impl AddNewIdentityScreen {
                     "1. Choose the wallet to use in which this identities keys will come from.",
                 );
 
-                ui.add_space(10.0);
-
                 // Display the ComboBox for wallet selection
                 ComboBox::from_id_salt("select_wallet")
                     .selected_text(selected_wallet_alias)
@@ -422,7 +420,6 @@ impl AddNewIdentityScreen {
                             }
                         }
                     });
-                ui.add_space(10.0);
                 true
             } else if let Some(wallet) = wallets.values().next() {
                 if self.selected_wallet.is_none() {
@@ -698,7 +695,7 @@ impl AddNewIdentityScreen {
         let funding_method = self.funding_method.read().unwrap(); // Read lock on funding_method
 
         ui.horizontal(|ui| {
-            ui.label("Funding Amount (DASH):");
+            ui.label("Amount (DASH):");
 
             // Render the text input field for the funding amount
             let amount_input = ui
@@ -1011,6 +1008,7 @@ impl ScreenLike for AddNewIdentityScreen {
                     }
                 }
 
+                ui.add_space(10.0);
                 ui.separator();
                 ui.add_space(10.0);
 

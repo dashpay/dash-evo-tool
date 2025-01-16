@@ -435,7 +435,15 @@ impl IdentitiesScreen {
             self.sort_vec(&mut local_identities);
         }
 
-        egui::ScrollArea::vertical().show(ui, |ui| {
+        let refreshing_height = 33.0;
+        let max_scroll_height =
+            if let IdentitiesRefreshingStatus::Refreshing(_) = self.refreshing_status {
+                ui.available_height() - refreshing_height
+            } else {
+                ui.available_height()
+            };
+
+        egui::ScrollArea::vertical().max_height(max_scroll_height).show(ui, |ui| {
             Frame::group(ui.style())
                 .fill(ui.visuals().panel_fill)
                 .stroke(egui::Stroke::new(

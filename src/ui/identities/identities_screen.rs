@@ -435,13 +435,20 @@ impl IdentitiesScreen {
             self.sort_vec(&mut local_identities);
         }
 
+        // Allocate space for refreshing status
         let refreshing_height = 33.0;
-        let max_scroll_height =
+        let mut max_scroll_height =
             if let IdentitiesRefreshingStatus::Refreshing(_) = self.refreshing_status {
                 ui.available_height() - refreshing_height
             } else {
                 ui.available_height()
             };
+
+        // Allocate space for backend message
+        let backend_message_height = 47.0;
+        if let Some((_, _, _)) = self.backend_message.clone() {
+            max_scroll_height -= backend_message_height;
+        }
 
         egui::ScrollArea::vertical().max_height(max_scroll_height).show(ui, |ui| {
             Frame::group(ui.style())
@@ -898,7 +905,7 @@ impl ScreenLike for IdentitiesScreen {
                     MessageType::Success => egui::Color32::DARK_GREEN,
                 };
 
-                ui.add_space(10.0);
+                ui.add_space(7.0);
                 ui.allocate_ui(egui::Vec2::new(ui.available_width(), 30.0), |ui| {
                     ui.group(|ui| {
                         ui.horizontal_wrapped(|ui| {

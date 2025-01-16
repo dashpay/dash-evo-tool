@@ -255,7 +255,7 @@ impl AppContext {
                     .filter_map(|maybe_doc| {
                         maybe_doc.as_ref().and_then(|doc| {
                             let name = doc
-                                .get("normalizedLabel")
+                                .get("label")
                                 .map(|label| label.to_str().unwrap_or_default());
                             let acquired_at = doc
                                 .created_at()

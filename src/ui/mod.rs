@@ -6,7 +6,7 @@ use crate::model::qualified_identity::encrypted_key_storage::{
 };
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::contracts_documents::document_query_screen::DocumentQueryScreen;
-use crate::ui::dpns::dpns_contested_names_screen::DPNSContestedNamesScreen;
+use crate::ui::dpns::dpns_contested_names_screen::DPNSScreen;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
 use crate::ui::identities::keys::keys_screen::KeysScreen;
@@ -21,10 +21,7 @@ use crate::ui::withdrawal_statuses_screen::WithdrawsStatusScreen;
 use contracts_documents::add_contracts_screen::AddContractsScreen;
 use dash_sdk::dpp::identity::Identity;
 use dash_sdk::dpp::prelude::IdentityPublicKey;
-use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
-use dpns::dpns_bulk_vote_schedule_screen::BulkScheduleVoteScreen;
-use dpns::dpns_contested_names_screen::{DPNSSubscreen, SelectedVote};
-use dpns::dpns_vote_scheduling_screen::ScheduleVoteScreen;
+use dpns::dpns_contested_names_screen::DPNSSubscreen;
 use egui::Context;
 use identities::add_existing_identity_screen::AddExistingIdentityScreen;
 use identities::add_new_identity_screen::AddNewIdentityScreen;
@@ -145,8 +142,6 @@ pub enum ScreenType {
     RegisterDpnsName,
     ProofLog,
     TopUpIdentity(QualifiedIdentity),
-    ScheduleVoteScreen(String, u64, Vec<QualifiedIdentity>, ResourceVoteChoice),
-    BulkScheduleVoteScreen(Vec<SelectedVote>),
     ScheduledVotes,
     AddContracts,
 }
@@ -155,15 +150,15 @@ impl ScreenType {
     pub fn create_screen(&self, app_context: &Arc<AppContext>) -> Screen {
         match self {
             ScreenType::Identities => Screen::IdentitiesScreen(IdentitiesScreen::new(app_context)),
-            ScreenType::DPNSActiveContests => Screen::DPNSContestedNamesScreen(
-                DPNSContestedNamesScreen::new(app_context, DPNSSubscreen::Active),
-            ),
-            ScreenType::DPNSPastContests => Screen::DPNSContestedNamesScreen(
-                DPNSContestedNamesScreen::new(app_context, DPNSSubscreen::Past),
-            ),
-            ScreenType::DPNSMyUsernames => Screen::DPNSContestedNamesScreen(
-                DPNSContestedNamesScreen::new(app_context, DPNSSubscreen::Owned),
-            ),
+            ScreenType::DPNSActiveContests => {
+                Screen::DPNSScreen(DPNSScreen::new(app_context, DPNSSubscreen::Active))
+            }
+            ScreenType::DPNSPastContests => {
+                Screen::DPNSScreen(DPNSScreen::new(app_context, DPNSSubscreen::Past))
+            }
+            ScreenType::DPNSMyUsernames => {
+                Screen::DPNSScreen(DPNSScreen::new(app_context, DPNSSubscreen::Owned))
+            }
             ScreenType::AddNewIdentity => {
                 Screen::AddNewIdentityScreen(AddNewIdentityScreen::new(app_context))
             }
@@ -218,24 +213,9 @@ impl ScreenType {
                 Screen::ImportWalletScreen(ImportWalletScreen::new(app_context))
             }
             ScreenType::ProofLog => Screen::ProofLogScreen(ProofLogScreen::new(app_context)),
-            ScreenType::ScheduleVoteScreen(
-                contested_name,
-                ending_time,
-                identities,
-                vote_choice,
-            ) => Screen::ScheduleVoteScreen(ScheduleVoteScreen::new(
-                app_context,
-                contested_name.clone(),
-                ending_time.clone(),
-                identities.clone(),
-                vote_choice.clone(),
-            )),
-            ScreenType::BulkScheduleVoteScreen(selected_votes) => Screen::BulkScheduleVoteScreen(
-                BulkScheduleVoteScreen::new(app_context, selected_votes.clone()),
-            ),
-            ScreenType::ScheduledVotes => Screen::DPNSContestedNamesScreen(
-                DPNSContestedNamesScreen::new(app_context, DPNSSubscreen::ScheduledVotes),
-            ),
+            ScreenType::ScheduledVotes => {
+                Screen::DPNSScreen(DPNSScreen::new(app_context, DPNSSubscreen::ScheduledVotes))
+            }
             ScreenType::AddContracts => {
                 Screen::AddContractsScreen(AddContractsScreen::new(app_context))
             }
@@ -245,7 +225,7 @@ impl ScreenType {
 
 pub enum Screen {
     IdentitiesScreen(IdentitiesScreen),
-    DPNSContestedNamesScreen(DPNSContestedNamesScreen),
+    DPNSScreen(DPNSScreen),
     DocumentQueryScreen(DocumentQueryScreen),
     AddNewWalletScreen(AddNewWalletScreen),
     ImportWalletScreen(ImportWalletScreen),
@@ -263,8 +243,6 @@ pub enum Screen {
     WithdrawsStatusScreen(WithdrawsStatusScreen),
     NetworkChooserScreen(NetworkChooserScreen),
     WalletsBalancesScreen(WalletsBalancesScreen),
-    ScheduleVoteScreen(ScheduleVoteScreen),
-    BulkScheduleVoteScreen(BulkScheduleVoteScreen),
     AddContractsScreen(AddContractsScreen),
 }
 
@@ -272,7 +250,7 @@ impl Screen {
     pub fn change_context(&mut self, app_context: Arc<AppContext>) {
         match self {
             Screen::IdentitiesScreen(screen) => screen.app_context = app_context,
-            Screen::DPNSContestedNamesScreen(screen) => screen.app_context = app_context,
+            Screen::DPNSScreen(screen) => screen.app_context = app_context,
             Screen::AddExistingIdentityScreen(screen) => screen.app_context = app_context,
             Screen::KeyInfoScreen(screen) => screen.app_context = app_context,
             Screen::KeysScreen(screen) => screen.app_context = app_context,
@@ -290,8 +268,6 @@ impl Screen {
             Screen::WithdrawsStatusScreen(screen) => screen.app_context = app_context,
             Screen::ImportWalletScreen(screen) => screen.app_context = app_context,
             Screen::ProofLogScreen(screen) => screen.app_context = app_context,
-            Screen::ScheduleVoteScreen(screen) => screen.app_context = app_context,
-            Screen::BulkScheduleVoteScreen(screen) => screen.app_context = app_context,
             Screen::AddContractsScreen(screen) => screen.app_context = app_context,
         }
     }
@@ -343,19 +319,19 @@ impl Screen {
                 screen.private_key_data.clone(),
             ),
             Screen::IdentitiesScreen(_) => ScreenType::Identities,
-            Screen::DPNSContestedNamesScreen(DPNSContestedNamesScreen {
+            Screen::DPNSScreen(DPNSScreen {
                 dpns_subscreen: DPNSSubscreen::Active,
                 ..
             }) => ScreenType::DPNSActiveContests,
-            Screen::DPNSContestedNamesScreen(DPNSContestedNamesScreen {
+            Screen::DPNSScreen(DPNSScreen {
                 dpns_subscreen: DPNSSubscreen::Past,
                 ..
             }) => ScreenType::DPNSPastContests,
-            Screen::DPNSContestedNamesScreen(DPNSContestedNamesScreen {
+            Screen::DPNSScreen(DPNSScreen {
                 dpns_subscreen: DPNSSubscreen::Owned,
                 ..
             }) => ScreenType::DPNSMyUsernames,
-            Screen::DPNSContestedNamesScreen(DPNSContestedNamesScreen {
+            Screen::DPNSScreen(DPNSScreen {
                 dpns_subscreen: DPNSSubscreen::ScheduledVotes,
                 ..
             }) => ScreenType::ScheduledVotes,
@@ -377,15 +353,6 @@ impl Screen {
             Screen::WithdrawsStatusScreen(_) => ScreenType::WithdrawsStatus,
             Screen::ImportWalletScreen(_) => ScreenType::ImportWallet,
             Screen::ProofLogScreen(_) => ScreenType::ProofLog,
-            Screen::ScheduleVoteScreen(screen) => ScreenType::ScheduleVoteScreen(
-                screen.contested_name.clone(),
-                screen.ending_time.clone(),
-                screen.identities.clone(),
-                screen.vote_choice.clone(),
-            ),
-            Screen::BulkScheduleVoteScreen(screen) => {
-                ScreenType::BulkScheduleVoteScreen(screen.selected_votes.clone())
-            }
             Screen::AddContractsScreen(_) => ScreenType::AddContracts,
         }
     }
@@ -395,7 +362,7 @@ impl ScreenLike for Screen {
     fn refresh(&mut self) {
         match self {
             Screen::IdentitiesScreen(screen) => screen.refresh(),
-            Screen::DPNSContestedNamesScreen(screen) => screen.refresh(),
+            Screen::DPNSScreen(screen) => screen.refresh(),
             Screen::DocumentQueryScreen(screen) => screen.refresh(),
             Screen::AddNewWalletScreen(screen) => screen.refresh(),
             Screen::ImportWalletScreen(screen) => screen.refresh(),
@@ -413,8 +380,6 @@ impl ScreenLike for Screen {
             Screen::NetworkChooserScreen(screen) => screen.refresh(),
             Screen::WalletsBalancesScreen(screen) => screen.refresh(),
             Screen::ProofLogScreen(screen) => screen.refresh(),
-            Screen::ScheduleVoteScreen(screen) => screen.refresh(),
-            Screen::BulkScheduleVoteScreen(screen) => screen.refresh(),
             Screen::AddContractsScreen(screen) => screen.refresh(),
         }
     }
@@ -422,7 +387,7 @@ impl ScreenLike for Screen {
     fn refresh_on_arrival(&mut self) {
         match self {
             Screen::IdentitiesScreen(screen) => screen.refresh_on_arrival(),
-            Screen::DPNSContestedNamesScreen(screen) => screen.refresh_on_arrival(),
+            Screen::DPNSScreen(screen) => screen.refresh_on_arrival(),
             Screen::DocumentQueryScreen(screen) => screen.refresh_on_arrival(),
             Screen::AddNewWalletScreen(screen) => screen.refresh_on_arrival(),
             Screen::ImportWalletScreen(screen) => screen.refresh_on_arrival(),
@@ -440,8 +405,6 @@ impl ScreenLike for Screen {
             Screen::NetworkChooserScreen(screen) => screen.refresh_on_arrival(),
             Screen::WalletsBalancesScreen(screen) => screen.refresh_on_arrival(),
             Screen::ProofLogScreen(screen) => screen.refresh_on_arrival(),
-            Screen::ScheduleVoteScreen(screen) => screen.refresh_on_arrival(),
-            Screen::BulkScheduleVoteScreen(screen) => screen.refresh_on_arrival(),
             Screen::AddContractsScreen(screen) => screen.refresh_on_arrival(),
         }
     }
@@ -449,7 +412,7 @@ impl ScreenLike for Screen {
     fn ui(&mut self, ctx: &Context) -> AppAction {
         match self {
             Screen::IdentitiesScreen(screen) => screen.ui(ctx),
-            Screen::DPNSContestedNamesScreen(screen) => screen.ui(ctx),
+            Screen::DPNSScreen(screen) => screen.ui(ctx),
             Screen::DocumentQueryScreen(screen) => screen.ui(ctx),
             Screen::AddNewWalletScreen(screen) => screen.ui(ctx),
             Screen::ImportWalletScreen(screen) => screen.ui(ctx),
@@ -467,8 +430,6 @@ impl ScreenLike for Screen {
             Screen::NetworkChooserScreen(screen) => screen.ui(ctx),
             Screen::WalletsBalancesScreen(screen) => screen.ui(ctx),
             Screen::ProofLogScreen(screen) => screen.ui(ctx),
-            Screen::ScheduleVoteScreen(screen) => screen.ui(ctx),
-            Screen::BulkScheduleVoteScreen(screen) => screen.ui(ctx),
             Screen::AddContractsScreen(screen) => screen.ui(ctx),
         }
     }
@@ -476,9 +437,7 @@ impl ScreenLike for Screen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
         match self {
             Screen::IdentitiesScreen(screen) => screen.display_message(message, message_type),
-            Screen::DPNSContestedNamesScreen(screen) => {
-                screen.display_message(message, message_type)
-            }
+            Screen::DPNSScreen(screen) => screen.display_message(message, message_type),
             Screen::DocumentQueryScreen(screen) => screen.display_message(message, message_type),
             Screen::AddNewWalletScreen(screen) => screen.display_message(message, message_type),
             Screen::ImportWalletScreen(screen) => screen.display_message(message, message_type),
@@ -500,8 +459,6 @@ impl ScreenLike for Screen {
             Screen::NetworkChooserScreen(screen) => screen.display_message(message, message_type),
             Screen::WalletsBalancesScreen(screen) => screen.display_message(message, message_type),
             Screen::ProofLogScreen(screen) => screen.display_message(message, message_type),
-            Screen::ScheduleVoteScreen(screen) => screen.display_message(message, message_type),
-            Screen::BulkScheduleVoteScreen(screen) => screen.display_message(message, message_type),
             Screen::AddContractsScreen(screen) => screen.display_message(message, message_type),
         }
     }
@@ -511,7 +468,7 @@ impl ScreenLike for Screen {
             Screen::IdentitiesScreen(screen) => {
                 screen.display_task_result(backend_task_success_result.clone())
             }
-            Screen::DPNSContestedNamesScreen(screen) => {
+            Screen::DPNSScreen(screen) => {
                 screen.display_task_result(backend_task_success_result.clone())
             }
             Screen::DocumentQueryScreen(screen) => {
@@ -565,12 +522,6 @@ impl ScreenLike for Screen {
             Screen::ProofLogScreen(screen) => {
                 screen.display_task_result(backend_task_success_result)
             }
-            Screen::ScheduleVoteScreen(screen) => {
-                screen.display_task_result(backend_task_success_result)
-            }
-            Screen::BulkScheduleVoteScreen(screen) => {
-                screen.display_task_result(backend_task_success_result)
-            }
             Screen::AddContractsScreen(screen) => {
                 screen.display_task_result(backend_task_success_result)
             }
@@ -580,7 +531,7 @@ impl ScreenLike for Screen {
     fn pop_on_success(&mut self) {
         match self {
             Screen::IdentitiesScreen(screen) => screen.pop_on_success(),
-            Screen::DPNSContestedNamesScreen(screen) => screen.pop_on_success(),
+            Screen::DPNSScreen(screen) => screen.pop_on_success(),
             Screen::DocumentQueryScreen(screen) => screen.pop_on_success(),
             Screen::AddNewWalletScreen(screen) => screen.pop_on_success(),
             Screen::ImportWalletScreen(screen) => screen.pop_on_success(),
@@ -598,8 +549,6 @@ impl ScreenLike for Screen {
             Screen::NetworkChooserScreen(screen) => screen.pop_on_success(),
             Screen::WalletsBalancesScreen(screen) => screen.pop_on_success(),
             Screen::ProofLogScreen(screen) => screen.pop_on_success(),
-            Screen::ScheduleVoteScreen(screen) => screen.pop_on_success(),
-            Screen::BulkScheduleVoteScreen(screen) => screen.pop_on_success(),
             Screen::AddContractsScreen(screen) => screen.pop_on_success(),
         }
     }

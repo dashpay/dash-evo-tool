@@ -72,6 +72,7 @@ pub enum DesiredAppAction {
     SwitchNetwork(Network),
     AddScreenType(ScreenType),
     BackendTask(BackendTask),
+    BackendTasks(Vec<BackendTask>, BackendTasksExecutionMode),
 }
 
 impl DesiredAppAction {
@@ -87,9 +88,18 @@ impl DesiredAppAction {
             DesiredAppAction::BackendTask(backend_task) => {
                 AppAction::BackendTask(backend_task.clone())
             }
+            DesiredAppAction::BackendTasks(tasks, mode) => {
+                AppAction::BackendTasks(tasks.clone(), mode.clone())
+            }
             DesiredAppAction::SwitchNetwork(network) => AppAction::SwitchNetwork(*network),
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum BackendTasksExecutionMode {
+    Sequential,
+    Concurrent,
 }
 
 #[derive(Debug, PartialEq)]
@@ -105,6 +115,7 @@ pub enum AppAction {
     AddScreen(Screen),
     PopThenAddScreenToMainScreen(RootScreenType, Screen),
     BackendTask(BackendTask),
+    BackendTasks(Vec<BackendTask>, BackendTasksExecutionMode),
 }
 
 impl BitOrAssign for AppAction {
@@ -325,6 +336,34 @@ impl AppState {
             // Send the result back to the main thread
             if let Err(e) = sender.send(result.into()).await {
                 eprintln!("Failed to send task result: {}", e);
+            }
+        });
+    }
+
+    /// Handle the backend tasks and send the results through the channel
+    pub fn handle_backend_tasks(&self, tasks: Vec<BackendTask>, mode: BackendTasksExecutionMode) {
+        let sender = self.task_result_sender.clone();
+        let app_context = self.current_app_context().clone();
+
+        tokio::spawn(async move {
+            let results = match mode {
+                BackendTasksExecutionMode::Sequential => {
+                    app_context
+                        .run_backend_tasks_sequential(tasks, sender.clone())
+                        .await
+                }
+                BackendTasksExecutionMode::Concurrent => {
+                    app_context
+                        .run_backend_tasks_concurrent(tasks, sender.clone())
+                        .await
+                }
+            };
+
+            // Send the results back to the main thread
+            for result in results {
+                if let Err(e) = sender.send(result.into()).await {
+                    eprintln!("Failed to send task result: {}", e);
+                }
             }
         });
     }
@@ -620,6 +659,9 @@ impl App for AppState {
             }
             AppAction::BackendTask(task) => {
                 self.handle_backend_task(task);
+            }
+            AppAction::BackendTasks(tasks, mode) => {
+                self.handle_backend_tasks(tasks, mode);
             }
             AppAction::SetMainScreen(root_screen_type) => {
                 self.selected_main_screen = root_screen_type;

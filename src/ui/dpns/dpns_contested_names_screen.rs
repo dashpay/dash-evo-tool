@@ -345,11 +345,18 @@ impl DPNSScreen {
         };
 
         let refreshing_height = 33.0;
-        let max_scroll_height = if let RefreshingStatus::Refreshing(_) = self.refreshing_status {
+        let mut max_scroll_height = if let RefreshingStatus::Refreshing(_) = self.refreshing_status
+        {
             ui.available_height() - refreshing_height
         } else {
             ui.available_height()
         };
+
+        // Allocate space for backend message
+        let backend_message_height = 40.0;
+        if let Some((_, _, _)) = self.message.clone() {
+            max_scroll_height -= backend_message_height;
+        }
 
         egui::ScrollArea::vertical()
             .max_height(max_scroll_height)
@@ -823,62 +830,78 @@ impl DPNSScreen {
             _ => std::cmp::Ordering::Equal,
         });
 
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            Frame::group(ui.style())
-                .fill(ui.visuals().panel_fill)
-                .stroke(egui::Stroke::new(
-                    1.0,
-                    ui.visuals().widgets.inactive.bg_stroke.color,
-                ))
-                .inner_margin(Margin::same(8.0))
-                .show(ui, |ui| {
-                    TableBuilder::new(ui)
-                        .striped(true)
-                        .resizable(true)
-                        .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                        .column(Column::initial(200.0).resizable(true)) // DPNS Name
-                        .column(Column::initial(400.0).resizable(true)) // Owner ID
-                        .column(Column::initial(300.0).resizable(true)) // Acquired At
-                        .header(30.0, |mut header| {
-                            header.col(|ui| {
-                                if ui.button("Name").clicked() {
-                                    self.toggle_sort(SortColumn::ContestedName);
-                                }
-                            });
-                            header.col(|ui| {
-                                if ui.button("Owner ID").clicked() {
-                                    self.toggle_sort(SortColumn::AwardedTo);
-                                }
-                            });
-                            header.col(|ui| {
-                                if ui.button("Acquired At").clicked() {
-                                    self.toggle_sort(SortColumn::EndingTime);
-                                }
-                            });
-                        })
-                        .body(|mut body| {
-                            for (identifier, dpns_info) in sorted_names {
-                                body.row(25.0, |mut row| {
-                                    row.col(|ui| {
-                                        ui.label(dpns_info.name);
-                                    });
-                                    row.col(|ui| {
-                                        ui.label(identifier.to_string(Encoding::Base58));
-                                    });
-                                    let dt = DateTime::from_timestamp(
-                                        dpns_info.acquired_at as i64 / 1000,
-                                        ((dpns_info.acquired_at % 1000) * 1_000_000) as u32,
-                                    )
-                                    .map(|dt| dt.to_string())
-                                    .unwrap_or_else(|| "Invalid timestamp".to_string());
-                                    row.col(|ui| {
-                                        ui.label(dt);
-                                    });
+        let refreshing_height = 33.0;
+        let mut max_scroll_height = if let RefreshingStatus::Refreshing(_) = self.refreshing_status
+        {
+            ui.available_height() - refreshing_height
+        } else {
+            ui.available_height()
+        };
+
+        // Allocate space for backend message
+        let backend_message_height = 40.0;
+        if let Some((_, _, _)) = self.message.clone() {
+            max_scroll_height -= backend_message_height;
+        }
+
+        egui::ScrollArea::vertical()
+            .max_height(max_scroll_height)
+            .show(ui, |ui| {
+                Frame::group(ui.style())
+                    .fill(ui.visuals().panel_fill)
+                    .stroke(egui::Stroke::new(
+                        1.0,
+                        ui.visuals().widgets.inactive.bg_stroke.color,
+                    ))
+                    .inner_margin(Margin::same(8.0))
+                    .show(ui, |ui| {
+                        TableBuilder::new(ui)
+                            .striped(true)
+                            .resizable(true)
+                            .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                            .column(Column::initial(200.0).resizable(true)) // DPNS Name
+                            .column(Column::initial(400.0).resizable(true)) // Owner ID
+                            .column(Column::initial(300.0).resizable(true)) // Acquired At
+                            .header(30.0, |mut header| {
+                                header.col(|ui| {
+                                    if ui.button("Name").clicked() {
+                                        self.toggle_sort(SortColumn::ContestedName);
+                                    }
                                 });
-                            }
-                        });
-                });
-        });
+                                header.col(|ui| {
+                                    if ui.button("Owner ID").clicked() {
+                                        self.toggle_sort(SortColumn::AwardedTo);
+                                    }
+                                });
+                                header.col(|ui| {
+                                    if ui.button("Acquired At").clicked() {
+                                        self.toggle_sort(SortColumn::EndingTime);
+                                    }
+                                });
+                            })
+                            .body(|mut body| {
+                                for (identifier, dpns_info) in sorted_names {
+                                    body.row(25.0, |mut row| {
+                                        row.col(|ui| {
+                                            ui.label(dpns_info.name);
+                                        });
+                                        row.col(|ui| {
+                                            ui.label(identifier.to_string(Encoding::Base58));
+                                        });
+                                        let dt = DateTime::from_timestamp(
+                                            dpns_info.acquired_at as i64 / 1000,
+                                            ((dpns_info.acquired_at % 1000) * 1_000_000) as u32,
+                                        )
+                                        .map(|dt| dt.to_string())
+                                        .unwrap_or_else(|| "Invalid timestamp".to_string());
+                                        row.col(|ui| {
+                                            ui.label(dt);
+                                        });
+                                    });
+                                }
+                            });
+                    });
+            });
     }
 
     /// Show the Scheduled Votes table

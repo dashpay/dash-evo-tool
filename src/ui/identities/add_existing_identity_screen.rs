@@ -152,21 +152,19 @@ impl AddExistingIdentityScreen {
         }
 
         egui::Grid::new("add_existing_identity_grid")
-            .num_columns(3)
-            .spacing([10.0, 5.0])
-            .striped(false)
+            .num_columns(2)
+            .spacing([10.0, 10.0])
+            .striped(true)
             .show(ui, |ui| {
                 ui.label("Identity ID / ProTxHash (Hex or Base58):");
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.identity_id_input)
-                        .desired_width(600.0),
-                );
+                ui.text_edit_singleline(&mut self.identity_id_input);
                 ui.label("");
                 ui.end_row();
 
                 ui.label("Identity Type:");
-                egui::ComboBox::from_label("")
+                egui::ComboBox::from_id_salt("identity_type_selector")
                     .selected_text(format!("{:?}", self.identity_type))
+                    // .width(350.0) // This sets the entire row's width
                     .show_ui(ui, |ui| {
                         ui.selectable_value(&mut self.identity_type, IdentityType::User, "User");
                         ui.selectable_value(
@@ -193,10 +191,7 @@ impl AddExistingIdentityScreen {
                         self.show_pop_up_info = Some("Alias is optional. It is only used to help identify the identity in Dash Evo Tool. It isn't saved to Dash Platform.".to_string());
                     }    
                 });
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.alias_input)
-                        .desired_width(600.0),
-                );
+                ui.text_edit_singleline(&mut self.alias_input);
                 ui.label("");
                 ui.end_row();
 
@@ -248,10 +243,7 @@ impl AddExistingIdentityScreen {
                             });
 
                             // Second column: the text field
-                            ui.add(
-                                egui::TextEdit::singleline(key)
-                                    .desired_width(600.0),
-                            );
+                            ui.text_edit_singleline(key);
                             
                             // Third column: the remove button
                             if ui.button("-").clicked() {

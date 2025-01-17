@@ -124,7 +124,7 @@ impl AddExistingIdentityScreen {
             voting_private_key_input: String::new(),
             owner_private_key_input: String::new(),
             payout_address_private_key_input: String::new(),
-            keys_input: vec![String::new()],
+            keys_input: vec![String::new(), String::new(), String::new()],
             add_identity_status: AddIdentityStatus::NotStarted,
             testnet_loaded_nodes,
             identity_load_method: IdentityLoadMethod::ByIdentifier,
@@ -141,9 +141,6 @@ impl AddExistingIdentityScreen {
     fn render_by_identity(&mut self, ui: &mut egui::Ui) -> AppAction {
         let mut action = AppAction::None;
 
-        ui.heading("2. Enter the identity details:");
-        ui.add_space(10.0);
-
         if self.app_context.network == Network::Testnet && self.testnet_loaded_nodes.is_some() {
             if ui.button("Fill Random HPMN").clicked() {
                 self.fill_random_hpmn();
@@ -151,35 +148,133 @@ impl AddExistingIdentityScreen {
             if ui.button("Fill Random Masternode").clicked() {
                 self.fill_random_masternode();
             }
-            ui.add_space(15.0);
+            ui.add_space(10.0);
         }
 
-        ui.horizontal(|ui| {
-            ui.label("Identity ID / ProTxHash (Hex or Base58):");
-            ui.text_edit_singleline(&mut self.identity_id_input);
-        });
-        ui.add_space(3.0);
+        egui::Grid::new("add_existing_identity_grid")
+            .num_columns(3)
+            .spacing([10.0, 5.0])
+            .striped(false)
+            .show(ui, |ui| {
+                ui.label("Identity ID / ProTxHash (Hex or Base58):");
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.identity_id_input)
+                        .desired_width(600.0),
+                );
+                ui.label("");
+                ui.end_row();
 
-        self.render_identity_type_selection(ui);
-        ui.add_space(3.0);
+                ui.label("Identity Type:");
+                egui::ComboBox::from_label("")
+                    .selected_text(format!("{:?}", self.identity_type))
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut self.identity_type, IdentityType::User, "User");
+                        ui.selectable_value(
+                            &mut self.identity_type,
+                            IdentityType::Masternode,
+                            "Masternode",
+                        );
+                        ui.selectable_value(
+                            &mut self.identity_type,
+                            IdentityType::Evonode,
+                            "Evonode",
+                        );
+                    });
+                ui.label("");
+                ui.end_row();
 
-        // Input for Alias
-        ui.horizontal(|ui| {
-            ui.label("Alias (optional):");
-            ui.text_edit_singleline(&mut self.alias_input);
+                // Input for Alias
+                ui.horizontal(|ui| {
+                    ui.label("Alias (optional):");
+                    let info_icon = egui::Label::new("ℹ").sense(egui::Sense::click());
+                    let response = ui.add(info_icon)
+                        .on_hover_text("Alias is optional. It is only used to help identify the identity in Dash Evo Tool. It isn't saved to Dash Platform.");
+                    if response.clicked() {
+                        self.show_pop_up_info = Some("Alias is optional. It is only used to help identify the identity in Dash Evo Tool. It isn't saved to Dash Platform.".to_string());
+                    }    
+                });
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.alias_input)
+                        .desired_width(600.0),
+                );
+                ui.label("");
+                ui.end_row();
 
-            let info_icon = egui::Label::new("ℹ").sense(egui::Sense::click());
-            let response = ui.add(info_icon)
-                .on_hover_text("Alias is optional. It is only used to help identify the identity in Dash Evo Tool. It isn't saved to Dash Platform.");
-            if response.clicked() {
-                self.show_pop_up_info = Some("Alias is optional. It is only used to help identify the identity in Dash Evo Tool. It isn't saved to Dash Platform.".to_string());
-            }            
-        });
-        ui.add_space(3.0);
+                // Render the keys input based on identity type
+                match self.identity_type {
+                    IdentityType::Masternode | IdentityType::Evonode => {
+                        // Store the voting and owner private key references before borrowing `self` mutably
+                        let voting_private_key_input = &mut self.voting_private_key_input;
+                        let owner_private_key_input = &mut self.owner_private_key_input;
+                        let payout_address_private_key_input =
+                            &mut self.payout_address_private_key_input;
 
-        // Render the keys input based on identity type
-        self.render_keys_input(ui);
-        ui.add_space(15.0);
+                        ui.label("Voting Private Key:");
+                        ui.text_edit_singleline(voting_private_key_input);
+                        ui.end_row();
+
+                        ui.label("Owner Private Key:");
+                        ui.text_edit_singleline(owner_private_key_input);
+                        ui.end_row();
+
+                        ui.label("Payout Address Private Key:");
+                        ui.text_edit_singleline(payout_address_private_key_input);
+                        ui.end_row();
+                    }
+                    IdentityType::User => {
+                        // A temporary vector to store indices of keys to be removed
+                        let mut keys_to_remove = vec![];
+
+                        for (i, key) in self.keys_input.iter_mut().enumerate() {
+                            // First column: the label & info icon, combined horizontally
+                            ui.horizontal(|ui| {
+                                ui.label(format!("Private Key {} (Hex or WIF):", i + 1));
+                
+                                let info_icon = egui::Label::new("ℹ").sense(egui::Sense::click());
+                                let response = ui
+                                    .add(info_icon)
+                                    .on_hover_text("You don't need to add all or even any private keys here. \
+                                                    Private keys can be added later. However, without private keys, \
+                                                    you won't be able to sign any transactions.");
+                
+                                if response.clicked() {
+                                    self.show_pop_up_info = Some(
+                                        "You don't need to add all or even any private keys here. \
+                                         Private keys can be added later. However, without private keys, \
+                                         you won't be able to sign any transactions."
+                                            .to_string(),
+                                    );
+                                }
+                            });
+
+                            // Second column: the text field
+                            ui.add(
+                                egui::TextEdit::singleline(key)
+                                    .desired_width(600.0),
+                            );
+                            
+                            // Third column: the remove button
+                            if ui.button("-").clicked() {
+                                keys_to_remove.push(i);
+                            }
+                
+                            ui.end_row();
+                        }
+                
+                        // Remove the keys after the loop to avoid borrowing conflicts
+                        for i in keys_to_remove.iter().rev() {
+                            self.keys_input.remove(*i);
+                        }
+                    }
+                }
+            });
+        ui.add_space(10.0);
+
+        // Add button to add more keys
+        if ui.button("+ Add Key").clicked() {
+            self.keys_input.push(String::new());
+        }
+        ui.add_space(10.0);
 
         // Load Identity button
         let mut new_style = (**ui.style()).clone();
@@ -298,86 +393,6 @@ impl AddExistingIdentityScreen {
             }
         }
         action
-    }
-
-    fn render_identity_type_selection(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            ui.label("Identity Type:");
-            egui::ComboBox::from_label("")
-                .selected_text(format!("{:?}", self.identity_type))
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut self.identity_type, IdentityType::User, "User");
-                    ui.selectable_value(
-                        &mut self.identity_type,
-                        IdentityType::Masternode,
-                        "Masternode",
-                    );
-                    ui.selectable_value(&mut self.identity_type, IdentityType::Evonode, "Evonode");
-                });
-        });
-    }
-
-    fn render_keys_input(&mut self, ui: &mut egui::Ui) {
-        match self.identity_type {
-            IdentityType::Masternode | IdentityType::Evonode => {
-                // Store the voting and owner private key references before borrowing `self` mutably
-                let voting_private_key_input = &mut self.voting_private_key_input;
-                let owner_private_key_input = &mut self.owner_private_key_input;
-                let payout_address_private_key_input = &mut self.payout_address_private_key_input;
-
-                ui.horizontal(|ui| {
-                    ui.label("Voting Private Key:");
-                    ui.text_edit_singleline(voting_private_key_input);
-                });
-                ui.add_space(3.0);
-
-                ui.horizontal(|ui| {
-                    ui.label("Owner Private Key:");
-                    ui.text_edit_singleline(owner_private_key_input);
-                });
-                ui.add_space(3.0);
-
-                ui.horizontal(|ui| {
-                    ui.label("Payout Address Private Key:");
-                    ui.text_edit_singleline(payout_address_private_key_input);
-                });
-            }
-            IdentityType::User => {
-                // A temporary vector to store indices of keys to be removed
-                let mut keys_to_remove = vec![];
-
-                // For User, show multiple key inputs
-                for (i, key) in self.keys_input.iter_mut().enumerate() {
-                    ui.horizontal(|ui| {
-                        ui.label(format!("Private Key {} (Hex or WIF):", i + 1));
-                        ui.text_edit_singleline(key);
-                        if ui.button("-").clicked() {
-                            keys_to_remove.push(i);
-                        }
-                        // Create a label with click sense and tooltip
-                        let info_icon = egui::Label::new("ℹ").sense(egui::Sense::click());
-                        let response = ui.add(info_icon)
-                            .on_hover_text("You don't need to add all or even any private keys here. Private keys can be added later. However, without private keys, you won't be able to sign any transactions.");
-                        // Check if the label was clicked
-                        if response.clicked() {
-                            self.show_pop_up_info = Some("You don't need to add all or even any private keys here. Private keys can be added later. However, without private keys, you won't be able to sign any transactions.".to_string());
-                        }                        
-                    });
-                    ui.add_space(3.0);
-                }
-                ui.add_space(5.0);
-
-                // Remove the keys after the loop to avoid borrowing conflicts
-                for i in keys_to_remove.iter().rev() {
-                    self.keys_input.remove(*i);
-                }
-
-                // Add button to add more keys
-                if ui.button("+ Add Key").clicked() {
-                    self.keys_input.push(String::new());
-                }
-            }
-        }
     }
 
     fn load_identity_clicked(&mut self) -> AppAction {
@@ -522,33 +537,33 @@ impl ScreenLike for AddExistingIdentityScreen {
                 return;
             }
 
-            ui.heading(format!("1. Select a method to load the identity:"));
-            ui.add_space(10.0);
-            // Prepare tabs
-            let tabs = vec![("By Identifier", IdentityLoadMethod::ByIdentifier)];
-            // let wallets_len = {
-            //     // Check if there are wallets
-            //     let wallets = self.app_context.wallets.read().unwrap();
-            //     let has_wallet = !wallets.is_empty();
-            //     if has_wallet {
-            //         tabs.push(("From Wallet", IdentityLoadMethod::FromWallet));
+            // ui.heading(format!("1. Select a method to load the identity:"));
+            // ui.add_space(10.0);
+            // // Prepare tabs
+            // let tabs = vec![("By Identifier", IdentityLoadMethod::ByIdentifier)];
+            // // let wallets_len = {
+            // //     // Check if there are wallets
+            // //     let wallets = self.app_context.wallets.read().unwrap();
+            // //     let has_wallet = !wallets.is_empty();
+            // //     if has_wallet {
+            // //         tabs.push(("From Wallet", IdentityLoadMethod::FromWallet));
+            // //     }
+            // //     wallets.len()
+            // // };
+
+            // // Render tabs
+            // ui.horizontal(|ui| {
+            //     for (tab_name, tab_method) in &tabs {
+            //         let selected = self.identity_load_method == *tab_method;
+            //         if ui.selectable_label(selected, *tab_name).clicked() {
+            //             self.identity_load_method = tab_method.clone();
+            //         }
             //     }
-            //     wallets.len()
-            // };
+            // });
 
-            // Render tabs
-            ui.horizontal(|ui| {
-                for (tab_name, tab_method) in &tabs {
-                    let selected = self.identity_load_method == *tab_method;
-                    if ui.selectable_label(selected, *tab_name).clicked() {
-                        self.identity_load_method = tab_method.clone();
-                    }
-                }
-            });
-
-            ui.add_space(10.0);
-            ui.separator();
-            ui.add_space(10.0);
+            // ui.add_space(10.0);
+            // ui.separator();
+            // ui.add_space(10.0);
 
             match self.identity_load_method {
                 IdentityLoadMethod::ByIdentifier => action |= self.render_by_identity(ui),

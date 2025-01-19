@@ -15,6 +15,7 @@ use crate::ui::identities::transfers::TransferScreen;
 use crate::ui::identities::withdraw_from_identity_screen::WithdrawalScreen;
 use crate::ui::network_chooser_screen::NetworkChooserScreen;
 use crate::ui::tools::proof_log_screen::ProofLogScreen;
+use crate::ui::tools::proof_visualizer_screen::ProofVisualizerScreen;
 use crate::ui::wallets::import_wallet_screen::ImportWalletScreen;
 use crate::ui::wallets::wallets_screen::WalletsBalancesScreen;
 use crate::ui::withdrawal_statuses_screen::WithdrawsStatusScreen;
@@ -58,6 +59,7 @@ pub enum RootScreenType {
     RootScreenToolsTransitionVisualizerScreen,
     RootScreenWithdrawsStatus,
     RootScreenNetworkChooser,
+    RootScreenToolsProofVisualizerScreen,
 }
 
 impl RootScreenType {
@@ -75,6 +77,7 @@ impl RootScreenType {
             RootScreenType::RootScreenWithdrawsStatus => 8,
             RootScreenType::RootScreenToolsProofLogScreen => 9,
             RootScreenType::RootScreenDPNSScheduledVotes => 10,
+            RootScreenType::RootScreenToolsProofVisualizerScreen => 11,
         }
     }
 
@@ -92,6 +95,7 @@ impl RootScreenType {
             8 => Some(RootScreenType::RootScreenWithdrawsStatus),
             9 => Some(RootScreenType::RootScreenToolsProofLogScreen),
             10 => Some(RootScreenType::RootScreenDPNSScheduledVotes),
+            11 => Some(RootScreenType::RootScreenToolsProofVisualizerScreen),
             _ => None,
         }
     }
@@ -113,6 +117,7 @@ impl From<RootScreenType> for ScreenType {
             RootScreenType::RootScreenWalletsBalances => ScreenType::WalletsBalances,
             RootScreenType::RootScreenToolsProofLogScreen => ScreenType::ProofLog,
             RootScreenType::RootScreenDPNSScheduledVotes => ScreenType::ScheduledVotes,
+            RootScreenType::RootScreenToolsProofVisualizerScreen => ScreenType::ProofVisualizer,
         }
     }
 }
@@ -149,6 +154,7 @@ pub enum ScreenType {
     BulkScheduleVoteScreen(Vec<SelectedVote>),
     ScheduledVotes,
     AddContracts,
+    ProofVisualizer,
 }
 
 impl ScreenType {
@@ -239,6 +245,9 @@ impl ScreenType {
             ScreenType::AddContracts => {
                 Screen::AddContractsScreen(AddContractsScreen::new(app_context))
             }
+            ScreenType::ProofVisualizer => {
+                Screen::ProofVisualizerScreen(ProofVisualizerScreen::new(app_context))
+            }
         }
     }
 }
@@ -266,6 +275,7 @@ pub enum Screen {
     ScheduleVoteScreen(ScheduleVoteScreen),
     BulkScheduleVoteScreen(BulkScheduleVoteScreen),
     AddContractsScreen(AddContractsScreen),
+    ProofVisualizerScreen(ProofVisualizerScreen),
 }
 
 impl Screen {
@@ -293,6 +303,7 @@ impl Screen {
             Screen::ScheduleVoteScreen(screen) => screen.app_context = app_context,
             Screen::BulkScheduleVoteScreen(screen) => screen.app_context = app_context,
             Screen::AddContractsScreen(screen) => screen.app_context = app_context,
+            Screen::ProofVisualizerScreen(screen) => screen.app_context = app_context,
         }
     }
 }
@@ -387,6 +398,7 @@ impl Screen {
                 ScreenType::BulkScheduleVoteScreen(screen.selected_votes.clone())
             }
             Screen::AddContractsScreen(_) => ScreenType::AddContracts,
+            Screen::ProofVisualizerScreen(_) => ScreenType::ProofVisualizer,
         }
     }
 }
@@ -416,6 +428,7 @@ impl ScreenLike for Screen {
             Screen::ScheduleVoteScreen(screen) => screen.refresh(),
             Screen::BulkScheduleVoteScreen(screen) => screen.refresh(),
             Screen::AddContractsScreen(screen) => screen.refresh(),
+            Screen::ProofVisualizerScreen(screen) => screen.refresh(),
         }
     }
 
@@ -443,6 +456,7 @@ impl ScreenLike for Screen {
             Screen::ScheduleVoteScreen(screen) => screen.refresh_on_arrival(),
             Screen::BulkScheduleVoteScreen(screen) => screen.refresh_on_arrival(),
             Screen::AddContractsScreen(screen) => screen.refresh_on_arrival(),
+            Screen::ProofVisualizerScreen(screen) => screen.refresh_on_arrival(),
         }
     }
 
@@ -470,6 +484,7 @@ impl ScreenLike for Screen {
             Screen::ScheduleVoteScreen(screen) => screen.ui(ctx),
             Screen::BulkScheduleVoteScreen(screen) => screen.ui(ctx),
             Screen::AddContractsScreen(screen) => screen.ui(ctx),
+            Screen::ProofVisualizerScreen(screen) => screen.ui(ctx),
         }
     }
 
@@ -503,6 +518,7 @@ impl ScreenLike for Screen {
             Screen::ScheduleVoteScreen(screen) => screen.display_message(message, message_type),
             Screen::BulkScheduleVoteScreen(screen) => screen.display_message(message, message_type),
             Screen::AddContractsScreen(screen) => screen.display_message(message, message_type),
+            Screen::ProofVisualizerScreen(screen) => screen.display_message(message, message_type),
         }
     }
 
@@ -574,6 +590,9 @@ impl ScreenLike for Screen {
             Screen::AddContractsScreen(screen) => {
                 screen.display_task_result(backend_task_success_result)
             }
+            Screen::ProofVisualizerScreen(screen) => {
+                screen.display_task_result(backend_task_success_result)
+            }
         }
     }
 
@@ -601,6 +620,7 @@ impl ScreenLike for Screen {
             Screen::ScheduleVoteScreen(screen) => screen.pop_on_success(),
             Screen::BulkScheduleVoteScreen(screen) => screen.pop_on_success(),
             Screen::AddContractsScreen(screen) => screen.pop_on_success(),
+            Screen::ProofVisualizerScreen(screen) => screen.pop_on_success(),
         }
     }
 }

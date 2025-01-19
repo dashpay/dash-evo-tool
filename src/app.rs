@@ -16,6 +16,7 @@ use crate::ui::dpns::dpns_contested_names_screen::{
 use crate::ui::identities::identities_screen::IdentitiesScreen;
 use crate::ui::network_chooser_screen::NetworkChooserScreen;
 use crate::ui::tools::proof_log_screen::ProofLogScreen;
+use crate::ui::tools::proof_visualizer_screen::ProofVisualizerScreen;
 use crate::ui::tools::transition_visualizer_screen::TransitionVisualizerScreen;
 use crate::ui::wallets::wallets_screen::WalletsBalancesScreen;
 use crate::ui::withdrawal_statuses_screen::WithdrawsStatusScreen;
@@ -158,6 +159,7 @@ impl AppState {
             DPNSContestedNamesScreen::new(&mainnet_app_context, DPNSSubscreen::ScheduledVotes);
         let mut transition_visualizer_screen =
             TransitionVisualizerScreen::new(&mainnet_app_context);
+        let mut proof_visualizer_screen = ProofVisualizerScreen::new(&mainnet_app_context);
         let mut proof_log_screen = ProofLogScreen::new(&mainnet_app_context);
         let mut document_query_screen = DocumentQueryScreen::new(&mainnet_app_context);
         let mut withdraws_status_screen = WithdrawsStatusScreen::new(&mainnet_app_context);
@@ -203,6 +205,7 @@ impl AppState {
                     DPNSSubscreen::ScheduledVotes,
                 );
                 transition_visualizer_screen = TransitionVisualizerScreen::new(testnet_app_context);
+                proof_visualizer_screen = ProofVisualizerScreen::new(testnet_app_context);
                 document_query_screen = DocumentQueryScreen::new(testnet_app_context);
                 wallets_balances_screen = WalletsBalancesScreen::new(testnet_app_context);
                 withdraws_status_screen = WithdrawsStatusScreen::new(testnet_app_context);
@@ -270,6 +273,10 @@ impl AppState {
                 (
                     RootScreenType::RootScreenToolsTransitionVisualizerScreen,
                     Screen::TransitionVisualizerScreen(transition_visualizer_screen),
+                ),
+                (
+                    RootScreenType::RootScreenToolsProofVisualizerScreen,
+                    Screen::ProofVisualizerScreen(proof_visualizer_screen),
                 ),
                 (
                     RootScreenType::RootScreenToolsProofLogScreen,

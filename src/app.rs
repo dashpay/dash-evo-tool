@@ -19,7 +19,6 @@ use crate::ui::tools::proof_log_screen::ProofLogScreen;
 use crate::ui::tools::proof_visualizer_screen::ProofVisualizerScreen;
 use crate::ui::tools::transition_visualizer_screen::TransitionVisualizerScreen;
 use crate::ui::wallets::wallets_screen::WalletsBalancesScreen;
-use crate::ui::withdrawal_statuses_screen::WithdrawsStatusScreen;
 use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike, ScreenType};
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -172,7 +171,6 @@ impl AppState {
         let mut proof_visualizer_screen = ProofVisualizerScreen::new(&mainnet_app_context);
         let mut proof_log_screen = ProofLogScreen::new(&mainnet_app_context);
         let mut document_query_screen = DocumentQueryScreen::new(&mainnet_app_context);
-        let mut withdraws_status_screen = WithdrawsStatusScreen::new(&mainnet_app_context);
 
         let (custom_dash_qt_path, overwrite_dash_conf) = match settings.clone() {
             Some((.., db_custom_dash_qt_path, db_overwrite_dash_qt)) => {
@@ -216,7 +214,6 @@ impl AppState {
                 proof_visualizer_screen = ProofVisualizerScreen::new(testnet_app_context);
                 document_query_screen = DocumentQueryScreen::new(testnet_app_context);
                 wallets_balances_screen = WalletsBalancesScreen::new(testnet_app_context);
-                withdraws_status_screen = WithdrawsStatusScreen::new(testnet_app_context);
                 proof_log_screen = ProofLogScreen::new(testnet_app_context);
             }
             network_chooser_screen.current_network = chosen_network;
@@ -293,10 +290,6 @@ impl AppState {
                 (
                     RootScreenType::RootScreenDocumentQuery,
                     Screen::DocumentQueryScreen(document_query_screen),
-                ),
-                (
-                    RootScreenType::RootScreenWithdrawsStatus,
-                    Screen::WithdrawsStatusScreen(withdraws_status_screen),
                 ),
                 (
                     RootScreenType::RootScreenNetworkChooser,

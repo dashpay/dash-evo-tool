@@ -18,7 +18,6 @@ use crate::ui::tools::proof_log_screen::ProofLogScreen;
 use crate::ui::tools::proof_visualizer_screen::ProofVisualizerScreen;
 use crate::ui::wallets::import_wallet_screen::ImportWalletScreen;
 use crate::ui::wallets::wallets_screen::WalletsBalancesScreen;
-use crate::ui::withdrawal_statuses_screen::WithdrawsStatusScreen;
 use contracts_documents::add_contracts_screen::AddContractsScreen;
 use dash_sdk::dpp::identity::Identity;
 use dash_sdk::dpp::prelude::IdentityPublicKey;
@@ -41,7 +40,6 @@ pub(crate) mod identities;
 pub mod network_chooser_screen;
 pub mod tools;
 pub(crate) mod wallets;
-pub mod withdrawal_statuses_screen;
 
 #[derive(Debug, Clone, Copy, Ord, PartialOrd, Eq, PartialEq, Hash)]
 pub enum RootScreenType {
@@ -54,7 +52,6 @@ pub enum RootScreenType {
     RootScreenWalletsBalances,
     RootScreenToolsProofLogScreen,
     RootScreenToolsTransitionVisualizerScreen,
-    RootScreenWithdrawsStatus,
     RootScreenNetworkChooser,
     RootScreenToolsProofVisualizerScreen,
 }
@@ -71,7 +68,6 @@ impl RootScreenType {
             RootScreenType::RootScreenWalletsBalances => 5,
             RootScreenType::RootScreenToolsTransitionVisualizerScreen => 6,
             RootScreenType::RootScreenNetworkChooser => 7,
-            RootScreenType::RootScreenWithdrawsStatus => 8,
             RootScreenType::RootScreenToolsProofLogScreen => 9,
             RootScreenType::RootScreenDPNSScheduledVotes => 10,
             RootScreenType::RootScreenToolsProofVisualizerScreen => 11,
@@ -89,7 +85,6 @@ impl RootScreenType {
             5 => Some(RootScreenType::RootScreenWalletsBalances),
             6 => Some(RootScreenType::RootScreenToolsTransitionVisualizerScreen),
             7 => Some(RootScreenType::RootScreenNetworkChooser),
-            8 => Some(RootScreenType::RootScreenWithdrawsStatus),
             9 => Some(RootScreenType::RootScreenToolsProofLogScreen),
             10 => Some(RootScreenType::RootScreenDPNSScheduledVotes),
             11 => Some(RootScreenType::RootScreenToolsProofVisualizerScreen),
@@ -109,7 +104,6 @@ impl From<RootScreenType> for ScreenType {
                 ScreenType::TransitionVisualizer
             }
             RootScreenType::RootScreenDocumentQuery => ScreenType::DocumentQueryScreen,
-            RootScreenType::RootScreenWithdrawsStatus => ScreenType::WithdrawsStatus,
             RootScreenType::RootScreenNetworkChooser => ScreenType::NetworkChooser,
             RootScreenType::RootScreenWalletsBalances => ScreenType::WalletsBalances,
             RootScreenType::RootScreenToolsProofLogScreen => ScreenType::ProofLog,
@@ -142,7 +136,6 @@ pub enum ScreenType {
     ),
     Keys(Identity),
     DocumentQueryScreen,
-    WithdrawsStatus,
     NetworkChooser,
     RegisterDpnsName,
     ProofLog,
@@ -206,9 +199,6 @@ impl ScreenType {
             ScreenType::DocumentQueryScreen => {
                 Screen::DocumentQueryScreen(DocumentQueryScreen::new(app_context))
             }
-            ScreenType::WithdrawsStatus => {
-                Screen::WithdrawsStatusScreen(WithdrawsStatusScreen::new(app_context))
-            }
             ScreenType::AddNewWallet => {
                 Screen::AddNewWalletScreen(AddNewWalletScreen::new(app_context))
             }
@@ -249,7 +239,6 @@ pub enum Screen {
     AddKeyScreen(AddKeyScreen),
     ProofLogScreen(ProofLogScreen),
     TransitionVisualizerScreen(TransitionVisualizerScreen),
-    WithdrawsStatusScreen(WithdrawsStatusScreen),
     NetworkChooserScreen(NetworkChooserScreen),
     WalletsBalancesScreen(WalletsBalancesScreen),
     AddContractsScreen(AddContractsScreen),
@@ -275,7 +264,6 @@ impl Screen {
             Screen::TransferScreen(screen) => screen.app_context = app_context,
             Screen::TopUpIdentityScreen(screen) => screen.app_context = app_context,
             Screen::WalletsBalancesScreen(screen) => screen.app_context = app_context,
-            Screen::WithdrawsStatusScreen(screen) => screen.app_context = app_context,
             Screen::ImportWalletScreen(screen) => screen.app_context = app_context,
             Screen::ProofLogScreen(screen) => screen.app_context = app_context,
             Screen::AddContractsScreen(screen) => screen.app_context = app_context,
@@ -361,7 +349,6 @@ impl Screen {
             Screen::AddNewWalletScreen(_) => ScreenType::AddNewWallet,
             Screen::TransferScreen(screen) => ScreenType::TransferScreen(screen.identity.clone()),
             Screen::WalletsBalancesScreen(_) => ScreenType::WalletsBalances,
-            Screen::WithdrawsStatusScreen(_) => ScreenType::WithdrawsStatus,
             Screen::ImportWalletScreen(_) => ScreenType::ImportWallet,
             Screen::ProofLogScreen(_) => ScreenType::ProofLog,
             Screen::AddContractsScreen(_) => ScreenType::AddContracts,
@@ -388,7 +375,6 @@ impl ScreenLike for Screen {
             Screen::TransferScreen(screen) => screen.refresh(),
             Screen::AddKeyScreen(screen) => screen.refresh(),
             Screen::TransitionVisualizerScreen(screen) => screen.refresh(),
-            Screen::WithdrawsStatusScreen(screen) => screen.refresh(),
             Screen::NetworkChooserScreen(screen) => screen.refresh(),
             Screen::WalletsBalancesScreen(screen) => screen.refresh(),
             Screen::ProofLogScreen(screen) => screen.refresh(),
@@ -414,7 +400,6 @@ impl ScreenLike for Screen {
             Screen::TransferScreen(screen) => screen.refresh_on_arrival(),
             Screen::AddKeyScreen(screen) => screen.refresh_on_arrival(),
             Screen::TransitionVisualizerScreen(screen) => screen.refresh_on_arrival(),
-            Screen::WithdrawsStatusScreen(screen) => screen.refresh_on_arrival(),
             Screen::NetworkChooserScreen(screen) => screen.refresh_on_arrival(),
             Screen::WalletsBalancesScreen(screen) => screen.refresh_on_arrival(),
             Screen::ProofLogScreen(screen) => screen.refresh_on_arrival(),
@@ -440,7 +425,6 @@ impl ScreenLike for Screen {
             Screen::TransferScreen(screen) => screen.ui(ctx),
             Screen::AddKeyScreen(screen) => screen.ui(ctx),
             Screen::TransitionVisualizerScreen(screen) => screen.ui(ctx),
-            Screen::WithdrawsStatusScreen(screen) => screen.ui(ctx),
             Screen::NetworkChooserScreen(screen) => screen.ui(ctx),
             Screen::WalletsBalancesScreen(screen) => screen.ui(ctx),
             Screen::ProofLogScreen(screen) => screen.ui(ctx),
@@ -470,7 +454,6 @@ impl ScreenLike for Screen {
             Screen::TransitionVisualizerScreen(screen) => {
                 screen.display_message(message, message_type)
             }
-            Screen::WithdrawsStatusScreen(screen) => screen.display_message(message, message_type),
             Screen::NetworkChooserScreen(screen) => screen.display_message(message, message_type),
             Screen::WalletsBalancesScreen(screen) => screen.display_message(message, message_type),
             Screen::ProofLogScreen(screen) => screen.display_message(message, message_type),
@@ -526,9 +509,6 @@ impl ScreenLike for Screen {
             Screen::TransitionVisualizerScreen(screen) => {
                 screen.display_task_result(backend_task_success_result.clone())
             }
-            Screen::WithdrawsStatusScreen(screen) => {
-                screen.display_task_result(backend_task_success_result.clone())
-            }
             Screen::NetworkChooserScreen(screen) => {
                 screen.display_task_result(backend_task_success_result.clone())
             }
@@ -564,7 +544,6 @@ impl ScreenLike for Screen {
             Screen::TransferScreen(screen) => screen.pop_on_success(),
             Screen::AddKeyScreen(screen) => screen.pop_on_success(),
             Screen::TransitionVisualizerScreen(screen) => screen.pop_on_success(),
-            Screen::WithdrawsStatusScreen(screen) => screen.pop_on_success(),
             Screen::NetworkChooserScreen(screen) => screen.pop_on_success(),
             Screen::WalletsBalancesScreen(screen) => screen.pop_on_success(),
             Screen::ProofLogScreen(screen) => screen.pop_on_success(),

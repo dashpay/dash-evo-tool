@@ -16,7 +16,7 @@ use dash_sdk::dpp::data_contract::document_type::{DocumentType, Index};
 use dash_sdk::dpp::prelude::TimestampMillis;
 use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::Start;
 use dash_sdk::platform::{Document, DocumentQuery, Identifier};
-use egui::{Context, Frame, Margin, ScrollArea, Ui};
+use egui::{Color32, Context, Frame, Margin, ScrollArea, Ui};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -322,7 +322,10 @@ impl DocumentQueryScreen {
                                 "Fetching documents... Time taken so far: {} seconds",
                                 time_elapsed
                             ));
-                            ui.spinner();
+                            ui.add(
+                                egui::widgets::Spinner::default()
+                                    .color(Color32::from_rgb(0, 128, 255)),
+                            );
                         });
                     }
                     DocumentQueryStatus::Complete => match self.document_display_mode {

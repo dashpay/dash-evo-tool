@@ -23,7 +23,7 @@ use dash_sdk::dpp::identity::KeyType::BIP13_SCRIPT_HASH;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::IdentityPublicKey;
 use eframe::egui::{self, Context};
-use egui::{RichText, TextEdit};
+use egui::{Color32, RichText, ScrollArea, TextEdit};
 use std::sync::{Arc, RwLock};
 
 pub struct KeyInfoScreen {
@@ -43,6 +43,7 @@ pub struct KeyInfoScreen {
     view_wallet_unlock: bool,
     wallet_open: bool,
     view_private_key_even_if_encrypted_or_in_wallet: bool,
+    show_pop_up_info: Option<String>,
 }
 
 // /// The prefix for signed messages using Dash's message signing protocol.
@@ -72,239 +73,278 @@ impl ScreenLike for KeyInfoScreen {
         );
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("Key Information");
+            ScrollArea::vertical().show(ui, |ui| {
+                ui.heading("Key Information");
+                ui.add_space(10.0);
 
-            egui::Grid::new("key_info_grid")
-                .num_columns(2)
-                .spacing([10.0, 10.0])
-                .striped(true)
-                .show(ui, |ui| {
-                    // Key ID
-                    ui.label(RichText::new("Key ID:").strong());
-                    ui.label(format!("{}", self.key.id()));
-                    ui.end_row();
-
-                    // Purpose
-                    ui.label(RichText::new("Purpose:").strong());
-                    ui.label(format!("{:?}", self.key.purpose()));
-                    ui.end_row();
-
-                    // Security Level
-                    ui.label(RichText::new("Security Level:").strong());
-                    ui.label(format!("{:?}", self.key.security_level()));
-                    ui.end_row();
-
-                    // Type
-                    ui.label(RichText::new("Type:").strong());
-                    ui.label(format!("{:?}", self.key.key_type()));
-                    ui.end_row();
-
-                    // Read Only
-                    ui.label(RichText::new("Read Only:").strong());
-                    ui.label(format!("{}", self.key.read_only()));
-                    ui.end_row();
-
-                    // Disabled
-                    ui.label(RichText::new("Active/Disabled:").strong());
-                    if !self.key.is_disabled() {
-                        ui.label("Active");
-                    } else {
-                        ui.label("Disabled");
-                    }
-                    ui.end_row();
-
-                    if let Some((_, Some(wallet_derivation_path))) = self.private_key_data.as_ref()
-                    {
-                        // Disabled
-                        ui.label(RichText::new("In local Wallet").strong());
-                        ui.label(
-                            RichText::new(format!(
-                                "At derivation path {}",
-                                wallet_derivation_path.derivation_path
-                            ))
-                            .strong(),
-                        );
+                egui::Grid::new("key_info_grid")
+                    .num_columns(2)
+                    .spacing([10.0, 10.0])
+                    .striped(true)
+                    .show(ui, |ui| {
+                        // Key ID
+                        ui.label(RichText::new("Key ID:").strong());
+                        ui.label(format!("{}", self.key.id()));
                         ui.end_row();
-                    }
 
-                    ui.end_row();
-                });
+                        // Purpose
+                        ui.label(RichText::new("Purpose:").strong());
+                        ui.label(format!("{:?}", self.key.purpose()));
+                        ui.end_row();
 
-            ui.separator();
+                        // Security Level
+                        ui.label(RichText::new("Security Level:").strong());
+                        ui.label(format!("{:?}", self.key.security_level()));
+                        ui.end_row();
 
-            // Display the public key information
-            ui.heading("Public Key Information");
+                        // Type
+                        ui.label(RichText::new("Type:").strong());
+                        ui.label(format!("{:?}", self.key.key_type()));
+                        ui.end_row();
 
-            egui::Grid::new("public_key_info_grid")
-                .num_columns(2)
-                .spacing([10.0, 10.0])
-                .striped(true)
-                .show(ui, |ui| {
-                    match self.key.key_type() {
-                        KeyType::ECDSA_SECP256K1 | KeyType::BLS12_381 => {
-                            // Public Key Hex
-                            ui.label(RichText::new("Public Key (Hex):").strong());
-                            ui.label(self.key.data().to_string(Encoding::Hex));
+                        // Read Only
+                        ui.label(RichText::new("Read Only:").strong());
+                        ui.label(format!("{}", self.key.read_only()));
+                        ui.end_row();
+
+                        // Disabled
+                        ui.label(RichText::new("Active/Disabled:").strong());
+                        if !self.key.is_disabled() {
+                            ui.label("Active");
+                        } else {
+                            ui.label("Disabled");
+                        }
+                        ui.end_row();
+
+                        if let Some((_, Some(wallet_derivation_path))) =
+                            self.private_key_data.as_ref()
+                        {
+                            // Disabled
+                            ui.label(RichText::new("In local Wallet").strong());
+                            ui.label(
+                                RichText::new(format!(
+                                    "At derivation path {}",
+                                    wallet_derivation_path.derivation_path
+                                ))
+                                .strong(),
+                            );
                             ui.end_row();
-
-                            // Public Key Hex
-                            ui.label(RichText::new("Public Key (Base64):").strong());
-                            ui.label(self.key.data().to_string(Encoding::Base64));
-                            ui.end_row();
                         }
-                        _ => {}
-                    }
 
-                    // Public Key Hash
-                    ui.label(RichText::new("Public Key Hash:").strong());
-                    match self.key.public_key_hash() {
-                        Ok(hash) => {
-                            let hash_hex = hex::encode(hash);
-                            ui.label(hash_hex);
-                        }
-                        Err(e) => {
-                            ui.colored_label(egui::Color32::RED, format!("Error: {}", e));
-                        }
-                    }
+                        ui.end_row();
+                    });
 
-                    if self.key.key_type().is_core_address_key_type() {
+                ui.add_space(10.0);
+                ui.separator();
+                ui.add_space(10.0);
+
+                // Display the public key information
+                ui.heading("Public Key Information");
+                ui.add_space(10.0);
+
+                egui::Grid::new("public_key_info_grid")
+                    .num_columns(2)
+                    .spacing([10.0, 10.0])
+                    .striped(true)
+                    .show(ui, |ui| {
+                        match self.key.key_type() {
+                            KeyType::ECDSA_SECP256K1 | KeyType::BLS12_381 => {
+                                // Public Key Hex
+                                ui.label(RichText::new("Public Key (Hex):").strong());
+                                ui.label(self.key.data().to_string(Encoding::Hex));
+                                ui.end_row();
+
+                                // Public Key Hex
+                                ui.label(RichText::new("Public Key (Base64):").strong());
+                                ui.label(self.key.data().to_string(Encoding::Base64));
+                                ui.end_row();
+                            }
+                            _ => {}
+                        }
+
                         // Public Key Hash
-                        ui.label(RichText::new("Address:").strong());
+                        ui.label(RichText::new("Public Key Hash:").strong());
                         match self.key.public_key_hash() {
                             Ok(hash) => {
-                                let address = if self.key.key_type() == BIP13_SCRIPT_HASH {
-                                    Address::new(
-                                        self.app_context.network,
-                                        Payload::ScriptHash(ScriptHash::from_byte_array(hash)),
-                                    )
-                                } else {
-                                    Address::new(
-                                        self.app_context.network,
-                                        Payload::PubkeyHash(PubkeyHash::from_byte_array(hash)),
-                                    )
-                                };
-                                ui.label(address.to_string());
+                                let hash_hex = hex::encode(hash);
+                                ui.label(hash_hex);
                             }
                             Err(e) => {
                                 ui.colored_label(egui::Color32::RED, format!("Error: {}", e));
                             }
                         }
-                    }
 
-                    ui.end_row();
-                });
+                        if self.key.key_type().is_core_address_key_type() {
+                            // Public Key Hash
+                            ui.label(RichText::new("Address:").strong());
+                            match self.key.public_key_hash() {
+                                Ok(hash) => {
+                                    let address = if self.key.key_type() == BIP13_SCRIPT_HASH {
+                                        Address::new(
+                                            self.app_context.network,
+                                            Payload::ScriptHash(ScriptHash::from_byte_array(hash)),
+                                        )
+                                    } else {
+                                        Address::new(
+                                            self.app_context.network,
+                                            Payload::PubkeyHash(PubkeyHash::from_byte_array(hash)),
+                                        )
+                                    };
+                                    ui.label(address.to_string());
+                                }
+                                Err(e) => {
+                                    ui.colored_label(egui::Color32::RED, format!("Error: {}", e));
+                                }
+                            }
+                        }
 
-            ui.separator();
+                        ui.end_row();
+                    });
 
-            // Display the private key if available
-            if let Some((private_key, _)) = self.private_key_data.as_mut() {
-                ui.label("Private Key:");
-                match private_key {
-                    PrivateKeyData::Clear(clear) | PrivateKeyData::AlwaysClear(clear) => {
-                        let private_key_hex = hex::encode(clear);
-                        ui.add(
-                            TextEdit::multiline(&mut private_key_hex.as_str().to_owned())
-                                .desired_width(f32::INFINITY),
-                        );
-                        self.render_sign_input(ui);
-                    }
-                    PrivateKeyData::Encrypted(_) => {
-                        ui.label("key is encrypted");
-                        //todo decrypt key
-                    }
-                    PrivateKeyData::AtWalletDerivationPath(derivation_path) => {
-                        if self.wallet_open
-                            && self.view_private_key_even_if_encrypted_or_in_wallet
-                            && self.selected_wallet.is_some()
-                        {
-                            if let Some(private_key) = self.decrypted_private_key {
-                                let private_key_wif = private_key.to_wif();
-                                ui.add(
-                                    TextEdit::multiline(&mut private_key_wif.as_str().to_owned())
+                ui.add_space(10.0);
+                ui.separator();
+                ui.add_space(10.0);
+
+                // Display the private key if available
+                if let Some((private_key, _)) = self.private_key_data.as_mut() {
+                    ui.heading("Private Key");
+                    ui.add_space(10.0);
+
+                    match private_key {
+                        PrivateKeyData::Clear(clear) | PrivateKeyData::AlwaysClear(clear) => {
+                            let private_key_hex = hex::encode(clear);
+                            ui.add(
+                                TextEdit::singleline(&mut private_key_hex.as_str().to_owned())
+                                    .desired_width(f32::INFINITY),
+                            );
+                            self.render_sign_input(ui);
+                        }
+                        PrivateKeyData::Encrypted(_) => {
+                            ui.label("Key is encrypted");
+                            ui.add_space(10.0);
+
+                            //todo decrypt key
+                        }
+                        PrivateKeyData::AtWalletDerivationPath(derivation_path) => {
+                            if self.wallet_open
+                                && self.view_private_key_even_if_encrypted_or_in_wallet
+                                && self.selected_wallet.is_some()
+                            {
+                                if let Some(private_key) = self.decrypted_private_key {
+                                    let private_key_wif = private_key.to_wif();
+                                    ui.add(
+                                        TextEdit::multiline(
+                                            &mut private_key_wif.as_str().to_owned(),
+                                        )
                                         .desired_width(f32::INFINITY),
-                                );
+                                    );
+                                } else {
+                                    let wallet =
+                                        self.selected_wallet.as_ref().unwrap().read().unwrap();
+                                    match wallet.private_key_at_derivation_path(
+                                        &derivation_path.derivation_path,
+                                    ) {
+                                        Ok(private_key) => {
+                                            let private_key_wif = private_key.to_wif();
+                                            ui.add(
+                                                TextEdit::multiline(
+                                                    &mut private_key_wif.as_str().to_owned(),
+                                                )
+                                                .desired_width(f32::INFINITY),
+                                            );
+                                            self.decrypted_private_key = Some(private_key);
+                                        }
+                                        Err(e) => {
+                                            ui.label(format!("Error: {}", e));
+                                            return;
+                                        }
+                                    }
+                                }
+                                self.render_sign_input(ui);
+                            } else if self.wallet_open {
+                                ui.colored_label(Color32::DARK_RED, "Key is in encrypted wallet");
+                                ui.add_space(10.0);
+
+                                if ui.button("View Private Key").clicked() {
+                                    self.view_private_key_even_if_encrypted_or_in_wallet = true;
+                                    self.view_wallet_unlock = true;
+                                }
+                                if self.decrypted_private_key.is_none() {
+                                    let wallet =
+                                        self.selected_wallet.as_ref().unwrap().read().unwrap();
+                                    match wallet.private_key_at_derivation_path(
+                                        &derivation_path.derivation_path,
+                                    ) {
+                                        Ok(private_key) => {
+                                            let private_key_wif = private_key.to_wif();
+                                            ui.add(
+                                                TextEdit::multiline(
+                                                    &mut private_key_wif.as_str().to_owned(),
+                                                )
+                                                .desired_width(f32::INFINITY),
+                                            );
+                                            self.decrypted_private_key = Some(private_key);
+                                        }
+                                        Err(e) => {
+                                            ui.label(format!("Error: {}", e));
+                                            return;
+                                        }
+                                    }
+                                }
+                                self.render_sign_input(ui);
                             } else {
-                                let wallet = self.selected_wallet.as_ref().unwrap().read().unwrap();
-                                match wallet.private_key_at_derivation_path(
-                                    &derivation_path.derivation_path,
-                                ) {
-                                    Ok(private_key) => {
-                                        let private_key_wif = private_key.to_wif();
-                                        ui.add(
-                                            TextEdit::multiline(
-                                                &mut private_key_wif.as_str().to_owned(),
-                                            )
-                                            .desired_width(f32::INFINITY),
-                                        );
-                                        self.decrypted_private_key = Some(private_key);
-                                    }
-                                    Err(e) => {
-                                        ui.label(format!("Error: {}", e));
-                                        return;
-                                    }
+                                ui.colored_label(Color32::DARK_RED, "Key is in encrypted wallet");
+                                ui.add_space(10.0);
+
+                                if ui.button("View Private Key").clicked() {
+                                    self.view_private_key_even_if_encrypted_or_in_wallet = true;
+                                    self.view_wallet_unlock = true;
                                 }
-                            }
-                            self.render_sign_input(ui);
-                        } else if self.wallet_open {
-                            ui.label("key is in encrypted wallet");
-                            if ui.button("view private key").clicked() {
-                                self.view_private_key_even_if_encrypted_or_in_wallet = true;
-                                self.view_wallet_unlock = true;
-                            }
-                            if self.decrypted_private_key.is_none() {
-                                let wallet = self.selected_wallet.as_ref().unwrap().read().unwrap();
-                                match wallet.private_key_at_derivation_path(
-                                    &derivation_path.derivation_path,
-                                ) {
-                                    Ok(private_key) => {
-                                        let private_key_wif = private_key.to_wif();
-                                        ui.add(
-                                            TextEdit::multiline(
-                                                &mut private_key_wif.as_str().to_owned(),
-                                            )
-                                            .desired_width(f32::INFINITY),
-                                        );
-                                        self.decrypted_private_key = Some(private_key);
-                                    }
-                                    Err(e) => {
-                                        ui.label(format!("Error: {}", e));
-                                        return;
-                                    }
+
+                                if ui.button("Sign Message").clicked() {
+                                    self.view_wallet_unlock = true;
                                 }
-                            }
-                            self.render_sign_input(ui);
-                        } else {
-                            ui.label("key is in encrypted wallet");
-                            if ui.button("view private key").clicked() {
-                                self.view_private_key_even_if_encrypted_or_in_wallet = true;
-                                self.view_wallet_unlock = true;
-                            }
-                            if ui.button("sign message").clicked() {
-                                self.view_wallet_unlock = true;
                             }
                         }
                     }
-                }
-            } else {
-                ui.label("Enter Private Key:");
-                ui.text_edit_singleline(&mut self.private_key_input);
+                } else {
+                    ui.label("Enter Private Key:");
+                    ui.text_edit_singleline(&mut self.private_key_input);
 
-                if ui.button("Add Private Key").clicked() {
-                    self.validate_and_store_private_key();
+                    if ui.button("Add Private Key").clicked() {
+                        self.validate_and_store_private_key();
+                    }
+
+                    // Display error message if validation fails
+                    if let Some(error_message) = &self.error_message {
+                        ui.colored_label(egui::Color32::RED, error_message);
+                    }
                 }
 
-                // Display error message if validation fails
-                if let Some(error_message) = &self.error_message {
-                    ui.colored_label(egui::Color32::RED, error_message);
+                if self.view_wallet_unlock {
+                    let (needed_unlock, just_unlocked) = self.render_wallet_unlock_if_needed(ui);
+                    if !needed_unlock || just_unlocked {
+                        self.wallet_open = true;
+                    }
                 }
-            }
 
-            if self.view_wallet_unlock {
-                let (needed_unlock, just_unlocked) = self.render_wallet_unlock_if_needed(ui);
-                if !needed_unlock || just_unlocked {
-                    self.wallet_open = true;
+                // Show the popup window if `show_popup` is true
+                if let Some(show_pop_up_info_text) = self.show_pop_up_info.clone() {
+                    egui::Window::new("Sign Message Info")
+                        .collapsible(false) // Prevent collapsing
+                        .resizable(false) // Prevent resizing
+                        .show(ctx, |ui| {
+                            ui.label(show_pop_up_info_text);
+                            ui.add_space(10.0);
+
+                            // Add a close button to dismiss the popup
+                            if ui.button("Close").clicked() {
+                                self.show_pop_up_info = None
+                            }
+                        });
                 }
-            }
+                ui.add_space(10.0);
+            });
         });
         action
     }
@@ -343,6 +383,7 @@ impl KeyInfoScreen {
             view_wallet_unlock: false,
             wallet_open: false,
             view_private_key_even_if_encrypted_or_in_wallet: false,
+            show_pop_up_info: None,
         }
     }
 
@@ -395,15 +436,33 @@ impl KeyInfoScreen {
     }
 
     fn render_sign_input(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(10.0);
         ui.separator();
-        ui.heading("Sign Message");
+        ui.add_space(10.0);
+
+        ui.horizontal(|ui| {
+            ui.heading("Sign");
+
+            // Create a label with click sense and tooltip
+            let info_icon = egui::Label::new("ℹ").sense(egui::Sense::click());
+            let response = ui.add(info_icon)
+                .on_hover_text("Enter a message and click Sign to encrypt it with your private key. You can send the encrypted message to someone and they can decrypt it using your public key. This is useful for proving you own the private key.");
+
+            // Check if the label was clicked
+            if response.clicked() {
+                self.show_pop_up_info = Some("Enter a message click Sign to encrypt it with your private key. You can can send the encrypted message to someone and they can decrypt it using your public key. This is useful for proving you own the private key.".to_string());
+            }
+        });
+        ui.add_space(5.0);
 
         ui.label("Enter message to sign:");
+        ui.add_space(5.0);
         ui.add(
             egui::TextEdit::multiline(&mut self.message_input)
                 .desired_width(f32::INFINITY)
                 .desired_rows(3),
         );
+        ui.add_space(5.0);
 
         if ui.button("Sign Message").clicked() {
             // Attempt to sign the message
@@ -415,8 +474,12 @@ impl KeyInfoScreen {
         }
 
         if let Some(signed_message) = &self.signed_message {
+            ui.add_space(10.0);
             ui.separator();
+            ui.add_space(10.0);
+
             ui.label("Signed Message (Base64):");
+            ui.add_space(5.0);
             ui.add(
                 egui::TextEdit::multiline(&mut signed_message.as_str().to_owned())
                     .desired_width(f32::INFINITY)

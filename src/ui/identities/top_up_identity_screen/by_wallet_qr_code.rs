@@ -125,7 +125,7 @@ impl TopUpIdentityScreen {
 
         ui.vertical_centered(|ui| {
             if let Err(e) = self.render_qr_code(ui, amount_dash) {
-                eprintln!("Error: {:?}", e);
+                self.error_message = Some(e);
             }
 
             ui.add_space(20.0);

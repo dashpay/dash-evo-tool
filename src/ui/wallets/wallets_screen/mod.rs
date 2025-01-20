@@ -699,15 +699,13 @@ impl ScreenLike for WalletsBalancesScreen {
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.add_space(10.0);
             self.render_wallet_selection(ui);
-            ui.add_space(10.0);
-
             ui.add_space(20.0);
 
             // Render the address table
             if self.selected_wallet.is_some() {
                 self.render_filter_selector(ui);
 
-                ui.add_space(20.0);
+                ui.add_space(10.0);
 
                 if !(self.selected_filters.contains("Unused Asset Locks")
                     && self.selected_filters.len() == 1)
@@ -720,7 +718,7 @@ impl ScreenLike for WalletsBalancesScreen {
                 if self.selected_filters.contains("Unused Asset Locks") {
                     // Render the asset locks section
                     self.render_wallet_asset_locks(ui);
-                    ui.add_space(15.0);
+                    ui.add_space(10.0);
                 }
 
                 self.render_bottom_options(ui);
@@ -736,7 +734,7 @@ impl ScreenLike for WalletsBalancesScreen {
                     MessageType::Success => egui::Color32::DARK_GREEN,
                 };
 
-                ui.add_space(15.0);
+                ui.add_space(10.0);
                 ui.allocate_ui(egui::Vec2::new(ui.available_width(), 30.0), |ui| {
                     ui.group(|ui| {
                         ui.horizontal_wrapped(|ui| {

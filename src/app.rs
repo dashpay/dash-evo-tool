@@ -5,7 +5,7 @@ use crate::app_dir::{
 use crate::backend_task::contested_names::ContestedResourceTask;
 use crate::backend_task::core::CoreItem;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
-use crate::components::core_zmq_listener::ZMQMessage;
+use crate::components::core_zmq_listener::{CoreZMQListener, ZMQMessage};
 use crate::context::AppContext;
 use crate::database::Database;
 use crate::logging::initialize_logger;
@@ -56,6 +56,8 @@ pub struct AppState {
     pub mainnet_app_context: Arc<AppContext>,
     pub testnet_app_context: Option<Arc<AppContext>>,
     pub devnet_app_context: Option<Arc<AppContext>>,
+    pub mainnet_core_zmq_listener: CoreZMQListener,
+    pub testnet_core_zmq_listener: CoreZMQListener,
     pub core_message_receiver: mpsc::Receiver<(ZMQMessage, Network)>,
     pub task_result_sender: tokiompsc::Sender<TaskResult>, // Channel sender for sending task results
     pub task_result_receiver: tokiompsc::Receiver<TaskResult>, // Channel receiver for receiving task results
@@ -240,7 +242,28 @@ impl AppState {
         let last_repaint = Instant::now();
 
         // Create a channel for communication with the InstantSendListener
-        let (_core_message_sender, core_message_receiver) = mpsc::channel();
+        let (core_message_sender, core_message_receiver) = mpsc::channel();
+
+        let mainnet_core_zmq_listener = CoreZMQListener::spawn_listener(
+            Network::Dash,
+            "tcp://127.0.0.1:23708",
+            core_message_sender.clone(), // Clone the sender for each listener
+            Some(mainnet_app_context.sx_zmq_status.clone()),
+        )
+        .expect("Failed to create mainnet InstantSend listener");
+
+        let tx_zmq_status_option = match testnet_app_context {
+            Some(ref context) => Some(context.sx_zmq_status.clone()),
+            None => None,
+        };
+
+        let testnet_core_zmq_listener = CoreZMQListener::spawn_listener(
+            Network::Testnet,
+            "tcp://127.0.0.1:23709",
+            core_message_sender, // Use the original sender or create a new one if needed
+            tx_zmq_status_option,
+        )
+        .expect("Failed to create testnet InstantSend listener");
 
         Self {
             main_screens: [
@@ -300,6 +323,8 @@ impl AppState {
             mainnet_app_context,
             testnet_app_context,
             devnet_app_context,
+            mainnet_core_zmq_listener,
+            testnet_core_zmq_listener,
             core_message_receiver,
             task_result_sender,
             task_result_receiver,

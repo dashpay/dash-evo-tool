@@ -568,14 +568,14 @@ impl IdentitiesScreen {
                                             }
 
                                             if more_keys_available {
-                                                if ui.button("...").clicked() {
+                                                if ui.button("...").on_hover_text("Show more keys").clicked() {
                                                     self.show_more_keys_popup =
                                                         Some(qualified_identity.clone());
                                                 }
                                             }
 
                                             if qualified_identity.can_sign_with_master_key().is_some()
-                                                && ui.button("Add Key").clicked()
+                                                && ui.button("+").on_hover_text("Add key").clicked()
                                             {
                                                 action = AppAction::AddScreen(Screen::AddKeyScreen(
                                                     AddKeyScreen::new(
@@ -591,7 +591,7 @@ impl IdentitiesScreen {
 
                                         ui.spacing_mut().item_spacing.x = 3.0;
 
-                                        if ui.button("Withdraw").clicked() {
+                                        if ui.button("Withdraw").on_hover_text("Withdraw credits from this identity to a Dash Core address").clicked() {
                                             action = AppAction::AddScreen(
                                                 Screen::WithdrawalScreen(WithdrawalScreen::new(
                                                     qualified_identity.clone(),
@@ -599,7 +599,7 @@ impl IdentitiesScreen {
                                                 )),
                                             );
                                         }
-                                        if ui.button("Top up").clicked() {
+                                        if ui.button("Top up").on_hover_text("Increase this identity's balance by sending it Dash from the Core chain").clicked() {
                                             action = AppAction::AddScreen(
                                                 Screen::TopUpIdentityScreen(TopUpIdentityScreen::new(
                                                     qualified_identity.clone(),
@@ -607,7 +607,7 @@ impl IdentitiesScreen {
                                                 )),
                                             );
                                         }
-                                        if ui.button("Transfer").clicked() {
+                                        if ui.button("Transfer").on_hover_text("Transfer credits from this identity to another identity").clicked() {
                                             action = AppAction::AddScreen(
                                                 Screen::TransferScreen(TransferScreen::new(
                                                     qualified_identity.clone(),
@@ -632,7 +632,7 @@ impl IdentitiesScreen {
                                             }
 
                                             // Remove
-                                            if ui.button("Remove").clicked() {
+                                            if ui.button("Remove").on_hover_text("Remove this identity from Dash Evo Tool (it'll still exist on Dash Platform)").clicked() {
                                                 self.identity_to_remove =
                                                     Some(qualified_identity.clone());
                                             }
@@ -640,9 +640,9 @@ impl IdentitiesScreen {
 
                                         ui.horizontal(|ui| {
                                             // Up arrow
-                                            let up_btn = ui.button("⬆");
+                                            let up_btn = ui.button("⬆").on_hover_text("Move this identity up in the list");
                                             // Down arrow
-                                            let down_btn = ui.button("⬇");
+                                            let down_btn = ui.button("⬇").on_hover_text("Move this identity down in the list");
 
                                             if up_btn.clicked() {
                                                 // If we are currently sorted (not custom),

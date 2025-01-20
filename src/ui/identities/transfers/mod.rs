@@ -314,7 +314,7 @@ impl ScreenLike for TransferScreen {
                 }
 
                 // Select the key to sign with
-                ui.heading("1. Select the key to sign with");
+                ui.heading("1. Select the key to sign the transaction with");
                 ui.add_space(5.0);
                 self.render_key_selection(ui);
 

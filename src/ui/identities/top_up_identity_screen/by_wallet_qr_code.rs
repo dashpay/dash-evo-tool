@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 impl TopUpIdentityScreen {
     fn render_qr_code(&mut self, ui: &mut egui::Ui, amount: f64) -> Result<(), String> {
-        let (address, should_check_balance) = {
+        let (address, _should_check_balance) = {
             // Scope the write lock to ensure it's dropped before calling `start_balance_check`.
 
             if let Some(wallet_guard) = self.wallet.as_ref() {
@@ -127,14 +127,14 @@ impl TopUpIdentityScreen {
             if let Err(e) = self.render_qr_code(ui, amount_dash) {
                 eprintln!("Error: {:?}", e);
             }
-    
+
             ui.add_space(20.0);
-    
+
             if let Some(error_message) = self.error_message.as_ref() {
                 ui.colored_label(Color32::DARK_RED, error_message);
                 ui.add_space(20.0);
             }
-    
+
             match step {
                 WalletFundedScreenStep::ChooseFundingMethod => {}
                 WalletFundedScreenStep::WaitingOnFunds => {

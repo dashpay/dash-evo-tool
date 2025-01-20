@@ -9,13 +9,12 @@ use crate::ui::identities::add_new_identity_screen::{
 use crate::ui::identities::funding_common::{copy_to_clipboard, generate_qr_code_image};
 use dash_sdk::dashcore_rpc::RpcApi;
 use eframe::epaint::TextureHandle;
-use eframe::App;
 use egui::{Color32, Ui};
 use std::sync::Arc;
 
 impl AddNewIdentityScreen {
     fn render_qr_code(&mut self, ui: &mut egui::Ui, amount: f64) -> Result<(), String> {
-        let (address, should_check_balance) = {
+        let (address, _should_check_balance) = {
             // Scope the write lock to ensure it's dropped before calling `start_balance_check`.
 
             if let Some(wallet_guard) = self.selected_wallet.as_ref() {
@@ -139,16 +138,16 @@ impl AddNewIdentityScreen {
             egui::Layout::top_down(egui::Align::Min).with_cross_align(egui::Align::Center),
             |ui| {
                 if let Err(e) = self.render_qr_code(ui, amount_dash) {
-                eprintln!("Error: {:?}", e);
+                self.error_message = Some(e);
             }
-    
+
             ui.add_space(20.0);
-    
+
             if let Some(error_message) = self.error_message.as_ref() {
                 ui.colored_label(Color32::DARK_RED, error_message);
                 ui.add_space(20.0);
             }
-    
+
             match step {
                 WalletFundedScreenStep::ChooseFundingMethod => {}
                 WalletFundedScreenStep::WaitingOnFunds => {
@@ -171,10 +170,10 @@ impl AddNewIdentityScreen {
                                 self.identity_id_number,
                             ),
                         };
-    
+
                         let mut step = self.step.write().unwrap();
                         *step = WalletFundedScreenStep::WaitingForAssetLock;
-    
+
                         // Create the backend task to register the identity
                         return AppAction::BackendTask(BackendTask::IdentityTask(
                             IdentityTask::RegisterIdentity(identity_input),

@@ -40,6 +40,7 @@ impl AppContext {
         let config_file: &str = match network {
             Network::Dash => "dash_core_configs/mainnet.conf",
             Network::Testnet => "dash_core_configs/testnet.conf",
+            Network::Devnet => "dash_core_configs/devnet.conf",
             _ => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
@@ -58,6 +59,8 @@ impl AppContext {
             command.arg(format!("-conf={}", config_path.display()));
         } else if network == Network::Testnet {
             command.arg("-testnet");
+        } else if network == Network::Devnet {
+            command.arg("-devnet");
         }
 
         // Spawn the Dash-Qt process

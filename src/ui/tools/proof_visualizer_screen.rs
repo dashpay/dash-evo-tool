@@ -80,9 +80,7 @@ impl ProofVisualizerScreen {
         }
     }
 
-    fn show_output(&mut self, ui: &mut Ui) -> AppAction {
-        let mut app_action = AppAction::None;
-
+    fn show_output(&mut self, ui: &mut Ui) {
         ui.separator();
         ui.add_space(10.0);
         ui.label("Parsed Proof:");
@@ -109,13 +107,13 @@ impl ProofVisualizerScreen {
                 );
 
                 ui.add_space(10.0);
+            } else {
+                ui.label("No proof parsed yet.");
             }
         });
 
         // Show status
         ui.add_space(5.0);
-
-        app_action
     }
 }
 
@@ -142,7 +140,7 @@ impl ScreenLike for ProofVisualizerScreen {
 
         egui::CentralPanel::default().show(ctx, |ui| {
             self.show_input_field(ui);
-            action |= self.show_output(ui);
+            self.show_output(ui);
         });
 
         action

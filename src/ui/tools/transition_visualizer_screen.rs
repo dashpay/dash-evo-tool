@@ -157,7 +157,7 @@ impl TransitionVisualizerScreen {
             } else {
                 // If parsed_json is None
                 if matches!(self.broadcast_status, TransitionBroadcastStatus::NotStarted) {
-                    ui.label("No valid state transition parsed yet.");
+                    ui.label("No state transition parsed yet.");
                 }
             }
         });

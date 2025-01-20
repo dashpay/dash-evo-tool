@@ -158,6 +158,13 @@ impl IdentitiesScreen {
                 IdentitiesSortOrder::Descending => ordering.reverse(),
             }
         });
+        let mut lock = self.identities.lock().unwrap();
+        *lock = list
+            .iter()
+            .map(|qi| (qi.identity.id(), qi.clone()))
+            .collect();
+        drop(lock);
+        self.save_current_order();
     }
 
     fn wallet_name_for(&self, qi: &QualifiedIdentity) -> String {
@@ -777,6 +784,13 @@ impl ScreenLike for IdentitiesScreen {
             .into_iter()
             .map(|qi| (qi.identity.id(), qi))
             .collect();
+        drop(identities);
+
+        // Keep order after refreshing
+        if let Ok(saved_ids) = self.app_context.db.load_identity_order() {
+            self.reorder_map_to(saved_ids);
+            self.use_custom_order = true;
+        }
 
         self.show_more_keys_popup = None;
     }

@@ -76,10 +76,11 @@ impl AppContext {
                         None,
                     )
                     .await
-                    .map_err(|e| format!("Error voting: {}", e))?;
+                    .map(|_| ())
+                    .map_err(|e| format!("Error voting: {}", e));
 
                 strength += qualified_identity.identity_type.vote_strength();
-                vote_results.push(result);
+                vote_results.push((name.clone(), vote_choice, result));
             } else {
                 return Err(format!(
                     "Error voting: No associated voter identity for qualified identity: {:?}",
@@ -98,6 +99,6 @@ impl AppContext {
             )
             .map_err(|e| format!("Error voting: Error updating vote count: {}", e))?;
 
-        Ok(BackendTaskSuccessResult::SuccessfulVotes(vote_results))
+        Ok(BackendTaskSuccessResult::DPNSVoteResults(vote_results))
     }
 }

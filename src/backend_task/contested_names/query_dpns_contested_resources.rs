@@ -244,10 +244,15 @@ impl AppContext {
 
         sender
             .send(TaskResult::Success(BackendTaskSuccessResult::Message(
-                "Finished querying DPNS contested resources".to_string(),
+                "Successfully refreshed DPNS contests".to_string(),
             )))
             .await
-            .map_err(|e| format!("Finished querying DPNS contested resources but sender failed to send TaskResult: {}", e.to_string()))?;
+            .map_err(|e| {
+                format!(
+                    "Successfully refreshed DPNS contests but sender failed to send TaskResult: {}",
+                    e.to_string()
+                )
+            })?;
         Ok(())
     }
 }

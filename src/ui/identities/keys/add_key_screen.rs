@@ -4,7 +4,10 @@ use crate::backend_task::BackendTask;
 use crate::context::AppContext;
 use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::wallet::Wallet;
 use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
+use crate::ui::identities::get_selected_wallet;
 use crate::ui::{MessageType, ScreenLike};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::hash::IdentityPublicKeyHashMethodsV0;
@@ -12,11 +15,14 @@ use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::prelude::TimestampMillis;
 use eframe::egui::{self, Context};
+use egui::{Color32, RichText, Ui};
 use rand::rngs::StdRng;
 use rand::SeedableRng;
-use std::sync::Arc;
+use std::collections::HashSet;
+use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[derive(PartialEq)]
 pub enum AddKeyStatus {
     NotStarted,
     WaitingForResult(TimestampMillis),
@@ -32,10 +38,25 @@ pub struct AddKeyScreen {
     purpose: Purpose,
     security_level: SecurityLevel,
     add_key_status: AddKeyStatus,
+    selected_wallet: Option<Arc<RwLock<Wallet>>>,
+    wallet_password: String,
+    show_password: bool,
+    error_message: Option<String>,
 }
 
 impl AddKeyScreen {
     pub fn new(identity: QualifiedIdentity, app_context: &Arc<AppContext>) -> Self {
+        let identity_clone = identity.clone();
+        let selected_key = identity_clone.identity.get_first_public_key_matching(
+            Purpose::AUTHENTICATION,
+            HashSet::from([SecurityLevel::MASTER]),
+            KeyType::all_key_types().into(),
+            false,
+        );
+        let mut error_message = None;
+        let selected_wallet =
+            get_selected_wallet(&identity, None, selected_key, &mut error_message);
+
         Self {
             identity,
             app_context: app_context.clone(),
@@ -44,6 +65,10 @@ impl AddKeyScreen {
             purpose: Purpose::AUTHENTICATION,
             security_level: SecurityLevel::HIGH,
             add_key_status: AddKeyStatus::NotStarted,
+            selected_wallet,
+            wallet_password: String::new(),
+            show_password: false,
+            error_message,
         }
     }
 
@@ -126,14 +151,58 @@ impl AddKeyScreen {
                 AddKeyStatus::ErrorMessage("Failed to generate a random private key.".to_string());
         }
     }
+
+    pub fn show_success(&mut self, ui: &mut Ui) -> AppAction {
+        let mut action = AppAction::None;
+
+        // Center the content vertically and horizontally
+        ui.vertical_centered(|ui| {
+            ui.add_space(50.0);
+
+            ui.heading("🎉");
+            ui.heading("Successfully added key.");
+
+            ui.add_space(20.0);
+
+            if ui.button("Back to Identities Screen").clicked() {
+                action = AppAction::PopScreenAndRefresh;
+            }
+            ui.add_space(5.0);
+
+            if ui.button("Add another key").clicked() {
+                action = AppAction::BackendTask(BackendTask::IdentityTask(
+                    IdentityTask::RefreshIdentity(self.identity.clone()),
+                ));
+                self.private_key_input = String::new();
+                self.add_key_status = AddKeyStatus::NotStarted;
+            }
+        });
+
+        action
+    }
 }
 
 impl ScreenLike for AddKeyScreen {
+    fn refresh(&mut self) {
+        if let Some(refreshed_identity) = self
+            .app_context
+            .load_local_qualified_identities()
+            .expect("Expected to load local identities")
+            .iter()
+            .find(|identity| identity.identity.id() == self.identity.identity.id())
+        {
+            self.identity = refreshed_identity.clone();
+        }
+    }
+
     fn display_message(&mut self, message: &str, message_type: MessageType) {
         match message_type {
             MessageType::Success => {
                 if message == "Successfully added key to identity" {
                     self.add_key_status = AddKeyStatus::Complete;
+                }
+                if message == "Successfully refreshed identity" {
+                    self.refresh();
                 }
             }
             MessageType::Info => {}
@@ -157,6 +226,20 @@ impl ScreenLike for AddKeyScreen {
 
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("Add New Key");
+            ui.add_space(10.0);
+
+            if self.add_key_status == AddKeyStatus::Complete {
+                action |= self.show_success(ui);
+                return;
+            }
+
+            if self.selected_wallet.is_some() {
+                let (needed_unlock, just_unlocked) = self.render_wallet_unlock_if_needed(ui);
+
+                if needed_unlock && !just_unlocked {
+                    return;
+                }
+            }
 
             egui::Grid::new("add_key_grid")
                 .num_columns(2)
@@ -233,11 +316,11 @@ impl ScreenLike for AddKeyScreen {
                                 KeyType::EDDSA_25519_HASH160,
                                 "EDDSA_25519_HASH160",
                             );
-                            ui.selectable_value(
-                                &mut self.key_type,
-                                KeyType::BIP13_SCRIPT_HASH,
-                                "BIP13_SCRIPT_HASH",
-                            );
+                            // ui.selectable_value(
+                            //     &mut self.key_type,
+                            //     KeyType::BIP13_SCRIPT_HASH,
+                            //     "BIP13_SCRIPT_HASH",
+                            // );
                         });
                     ui.end_row();
 
@@ -249,10 +332,17 @@ impl ScreenLike for AddKeyScreen {
                     }
                     ui.end_row();
                 });
+            ui.add_space(20.0);
 
-            ui.separator();
-
-            if ui.button("Add Key").clicked() {
+            // Add Key button
+            let mut new_style = (**ui.style()).clone();
+            new_style.spacing.button_padding = egui::vec2(10.0, 5.0);
+            ui.set_style(new_style);
+            let button = egui::Button::new(RichText::new("Add Key").color(Color32::WHITE))
+                .fill(Color32::from_rgb(0, 128, 255))
+                .frame(true)
+                .rounding(3.0);
+            if ui.add(button).clicked() {
                 // Set the status to waiting and capture the current time
                 let now = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
@@ -261,6 +351,7 @@ impl ScreenLike for AddKeyScreen {
                 self.add_key_status = AddKeyStatus::WaitingForResult(now);
                 action |= self.validate_and_add_key();
             }
+            ui.add_space(10.0);
 
             match &self.add_key_status {
                 AddKeyStatus::NotStarted => {
@@ -294,14 +385,44 @@ impl ScreenLike for AddKeyScreen {
                     ui.label(format!("Adding key... Time taken so far: {}", display_time));
                 }
                 AddKeyStatus::ErrorMessage(msg) => {
-                    ui.colored_label(egui::Color32::RED, format!("Error: {}", msg));
+                    ui.colored_label(egui::Color32::DARK_RED, format!("Error: {}", msg));
                 }
                 AddKeyStatus::Complete => {
-                    action = AppAction::PopScreenAndRefresh;
+                    // handled above
                 }
             }
         });
 
         action
+    }
+}
+
+impl ScreenWithWalletUnlock for AddKeyScreen {
+    fn selected_wallet_ref(&self) -> &Option<Arc<RwLock<Wallet>>> {
+        &self.selected_wallet
+    }
+
+    fn wallet_password_ref(&self) -> &String {
+        &self.wallet_password
+    }
+
+    fn wallet_password_mut(&mut self) -> &mut String {
+        &mut self.wallet_password
+    }
+
+    fn show_password(&self) -> bool {
+        self.show_password
+    }
+
+    fn show_password_mut(&mut self) -> &mut bool {
+        &mut self.show_password
+    }
+
+    fn set_error_message(&mut self, error_message: Option<String>) {
+        self.error_message = error_message;
+    }
+
+    fn error_message(&self) -> Option<&String> {
+        self.error_message.as_ref()
     }
 }

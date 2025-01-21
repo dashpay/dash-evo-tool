@@ -226,6 +226,14 @@ impl ScreenLike for TransitionVisualizerScreen {
         }
     }
 
+    fn display_task_result(
+        &mut self,
+        _backend_task_success_result: crate::ui::BackendTaskSuccessResult,
+    ) {
+        // Nothing
+        // If we don't include this, messages from the ZMQ listener will keep popping up
+    }
+
     fn ui(&mut self, ctx: &Context) -> AppAction {
         let mut action = add_top_panel(
             ctx,

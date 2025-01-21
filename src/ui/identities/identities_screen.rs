@@ -390,44 +390,56 @@ impl IdentitiesScreen {
     }
 
     fn render_no_identities_view(&self, ui: &mut Ui) {
-        ui.vertical_centered(|ui| {
-            ui.add_space(20.0);
-            ui.label(
-                RichText::new("Not Tracking Any Identities")
-                    .heading()
-                    .size(30.0),
-            );
-            ui.add_space(10.0);
-            ui.label(
-                RichText::new(
-                    "It looks like you are not tracking any Identities, Evonodes or Masternodes yet.",
-                )
-                .size(20.0),
-            );
-            ui.add_space(30.0);
-            ui.label(
-                RichText::new(
-                    "* You can load an Evonode/Masternode/Identity by clicking on \"Load Identity\" on the top right of the screen.",
-                )
-                .size(18.0),
-            );
-            ui.add_space(10.0);
-            ui.label(RichText::new("Or").size(22.0).strong());
-            ui.add_space(10.0);
-            ui.label(
-                RichText::new(
-                    "* You can create a wallet and then register an Identity on Dash Evo.",
-                )
-                .size(18.0),
-            );
-            ui.add_space(30.0);
-            ui.label(
-                RichText::new(
-                    "(Make sure Dash Core is running, you can check in the settings tab on the left)",
-                )
-                .size(18.0),
-            );
-        });
+        // Optionally put everything in a framed "card"-like container
+        Frame::group(ui.style())
+            .fill(ui.visuals().extreme_bg_color) // background color
+            .rounding(5.0) // rounded corners
+            .outer_margin(Margin::same(20.0)) // space around the frame
+            .shadow(ui.visuals().window_shadow) // drop shadow
+            .show(ui, |ui| {
+                ui.vertical_centered(|ui| {
+                    // Heading
+                    ui.add_space(5.0);
+                    ui.label(RichText::new("No Identities Loaded").strong().size(25.0));
+
+                    // A separator line for visual clarity
+                    ui.add_space(5.0);
+                    ui.separator();
+                    ui.add_space(10.0);
+
+                    // Description
+                    ui.label(
+                        "It looks like you are not tracking any Identities, \
+                         Evonodes, or Masternodes yet.",
+                    );
+
+                    ui.add_space(10.0);
+
+                    // Subheading or emphasis
+                    ui.heading(RichText::new("Here’s what you can do:").strong().size(18.0));
+                    ui.add_space(5.0);
+
+                    // Bullet points
+                    ui.label(
+                        "• LOAD an Evonode/Masternode/Identity by clicking \
+                         on \"Load Identity\" at the top right, or",
+                    );
+                    ui.add_space(1.0);
+                    ui.label("• REGISTER an Identity after creating or importing a wallet.");
+
+                    ui.add_space(10.0);
+                    ui.separator();
+                    ui.add_space(10.0);
+
+                    // Footnote or extra info
+                    ui.label(
+                        "(Make sure Dash Core is running. You can check in the \
+                         network tab on the left.)",
+                    );
+
+                    ui.add_space(5.0);
+                });
+            });
     }
 
     fn render_identities_view(
@@ -833,6 +845,14 @@ impl ScreenLike for IdentitiesScreen {
             self.refreshing_status = IdentitiesRefreshingStatus::NotRefreshing;
         }
         self.backend_message = Some((message.to_string(), message_type, Utc::now()));
+    }
+
+    fn display_task_result(
+        &mut self,
+        _backend_task_success_result: crate::ui::BackendTaskSuccessResult,
+    ) {
+        // Nothing
+        // If we don't include this, success messages from ZMQ listener will keep popping up
     }
 
     fn ui(&mut self, ctx: &Context) -> AppAction {

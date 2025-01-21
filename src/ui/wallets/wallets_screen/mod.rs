@@ -10,6 +10,7 @@ use chrono::{DateTime, Utc};
 use dash_sdk::dashcore_rpc::dashcore::{Address, Network};
 use dash_sdk::dpp::dashcore::bip32::{ChildNumber, DerivationPath};
 use eframe::egui::{self, ComboBox, Context, Ui};
+use egui::{Frame, Margin, RichText};
 use egui_extras::{Column, TableBuilder};
 use std::collections::HashSet;
 use std::sync::atomic::Ordering;
@@ -621,6 +622,59 @@ impl WalletsBalancesScreen {
         }
     }
 
+    fn render_no_wallets_view(&self, ui: &mut Ui) {
+        // Optionally put everything in a framed "card"-like container
+        Frame::group(ui.style())
+            .fill(ui.visuals().extreme_bg_color) // background color
+            .rounding(5.0) // rounded corners
+            .outer_margin(Margin::same(20.0)) // space around the frame
+            .shadow(ui.visuals().window_shadow) // drop shadow
+            .show(ui, |ui| {
+                ui.vertical_centered(|ui| {
+                    // Heading
+                    ui.add_space(5.0);
+                    ui.label(RichText::new("No Wallets Loaded").strong().size(25.0));
+
+                    // A separator line for visual clarity
+                    ui.add_space(5.0);
+                    ui.separator();
+                    ui.add_space(10.0);
+
+                    // Description
+                    ui.label("It looks like you are not tracking any wallets yet.");
+
+                    ui.add_space(10.0);
+
+                    // Subheading or emphasis
+                    ui.heading(RichText::new("Here’s what you can do:").strong().size(18.0));
+                    ui.add_space(5.0);
+
+                    // Bullet points
+                    ui.label(
+                        "• IMPORT a Dash wallet by clicking \
+                         on \"Import Wallet\" at the top right, or",
+                    );
+                    ui.add_space(1.0);
+                    ui.label(
+                        "• CREATE a new Dash wallet by clicking \
+                         on \"Create Wallet\".",
+                    );
+
+                    ui.add_space(10.0);
+                    ui.separator();
+                    ui.add_space(10.0);
+
+                    // Footnote or extra info
+                    ui.label(
+                        "(Make sure Dash Core is running. You can check in the \
+                         network tab on the left.)",
+                    );
+
+                    ui.add_space(5.0);
+                });
+            });
+    }
+
     fn dismiss_message(&mut self) {
         self.message = None;
     }
@@ -697,6 +751,11 @@ impl ScreenLike for WalletsBalancesScreen {
         );
 
         egui::CentralPanel::default().show(ctx, |ui| {
+            if self.app_context.wallets.read().unwrap().is_empty() {
+                self.render_no_wallets_view(ui);
+                return;
+            }
+
             ui.add_space(10.0);
             self.render_wallet_selection(ui);
             ui.add_space(20.0);
@@ -772,6 +831,14 @@ impl ScreenLike for WalletsBalancesScreen {
             self.refreshing = false;
         }
         self.message = Some((message.to_string(), message_type, Utc::now()))
+    }
+
+    fn display_task_result(
+        &mut self,
+        _backend_task_success_result: crate::ui::BackendTaskSuccessResult,
+    ) {
+        // Nothing
+        // If we don't include this, messages from the ZMQ listener will keep popping up
     }
 
     fn refresh_on_arrival(&mut self) {}

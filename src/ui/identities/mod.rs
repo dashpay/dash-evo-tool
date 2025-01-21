@@ -25,8 +25,8 @@ pub mod identities_screen;
 pub mod keys;
 pub mod register_dpns_name_screen;
 pub mod top_up_identity_screen;
-pub mod transfers;
-pub mod withdraw_from_identity_screen;
+pub mod transfer_screen;
+pub mod withdraw_screen;
 
 /// Retrieves the appropriate wallet (if any) associated with the given identity.
 ///

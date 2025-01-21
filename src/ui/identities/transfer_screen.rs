@@ -22,7 +22,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
 
 use super::get_selected_wallet;
+use super::keys::add_key_screen::AddKeyScreen;
 
+#[derive(PartialEq)]
 pub enum TransferCreditsStatus {
     NotStarted,
     WaitingForResult(TimestampMillis),
@@ -256,6 +258,18 @@ impl ScreenLike for TransferScreen {
         }
     }
 
+    fn refresh(&mut self) {
+        // Refresh the identity because there might be new keys
+        self.identity = self
+            .app_context
+            .load_local_qualified_identities()
+            .unwrap()
+            .into_iter()
+            .find(|identity| identity.identity.id() == self.identity.identity.id())
+            .unwrap();
+        self.max_amount = self.identity.identity.balance();
+    }
+
     /// Renders the UI components for the withdrawal screen
     fn ui(&mut self, ctx: &Context) -> AppAction {
         let mut action = add_top_panel(
@@ -269,6 +283,12 @@ impl ScreenLike for TransferScreen {
         );
 
         egui::CentralPanel::default().show(ctx, |ui| {
+            // Show the success screen if the transfer was successful
+            if self.transfer_credits_status == TransferCreditsStatus::Complete {
+                action = self.show_success(ui);
+                return;
+            }
+
             ui.heading("Transfer Funds");
             ui.add_space(10.0);
 
@@ -282,10 +302,11 @@ impl ScreenLike for TransferScreen {
                 ui.colored_label(
                     egui::Color32::DARK_RED,
                     format!(
-                        "You do not have any transfer keys loaded for this {}.",
+                        "You do not have any transfer keys loaded for this {} identity.",
                         self.identity.identity_type
                     ),
                 );
+                ui.add_space(10.0);
 
                 let key = self.identity.identity.get_first_public_key_matching(
                     Purpose::TRANSFER,
@@ -303,6 +324,14 @@ impl ScreenLike for TransferScreen {
                             &self.app_context,
                         )));
                     }
+                    ui.add_space(5.0);
+                }
+
+                if ui.button("Add key").clicked() {
+                    action |= AppAction::AddScreen(Screen::AddKeyScreen(AddKeyScreen::new(
+                        self.identity.clone(),
+                        &self.app_context,
+                    )));
                 }
             } else {
                 if self.selected_wallet.is_some() {
@@ -394,7 +423,7 @@ impl ScreenLike for TransferScreen {
                         ui.colored_label(egui::Color32::RED, format!("Error: {}", msg));
                     }
                     TransferCreditsStatus::Complete => {
-                        action = self.show_success(ui);
+                        // Handled above
                     }
                 }
             }

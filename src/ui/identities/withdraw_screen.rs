@@ -22,8 +22,10 @@ use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::get_selected_wallet;
+use super::keys::add_key_screen::AddKeyScreen;
 use super::keys::key_info_screen::KeyInfoScreen;
 
+#[derive(PartialEq)]
 pub enum WithdrawFromIdentityStatus {
     NotStarted,
     WaitingForResult(TimestampMillis),
@@ -246,6 +248,28 @@ impl WithdrawalScreen {
         }
         app_action
     }
+
+    pub fn show_success(&self, ui: &mut Ui) -> AppAction {
+        let mut action = AppAction::None;
+
+        // Center the content vertically and horizontally
+        ui.vertical_centered(|ui| {
+            ui.add_space(50.0);
+
+            ui.heading("🎉");
+            ui.heading("Successfully withdrew from identity");
+
+            ui.add_space(20.0);
+
+            // Display the "Back to Identities" button
+            if ui.button("Back to Identities").clicked() {
+                // Handle navigation back to the identities screen
+                action = AppAction::PopScreenAndRefresh;
+            }
+        });
+
+        action
+    }
 }
 
 impl ScreenLike for WithdrawalScreen {
@@ -265,6 +289,18 @@ impl ScreenLike for WithdrawalScreen {
         }
     }
 
+    fn refresh(&mut self) {
+        // Refresh the identity because there might be new keys
+        self.identity = self
+            .app_context
+            .load_local_qualified_identities()
+            .unwrap()
+            .into_iter()
+            .find(|identity| identity.identity.id() == self.identity.identity.id())
+            .unwrap();
+        self.max_amount = self.identity.identity.balance();
+    }
+
     /// Renders the UI components for the withdrawal screen
     fn ui(&mut self, ctx: &Context) -> AppAction {
         let mut action = add_top_panel(
@@ -278,6 +314,15 @@ impl ScreenLike for WithdrawalScreen {
         );
 
         egui::CentralPanel::default().show(ctx, |ui| {
+            // Show the success screen if the withdrawal was successful
+            if self.withdraw_from_identity_status == WithdrawFromIdentityStatus::Complete {
+                action = self.show_success(ui);
+                return;
+            }
+
+            ui.heading("Withdraw Funds");
+            ui.add_space(10.0);
+
             let has_keys = if self.app_context.developer_mode {
                 !self.identity.identity.public_keys().is_empty()
             } else {
@@ -285,17 +330,18 @@ impl ScreenLike for WithdrawalScreen {
             };
 
             if !has_keys {
-                ui.heading(format!("You do not have any withdrawal keys loaded for this {} identity.", self.identity.identity_type));
-
+                ui.colored_label(
+                    egui::Color32::DARK_RED,
+                    format!("You do not have any withdrawal keys loaded for this {} identity. Note that TRANSFER or OWNER keys are used for withdrawals.", self.identity.identity_type));
                 ui.add_space(10.0);
 
                 if self.identity.identity_type != IdentityType::User {
-                    ui.heading("An evonode can withdraw with the payout address private key or the owner key.".to_string());
-                    ui.heading("If the owner key is used you can only withdraw to the Dash Core payout address (where you get your Core rewards).".to_string());
+                    ui.label("An evonode can withdraw with the payout address private key or the owner key.".to_string());
+                    ui.label("If the owner key is used you can only withdraw to the Dash Core payout address (where you get your Core rewards).".to_string());
+                    ui.add_space(10.0);
                 }
 
                 let owner_key = self.identity.identity.get_first_public_key_matching(Purpose::OWNER, SecurityLevel::full_range().into(), KeyType::all_key_types().into(), false);
-
                 let transfer_key = self.identity.identity.get_first_public_key_matching(Purpose::TRANSFER, SecurityLevel::full_range().into(), KeyType::all_key_types().into(), false);
 
                 if let Some(owner_key) = owner_key {
@@ -307,6 +353,7 @@ impl ScreenLike for WithdrawalScreen {
                             &self.app_context,
                         )));
                     }
+                    ui.add_space(5.0);
                 }
 
                 if let Some(transfer_key) = transfer_key {
@@ -323,16 +370,24 @@ impl ScreenLike for WithdrawalScreen {
                             &self.app_context,
                         )));
                     }
+                    ui.add_space(5.0);
+                }
+
+                if ui.button("Add key").clicked() {
+                    action |= AppAction::AddScreen(
+                        Screen::AddKeyScreen(AddKeyScreen::new(
+                            self.identity.clone(),
+                            &self.app_context,
+                        )),
+                    );
                 }
             } else {
-                ui.heading("Withdraw Funds");
-
-                ui.add_space(10.0);
-
+                // Select the key to sign with
+                ui.heading("1. Select the key to sign with");
+                ui.add_space(5.0);
                 self.render_key_selection(ui);
 
-                ui.add_space(10.0);
-
+                // Render wallet unlock component if needed
                 if let Some(selected_key) = self.selected_key.as_ref() {
                     // If there is an associated wallet then render the wallet unlock component for it if its locked
                     if let Some((_, PrivateKeyData::AtWalletDerivationPath(wallet_derivation_path))) = self.identity.private_keys.private_keys.get(&(PrivateKeyTarget::PrivateKeyOnMainIdentity, selected_key.id())) {
@@ -348,13 +403,25 @@ impl ScreenLike for WithdrawalScreen {
                     return;
                 }
 
+                ui.add_space(10.0);
+                ui.separator();
+                ui.add_space(10.0);
+
+                                // Input the amount to transfer
+                                ui.heading("2. Input the amount to withdraw");
+                                ui.add_space(5.0);
                 self.render_amount_input(ui);
 
                 ui.add_space(10.0);
+                ui.separator();
+                ui.add_space(10.0);
 
+                // Input the ID of the identity to transfer to
+                ui.heading("3. Dash address to withdraw to");
+                ui.add_space(5.0);
                 self.render_address_input(ui);
 
-                ui.add_space(20.0);
+                ui.add_space(10.0);
 
                 // Withdraw button
                 let button = egui::Button::new(RichText::new("Withdraw").color(Color32::WHITE))

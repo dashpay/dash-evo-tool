@@ -107,19 +107,24 @@ impl TopUpIdentityScreen {
 
         ui.add_space(20.0);
 
-        match step {
+        if let Some(error_message) = self.error_message.as_ref() {
+            ui.colored_label(Color32::DARK_RED, error_message);
+            ui.add_space(20.0);
+        }
+
+        ui.vertical_centered(|ui| match step {
             WalletFundedScreenStep::WaitingForPlatformAcceptance => {
-                ui.heading("Waiting for Platform acknowledgement");
+                ui.heading("=> Waiting for Platform acknowledgement <=");
+                ui.add_space(20.0);
+                ui.label("NOTE: If this gets stuck, the funds were likely either transferred to the wallet or asset locked,\nand you can use the funding method selector in step 1 to change the method and use those funds to complete the process.");
             }
             WalletFundedScreenStep::Success => {
                 ui.heading("...Success...");
             }
             _ => {}
-        }
+        });
 
-        if let Some(error_message) = self.error_message.as_ref() {
-            ui.heading(error_message);
-        }
+        ui.add_space(40.0);
         action
     }
 }

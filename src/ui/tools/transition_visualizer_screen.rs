@@ -157,7 +157,7 @@ impl TransitionVisualizerScreen {
             } else {
                 // If parsed_json is None
                 if matches!(self.broadcast_status, TransitionBroadcastStatus::NotStarted) {
-                    ui.label("No valid state transition parsed yet.");
+                    ui.label("No state transition parsed yet.");
                 }
             }
         });
@@ -224,6 +224,14 @@ impl ScreenLike for TransitionVisualizerScreen {
                 // Could do nothing or handle info
             }
         }
+    }
+
+    fn display_task_result(
+        &mut self,
+        _backend_task_success_result: crate::ui::BackendTaskSuccessResult,
+    ) {
+        // Nothing
+        // If we don't include this, messages from the ZMQ listener will keep popping up
     }
 
     fn ui(&mut self, ctx: &Context) -> AppAction {

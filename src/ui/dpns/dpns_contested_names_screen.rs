@@ -1186,6 +1186,18 @@ impl DPNSScreen {
             _ => {}
         }
 
+        // If no voting identities are loaded, display a message and return
+        if self.voting_identities.is_empty() {
+            ui.add_space(5.0);
+            ui.colored_label(Color32::DARK_RED, "No masternode identities loaded. Please go to the Identities screen to load your masternodes.");
+            ui.add_space(10.0);
+            if ui.button("Close").clicked() {
+                self.show_bulk_schedule_popup = false;
+            }
+            return action;
+        }
+
+        // If no votes are selected, display a message and return
         if self.selected_votes.is_empty() {
             ui.add_space(5.0);
             ui.colored_label(Color32::DARK_RED, "No votes selected. Please click the votes you want to cast or schedule in the Active Contests screen.");

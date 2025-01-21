@@ -4,7 +4,6 @@ use crate::backend_task::contract::ContractTask;
 use crate::backend_task::core::{CoreItem, CoreTask};
 use crate::backend_task::document::DocumentTask;
 use crate::backend_task::identity::IdentityTask;
-use crate::backend_task::withdrawal_statuses::{WithdrawStatusPartialData, WithdrawalsTask};
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use contested_names::ScheduledDPNSVote;
@@ -25,7 +24,6 @@ pub mod contract;
 pub mod core;
 pub mod document;
 pub mod identity;
-pub mod withdrawal_statuses;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum BackendTask {
@@ -34,7 +32,6 @@ pub(crate) enum BackendTask {
     ContractTask(ContractTask),
     ContestedResourceTask(ContestedResourceTask),
     CoreTask(CoreTask),
-    WithdrawalTask(WithdrawalsTask),
     BroadcastStateTransition(StateTransition),
 }
 
@@ -50,7 +47,6 @@ pub(crate) enum BackendTaskSuccessResult {
     SuccessfulVotes(Vec<Vote>),
     DPNSVoteResults(Vec<(String, ResourceVoteChoice, Result<(), String>)>),
     CastScheduledVote(ScheduledDPNSVote),
-    WithdrawalStatus(WithdrawStatusPartialData),
     FetchedContract(DataContract),
     FetchedContracts(Vec<Option<DataContract>>),
     PageDocuments(IndexMap<Identifier, Option<Document>>, Option<Start>),
@@ -115,9 +111,6 @@ impl AppContext {
                 self.run_document_task(document_task, &sdk).await
             }
             BackendTask::CoreTask(core_task) => self.run_core_task(core_task).await,
-            BackendTask::WithdrawalTask(withdrawal_task) => {
-                self.run_withdraws_task(withdrawal_task, &sdk).await
-            }
             BackendTask::BroadcastStateTransition(state_transition) => {
                 self.broadcast_state_transition(state_transition, &sdk)
                     .await

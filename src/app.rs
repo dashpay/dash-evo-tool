@@ -494,9 +494,6 @@ impl App for AppState {
                         );
                         self.visible_screen_mut().refresh();
                     }
-                    BackendTaskSuccessResult::WithdrawalStatus(_) => {
-                        self.visible_screen_mut().display_task_result(message);
-                    }
                     BackendTaskSuccessResult::RegisteredIdentity(_) => {
                         self.visible_screen_mut().display_task_result(message);
                     }

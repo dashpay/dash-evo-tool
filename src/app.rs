@@ -72,6 +72,7 @@ pub enum DesiredAppAction {
     SwitchNetwork(Network),
     AddScreenType(ScreenType),
     BackendTask(BackendTask),
+    BackendTasks(Vec<BackendTask>, BackendTasksExecutionMode),
     Custom(String),
 }
 
@@ -89,12 +90,15 @@ impl DesiredAppAction {
             DesiredAppAction::BackendTask(backend_task) => {
                 AppAction::BackendTask(backend_task.clone())
             }
+            DesiredAppAction::BackendTasks(tasks, mode) => {
+                AppAction::BackendTasks(tasks.clone(), mode.clone())
+            }
             DesiredAppAction::SwitchNetwork(network) => AppAction::SwitchNetwork(*network),
         }
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum BackendTasksExecutionMode {
     Sequential,
     Concurrent,

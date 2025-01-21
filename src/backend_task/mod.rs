@@ -10,6 +10,7 @@ use crate::model::qualified_identity::QualifiedIdentity;
 use contested_names::ScheduledDPNSVote;
 use dash_sdk::dpp::prelude::DataContract;
 use dash_sdk::dpp::state_transition::StateTransition;
+use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
 use dash_sdk::dpp::voting::votes::Vote;
 use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::Start;
 use dash_sdk::platform::{Document, Identifier};
@@ -47,6 +48,7 @@ pub(crate) enum BackendTaskSuccessResult {
     RegisteredIdentity(QualifiedIdentity),
     ToppedUpIdentity(QualifiedIdentity),
     SuccessfulVotes(Vec<Vote>),
+    DPNSVoteResults(Vec<(String, ResourceVoteChoice, Result<(), String>)>),
     CastScheduledVote(ScheduledDPNSVote),
     WithdrawalStatus(WithdrawStatusPartialData),
     FetchedContract(DataContract),

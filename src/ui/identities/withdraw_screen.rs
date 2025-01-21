@@ -141,6 +141,17 @@ impl WithdrawalScreen {
 
                 ui.text_edit_singleline(&mut self.withdrawal_address);
             });
+        } else {
+            ui.label(format!(
+                "Masternode payout address: {}",
+                match self
+                    .identity
+                    .masternode_payout_address(self.app_context.network)
+                {
+                    Some(address) => address.to_string(),
+                    None => "No masternode payout address".to_string(),
+                }
+            ));
         }
     }
 

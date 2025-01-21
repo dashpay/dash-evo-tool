@@ -142,6 +142,7 @@ impl TransferScreen {
                     self.error_message = Some("Invalid identifier".to_string());
                     self.transfer_credits_status =
                         TransferCreditsStatus::ErrorMessage("Invalid identifier".to_string());
+                    self.confirmation_popup = false;
                     return;
                 } else {
                     match Identifier::from_string_try_encodings(
@@ -154,6 +155,7 @@ impl TransferScreen {
                             self.transfer_credits_status = TransferCreditsStatus::ErrorMessage(
                                 "Invalid identifier".to_string(),
                             );
+                            self.confirmation_popup = false;
                             return;
                         }
                     }
@@ -163,6 +165,7 @@ impl TransferScreen {
                     self.error_message = Some("No selected key".to_string());
                     self.transfer_credits_status =
                         TransferCreditsStatus::ErrorMessage("No selected key".to_string());
+                    self.confirmation_popup = false;
                     return;
                 };
 
@@ -340,7 +343,7 @@ impl ScreenLike for TransferScreen {
                 }
 
                 // Select the key to sign with
-                ui.heading("1. Select the key to sign with");
+                ui.heading("1. Select the key to sign the transaction with");
                 ui.add_space(5.0);
                 self.render_key_selection(ui);
 
@@ -372,7 +375,7 @@ impl ScreenLike for TransferScreen {
                     .fill(Color32::from_rgb(0, 128, 255))
                     .frame(true)
                     .rounding(3.0);
-                if ui.add(button).clicked() || ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                if ui.add(button).clicked() {
                     self.confirmation_popup = true;
                 }
 
@@ -381,6 +384,7 @@ impl ScreenLike for TransferScreen {
                 }
 
                 // Handle transfer status messages
+                ui.add_space(5.0);
                 match &self.transfer_credits_status {
                     TransferCreditsStatus::NotStarted => {
                         // Do nothing

@@ -7,6 +7,7 @@ use egui::{Color32, Context, Frame, Margin, RichText, SidePanel};
 pub enum ToolsSubscreen {
     ProofLog,
     TransactionViewer,
+    ProofViewer,
 }
 
 impl ToolsSubscreen {
@@ -14,6 +15,7 @@ impl ToolsSubscreen {
         match self {
             Self::ProofLog => "Proof logs",
             Self::TransactionViewer => "Transaction deserializer",
+            Self::ProofViewer => "Proof deserializer",
         }
     }
 }
@@ -21,7 +23,11 @@ impl ToolsSubscreen {
 pub fn add_tools_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext) -> AppAction {
     let mut action = AppAction::None;
 
-    let subscreens = vec![ToolsSubscreen::ProofLog, ToolsSubscreen::TransactionViewer];
+    let subscreens = vec![
+        ToolsSubscreen::ProofLog,
+        ToolsSubscreen::ProofViewer,
+        ToolsSubscreen::TransactionViewer,
+    ];
 
     let active_screen = match app_context.get_settings() {
         Ok(Some(settings)) => match settings.1 {
@@ -29,6 +35,7 @@ pub fn add_tools_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext
             ui::RootScreenType::RootScreenToolsTransitionVisualizerScreen => {
                 ToolsSubscreen::TransactionViewer
             }
+            ui::RootScreenType::RootScreenToolsProofVisualizerScreen => ToolsSubscreen::ProofViewer,
             _ => ToolsSubscreen::ProofLog,
         },
         _ => ToolsSubscreen::ProofLog, // Fallback to Active screen if settings unavailable
@@ -70,6 +77,11 @@ pub fn add_tools_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext
                             ToolsSubscreen::TransactionViewer => {
                                 action = AppAction::SetMainScreen(
                                     RootScreenType::RootScreenToolsTransitionVisualizerScreen,
+                                )
+                            }
+                            ToolsSubscreen::ProofViewer => {
+                                action = AppAction::SetMainScreen(
+                                    RootScreenType::RootScreenToolsProofVisualizerScreen,
                                 )
                             }
                         }

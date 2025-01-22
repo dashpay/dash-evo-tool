@@ -1,5 +1,5 @@
-use super::withdraw_from_identity_screen::WithdrawalScreen;
-use crate::app::{AppAction, DesiredAppAction};
+use super::withdraw_screen::WithdrawalScreen;
+use crate::app::{AppAction, BackendTasksExecutionMode, DesiredAppAction};
 use crate::backend_task::identity::IdentityTask;
 use crate::backend_task::BackendTask;
 use crate::context::AppContext;
@@ -16,8 +16,9 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
 use crate::ui::identities::top_up_identity_screen::TopUpIdentityScreen;
-use crate::ui::identities::transfers::TransferScreen;
-use crate::ui::{RootScreenType, Screen, ScreenLike, ScreenType};
+use crate::ui::identities::transfer_screen::TransferScreen;
+use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike, ScreenType};
+use chrono::{DateTime, Utc};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::Purpose;
@@ -48,6 +49,12 @@ enum IdentitiesSortOrder {
     Descending,
 }
 
+#[derive(PartialEq)]
+enum IdentitiesRefreshingStatus {
+    Refreshing(u64),
+    NotRefreshing,
+}
+
 pub struct IdentitiesScreen {
     pub identities: Arc<Mutex<IndexMap<Identifier, QualifiedIdentity>>>,
     pub app_context: Arc<AppContext>,
@@ -57,6 +64,8 @@ pub struct IdentitiesScreen {
     sort_column: IdentitiesSortColumn,
     sort_order: IdentitiesSortOrder,
     use_custom_order: bool,
+    refreshing_status: IdentitiesRefreshingStatus,
+    backend_message: Option<(String, MessageType, DateTime<Utc>)>,
 }
 
 impl IdentitiesScreen {
@@ -79,6 +88,8 @@ impl IdentitiesScreen {
             sort_column: IdentitiesSortColumn::Alias,
             sort_order: IdentitiesSortOrder::Ascending,
             use_custom_order: true,
+            refreshing_status: IdentitiesRefreshingStatus::NotRefreshing,
+            backend_message: None,
         };
 
         if let Ok(saved_ids) = screen.app_context.db.load_identity_order() {
@@ -158,6 +169,13 @@ impl IdentitiesScreen {
                 IdentitiesSortOrder::Descending => ordering.reverse(),
             }
         });
+        let mut lock = self.identities.lock().unwrap();
+        *lock = list
+            .iter()
+            .map(|qi| (qi.identity.id(), qi.clone()))
+            .collect();
+        drop(lock);
+        self.save_current_order();
     }
 
     fn wallet_name_for(&self, qi: &QualifiedIdentity) -> String {
@@ -372,44 +390,56 @@ impl IdentitiesScreen {
     }
 
     fn render_no_identities_view(&self, ui: &mut Ui) {
-        ui.vertical_centered(|ui| {
-            ui.add_space(20.0);
-            ui.label(
-                RichText::new("Not Tracking Any Identities")
-                    .heading()
-                    .size(30.0),
-            );
-            ui.add_space(10.0);
-            ui.label(
-                RichText::new(
-                    "It looks like you are not tracking any Identities, Evonodes or Masternodes yet.",
-                )
-                .size(20.0),
-            );
-            ui.add_space(30.0);
-            ui.label(
-                RichText::new(
-                    "* You can load an Evonode/Masternode/Identity by clicking on \"Load Identity\" on the top right of the screen.",
-                )
-                .size(18.0),
-            );
-            ui.add_space(10.0);
-            ui.label(RichText::new("Or").size(22.0).strong());
-            ui.add_space(10.0);
-            ui.label(
-                RichText::new(
-                    "* You can create a wallet and then register an Identity on Dash Evo.",
-                )
-                .size(18.0),
-            );
-            ui.add_space(30.0);
-            ui.label(
-                RichText::new(
-                    "(Make sure Dash Core is running, you can check in the settings tab on the left)",
-                )
-                .size(18.0),
-            );
-        });
+        // Optionally put everything in a framed "card"-like container
+        Frame::group(ui.style())
+            .fill(ui.visuals().extreme_bg_color) // background color
+            .rounding(5.0) // rounded corners
+            .outer_margin(Margin::same(20.0)) // space around the frame
+            .shadow(ui.visuals().window_shadow) // drop shadow
+            .show(ui, |ui| {
+                ui.vertical_centered(|ui| {
+                    // Heading
+                    ui.add_space(5.0);
+                    ui.label(RichText::new("No Identities Loaded").strong().size(25.0));
+
+                    // A separator line for visual clarity
+                    ui.add_space(5.0);
+                    ui.separator();
+                    ui.add_space(10.0);
+
+                    // Description
+                    ui.label(
+                        "It looks like you are not tracking any Identities, \
+                         Evonodes, or Masternodes yet.",
+                    );
+
+                    ui.add_space(10.0);
+
+                    // Subheading or emphasis
+                    ui.heading(RichText::new("Here’s what you can do:").strong().size(18.0));
+                    ui.add_space(5.0);
+
+                    // Bullet points
+                    ui.label(
+                        "• LOAD an Evonode/Masternode/Identity by clicking \
+                         on \"Load Identity\" at the top right, or",
+                    );
+                    ui.add_space(1.0);
+                    ui.label("• REGISTER an Identity after creating or importing a wallet.");
+
+                    ui.add_space(10.0);
+                    ui.separator();
+                    ui.add_space(10.0);
+
+                    // Footnote or extra info
+                    ui.label(
+                        "(Make sure Dash Core is running. You can check in the \
+                         network tab on the left.)",
+                    );
+
+                    ui.add_space(5.0);
+                });
+            });
     }
 
     fn render_identities_view(
@@ -424,7 +454,22 @@ impl IdentitiesScreen {
             self.sort_vec(&mut local_identities);
         }
 
-        egui::ScrollArea::vertical().show(ui, |ui| {
+        // Allocate space for refreshing status
+        let refreshing_height = 33.0;
+        let mut max_scroll_height =
+            if let IdentitiesRefreshingStatus::Refreshing(_) = self.refreshing_status {
+                ui.available_height() - refreshing_height
+            } else {
+                ui.available_height()
+            };
+
+        // Allocate space for backend message
+        let backend_message_height = 47.0;
+        if let Some((_, _, _)) = self.backend_message.clone() {
+            max_scroll_height -= backend_message_height;
+        }
+
+        egui::ScrollArea::vertical().max_height(max_scroll_height).show(ui, |ui| {
             Frame::group(ui.style())
                 .fill(ui.visuals().panel_fill)
                 .stroke(egui::Stroke::new(
@@ -561,14 +606,14 @@ impl IdentitiesScreen {
                                             }
 
                                             if more_keys_available {
-                                                if ui.button("...").clicked() {
+                                                if ui.button("...").on_hover_text("Show more keys").clicked() {
                                                     self.show_more_keys_popup =
                                                         Some(qualified_identity.clone());
                                                 }
                                             }
 
                                             if qualified_identity.can_sign_with_master_key().is_some()
-                                                && ui.button("Add Key").clicked()
+                                                && ui.button("+").on_hover_text("Add key").clicked()
                                             {
                                                 action = AppAction::AddScreen(Screen::AddKeyScreen(
                                                     AddKeyScreen::new(
@@ -584,7 +629,7 @@ impl IdentitiesScreen {
 
                                         ui.spacing_mut().item_spacing.x = 3.0;
 
-                                        if ui.button("Withdraw").clicked() {
+                                        if ui.button("Withdraw").on_hover_text("Withdraw credits from this identity to a Dash Core address").clicked() {
                                             action = AppAction::AddScreen(
                                                 Screen::WithdrawalScreen(WithdrawalScreen::new(
                                                     qualified_identity.clone(),
@@ -592,7 +637,7 @@ impl IdentitiesScreen {
                                                 )),
                                             );
                                         }
-                                        if ui.button("Top up").clicked() {
+                                        if ui.button("Top up").on_hover_text("Increase this identity's balance by sending it Dash from the Core chain").clicked() {
                                             action = AppAction::AddScreen(
                                                 Screen::TopUpIdentityScreen(TopUpIdentityScreen::new(
                                                     qualified_identity.clone(),
@@ -600,7 +645,7 @@ impl IdentitiesScreen {
                                                 )),
                                             );
                                         }
-                                        if ui.button("Transfer").clicked() {
+                                        if ui.button("Transfer").on_hover_text("Transfer credits from this identity to another identity").clicked() {
                                             action = AppAction::AddScreen(
                                                 Screen::TransferScreen(TransferScreen::new(
                                                     qualified_identity.clone(),
@@ -613,19 +658,8 @@ impl IdentitiesScreen {
                                         ui.spacing_mut().item_spacing.x = 3.0;
 
                                         ui.horizontal(|ui| {
-                                            // Refresh
-                                            if ui.button("Refresh").clicked() {
-                                                action = AppAction::BackendTask(
-                                                    BackendTask::IdentityTask(
-                                                        IdentityTask::RefreshIdentity(
-                                                            qualified_identity.clone(),
-                                                        ),
-                                                    ),
-                                                );
-                                            }
-
                                             // Remove
-                                            if ui.button("Remove").clicked() {
+                                            if ui.button("Remove").on_hover_text("Remove this identity from Dash Evo Tool (it'll still exist on Dash Platform)").clicked() {
                                                 self.identity_to_remove =
                                                     Some(qualified_identity.clone());
                                             }
@@ -633,9 +667,9 @@ impl IdentitiesScreen {
 
                                         ui.horizontal(|ui| {
                                             // Up arrow
-                                            let up_btn = ui.button("⬆");
+                                            let up_btn = ui.button("⬆").on_hover_text("Move this identity up in the list");
                                             // Down arrow
-                                            let down_btn = ui.button("⬇");
+                                            let down_btn = ui.button("⬇").on_hover_text("Move this identity down in the list");
 
                                             if up_btn.clicked() {
                                                 // If we are currently sorted (not custom),
@@ -765,6 +799,22 @@ impl IdentitiesScreen {
 
         action
     }
+
+    fn dismiss_message(&mut self) {
+        self.backend_message = None;
+    }
+
+    fn check_message_expiration(&mut self) {
+        if let Some((_, _, timestamp)) = &self.backend_message {
+            let now = Utc::now();
+            let elapsed = now.signed_duration_since(*timestamp);
+
+            // Automatically dismiss the message after 10 seconds
+            if elapsed.num_seconds() >= 10 {
+                self.dismiss_message();
+            }
+        }
+    }
 }
 
 impl ScreenLike for IdentitiesScreen {
@@ -777,11 +827,37 @@ impl ScreenLike for IdentitiesScreen {
             .into_iter()
             .map(|qi| (qi.identity.id(), qi))
             .collect();
+        drop(identities);
+
+        // Keep order after refreshing
+        if let Ok(saved_ids) = self.app_context.db.load_identity_order() {
+            self.reorder_map_to(saved_ids);
+            self.use_custom_order = true;
+        }
 
         self.show_more_keys_popup = None;
     }
 
+    fn display_message(&mut self, message: &str, message_type: crate::ui::MessageType) {
+        if message.contains("Error refreshing identities")
+            || message.contains("Successfully refreshed identity")
+        {
+            self.refreshing_status = IdentitiesRefreshingStatus::NotRefreshing;
+        }
+        self.backend_message = Some((message.to_string(), message_type, Utc::now()));
+    }
+
+    fn display_task_result(
+        &mut self,
+        _backend_task_success_result: crate::ui::BackendTaskSuccessResult,
+    ) {
+        // Nothing
+        // If we don't include this, success messages from ZMQ listener will keep popping up
+    }
+
     fn ui(&mut self, ctx: &Context) -> AppAction {
+        self.check_message_expiration();
+
         let mut right_buttons = if !self.app_context.has_wallet.load(Ordering::Relaxed) {
             vec![
                 (
@@ -803,6 +879,23 @@ impl ScreenLike for IdentitiesScreen {
             "Load Identity",
             DesiredAppAction::AddScreenType(ScreenType::AddExistingIdentity),
         ));
+        if self.identities.lock().unwrap().len() > 0 {
+            // Create a vec of RefreshIdentity(identity) DesiredAppAction for each identity
+            let backend_tasks: Vec<BackendTask> = self
+                .identities
+                .lock()
+                .unwrap()
+                .values()
+                .map(|qi| BackendTask::IdentityTask(IdentityTask::RefreshIdentity(qi.clone())))
+                .collect();
+            right_buttons.push((
+                "Refresh",
+                DesiredAppAction::BackendTasks(
+                    backend_tasks,
+                    BackendTasksExecutionMode::Concurrent,
+                ),
+            ));
+        }
 
         let mut action = add_top_panel(
             ctx,
@@ -824,6 +917,47 @@ impl ScreenLike for IdentitiesScreen {
             } else {
                 action |= self.render_identities_view(ui, &identities_vec);
             }
+
+            // If we are refreshing, show a spinner at the bottom
+            if let IdentitiesRefreshingStatus::Refreshing(start_time) = self.refreshing_status {
+                ui.add_space(5.0);
+                let now = Utc::now().timestamp() as u64;
+                let elapsed = now - start_time;
+                ui.horizontal(|ui| {
+                    ui.add_space(10.0);
+                    ui.label(format!("Refreshing... Time taken so far: {}", elapsed));
+                    ui.add(egui::widgets::Spinner::default().color(Color32::from_rgb(0, 128, 255)));
+                });
+                ui.add_space(10.0);
+            }
+
+            let message = self.backend_message.clone();
+            if let Some((message, message_type, timestamp)) = message {
+                let message_color = match message_type {
+                    MessageType::Error => egui::Color32::DARK_RED,
+                    MessageType::Info => egui::Color32::BLACK,
+                    MessageType::Success => egui::Color32::DARK_GREEN,
+                };
+
+                ui.add_space(7.0);
+                ui.allocate_ui(egui::Vec2::new(ui.available_width(), 30.0), |ui| {
+                    ui.group(|ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(egui::RichText::new(message).color(message_color));
+                            let now = Utc::now();
+                            let elapsed = now.signed_duration_since(timestamp);
+                            if ui
+                                .button(format!("Dismiss ({})", 10 - elapsed.num_seconds()))
+                                .clicked()
+                            {
+                                // Update the state outside the closure
+                                self.dismiss_message();
+                            }
+                        });
+                    });
+                });
+                ui.add_space(10.0);
+            }
         });
 
         if self.show_more_keys_popup.is_some() {
@@ -836,6 +970,19 @@ impl ScreenLike for IdentitiesScreen {
 
         if self.identity_to_remove.is_some() {
             self.show_identity_to_remove(ctx);
+        }
+
+        match action {
+            AppAction::BackendTask(BackendTask::IdentityTask(IdentityTask::RefreshIdentity(_))) => {
+                self.refreshing_status =
+                    IdentitiesRefreshingStatus::Refreshing(Utc::now().timestamp() as u64)
+            }
+            AppAction::BackendTasks(_, _) => {
+                // Going to assume this is only going to be Refresh All
+                self.refreshing_status =
+                    IdentitiesRefreshingStatus::Refreshing(Utc::now().timestamp() as u64)
+            }
+            _ => {}
         }
 
         action

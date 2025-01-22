@@ -63,7 +63,7 @@ impl ProofVisualizerScreen {
     }
 
     fn show_input_field(&mut self, ui: &mut Ui) {
-        ui.label("Enter hex or base64 encoded groveDB proof:");
+        ui.label("Enter hex or Base64 encoded GroveDB proof:");
         ui.add_space(5.0);
         let response = ui.add(
             TextEdit::multiline(&mut self.input_data)

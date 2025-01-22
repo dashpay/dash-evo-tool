@@ -380,7 +380,12 @@ impl ScreenLike for ProofLogScreen {
         egui::CentralPanel::default().show(ctx, |ui| {
             // Fetch proof items if not already fetched
             if self.proof_items.is_empty() {
+                ui.vertical_centered(|ui| {
+                    ui.add_space(10.0);
+                    ui.heading("No proof items to display.");
+                });
                 self.fetch_proof_items();
+                return;
             }
 
             ui.columns(2, |columns| {

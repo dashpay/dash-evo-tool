@@ -17,7 +17,7 @@ pub fn initialize_sdk<P: ContextProvider + 'static>(
         connect_timeout: Some(Duration::from_secs(1)),
         timeout: Some(Duration::from_secs(10)),
         retries: Some(6),
-        ..Default::default()
+        ban_failed_address: Some(true),
     };
 
     let sdk = SdkBuilder::new(address_list)

@@ -78,18 +78,18 @@ impl NetworkChooserScreen {
     /// Render the network selection table
     fn render_network_table(&mut self, ui: &mut Ui) -> AppAction {
         let mut app_action = AppAction::None;
-        ui.heading("Choose Network");
 
         egui::Grid::new("network_grid")
             .striped(true)
+            .spacing([20.0, 10.0])
             .show(ui, |ui| {
                 // Header row
-                ui.label("Network");
-                ui.label("Status");
-                ui.label("Wallet Count");
-                ui.label("Add New Wallet");
-                ui.label("Select");
-                ui.label("Start");
+                ui.label(egui::RichText::new("Network").strong().underline());
+                ui.label(egui::RichText::new("Status").strong().underline());
+                // ui.label(egui::RichText::new("Wallet Count").strong().underline());
+                // ui.label(egui::RichText::new("Add New Wallet").strong().underline());
+                ui.label(egui::RichText::new("Select").strong().underline());
+                ui.label(egui::RichText::new("Start").strong().underline());
                 ui.end_row();
 
                 // Render Mainnet Row
@@ -104,8 +104,11 @@ impl NetworkChooserScreen {
                 // Render Local Row
                 app_action |= self.render_network_row(ui, Network::Regtest, "Local");
             });
-        egui::CollapsingHeader::new("Show more advanced settings")
-            .default_open(false) // The grid is hidden by default
+
+        ui.add_space(10.0);
+
+        egui::CollapsingHeader::new("Advanced settings")
+            .default_open(false)
             .show(ui, |ui| {
                 egui::Grid::new("advanced_settings")
                     .show(ui, |ui| {
@@ -194,9 +197,9 @@ impl NetworkChooserScreen {
         // Check network status
         let is_working = self.check_network_status(network);
         let status_color = if is_working {
-            Color32::from_rgb(0, 255, 0) // Green if working
+            Color32::DARK_GREEN // Green if working
         } else {
-            Color32::from_rgb(255, 0, 0) // Red if not working
+            Color32::RED // Red if not working
         };
 
         // Display status indicator
@@ -218,57 +221,31 @@ impl NetworkChooserScreen {
             return AppAction::None;
         }
 
-        // Display wallet count
-        let wallet_count = format!(
-            "{}",
-            self.context_for_network(network)
-                .wallets
-                .read()
-                .unwrap()
-                .len()
-        );
-        ui.label(wallet_count);
+        // // Display wallet count
+        // let wallet_count = format!(
+        //     "{}",
+        //     self.context_for_network(network)
+        //         .wallets
+        //         .read()
+        //         .unwrap()
+        //         .len()
+        // );
+        // ui.label(wallet_count);
 
-        // Add a button to add a wallet
-        if ui.button("+").clicked() {
-            let context = match network {
-                Network::Dash => &self.mainnet_app_context,
-                Network::Testnet => {
-                    if self.testnet_app_context.is_some() {
-                        self.testnet_app_context.as_ref().unwrap()
-                    } else {
-                        eprintln!("Configs not present for testnet");
-                        return AppAction::None;
-                    }
-                }
-                Network::Devnet => {
-                    if self.devnet_app_context.is_some() {
-                        self.devnet_app_context.as_ref().unwrap()
-                    } else {
-                        eprintln!("Configs not present for devnet");
-                        return AppAction::None;
-                    }
-                }
-                Network::Regtest => {
-                    if self.local_app_context.is_some() {
-                        self.local_app_context.as_ref().unwrap()
-                    } else {
-                        eprintln!("Configs not present for local");
-                        return AppAction::None;
-                    }
-                }
-                _ => {
-                    eprintln!("Unsupported network: {:?}", network);
-                    return AppAction::None;
-                }
-            };
-            app_action =
-                AppAction::AddScreen(Screen::AddNewWalletScreen(AddNewWalletScreen::new(context)));
-        }
+        // // Add a button to add a wallet
+        // if ui.button("+").clicked() {
+        //     let context = if network == Network::Dash || self.testnet_app_context.is_none() {
+        //         &self.mainnet_app_context
+        //     } else {
+        //         &self.testnet_app_context.as_ref().unwrap()
+        //     };
+        //     app_action =
+        //         AppAction::AddScreen(Screen::AddNewWalletScreen(AddNewWalletScreen::new(context)));
+        // }
 
         // Network selection
         let mut is_selected = self.current_network == network;
-        if ui.checkbox(&mut is_selected, "Select").clicked() && is_selected {
+        if ui.checkbox(&mut is_selected, "").clicked() && is_selected {
             self.current_network = network;
             app_action = AppAction::SwitchNetwork(network);
             // Recheck in 1 second

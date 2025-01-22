@@ -33,7 +33,12 @@ impl PartialEq for CoreTask {
 pub(crate) enum CoreItem {
     ReceivedAvailableUTXOTransaction(Transaction, Vec<(OutPoint, TxOut, Address)>),
     ChainLock(ChainLock, Network),
-    ChainLocks(Option<ChainLock>, Option<ChainLock>, Option<ChainLock>), // Mainnet, Testnet, Devnet
+    ChainLocks(
+        Option<ChainLock>,
+        Option<ChainLock>,
+        Option<ChainLock>,
+        Option<ChainLock>,
+    ), // Mainnet, Testnet, Devnet, Local
 }
 
 impl AppContext {
@@ -60,6 +65,7 @@ impl AppContext {
                 let maybe_mainnet_config = config.config_for_network(Network::Dash);
                 let maybe_testnet_config = config.config_for_network(Network::Testnet);
                 let maybe_devnet_config = config.config_for_network(Network::Devnet);
+                let maybe_local_config = config.config_for_network(Network::Regtest);
 
                 fn best_chainlock_for(
                     network_name: &str,
@@ -90,19 +96,22 @@ impl AppContext {
                 let mainnet_result = best_chainlock_for("mainnet", maybe_mainnet_config.as_ref());
                 let testnet_result = best_chainlock_for("testnet", maybe_testnet_config.as_ref());
                 let devnet_result = best_chainlock_for("devnet", maybe_devnet_config.as_ref());
+                let local_result = best_chainlock_for("local", maybe_local_config.as_ref());
 
                 // Convert each to Option<ChainLock>
                 let mainnet_chainlock = mainnet_result.ok();
                 let testnet_chainlock = testnet_result.ok();
                 let devnet_chainlock = devnet_result.ok();
+                let local_chainlock = local_result.ok();
 
                 // If all three failed, bail out with an error
                 if mainnet_chainlock.is_none()
                     && testnet_chainlock.is_none()
                     && devnet_chainlock.is_none()
+                    && local_chainlock.is_none()
                 {
                     return Err(
-                        "Failed to get best chain lock for mainnet, testnet, and devnet"
+                        "Failed to get best chain lock for mainnet, testnet, devnet, and local network"
                             .to_string(),
                     );
                 }
@@ -112,6 +121,7 @@ impl AppContext {
                     mainnet_chainlock,
                     testnet_chainlock,
                     devnet_chainlock,
+                    local_chainlock,
                 )))
             }
             CoreTask::RefreshWalletInfo(wallet) => self

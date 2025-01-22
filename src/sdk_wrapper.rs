@@ -14,7 +14,7 @@ pub fn initialize_sdk<P: ContextProvider + 'static>(
     // Setup Platform SDK
     let address_list = config.dapi_address_list();
     let request_settings = RequestSettings {
-        connect_timeout: Some(Duration::from_secs(10)),
+        connect_timeout: Some(Duration::from_secs(1)),
         timeout: Some(Duration::from_secs(10)),
         retries: Some(6),
         ..Default::default()

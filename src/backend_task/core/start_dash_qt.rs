@@ -41,6 +41,7 @@ impl AppContext {
             Network::Dash => "dash_core_configs/mainnet.conf",
             Network::Testnet => "dash_core_configs/testnet.conf",
             Network::Devnet => "dash_core_configs/devnet.conf",
+            Network::Regtest => "dash_core_configs/local.conf",
             _ => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
@@ -61,6 +62,8 @@ impl AppContext {
             command.arg("-testnet");
         } else if network == Network::Devnet {
             command.arg("-devnet");
+        } else if network == Network::Regtest {
+            command.arg("-local");
         }
 
         // Spawn the Dash-Qt process

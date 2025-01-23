@@ -59,7 +59,7 @@ pub struct AppState {
     pub mainnet_core_zmq_listener: CoreZMQListener,
     pub testnet_core_zmq_listener: CoreZMQListener,
     pub devnet_core_zmq_listener: CoreZMQListener,
-    pub local_core_zmq_listener: CoreZMQListener,
+    // pub local_core_zmq_listener: CoreZMQListener,
     pub core_message_receiver: mpsc::Receiver<(ZMQMessage, Network)>,
     pub task_result_sender: tokiompsc::Sender<TaskResult>, // Channel sender for sending task results
     pub task_result_receiver: tokiompsc::Receiver<TaskResult>, // Channel receiver for receiving task results
@@ -304,18 +304,18 @@ impl AppState {
         )
         .expect("Failed to create devnet InstantSend listener");
 
-        let local_tx_zmq_status_option = match local_app_context {
-            Some(ref context) => Some(context.sx_zmq_status.clone()),
-            None => None,
-        };
+        // let local_tx_zmq_status_option = match local_app_context {
+        //     Some(ref context) => Some(context.sx_zmq_status.clone()),
+        //     None => None,
+        // };
 
-        let local_core_zmq_listener = CoreZMQListener::spawn_listener(
-            Network::Regtest,
-            "tcp://127.0.0.1:20302",
-            core_message_sender,
-            local_tx_zmq_status_option,
-        )
-        .expect("Failed to create local InstantSend listener");
+        // let local_core_zmq_listener = CoreZMQListener::spawn_listener(
+        //     Network::Regtest,
+        //     "tcp://127.0.0.1:20302",
+        //     core_message_sender,
+        //     local_tx_zmq_status_option,
+        // )
+        // .expect("Failed to create local InstantSend listener");
 
         Self {
             main_screens: [
@@ -375,7 +375,7 @@ impl AppState {
             mainnet_core_zmq_listener,
             testnet_core_zmq_listener,
             devnet_core_zmq_listener,
-            local_core_zmq_listener,
+            // local_core_zmq_listener,
             core_message_receiver,
             task_result_sender,
             task_result_receiver,

@@ -259,12 +259,14 @@ impl NetworkChooserScreen {
         }
 
         // Add a button to start the network
-        if ui.button("Start").clicked() {
-            app_action = AppAction::BackendTask(BackendTask::CoreTask(CoreTask::StartDashQT(
-                network,
-                self.custom_dash_qt_path.clone(),
-                self.overwrite_dash_conf,
-            )));
+        if !(network == Network::Regtest) {
+            if ui.button("Start").clicked() {
+                app_action = AppAction::BackendTask(BackendTask::CoreTask(CoreTask::StartDashQT(
+                    network,
+                    self.custom_dash_qt_path.clone(),
+                    self.overwrite_dash_conf,
+                )));
+            }
         }
 
         ui.end_row();
@@ -285,7 +287,8 @@ impl NetworkChooserScreen {
 
 impl ScreenLike for NetworkChooserScreen {
     fn display_message(&mut self, message: &str, _message_type: super::MessageType) {
-        if message.contains("Failed to get best chain lock for mainnet, testnet, and devnet") {
+        if message.contains("Failed to get best chain lock for mainnet, testnet, devnet, and local")
+        {
             self.mainnet_core_status_online = false;
             self.testnet_core_status_online = false;
             self.devnet_core_status_online = false;

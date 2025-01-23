@@ -839,7 +839,7 @@ impl ScreenLike for IdentitiesScreen {
     }
 
     fn display_message(&mut self, message: &str, message_type: crate::ui::MessageType) {
-        if message.contains("Error refreshing identities")
+        if message.contains("Error refreshing identity")
             || message.contains("Successfully refreshed identity")
         {
             self.refreshing_status = IdentitiesRefreshingStatus::NotRefreshing;

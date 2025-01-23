@@ -455,9 +455,10 @@ impl AppContext {
                 self.register_identity(registration_info, sender).await
             }
             IdentityTask::RegisterDpnsName(input) => self.register_dpns_name(sdk, input).await,
-            IdentityTask::RefreshIdentity(qualified_identity) => {
-                self.refresh_identity(sdk, qualified_identity, sender).await
-            }
+            IdentityTask::RefreshIdentity(qualified_identity) => self
+                .refresh_identity(sdk, qualified_identity, sender)
+                .await
+                .map_err(|e| format!("Error refreshing identity: {:?}", e)),
             IdentityTask::Transfer(qualified_identity, to_identifier, credits, id) => {
                 self.transfer_to_identity(qualified_identity, to_identifier, credits, id)
                     .await

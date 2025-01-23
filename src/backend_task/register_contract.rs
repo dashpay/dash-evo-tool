@@ -17,9 +17,8 @@ impl AppContext {
         let public_key = identity
             .identity
             .get_first_public_key_matching(
-                // is it correct purpose and security level? should move this to the screen and only allow identities that contain the right key
                 Purpose::AUTHENTICATION,
-                [SecurityLevel::MASTER, SecurityLevel::CRITICAL].into(),
+                [SecurityLevel::CRITICAL, SecurityLevel::HIGH].into(),
                 KeyType::all_key_types().into(),
                 false,
             )

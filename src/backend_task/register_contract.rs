@@ -10,7 +10,9 @@ use super::BackendTaskSuccessResult;
 
 impl AppContext {
     pub async fn register_data_contract(
+        &self,
         data_contract: DataContract,
+        alias: String,
         identity: QualifiedIdentity,
         sdk: &Sdk,
     ) -> Result<BackendTaskSuccessResult, String> {
@@ -30,9 +32,27 @@ impl AppContext {
             .put_to_platform_and_wait_for_response(&sdk, public_key.clone(), &identity)
             .await
         {
-            Ok(_returned_contract) => Ok(BackendTaskSuccessResult::Message(
-                "DataContract successfully registered".to_string(),
-            )),
+            Ok(returned_contract) => {
+                let optional_alias = match alias.is_empty() {
+                    true => None,
+                    false => Some(alias),
+                };
+                self.db
+                    .insert_contract_if_not_exists(
+                        &returned_contract,
+                        optional_alias.as_deref(),
+                        self,
+                    )
+                    .map_err(|e| {
+                        format!(
+                            "Error inserting contract into the database: {}",
+                            e.to_string()
+                        )
+                    })?;
+                Ok(BackendTaskSuccessResult::Message(
+                    "DataContract successfully registered".to_string(),
+                ))
+            }
             Err(e) => Err(format!("Failed to register DataContract: {:?}", e)),
         }
     }

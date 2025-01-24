@@ -16,8 +16,8 @@ use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::platform::{DataContract, IdentityPublicKey};
-use eframe::egui::{self, Color32, Context, ScrollArea, TextEdit};
-use egui::{RichText, Ui};
+use eframe::egui::{self, Color32, Context, TextEdit};
+use egui::{RichText, ScrollArea, Ui};
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -34,6 +34,7 @@ enum BroadcastStatus {
 pub struct RegisterDataContractScreen {
     pub app_context: Arc<AppContext>,
     contract_json_input: String,
+    contract_alias_input: String,
     broadcast_status: BroadcastStatus,
 
     pub show_identity_selector: bool,
@@ -86,6 +87,7 @@ impl RegisterDataContractScreen {
         Self {
             app_context: app_context.clone(),
             contract_json_input: String::new(),
+            contract_alias_input: String::new(),
             broadcast_status: BroadcastStatus::Idle,
 
             show_identity_selector,
@@ -214,23 +216,25 @@ impl RegisterDataContractScreen {
     }
 
     fn ui_input_field(&mut self, ui: &mut egui::Ui) {
-        ScrollArea::vertical().max_height(600.0).show(ui, |ui| {
-            let response = ui.add(
-                TextEdit::multiline(&mut self.contract_json_input)
-                    .desired_rows(6)
-                    .desired_width(ui.available_width())
-                    .code_editor(),
-            );
-            if response.changed() {
-                self.parse_contract();
-            }
-        });
+        ScrollArea::vertical()
+            .max_height(ui.available_height() - 100.0)
+            .show(ui, |ui| {
+                let response = ui.add(
+                    TextEdit::multiline(&mut self.contract_json_input)
+                        .desired_rows(6)
+                        .desired_width(ui.available_width())
+                        .code_editor(),
+                );
+                if response.changed() {
+                    self.parse_contract();
+                }
+            });
     }
 
     fn ui_parsed_contract(&mut self, ui: &mut egui::Ui) -> AppAction {
         let mut app_action = AppAction::None;
 
-        ui.add_space(10.0);
+        ui.add_space(5.0);
 
         match &self.broadcast_status {
             BroadcastStatus::Idle => {
@@ -256,6 +260,7 @@ impl RegisterDataContractScreen {
                     app_action = AppAction::BackendTask(BackendTask::ContractTask(
                         ContractTask::RegisterDataContract(
                             contract.clone(),
+                            self.contract_alias_input.clone(),
                             self.selected_qualified_identity.clone().unwrap().0, // unwrap should be safe here
                         ),
                     ));
@@ -283,7 +288,7 @@ impl RegisterDataContractScreen {
 
         match app_action {
             AppAction::BackendTask(BackendTask::ContractTask(
-                ContractTask::RegisterDataContract(_, _),
+                ContractTask::RegisterDataContract(_, _, _),
             )) => {
                 self.broadcast_status = BroadcastStatus::Broadcasting(
                     SystemTime::now()
@@ -317,6 +322,7 @@ impl RegisterDataContractScreen {
 
             if ui.button("Register another contract").clicked() {
                 self.contract_json_input = String::new();
+                self.contract_alias_input = String::new();
                 self.broadcast_status = BroadcastStatus::Idle;
             }
         });
@@ -392,6 +398,14 @@ impl ScreenLike for RegisterDataContractScreen {
                 ));
             }
 
+            // Input for the alias
+            ui.add_space(10.0);
+            ui.separator();
+            ui.add_space(10.0);
+            ui.heading("2. Contract alias for DET (optional)");
+            ui.add_space(5.0);
+            ui.text_edit_singleline(&mut self.contract_alias_input);
+
             ui.add_space(10.0);
             ui.separator();
             ui.add_space(10.0);
@@ -404,11 +418,12 @@ impl ScreenLike for RegisterDataContractScreen {
                 }
             }
 
-            // Input for the name
-            ui.heading("2. Paste the contract JSON below:");
+            // Input for the contract
+            ui.heading("3. Paste the contract JSON below");
             ui.add_space(5.0);
             self.ui_input_field(ui);
 
+            // Parse the contract and show the result
             action |= self.ui_parsed_contract(ui);
         });
 

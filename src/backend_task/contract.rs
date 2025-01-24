@@ -12,7 +12,7 @@ pub(crate) enum ContractTask {
     FetchContract(Identifier, Option<String>),
     FetchContracts(Vec<Identifier>),
     RemoveContract(Identifier),
-    RegisterDataContract(DataContract, QualifiedIdentity),
+    RegisterDataContract(DataContract, String, QualifiedIdentity),
 }
 
 impl AppContext {
@@ -75,8 +75,8 @@ impl AppContext {
                     Err(e) => Err(format!("Error fetching DPNS contract: {}", e.to_string())),
                 }
             }
-            ContractTask::RegisterDataContract(data_contract, identity) => {
-                AppContext::register_data_contract(data_contract, identity, sdk)
+            ContractTask::RegisterDataContract(data_contract, alias, identity) => {
+                AppContext::register_data_contract(&self, data_contract, alias, identity, sdk)
                     .await
                     .map(|_| {
                         BackendTaskSuccessResult::Message(

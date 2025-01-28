@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 use chrono::{DateTime, Utc};
-use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::Identifier;
 use eframe::egui::{self, CentralPanel, Color32, Context, Frame, Margin, Ui};
 use egui::Align;
@@ -16,6 +16,15 @@ use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::{BackendTaskSuccessResult, MessageType, RootScreenType, ScreenLike};
+
+/// A token owned by an identity.
+#[derive(Clone)]
+pub struct IdentityTokenBalance {
+    pub token_identifier: Identifier,
+    pub token_name: String,
+    pub identity_id: Identifier,
+    pub balance: u64,
+}
 
 /// Which DPNS sub-screen is currently showing.
 #[derive(PartialEq)]
@@ -54,14 +63,17 @@ enum SortOrder {
 }
 
 /// The main, combined TokensScreen:
-/// - Displays active/past/owned DPNS contests
-/// - Allows clicking selection of votes (bulk scheduling)
-/// - Allows single immediate vote or single schedule
-/// - Shows scheduled votes listing
+/// - Displays token balances or a search UI
+/// - Allows reordering of tokens if desired
 pub struct TokensScreen {
     pub app_context: Arc<AppContext>,
+
+    // Identities you might own; not strictly necessary but included from your original example
     user_identities: Vec<QualifiedIdentity>,
-    my_tokens: Arc<Mutex<Vec<Token>>>,
+
+    // CHANGED: Instead of IndexMap, a simple Vec:
+    my_tokens: Arc<Mutex<Vec<IdentityTokenBalance>>>,
+
     token_search_query: Option<String>,
     message: Option<(String, MessageType, DateTime<Utc>)>,
     pending_backend_task: Option<BackendTask>,
@@ -77,10 +89,11 @@ pub struct TokensScreen {
 impl TokensScreen {
     pub fn new(app_context: &Arc<AppContext>, tokens_subscreen: TokensSubscreen) -> Self {
         let user_identities = app_context
-            .db
-            .get_local_user_identities(app_context)
+            .load_local_qualified_identities()
             .unwrap_or_default();
-        // let my_tokens =
+        let my_tokens = Arc::new(Mutex::new(
+            app_context.identity_token_balances().unwrap_or_default(),
+        ));
 
         let mut screen = Self {
             app_context: app_context.clone(),
@@ -96,76 +109,118 @@ impl TokensScreen {
             refreshing_status: RefreshingStatus::NotRefreshing,
         };
 
+        // CHANGED: Load your saved order from DB and reorder the Vec accordingly
         if let Ok(saved_ids) = screen.app_context.db.load_token_order() {
-            // reorder the IndexMap
-            screen.reorder_map_to(saved_ids);
+            screen.reorder_vec_to(saved_ids);
             screen.use_custom_order = true;
         }
 
         screen
     }
 
-    /// Reorder the underlying IndexMap to match a list of IDs
-    fn reorder_map_to(&self, new_order: Vec<Identifier>) {
+    // ─────────────────────────────────────────────────────────────────
+    // Reordering
+    // ─────────────────────────────────────────────────────────────────
+
+    /// Reorder `my_tokens` to match a given list of token_identifiers.
+    fn reorder_vec_to(&self, new_order: Vec<Identifier>) {
         let mut lock = self.my_tokens.lock().unwrap();
         for (desired_idx, id) in new_order.iter().enumerate() {
-            if let Some(current_idx) = lock.get_index_of(id) {
+            // CHANGED: Use Vec::position:
+            if let Some(current_idx) = lock.iter().position(|t| t.token_identifier == *id) {
                 if current_idx != desired_idx && current_idx < lock.len() {
-                    lock.swap_indices(current_idx, desired_idx);
+                    lock.swap(current_idx, desired_idx);
                 }
             }
         }
     }
 
-    /// Sorts a list of QIs
-    fn sort_vec(&self, list: &mut [Token]) {
+    /// Save the current vector's order of token IDs to the DB
+    fn save_current_order(&self) {
+        let lock = self.my_tokens.lock().unwrap();
+        // CHANGED: gather token_identifier from each item in the Vec
+        let all_ids = lock
+            .iter()
+            .map(|token| token.token_identifier.clone())
+            .collect::<Vec<_>>();
+        drop(lock);
+        self.app_context.db.save_token_order(all_ids).ok();
+    }
+
+    // If user toggles away from sorting to a custom order,
+    // but we've already displayed an ephemeral sort,
+    // we can unify that ephemeral order with the underlying Vec
+    // *before* doing an up/down swap.
+    fn update_vec_to_current_ephemeral(&self, ephemeral_list: Vec<IdentityTokenBalance>) {
+        let mut lock = self.my_tokens.lock().unwrap();
+        // Reorder `lock` to match ephemeral_list:
+        for (desired_idx, ephemeral_token) in ephemeral_list.into_iter().enumerate() {
+            if let Some(current_idx) = lock
+                .iter()
+                .position(|t| t.token_identifier == ephemeral_token.token_identifier)
+            {
+                if current_idx != desired_idx {
+                    lock.swap(current_idx, desired_idx);
+                }
+            }
+        }
+    }
+
+    // Move a token up
+    fn move_token_up(&mut self, token_id: &Identifier) {
+        let mut lock = self.my_tokens.lock().unwrap();
+        if let Some(idx) = lock.iter().position(|t| &t.token_identifier == token_id) {
+            if idx > 0 {
+                lock.swap(idx, idx - 1);
+            }
+        }
+        drop(lock);
+        self.save_current_order();
+    }
+
+    // Move a token down
+    fn move_token_down(&mut self, token_id: &Identifier) {
+        let mut lock = self.my_tokens.lock().unwrap();
+        if let Some(idx) = lock.iter().position(|t| &t.token_identifier == token_id) {
+            if idx + 1 < lock.len() {
+                lock.swap(idx, idx + 1);
+            }
+        }
+        drop(lock);
+        self.save_current_order();
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // Sorting
+    // ─────────────────────────────────────────────────────────────────
+
+    /// Sort the vector by the user-specified column/order, overriding any custom order.
+    fn sort_vec(&self, list: &mut [IdentityTokenBalance]) {
         list.sort_by(|a, b| {
             let ordering = match self.sort_column {
-                SortColumn::Balance => {
-                    let balance_a = a.balance.as_deref().unwrap_or("");
-                    let balance_b = b.balance.as_deref().unwrap_or("");
-                    balance_a.cmp(balance_b)
-                }
-                SortColumn::OwnerIdentity => {
-                    let short_a: String = a
-                        .identity
-                        .id()
-                        .to_string(a.identity_type.default_encoding())
-                        .chars()
-                        .take(6)
-                        .collect();
-                    let short_b: String = b
-                        .identity
-                        .id()
-                        .to_string(b.identity_type.default_encoding())
-                        .chars()
-                        .take(6)
-                        .collect();
-                    short_a.cmp(&short_b)
-                }
-                SortColumn::TokenName => {
-                    let name_a = a.token_name.to_string();
-                    let name_b = b.token_name.to_string();
-                    name_a.cmp(&name_b)
-                }
+                SortColumn::Balance => a.balance.cmp(&b.balance),
+                SortColumn::OwnerIdentity => a.identity_id.cmp(&b.identity_id),
+                SortColumn::TokenName => a.token_name.cmp(&b.token_name),
             };
             match self.sort_order {
                 SortOrder::Ascending => ordering,
                 SortOrder::Descending => ordering.reverse(),
             }
         });
-        let mut lock = self.my_tokens.lock().unwrap();
-        *lock = list
-            .iter()
-            .map(|token| (token.identity.id(), token.clone()))
-            .collect();
-        drop(lock);
-        // self.save_current_order();
     }
 
-    // ---------------------------
-    // Error handling
-    // ---------------------------
+    fn toggle_sort(&mut self, column: SortColumn) {
+        if self.sort_column == column {
+            self.sort_order = match self.sort_order {
+                SortOrder::Ascending => SortOrder::Descending,
+                SortOrder::Descending => SortOrder::Ascending,
+            };
+        } else {
+            self.sort_column = column;
+            self.sort_order = SortOrder::Ascending;
+        }
+    }
+
     fn dismiss_message(&mut self) {
         self.message = None;
     }
@@ -180,104 +235,33 @@ impl TokensScreen {
         }
     }
 
-    // ---------------------------
-    // Sorting
-    // ---------------------------
-    fn toggle_sort(&mut self, column: SortColumn) {
-        if self.sort_column == column {
-            self.sort_order = match self.sort_order {
-                SortOrder::Ascending => SortOrder::Descending,
-                SortOrder::Descending => SortOrder::Ascending,
-            };
-        } else {
-            self.sort_column = column;
-            self.sort_order = SortOrder::Ascending;
-        }
-    }
+    // ─────────────────────────────────────────────────────────────────
+    // Rendering
+    // ─────────────────────────────────────────────────────────────────
 
-    fn sort_my_tokens(&self, tokens: &mut Vec<Token>) {
-        tokens.sort_by(|a, b| {
-            let order = match self.sort_column {
-                SortColumn::TokenName => a.token_name.cmp(&b.token_name),
-                SortColumn::OwnerIdentity => a.owner_identity.cmp(&b.owner_identity),
-                SortColumn::Balance => a.balance.cmp(&b.balance),
-            };
-            if self.sort_order == SortOrder::Descending {
-                order.reverse()
-            } else {
-                order
-            }
-        });
-    }
-
-    /// This method merges the ephemeral-sorted `Vec` back into the IndexMap
-    /// so the IndexMap is updated to the user’s currently displayed order.
-    fn update_index_map_to_current_ephemeral(&self, ephemeral_list: Vec<QualifiedIdentity>) {
-        let mut lock = self.my_tokens.lock().unwrap();
-        // basically reorder the underlying IndexMap to match ephemeral_list
-        for (desired_idx, qi) in ephemeral_list.into_iter().enumerate() {
-            let id = qi.identity.id();
-            if let Some(current_idx) = lock.get_index_of(&id) {
-                if current_idx != desired_idx {
-                    lock.swap_indices(current_idx, desired_idx);
-                }
-            }
-        }
-    }
-
-    // Up/down reorder methods
-    fn move_token_up(&mut self, identity_id: &Identifier) {
-        let mut lock = self.my_tokens.lock().unwrap();
-        if let Some(idx) = lock.get_index_of(identity_id) {
-            if idx > 0 {
-                lock.swap_indices(idx, idx - 1);
-            }
-        }
-        drop(lock);
-        self.save_current_order();
-    }
-
-    // arrow down
-    fn move_token_down(&mut self, identity_id: &Identifier) {
-        let mut lock = self.my_tokens.lock().unwrap();
-        if let Some(idx) = lock.get_index_of(identity_id) {
-            if idx + 1 < lock.len() {
-                lock.swap_indices(idx, idx + 1);
-            }
-        }
-        drop(lock);
-        self.save_current_order();
-    }
-
-    // Save the current index order to DB
-    fn save_current_order(&self) {
-        let lock = self.my_tokens.lock().unwrap();
-        let all_ids = lock.keys().cloned().collect::<Vec<_>>();
-        drop(lock);
-        self.app_context.db.save_identity_order(all_ids).ok();
-    }
-
-    fn render_table_my_token_balances(&mut self, ui: &mut Ui, tokens: &[Token]) -> AppAction {
+    fn render_table_my_token_balances(
+        &mut self,
+        ui: &mut Ui,
+        tokens: &[IdentityTokenBalance],
+    ) -> AppAction {
         let mut action = AppAction::None;
 
-        let mut my_tokens = tokens.to_vec();
+        let mut display_list = tokens.to_vec();
+        // If user hasn't chosen to keep a custom order, do a normal sort:
         if !self.use_custom_order {
-            self.sort_vec(&mut my_tokens);
+            self.sort_vec(&mut display_list);
         }
 
-        // Allocate space for refreshing status
-        let refreshing_height = 33.0;
-        let mut max_scroll_height = if let RefreshingStatus::Refreshing(_) = self.refreshing_status
-        {
-            ui.available_height() - refreshing_height
-        } else {
-            ui.available_height()
-        };
+        // We'll use a scroll area for large lists.
+        let mut max_scroll_height = ui.available_height();
 
-        // Allocate space for backend message
-        let backend_message_height = 47.0;
-        if let Some((_, _, _)) = self.message.clone() {
-            max_scroll_height -= backend_message_height;
+        // If we are refreshing, we want space for that spinner, etc.
+        if let RefreshingStatus::Refreshing(_) = self.refreshing_status {
+            max_scroll_height -= 33.0;
+        }
+        // If there's a message at bottom, allocate space for that.
+        if self.message.is_some() {
+            max_scroll_height -= 47.0;
         }
 
         egui::ScrollArea::vertical()
@@ -320,57 +304,52 @@ impl TokensScreen {
                                 });
                             })
                             .body(|mut body| {
-                                for token in &my_tokens {
+                                for token in &display_list {
                                     body.row(25.0, |mut row| {
                                         row.col(|ui| {
-                                            self.show_token_name(ui, token);
+                                            ui.label(&token.token_name);
                                         });
                                         row.col(|ui| {
-                                            Self::show_owner_identity_id(ui, token);
+                                            ui.label(token.identity_id.to_string(Encoding::Base58));
                                         });
                                         row.col(|ui| {
-                                            TokensScreen::show_balance(ui, token);
+                                            ui.label(token.balance.to_string());
                                         });
                                         row.col(|ui| {
                                             ui.spacing_mut().item_spacing.x = 3.0;
 
                                             ui.horizontal(|ui| {
-                                                // Remove
                                                 if ui.button("Remove").clicked() {
-                                                    // nothing.. placeholder
+                                                    // If you need a removal, handle here
                                                 }
                                             });
 
                                             ui.horizontal(|ui| {
-                                                // Up arrow
                                                 let up_btn = ui.button("⬆").on_hover_text(
                                                     "Move this token up in the list",
                                                 );
-                                                // Down arrow
                                                 let down_btn = ui.button("⬇").on_hover_text(
                                                     "Move this token down in the list",
                                                 );
 
                                                 if up_btn.clicked() {
-                                                    // If we are currently sorted (not custom),
-                                                    // unify the IndexMap to reflect that ephemeral sort
+                                                    // CHANGED: If we are currently sorted, unify the ephemeral sort:
                                                     if !self.use_custom_order {
-                                                        self.update_index_map_to_current_ephemeral(
-                                                            my_tokens.clone(),
+                                                        self.update_vec_to_current_ephemeral(
+                                                            display_list.clone(),
                                                         );
                                                     }
-                                                    // Now do the swap
                                                     self.use_custom_order = true;
-                                                    self.move_token_up(&token.id());
+                                                    self.move_token_up(&token.token_identifier);
                                                 }
                                                 if down_btn.clicked() {
                                                     if !self.use_custom_order {
-                                                        self.update_index_map_to_current_ephemeral(
-                                                            my_tokens.clone(),
+                                                        self.update_vec_to_current_ephemeral(
+                                                            display_list.clone(),
                                                         );
                                                     }
                                                     self.use_custom_order = true;
-                                                    self.move_token_down(&token.id());
+                                                    self.move_token_down(&token.token_identifier);
                                                 }
                                             });
                                         });
@@ -381,18 +360,6 @@ impl TokensScreen {
             });
 
         action
-    }
-
-    fn show_token_name(&self, ui: &mut Ui, token: &Token) {
-        ui.label(token.token_name.to_string());
-    }
-
-    fn show_owner_identity_id(ui: &mut Ui, token: &Token) {
-        ui.label(token.owner_identity.id().to_string());
-    }
-
-    fn show_balance(ui: &mut Ui, token: &Token) {
-        ui.label(token.balance.to_string());
     }
 
     fn render_token_search(&mut self, ui: &mut Ui) -> AppAction {
@@ -412,8 +379,9 @@ impl TokensScreen {
                     action =
                         AppAction::BackendTask(BackendTask::TokenTask(TokenTask::QueryTokens(
                             self.token_search_query
-                                .get_or_insert_with(String::new)
-                                .to_string(),
+                                .as_ref()
+                                .unwrap_or(&String::new())
+                                .clone(),
                         )));
                 }
             });
@@ -422,9 +390,6 @@ impl TokensScreen {
         action
     }
 
-    // ---------------------------
-    // Rendering: Empty states
-    // ---------------------------
     fn render_no_owned_tokens(&mut self, ui: &mut Ui) -> AppAction {
         let mut app_action = AppAction::None;
         ui.vertical_centered(|ui| {
@@ -475,9 +440,9 @@ impl TokensScreen {
     }
 }
 
-// ---------------------------
+// ─────────────────────────────────────────────────────────────────
 // ScreenLike implementation
-// ---------------------------
+// ─────────────────────────────────────────────────────────────────
 impl ScreenLike for TokensScreen {
     fn refresh(&mut self) {}
 
@@ -491,7 +456,7 @@ impl ScreenLike for TokensScreen {
         self.check_error_expiration();
 
         // Build top-right buttons
-        let mut right_buttons = match self.tokens_subscreen {
+        let right_buttons = match self.tokens_subscreen {
             TokensSubscreen::MyBalances => vec![(
                 "Refresh",
                 DesiredAppAction::BackendTask(BackendTask::TokenTask(
@@ -501,6 +466,7 @@ impl ScreenLike for TokensScreen {
             TokensSubscreen::TokenSearch => vec![("Refresh", DesiredAppAction::Refresh)],
         };
 
+        // Top panel
         let mut action = add_top_panel(
             ctx,
             &self.app_context,
@@ -531,21 +497,25 @@ impl ScreenLike for TokensScreen {
 
         // Main panel
         CentralPanel::default().show(ctx, |ui| {
-            // Render sub-screen
             match self.tokens_subscreen {
                 TokensSubscreen::MyBalances => {
-                    let has_any = {
+                    let tokens_empty = {
                         let guard = self.my_tokens.lock().unwrap();
-                        !guard.is_empty()
+                        guard.is_empty()
                     };
-                    if has_any {
-                        self.render_table_my_token_balances(ui);
-                    } else {
+
+                    if tokens_empty {
                         action |= self.render_no_owned_tokens(ui);
                     }
+
+                    let tokens = {
+                        let guard = self.my_tokens.lock().unwrap();
+                        guard.clone()
+                    };
+                    action |= self.render_table_my_token_balances(ui, &tokens);
                 }
                 TokensSubscreen::TokenSearch => {
-                    self.render_token_search(ui);
+                    action |= self.render_token_search(ui);
                 }
             }
 
@@ -556,7 +526,7 @@ impl ScreenLike for TokensScreen {
                 let elapsed = now - start_time;
                 ui.horizontal(|ui| {
                     ui.add_space(10.0);
-                    ui.label(format!("Refreshing... Time taken so far: {}", elapsed)); // Can add "time taken so far" later
+                    ui.label(format!("Refreshing... Time so far: {}", elapsed));
                     ui.add(egui::widgets::Spinner::default().color(Color32::from_rgb(0, 128, 255)));
                 });
                 ui.add_space(10.0);
@@ -585,7 +555,7 @@ impl ScreenLike for TokensScreen {
             }
         });
 
-        // Extra handling for actions
+        // Post-processing on user actions
         match action {
             AppAction::BackendTask(BackendTask::TokenTask(TokenTask::QueryMyTokenBalances)) => {
                 self.refreshing_status =

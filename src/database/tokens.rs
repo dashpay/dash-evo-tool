@@ -1,9 +1,78 @@
 use dash_sdk::platform::Identifier;
 use rusqlite::params;
 
+use crate::{context::AppContext, ui::tokens::tokens_screen::IdentityTokenBalance};
+
 use super::Database;
 
 impl Database {
+    pub fn insert_identity_token_balance(
+        &self,
+        token_identifier: &Identifier,
+        token_name: &str,
+        identity_id: &Identifier,
+        balance: u64,
+        app_context: &AppContext,
+    ) -> rusqlite::Result<()> {
+        let network = app_context.network_string();
+        let token_identifier_vec = token_identifier.to_vec();
+        let identity_id_vec = identity_id.to_vec();
+
+        self.execute(
+            "INSERT OR REPLACE INTO identity_token_balances
+             (token_identifier, token_name, identity_id, balance, network)
+             VALUES (?, ?, ?, ?, ?)",
+            params![
+                token_identifier_vec,
+                token_name,
+                identity_id_vec,
+                balance,
+                network
+            ],
+        )?;
+
+        Ok(())
+    }
+
+    pub fn get_identity_token_balances(
+        &self,
+        app_context: &AppContext,
+    ) -> rusqlite::Result<Vec<IdentityTokenBalance>> {
+        let network = app_context.network_string();
+
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT *
+             FROM identity_token_balances
+             WHERE network = ?",
+        )?;
+
+        let rows = stmt.query_map(params![network], |row| {
+            Ok((
+                Identifier::from_vec(row.get(0)?),
+                row.get(1)?,
+                Identifier::from_vec(row.get(2)?),
+                row.get(3)?,
+            ))
+        })?;
+
+        let mut result = Vec::new();
+        for row in rows {
+            let (token_identifier, token_name, identity_id, balance) = row?;
+            let identity_token_balance = IdentityTokenBalance {
+                token_identifier: token_identifier
+                    .expect("Expected to convert token_identifier from vec to Identifier"),
+                token_name,
+                identity_id: identity_id
+                    .expect("Expected to convert identity_id from vec to Identifier"),
+                balance,
+            };
+            result.push(identity_token_balance);
+        }
+
+        Ok(result)
+    }
+
     /// Creates the identity_order table if it doesn't already exist
     /// with two columns: `pos` (int) and `identity_id` (blob).
     /// pos is the "position" in the custom ordering.

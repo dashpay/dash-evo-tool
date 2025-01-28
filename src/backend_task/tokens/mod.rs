@@ -18,8 +18,22 @@ impl AppContext {
         sender: mpsc::Sender<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, String> {
         match &task {
-            TokenTask::QueryMyTokenBalances => self.query_my_token_balances(sdk, sender).await,
-            TokenTask::QueryTokens(query) => self.query_tokens(sdk, sender, query).await,
+            TokenTask::QueryMyTokenBalances => {
+                // Placeholder
+                Ok(BackendTaskSuccessResult::Message(
+                    "QueryMyTokenBalances".to_string(),
+                ))
+
+                // Actually do this
+                // self.query_my_token_balances(sdk, sender).await
+            }
+            TokenTask::QueryTokens(query) => {
+                // Placeholder
+                Ok(BackendTaskSuccessResult::Message("QueryTokens".to_string()))
+
+                // Actually do this
+                // self.query_tokens(query, sdk, sender).await
+            }
         }
     }
 }

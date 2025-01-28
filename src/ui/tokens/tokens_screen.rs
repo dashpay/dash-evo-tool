@@ -506,13 +506,13 @@ impl ScreenLike for TokensScreen {
 
                     if tokens_empty {
                         action |= self.render_no_owned_tokens(ui);
+                    } else {
+                        let tokens = {
+                            let guard = self.my_tokens.lock().unwrap();
+                            guard.clone()
+                        };
+                        action |= self.render_table_my_token_balances(ui, &tokens);
                     }
-
-                    let tokens = {
-                        let guard = self.my_tokens.lock().unwrap();
-                        guard.clone()
-                    };
-                    action |= self.render_table_my_token_balances(ui, &tokens);
                 }
                 TokensSubscreen::TokenSearch => {
                     action |= self.render_token_search(ui);

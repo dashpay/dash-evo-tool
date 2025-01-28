@@ -26,7 +26,7 @@ pub struct IdentityTokenBalance {
     pub balance: u64,
 }
 
-/// Which DPNS sub-screen is currently showing.
+/// Which token sub-screen is currently showing.
 #[derive(PartialEq)]
 pub enum TokensSubscreen {
     MyBalances,
@@ -67,13 +67,7 @@ enum SortOrder {
 /// - Allows reordering of tokens if desired
 pub struct TokensScreen {
     pub app_context: Arc<AppContext>,
-
-    // Identities you might own; not strictly necessary but included from your original example
-    user_identities: Vec<QualifiedIdentity>,
-
-    // CHANGED: Instead of IndexMap, a simple Vec:
     my_tokens: Arc<Mutex<Vec<IdentityTokenBalance>>>,
-
     token_search_query: Option<String>,
     message: Option<(String, MessageType, DateTime<Utc>)>,
     pending_backend_task: Option<BackendTask>,
@@ -88,16 +82,12 @@ pub struct TokensScreen {
 
 impl TokensScreen {
     pub fn new(app_context: &Arc<AppContext>, tokens_subscreen: TokensSubscreen) -> Self {
-        let user_identities = app_context
-            .load_local_qualified_identities()
-            .unwrap_or_default();
         let my_tokens = Arc::new(Mutex::new(
             app_context.identity_token_balances().unwrap_or_default(),
         ));
 
         let mut screen = Self {
             app_context: app_context.clone(),
-            user_identities,
             my_tokens,
             token_search_query: None,
             message: None,
@@ -109,7 +99,6 @@ impl TokensScreen {
             refreshing_status: RefreshingStatus::NotRefreshing,
         };
 
-        // CHANGED: Load your saved order from DB and reorder the Vec accordingly
         if let Ok(saved_ids) = screen.app_context.db.load_token_order() {
             screen.reorder_vec_to(saved_ids);
             screen.use_custom_order = true;
@@ -220,6 +209,10 @@ impl TokensScreen {
             self.sort_order = SortOrder::Ascending;
         }
     }
+
+    // ─────────────────────────────────────────────────────────────────
+    // Message handling
+    // ─────────────────────────────────────────────────────────────────
 
     fn dismiss_message(&mut self) {
         self.message = None;
@@ -333,7 +326,7 @@ impl TokensScreen {
                                                 );
 
                                                 if up_btn.clicked() {
-                                                    // CHANGED: If we are currently sorted, unify the ephemeral sort:
+                                                    // If we are currently sorted, unify the ephemeral sort:
                                                     if !self.use_custom_order {
                                                         self.update_vec_to_current_ephemeral(
                                                             display_list.clone(),

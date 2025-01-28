@@ -189,7 +189,7 @@ impl AddExistingIdentityScreen {
                         .on_hover_text("Alias is optional. It is only used to help identify the identity in Dash Evo Tool. It isn't saved to Dash Platform.");
                     if response.clicked() {
                         self.show_pop_up_info = Some("Alias is optional. It is only used to help identify the identity in Dash Evo Tool. It isn't saved to Dash Platform.".to_string());
-                    }    
+                    }
                 });
                 ui.text_edit_singleline(&mut self.alias_input);
                 ui.label("");
@@ -224,14 +224,14 @@ impl AddExistingIdentityScreen {
                             // First column: the label & info icon, combined horizontally
                             ui.horizontal(|ui| {
                                 ui.label(format!("Private Key {} (Hex or WIF):", i + 1));
-                
+
                                 let info_icon = egui::Label::new("ℹ").sense(egui::Sense::click());
                                 let response = ui
                                     .add(info_icon)
                                     .on_hover_text("You don't need to add all or even any private keys here. \
                                                     Private keys can be added later. However, without private keys, \
                                                     you won't be able to sign any transactions.");
-                
+
                                 if response.clicked() {
                                     self.show_pop_up_info = Some(
                                         "You don't need to add all or even any private keys here. \
@@ -244,15 +244,15 @@ impl AddExistingIdentityScreen {
 
                             // Second column: the text field
                             ui.text_edit_singleline(key);
-                            
+
                             // Third column: the remove button
                             if ui.button("-").clicked() {
                                 keys_to_remove.push(i);
                             }
-                
+
                             ui.end_row();
                         }
-                
+
                         // Remove the keys after the loop to avoid borrowing conflicts
                         for i in keys_to_remove.iter().rev() {
                             self.keys_input.remove(*i);

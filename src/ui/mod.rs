@@ -30,6 +30,7 @@ use identities::register_dpns_name_screen::RegisterDpnsNameScreen;
 use std::fmt;
 use std::hash::Hash;
 use std::sync::Arc;
+use tokens::tokens_screen::{TokensScreen, TokensSubscreen};
 use tools::transition_visualizer_screen::TransitionVisualizerScreen;
 use wallets::add_new_wallet_screen::AddNewWalletScreen;
 
@@ -38,6 +39,7 @@ pub mod contracts_documents;
 pub mod dpns;
 pub(crate) mod identities;
 pub mod network_chooser_screen;
+pub mod tokens;
 pub mod tools;
 pub(crate) mod wallets;
 
@@ -54,6 +56,8 @@ pub enum RootScreenType {
     RootScreenToolsTransitionVisualizerScreen,
     RootScreenNetworkChooser,
     RootScreenToolsProofVisualizerScreen,
+    RootScreenMyTokenBalances,
+    RootScreenTokenSearch,
 }
 
 impl RootScreenType {
@@ -68,9 +72,12 @@ impl RootScreenType {
             RootScreenType::RootScreenWalletsBalances => 5,
             RootScreenType::RootScreenToolsTransitionVisualizerScreen => 6,
             RootScreenType::RootScreenNetworkChooser => 7,
+            // 8 used to be the Withdrawals Statuses screen
             RootScreenType::RootScreenToolsProofLogScreen => 9,
             RootScreenType::RootScreenDPNSScheduledVotes => 10,
             RootScreenType::RootScreenToolsProofVisualizerScreen => 11,
+            RootScreenType::RootScreenMyTokenBalances => 12,
+            RootScreenType::RootScreenTokenSearch => 13,
         }
     }
 
@@ -85,9 +92,12 @@ impl RootScreenType {
             5 => Some(RootScreenType::RootScreenWalletsBalances),
             6 => Some(RootScreenType::RootScreenToolsTransitionVisualizerScreen),
             7 => Some(RootScreenType::RootScreenNetworkChooser),
+            // 8 used to be the Withdrawals Statuses screen
             9 => Some(RootScreenType::RootScreenToolsProofLogScreen),
             10 => Some(RootScreenType::RootScreenDPNSScheduledVotes),
             11 => Some(RootScreenType::RootScreenToolsProofVisualizerScreen),
+            12 => Some(RootScreenType::RootScreenMyTokenBalances),
+            13 => Some(RootScreenType::RootScreenTokenSearch),
             _ => None,
         }
     }
@@ -109,6 +119,8 @@ impl From<RootScreenType> for ScreenType {
             RootScreenType::RootScreenToolsProofLogScreen => ScreenType::ProofLog,
             RootScreenType::RootScreenDPNSScheduledVotes => ScreenType::ScheduledVotes,
             RootScreenType::RootScreenToolsProofVisualizerScreen => ScreenType::ProofVisualizer,
+            RootScreenType::RootScreenMyTokenBalances => ScreenType::TokenBalances,
+            RootScreenType::RootScreenTokenSearch => ScreenType::TokenSearch,
         }
     }
 }
@@ -143,6 +155,8 @@ pub enum ScreenType {
     ScheduledVotes,
     AddContracts,
     ProofVisualizer,
+    TokenBalances,
+    TokenSearch,
 }
 
 impl ScreenType {
@@ -218,6 +232,12 @@ impl ScreenType {
             ScreenType::ProofVisualizer => {
                 Screen::ProofVisualizerScreen(ProofVisualizerScreen::new(app_context))
             }
+            ScreenType::TokenBalances => {
+                Screen::TokensScreen(TokensScreen::new(app_context, TokensSubscreen::MyBalances))
+            }
+            ScreenType::TokenSearch => {
+                Screen::TokensScreen(TokensScreen::new(app_context, TokensSubscreen::TokenSearch))
+            }
         }
     }
 }
@@ -243,6 +263,7 @@ pub enum Screen {
     WalletsBalancesScreen(WalletsBalancesScreen),
     AddContractsScreen(AddContractsScreen),
     ProofVisualizerScreen(ProofVisualizerScreen),
+    TokensScreen(TokensScreen),
 }
 
 impl Screen {
@@ -268,6 +289,7 @@ impl Screen {
             Screen::ProofLogScreen(screen) => screen.app_context = app_context,
             Screen::AddContractsScreen(screen) => screen.app_context = app_context,
             Screen::ProofVisualizerScreen(screen) => screen.app_context = app_context,
+            Screen::TokensScreen(screen) => screen.app_context = app_context,
         }
     }
 }
@@ -353,6 +375,14 @@ impl Screen {
             Screen::ProofLogScreen(_) => ScreenType::ProofLog,
             Screen::AddContractsScreen(_) => ScreenType::AddContracts,
             Screen::ProofVisualizerScreen(_) => ScreenType::ProofVisualizer,
+            Screen::TokensScreen(TokensScreen {
+                tokens_subscreen: TokensSubscreen::MyBalances,
+                ..
+            }) => ScreenType::TokenBalances,
+            Screen::TokensScreen(TokensScreen {
+                tokens_subscreen: TokensSubscreen::TokenSearch,
+                ..
+            }) => ScreenType::TokenSearch,
         }
     }
 }
@@ -380,6 +410,7 @@ impl ScreenLike for Screen {
             Screen::ProofLogScreen(screen) => screen.refresh(),
             Screen::AddContractsScreen(screen) => screen.refresh(),
             Screen::ProofVisualizerScreen(screen) => screen.refresh(),
+            Screen::TokensScreen(screen) => screen.refresh(),
         }
     }
 
@@ -405,6 +436,7 @@ impl ScreenLike for Screen {
             Screen::ProofLogScreen(screen) => screen.refresh_on_arrival(),
             Screen::AddContractsScreen(screen) => screen.refresh_on_arrival(),
             Screen::ProofVisualizerScreen(screen) => screen.refresh_on_arrival(),
+            Screen::TokensScreen(screen) => screen.refresh_on_arrival(),
         }
     }
 
@@ -430,6 +462,7 @@ impl ScreenLike for Screen {
             Screen::ProofLogScreen(screen) => screen.ui(ctx),
             Screen::AddContractsScreen(screen) => screen.ui(ctx),
             Screen::ProofVisualizerScreen(screen) => screen.ui(ctx),
+            Screen::TokensScreen(screen) => screen.ui(ctx),
         }
     }
 
@@ -459,6 +492,7 @@ impl ScreenLike for Screen {
             Screen::ProofLogScreen(screen) => screen.display_message(message, message_type),
             Screen::AddContractsScreen(screen) => screen.display_message(message, message_type),
             Screen::ProofVisualizerScreen(screen) => screen.display_message(message, message_type),
+            Screen::TokensScreen(screen) => screen.display_message(message, message_type),
         }
     }
 
@@ -524,6 +558,7 @@ impl ScreenLike for Screen {
             Screen::ProofVisualizerScreen(screen) => {
                 screen.display_task_result(backend_task_success_result)
             }
+            Screen::TokensScreen(screen) => screen.display_task_result(backend_task_success_result),
         }
     }
 
@@ -549,6 +584,7 @@ impl ScreenLike for Screen {
             Screen::ProofLogScreen(screen) => screen.pop_on_success(),
             Screen::AddContractsScreen(screen) => screen.pop_on_success(),
             Screen::ProofVisualizerScreen(screen) => screen.pop_on_success(),
+            Screen::TokensScreen(screen) => screen.pop_on_success(),
         }
     }
 }

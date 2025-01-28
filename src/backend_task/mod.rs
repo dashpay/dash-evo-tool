@@ -16,6 +16,7 @@ use dash_sdk::platform::{Document, Identifier};
 use dash_sdk::query_types::{Documents, IndexMap};
 use futures::future::join_all;
 use std::sync::Arc;
+use tokens::TokenTask;
 use tokio::sync::mpsc;
 
 pub mod broadcast_state_transition;
@@ -24,6 +25,7 @@ pub mod contract;
 pub mod core;
 pub mod document;
 pub mod identity;
+pub mod tokens;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum BackendTask {
@@ -33,6 +35,7 @@ pub(crate) enum BackendTask {
     ContestedResourceTask(ContestedResourceTask),
     CoreTask(CoreTask),
     BroadcastStateTransition(StateTransition),
+    TokenTask(TokenTask),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -114,6 +117,9 @@ impl AppContext {
             BackendTask::BroadcastStateTransition(state_transition) => {
                 self.broadcast_state_transition(state_transition, &sdk)
                     .await
+            }
+            BackendTask::TokenTask(token_task) => {
+                self.run_token_task(token_task, &sdk, sender).await
             }
         }
     }

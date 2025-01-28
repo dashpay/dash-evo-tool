@@ -4,6 +4,9 @@ use dash_sdk::Sdk;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
+mod query_my_token_balances;
+mod query_tokens;
+
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum TokenTask {
     QueryMyTokenBalances,

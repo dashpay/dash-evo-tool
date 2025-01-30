@@ -2,7 +2,6 @@ use crate::model::qualified_identity::encrypted_key_storage::WalletDerivationPat
 use crate::model::wallet::Wallet;
 use bincode::{Decode, Encode};
 use dash_sdk::dpp::dashcore::Network;
-use dash_sdk::dpp::identity::hash::IdentityPublicKeyHashMethodsV0;
 use dash_sdk::platform::IdentityPublicKey;
 use std::sync::{Arc, RwLock};
 

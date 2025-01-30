@@ -62,15 +62,12 @@ impl AppContext {
                 }
                 Err(e) => {
                     tracing::error!("Error fetching vote polls: {}", e);
-                    if let dash_sdk::Error::Proof(
-                        dash_sdk::ProofVerifierError::GroveDBProofVerificationError {
-                            proof_bytes,
-                            path_query,
-                            height,
-                            time_ms,
-                            error,
-                        },
-                    ) = &e
+                    if let dash_sdk::Error::Proof(dash_sdk::ProofVerifierError::GroveDBError {
+                        proof_bytes,
+                        height,
+                        time_ms,
+                        error,
+                    }) = &e
                     {
                         // Encode the query using bincode
                         let encoded_query = match bincode::encode_to_vec(

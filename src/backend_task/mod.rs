@@ -54,7 +54,8 @@ pub(crate) enum BackendTaskSuccessResult {
     FetchedContract(DataContract),
     FetchedContracts(Vec<Option<DataContract>>),
     PageDocuments(IndexMap<Identifier, Option<Document>>, Option<Start>),
-    TokensQueried(Vec<IdentityTokenBalance>),
+    TokensByKeyword(Vec<IdentityTokenBalance>),
+    TokensByKeywordPage(Vec<IdentityTokenBalance>, Option<Identifier>),
 }
 
 impl BackendTaskSuccessResult {}

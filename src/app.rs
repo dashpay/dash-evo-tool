@@ -526,7 +526,10 @@ impl App for AppState {
                     BackendTaskSuccessResult::PageDocuments(_, _) => {
                         self.visible_screen_mut().display_task_result(message);
                     }
-                    BackendTaskSuccessResult::TokensQueried(_) => {
+                    BackendTaskSuccessResult::TokensByKeyword(_) => {
+                        self.visible_screen_mut().display_task_result(message);
+                    }
+                    BackendTaskSuccessResult::TokensByKeywordPage(_, _) => {
                         self.visible_screen_mut().display_task_result(message);
                     }
                 },

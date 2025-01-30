@@ -47,6 +47,15 @@ pub enum RefreshingStatus {
     NotRefreshing,
 }
 
+/// Represents the status of the user’s search
+#[derive(PartialEq, Eq, Clone)]
+pub enum TokenSearchStatus {
+    NotStarted,
+    WaitingForResult(u64),
+    Complete,
+    ErrorMessage(String),
+}
+
 /// Sorting columns
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SortColumn {
@@ -66,13 +75,20 @@ enum SortOrder {
 /// - Allows reordering of tokens if desired
 pub struct TokensScreen {
     pub app_context: Arc<AppContext>,
+    pub tokens_subscreen: TokensSubscreen,
     my_tokens: Arc<Mutex<Vec<IdentityTokenBalance>>>,
+    backend_message: Option<(String, MessageType, DateTime<Utc>)>,
+    pending_backend_task: Option<BackendTask>,
+    refreshing_status: RefreshingStatus,
+
+    // Token Search
     token_search_query: Option<String>,
     search_results: Arc<Mutex<Vec<IdentityTokenBalance>>>,
-    message: Option<(String, MessageType, DateTime<Utc>)>,
-    pending_backend_task: Option<BackendTask>,
-    pub tokens_subscreen: TokensSubscreen,
-    refreshing_status: RefreshingStatus,
+    token_search_status: TokenSearchStatus,
+    search_current_page: usize,
+    search_has_next_page: bool,
+    next_cursors: Vec<Identifier>,
+    previous_cursors: Vec<Identifier>,
 
     /// Sorting
     sort_column: SortColumn,
@@ -90,8 +106,13 @@ impl TokensScreen {
             app_context: app_context.clone(),
             my_tokens,
             token_search_query: None,
+            token_search_status: TokenSearchStatus::NotStarted,
+            search_current_page: 1,
+            search_has_next_page: false,
+            next_cursors: vec![],
+            previous_cursors: vec![],
             search_results: Arc::new(Mutex::new(Vec::new())),
-            message: None,
+            backend_message: None,
             sort_column: SortColumn::TokenName,
             sort_order: SortOrder::Ascending,
             use_custom_order: true,
@@ -216,11 +237,11 @@ impl TokensScreen {
     // ─────────────────────────────────────────────────────────────────
 
     fn dismiss_message(&mut self) {
-        self.message = None;
+        self.backend_message = None;
     }
 
     fn check_error_expiration(&mut self) {
-        if let Some((_, _, timestamp)) = &self.message {
+        if let Some((_, _, timestamp)) = &self.backend_message {
             let now = Utc::now();
             let elapsed = now.signed_duration_since(*timestamp);
             if elapsed.num_seconds() >= 10 {
@@ -254,7 +275,7 @@ impl TokensScreen {
             max_scroll_height -= 33.0;
         }
         // If there's a message at bottom, allocate space for that.
-        if self.message.is_some() {
+        if self.backend_message.is_some() {
             max_scroll_height -= 47.0;
         }
 
@@ -366,36 +387,87 @@ impl TokensScreen {
         let mut action = AppAction::None;
 
         ui.vertical_centered(|ui| {
-            ui.add_space(20.0);
-            ui.label("Search for tokens by keyword, name, or owner identity ID.");
             ui.add_space(10.0);
+            ui.label("Search for tokens by keyword, name, or owner identity ID.");
+            ui.add_space(5.0);
 
             ui.horizontal(|ui| {
                 ui.label("Search by keyword(s):");
                 ui.text_edit_singleline(self.token_search_query.get_or_insert_with(String::new));
                 if ui.button("Go").clicked() {
+                    // 1) Clear old results, set status
                     let now = Utc::now().timestamp() as u64;
-                    self.refreshing_status = RefreshingStatus::Refreshing(now);
+                    self.token_search_status = TokenSearchStatus::WaitingForResult(now);
+                    {
+                        let mut sr = self.search_results.lock().unwrap();
+                        sr.clear();
+                    }
+                    self.search_current_page = 1;
+                    self.next_cursors.clear();
+                    self.previous_cursors.clear();
+                    self.search_has_next_page = false;
+
+                    // 2) Dispatch backend request
+                    let query_string = self
+                        .token_search_query
+                        .as_ref()
+                        .map(|s| s.clone())
+                        .unwrap_or_default();
+
+                    // Example: if you want paged results from the start:
                     action = AppAction::BackendTask(BackendTask::TokenTask(
-                        TokenTask::QueryTokensByKeyword(
-                            self.token_search_query
-                                .as_ref()
-                                .unwrap_or(&String::new())
-                                .clone(),
-                        ),
+                        TokenTask::QueryTokensByKeywordPage(query_string, None),
                     ));
                 }
             });
         });
 
         ui.separator();
+        ui.add_space(10.0);
 
-        // Show the search results table:
-        let search_results = self.search_results.lock().unwrap().clone();
-        if !search_results.is_empty() {
-            action |= self.render_search_results_table(ui, &search_results);
-        } else {
-            ui.label("No search results yet.");
+        // Show results or messages
+        match self.token_search_status {
+            TokenSearchStatus::WaitingForResult(start_time) => {
+                let now = Utc::now().timestamp() as u64;
+                let elapsed = now - start_time;
+                ui.label(format!("Searching... Time so far: {} seconds", elapsed));
+                ui.add(egui::widgets::Spinner::default().color(Color32::from_rgb(0, 128, 255)));
+            }
+            TokenSearchStatus::Complete => {
+                // Render the results table
+                let tokens = self.search_results.lock().unwrap().clone();
+                if tokens.is_empty() {
+                    ui.label("No tokens match your search.");
+                } else {
+                    // Possibly add a filter input above the table, if you like
+                    action |= self.render_search_results_table(ui, &tokens);
+                }
+
+                // Then pagination controls
+                ui.horizontal(|ui| {
+                    // If not on page 1, we can show a “Prev” button
+                    if self.search_current_page > 1 {
+                        if ui.button("Previous Page").clicked() {
+                            action |= self.goto_previous_search_page();
+                        }
+                    }
+
+                    ui.label(format!("Page {}", self.search_current_page));
+
+                    // If has_next_page, show “Next Page” button
+                    if self.search_has_next_page {
+                        if ui.button("Next Page").clicked() {
+                            action |= self.goto_next_search_page();
+                        }
+                    }
+                });
+            }
+            TokenSearchStatus::ErrorMessage(ref e) => {
+                ui.colored_label(Color32::RED, format!("Error: {}", e));
+            }
+            TokenSearchStatus::NotStarted => {
+                ui.label("Enter keywords above and click Go to search tokens.");
+            }
         }
 
         action
@@ -407,6 +479,8 @@ impl TokensScreen {
         search_results: &[IdentityTokenBalance],
     ) -> AppAction {
         let action = AppAction::None;
+
+        // In your DocumentQueryScreen code, you also had a ScrollArea
         egui::ScrollArea::vertical().show(ui, |ui| {
             Frame::group(ui.style())
                 .fill(ui.visuals().panel_fill)
@@ -461,6 +535,7 @@ impl TokensScreen {
                         });
                 });
         });
+
         action
     }
 
@@ -525,6 +600,57 @@ impl TokensScreen {
         // Optionally, also save the new order if you want:
         self.save_current_order();
     }
+
+    fn goto_next_search_page(&mut self) -> AppAction {
+        // If we have a next cursor:
+        if let Some(next_cursor) = self.next_cursors.last().cloned() {
+            // set status
+            let now = Utc::now().timestamp() as u64;
+            self.token_search_status = TokenSearchStatus::WaitingForResult(now);
+
+            // push the current one onto “previous” so we can go back
+            // if the user is on page N, and we have a nextCursor in next_cursors[N - 1] or so
+            self.previous_cursors.push(next_cursor.clone());
+
+            self.search_current_page += 1;
+
+            // Dispatch
+            let query_string = self
+                .token_search_query
+                .as_ref()
+                .map(|s| s.clone())
+                .unwrap_or_default();
+
+            return AppAction::BackendTask(BackendTask::TokenTask(
+                TokenTask::QueryTokensByKeywordPage(query_string, Some(next_cursor)),
+            ));
+        }
+        AppAction::None
+    }
+
+    fn goto_previous_search_page(&mut self) -> AppAction {
+        if self.search_current_page > 1 {
+            // Move to (page - 1)
+            self.search_current_page -= 1;
+            let now = Utc::now().timestamp() as u64;
+            self.token_search_status = TokenSearchStatus::WaitingForResult(now);
+
+            // The “last” previous_cursors item is the new page’s state
+            if let Some(prev_cursor) = self.previous_cursors.pop() {
+                // Possibly pop from next_cursors if we want to re-insert it later
+                // self.next_cursors.truncate(self.search_current_page - 1);
+                let query_string = self
+                    .token_search_query
+                    .as_ref()
+                    .map(|s| s.clone())
+                    .unwrap_or_default();
+                return AppAction::BackendTask(BackendTask::TokenTask(
+                    TokenTask::QueryTokensByKeywordPage(query_string, Some(prev_cursor)),
+                ));
+            }
+        }
+        AppAction::None
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -535,14 +661,32 @@ impl ScreenLike for TokensScreen {
 
     fn refresh_on_arrival(&mut self) {}
 
-    fn display_message(&mut self, _message: &str, _message_type: MessageType) {}
+    fn display_message(&mut self, msg: &str, msg_type: MessageType) {
+        if msg.contains("Error fetching tokens") {
+            self.token_search_status = TokenSearchStatus::ErrorMessage(msg.to_string());
+            self.backend_message = Some((msg.to_string(), msg_type, Utc::now()));
+        }
+    }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         match backend_task_success_result {
-            BackendTaskSuccessResult::TokensQueried(tokens_list) => {
-                // tokens_list is presumably a Vec<IdentityTokenBalance>
-                let mut lock = self.search_results.lock().unwrap();
-                *lock = tokens_list;
+            BackendTaskSuccessResult::TokensByKeyword(tokens) => {
+                // This might be a “full” result (no paging).
+                let mut srch = self.search_results.lock().unwrap();
+                *srch = tokens;
+                self.token_search_status = TokenSearchStatus::Complete;
+            }
+            BackendTaskSuccessResult::TokensByKeywordPage(tokens, next_cursor) => {
+                // Paged result
+                let mut srch = self.search_results.lock().unwrap();
+                *srch = tokens;
+                self.search_has_next_page = next_cursor.is_some();
+
+                if let Some(cursor) = next_cursor {
+                    // Save it for “next page” retrieval
+                    self.next_cursors.push(cursor);
+                }
+                self.token_search_status = TokenSearchStatus::Complete;
             }
             _ => {}
         }
@@ -629,7 +773,7 @@ impl ScreenLike for TokensScreen {
             }
 
             // If there's a backend message, show it at the bottom
-            if let Some((msg, msg_type, timestamp)) = self.message.clone() {
+            if let Some((msg, msg_type, timestamp)) = self.backend_message.clone() {
                 let color = match msg_type {
                     MessageType::Error => Color32::DARK_RED,
                     MessageType::Info => Color32::BLACK,

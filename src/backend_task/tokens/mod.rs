@@ -12,6 +12,7 @@ mod query_tokens;
 pub(crate) enum TokenTask {
     QueryMyTokenBalances,
     QueryTokensByKeyword(String),
+    QueryTokensByKeywordPage(String, Option<Identifier>),
     MintToken(Identifier),
 }
 
@@ -45,6 +46,15 @@ impl AppContext {
 
                 // Actually do this
                 // self.mint_token(id, sdk, sender).await
+            }
+            TokenTask::QueryTokensByKeywordPage(query, cursor) => {
+                // Placeholder
+                Ok(BackendTaskSuccessResult::Message(
+                    "QueryTokensByKeywordPage".to_string(),
+                ))
+
+                // Actually do this
+                // self.query_tokens_page(query, cursor, sdk, sender).await
             }
         }
     }

@@ -233,11 +233,12 @@ impl ScreenType {
                 Screen::ProofVisualizerScreen(ProofVisualizerScreen::new(app_context))
             }
             ScreenType::TokenBalances => {
-                Screen::TokensScreen(TokensScreen::new(app_context, TokensSubscreen::MyBalances))
+                Screen::TokensScreen(TokensScreen::new(app_context, TokensSubscreen::MyTokens))
             }
-            ScreenType::TokenSearch => {
-                Screen::TokensScreen(TokensScreen::new(app_context, TokensSubscreen::TokenSearch))
-            }
+            ScreenType::TokenSearch => Screen::TokensScreen(TokensScreen::new(
+                app_context,
+                TokensSubscreen::SearchTokens,
+            )),
         }
     }
 }
@@ -376,11 +377,11 @@ impl Screen {
             Screen::AddContractsScreen(_) => ScreenType::AddContracts,
             Screen::ProofVisualizerScreen(_) => ScreenType::ProofVisualizer,
             Screen::TokensScreen(TokensScreen {
-                tokens_subscreen: TokensSubscreen::MyBalances,
+                tokens_subscreen: TokensSubscreen::MyTokens,
                 ..
             }) => ScreenType::TokenBalances,
             Screen::TokensScreen(TokensScreen {
-                tokens_subscreen: TokensSubscreen::TokenSearch,
+                tokens_subscreen: TokensSubscreen::SearchTokens,
                 ..
             }) => ScreenType::TokenSearch,
         }

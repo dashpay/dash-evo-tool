@@ -177,9 +177,9 @@ impl AppState {
         let mut proof_log_screen = ProofLogScreen::new(&mainnet_app_context);
         let mut document_query_screen = DocumentQueryScreen::new(&mainnet_app_context);
         let mut tokens_balances_screen =
-            TokensScreen::new(&mainnet_app_context, TokensSubscreen::MyBalances);
+            TokensScreen::new(&mainnet_app_context, TokensSubscreen::MyTokens);
         let mut token_search_screen =
-            TokensScreen::new(&mainnet_app_context, TokensSubscreen::TokenSearch);
+            TokensScreen::new(&mainnet_app_context, TokensSubscreen::SearchTokens);
 
         let (custom_dash_qt_path, overwrite_dash_conf) = match settings.clone() {
             Some((.., db_custom_dash_qt_path, db_overwrite_dash_qt)) => {
@@ -225,9 +225,9 @@ impl AppState {
                 wallets_balances_screen = WalletsBalancesScreen::new(testnet_app_context);
                 proof_log_screen = ProofLogScreen::new(testnet_app_context);
                 tokens_balances_screen =
-                    TokensScreen::new(testnet_app_context, TokensSubscreen::MyBalances);
+                    TokensScreen::new(testnet_app_context, TokensSubscreen::MyTokens);
                 token_search_screen =
-                    TokensScreen::new(testnet_app_context, TokensSubscreen::TokenSearch);
+                    TokensScreen::new(testnet_app_context, TokensSubscreen::SearchTokens);
             }
             network_chooser_screen.current_network = chosen_network;
         }
@@ -524,6 +524,9 @@ impl App for AppState {
                         self.visible_screen_mut().display_task_result(message);
                     }
                     BackendTaskSuccessResult::PageDocuments(_, _) => {
+                        self.visible_screen_mut().display_task_result(message);
+                    }
+                    BackendTaskSuccessResult::TokensQueried(_) => {
                         self.visible_screen_mut().display_task_result(message);
                     }
                 },

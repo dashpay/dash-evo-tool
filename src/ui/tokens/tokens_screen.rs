@@ -11,14 +11,13 @@ use crate::app::{AppAction, DesiredAppAction};
 use crate::backend_task::tokens::TokenTask;
 use crate::backend_task::BackendTask;
 use crate::context::AppContext;
-use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::{BackendTaskSuccessResult, MessageType, RootScreenType, ScreenLike};
 
 /// A token owned by an identity.
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct IdentityTokenBalance {
     pub token_identifier: Identifier,
     pub token_name: String,
@@ -29,15 +28,15 @@ pub struct IdentityTokenBalance {
 /// Which token sub-screen is currently showing.
 #[derive(PartialEq)]
 pub enum TokensSubscreen {
-    MyBalances,
-    TokenSearch,
+    MyTokens,
+    SearchTokens,
 }
 
 impl TokensSubscreen {
     pub fn display_name(&self) -> &'static str {
         match self {
-            Self::MyBalances => "My Balances",
-            Self::TokenSearch => "Token Search",
+            Self::MyTokens => "My Tokens",
+            Self::SearchTokens => "Search Tokens",
         }
     }
 }
@@ -69,6 +68,7 @@ pub struct TokensScreen {
     pub app_context: Arc<AppContext>,
     my_tokens: Arc<Mutex<Vec<IdentityTokenBalance>>>,
     token_search_query: Option<String>,
+    search_results: Arc<Mutex<Vec<IdentityTokenBalance>>>,
     message: Option<(String, MessageType, DateTime<Utc>)>,
     pending_backend_task: Option<BackendTask>,
     pub tokens_subscreen: TokensSubscreen,
@@ -90,6 +90,7 @@ impl TokensScreen {
             app_context: app_context.clone(),
             my_tokens,
             token_search_query: None,
+            search_results: Arc::new(Mutex::new(Vec::new())),
             message: None,
             sort_column: SortColumn::TokenName,
             sort_order: SortOrder::Ascending,
@@ -309,24 +310,9 @@ impl TokensScreen {
                                             ui.label(token.balance.to_string());
                                         });
                                         row.col(|ui| {
-                                            ui.spacing_mut().item_spacing.x = 3.0;
-
                                             ui.horizontal(|ui| {
-                                                if ui.button("Remove").clicked() {
-                                                    // If you need a removal, handle here
-                                                }
-                                            });
-
-                                            ui.horizontal(|ui| {
-                                                let up_btn = ui.button("⬆").on_hover_text(
-                                                    "Move this token up in the list",
-                                                );
-                                                let down_btn = ui.button("⬇").on_hover_text(
-                                                    "Move this token down in the list",
-                                                );
-
-                                                if up_btn.clicked() {
-                                                    // If we are currently sorted, unify the ephemeral sort:
+                                                // Up/Down reorder
+                                                if ui.button("⬆").clicked() {
                                                     if !self.use_custom_order {
                                                         self.update_vec_to_current_ephemeral(
                                                             display_list.clone(),
@@ -335,7 +321,7 @@ impl TokensScreen {
                                                     self.use_custom_order = true;
                                                     self.move_token_up(&token.token_identifier);
                                                 }
-                                                if down_btn.clicked() {
+                                                if ui.button("⬇").clicked() {
                                                     if !self.use_custom_order {
                                                         self.update_vec_to_current_ephemeral(
                                                             display_list.clone(),
@@ -344,6 +330,27 @@ impl TokensScreen {
                                                     self.use_custom_order = true;
                                                     self.move_token_down(&token.token_identifier);
                                                 }
+
+                                                // "..." menu button:
+                                                ui.menu_button("...", |ui| {
+                                                    // Could list multiple advanced actions here:
+                                                    if ui.button("Mint").clicked() {
+                                                        // Dispatch a backend action or store a pending action
+                                                        // for the Mint operation:
+                                                        action = AppAction::BackendTask(
+                                                            BackendTask::TokenTask(
+                                                                TokenTask::MintToken(
+                                                                    token.token_identifier.clone(),
+                                                                ),
+                                                            ),
+                                                        );
+                                                        // Close the menu after clicking
+                                                        ui.close_menu();
+                                                    }
+
+                                                    // Additional actions here in the future...
+                                                    // if ui.button("Do something else").clicked() { ... }
+                                                });
                                             });
                                         });
                                     });
@@ -360,26 +367,100 @@ impl TokensScreen {
 
         ui.vertical_centered(|ui| {
             ui.add_space(20.0);
-            ui.label("Search for tokens by name or owner identity ID.");
+            ui.label("Search for tokens by keyword, name, or owner identity ID.");
             ui.add_space(10.0);
 
             ui.horizontal(|ui| {
-                ui.label("Search:");
+                ui.label("Search by keyword(s):");
                 ui.text_edit_singleline(self.token_search_query.get_or_insert_with(String::new));
                 if ui.button("Go").clicked() {
                     let now = Utc::now().timestamp() as u64;
                     self.refreshing_status = RefreshingStatus::Refreshing(now);
-                    action =
-                        AppAction::BackendTask(BackendTask::TokenTask(TokenTask::QueryTokens(
+                    action = AppAction::BackendTask(BackendTask::TokenTask(
+                        TokenTask::QueryTokensByKeyword(
                             self.token_search_query
                                 .as_ref()
                                 .unwrap_or(&String::new())
                                 .clone(),
-                        )));
+                        ),
+                    ));
                 }
             });
         });
 
+        ui.separator();
+
+        // Show the search results table:
+        let search_results = self.search_results.lock().unwrap().clone();
+        if !search_results.is_empty() {
+            action |= self.render_search_results_table(ui, &search_results);
+        } else {
+            ui.label("No search results yet.");
+        }
+
+        action
+    }
+
+    fn render_search_results_table(
+        &mut self,
+        ui: &mut Ui,
+        search_results: &[IdentityTokenBalance],
+    ) -> AppAction {
+        let action = AppAction::None;
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            Frame::group(ui.style())
+                .fill(ui.visuals().panel_fill)
+                .stroke(egui::Stroke::new(
+                    1.0,
+                    ui.visuals().widgets.inactive.bg_stroke.color,
+                ))
+                .inner_margin(Margin::same(8.0))
+                .show(ui, |ui| {
+                    TableBuilder::new(ui)
+                        .striped(true)
+                        .resizable(true)
+                        .cell_layout(egui::Layout::left_to_right(Align::Center))
+                        .column(Column::initial(80.0).resizable(true)) // Token Name
+                        .column(Column::initial(330.0).resizable(true)) // Owner Identity ID
+                        .column(Column::initial(60.0).resizable(true)) // Balance
+                        .column(Column::initial(80.0).resizable(true)) // Action
+                        .header(30.0, |mut header| {
+                            header.col(|ui| {
+                                ui.label("Token Name");
+                            });
+                            header.col(|ui| {
+                                ui.label("Owner ID");
+                            });
+                            header.col(|ui| {
+                                ui.label("Balance");
+                            });
+                            header.col(|ui| {
+                                ui.label("Action");
+                            });
+                        })
+                        .body(|mut body| {
+                            for token in search_results {
+                                body.row(25.0, |mut row| {
+                                    row.col(|ui| {
+                                        ui.label(&token.token_name);
+                                    });
+                                    row.col(|ui| {
+                                        ui.label(token.identity_id.to_string(Encoding::Base58));
+                                    });
+                                    row.col(|ui| {
+                                        ui.label(token.balance.to_string());
+                                    });
+                                    row.col(|ui| {
+                                        if ui.button("Add").clicked() {
+                                            // Add to my_tokens
+                                            self.add_token_to_my_tokens(token.clone());
+                                        }
+                                    });
+                                });
+                            }
+                        });
+                });
+        });
         action
     }
 
@@ -388,7 +469,7 @@ impl TokensScreen {
         ui.vertical_centered(|ui| {
             ui.add_space(20.0);
             match self.tokens_subscreen {
-                TokensSubscreen::MyBalances => {
+                TokensSubscreen::MyTokens => {
                     ui.label(
                         egui::RichText::new("No owned tokens found.")
                             .heading()
@@ -396,7 +477,7 @@ impl TokensScreen {
                             .color(Color32::GRAY),
                     );
                 }
-                TokensSubscreen::TokenSearch => {
+                TokensSubscreen::SearchTokens => {
                     ui.label(
                         egui::RichText::new("No matching tokens found.")
                             .heading()
@@ -416,12 +497,12 @@ impl TokensScreen {
                     let now = Utc::now().timestamp() as u64;
                     self.refreshing_status = RefreshingStatus::Refreshing(now);
                     match self.tokens_subscreen {
-                        TokensSubscreen::MyBalances => {
+                        TokensSubscreen::MyTokens => {
                             app_action = AppAction::BackendTask(BackendTask::TokenTask(
                                 TokenTask::QueryMyTokenBalances,
                             ));
                         }
-                        TokensSubscreen::TokenSearch => {
+                        TokensSubscreen::SearchTokens => {
                             app_action = AppAction::Refresh;
                         }
                     }
@@ -430,6 +511,19 @@ impl TokensScreen {
         });
 
         app_action
+    }
+
+    fn add_token_to_my_tokens(&self, token: IdentityTokenBalance) {
+        let mut my_tokens = self.my_tokens.lock().unwrap();
+        // Prevent duplicates:
+        if !my_tokens
+            .iter()
+            .any(|t| t.token_identifier == token.token_identifier)
+        {
+            my_tokens.push(token);
+        }
+        // Optionally, also save the new order if you want:
+        self.save_current_order();
     }
 }
 
@@ -443,20 +537,29 @@ impl ScreenLike for TokensScreen {
 
     fn display_message(&mut self, _message: &str, _message_type: MessageType) {}
 
-    fn display_task_result(&mut self, _backend_task_success_result: BackendTaskSuccessResult) {}
+    fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
+        match backend_task_success_result {
+            BackendTaskSuccessResult::TokensQueried(tokens_list) => {
+                // tokens_list is presumably a Vec<IdentityTokenBalance>
+                let mut lock = self.search_results.lock().unwrap();
+                *lock = tokens_list;
+            }
+            _ => {}
+        }
+    }
 
     fn ui(&mut self, ctx: &Context) -> AppAction {
         self.check_error_expiration();
 
         // Build top-right buttons
         let right_buttons = match self.tokens_subscreen {
-            TokensSubscreen::MyBalances => vec![(
+            TokensSubscreen::MyTokens => vec![(
                 "Refresh",
                 DesiredAppAction::BackendTask(BackendTask::TokenTask(
                     TokenTask::QueryMyTokenBalances,
                 )),
             )],
-            TokensSubscreen::TokenSearch => vec![("Refresh", DesiredAppAction::Refresh)],
+            TokensSubscreen::SearchTokens => vec![("Refresh", DesiredAppAction::Refresh)],
         };
 
         // Top panel
@@ -469,14 +572,14 @@ impl ScreenLike for TokensScreen {
 
         // Left panel
         match self.tokens_subscreen {
-            TokensSubscreen::MyBalances => {
+            TokensSubscreen::MyTokens => {
                 action |= add_left_panel(
                     ctx,
                     &self.app_context,
                     RootScreenType::RootScreenMyTokenBalances,
                 );
             }
-            TokensSubscreen::TokenSearch => {
+            TokensSubscreen::SearchTokens => {
                 action |= add_left_panel(
                     ctx,
                     &self.app_context,
@@ -491,7 +594,7 @@ impl ScreenLike for TokensScreen {
         // Main panel
         CentralPanel::default().show(ctx, |ui| {
             match self.tokens_subscreen {
-                TokensSubscreen::MyBalances => {
+                TokensSubscreen::MyTokens => {
                     let tokens_empty = {
                         let guard = self.my_tokens.lock().unwrap();
                         guard.is_empty()
@@ -507,7 +610,7 @@ impl ScreenLike for TokensScreen {
                         action |= self.render_table_my_token_balances(ui, &tokens);
                     }
                 }
-                TokensSubscreen::TokenSearch => {
+                TokensSubscreen::SearchTokens => {
                     action |= self.render_token_search(ui);
                 }
             }
@@ -554,7 +657,7 @@ impl ScreenLike for TokensScreen {
                 self.refreshing_status =
                     RefreshingStatus::Refreshing(Utc::now().timestamp() as u64);
             }
-            AppAction::BackendTask(BackendTask::TokenTask(TokenTask::QueryTokens(_))) => {
+            AppAction::BackendTask(BackendTask::TokenTask(TokenTask::QueryTokensByKeyword(_))) => {
                 self.refreshing_status =
                     RefreshingStatus::Refreshing(Utc::now().timestamp() as u64);
             }

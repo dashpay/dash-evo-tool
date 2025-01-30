@@ -1,16 +1,18 @@
 use super::BackendTaskSuccessResult;
 use crate::{app::TaskResult, context::AppContext};
-use dash_sdk::Sdk;
+use dash_sdk::{platform::Identifier, Sdk};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
+mod mint_token;
 mod query_my_token_balances;
 mod query_tokens;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum TokenTask {
     QueryMyTokenBalances,
-    QueryTokens(String),
+    QueryTokensByKeyword(String),
+    MintToken(Identifier),
 }
 
 impl AppContext {
@@ -30,12 +32,19 @@ impl AppContext {
                 // Actually do this
                 // self.query_my_token_balances(sdk, sender).await
             }
-            TokenTask::QueryTokens(query) => {
+            TokenTask::QueryTokensByKeyword(query) => {
                 // Placeholder
                 Ok(BackendTaskSuccessResult::Message("QueryTokens".to_string()))
 
                 // Actually do this
                 // self.query_tokens(query, sdk, sender).await
+            }
+            TokenTask::MintToken(id) => {
+                // Placeholder
+                Ok(BackendTaskSuccessResult::Message("MintToken".to_string()))
+
+                // Actually do this
+                // self.mint_token(id, sdk, sender).await
             }
         }
     }

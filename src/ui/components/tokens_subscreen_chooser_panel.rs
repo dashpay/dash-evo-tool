@@ -7,15 +7,15 @@ use egui::{Color32, Context, Frame, Margin, RichText, SidePanel};
 pub fn add_tokens_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext) -> AppAction {
     let mut action = AppAction::None;
 
-    let subscreens = vec![TokensSubscreen::MyBalances, TokensSubscreen::TokenSearch];
+    let subscreens = vec![TokensSubscreen::MyTokens, TokensSubscreen::SearchTokens];
 
     let active_screen = match app_context.get_settings() {
         Ok(Some(settings)) => match settings.1 {
-            ui::RootScreenType::RootScreenMyTokenBalances => TokensSubscreen::MyBalances,
-            ui::RootScreenType::RootScreenTokenSearch => TokensSubscreen::TokenSearch,
-            _ => TokensSubscreen::MyBalances,
+            ui::RootScreenType::RootScreenMyTokenBalances => TokensSubscreen::MyTokens,
+            ui::RootScreenType::RootScreenTokenSearch => TokensSubscreen::SearchTokens,
+            _ => TokensSubscreen::MyTokens,
         },
-        _ => TokensSubscreen::MyBalances, // Fallback to Active screen if settings unavailable
+        _ => TokensSubscreen::MyTokens, // Fallback to Active screen if settings unavailable
     };
 
     SidePanel::left("tokens_subscreen_chooser_panel")
@@ -46,12 +46,12 @@ pub fn add_tokens_subscreen_chooser_panel(ctx: &Context, app_context: &AppContex
                     if ui.add(button).clicked() {
                         // Handle navigation based on which subscreen is selected
                         match subscreen {
-                            TokensSubscreen::MyBalances => {
+                            TokensSubscreen::MyTokens => {
                                 action = AppAction::SetMainScreen(
                                     RootScreenType::RootScreenMyTokenBalances,
                                 )
                             }
-                            TokensSubscreen::TokenSearch => {
+                            TokensSubscreen::SearchTokens => {
                                 action =
                                     AppAction::SetMainScreen(RootScreenType::RootScreenTokenSearch)
                             }

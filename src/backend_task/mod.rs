@@ -6,6 +6,7 @@ use crate::backend_task::document::DocumentTask;
 use crate::backend_task::identity::IdentityTask;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::ui::tokens::tokens_screen::IdentityTokenBalance;
 use contested_names::ScheduledDPNSVote;
 use dash_sdk::dpp::prelude::DataContract;
 use dash_sdk::dpp::state_transition::StateTransition;
@@ -53,6 +54,7 @@ pub(crate) enum BackendTaskSuccessResult {
     FetchedContract(DataContract),
     FetchedContracts(Vec<Option<DataContract>>),
     PageDocuments(IndexMap<Identifier, Option<Document>>, Option<Start>),
+    TokensQueried(Vec<IdentityTokenBalance>),
 }
 
 impl BackendTaskSuccessResult {}

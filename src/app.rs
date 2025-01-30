@@ -55,8 +55,12 @@ pub struct AppState {
     pub chosen_network: Network,
     pub mainnet_app_context: Arc<AppContext>,
     pub testnet_app_context: Option<Arc<AppContext>>,
+    pub devnet_app_context: Option<Arc<AppContext>>,
+    pub local_app_context: Option<Arc<AppContext>>,
     pub mainnet_core_zmq_listener: CoreZMQListener,
     pub testnet_core_zmq_listener: CoreZMQListener,
+    pub devnet_core_zmq_listener: CoreZMQListener,
+    // pub local_core_zmq_listener: CoreZMQListener,
     pub core_message_receiver: mpsc::Receiver<(ZMQMessage, Network)>,
     pub task_result_sender: tokiompsc::Sender<TaskResult>, // Channel sender for sending task results
     pub task_result_receiver: tokiompsc::Receiver<TaskResult>, // Channel receiver for receiving task results
@@ -160,7 +164,11 @@ impl AppState {
                     std::process::exit(1);
                 }
             };
-        let testnet_app_context = AppContext::new(Network::Testnet, db.clone(), password_info);
+        let testnet_app_context =
+            AppContext::new(Network::Testnet, db.clone(), password_info.clone());
+        let devnet_app_context =
+            AppContext::new(Network::Devnet, db.clone(), password_info.clone());
+        let local_app_context = AppContext::new(Network::Regtest, db.clone(), password_info);
 
         let mut identities_screen = IdentitiesScreen::new(&mainnet_app_context);
         let mut dpns_active_contests_screen =
@@ -194,6 +202,8 @@ impl AppState {
         let mut network_chooser_screen = NetworkChooserScreen::new(
             &mainnet_app_context,
             testnet_app_context.as_ref(),
+            devnet_app_context.as_ref(),
+            local_app_context.as_ref(),
             Network::Dash,
             custom_dash_qt_path,
             overwrite_dash_conf,
@@ -205,7 +215,7 @@ impl AppState {
 
         let mut chosen_network = Network::Dash;
 
-        if let Some((network, screen_type, _, _, _)) = settings {
+        if let Some((network, screen_type, _password_info, _, _)) = settings {
             selected_main_screen = screen_type;
             chosen_network = network;
             if chosen_network == Network::Testnet && testnet_app_context.is_some() {
@@ -230,6 +240,34 @@ impl AppState {
                     TokensScreen::new(testnet_app_context, TokensSubscreen::SearchTokens);
             }
             network_chooser_screen.current_network = chosen_network;
+        } else if chosen_network == Network::Devnet && devnet_app_context.is_some() {
+            let devnet_app_context = devnet_app_context.as_ref().unwrap();
+            identities_screen = IdentitiesScreen::new(devnet_app_context);
+            dpns_active_contests_screen =
+                DPNSScreen::new(&devnet_app_context, DPNSSubscreen::Active);
+            dpns_past_contests_screen = DPNSScreen::new(&devnet_app_context, DPNSSubscreen::Past);
+            dpns_my_usernames_screen = DPNSScreen::new(&devnet_app_context, DPNSSubscreen::Owned);
+            dpns_scheduled_votes_screen =
+                DPNSScreen::new(&devnet_app_context, DPNSSubscreen::ScheduledVotes);
+            transition_visualizer_screen = TransitionVisualizerScreen::new(devnet_app_context);
+            proof_visualizer_screen = ProofVisualizerScreen::new(devnet_app_context);
+            document_query_screen = DocumentQueryScreen::new(devnet_app_context);
+            wallets_balances_screen = WalletsBalancesScreen::new(devnet_app_context);
+            proof_log_screen = ProofLogScreen::new(devnet_app_context);
+        } else if chosen_network == Network::Regtest && local_app_context.is_some() {
+            let local_app_context = local_app_context.as_ref().unwrap();
+            identities_screen = IdentitiesScreen::new(local_app_context);
+            dpns_active_contests_screen =
+                DPNSScreen::new(&local_app_context, DPNSSubscreen::Active);
+            dpns_past_contests_screen = DPNSScreen::new(&local_app_context, DPNSSubscreen::Past);
+            dpns_my_usernames_screen = DPNSScreen::new(&local_app_context, DPNSSubscreen::Owned);
+            dpns_scheduled_votes_screen =
+                DPNSScreen::new(&local_app_context, DPNSSubscreen::ScheduledVotes);
+            transition_visualizer_screen = TransitionVisualizerScreen::new(local_app_context);
+            proof_visualizer_screen = ProofVisualizerScreen::new(local_app_context);
+            document_query_screen = DocumentQueryScreen::new(local_app_context);
+            wallets_balances_screen = WalletsBalancesScreen::new(local_app_context);
+            proof_log_screen = ProofLogScreen::new(local_app_context);
         }
 
         // // Create a channel with a buffer size of 32 (adjust as needed)
@@ -249,7 +287,7 @@ impl AppState {
         )
         .expect("Failed to create mainnet InstantSend listener");
 
-        let tx_zmq_status_option = match testnet_app_context {
+        let testnet_tx_zmq_status_option = match testnet_app_context {
             Some(ref context) => Some(context.sx_zmq_status.clone()),
             None => None,
         };
@@ -257,10 +295,36 @@ impl AppState {
         let testnet_core_zmq_listener = CoreZMQListener::spawn_listener(
             Network::Testnet,
             "tcp://127.0.0.1:23709",
-            core_message_sender, // Use the original sender or create a new one if needed
-            tx_zmq_status_option,
+            core_message_sender.clone(), // Use the original sender or create a new one if needed
+            testnet_tx_zmq_status_option,
         )
         .expect("Failed to create testnet InstantSend listener");
+
+        let devnet_tx_zmq_status_option = match devnet_app_context {
+            Some(ref context) => Some(context.sx_zmq_status.clone()),
+            None => None,
+        };
+
+        let devnet_core_zmq_listener = CoreZMQListener::spawn_listener(
+            Network::Devnet,
+            "tcp://127.0.0.1:23710",
+            core_message_sender.clone(),
+            devnet_tx_zmq_status_option,
+        )
+        .expect("Failed to create devnet InstantSend listener");
+
+        // let local_tx_zmq_status_option = match local_app_context {
+        //     Some(ref context) => Some(context.sx_zmq_status.clone()),
+        //     None => None,
+        // };
+
+        // let local_core_zmq_listener = CoreZMQListener::spawn_listener(
+        //     Network::Regtest,
+        //     "tcp://127.0.0.1:20302",
+        //     core_message_sender,
+        //     local_tx_zmq_status_option,
+        // )
+        // .expect("Failed to create local InstantSend listener");
 
         Self {
             main_screens: [
@@ -323,8 +387,12 @@ impl AppState {
             chosen_network,
             mainnet_app_context,
             testnet_app_context,
+            devnet_app_context,
+            local_app_context,
             mainnet_core_zmq_listener,
             testnet_core_zmq_listener,
+            devnet_core_zmq_listener,
+            // local_core_zmq_listener,
             core_message_receiver,
             task_result_sender,
             task_result_receiver,
@@ -337,8 +405,8 @@ impl AppState {
         match self.chosen_network {
             Network::Dash => &self.mainnet_app_context,
             Network::Testnet => self.testnet_app_context.as_ref().expect("expected testnet"),
-            Network::Devnet => todo!(),
-            Network::Regtest => todo!(),
+            Network::Devnet => self.devnet_app_context.as_ref().expect("expected devnet"),
+            Network::Regtest => self.local_app_context.as_ref().expect("expected local"),
             _ => todo!(),
         }
     }
@@ -551,9 +619,24 @@ impl App for AppState {
                     if let Some(context) = self.testnet_app_context.as_ref() {
                         context
                     } else {
-                        // Handle the case when testnet_app_context is None
                         eprintln!("No testnet app context available for Testnet");
-                        continue; // Skip this iteration or handle as needed
+                        continue;
+                    }
+                }
+                Network::Devnet => {
+                    if let Some(context) = self.devnet_app_context.as_ref() {
+                        context
+                    } else {
+                        eprintln!("No devnet app context available");
+                        continue;
+                    }
+                }
+                Network::Regtest => {
+                    if let Some(context) = self.local_app_context.as_ref() {
+                        context
+                    } else {
+                        eprintln!("No local app context available");
+                        continue;
                     }
                 }
                 _ => continue,

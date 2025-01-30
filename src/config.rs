@@ -8,10 +8,10 @@ use serde::Deserialize;
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct Config {
-    /// The mainnet network config
     pub mainnet_config: Option<NetworkConfig>,
-    /// The testnet network config
     pub testnet_config: Option<NetworkConfig>,
+    pub devnet_config: Option<NetworkConfig>,
+    pub local_config: Option<NetworkConfig>,
 }
 
 impl Config {
@@ -19,8 +19,8 @@ impl Config {
         match network {
             Network::Dash => &self.mainnet_config,
             Network::Testnet => &self.testnet_config,
-            Network::Devnet => &None,
-            Network::Regtest => &None,
+            Network::Devnet => &self.devnet_config,
+            Network::Regtest => &self.local_config,
             _ => &None,
         }
     }
@@ -93,7 +93,33 @@ impl Config {
             }
         };
 
-        if mainnet_config.is_none() && testnet_config.is_none() {
+        let devnet_config = match envy::prefixed("DEVNET_").from_env::<NetworkConfig>() {
+            Ok(config) => {
+                tracing::info!("Devnet configuration loaded successfully");
+                Some(config)
+            }
+            Err(err) => {
+                tracing::error!(?err, "Failed to load devnet configuration");
+                None
+            }
+        };
+
+        let local_config = match envy::prefixed("LOCAL_").from_env::<NetworkConfig>() {
+            Ok(config) => {
+                tracing::info!("Local configuration loaded successfully");
+                Some(config)
+            }
+            Err(err) => {
+                tracing::error!(?err, "Failed to load local configuration");
+                None
+            }
+        };
+
+        if mainnet_config.is_none()
+            && testnet_config.is_none()
+            && devnet_config.is_none()
+            && local_config.is_none()
+        {
             return Err(ConfigError::NoValidConfigs);
         } else if mainnet_config.is_none() {
             return Err(ConfigError::LoadError(
@@ -103,11 +129,21 @@ impl Config {
             tracing::warn!(
                 "Failed to load testnet configuration, but successfully loaded mainnet config"
             );
+        } else if devnet_config.is_none() {
+            tracing::warn!(
+                "Failed to load devnet configuration, but successfully loaded mainnet config"
+            );
+        } else if local_config.is_none() {
+            tracing::warn!(
+                "Failed to load local configuration, but successfully loaded mainnet config"
+            );
         }
 
         Ok(Config {
             mainnet_config,
             testnet_config,
+            devnet_config,
+            local_config,
         })
     }
 }

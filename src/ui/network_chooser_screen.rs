@@ -15,9 +15,13 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 pub struct NetworkChooserScreen {
     pub mainnet_app_context: Arc<AppContext>,
     pub testnet_app_context: Option<Arc<AppContext>>,
+    pub devnet_app_context: Option<Arc<AppContext>>,
+    pub local_app_context: Option<Arc<AppContext>>,
     pub current_network: Network,
     pub mainnet_core_status_online: bool,
     pub testnet_core_status_online: bool,
+    pub devnet_core_status_online: bool,
+    pub local_core_status_online: bool,
     pub recheck_time: Option<TimestampMillis>,
     custom_dash_qt_path: Option<String>,
     custom_dash_qt_error_message: Option<String>,
@@ -28,6 +32,8 @@ impl NetworkChooserScreen {
     pub fn new(
         mainnet_app_context: &Arc<AppContext>,
         testnet_app_context: Option<&Arc<AppContext>>,
+        devnet_app_context: Option<&Arc<AppContext>>,
+        local_app_context: Option<&Arc<AppContext>>,
         current_network: Network,
         custom_dash_qt_path: Option<String>,
         overwrite_dash_conf: bool,
@@ -35,9 +41,13 @@ impl NetworkChooserScreen {
         Self {
             mainnet_app_context: mainnet_app_context.clone(),
             testnet_app_context: testnet_app_context.cloned(),
+            devnet_app_context: devnet_app_context.cloned(),
+            local_app_context: local_app_context.cloned(),
             current_network,
             mainnet_core_status_online: false,
             testnet_core_status_online: false,
+            devnet_core_status_online: false,
+            local_core_status_online: false,
             recheck_time: None,
             custom_dash_qt_path,
             custom_dash_qt_error_message: None,
@@ -50,6 +60,12 @@ impl NetworkChooserScreen {
             Network::Dash => &self.mainnet_app_context,
             Network::Testnet if self.testnet_app_context.is_some() => {
                 self.testnet_app_context.as_ref().unwrap()
+            }
+            Network::Devnet if self.devnet_app_context.is_some() => {
+                self.devnet_app_context.as_ref().unwrap()
+            }
+            Network::Regtest if self.local_app_context.is_some() => {
+                self.local_app_context.as_ref().unwrap()
             }
             _ => &self.mainnet_app_context,
         }
@@ -81,6 +97,12 @@ impl NetworkChooserScreen {
 
                 // Render Testnet Row
                 app_action |= self.render_network_row(ui, Network::Testnet, "Testnet");
+
+                // Render Devnet Row
+                app_action |= self.render_network_row(ui, Network::Devnet, "Devnet");
+
+                // Render Local Row
+                app_action |= self.render_network_row(ui, Network::Regtest, "Local");
             });
 
         ui.add_space(10.0);
@@ -144,16 +166,24 @@ impl NetworkChooserScreen {
                                 ui.label("zmqpubrawtxlocksig=tcp://0.0.0.0:23708");
                                 ui.end_row();
                                 ui.label("zmqpubrawchainlock=tcp://0.0.0.0:23708");
-                            }
-                            else { //Testnet
+                            } else if self.current_network == Network::Testnet {
                                 ui.colored_label(egui::Color32::ORANGE, "The following lines must be included in the custom Testnet dash.conf:");
                                 ui.end_row();
                                 ui.label("zmqpubrawtxlocksig=tcp://0.0.0.0:23709");
                                 ui.end_row();
                                 ui.label("zmqpubrawchainlock=tcp://0.0.0.0:23709");
+                            } else if self.current_network == Network::Devnet {
+                                ui.colored_label(egui::Color32::ORANGE, "The following lines must be included in the custom Devnet dash.conf:");
+                                ui.end_row();
+                                ui.label("zmqpubrawtxlocksig=tcp://0.0.0.0:23710");
+                                ui.end_row();
+                                ui.label("zmqpubrawchainlock=tcp://0.0.0.0:23710");
+                            } else if self.current_network == Network::Regtest {
+                                ui.colored_label(egui::Color32::ORANGE, "The following lines must be included in the custom Regtest dash.conf:");
+                                ui.end_row();
+                                ui.label("zmqpubrawtxlocksig=tcp://0.0.0.0:20302");
                             }
                         }
-
                     });
             });
         app_action
@@ -177,6 +207,17 @@ impl NetworkChooserScreen {
 
         if network == Network::Testnet && self.testnet_app_context.is_none() {
             ui.label("(No configs for testnet loaded)");
+            ui.end_row();
+            return AppAction::None;
+        }
+        if network == Network::Devnet && self.devnet_app_context.is_none() {
+            ui.label("(No configs for devnet loaded)");
+            ui.end_row();
+            return AppAction::None;
+        }
+        if network == Network::Regtest && self.local_app_context.is_none() {
+            ui.label("(No configs for local loaded)");
+            ui.end_row();
             return AppAction::None;
         }
 
@@ -218,12 +259,14 @@ impl NetworkChooserScreen {
         }
 
         // Add a button to start the network
-        if ui.button("Start").clicked() {
-            app_action = AppAction::BackendTask(BackendTask::CoreTask(CoreTask::StartDashQT(
-                network,
-                self.custom_dash_qt_path.clone(),
-                self.overwrite_dash_conf,
-            )));
+        if !(network == Network::Regtest) {
+            if ui.button("Start").clicked() {
+                app_action = AppAction::BackendTask(BackendTask::CoreTask(CoreTask::StartDashQT(
+                    network,
+                    self.custom_dash_qt_path.clone(),
+                    self.overwrite_dash_conf,
+                )));
+            }
         }
 
         ui.end_row();
@@ -235,6 +278,8 @@ impl NetworkChooserScreen {
         match network {
             Network::Dash => self.mainnet_core_status_online,
             Network::Testnet => self.testnet_core_status_online,
+            Network::Devnet => self.devnet_core_status_online,
+            Network::Regtest => self.local_core_status_online,
             _ => false,
         }
     }
@@ -242,9 +287,12 @@ impl NetworkChooserScreen {
 
 impl ScreenLike for NetworkChooserScreen {
     fn display_message(&mut self, message: &str, _message_type: super::MessageType) {
-        if message.contains("Failed to get best chain lock for both mainnet and testnet") {
+        if message.contains("Failed to get best chain lock for mainnet, testnet, devnet, and local")
+        {
             self.mainnet_core_status_online = false;
             self.testnet_core_status_online = false;
+            self.devnet_core_status_online = false;
+            self.local_core_status_online = false;
         }
     }
 
@@ -253,6 +301,8 @@ impl ScreenLike for NetworkChooserScreen {
             BackendTaskSuccessResult::CoreItem(CoreItem::ChainLocks(
                 mainnet_chainlock,
                 testnet_chainlock,
+                devnet_chainlock,
+                local_chainlock,
             )) => {
                 match mainnet_chainlock {
                     Some(_) => self.mainnet_core_status_online = true,
@@ -261,6 +311,14 @@ impl ScreenLike for NetworkChooserScreen {
                 match testnet_chainlock {
                     Some(_) => self.testnet_core_status_online = true,
                     None => self.testnet_core_status_online = false,
+                }
+                match devnet_chainlock {
+                    Some(_) => self.devnet_core_status_online = true,
+                    None => self.devnet_core_status_online = false,
+                }
+                match local_chainlock {
+                    Some(_) => self.local_core_status_online = true,
+                    None => self.local_core_status_online = false,
                 }
             }
             _ => {}

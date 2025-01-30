@@ -26,6 +26,7 @@ pub mod contract;
 pub mod core;
 pub mod document;
 pub mod identity;
+pub mod register_contract;
 pub mod tokens;
 
 #[derive(Debug, Clone, PartialEq)]

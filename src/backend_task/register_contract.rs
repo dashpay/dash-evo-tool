@@ -29,7 +29,7 @@ impl AppContext {
             })?;
 
         match data_contract
-            .put_to_platform_and_wait_for_response(&sdk, public_key.clone(), &identity)
+            .put_to_platform_and_wait_for_response(&sdk, public_key.clone(), &identity, None)
             .await
         {
             Ok(returned_contract) => {

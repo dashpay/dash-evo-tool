@@ -160,7 +160,7 @@ impl NetworkConfig {
 
     /// List of DAPI addresses
     pub fn dapi_address_list(&self) -> AddressList {
-        AddressList::from(self.dapi_addresses.as_str())
+        AddressList::from_str(&self.dapi_addresses).expect("Could not parse DAPI addresses")
     }
 
     /// Insight API URI

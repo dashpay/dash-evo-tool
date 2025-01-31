@@ -25,7 +25,7 @@ strum = { version = "0.26.1", features = ["derive"] }
 bs58 = "0.5.0"
 base64 = "0.22.1"
 copypasta = "0.10.1"
-dash-sdk = { git = "https://github.com/dashpay/platform", rev = "6a7016af671fcf1d1449e418b0e5aa5c943bde8d" }
+dash-sdk = { git = "https://github.com/dashpay/platform", rev = "0743be234d4008a5260d6ec41db6736a48b35798" }
 thiserror = "1"
 serde = "1.0.197"
 serde_json = "1.0.120"
@@ -42,7 +42,7 @@ envy = "0.4.2"
 tokio-util = "0.7.10"
 chrono = "0.4"
 chrono-humanize = "0.2.3"
-grovedb-version = "2.0.3"
+grovedb-version = "2.2.1"
 sha2 = "0.10.8"
 arboard = { version = "3.4.0", default-features = false, features = [
     "windows-sys",

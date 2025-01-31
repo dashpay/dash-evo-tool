@@ -81,23 +81,23 @@ impl AppContext {
                             Err(e) => return Err(e),
                         };
 
-                        // Encode the path_query using bincode
-                        let verification_path_query_bytes =
-                            match bincode::encode_to_vec(&path_query, bincode::config::standard())
-                                .map_err(|encode_err| {
-                                    tracing::error!("Error encoding path_query: {}", encode_err);
-                                    format!("Error encoding path_query: {}", encode_err)
-                                }) {
-                                Ok(encoded_path_query) => encoded_path_query,
-                                Err(e) => return Err(e),
-                            };
+                        // // Encode the path_query using bincode
+                        // let verification_path_query_bytes =
+                        //     match bincode::encode_to_vec(&path_query, bincode::config::standard())
+                        //         .map_err(|encode_err| {
+                        //             tracing::error!("Error encoding path_query: {}", encode_err);
+                        //             format!("Error encoding path_query: {}", encode_err)
+                        //         }) {
+                        //         Ok(encoded_path_query) => encoded_path_query,
+                        //         Err(e) => return Err(e),
+                        //     };
 
                         if let Err(e) = self
                             .db
                             .insert_proof_log_item(ProofLogItem {
                                 request_type: RequestType::GetContestedResourceIdentityVotes,
                                 request_bytes: encoded_query,
-                                verification_path_query_bytes,
+                                verification_path_query_bytes: vec![],
                                 height: *height,
                                 time_ms: *time_ms,
                                 proof_bytes: proof_bytes.clone(),

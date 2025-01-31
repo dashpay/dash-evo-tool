@@ -6,6 +6,7 @@ use crate::backend_task::document::DocumentTask;
 use crate::backend_task::identity::IdentityTask;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::ui::tokens::tokens_screen::IdentityTokenBalance;
 use contested_names::ScheduledDPNSVote;
 use dash_sdk::dpp::prelude::DataContract;
 use dash_sdk::dpp::state_transition::StateTransition;
@@ -16,6 +17,7 @@ use dash_sdk::platform::{Document, Identifier};
 use dash_sdk::query_types::{Documents, IndexMap};
 use futures::future::join_all;
 use std::sync::Arc;
+use tokens::TokenTask;
 use tokio::sync::mpsc;
 
 pub mod broadcast_state_transition;
@@ -25,6 +27,7 @@ pub mod core;
 pub mod document;
 pub mod identity;
 pub mod register_contract;
+pub mod tokens;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum BackendTask {
@@ -34,6 +37,7 @@ pub(crate) enum BackendTask {
     ContestedResourceTask(ContestedResourceTask),
     CoreTask(CoreTask),
     BroadcastStateTransition(StateTransition),
+    TokenTask(TokenTask),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -51,6 +55,8 @@ pub(crate) enum BackendTaskSuccessResult {
     FetchedContract(DataContract),
     FetchedContracts(Vec<Option<DataContract>>),
     PageDocuments(IndexMap<Identifier, Option<Document>>, Option<Start>),
+    TokensByKeyword(Vec<IdentityTokenBalance>),
+    TokensByKeywordPage(Vec<IdentityTokenBalance>, Option<Identifier>),
 }
 
 impl BackendTaskSuccessResult {}
@@ -115,6 +121,9 @@ impl AppContext {
             BackendTask::BroadcastStateTransition(state_transition) => {
                 self.broadcast_state_transition(state_transition, &sdk)
                     .await
+            }
+            BackendTask::TokenTask(token_task) => {
+                self.run_token_task(token_task, &sdk, sender).await
             }
         }
     }

@@ -15,6 +15,7 @@ use crate::ui::dpns::dpns_contested_names_screen::{
 };
 use crate::ui::identities::identities_screen::IdentitiesScreen;
 use crate::ui::network_chooser_screen::NetworkChooserScreen;
+use crate::ui::tokens::tokens_screen::{TokensScreen, TokensSubscreen};
 use crate::ui::tools::proof_log_screen::ProofLogScreen;
 use crate::ui::tools::proof_visualizer_screen::ProofVisualizerScreen;
 use crate::ui::tools::transition_visualizer_screen::TransitionVisualizerScreen;
@@ -183,6 +184,10 @@ impl AppState {
         let mut proof_visualizer_screen = ProofVisualizerScreen::new(&mainnet_app_context);
         let mut proof_log_screen = ProofLogScreen::new(&mainnet_app_context);
         let mut document_query_screen = DocumentQueryScreen::new(&mainnet_app_context);
+        let mut tokens_balances_screen =
+            TokensScreen::new(&mainnet_app_context, TokensSubscreen::MyTokens);
+        let mut token_search_screen =
+            TokensScreen::new(&mainnet_app_context, TokensSubscreen::SearchTokens);
 
         let (custom_dash_qt_path, overwrite_dash_conf) = match settings.clone() {
             Some((.., db_custom_dash_qt_path, db_overwrite_dash_qt)) => {
@@ -229,6 +234,10 @@ impl AppState {
                 document_query_screen = DocumentQueryScreen::new(testnet_app_context);
                 wallets_balances_screen = WalletsBalancesScreen::new(testnet_app_context);
                 proof_log_screen = ProofLogScreen::new(testnet_app_context);
+                tokens_balances_screen =
+                    TokensScreen::new(testnet_app_context, TokensSubscreen::MyTokens);
+                token_search_screen =
+                    TokensScreen::new(testnet_app_context, TokensSubscreen::SearchTokens);
             }
             network_chooser_screen.current_network = chosen_network;
         } else if chosen_network == Network::Devnet && devnet_app_context.is_some() {
@@ -362,6 +371,14 @@ impl AppState {
                 (
                     RootScreenType::RootScreenNetworkChooser,
                     Screen::NetworkChooserScreen(network_chooser_screen),
+                ),
+                (
+                    RootScreenType::RootScreenMyTokenBalances,
+                    Screen::TokensScreen(tokens_balances_screen),
+                ),
+                (
+                    RootScreenType::RootScreenTokenSearch,
+                    Screen::TokensScreen(token_search_screen),
                 ),
             ]
             .into(),
@@ -575,6 +592,12 @@ impl App for AppState {
                         self.visible_screen_mut().display_task_result(message);
                     }
                     BackendTaskSuccessResult::PageDocuments(_, _) => {
+                        self.visible_screen_mut().display_task_result(message);
+                    }
+                    BackendTaskSuccessResult::TokensByKeyword(_) => {
+                        self.visible_screen_mut().display_task_result(message);
+                    }
+                    BackendTaskSuccessResult::TokensByKeywordPage(_, _) => {
                         self.visible_screen_mut().display_task_result(message);
                     }
                 },

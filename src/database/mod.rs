@@ -6,6 +6,7 @@ mod initialization;
 mod proof_log;
 mod scheduled_votes;
 mod settings;
+mod tokens;
 mod top_ups;
 mod utxo;
 mod wallet;

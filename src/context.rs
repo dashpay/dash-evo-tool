@@ -9,6 +9,7 @@ use crate::model::qualified_contract::QualifiedContract;
 use crate::model::qualified_identity::{DPNSNameInfo, QualifiedIdentity};
 use crate::model::wallet::{Wallet, WalletSeedHash};
 use crate::sdk_wrapper::initialize_sdk;
+use crate::ui::tokens::tokens_screen::IdentityTokenBalance;
 use crate::ui::RootScreenType;
 use crossbeam_channel::{Receiver, Sender};
 use dash_sdk::dashcore_rpc::dashcore::{InstantLock, Transaction};
@@ -457,5 +458,9 @@ impl AppContext {
         }
 
         Ok(())
+    }
+
+    pub fn identity_token_balances(&self) -> Result<Vec<IdentityTokenBalance>> {
+        self.db.get_identity_token_balances(self)
     }
 }

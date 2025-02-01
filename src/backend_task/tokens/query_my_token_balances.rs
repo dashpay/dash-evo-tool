@@ -2,9 +2,10 @@
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::context::AppContext;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-use dash_sdk::platform::proto::get_identities_token_balances_response::get_identities_token_balances_response_v0::IdentityTokenBalances;
-use dash_sdk::platform::tokens::identity_token_balances::IdentityTokenBalancesQuery;
-use dash_sdk::platform::{FetchMany, Query};
+use dash_sdk::platform::tokens::identity_token_balances::{
+    IdentityTokenBalances, IdentityTokenBalancesQuery,
+};
+use dash_sdk::platform::FetchMany;
 use dash_sdk::{dpp::balances::credits::TokenAmount, Sdk};
 use tokio::sync::mpsc;
 
@@ -28,18 +29,18 @@ impl AppContext {
                 .map(|t| t.token_identifier.clone())
                 .collect();
 
-            let query_struct = IdentityTokenBalancesQuery {
+            let query = IdentityTokenBalancesQuery {
                 identity_id,
                 token_ids,
             };
 
-            let query = query_struct.query(false).expect("Failed to create query");
+            let balances_result: Result<IdentityTokenBalances, String> =
+                TokenAmount::fetch_many(sdk, query)
+                    .await
+                    .map_err(|e| format!("Failed to fetch token balances: {:?}", e));
 
-            let token_balances: Result<IdentityTokenBalances, _> =
-                TokenAmount::fetch_many(sdk, query).await;
-
-            match token_balances {
-                Ok(_balances) => {
+            match balances_result {
+                Ok(token_balances) => {
                     sender
                         .send(TaskResult::Refresh)
                         .await

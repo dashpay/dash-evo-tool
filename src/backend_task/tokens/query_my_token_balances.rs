@@ -2,11 +2,11 @@
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::context::AppContext;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-use dash_sdk::platform::tokens::identity_token_balances::IdentityTokenBalances;
+use dash_sdk::platform::proto::get_identities_token_balances_response::get_identities_token_balances_response_v0::IdentityTokenBalances;
 use dash_sdk::platform::tokens::identity_token_balances::IdentityTokenBalancesQuery;
 use dash_sdk::platform::{FetchMany, Query};
 use dash_sdk::{dpp::balances::credits::TokenAmount, Sdk};
-use std::sync::mpsc;
+use tokio::sync::mpsc;
 
 use crate::app::TaskResult;
 impl AppContext {
@@ -42,6 +42,7 @@ impl AppContext {
                 Ok(_balances) => {
                     sender
                         .send(TaskResult::Refresh)
+                        .await
                         .map_err(|e| format!("Failed to send token balances: {:?}", e))?;
                 }
                 Err(e) => {

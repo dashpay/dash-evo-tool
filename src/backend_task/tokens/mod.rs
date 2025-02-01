@@ -26,12 +26,12 @@ impl AppContext {
         match &task {
             TokenTask::QueryMyTokenBalances => {
                 // Placeholder
-                Ok(BackendTaskSuccessResult::Message(
-                    "QueryMyTokenBalances".to_string(),
-                ))
+                // Ok(BackendTaskSuccessResult::Message(
+                //     "QueryMyTokenBalances".to_string(),
+                // ))
 
                 // Actually do this
-                // self.query_my_token_balances(sdk, sender).await
+                self.query_my_token_balances(sdk, sender).await
             }
             TokenTask::QueryTokensByKeyword(query) => {
                 // Placeholder

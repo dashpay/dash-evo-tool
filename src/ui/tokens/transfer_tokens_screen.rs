@@ -325,14 +325,14 @@ impl ScreenLike for TransferTokensScreen {
             let has_keys = if self.app_context.developer_mode {
                 !self.identity.identity.public_keys().is_empty()
             } else {
-                !self.identity.available_transfer_keys().is_empty()
+                !self.identity.available_authentication_keys().is_empty()
             };
 
             if !has_keys {
                 ui.colored_label(
                     egui::Color32::DARK_RED,
                     format!(
-                        "You do not have any transfer keys loaded for this {} identity.",
+                        "You do not have any authentication keys loaded for this {} identity.",
                         self.identity.identity_type
                     ),
                 );
@@ -350,7 +350,7 @@ impl ScreenLike for TransferTokensScreen {
                 );
 
                 if let Some(key) = key {
-                    if ui.button("Check Transfer Key").clicked() {
+                    if ui.button("Check Keys").clicked() {
                         action |= AppAction::AddScreen(Screen::KeyInfoScreen(KeyInfoScreen::new(
                             self.identity.clone(),
                             key.clone(),

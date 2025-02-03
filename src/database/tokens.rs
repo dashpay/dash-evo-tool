@@ -14,6 +14,8 @@ impl Database {
                 token_id BLOB NOT NULL,
                 identity_id BLOB NOT NULL,
                 balance INTEGER NOT NULL,
+                data_contract_id BLOB NOT NULL,
+                token_position INTEGER NOT NULL,
                 network TEXT NOT NULL,
                 PRIMARY KEY(token_id, identity_id, network)
              )",
@@ -26,6 +28,8 @@ impl Database {
         token_identifier: &Identifier,
         identity_id: &Identifier,
         balance: u64,
+        data_contract_id: &Identifier,
+        token_position: u16,
         app_context: &AppContext,
     ) -> rusqlite::Result<()> {
         self.ensure_identity_token_balances_table_exists()?;
@@ -33,12 +37,20 @@ impl Database {
         let network = app_context.network_string();
         let token_identifier_vec = token_identifier.to_vec();
         let identity_id_vec = identity_id.to_vec();
+        let data_contract_id_vec = data_contract_id.to_vec();
 
         self.execute(
             "INSERT OR REPLACE INTO identity_token_balances
-             (token_id, identity_id, balance, network)
-             VALUES (?, ?, ?, ?)",
-            params![token_identifier_vec, identity_id_vec, balance, network],
+             (token_id, identity_id, balance, data_contract_id, token_position, network)
+             VALUES (?, ?, ?, ?, ?, ?)",
+            params![
+                token_identifier_vec,
+                identity_id_vec,
+                balance,
+                data_contract_id_vec,
+                token_position,
+                network
+            ],
         )?;
 
         Ok(())
@@ -62,12 +74,14 @@ impl Database {
                 Identifier::from_vec(row.get(0)?),
                 Identifier::from_vec(row.get(1)?),
                 row.get(2)?,
+                Identifier::from_vec(row.get(3)?),
+                row.get(4)?,
             ))
         })?;
 
         let mut result = Vec::new();
         for row in rows {
-            let (token_identifier, identity_id, balance) = row?;
+            let (token_identifier, identity_id, balance, data_contract_id, token_position) = row?;
             let identity_token_balance = IdentityTokenBalance {
                 token_identifier: token_identifier
                     .clone()
@@ -78,6 +92,9 @@ impl Database {
                 identity_id: identity_id
                     .expect("Expected to convert identity_id from vec to Identifier"),
                 balance,
+                data_contract_id: data_contract_id
+                    .expect("Expected to convert data_contract_id from vec to Identifier"),
+                token_position,
             };
             result.push(identity_token_balance);
         }

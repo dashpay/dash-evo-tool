@@ -14,7 +14,9 @@ use crate::context::AppContext;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::{BackendTaskSuccessResult, MessageType, RootScreenType, ScreenLike};
+use crate::ui::{BackendTaskSuccessResult, MessageType, RootScreenType, Screen, ScreenLike};
+
+use super::transfer_tokens_screen::TransferTokensScreen;
 
 /// A token owned by an identity.
 #[derive(Clone, Debug, PartialEq)]
@@ -23,6 +25,8 @@ pub struct IdentityTokenBalance {
     pub token_name: String,
     pub identity_id: Identifier,
     pub balance: u64,
+    pub data_contract_id: Identifier,
+    pub token_position: u16,
 }
 
 /// Which token sub-screen is currently showing.
@@ -319,16 +323,16 @@ impl TokensScreen {
                                 });
                             })
                             .body(|mut body| {
-                                for token in &display_list {
+                                for identity_token_balance in &display_list {
                                     body.row(25.0, |mut row| {
                                         row.col(|ui| {
-                                            ui.label(&token.token_name);
+                                            ui.label(&identity_token_balance.token_name);
                                         });
                                         row.col(|ui| {
-                                            ui.label(token.identity_id.to_string(Encoding::Base58));
+                                            ui.label(identity_token_balance.identity_id.to_string(Encoding::Base58));
                                         });
                                         row.col(|ui| {
-                                            ui.label(token.balance.to_string());
+                                            ui.label(identity_token_balance.balance.to_string());
                                         });
                                         row.col(|ui| {
                                             ui.horizontal(|ui| {
@@ -340,7 +344,7 @@ impl TokensScreen {
                                                         );
                                                     }
                                                     self.use_custom_order = true;
-                                                    self.move_token_up(&token.token_identifier);
+                                                    self.move_token_up(&identity_token_balance.token_identifier);
                                                 }
                                                 if ui.button("⬇").clicked() {
                                                     if !self.use_custom_order {
@@ -349,9 +353,17 @@ impl TokensScreen {
                                                         );
                                                     }
                                                     self.use_custom_order = true;
-                                                    self.move_token_down(&token.token_identifier);
+                                                    self.move_token_down(&identity_token_balance.token_identifier);
                                                 }
-
+                                                if ui.button("Transfer").on_hover_text("Transfer tokens from this identity to another identity").clicked() {
+                                                    action = AppAction::AddScreen(
+                                                        Screen::TransferTokensScreen(TransferTokensScreen::new(
+                                                            identity_token_balance.clone(),
+                                                            &self.app_context,
+                                                        )),
+                                                    );
+                                                }
+        
                                                 // "..." menu button:
                                                 ui.menu_button("...", |ui| {
                                                     // Could list multiple advanced actions here:
@@ -361,7 +373,7 @@ impl TokensScreen {
                                                         action = AppAction::BackendTask(
                                                             BackendTask::TokenTask(
                                                                 TokenTask::MintToken(
-                                                                    token.token_identifier.clone(),
+                                                                    identity_token_balance.token_identifier.clone(),
                                                                 ),
                                                             ),
                                                         );

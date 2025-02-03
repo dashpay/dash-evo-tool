@@ -50,6 +50,8 @@ impl Database {
                                 &token_id,
                                 &identity.identity.id(),
                                 balance,
+                                &data_contract.id(),
+                                *token.0,
                                 app_context,
                             )
                             .map_err(|e| {

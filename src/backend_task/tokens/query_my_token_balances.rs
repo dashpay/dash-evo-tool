@@ -24,17 +24,23 @@ impl AppContext {
 
         for identity in identities {
             let identity_id = identity.identity.id();
-            let token_ids = self
+            let token_infos = self
                 .identity_token_balances()
                 .map_err(|e| format!("Failed to load identity token balances: {e}"))?
                 .iter()
-                .map(|t| t.token_identifier.clone())
-                .collect::<BTreeSet<_>>()
-                .into_iter()
-                .collect();
+                .map(|t| {
+                    (
+                        t.token_identifier.clone(),
+                        t.data_contract_id.clone(),
+                        t.token_position,
+                    )
+                })
+                .collect::<Vec<_>>();
 
-            println!("Identity ID: {:?}", identity_id);
-            println!("Token IDs: {:?}", token_ids);
+            let token_ids = token_infos
+                .iter()
+                .map(|(token_id, _, _)| token_id.clone())
+                .collect();
 
             let query = IdentityTokenBalancesQuery {
                 identity_id,
@@ -54,10 +60,16 @@ impl AppContext {
                             Some(b) => *b,
                             None => 0,
                         };
+                        let associated_contract_and_position = token_infos
+                            .iter()
+                            .find(|(id, _, _)| id == token_id)
+                            .expect("Expected to find associated contract and position");
                         if let Err(e) = self.db.insert_identity_token_balance(
                             token_id,
                             &identity_id,
                             balance,
+                            &associated_contract_and_position.1,
+                            associated_contract_and_position.2,
                             self,
                         ) {
                             return Err(format!(

@@ -1,12 +1,16 @@
 use super::BackendTaskSuccessResult;
-use crate::{app::TaskResult, context::AppContext};
-use dash_sdk::{platform::Identifier, Sdk};
+use crate::{app::TaskResult, context::AppContext, model::qualified_identity::QualifiedIdentity};
+use dash_sdk::{
+    platform::{DataContract, Identifier, IdentityPublicKey},
+    Sdk,
+};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
 mod mint_token;
 mod query_my_token_balances;
 mod query_tokens;
+mod transfer_tokens;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum TokenTask {
@@ -14,6 +18,14 @@ pub(crate) enum TokenTask {
     QueryTokensByKeyword(String),
     QueryTokensByKeywordPage(String, Option<Identifier>),
     MintToken(Identifier),
+    TransferTokens {
+        sending_identity: QualifiedIdentity,
+        recipient_id: Identifier,
+        amount: u64,
+        data_contract: DataContract,
+        token_position: u16,
+        signing_key: IdentityPublicKey,
+    },
 }
 
 impl AppContext {
@@ -51,6 +63,26 @@ impl AppContext {
                 // Actually do this
                 // self.query_tokens_page(query, cursor, sdk, sender).await
             }
+            TokenTask::TransferTokens {
+                sending_identity,
+                recipient_id,
+                amount,
+                data_contract,
+                token_position,
+                signing_key,
+            } => self
+                .transfer_tokens(
+                    &sending_identity,
+                    *recipient_id,
+                    *amount,
+                    data_contract,
+                    *token_position,
+                    signing_key.clone(),
+                    sdk,
+                    sender,
+                )
+                .await
+                .map_err(|e| format!("Failed to transfer tokens: {e}")),
         }
     }
 }

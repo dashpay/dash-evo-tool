@@ -14,6 +14,7 @@ use crate::ui::identities::top_up_identity_screen::TopUpIdentityScreen;
 use crate::ui::identities::transfer_screen::TransferScreen;
 use crate::ui::identities::withdraw_screen::WithdrawalScreen;
 use crate::ui::network_chooser_screen::NetworkChooserScreen;
+use crate::ui::tokens::transfer_tokens_screen::TransferTokensScreen;
 use crate::ui::tools::proof_log_screen::ProofLogScreen;
 use crate::ui::tools::proof_visualizer_screen::ProofVisualizerScreen;
 use crate::ui::wallets::import_wallet_screen::ImportWalletScreen;
@@ -31,7 +32,7 @@ use identities::register_dpns_name_screen::RegisterDpnsNameScreen;
 use std::fmt;
 use std::hash::Hash;
 use std::sync::Arc;
-use tokens::tokens_screen::{TokensScreen, TokensSubscreen};
+use tokens::tokens_screen::{IdentityTokenBalance, TokensScreen, TokensSubscreen};
 use tools::transition_visualizer_screen::TransitionVisualizerScreen;
 use wallets::add_new_wallet_screen::AddNewWalletScreen;
 
@@ -141,6 +142,7 @@ pub enum ScreenType {
     TransitionVisualizer,
     WithdrawalScreen(QualifiedIdentity),
     TransferScreen(QualifiedIdentity),
+    TransferTokensScreen(IdentityTokenBalance),
     AddKeyScreen(QualifiedIdentity),
     KeyInfo(
         QualifiedIdentity,
@@ -209,6 +211,12 @@ impl ScreenType {
             ScreenType::TransferScreen(identity) => {
                 Screen::TransferScreen(TransferScreen::new(identity.clone(), app_context))
             }
+            ScreenType::TransferTokensScreen(identity_token_balance) => {
+                Screen::TransferTokensScreen(TransferTokensScreen::new(
+                    identity_token_balance.clone(),
+                    app_context,
+                ))
+            }
             ScreenType::NetworkChooser => {
                 unreachable!()
             }
@@ -263,6 +271,7 @@ pub enum Screen {
     WithdrawalScreen(WithdrawalScreen),
     TopUpIdentityScreen(TopUpIdentityScreen),
     TransferScreen(TransferScreen),
+    TransferTokensScreen(TransferTokensScreen),
     AddKeyScreen(AddKeyScreen),
     ProofLogScreen(ProofLogScreen),
     TransitionVisualizerScreen(TransitionVisualizerScreen),
@@ -291,6 +300,7 @@ impl Screen {
             Screen::RegisterDataContractScreen(screen) => screen.app_context = app_context,
             Screen::AddNewWalletScreen(screen) => screen.app_context = app_context,
             Screen::TransferScreen(screen) => screen.app_context = app_context,
+            Screen::TransferTokensScreen(screen) => screen.app_context = app_context,
             Screen::TopUpIdentityScreen(screen) => screen.app_context = app_context,
             Screen::WalletsBalancesScreen(screen) => screen.app_context = app_context,
             Screen::ImportWalletScreen(screen) => screen.app_context = app_context,
@@ -379,6 +389,9 @@ impl Screen {
             Screen::RegisterDataContractScreen(_) => ScreenType::RegisterContract,
             Screen::AddNewWalletScreen(_) => ScreenType::AddNewWallet,
             Screen::TransferScreen(screen) => ScreenType::TransferScreen(screen.identity.clone()),
+            Screen::TransferTokensScreen(screen) => {
+                ScreenType::TransferTokensScreen(screen.identity_token_balance.clone())
+            }
             Screen::WalletsBalancesScreen(_) => ScreenType::WalletsBalances,
             Screen::ImportWalletScreen(_) => ScreenType::ImportWallet,
             Screen::ProofLogScreen(_) => ScreenType::ProofLog,
@@ -413,6 +426,7 @@ impl ScreenLike for Screen {
             Screen::RegisterDataContractScreen(screen) => screen.refresh(),
             Screen::WithdrawalScreen(screen) => screen.refresh(),
             Screen::TransferScreen(screen) => screen.refresh(),
+            Screen::TransferTokensScreen(screen) => screen.refresh(),
             Screen::AddKeyScreen(screen) => screen.refresh(),
             Screen::TransitionVisualizerScreen(screen) => screen.refresh(),
             Screen::NetworkChooserScreen(screen) => screen.refresh(),
@@ -440,6 +454,7 @@ impl ScreenLike for Screen {
             Screen::RegisterDataContractScreen(screen) => screen.refresh_on_arrival(),
             Screen::WithdrawalScreen(screen) => screen.refresh_on_arrival(),
             Screen::TransferScreen(screen) => screen.refresh_on_arrival(),
+            Screen::TransferTokensScreen(screen) => screen.refresh_on_arrival(),
             Screen::AddKeyScreen(screen) => screen.refresh_on_arrival(),
             Screen::TransitionVisualizerScreen(screen) => screen.refresh_on_arrival(),
             Screen::NetworkChooserScreen(screen) => screen.refresh_on_arrival(),
@@ -467,6 +482,7 @@ impl ScreenLike for Screen {
             Screen::RegisterDataContractScreen(screen) => screen.ui(ctx),
             Screen::WithdrawalScreen(screen) => screen.ui(ctx),
             Screen::TransferScreen(screen) => screen.ui(ctx),
+            Screen::TransferTokensScreen(screen) => screen.ui(ctx),
             Screen::AddKeyScreen(screen) => screen.ui(ctx),
             Screen::TransitionVisualizerScreen(screen) => screen.ui(ctx),
             Screen::NetworkChooserScreen(screen) => screen.ui(ctx),
@@ -498,6 +514,7 @@ impl ScreenLike for Screen {
             }
             Screen::WithdrawalScreen(screen) => screen.display_message(message, message_type),
             Screen::TransferScreen(screen) => screen.display_message(message, message_type),
+            Screen::TransferTokensScreen(screen) => screen.display_message(message, message_type),
             Screen::AddKeyScreen(screen) => screen.display_message(message, message_type),
             Screen::TransitionVisualizerScreen(screen) => {
                 screen.display_message(message, message_type)
@@ -555,6 +572,9 @@ impl ScreenLike for Screen {
             Screen::TransferScreen(screen) => {
                 screen.display_task_result(backend_task_success_result.clone())
             }
+            Screen::TransferTokensScreen(screen) => {
+                screen.display_task_result(backend_task_success_result.clone())
+            }
             Screen::AddKeyScreen(screen) => {
                 screen.display_task_result(backend_task_success_result.clone())
             }
@@ -596,6 +616,7 @@ impl ScreenLike for Screen {
             Screen::RegisterDataContractScreen(screen) => screen.pop_on_success(),
             Screen::WithdrawalScreen(screen) => screen.pop_on_success(),
             Screen::TransferScreen(screen) => screen.pop_on_success(),
+            Screen::TransferTokensScreen(screen) => screen.pop_on_success(),
             Screen::AddKeyScreen(screen) => screen.pop_on_success(),
             Screen::TransitionVisualizerScreen(screen) => screen.pop_on_success(),
             Screen::NetworkChooserScreen(screen) => screen.pop_on_success(),

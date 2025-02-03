@@ -24,15 +24,10 @@ impl AppContext {
         sender: mpsc::Sender<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, String> {
         match &task {
-            TokenTask::QueryMyTokenBalances => {
-                // Placeholder
-                // Ok(BackendTaskSuccessResult::Message(
-                //     "QueryMyTokenBalances".to_string(),
-                // ))
-
-                // Actually do this
-                self.query_my_token_balances(sdk, sender).await
-            }
+            TokenTask::QueryMyTokenBalances => self
+                .query_my_token_balances(sdk, sender)
+                .await
+                .map_err(|e| format!("Failed to fetch token balances: {e}")),
             TokenTask::QueryTokensByKeyword(query) => {
                 // Placeholder
                 Ok(BackendTaskSuccessResult::Message("QueryTokens".to_string()))

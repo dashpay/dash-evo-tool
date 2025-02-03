@@ -295,7 +295,7 @@ impl TokensScreen {
                             .resizable(true)
                             .cell_layout(egui::Layout::left_to_right(Align::Center))
                             .column(Column::initial(80.0).resizable(true)) // Token Name
-                            .column(Column::initial(330.0).resizable(true)) // Owner Identity ID
+                            .column(Column::initial(330.0).resizable(true)) // Identity ID
                             .column(Column::initial(60.0).resizable(true)) // Balance
                             .column(Column::initial(80.0).resizable(true)) // Actions
                             .header(30.0, |mut header| {
@@ -305,7 +305,7 @@ impl TokensScreen {
                                     }
                                 });
                                 header.col(|ui| {
-                                    if ui.button("Owner ID").clicked() {
+                                    if ui.button("Identity ID").clicked() {
                                         self.toggle_sort(SortColumn::OwnerIdentity);
                                     }
                                 });
@@ -388,7 +388,7 @@ impl TokensScreen {
 
         ui.vertical_centered(|ui| {
             ui.add_space(10.0);
-            ui.label("Search for tokens by keyword, name, or owner identity ID.");
+            ui.label("Search for tokens by keyword, name, or ID.");
             ui.add_space(5.0);
 
             ui.horizontal(|ui| {
@@ -503,7 +503,7 @@ impl TokensScreen {
                                 ui.label("Token Name");
                             });
                             header.col(|ui| {
-                                ui.label("Owner ID");
+                                ui.label("Token ID");
                             });
                             header.col(|ui| {
                                 ui.label("Balance");
@@ -657,11 +657,32 @@ impl TokensScreen {
 // ScreenLike implementation
 // ─────────────────────────────────────────────────────────────────
 impl ScreenLike for TokensScreen {
-    fn refresh(&mut self) {}
+    fn refresh(&mut self) {
+        self.my_tokens = Arc::new(Mutex::new(
+            self.app_context
+                .identity_token_balances()
+                .unwrap_or_default(),
+        ));
+    }
 
-    fn refresh_on_arrival(&mut self) {}
+    fn refresh_on_arrival(&mut self) {
+        self.my_tokens = Arc::new(Mutex::new(
+            self.app_context
+                .identity_token_balances()
+                .unwrap_or_default(),
+        ));
+    }
 
     fn display_message(&mut self, msg: &str, msg_type: MessageType) {
+        // Handle messages from querying My Token Balances
+        if msg.contains("Successfully fetched token balances")
+            | msg.contains("Failed to fetch token balances")
+        {
+            self.backend_message = Some((msg.to_string(), msg_type, Utc::now()));
+            self.refreshing_status = RefreshingStatus::NotRefreshing;
+        }
+
+        // Handle messages from Token Search
         if msg.contains("Error fetching tokens") {
             self.token_search_status = TokenSearchStatus::ErrorMessage(msg.to_string());
             self.backend_message = Some((msg.to_string(), msg_type, Utc::now()));

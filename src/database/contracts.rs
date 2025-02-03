@@ -2,8 +2,11 @@ use crate::context::AppContext;
 use crate::database::Database;
 use crate::model::qualified_contract::QualifiedContract;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
+use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
 use dash_sdk::dpp::data_contract::DataContract;
 use dash_sdk::dpp::identifier::Identifier;
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::serialization::{
     PlatformDeserializableWithPotentialValidationFromVersionedStructure,
     PlatformSerializableWithPlatformVersion,
@@ -29,6 +32,37 @@ impl Database {
             "INSERT OR IGNORE INTO contract (contract_id, contract, name, network) VALUES (?, ?, ?, ?)",
             params![contract_id, contract_bytes, contract_name, network],
         )?;
+
+        // Next, if the contract has tokens, add the tokens to identity_token_balances
+        if !data_contract.tokens().is_empty() {
+            for token in data_contract.tokens().iter() {
+                let wallets = app_context.wallets.read().unwrap();
+                let identities = self.get_local_qualified_identities(app_context, &wallets)?;
+                if let Some(token_id) = data_contract.token_id(*token.0) {
+                    for identity in identities {
+                        let balance = if data_contract.owner_id() == identity.identity.id() {
+                            token.1.base_supply()
+                        } else {
+                            0
+                        };
+                        let _ = self
+                            .insert_identity_token_balance(
+                                &token_id,
+                                &identity.identity.id(),
+                                balance,
+                                app_context,
+                            )
+                            .map_err(|e| {
+                                format!(
+                                    "Failed to insert token balance into local database: {:?}",
+                                    e
+                                )
+                            });
+                    }
+                }
+            }
+        }
+
         Ok(())
     }
 

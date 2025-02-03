@@ -1,4 +1,4 @@
-use dash_sdk::platform::Identifier;
+use dash_sdk::{dpp::platform_value::string_encoding::Encoding, platform::Identifier};
 use rusqlite::params;
 
 use crate::{context::AppContext, ui::tokens::tokens_screen::IdentityTokenBalance};
@@ -6,29 +6,39 @@ use crate::{context::AppContext, ui::tokens::tokens_screen::IdentityTokenBalance
 use super::Database;
 
 impl Database {
+    /// Creates the identity_token_balances table if it doesn't already exist
+    fn ensure_identity_token_balances_table_exists(&self) -> rusqlite::Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS identity_token_balances (
+                token_id BLOB NOT NULL,
+                identity_id BLOB NOT NULL,
+                balance INTEGER NOT NULL,
+                network TEXT NOT NULL,
+                PRIMARY KEY(token_id, identity_id, network)
+             )",
+        )?;
+        Ok(())
+    }
+
     pub fn insert_identity_token_balance(
         &self,
         token_identifier: &Identifier,
-        token_name: &str,
         identity_id: &Identifier,
         balance: u64,
         app_context: &AppContext,
     ) -> rusqlite::Result<()> {
+        self.ensure_identity_token_balances_table_exists()?;
+
         let network = app_context.network_string();
         let token_identifier_vec = token_identifier.to_vec();
         let identity_id_vec = identity_id.to_vec();
 
         self.execute(
             "INSERT OR REPLACE INTO identity_token_balances
-             (token_identifier, token_name, identity_id, balance, network)
-             VALUES (?, ?, ?, ?, ?)",
-            params![
-                token_identifier_vec,
-                token_name,
-                identity_id_vec,
-                balance,
-                network
-            ],
+             (token_id, identity_id, balance, network)
+             VALUES (?, ?, ?, ?)",
+            params![token_identifier_vec, identity_id_vec, balance, network],
         )?;
 
         Ok(())
@@ -50,19 +60,21 @@ impl Database {
         let rows = stmt.query_map(params![network], |row| {
             Ok((
                 Identifier::from_vec(row.get(0)?),
-                row.get(1)?,
-                Identifier::from_vec(row.get(2)?),
-                row.get(3)?,
+                Identifier::from_vec(row.get(1)?),
+                row.get(2)?,
             ))
         })?;
 
         let mut result = Vec::new();
         for row in rows {
-            let (token_identifier, token_name, identity_id, balance) = row?;
+            let (token_identifier, identity_id, balance) = row?;
             let identity_token_balance = IdentityTokenBalance {
                 token_identifier: token_identifier
+                    .clone()
                     .expect("Expected to convert token_identifier from vec to Identifier"),
-                token_name,
+                token_name: token_identifier
+                    .expect("Expected to convert identity_id from vec to Identifier")
+                    .to_string(Encoding::Base58),
                 identity_id: identity_id
                     .expect("Expected to convert identity_id from vec to Identifier"),
                 balance,

@@ -454,7 +454,7 @@ impl ScreenLike for TransferTokensScreen {
                         ));
                     }
                     TransferTokensStatus::ErrorMessage(msg) => {
-                        ui.colored_label(egui::Color32::RED, format!("Error: {}", msg));
+                        ui.colored_label(egui::Color32::DARK_RED, format!("Error: {}", msg));
                     }
                     TransferTokensStatus::Complete => {
                         // Handled above

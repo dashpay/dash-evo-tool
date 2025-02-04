@@ -8,6 +8,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 
 mod burn_tokens;
+mod destroy_frozen_funds;
 mod mint_tokens;
 mod query_my_token_balances;
 mod query_tokens;
@@ -40,6 +41,13 @@ pub(crate) enum TokenTask {
         token_position: u16,
         signing_key: IdentityPublicKey,
         amount: u64,
+    },
+    DestroyFrozenFunds {
+        actor_identity: QualifiedIdentity,
+        data_contract: DataContract,
+        token_position: u16,
+        signing_key: IdentityPublicKey,
+        frozen_identity: Identifier,
     },
 }
 
@@ -129,6 +137,24 @@ impl AppContext {
                 )
                 .await
                 .map_err(|e| format!("Failed to burn tokens: {e}")),
+            TokenTask::DestroyFrozenFunds {
+                actor_identity,
+                data_contract,
+                token_position,
+                signing_key,
+                frozen_identity,
+            } => self
+                .destroy_frozen_funds(
+                    actor_identity,
+                    data_contract,
+                    *token_position,
+                    signing_key.clone(),
+                    frozen_identity.clone(),
+                    sdk,
+                    sender,
+                )
+                .await
+                .map_err(|e| format!("Failed to destroy frozen funds: {e}")),
         }
     }
 }

@@ -17,6 +17,7 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::{BackendTaskSuccessResult, MessageType, RootScreenType, Screen, ScreenLike};
 
 use super::burn_tokens_screen::BurnTokensScreen;
+use super::destroy_frozen_funds_screen::DestroyFrozenFundsScreen;
 use super::mint_tokens_screen::MintTokensScreen;
 use super::transfer_tokens_screen::TransferTokensScreen;
 
@@ -382,7 +383,13 @@ impl TokensScreen {
                                                             BurnTokensScreen::new(identity_token_balance.clone(), &self.app_context),
                                                         ));
                                                         ui.close_menu();
-                                                    }                                                
+                                                    }
+                                                    if ui.button("Destroy").clicked() {
+                                                        action = AppAction::AddScreen(Screen::DestroyFrozenFundsScreen(
+                                                            DestroyFrozenFundsScreen::new(identity_token_balance.clone(), &self.app_context),
+                                                        ));
+                                                        ui.close_menu();
+                                                    }
                                                 });
                                             });
                                         });
@@ -475,7 +482,7 @@ impl TokensScreen {
                 });
             }
             TokenSearchStatus::ErrorMessage(ref e) => {
-                ui.colored_label(Color32::RED, format!("Error: {}", e));
+                ui.colored_label(Color32::DARK_RED, format!("Error: {}", e));
             }
             TokenSearchStatus::NotStarted => {
                 ui.label("Enter keywords above and click Go to search tokens.");

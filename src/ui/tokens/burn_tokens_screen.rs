@@ -289,7 +289,7 @@ impl ScreenLike for BurnTokensScreen {
 
             if !has_keys {
                 ui.colored_label(
-                    Color32::RED,
+                    Color32::DARK_RED,
                     format!(
                         "No authentication keys found for this {} identity.",
                         self.identity.identity_type,
@@ -382,7 +382,7 @@ impl ScreenLike for BurnTokensScreen {
                         ui.label(format!("Burning... elapsed: {} seconds", elapsed));
                     }
                     BurnTokensStatus::ErrorMessage(msg) => {
-                        ui.colored_label(Color32::RED, format!("Error: {}", msg));
+                        ui.colored_label(Color32::DARK_RED, format!("Error: {}", msg));
                     }
                     BurnTokensStatus::Complete => {
                         // handled above

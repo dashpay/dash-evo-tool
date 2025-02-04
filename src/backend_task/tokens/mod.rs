@@ -7,6 +7,7 @@ use dash_sdk::{
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
+mod burn_tokens;
 mod mint_tokens;
 mod query_my_token_balances;
 mod query_tokens;
@@ -32,6 +33,13 @@ pub(crate) enum TokenTask {
         data_contract: DataContract,
         token_position: u16,
         signing_key: IdentityPublicKey,
+    },
+    BurnTokens {
+        owner_identity: QualifiedIdentity,
+        data_contract: DataContract,
+        token_position: u16,
+        signing_key: IdentityPublicKey,
+        amount: u64,
     },
 }
 
@@ -103,6 +111,24 @@ impl AppContext {
                 )
                 .await
                 .map_err(|e| format!("Failed to transfer tokens: {e}")),
+            TokenTask::BurnTokens {
+                owner_identity,
+                data_contract,
+                token_position,
+                signing_key,
+                amount,
+            } => self
+                .burn_tokens(
+                    owner_identity,
+                    data_contract,
+                    *token_position,
+                    signing_key.clone(),
+                    *amount,
+                    sdk,
+                    sender,
+                )
+                .await
+                .map_err(|e| format!("Failed to burn tokens: {e}")),
         }
     }
 }

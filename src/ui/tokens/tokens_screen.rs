@@ -16,6 +16,7 @@ use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::{BackendTaskSuccessResult, MessageType, RootScreenType, Screen, ScreenLike};
 
+use super::burn_tokens_screen::BurnTokensScreen;
 use super::mint_tokens_screen::MintTokensScreen;
 use super::transfer_tokens_screen::TransferTokensScreen;
 
@@ -375,7 +376,13 @@ impl TokensScreen {
                                                         ));
                                                         ui.close_menu();
                                                     }
-                                                    // Other items...
+                                                    if ui.button("Burn").clicked() {
+                                                        // Show the BurnTokensScreen
+                                                        action = AppAction::AddScreen(Screen::BurnTokensScreen(
+                                                            BurnTokensScreen::new(identity_token_balance.clone(), &self.app_context),
+                                                        ));
+                                                        ui.close_menu();
+                                                    }                                                
                                                 });
                                             });
                                         });

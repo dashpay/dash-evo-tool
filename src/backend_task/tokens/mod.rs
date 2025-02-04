@@ -9,6 +9,7 @@ use tokio::sync::mpsc;
 
 mod burn_tokens;
 mod destroy_frozen_funds;
+mod freeze_tokens;
 mod mint_tokens;
 mod query_my_token_balances;
 mod query_tokens;
@@ -48,6 +49,13 @@ pub(crate) enum TokenTask {
         token_position: u16,
         signing_key: IdentityPublicKey,
         frozen_identity: Identifier,
+    },
+    FreezeTokens {
+        actor_identity: QualifiedIdentity,
+        data_contract: DataContract,
+        token_position: u16,
+        signing_key: IdentityPublicKey,
+        freeze_identity: Identifier,
     },
 }
 
@@ -155,6 +163,24 @@ impl AppContext {
                 )
                 .await
                 .map_err(|e| format!("Failed to destroy frozen funds: {e}")),
+            TokenTask::FreezeTokens {
+                actor_identity,
+                data_contract,
+                token_position,
+                signing_key,
+                freeze_identity,
+            } => self
+                .freeze_tokens(
+                    actor_identity,
+                    data_contract,
+                    *token_position,
+                    signing_key.clone(),
+                    freeze_identity.clone(),
+                    sdk,
+                    sender,
+                )
+                .await
+                .map_err(|e| format!("Failed to freeze tokens: {e}")),
         }
     }
 }

@@ -34,6 +34,7 @@ use std::hash::Hash;
 use std::sync::Arc;
 use tokens::burn_tokens_screen::BurnTokensScreen;
 use tokens::destroy_frozen_funds_screen::DestroyFrozenFundsScreen;
+use tokens::freeze_tokens_screen::FreezeTokensScreen;
 use tokens::mint_tokens_screen::MintTokensScreen;
 use tokens::tokens_screen::{IdentityTokenBalance, TokensScreen, TokensSubscreen};
 use tools::transition_visualizer_screen::TransitionVisualizerScreen;
@@ -169,6 +170,7 @@ pub enum ScreenType {
     MintTokensScreen(IdentityTokenBalance),
     BurnTokensScreen(IdentityTokenBalance),
     DestroyFrozenFundsScreen(IdentityTokenBalance),
+    FreezeTokensScreen(IdentityTokenBalance),
 }
 
 impl ScreenType {
@@ -274,6 +276,12 @@ impl ScreenType {
                     app_context,
                 ))
             }
+            ScreenType::FreezeTokensScreen(identity_token_balance) => {
+                Screen::DestroyFrozenFundsScreen(DestroyFrozenFundsScreen::new(
+                    identity_token_balance.clone(),
+                    app_context,
+                ))
+            }
         }
     }
 }
@@ -307,6 +315,7 @@ pub enum Screen {
     MintTokensScreen(MintTokensScreen),
     BurnTokensScreen(BurnTokensScreen),
     DestroyFrozenFundsScreen(DestroyFrozenFundsScreen),
+    FreezeTokensScreen(FreezeTokensScreen),
 }
 
 impl Screen {
@@ -340,6 +349,7 @@ impl Screen {
             Screen::MintTokensScreen(screen) => screen.app_context = app_context,
             Screen::BurnTokensScreen(screen) => screen.app_context = app_context,
             Screen::DestroyFrozenFundsScreen(screen) => screen.app_context = app_context,
+            Screen::FreezeTokensScreen(screen) => screen.app_context = app_context,
         }
     }
 }
@@ -448,6 +458,9 @@ impl Screen {
             Screen::DestroyFrozenFundsScreen(screen) => {
                 ScreenType::DestroyFrozenFundsScreen(screen.identity_token_balance.clone())
             }
+            Screen::FreezeTokensScreen(screen) => {
+                ScreenType::FreezeTokensScreen(screen.identity_token_balance.clone())
+            }
         }
     }
 }
@@ -483,6 +496,7 @@ impl ScreenLike for Screen {
             Screen::MintTokensScreen(screen) => screen.refresh(),
             Screen::BurnTokensScreen(screen) => screen.refresh(),
             Screen::DestroyFrozenFundsScreen(screen) => screen.refresh(),
+            Screen::FreezeTokensScreen(screen) => screen.refresh(),
         }
     }
 
@@ -516,6 +530,7 @@ impl ScreenLike for Screen {
             Screen::MintTokensScreen(screen) => screen.refresh_on_arrival(),
             Screen::BurnTokensScreen(screen) => screen.refresh_on_arrival(),
             Screen::DestroyFrozenFundsScreen(screen) => screen.refresh_on_arrival(),
+            Screen::FreezeTokensScreen(screen) => screen.refresh_on_arrival(),
         }
     }
 
@@ -549,6 +564,7 @@ impl ScreenLike for Screen {
             Screen::MintTokensScreen(screen) => screen.ui(ctx),
             Screen::BurnTokensScreen(screen) => screen.ui(ctx),
             Screen::DestroyFrozenFundsScreen(screen) => screen.ui(ctx),
+            Screen::FreezeTokensScreen(screen) => screen.ui(ctx),
         }
     }
 
@@ -590,6 +606,7 @@ impl ScreenLike for Screen {
             Screen::DestroyFrozenFundsScreen(screen) => {
                 screen.display_message(message, message_type)
             }
+            Screen::FreezeTokensScreen(screen) => screen.display_message(message, message_type),
         }
     }
 
@@ -673,6 +690,9 @@ impl ScreenLike for Screen {
             Screen::DestroyFrozenFundsScreen(screen) => {
                 screen.display_task_result(backend_task_success_result.clone())
             }
+            Screen::FreezeTokensScreen(screen) => {
+                screen.display_task_result(backend_task_success_result.clone())
+            }
         }
     }
 
@@ -706,6 +726,7 @@ impl ScreenLike for Screen {
             Screen::MintTokensScreen(screen) => screen.pop_on_success(),
             Screen::BurnTokensScreen(screen) => screen.pop_on_success(),
             Screen::DestroyFrozenFundsScreen(screen) => screen.pop_on_success(),
+            Screen::FreezeTokensScreen(screen) => screen.pop_on_success(),
         }
     }
 }

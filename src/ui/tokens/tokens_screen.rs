@@ -18,6 +18,7 @@ use crate::ui::{BackendTaskSuccessResult, MessageType, RootScreenType, Screen, S
 
 use super::burn_tokens_screen::BurnTokensScreen;
 use super::destroy_frozen_funds_screen::DestroyFrozenFundsScreen;
+use super::freeze_tokens_screen::FreezeTokensScreen;
 use super::mint_tokens_screen::MintTokensScreen;
 use super::transfer_tokens_screen::TransferTokensScreen;
 
@@ -366,7 +367,7 @@ impl TokensScreen {
                                                         )),
                                                     );
                                                 }
-        
+
                                                 // "..." menu button:
                                                 ui.menu_button("...", |ui| {
                                                     if ui.button("Mint").clicked() {
@@ -387,6 +388,12 @@ impl TokensScreen {
                                                     if ui.button("Destroy").clicked() {
                                                         action = AppAction::AddScreen(Screen::DestroyFrozenFundsScreen(
                                                             DestroyFrozenFundsScreen::new(identity_token_balance.clone(), &self.app_context),
+                                                        ));
+                                                        ui.close_menu();
+                                                    }
+                                                    if ui.button("Freeze").clicked() {
+                                                        action = AppAction::AddScreen(Screen::FreezeTokensScreen(
+                                                            FreezeTokensScreen::new(identity_token_balance.clone(), &self.app_context),
                                                         ));
                                                         ui.close_menu();
                                                     }

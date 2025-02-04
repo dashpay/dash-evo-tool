@@ -14,6 +14,7 @@ mod mint_tokens;
 mod query_my_token_balances;
 mod query_tokens;
 mod transfer_tokens;
+mod unfreeze_tokens;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum TokenTask {
@@ -56,6 +57,13 @@ pub(crate) enum TokenTask {
         token_position: u16,
         signing_key: IdentityPublicKey,
         freeze_identity: Identifier,
+    },
+    UnfreezeTokens {
+        actor_identity: QualifiedIdentity,
+        data_contract: DataContract,
+        token_position: u16,
+        signing_key: IdentityPublicKey,
+        unfreeze_identity: Identifier,
     },
 }
 
@@ -181,6 +189,24 @@ impl AppContext {
                 )
                 .await
                 .map_err(|e| format!("Failed to freeze tokens: {e}")),
+            TokenTask::UnfreezeTokens {
+                actor_identity,
+                data_contract,
+                token_position,
+                signing_key,
+                unfreeze_identity,
+            } => self
+                .unfreeze_tokens(
+                    actor_identity,
+                    data_contract,
+                    *token_position,
+                    signing_key.clone(),
+                    unfreeze_identity.clone(),
+                    sdk,
+                    sender,
+                )
+                .await
+                .map_err(|e| format!("Failed to unfreeze tokens: {e}")),
         }
     }
 }

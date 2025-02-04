@@ -16,7 +16,7 @@ impl AppContext {
         credits: Credits,
         id: Option<KeyID>,
     ) -> Result<BackendTaskSuccessResult, String> {
-        let remaining_balance = qualified_identity
+        let (sender_balance, receiver_balance) = qualified_identity
             .identity
             .clone()
             .transfer_credits(
@@ -29,7 +29,7 @@ impl AppContext {
             )
             .await
             .map_err(|e| format!("Transfer error: {}", e))?;
-        qualified_identity.identity.set_balance(remaining_balance);
+        qualified_identity.identity.set_balance(sender_balance);
 
         // If the receiver is a local qualified identity, update its balance too
         if let Some(receiver) = self
@@ -38,9 +38,7 @@ impl AppContext {
             .iter_mut()
             .find(|qi| qi.identity.id() == to_identifier)
         {
-            receiver
-                .identity
-                .set_balance(receiver.identity.balance() + credits);
+            receiver.identity.set_balance(receiver_balance);
             self.update_local_qualified_identity(receiver)
                 .map_err(|e| format!("Transfer error: {}", e))?;
         }

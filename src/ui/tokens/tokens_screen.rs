@@ -21,6 +21,7 @@ use super::destroy_frozen_funds_screen::DestroyFrozenFundsScreen;
 use super::freeze_tokens_screen::FreezeTokensScreen;
 use super::mint_tokens_screen::MintTokensScreen;
 use super::transfer_tokens_screen::TransferTokensScreen;
+use super::unfreeze_tokens_screen::UnfreezeTokensScreen;
 
 /// A token owned by an identity.
 #[derive(Clone, Debug, PartialEq)]
@@ -394,6 +395,12 @@ impl TokensScreen {
                                                     if ui.button("Freeze").clicked() {
                                                         action = AppAction::AddScreen(Screen::FreezeTokensScreen(
                                                             FreezeTokensScreen::new(identity_token_balance.clone(), &self.app_context),
+                                                        ));
+                                                        ui.close_menu();
+                                                    }
+                                                    if ui.button("Unfreeze").clicked() {
+                                                        action = AppAction::AddScreen(Screen::UnfreezeTokensScreen(
+                                                            UnfreezeTokensScreen::new(identity_token_balance.clone(), &self.app_context),
                                                         ));
                                                         ui.close_menu();
                                                     }

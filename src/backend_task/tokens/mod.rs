@@ -11,8 +11,10 @@ mod burn_tokens;
 mod destroy_frozen_funds;
 mod freeze_tokens;
 mod mint_tokens;
+mod pause_tokens;
 mod query_my_token_balances;
 mod query_tokens;
+mod resume_tokens;
 mod transfer_tokens;
 mod unfreeze_tokens;
 
@@ -64,6 +66,18 @@ pub(crate) enum TokenTask {
         token_position: u16,
         signing_key: IdentityPublicKey,
         unfreeze_identity: Identifier,
+    },
+    PauseTokens {
+        actor_identity: QualifiedIdentity,
+        data_contract: DataContract,
+        token_position: u16,
+        signing_key: IdentityPublicKey,
+    },
+    ResumeTokens {
+        actor_identity: QualifiedIdentity,
+        data_contract: DataContract,
+        token_position: u16,
+        signing_key: IdentityPublicKey,
     },
 }
 
@@ -207,6 +221,38 @@ impl AppContext {
                 )
                 .await
                 .map_err(|e| format!("Failed to unfreeze tokens: {e}")),
+            TokenTask::PauseTokens {
+                actor_identity,
+                data_contract,
+                token_position,
+                signing_key,
+            } => self
+                .pause_tokens(
+                    actor_identity,
+                    data_contract,
+                    *token_position,
+                    signing_key.clone(),
+                    sdk,
+                    sender,
+                )
+                .await
+                .map_err(|e| format!("Failed to pause tokens: {e}")),
+            TokenTask::ResumeTokens {
+                actor_identity,
+                data_contract,
+                token_position,
+                signing_key,
+            } => self
+                .resume_tokens(
+                    actor_identity,
+                    data_contract,
+                    *token_position,
+                    signing_key.clone(),
+                    sdk,
+                    sender,
+                )
+                .await
+                .map_err(|e| format!("Failed to resume tokens: {e}")),
         }
     }
 }

@@ -20,6 +20,8 @@ use super::burn_tokens_screen::BurnTokensScreen;
 use super::destroy_frozen_funds_screen::DestroyFrozenFundsScreen;
 use super::freeze_tokens_screen::FreezeTokensScreen;
 use super::mint_tokens_screen::MintTokensScreen;
+use super::pause_tokens_screen::PauseTokensScreen;
+use super::resume_tokens_screen::ResumeTokensScreen;
 use super::transfer_tokens_screen::TransferTokensScreen;
 use super::unfreeze_tokens_screen::UnfreezeTokensScreen;
 
@@ -401,6 +403,18 @@ impl TokensScreen {
                                                     if ui.button("Unfreeze").clicked() {
                                                         action = AppAction::AddScreen(Screen::UnfreezeTokensScreen(
                                                             UnfreezeTokensScreen::new(identity_token_balance.clone(), &self.app_context),
+                                                        ));
+                                                        ui.close_menu();
+                                                    }
+                                                    if ui.button("Pause").clicked() {
+                                                        action = AppAction::AddScreen(Screen::PauseTokensScreen(
+                                                            PauseTokensScreen::new(identity_token_balance.clone(), &self.app_context),
+                                                        ));
+                                                        ui.close_menu();
+                                                    }
+                                                    if ui.button("Resume").clicked() {
+                                                        action = AppAction::AddScreen(Screen::ResumeTokensScreen(
+                                                            ResumeTokensScreen::new(identity_token_balance.clone(), &self.app_context),
                                                         ));
                                                         ui.close_menu();
                                                     }

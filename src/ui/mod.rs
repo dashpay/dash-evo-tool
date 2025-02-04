@@ -36,6 +36,8 @@ use tokens::burn_tokens_screen::BurnTokensScreen;
 use tokens::destroy_frozen_funds_screen::DestroyFrozenFundsScreen;
 use tokens::freeze_tokens_screen::FreezeTokensScreen;
 use tokens::mint_tokens_screen::MintTokensScreen;
+use tokens::pause_tokens_screen::PauseTokensScreen;
+use tokens::resume_tokens_screen::ResumeTokensScreen;
 use tokens::tokens_screen::{IdentityTokenBalance, TokensScreen, TokensSubscreen};
 use tokens::unfreeze_tokens_screen::UnfreezeTokensScreen;
 use tools::transition_visualizer_screen::TransitionVisualizerScreen;
@@ -173,6 +175,8 @@ pub enum ScreenType {
     DestroyFrozenFundsScreen(IdentityTokenBalance),
     FreezeTokensScreen(IdentityTokenBalance),
     UnfreezeTokensScreen(IdentityTokenBalance),
+    PauseTokensScreen(IdentityTokenBalance),
+    ResumeTokensScreen(IdentityTokenBalance),
 }
 
 impl ScreenType {
@@ -290,6 +294,18 @@ impl ScreenType {
                     app_context,
                 ))
             }
+            ScreenType::PauseTokensScreen(identity_token_balance) => {
+                Screen::DestroyFrozenFundsScreen(DestroyFrozenFundsScreen::new(
+                    identity_token_balance.clone(),
+                    app_context,
+                ))
+            }
+            ScreenType::ResumeTokensScreen(identity_token_balance) => {
+                Screen::DestroyFrozenFundsScreen(DestroyFrozenFundsScreen::new(
+                    identity_token_balance.clone(),
+                    app_context,
+                ))
+            }
         }
     }
 }
@@ -325,6 +341,8 @@ pub enum Screen {
     DestroyFrozenFundsScreen(DestroyFrozenFundsScreen),
     FreezeTokensScreen(FreezeTokensScreen),
     UnfreezeTokensScreen(UnfreezeTokensScreen),
+    PauseTokensScreen(PauseTokensScreen),
+    ResumeTokensScreen(ResumeTokensScreen),
 }
 
 impl Screen {
@@ -360,6 +378,8 @@ impl Screen {
             Screen::DestroyFrozenFundsScreen(screen) => screen.app_context = app_context,
             Screen::FreezeTokensScreen(screen) => screen.app_context = app_context,
             Screen::UnfreezeTokensScreen(screen) => screen.app_context = app_context,
+            Screen::PauseTokensScreen(screen) => screen.app_context = app_context,
+            Screen::ResumeTokensScreen(screen) => screen.app_context = app_context,
         }
     }
 }
@@ -474,6 +494,12 @@ impl Screen {
             Screen::UnfreezeTokensScreen(screen) => {
                 ScreenType::UnfreezeTokensScreen(screen.identity_token_balance.clone())
             }
+            Screen::PauseTokensScreen(screen) => {
+                ScreenType::PauseTokensScreen(screen.identity_token_balance.clone())
+            }
+            Screen::ResumeTokensScreen(screen) => {
+                ScreenType::ResumeTokensScreen(screen.identity_token_balance.clone())
+            }
         }
     }
 }
@@ -511,6 +537,8 @@ impl ScreenLike for Screen {
             Screen::DestroyFrozenFundsScreen(screen) => screen.refresh(),
             Screen::FreezeTokensScreen(screen) => screen.refresh(),
             Screen::UnfreezeTokensScreen(screen) => screen.refresh(),
+            Screen::PauseTokensScreen(screen) => screen.refresh(),
+            Screen::ResumeTokensScreen(screen) => screen.refresh(),
         }
     }
 
@@ -546,6 +574,8 @@ impl ScreenLike for Screen {
             Screen::DestroyFrozenFundsScreen(screen) => screen.refresh_on_arrival(),
             Screen::FreezeTokensScreen(screen) => screen.refresh_on_arrival(),
             Screen::UnfreezeTokensScreen(screen) => screen.refresh_on_arrival(),
+            Screen::PauseTokensScreen(screen) => screen.refresh_on_arrival(),
+            Screen::ResumeTokensScreen(screen) => screen.refresh_on_arrival(),
         }
     }
 
@@ -581,6 +611,8 @@ impl ScreenLike for Screen {
             Screen::DestroyFrozenFundsScreen(screen) => screen.ui(ctx),
             Screen::FreezeTokensScreen(screen) => screen.ui(ctx),
             Screen::UnfreezeTokensScreen(screen) => screen.ui(ctx),
+            Screen::PauseTokensScreen(screen) => screen.ui(ctx),
+            Screen::ResumeTokensScreen(screen) => screen.ui(ctx),
         }
     }
 
@@ -624,6 +656,8 @@ impl ScreenLike for Screen {
             }
             Screen::FreezeTokensScreen(screen) => screen.display_message(message, message_type),
             Screen::UnfreezeTokensScreen(screen) => screen.display_message(message, message_type),
+            Screen::PauseTokensScreen(screen) => screen.display_message(message, message_type),
+            Screen::ResumeTokensScreen(screen) => screen.display_message(message, message_type),
         }
     }
 
@@ -713,6 +747,12 @@ impl ScreenLike for Screen {
             Screen::UnfreezeTokensScreen(screen) => {
                 screen.display_task_result(backend_task_success_result.clone())
             }
+            Screen::PauseTokensScreen(screen) => {
+                screen.display_task_result(backend_task_success_result.clone())
+            }
+            Screen::ResumeTokensScreen(screen) => {
+                screen.display_task_result(backend_task_success_result.clone())
+            }
         }
     }
 
@@ -748,6 +788,8 @@ impl ScreenLike for Screen {
             Screen::DestroyFrozenFundsScreen(screen) => screen.pop_on_success(),
             Screen::FreezeTokensScreen(screen) => screen.pop_on_success(),
             Screen::UnfreezeTokensScreen(screen) => screen.pop_on_success(),
+            Screen::PauseTokensScreen(screen) => screen.pop_on_success(),
+            Screen::ResumeTokensScreen(screen) => screen.pop_on_success(),
         }
     }
 }

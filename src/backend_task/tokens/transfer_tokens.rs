@@ -7,7 +7,6 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::state_transition::proof_result::StateTransitionProofResult;
 use dash_sdk::platform::transition::broadcast::BroadcastStateTransition;
 use dash_sdk::platform::transition::fungible_tokens::transfer::TokenTransferTransitionBuilder;
-use dash_sdk::platform::transition::put_settings::PutSettings;
 use dash_sdk::platform::{DataContract, Identifier, IdentityPublicKey};
 use dash_sdk::Sdk;
 use tokio::sync::mpsc;

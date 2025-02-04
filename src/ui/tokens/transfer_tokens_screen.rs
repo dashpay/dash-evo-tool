@@ -187,7 +187,7 @@ impl TransferTokensScreen {
                     }
                 };
 
-                let Some(selected_key) = self.selected_key.as_ref() else {
+                if self.selected_key.is_none() {
                     self.error_message = Some("No selected key".to_string());
                     self.transfer_tokens_status =
                         TransferTokensStatus::ErrorMessage("No selected key".to_string());

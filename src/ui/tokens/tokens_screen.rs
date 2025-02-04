@@ -16,6 +16,7 @@ use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::{BackendTaskSuccessResult, MessageType, RootScreenType, Screen, ScreenLike};
 
+use super::mint_tokens_screen::MintTokensScreen;
 use super::transfer_tokens_screen::TransferTokensScreen;
 
 /// A token owned by an identity.
@@ -366,23 +367,15 @@ impl TokensScreen {
         
                                                 // "..." menu button:
                                                 ui.menu_button("...", |ui| {
-                                                    // Could list multiple advanced actions here:
                                                     if ui.button("Mint").clicked() {
-                                                        // Dispatch a backend action or store a pending action
-                                                        // for the Mint operation:
-                                                        action = AppAction::BackendTask(
-                                                            BackendTask::TokenTask(
-                                                                TokenTask::MintToken(
-                                                                    identity_token_balance.token_identifier.clone(),
-                                                                ),
-                                                            ),
-                                                        );
-                                                        // Close the menu after clicking
+                                                        // Instead of directly dispatching a backend action,
+                                                        // open the MintTokensScreen so the user can specify the amount, etc.
+                                                        action = AppAction::AddScreen(Screen::MintTokensScreen(
+                                                            MintTokensScreen::new(identity_token_balance.clone(), &self.app_context),
+                                                        ));
                                                         ui.close_menu();
                                                     }
-
-                                                    // Additional actions here in the future...
-                                                    // if ui.button("Do something else").clicked() { ... }
+                                                    // Other items...
                                                 });
                                             });
                                         });

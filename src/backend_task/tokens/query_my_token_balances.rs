@@ -28,6 +28,7 @@ impl AppContext {
                 .identity_token_balances()
                 .map_err(|e| format!("Failed to load identity token balances: {e}"))?
                 .iter()
+                .filter(|t| t.identity_id == identity_id)
                 .map(|t| {
                     (
                         t.token_identifier.clone(),

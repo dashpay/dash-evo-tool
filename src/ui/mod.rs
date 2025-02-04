@@ -32,6 +32,7 @@ use identities::register_dpns_name_screen::RegisterDpnsNameScreen;
 use std::fmt;
 use std::hash::Hash;
 use std::sync::Arc;
+use tokens::mint_tokens_screen::MintTokensScreen;
 use tokens::tokens_screen::{IdentityTokenBalance, TokensScreen, TokensSubscreen};
 use tools::transition_visualizer_screen::TransitionVisualizerScreen;
 use wallets::add_new_wallet_screen::AddNewWalletScreen;
@@ -143,6 +144,7 @@ pub enum ScreenType {
     WithdrawalScreen(QualifiedIdentity),
     TransferScreen(QualifiedIdentity),
     TransferTokensScreen(IdentityTokenBalance),
+    MintTokensScreen(IdentityTokenBalance),
     AddKeyScreen(QualifiedIdentity),
     KeyInfo(
         QualifiedIdentity,
@@ -217,6 +219,9 @@ impl ScreenType {
                     app_context,
                 ))
             }
+            ScreenType::MintTokensScreen(identity_token_balance) => Screen::MintTokensScreen(
+                MintTokensScreen::new(identity_token_balance.clone(), app_context),
+            ),
             ScreenType::NetworkChooser => {
                 unreachable!()
             }
@@ -272,6 +277,7 @@ pub enum Screen {
     TopUpIdentityScreen(TopUpIdentityScreen),
     TransferScreen(TransferScreen),
     TransferTokensScreen(TransferTokensScreen),
+    MintTokensScreen(MintTokensScreen),
     AddKeyScreen(AddKeyScreen),
     ProofLogScreen(ProofLogScreen),
     TransitionVisualizerScreen(TransitionVisualizerScreen),
@@ -301,6 +307,7 @@ impl Screen {
             Screen::AddNewWalletScreen(screen) => screen.app_context = app_context,
             Screen::TransferScreen(screen) => screen.app_context = app_context,
             Screen::TransferTokensScreen(screen) => screen.app_context = app_context,
+            Screen::MintTokensScreen(screen) => screen.app_context = app_context,
             Screen::TopUpIdentityScreen(screen) => screen.app_context = app_context,
             Screen::WalletsBalancesScreen(screen) => screen.app_context = app_context,
             Screen::ImportWalletScreen(screen) => screen.app_context = app_context,
@@ -392,6 +399,9 @@ impl Screen {
             Screen::TransferTokensScreen(screen) => {
                 ScreenType::TransferTokensScreen(screen.identity_token_balance.clone())
             }
+            Screen::MintTokensScreen(screen) => {
+                ScreenType::MintTokensScreen(screen.identity_token_balance.clone())
+            }
             Screen::WalletsBalancesScreen(_) => ScreenType::WalletsBalances,
             Screen::ImportWalletScreen(_) => ScreenType::ImportWallet,
             Screen::ProofLogScreen(_) => ScreenType::ProofLog,
@@ -427,6 +437,7 @@ impl ScreenLike for Screen {
             Screen::WithdrawalScreen(screen) => screen.refresh(),
             Screen::TransferScreen(screen) => screen.refresh(),
             Screen::TransferTokensScreen(screen) => screen.refresh(),
+            Screen::MintTokensScreen(screen) => screen.refresh(),
             Screen::AddKeyScreen(screen) => screen.refresh(),
             Screen::TransitionVisualizerScreen(screen) => screen.refresh(),
             Screen::NetworkChooserScreen(screen) => screen.refresh(),
@@ -455,6 +466,7 @@ impl ScreenLike for Screen {
             Screen::WithdrawalScreen(screen) => screen.refresh_on_arrival(),
             Screen::TransferScreen(screen) => screen.refresh_on_arrival(),
             Screen::TransferTokensScreen(screen) => screen.refresh_on_arrival(),
+            Screen::MintTokensScreen(screen) => screen.refresh_on_arrival(),
             Screen::AddKeyScreen(screen) => screen.refresh_on_arrival(),
             Screen::TransitionVisualizerScreen(screen) => screen.refresh_on_arrival(),
             Screen::NetworkChooserScreen(screen) => screen.refresh_on_arrival(),
@@ -483,6 +495,7 @@ impl ScreenLike for Screen {
             Screen::WithdrawalScreen(screen) => screen.ui(ctx),
             Screen::TransferScreen(screen) => screen.ui(ctx),
             Screen::TransferTokensScreen(screen) => screen.ui(ctx),
+            Screen::MintTokensScreen(screen) => screen.ui(ctx),
             Screen::AddKeyScreen(screen) => screen.ui(ctx),
             Screen::TransitionVisualizerScreen(screen) => screen.ui(ctx),
             Screen::NetworkChooserScreen(screen) => screen.ui(ctx),
@@ -515,6 +528,7 @@ impl ScreenLike for Screen {
             Screen::WithdrawalScreen(screen) => screen.display_message(message, message_type),
             Screen::TransferScreen(screen) => screen.display_message(message, message_type),
             Screen::TransferTokensScreen(screen) => screen.display_message(message, message_type),
+            Screen::MintTokensScreen(screen) => screen.display_message(message, message_type),
             Screen::AddKeyScreen(screen) => screen.display_message(message, message_type),
             Screen::TransitionVisualizerScreen(screen) => {
                 screen.display_message(message, message_type)
@@ -575,6 +589,9 @@ impl ScreenLike for Screen {
             Screen::TransferTokensScreen(screen) => {
                 screen.display_task_result(backend_task_success_result.clone())
             }
+            Screen::MintTokensScreen(screen) => {
+                screen.display_task_result(backend_task_success_result.clone())
+            }
             Screen::AddKeyScreen(screen) => {
                 screen.display_task_result(backend_task_success_result.clone())
             }
@@ -617,6 +634,7 @@ impl ScreenLike for Screen {
             Screen::WithdrawalScreen(screen) => screen.pop_on_success(),
             Screen::TransferScreen(screen) => screen.pop_on_success(),
             Screen::TransferTokensScreen(screen) => screen.pop_on_success(),
+            Screen::MintTokensScreen(screen) => screen.pop_on_success(),
             Screen::AddKeyScreen(screen) => screen.pop_on_success(),
             Screen::TransitionVisualizerScreen(screen) => screen.pop_on_success(),
             Screen::NetworkChooserScreen(screen) => screen.pop_on_success(),

@@ -1,4 +1,13 @@
-use dash_sdk::{dpp::platform_value::string_encoding::Encoding, platform::Identifier};
+use dash_sdk::{
+    dpp::{
+        data_contract::{
+            accessors::v1::DataContractV1Getters,
+            associated_token::token_configuration_convention::TokenConfigurationConvention,
+        },
+        platform_value::string_encoding::Encoding,
+    },
+    platform::Identifier,
+};
 use rusqlite::params;
 
 use crate::{context::AppContext, ui::tokens::tokens_screen::IdentityTokenBalance};
@@ -62,33 +71,73 @@ impl Database {
     ) -> rusqlite::Result<Vec<IdentityTokenBalance>> {
         let network = app_context.network_string();
 
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT *
+        // 1) Lock and read everything into memory first.
+        let rows_data = {
+            let conn = self.conn.lock().unwrap();
+            let mut stmt = conn.prepare(
+                "SELECT *
              FROM identity_token_balances
              WHERE network = ?",
-        )?;
+            )?;
 
-        let rows = stmt.query_map(params![network], |row| {
-            Ok((
-                Identifier::from_vec(row.get(0)?),
-                Identifier::from_vec(row.get(1)?),
-                row.get(2)?,
-                Identifier::from_vec(row.get(3)?),
-                row.get(4)?,
-            ))
-        })?;
+            // Map all the rows into a Vec in memory.
+            let rows = stmt.query_map(params![network], |row| {
+                Ok((
+                    Identifier::from_vec(row.get(0)?),
+                    Identifier::from_vec(row.get(1)?),
+                    row.get(2)?,
+                    Identifier::from_vec(row.get(3)?),
+                    row.get(4)?,
+                ))
+            })?;
+
+            let mut temp = Vec::new();
+            for row in rows {
+                temp.push(row?);
+            }
+            temp
+        }; // <- The lock is dropped here because `conn` goes out of scope.
 
         let mut result = Vec::new();
-        for row in rows {
-            let (token_identifier, identity_id, balance, data_contract_id, token_position) = row?;
+        for (token_identifier, identity_id, balance, data_contract_id, token_position) in rows_data
+        {
+            let token_name = match self.get_contract_by_id(
+                data_contract_id
+                    .clone()
+                    .expect("Expected to convert data_contract_id from vec to Identifier"),
+                app_context,
+            ) {
+                Ok(Some(qualified_contract)) => {
+                    let token_configuration = qualified_contract
+                        .contract
+                        .expected_token_configuration(token_position)
+                        .expect("Expected to get token configuration")
+                        .as_cow_v0();
+                    let conventions = match &token_configuration.conventions {
+                        TokenConfigurationConvention::V0(conventions) => conventions,
+                    };
+                    match conventions
+                        .localizations
+                        .get("en")
+                        .map(|l| l.singular_form.clone())
+                    {
+                        Some(token_name) => token_name,
+                        None => token_identifier
+                            .clone()
+                            .expect("Expected to convert token_identifier from vec to Identifier")
+                            .to_string(Encoding::Base58),
+                    }
+                }
+                _ => token_identifier
+                    .clone()
+                    .expect("Expected to convert identity_id from vec to Identifier")
+                    .to_string(Encoding::Base58),
+            };
             let identity_token_balance = IdentityTokenBalance {
                 token_identifier: token_identifier
                     .clone()
                     .expect("Expected to convert token_identifier from vec to Identifier"),
-                token_name: token_identifier
-                    .expect("Expected to convert identity_id from vec to Identifier")
-                    .to_string(Encoding::Base58),
+                token_name,
                 identity_id: identity_id
                     .expect("Expected to convert identity_id from vec to Identifier"),
                 balance,

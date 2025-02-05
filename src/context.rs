@@ -463,4 +463,12 @@ impl AppContext {
     pub fn identity_token_balances(&self) -> Result<Vec<IdentityTokenBalance>> {
         self.db.get_identity_token_balances(self)
     }
+
+    pub fn remove_token_balance(
+        &self,
+        token_id: Identifier,
+        identity_id: Identifier,
+    ) -> Result<()> {
+        self.db.remove_token_balance(&token_id, &identity_id, self)
+    }
 }

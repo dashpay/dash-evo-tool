@@ -151,6 +151,25 @@ impl Database {
         Ok(result)
     }
 
+    pub fn remove_token_balance(
+        &self,
+        token_identifier: &Identifier,
+        identity_id: &Identifier,
+        app_context: &AppContext,
+    ) -> rusqlite::Result<()> {
+        let network = app_context.network_string();
+        let token_identifier_vec = token_identifier.to_vec();
+        let identity_id_vec = identity_id.to_vec();
+
+        self.execute(
+            "DELETE FROM identity_token_balances
+             WHERE token_id = ? AND identity_id = ? AND network = ?",
+            params![token_identifier_vec, identity_id_vec, network],
+        )?;
+
+        Ok(())
+    }
+
     /// Creates the identity_order table if it doesn't already exist
     /// with two columns: `pos` (int) and `identity_id` (blob).
     /// pos is the "position" in the custom ordering.

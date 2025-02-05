@@ -105,6 +105,10 @@ pub struct TokensScreen {
     sort_column: SortColumn,
     sort_order: SortOrder,
     use_custom_order: bool,
+
+    // Remove token
+    confirm_remove_token_popup: bool,
+    token_to_remove: Option<IdentityTokenBalance>,
 }
 
 impl TokensScreen {
@@ -130,6 +134,10 @@ impl TokensScreen {
             pending_backend_task: None,
             tokens_subscreen,
             refreshing_status: RefreshingStatus::NotRefreshing,
+
+            // Remove token
+            confirm_remove_token_popup: false,
+            token_to_remove: None,
         };
 
         if let Ok(saved_ids) = screen.app_context.db.load_token_order() {
@@ -344,7 +352,7 @@ impl TokensScreen {
                                         row.col(|ui| {
                                             ui.horizontal(|ui| {
                                                 // Up/Down reorder
-                                                if ui.button("⬆").clicked() {
+                                                if ui.button("⬆").on_hover_text("Move up").clicked() {
                                                     if !self.use_custom_order {
                                                         self.update_vec_to_current_ephemeral(
                                                             display_list.clone(),
@@ -353,7 +361,7 @@ impl TokensScreen {
                                                     self.use_custom_order = true;
                                                     self.move_token_up(&identity_token_balance.token_identifier);
                                                 }
-                                                if ui.button("⬇").clicked() {
+                                                if ui.button("⬇").on_hover_text("Move down").clicked() {
                                                     if !self.use_custom_order {
                                                         self.update_vec_to_current_ephemeral(
                                                             display_list.clone(),
@@ -418,7 +426,11 @@ impl TokensScreen {
                                                         ));
                                                         ui.close_menu();
                                                     }
-                                                });
+                                                }).response.on_hover_text("Advanced actions");
+                                                if ui.button("X").on_hover_text("Remove identity token balance from DET").clicked() {
+                                                    self.confirm_remove_token_popup = true;
+                                                    self.token_to_remove = Some(identity_token_balance.clone());
+                                                }
                                             });
                                         });
                                     });
@@ -698,6 +710,62 @@ impl TokensScreen {
         }
         AppAction::None
     }
+
+    fn show_remove_token_popup(&mut self, ui: &mut egui::Ui) {
+        // If no token is set, nothing to confirm
+        let token_to_remove = match &self.token_to_remove {
+            Some(token) => token.clone(),
+            None => {
+                self.confirm_remove_token_popup = false;
+                return;
+            }
+        };
+
+        let mut is_open = true;
+
+        egui::Window::new("Confirm Remove Balance")
+            .collapsible(false)
+            .open(&mut is_open)
+            .show(ui.ctx(), |ui| {
+                ui.label(format!(
+                    "Are you sure you want to remove identity token balance \"{}\" for identity \"{}\"?",
+                    token_to_remove.token_name,
+                    token_to_remove.identity_id.to_string(Encoding::Base58)
+                ));
+
+                // Confirm button
+                if ui.button("Confirm").clicked() {
+                    if let Err(e) = self.app_context.remove_token_balance(
+                        token_to_remove.token_identifier,
+                        token_to_remove.identity_id.clone(),
+                    ) {
+                        self.backend_message = Some((
+                            format!("Error removing token balance: {}", e),
+                            MessageType::Error,
+                            Utc::now(),
+                        ));
+                        self.confirm_remove_token_popup = false;
+                        self.token_to_remove = None;
+                    } else {
+                        self.confirm_remove_token_popup = false;
+                        self.token_to_remove = None;
+                        self.refresh();
+                    };
+                }
+
+                // Cancel button
+                if ui.button("Cancel").clicked() {
+                    self.confirm_remove_token_popup = false;
+                    self.token_to_remove = None;
+                }
+            });
+
+        // If user closes the popup window (the [x] button), also reset state
+        if !is_open {
+            self.confirm_remove_token_popup = false;
+            self.token_to_remove = None;
+        }
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -710,6 +778,7 @@ impl ScreenLike for TokensScreen {
                 .identity_token_balances()
                 .unwrap_or_default(),
         ));
+        self.save_current_order();
     }
 
     fn refresh_on_arrival(&mut self) {
@@ -860,6 +929,10 @@ impl ScreenLike for TokensScreen {
                         }
                     });
                 });
+            }
+
+            if self.confirm_remove_token_popup {
+                self.show_remove_token_popup(ui);
             }
         });
 

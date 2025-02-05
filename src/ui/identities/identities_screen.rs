@@ -30,7 +30,7 @@ use eframe::egui::{self, Context};
 use eframe::emath::Align;
 use egui::{Color32, Frame, Margin, RichText, Ui};
 use egui_extras::{Column, TableBuilder};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
@@ -101,12 +101,34 @@ impl IdentitiesScreen {
         screen
     }
 
-    /// Reorder the underlying IndexMap to match a list of IDs
+    /// Reorders `self.identities` to match the order of the provided list of IDs.
+    /// Any IDs not present in the provided list are left in their current position.
     fn reorder_map_to(&self, new_order: Vec<Identifier>) {
         let mut lock = self.identities.lock().unwrap();
-        for (desired_idx, id) in new_order.iter().enumerate() {
-            if let Some(current_idx) = lock.get_index_of(id) {
-                if current_idx != desired_idx && current_idx < lock.len() {
+        if lock.is_empty() || new_order.is_empty() {
+            return;
+        }
+
+        // 1) Collect the set of IDs currently in `self.identities`
+        let existing_ids: HashSet<Identifier> = lock.keys().cloned().collect();
+
+        // 2) Build a filtered list that only includes IDs which exist in the map
+        //    (and also limit the length so we don’t swap out of range)
+        let valid_ids: Vec<Identifier> = new_order
+            .into_iter()
+            .filter(|id| existing_ids.contains(id))
+            .take(lock.len()) // never try to reorder more items than we actually have
+            .collect();
+
+        // 3) Do the swaps only for items still present in our map,
+        //    skipping any that no longer exist or where desired_idx is out of range
+        for (desired_idx, id) in valid_ids.into_iter().enumerate() {
+            // Double‐check the desired index is in range
+            if desired_idx >= lock.len() {
+                break;
+            }
+            if let Some(current_idx) = lock.get_index_of(&id) {
+                if current_idx != desired_idx {
                     lock.swap_indices(current_idx, desired_idx);
                 }
             }

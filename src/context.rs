@@ -171,6 +171,11 @@ impl AppContext {
         self.db.set_alias(identifier, new_alias)
     }
 
+    /// Gets the alias for an identity
+    pub fn get_alias(&self, identifier: &Identifier) -> Result<Option<String>> {
+        self.db.get_alias(identifier)
+    }
+
     /// This is for before we know if Platform will accept the identity
     pub fn insert_local_qualified_identity_in_creation(
         &self,

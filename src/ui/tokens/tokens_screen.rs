@@ -314,7 +314,7 @@ impl TokensScreen {
                             .resizable(true)
                             .cell_layout(egui::Layout::left_to_right(Align::Center))
                             .column(Column::initial(80.0).resizable(true)) // Token Name
-                            .column(Column::initial(330.0).resizable(true)) // Identity ID
+                            .column(Column::initial(330.0).resizable(true)) // Identity
                             .column(Column::initial(60.0).resizable(true)) // Balance
                             .column(Column::initial(80.0).resizable(true)) // Actions
                             .header(30.0, |mut header| {
@@ -324,7 +324,7 @@ impl TokensScreen {
                                     }
                                 });
                                 header.col(|ui| {
-                                    if ui.button("Identity ID").clicked() {
+                                    if ui.button("Identity").clicked() {
                                         self.toggle_sort(SortColumn::OwnerIdentity);
                                     }
                                 });
@@ -344,7 +344,15 @@ impl TokensScreen {
                                             ui.label(&identity_token_balance.token_name);
                                         });
                                         row.col(|ui| {
-                                            ui.label(identity_token_balance.identity_id.to_string(Encoding::Base58));
+                                            if let Some(alias) = self
+                                                .app_context
+                                                .get_alias(&identity_token_balance.identity_id)
+                                                .expect("Expected to get alias")
+                                            {
+                                                ui.label(alias);
+                                            } else {
+                                                ui.label(identity_token_balance.identity_id.to_string(Encoding::Base58));
+                                            }
                                         });
                                         row.col(|ui| {
                                             ui.label(identity_token_balance.balance.to_string());
@@ -369,6 +377,10 @@ impl TokensScreen {
                                                     }
                                                     self.use_custom_order = true;
                                                     self.move_token_down(&identity_token_balance.token_identifier);
+                                                }
+                                                if ui.button("X").on_hover_text("Remove identity token balance from DET").clicked() {
+                                                    self.confirm_remove_token_popup = true;
+                                                    self.token_to_remove = Some(identity_token_balance.clone());
                                                 }
                                                 if ui.button("Transfer").on_hover_text("Transfer tokens from this identity to another identity").clicked() {
                                                     action = AppAction::AddScreen(
@@ -427,10 +439,6 @@ impl TokensScreen {
                                                         ui.close_menu();
                                                     }
                                                 }).response.on_hover_text("Advanced actions");
-                                                if ui.button("X").on_hover_text("Remove identity token balance from DET").clicked() {
-                                                    self.confirm_remove_token_popup = true;
-                                                    self.token_to_remove = Some(identity_token_balance.clone());
-                                                }
                                             });
                                         });
                                     });
@@ -554,7 +562,7 @@ impl TokensScreen {
                         .resizable(true)
                         .cell_layout(egui::Layout::left_to_right(Align::Center))
                         .column(Column::initial(80.0).resizable(true)) // Token Name
-                        .column(Column::initial(330.0).resizable(true)) // Owner Identity ID
+                        .column(Column::initial(330.0).resizable(true)) // Identity
                         .column(Column::initial(60.0).resizable(true)) // Balance
                         .column(Column::initial(80.0).resizable(true)) // Action
                         .header(30.0, |mut header| {

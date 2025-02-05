@@ -3,6 +3,7 @@ use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use eframe::egui::{self, Color32, Context, Ui};
 use egui::RichText;
 
@@ -340,9 +341,21 @@ impl ScreenLike for BurnTokensScreen {
 
                 // 1) Key selection
                 ui.heading("1. Select the key to sign the Burn transaction");
-                ui.add_space(5.0);
-                self.render_key_selection(ui);
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    self.render_key_selection(ui);
+                    ui.add_space(5.0);
+                    let identity_id_string =
+                        self.identity.identity.id().to_string(Encoding::Base58);
+                    let identity_display = self
+                        .identity
+                        .alias
+                        .as_deref()
+                        .unwrap_or_else(|| &identity_id_string);
+                    ui.label(format!("Identity: {}", identity_display));
+                });
 
+                ui.add_space(10.0);
                 ui.separator();
                 ui.add_space(10.0);
 

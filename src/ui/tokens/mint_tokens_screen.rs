@@ -177,7 +177,7 @@ impl MintTokensScreen {
                 }
 
                 let maybe_identifier = if self.recipient_identity_id.trim().is_empty() {
-                    None
+                    Some(self.identity.identity.id())
                 } else {
                     // Attempt to parse from base58 or hex
                     match Identifier::from_string_try_encodings(
@@ -388,9 +388,21 @@ impl ScreenLike for MintTokensScreen {
 
                 // 1) Key selection
                 ui.heading("1. Select the key to sign the Mint transaction");
-                ui.add_space(5.0);
-                self.render_key_selection(ui);
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    self.render_key_selection(ui);
+                    ui.add_space(5.0);
+                    let identity_id_string =
+                        self.identity.identity.id().to_string(Encoding::Base58);
+                    let identity_display = self
+                        .identity
+                        .alias
+                        .as_deref()
+                        .unwrap_or_else(|| &identity_id_string);
+                    ui.label(format!("Identity: {}", identity_display));
+                });
 
+                ui.add_space(10.0);
                 ui.separator();
                 ui.add_space(10.0);
 

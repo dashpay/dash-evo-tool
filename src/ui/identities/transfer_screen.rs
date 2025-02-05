@@ -344,8 +344,19 @@ impl ScreenLike for TransferScreen {
 
                 // Select the key to sign with
                 ui.heading("1. Select the key to sign the transaction with");
-                ui.add_space(5.0);
-                self.render_key_selection(ui);
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    self.render_key_selection(ui);
+                    ui.add_space(5.0);
+                    let identity_id_string =
+                        self.identity.identity.id().to_string(Encoding::Base58);
+                    let identity_display = self
+                        .identity
+                        .alias
+                        .as_deref()
+                        .unwrap_or_else(|| &identity_id_string);
+                    ui.label(format!("Identity: {}", identity_display));
+                });
 
                 ui.add_space(10.0);
                 ui.separator();

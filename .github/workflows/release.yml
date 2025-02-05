@@ -30,7 +30,7 @@ jobs:
             target: "x86_64-unknown-linux-gnu"
             platform: "x86_64-linux"
           - name: "linux-arm64"
-            runs-on: ["self-hosted", "Linux", "ARM64", "ubuntu20.04"]  # Array of tags for ARM64
+            runs-on: "ubuntu-22.04-arm"
             target: "aarch64-unknown-linux-gnu"
             platform: "arm64-linux"
           - name: "macos-x86_64"

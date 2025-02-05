@@ -218,6 +218,8 @@ impl AppState {
         if let Some((network, screen_type, _password_info, _, _)) = settings {
             selected_main_screen = screen_type;
             chosen_network = network;
+            network_chooser_screen.current_network = chosen_network;
+
             if chosen_network == Network::Testnet && testnet_app_context.is_some() {
                 let testnet_app_context = testnet_app_context.as_ref().unwrap();
                 identities_screen = IdentitiesScreen::new(testnet_app_context);
@@ -238,36 +240,47 @@ impl AppState {
                     TokensScreen::new(testnet_app_context, TokensSubscreen::MyTokens);
                 token_search_screen =
                     TokensScreen::new(testnet_app_context, TokensSubscreen::SearchTokens);
+            } else if chosen_network == Network::Devnet && devnet_app_context.is_some() {
+                let devnet_app_context = devnet_app_context.as_ref().unwrap();
+                identities_screen = IdentitiesScreen::new(devnet_app_context);
+                dpns_active_contests_screen =
+                    DPNSScreen::new(&devnet_app_context, DPNSSubscreen::Active);
+                dpns_past_contests_screen =
+                    DPNSScreen::new(&devnet_app_context, DPNSSubscreen::Past);
+                dpns_my_usernames_screen =
+                    DPNSScreen::new(&devnet_app_context, DPNSSubscreen::Owned);
+                dpns_scheduled_votes_screen =
+                    DPNSScreen::new(&devnet_app_context, DPNSSubscreen::ScheduledVotes);
+                transition_visualizer_screen = TransitionVisualizerScreen::new(devnet_app_context);
+                proof_visualizer_screen = ProofVisualizerScreen::new(devnet_app_context);
+                document_query_screen = DocumentQueryScreen::new(devnet_app_context);
+                wallets_balances_screen = WalletsBalancesScreen::new(devnet_app_context);
+                proof_log_screen = ProofLogScreen::new(devnet_app_context);
+                tokens_balances_screen =
+                    TokensScreen::new(devnet_app_context, TokensSubscreen::MyTokens);
+                token_search_screen =
+                    TokensScreen::new(devnet_app_context, TokensSubscreen::SearchTokens);
+            } else if chosen_network == Network::Regtest && local_app_context.is_some() {
+                let local_app_context = local_app_context.as_ref().unwrap();
+                identities_screen = IdentitiesScreen::new(local_app_context);
+                dpns_active_contests_screen =
+                    DPNSScreen::new(&local_app_context, DPNSSubscreen::Active);
+                dpns_past_contests_screen =
+                    DPNSScreen::new(&local_app_context, DPNSSubscreen::Past);
+                dpns_my_usernames_screen =
+                    DPNSScreen::new(&local_app_context, DPNSSubscreen::Owned);
+                dpns_scheduled_votes_screen =
+                    DPNSScreen::new(&local_app_context, DPNSSubscreen::ScheduledVotes);
+                transition_visualizer_screen = TransitionVisualizerScreen::new(local_app_context);
+                proof_visualizer_screen = ProofVisualizerScreen::new(local_app_context);
+                document_query_screen = DocumentQueryScreen::new(local_app_context);
+                wallets_balances_screen = WalletsBalancesScreen::new(local_app_context);
+                proof_log_screen = ProofLogScreen::new(local_app_context);
+                tokens_balances_screen =
+                    TokensScreen::new(local_app_context, TokensSubscreen::MyTokens);
+                token_search_screen =
+                    TokensScreen::new(local_app_context, TokensSubscreen::SearchTokens);
             }
-            network_chooser_screen.current_network = chosen_network;
-        } else if chosen_network == Network::Devnet && devnet_app_context.is_some() {
-            let devnet_app_context = devnet_app_context.as_ref().unwrap();
-            identities_screen = IdentitiesScreen::new(devnet_app_context);
-            dpns_active_contests_screen =
-                DPNSScreen::new(&devnet_app_context, DPNSSubscreen::Active);
-            dpns_past_contests_screen = DPNSScreen::new(&devnet_app_context, DPNSSubscreen::Past);
-            dpns_my_usernames_screen = DPNSScreen::new(&devnet_app_context, DPNSSubscreen::Owned);
-            dpns_scheduled_votes_screen =
-                DPNSScreen::new(&devnet_app_context, DPNSSubscreen::ScheduledVotes);
-            transition_visualizer_screen = TransitionVisualizerScreen::new(devnet_app_context);
-            proof_visualizer_screen = ProofVisualizerScreen::new(devnet_app_context);
-            document_query_screen = DocumentQueryScreen::new(devnet_app_context);
-            wallets_balances_screen = WalletsBalancesScreen::new(devnet_app_context);
-            proof_log_screen = ProofLogScreen::new(devnet_app_context);
-        } else if chosen_network == Network::Regtest && local_app_context.is_some() {
-            let local_app_context = local_app_context.as_ref().unwrap();
-            identities_screen = IdentitiesScreen::new(local_app_context);
-            dpns_active_contests_screen =
-                DPNSScreen::new(&local_app_context, DPNSSubscreen::Active);
-            dpns_past_contests_screen = DPNSScreen::new(&local_app_context, DPNSSubscreen::Past);
-            dpns_my_usernames_screen = DPNSScreen::new(&local_app_context, DPNSSubscreen::Owned);
-            dpns_scheduled_votes_screen =
-                DPNSScreen::new(&local_app_context, DPNSSubscreen::ScheduledVotes);
-            transition_visualizer_screen = TransitionVisualizerScreen::new(local_app_context);
-            proof_visualizer_screen = ProofVisualizerScreen::new(local_app_context);
-            document_query_screen = DocumentQueryScreen::new(local_app_context);
-            wallets_balances_screen = WalletsBalancesScreen::new(local_app_context);
-            proof_log_screen = ProofLogScreen::new(local_app_context);
         }
 
         // // Create a channel with a buffer size of 32 (adjust as needed)

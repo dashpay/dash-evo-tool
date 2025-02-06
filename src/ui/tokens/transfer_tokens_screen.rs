@@ -265,7 +265,7 @@ impl ScreenLike for TransferTokensScreen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
         match message_type {
             MessageType::Success => {
-                if message == "Successfully transferred tokens" {
+                if message == "TransferTokens" {
                     self.transfer_tokens_status = TransferTokensStatus::Complete;
                 }
             }

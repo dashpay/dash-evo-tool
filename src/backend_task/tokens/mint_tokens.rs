@@ -37,8 +37,6 @@ impl AppContext {
             builder
         };
 
-        // Optionally chain `with_public_note(...)`, `with_settings(...)`, etc.
-
         let state_transition = builder
             .sign(sdk, &signing_key, sending_identity, self.platform_version)
             .await

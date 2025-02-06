@@ -58,6 +58,8 @@ impl ContextProvider for Provider {
 
         if data_contract_id == &app_ctx.dpns_contract.id() {
             Ok(Some(app_ctx.dpns_contract.clone()))
+        } else if data_contract_id == &app_ctx.token_history_contract.id() {
+            Ok(Some(app_ctx.token_history_contract.clone()))
         } else {
             let dc = self
                 .db

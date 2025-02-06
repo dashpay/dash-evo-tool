@@ -44,6 +44,7 @@ pub struct AppContext {
     pub(crate) zmq_connection_status: Mutex<ZMQConnectionEvent>,
     pub(crate) dpns_contract: Arc<DataContract>,
     pub(crate) withdraws_contract: Arc<DataContract>,
+    pub(crate) token_history_contract: Arc<DataContract>,
     pub(crate) core_client: Client,
     pub(crate) has_wallet: AtomicBool,
     pub(crate) wallets: RwLock<BTreeMap<WalletSeedHash, Arc<RwLock<Wallet>>>>,
@@ -83,6 +84,10 @@ impl AppContext {
             load_system_data_contract(SystemDataContract::Withdrawals, PlatformVersion::latest())
                 .expect("expected to get withdrawal contract");
 
+        let token_history_contract =
+            load_system_data_contract(SystemDataContract::TokenHistory, PlatformVersion::latest())
+                .expect("expected to get token history contract");
+
         let addr = format!(
             "http://{}:{}",
             network_config.core_host, network_config.core_rpc_port
@@ -114,6 +119,7 @@ impl AppContext {
             rx_zmq_status,
             dpns_contract: Arc::new(dpns_contract),
             withdraws_contract: Arc::new(withdrawal_contract),
+            token_history_contract: Arc::new(token_history_contract),
             core_client,
             has_wallet: (!wallets.is_empty()).into(),
             wallets: RwLock::new(wallets),

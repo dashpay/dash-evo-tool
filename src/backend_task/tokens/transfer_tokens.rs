@@ -35,12 +35,17 @@ impl AppContext {
         let state_transition = builder
             .sign(sdk, &signing_key, sending_identity, self.platform_version)
             .await
-            .map_err(|e| format!("Error signing state transition: {:?}", e))?;
+            .map_err(|e| format!("Error signing token transfer state transition: {:?}", e))?;
 
         let _ = state_transition
             .broadcast_and_wait::<StateTransitionProofResult>(sdk, None)
             .await
-            .map_err(|e| format!("Error broadcasting state transition: {:?}", e.to_string()))?;
+            .map_err(|e| {
+                format!(
+                    "Error broadcasting token transfer state transition: {:?}",
+                    e.to_string()
+                )
+            })?;
 
         Ok(BackendTaskSuccessResult::Message(
             "TransferTokens".to_string(),

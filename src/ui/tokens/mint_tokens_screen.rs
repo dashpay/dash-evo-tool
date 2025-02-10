@@ -13,7 +13,7 @@ use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
 
 use super::tokens_screen::IdentityTokenBalance;
-use crate::app::AppAction;
+use crate::app::{AppAction, BackendTasksExecutionMode};
 use crate::backend_task::tokens::TokenTask;
 use crate::backend_task::BackendTask;
 use crate::context::AppContext;
@@ -233,15 +233,20 @@ impl MintTokensScreen {
                         .clone();
 
                     // Dispatch the actual backend mint action
-                    action =
-                        AppAction::BackendTask(BackendTask::TokenTask(TokenTask::MintTokens {
-                            sending_identity: self.identity.clone(),
-                            data_contract,
-                            token_position: self.identity_token_balance.token_position,
-                            signing_key: self.selected_key.clone().expect("Expected a key"),
-                            amount: amount_ok.unwrap(),
-                            recipient_id: maybe_identifier,
-                        }));
+                    action = AppAction::BackendTasks(
+                        vec![
+                            BackendTask::TokenTask(TokenTask::MintTokens {
+                                sending_identity: self.identity.clone(),
+                                data_contract,
+                                token_position: self.identity_token_balance.token_position,
+                                signing_key: self.selected_key.clone().expect("Expected a key"),
+                                amount: amount_ok.unwrap(),
+                                recipient_id: maybe_identifier,
+                            }),
+                            BackendTask::TokenTask(TokenTask::QueryMyTokenBalances),
+                        ],
+                        BackendTasksExecutionMode::Sequential,
+                    );
                 }
 
                 // Cancel button

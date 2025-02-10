@@ -168,7 +168,6 @@ impl TokensScreen {
     /// Save the current vector's order of token IDs to the DB
     fn save_current_order(&self) {
         let lock = self.my_tokens.lock().unwrap();
-        // CHANGED: gather token_identifier from each item in the Vec
         let all_ids = lock
             .iter()
             .map(|token| token.token_identifier.clone())
@@ -657,14 +656,14 @@ impl TokensScreen {
 
     fn add_token_to_my_tokens(&self, token: IdentityTokenBalance) {
         let mut my_tokens = self.my_tokens.lock().unwrap();
-        // Prevent duplicates:
+        // Prevent duplicates
         if !my_tokens
             .iter()
             .any(|t| t.token_identifier == token.token_identifier)
         {
             my_tokens.push(token);
         }
-        // Optionally, also save the new order if you want:
+        // Save the new order
         self.save_current_order();
     }
 
@@ -786,7 +785,6 @@ impl ScreenLike for TokensScreen {
                 .identity_token_balances()
                 .unwrap_or_default(),
         ));
-        self.save_current_order();
     }
 
     fn refresh_on_arrival(&mut self) {

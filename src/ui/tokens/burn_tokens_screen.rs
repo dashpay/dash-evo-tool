@@ -12,7 +12,7 @@ use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicK
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::platform::IdentityPublicKey;
 
-use crate::app::AppAction;
+use crate::app::{AppAction, BackendTasksExecutionMode};
 use crate::backend_task::tokens::TokenTask;
 use crate::backend_task::BackendTask;
 use crate::context::AppContext;
@@ -188,14 +188,19 @@ impl BurnTokensScreen {
                         .clone();
 
                     // Dispatch the actual backend burn action
-                    action =
-                        AppAction::BackendTask(BackendTask::TokenTask(TokenTask::BurnTokens {
-                            owner_identity: self.identity.clone(),
-                            data_contract,
-                            token_position: self.identity_token_balance.token_position,
-                            signing_key: self.selected_key.clone().expect("Expected a key"),
-                            amount: amount_ok.unwrap(),
-                        }));
+                    action = AppAction::BackendTasks(
+                        vec![
+                            BackendTask::TokenTask(TokenTask::BurnTokens {
+                                owner_identity: self.identity.clone(),
+                                data_contract,
+                                token_position: self.identity_token_balance.token_position,
+                                signing_key: self.selected_key.clone().expect("Expected a key"),
+                                amount: amount_ok.unwrap(),
+                            }),
+                            BackendTask::TokenTask(TokenTask::QueryMyTokenBalances),
+                        ],
+                        BackendTasksExecutionMode::Sequential,
+                    );
                 }
 
                 // Cancel button

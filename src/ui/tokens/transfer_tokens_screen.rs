@@ -1,4 +1,4 @@
-use crate::app::AppAction;
+use crate::app::{AppAction, BackendTasksExecutionMode};
 use crate::backend_task::tokens::TokenTask;
 use crate::backend_task::BackendTask;
 use crate::context::AppContext;
@@ -218,15 +218,20 @@ impl TransferTokensScreen {
                         .expect("Data contract not found")
                         .contract
                         .clone();
-                    app_action =
-                        AppAction::BackendTask(BackendTask::TokenTask(TokenTask::TransferTokens {
-                            sending_identity: self.identity.clone(),
-                            recipient_id: identifier,
-                            amount: self.amount.parse().unwrap(),
-                            data_contract,
-                            token_position: self.identity_token_balance.token_position,
-                            signing_key: self.selected_key.clone().expect("Expected a key"),
-                        }));
+                    app_action = AppAction::BackendTasks(
+                        vec![
+                            BackendTask::TokenTask(TokenTask::TransferTokens {
+                                sending_identity: self.identity.clone(),
+                                recipient_id: identifier,
+                                amount: self.amount.parse().unwrap(),
+                                data_contract,
+                                token_position: self.identity_token_balance.token_position,
+                                signing_key: self.selected_key.clone().expect("Expected a key"),
+                            }),
+                            BackendTask::TokenTask(TokenTask::QueryMyTokenBalances),
+                        ],
+                        BackendTasksExecutionMode::Sequential,
+                    );
                 }
                 if ui.button("Cancel").clicked() {
                     self.confirmation_popup = false;

@@ -1,5 +1,4 @@
 //! Query token balances from Platform
-use std::collections::BTreeSet;
 
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::context::AppContext;

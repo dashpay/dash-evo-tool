@@ -560,27 +560,13 @@ impl App for AppState {
             // Handle the result on the main thread
             match task_result {
                 TaskResult::Success(message) => match message {
-                    BackendTaskSuccessResult::None => {
-                        self.visible_screen_mut().pop_on_success();
-                    }
+                    BackendTaskSuccessResult::None => {}
                     BackendTaskSuccessResult::Refresh => {
                         self.visible_screen_mut().refresh();
                     }
                     BackendTaskSuccessResult::Message(message) => {
                         self.visible_screen_mut()
                             .display_message(&message, MessageType::Success);
-                    }
-                    BackendTaskSuccessResult::Documents(_) => {
-                        self.visible_screen_mut().display_task_result(message);
-                    }
-                    BackendTaskSuccessResult::CoreItem(_) => {
-                        self.visible_screen_mut().display_task_result(message);
-                    }
-                    BackendTaskSuccessResult::SuccessfulVotes(_) => {
-                        self.visible_screen_mut().refresh();
-                    }
-                    BackendTaskSuccessResult::DPNSVoteResults(_) => {
-                        self.visible_screen_mut().display_task_result(message);
                     }
                     BackendTaskSuccessResult::CastScheduledVote(vote) => {
                         let _ = self
@@ -592,25 +578,7 @@ impl App for AppState {
                         );
                         self.visible_screen_mut().refresh();
                     }
-                    BackendTaskSuccessResult::RegisteredIdentity(_) => {
-                        self.visible_screen_mut().display_task_result(message);
-                    }
-                    BackendTaskSuccessResult::ToppedUpIdentity(_) => {
-                        self.visible_screen_mut().display_task_result(message);
-                    }
-                    BackendTaskSuccessResult::FetchedContract(_) => {
-                        self.visible_screen_mut().display_task_result(message);
-                    }
-                    BackendTaskSuccessResult::FetchedContracts(_) => {
-                        self.visible_screen_mut().display_task_result(message);
-                    }
-                    BackendTaskSuccessResult::PageDocuments(_, _) => {
-                        self.visible_screen_mut().display_task_result(message);
-                    }
-                    BackendTaskSuccessResult::TokensByKeyword(_) => {
-                        self.visible_screen_mut().display_task_result(message);
-                    }
-                    BackendTaskSuccessResult::TokensByKeywordPage(_, _) => {
+                    _ => {
                         self.visible_screen_mut().display_task_result(message);
                     }
                 },

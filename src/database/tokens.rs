@@ -179,6 +179,7 @@ impl Database {
             "CREATE TABLE IF NOT EXISTS token_order (
                 pos INTEGER NOT NULL,
                 token_id BLOB NOT NULL,
+                identity_id BLOB NOT NULL,
                 PRIMARY KEY(pos)
              )",
         )?;
@@ -187,7 +188,7 @@ impl Database {
 
     /// Saves the user’s custom identity order (the entire list).
     /// This method overwrites whatever was there before.
-    pub fn save_token_order(&self, all_ids: Vec<Identifier>) -> rusqlite::Result<()> {
+    pub fn save_token_order(&self, all_ids: Vec<(Identifier, Identifier)>) -> rusqlite::Result<()> {
         // Make sure table exists
         self.ensure_token_order_table_exists()?;
 
@@ -198,12 +199,13 @@ impl Database {
         tx.execute("DELETE FROM token_order", [])?;
 
         // Insert each ID with a numeric pos = 0..N
-        for (pos, id) in all_ids.iter().enumerate() {
-            let id_bytes = id.to_vec();
+        for (pos, (token_id, identity_id)) in all_ids.iter().enumerate() {
+            let token_id_bytes = token_id.to_vec();
+            let identity_id_bytes = identity_id.to_vec();
             tx.execute(
-                "INSERT INTO token_order (pos, token_id)
-                 VALUES (?1, ?2)",
-                params![pos as i64, id_bytes],
+                "INSERT INTO token_order (pos, token_id, identity_id)
+                 VALUES (?1, ?2, ?3)",
+                params![pos as i64, token_id_bytes, identity_id_bytes],
             )?;
         }
 
@@ -213,7 +215,7 @@ impl Database {
 
     /// Loads the custom identity order from the DB, returning a list of Identifiers in the stored order.
     /// If there's no data, returns an empty Vec.
-    pub fn load_token_order(&self) -> rusqlite::Result<Vec<Identifier>> {
+    pub fn load_token_order(&self) -> rusqlite::Result<Vec<(Identifier, Identifier)>> {
         // Make sure table exists (in case it doesn't)
         self.ensure_token_order_table_exists()?;
 
@@ -221,7 +223,7 @@ impl Database {
 
         // Read all rows sorted by pos
         let mut stmt = conn.prepare(
-            "SELECT token_id FROM token_order
+            "SELECT token_id, identity_id FROM token_order
              ORDER BY pos ASC",
         )?;
 
@@ -229,10 +231,15 @@ impl Database {
         let mut result = Vec::new();
 
         while let Some(row) = rows.next()? {
-            let id_bytes: Vec<u8> = row.get(0)?;
+            let token_id_bytes: Vec<u8> = row.get(0)?;
+            let identity_id_bytes: Vec<u8> = row.get(1)?;
             // Convert from raw bytes to an Identifier
-            if let Ok(identifier) = Identifier::from_vec(id_bytes) {
-                result.push(identifier);
+            if let Ok(token_id) = Identifier::from_vec(token_id_bytes) {
+                if let Ok(identity_id) = Identifier::from_vec(identity_id_bytes) {
+                    result.push((token_id, identity_id));
+                } else {
+                    // If for some reason it fails to parse, skip it or handle error
+                }
             } else {
                 // If for some reason it fails to parse, skip it or handle error
             }

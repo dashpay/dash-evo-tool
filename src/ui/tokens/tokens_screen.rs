@@ -130,7 +130,7 @@ impl TokensScreen {
             backend_message: None,
             sort_column: SortColumn::TokenName,
             sort_order: SortOrder::Ascending,
-            use_custom_order: true,
+            use_custom_order: false,
             pending_backend_task: None,
             tokens_subscreen,
             refreshing_status: RefreshingStatus::NotRefreshing,
@@ -152,12 +152,14 @@ impl TokensScreen {
     // Reordering
     // ─────────────────────────────────────────────────────────────────
 
-    /// Reorder `my_tokens` to match a given list of token_identifiers.
-    fn reorder_vec_to(&self, new_order: Vec<Identifier>) {
+    /// Reorder `my_tokens` to match a given list of (token_id, identity_id).
+    fn reorder_vec_to(&self, new_order: Vec<(Identifier, Identifier)>) {
         let mut lock = self.my_tokens.lock().unwrap();
-        for (desired_idx, id) in new_order.iter().enumerate() {
-            // CHANGED: Use Vec::position:
-            if let Some(current_idx) = lock.iter().position(|t| t.token_identifier == *id) {
+        for (desired_idx, (token_id, identity_id)) in new_order.iter().enumerate() {
+            if let Some(current_idx) = lock
+                .iter()
+                .position(|t| t.token_identifier == *token_id && t.identity_id == *identity_id)
+            {
                 if current_idx != desired_idx && current_idx < lock.len() {
                     lock.swap(current_idx, desired_idx);
                 }
@@ -170,10 +172,17 @@ impl TokensScreen {
         let lock = self.my_tokens.lock().unwrap();
         let all_ids = lock
             .iter()
-            .map(|token| token.token_identifier.clone())
+            .map(|token| (token.token_identifier.clone(), token.identity_id.clone()))
             .collect::<Vec<_>>();
         drop(lock);
-        self.app_context.db.save_token_order(all_ids).ok();
+        self.app_context
+            .db
+            .save_token_order(all_ids)
+            .or_else(|e| {
+                eprintln!("Error saving token order: {}", e);
+                Err(e)
+            })
+            .ok();
     }
 
     // If user toggles away from sorting to a custom order,
@@ -196,9 +205,12 @@ impl TokensScreen {
     }
 
     // Move a token up
-    fn move_token_up(&mut self, token_id: &Identifier) {
+    fn move_token_up(&mut self, token_id: &Identifier, identity_id: &Identifier) {
         let mut lock = self.my_tokens.lock().unwrap();
-        if let Some(idx) = lock.iter().position(|t| &t.token_identifier == token_id) {
+        if let Some(idx) = lock
+            .iter()
+            .position(|t| &t.token_identifier == token_id && t.identity_id == identity_id)
+        {
             if idx > 0 {
                 lock.swap(idx, idx - 1);
             }
@@ -208,9 +220,12 @@ impl TokensScreen {
     }
 
     // Move a token down
-    fn move_token_down(&mut self, token_id: &Identifier) {
+    fn move_token_down(&mut self, token_id: &Identifier, identity_id: &Identifier) {
         let mut lock = self.my_tokens.lock().unwrap();
-        if let Some(idx) = lock.iter().position(|t| &t.token_identifier == token_id) {
+        if let Some(idx) = lock
+            .iter()
+            .position(|t| &t.token_identifier == token_id && t.identity_id == identity_id)
+        {
             if idx + 1 < lock.len() {
                 lock.swap(idx, idx + 1);
             }
@@ -236,17 +251,21 @@ impl TokensScreen {
                 SortOrder::Descending => ordering.reverse(),
             }
         });
+        self.save_current_order();
     }
 
     fn toggle_sort(&mut self, column: SortColumn) {
+        self.use_custom_order = false;
         if self.sort_column == column {
             self.sort_order = match self.sort_order {
                 SortOrder::Ascending => SortOrder::Descending,
                 SortOrder::Descending => SortOrder::Ascending,
             };
+            self.save_current_order();
         } else {
             self.sort_column = column;
             self.sort_order = SortOrder::Ascending;
+            self.save_current_order();
         }
     }
 
@@ -366,7 +385,7 @@ impl TokensScreen {
                                                         );
                                                     }
                                                     self.use_custom_order = true;
-                                                    self.move_token_up(&identity_token_balance.token_identifier);
+                                                    self.move_token_up(&identity_token_balance.token_identifier, &identity_token_balance.identity_id);
                                                 }
                                                 if ui.button("⬇").on_hover_text("Move down").clicked() {
                                                     if !self.use_custom_order {
@@ -375,7 +394,7 @@ impl TokensScreen {
                                                         );
                                                     }
                                                     self.use_custom_order = true;
-                                                    self.move_token_down(&identity_token_balance.token_identifier);
+                                                    self.move_token_down(&identity_token_balance.token_identifier, &identity_token_balance.identity_id);
                                                 }
                                                 if ui.button("X").on_hover_text("Remove identity token balance from DET").clicked() {
                                                     self.confirm_remove_token_popup = true;
@@ -785,6 +804,15 @@ impl ScreenLike for TokensScreen {
                 .identity_token_balances()
                 .unwrap_or_default(),
         ));
+        match self.app_context.db.load_token_order() {
+            Ok(saved_ids) => {
+                self.reorder_vec_to(saved_ids);
+                self.use_custom_order = true;
+            }
+            Err(e) => {
+                eprintln!("Error loading token order: {}", e);
+            }
+        }
     }
 
     fn refresh_on_arrival(&mut self) {

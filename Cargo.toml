@@ -61,6 +61,14 @@ argon2 = "0.5"           # For Argon2 key derivation
 aes-gcm = "0.10" # For AES-256-GCM encryption
 crossbeam-channel = "0.5.13"
 regex = "1.11"
+dashcoretemp = { package = "dashcore", git = "https://github.com/dashpay/rust-dashcore", features = [
+    "std",
+    "secp-recovery",
+    "rand",
+    "signer",
+    "serde",
+    "bls",
+], default-features = false, rev = "0a471218f9da6351dc0cb6e7a8a605904eee92f5" }
 
 [target.'cfg(not(target_os = "windows"))'.dependencies]
 zmq = "0.10"

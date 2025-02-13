@@ -15,6 +15,7 @@ use crate::ui::dpns::dpns_contested_names_screen::{
 };
 use crate::ui::identities::identities_screen::IdentitiesScreen;
 use crate::ui::network_chooser_screen::NetworkChooserScreen;
+use crate::ui::tools::masternode_list_diff_screen::MasternodeListDiffScreen;
 use crate::ui::tools::proof_log_screen::ProofLogScreen;
 use crate::ui::tools::proof_visualizer_screen::ProofVisualizerScreen;
 use crate::ui::tools::transition_visualizer_screen::TransitionVisualizerScreen;
@@ -194,6 +195,8 @@ impl AppState {
             overwrite_dash_conf,
         );
 
+        let mut masternode_list_diff_screen = MasternodeListDiffScreen::new(&mainnet_app_context);
+
         let mut wallets_balances_screen = WalletsBalancesScreen::new(&mainnet_app_context);
 
         let mut selected_main_screen = RootScreenType::RootScreenIdentities;
@@ -219,6 +222,7 @@ impl AppState {
                 document_query_screen = DocumentQueryScreen::new(testnet_app_context);
                 wallets_balances_screen = WalletsBalancesScreen::new(testnet_app_context);
                 proof_log_screen = ProofLogScreen::new(testnet_app_context);
+                masternode_list_diff_screen = MasternodeListDiffScreen::new(&testnet_app_context);
             }
             network_chooser_screen.current_network = chosen_network;
         }
@@ -298,6 +302,10 @@ impl AppState {
                 (
                     RootScreenType::RootScreenNetworkChooser,
                     Screen::NetworkChooserScreen(network_chooser_screen),
+                ),
+                (
+                    RootScreenType::RootScreenToolsMasternodeListDiffScreen,
+                    Screen::MasternodeListDiffScreen(masternode_list_diff_screen),
                 ),
             ]
             .into(),

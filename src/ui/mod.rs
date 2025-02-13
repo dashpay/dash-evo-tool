@@ -14,6 +14,7 @@ use crate::ui::identities::top_up_identity_screen::TopUpIdentityScreen;
 use crate::ui::identities::transfer_screen::TransferScreen;
 use crate::ui::identities::withdraw_screen::WithdrawalScreen;
 use crate::ui::network_chooser_screen::NetworkChooserScreen;
+use crate::ui::tools::masternode_list_diff_screen::MasternodeListDiffScreen;
 use crate::ui::tools::proof_log_screen::ProofLogScreen;
 use crate::ui::tools::proof_visualizer_screen::ProofVisualizerScreen;
 use crate::ui::wallets::import_wallet_screen::ImportWalletScreen;
@@ -54,6 +55,7 @@ pub enum RootScreenType {
     RootScreenToolsTransitionVisualizerScreen,
     RootScreenNetworkChooser,
     RootScreenToolsProofVisualizerScreen,
+    RootScreenToolsMasternodeListDiffScreen,
 }
 
 impl RootScreenType {
@@ -71,6 +73,7 @@ impl RootScreenType {
             RootScreenType::RootScreenToolsProofLogScreen => 9,
             RootScreenType::RootScreenDPNSScheduledVotes => 10,
             RootScreenType::RootScreenToolsProofVisualizerScreen => 11,
+            RootScreenType::RootScreenToolsMasternodeListDiffScreen => 12,
         }
     }
 
@@ -88,6 +91,7 @@ impl RootScreenType {
             9 => Some(RootScreenType::RootScreenToolsProofLogScreen),
             10 => Some(RootScreenType::RootScreenDPNSScheduledVotes),
             11 => Some(RootScreenType::RootScreenToolsProofVisualizerScreen),
+            12 => Some(RootScreenType::RootScreenToolsMasternodeListDiffScreen),
             _ => None,
         }
     }
@@ -109,6 +113,9 @@ impl From<RootScreenType> for ScreenType {
             RootScreenType::RootScreenToolsProofLogScreen => ScreenType::ProofLog,
             RootScreenType::RootScreenDPNSScheduledVotes => ScreenType::ScheduledVotes,
             RootScreenType::RootScreenToolsProofVisualizerScreen => ScreenType::ProofVisualizer,
+            RootScreenType::RootScreenToolsMasternodeListDiffScreen => {
+                ScreenType::MasternodeListDiff
+            }
         }
     }
 }
@@ -139,6 +146,7 @@ pub enum ScreenType {
     NetworkChooser,
     RegisterDpnsName,
     ProofLog,
+    MasternodeListDiff,
     TopUpIdentity(QualifiedIdentity),
     ScheduledVotes,
     AddContracts,
@@ -218,6 +226,9 @@ impl ScreenType {
             ScreenType::ProofVisualizer => {
                 Screen::ProofVisualizerScreen(ProofVisualizerScreen::new(app_context))
             }
+            ScreenType::MasternodeListDiff => {
+                Screen::MasternodeListDiffScreen(MasternodeListDiffScreen::new(app_context))
+            }
         }
     }
 }
@@ -243,6 +254,7 @@ pub enum Screen {
     WalletsBalancesScreen(WalletsBalancesScreen),
     AddContractsScreen(AddContractsScreen),
     ProofVisualizerScreen(ProofVisualizerScreen),
+    MasternodeListDiffScreen(MasternodeListDiffScreen),
 }
 
 impl Screen {
@@ -268,6 +280,7 @@ impl Screen {
             Screen::ProofLogScreen(screen) => screen.app_context = app_context,
             Screen::AddContractsScreen(screen) => screen.app_context = app_context,
             Screen::ProofVisualizerScreen(screen) => screen.app_context = app_context,
+            Screen::MasternodeListDiffScreen(screen) => screen.app_context = app_context,
         }
     }
 }
@@ -353,6 +366,7 @@ impl Screen {
             Screen::ProofLogScreen(_) => ScreenType::ProofLog,
             Screen::AddContractsScreen(_) => ScreenType::AddContracts,
             Screen::ProofVisualizerScreen(_) => ScreenType::ProofVisualizer,
+            Screen::MasternodeListDiffScreen(_) => ScreenType::MasternodeListDiff,
         }
     }
 }
@@ -380,6 +394,7 @@ impl ScreenLike for Screen {
             Screen::ProofLogScreen(screen) => screen.refresh(),
             Screen::AddContractsScreen(screen) => screen.refresh(),
             Screen::ProofVisualizerScreen(screen) => screen.refresh(),
+            Screen::MasternodeListDiffScreen(screen) => screen.refresh(),
         }
     }
 
@@ -405,6 +420,7 @@ impl ScreenLike for Screen {
             Screen::ProofLogScreen(screen) => screen.refresh_on_arrival(),
             Screen::AddContractsScreen(screen) => screen.refresh_on_arrival(),
             Screen::ProofVisualizerScreen(screen) => screen.refresh_on_arrival(),
+            Screen::MasternodeListDiffScreen(screen) => screen.refresh_on_arrival(),
         }
     }
 
@@ -430,6 +446,7 @@ impl ScreenLike for Screen {
             Screen::ProofLogScreen(screen) => screen.ui(ctx),
             Screen::AddContractsScreen(screen) => screen.ui(ctx),
             Screen::ProofVisualizerScreen(screen) => screen.ui(ctx),
+            Screen::MasternodeListDiffScreen(screen) => screen.ui(ctx),
         }
     }
 
@@ -459,6 +476,9 @@ impl ScreenLike for Screen {
             Screen::ProofLogScreen(screen) => screen.display_message(message, message_type),
             Screen::AddContractsScreen(screen) => screen.display_message(message, message_type),
             Screen::ProofVisualizerScreen(screen) => screen.display_message(message, message_type),
+            Screen::MasternodeListDiffScreen(screen) => {
+                screen.display_message(message, message_type)
+            }
         }
     }
 
@@ -524,6 +544,9 @@ impl ScreenLike for Screen {
             Screen::ProofVisualizerScreen(screen) => {
                 screen.display_task_result(backend_task_success_result)
             }
+            Screen::MasternodeListDiffScreen(screen) => {
+                screen.display_task_result(backend_task_success_result)
+            }
         }
     }
 
@@ -549,6 +572,7 @@ impl ScreenLike for Screen {
             Screen::ProofLogScreen(screen) => screen.pop_on_success(),
             Screen::AddContractsScreen(screen) => screen.pop_on_success(),
             Screen::ProofVisualizerScreen(screen) => screen.pop_on_success(),
+            Screen::MasternodeListDiffScreen(screen) => screen.pop_on_success(),
         }
     }
 }

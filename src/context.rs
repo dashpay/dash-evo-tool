@@ -1,4 +1,5 @@
 use crate::backend_task::contested_names::ScheduledDPNSVote;
+use crate::components::core_p2p_handler::CoreP2PHandler;
 use crate::components::core_zmq_listener::ZMQConnectionEvent;
 use crate::config::{Config, NetworkConfig};
 use crate::context_provider::Provider;

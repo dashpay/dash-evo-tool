@@ -66,9 +66,8 @@ dashcoretemp = { package = "dashcore", git = "https://github.com/dashpay/rust-da
     "secp-recovery",
     "rand",
     "signer",
-    "serde",
     "bls",
-], default-features = false, rev = "0a471218f9da6351dc0cb6e7a8a605904eee92f5" }
+], default-features = false, rev = "f1406c50d956f97c68e5f363951f5626e0d7aeb9" }
 
 [target.'cfg(not(target_os = "windows"))'.dependencies]
 zmq = "0.10"

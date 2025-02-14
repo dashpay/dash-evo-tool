@@ -11,12 +11,15 @@ use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::prelude::CoreBlockHeight;
 use dashcoretemp::hashes::Hash as tempHash;
 use dashcoretemp::network::message_sml::MnListDiff;
-use dashcoretemp::sml::entry::MasternodeType;
-use dashcoretemp::BlockHash;
+use dashcoretemp::{BlockHash, Network};
 use eframe::egui::{self, Context, ScrollArea, Ui};
 use egui::{Align, Color32, Frame, Layout, Stroke, TextEdit, Vec2};
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use dashcoretemp::sml::error::SmlError;
+use dashcoretemp::sml::masternode_list::MasternodeList;
+use dashcoretemp::sml::masternode_list_engine::MasternodeListEngine;
+use dashcoretemp::sml::masternode_list_entry::MasternodeType;
 
 /// Screen for viewing MNList diffs (diffs in the masternode list and quorums)
 pub struct MasternodeListDiffScreen {
@@ -27,18 +30,35 @@ pub struct MasternodeListDiffScreen {
     /// The user‐entered end block height (as text)
     end_block_height: String,
 
+    /// Selected tab (0 = Diffs, 1 = Masternode Lists)
+    selected_tab: usize,
+
+    /// The engine to compute masternode lists
+    masternode_list_engine: MasternodeListEngine,
+
     /// The list of MNList diff items (one per block height)
     mnlist_diffs: BTreeMap<(CoreBlockHeight, CoreBlockHeight), MnListDiff>,
 
     /// Selected MNList diff
-    selected_dml_key: Option<(CoreBlockHeight, CoreBlockHeight)>,
+    selected_dml_diff_key: Option<(CoreBlockHeight, CoreBlockHeight)>,
+
+    /// Selected MNList
+    selected_dml_height_key: Option<CoreBlockHeight>,
+    
     /// Selected display option
     selected_option_index: Option<usize>,
+    /// Selected quorum within the MNList diff
+    selected_quorum_in_diff_index: Option<usize>,
+
+    /// Selected masternode within the MNList diff
+    selected_masternode_in_diff_index: Option<usize>,
+
     /// Selected quorum within the MNList diff
     selected_quorum_index: Option<usize>,
 
     /// Selected masternode within the MNList diff
     selected_masternode_index: Option<usize>,
+
 
     error: Option<String>,
 }
@@ -50,9 +70,18 @@ impl MasternodeListDiffScreen {
             app_context: app_context.clone(),
             base_block_height: "".to_string(),
             end_block_height: "".to_string(),
+            selected_tab: 0,
+            masternode_list_engine: MasternodeListEngine {
+                block_hashes: Default::default(),
+                block_heights: Default::default(),
+                masternode_lists: Default::default(),
+            },
             mnlist_diffs: Default::default(),
-            selected_dml_key: None,
+            selected_dml_diff_key: None,
+            selected_dml_height_key: None,
             selected_option_index: None,
+            selected_quorum_in_diff_index: None,
+            selected_masternode_in_diff_index: None,
             selected_quorum_index: None,
             selected_masternode_index: None,
             error: None,
@@ -139,6 +168,23 @@ impl MasternodeListDiffScreen {
                 return;
             }
         };
+
+        if base_block_height == 0 {
+            //todo put correct network
+            self.masternode_list_engine = match MasternodeListEngine::initialize_with_diff_to_height(list_diff.clone(), block_height, Network::Dash) {
+                Ok(masternode_list_engine) => masternode_list_engine,
+                Err(e) => {
+                    self.error = Some(e.to_string());
+                    return;
+                }
+            }
+        } else {
+            if let Err(e) = self.masternode_list_engine.apply_diff(list_diff.clone(), block_height, false) {
+                self.error = Some(e.to_string());
+                return;
+            }
+        }
+
 
         self.mnlist_diffs
             .insert((base_block_height, block_height), list_diff);
@@ -265,8 +311,8 @@ impl MasternodeListDiffScreen {
         }
 
         // Reset selections when new data is loaded
-        self.selected_dml_key = None;
-        self.selected_quorum_index = None;
+        self.selected_dml_diff_key = None;
+        self.selected_quorum_in_diff_index = None;
     }
 
     /// Fetch the MNList diffs between the given base and end block heights.
@@ -299,8 +345,8 @@ impl MasternodeListDiffScreen {
         );
 
         // Reset selections when new data is loaded
-        self.selected_dml_key = None;
-        self.selected_quorum_index = None;
+        self.selected_dml_diff_key = None;
+        self.selected_quorum_in_diff_index = None;
     }
 
     /// Render the input area at the top (base and end block height fields plus Get DMLs button)
@@ -319,8 +365,27 @@ impl MasternodeListDiffScreen {
         });
     }
 
+    fn render_masternode_lists(&mut self, ui: &mut Ui) {
+        ui.heading("Masternode lists");
+        ScrollArea::vertical()
+            .id_salt("dml_list_scroll_area")
+            .show(ui, |ui| {
+                for height in self.masternode_list_engine.masternode_lists.keys() {
+                    let height_label = format!("{}", height);
+
+                    if ui
+                        .selectable_label(self.selected_dml_height_key == Some(*height), height_label)
+                        .clicked()
+                    {
+                        self.selected_dml_height_key = Some(*height);
+                        self.selected_quorum_in_diff_index = None;
+                    }
+                }
+            });
+    }
+
     /// Render MNList diffs list (block heights)
-    fn render_dml_list(&mut self, ui: &mut Ui) {
+    fn render_diff_list(&mut self, ui: &mut Ui) {
         ui.heading("MNList Diffs");
         ScrollArea::vertical()
             .id_salt("dml_list_scroll_area")
@@ -329,11 +394,11 @@ impl MasternodeListDiffScreen {
                     let block_label = format!("Base: {} -> Block: {}", key.0, key.1);
 
                     if ui
-                        .selectable_label(self.selected_dml_key == Some(*key), block_label)
+                        .selectable_label(self.selected_dml_diff_key == Some(*key), block_label)
                         .clicked()
                     {
-                        self.selected_dml_key = Some(*key);
-                        self.selected_quorum_index = None;
+                        self.selected_dml_diff_key = Some(*key);
+                        self.selected_quorum_in_diff_index = None;
                     }
                 }
             });
@@ -342,7 +407,7 @@ impl MasternodeListDiffScreen {
     /// Render the list of quorums for the selected DML
     fn render_new_quorums(&mut self, ui: &mut Ui) {
         ui.heading("New Quorums");
-        if let Some(selected_key) = self.selected_dml_key {
+        if let Some(selected_key) = self.selected_dml_diff_key {
             if let Some(dml) = self.mnlist_diffs.get(&selected_key) {
                 ScrollArea::vertical()
                     .id_salt("quorum_list_scroll_area")
@@ -350,7 +415,7 @@ impl MasternodeListDiffScreen {
                         for (q_index, quorum) in dml.new_quorums.iter().enumerate() {
                             if ui
                                 .selectable_label(
-                                    self.selected_quorum_index == Some(q_index),
+                                    self.selected_quorum_in_diff_index == Some(q_index),
                                     format!(
                                         "Quorum {} Type: {}",
                                         quorum.quorum_hash.to_string().as_str().split_at(5).0,
@@ -359,8 +424,8 @@ impl MasternodeListDiffScreen {
                                 )
                                 .clicked()
                             {
-                                self.selected_quorum_index = Some(q_index);
-                                self.selected_masternode_index = None;
+                                self.selected_quorum_in_diff_index = Some(q_index);
+                                self.selected_masternode_in_diff_index = None;
                             }
                         }
                     });
@@ -370,9 +435,174 @@ impl MasternodeListDiffScreen {
         }
     }
 
+    fn render_selected_masternode_list_items(&mut self, ui: &mut Ui) {
+        ui.heading("Masternode List Explorer");
+
+        // Define available options for selection
+        let options = ["Quorums", "Masternodes"];
+        let selected_index = self.selected_option_index.unwrap_or(0);
+
+        // Render the selection buttons
+        ui.horizontal(|ui| {
+            for (index, option) in options.iter().enumerate() {
+                if ui
+                    .selectable_label(selected_index == index, *option)
+                    .clicked()
+                {
+                    self.selected_option_index = Some(index);
+                }
+            }
+        });
+
+        ui.separator();
+
+        // Borrow mn_list separately to avoid multiple borrows of `self`
+        if self.selected_dml_height_key.is_some() {
+                ScrollArea::vertical()
+                    .id_salt("mnlist_items_scroll_area")
+                    .show(ui, |ui| {
+                        match selected_index {
+                            0 => self.render_quorums_in_masternode_list(ui),
+                            1 => self.render_masternodes_in_masternode_list(ui),
+                            _ => (),
+                        }
+                    });
+        } else {
+            ui.label("Select a block height to show details.");
+        }
+    }
+
+    fn render_quorums_in_masternode_list(&mut self, ui: &mut Ui) {
+        if let Some(selected_height) = self.selected_dml_height_key {
+            if let Some(mn_list) = self.masternode_list_engine.masternode_lists.get(&selected_height) {
+                ui.heading("Quorums in Masternode List");
+                ScrollArea::vertical()
+                    .id_salt("quorum_list_scroll_area")
+                    .show(ui, |ui| {
+                        for (llmq_type, quorum_map) in &mn_list.quorums {
+                            for (q_index, (quorum_hash, quorum_entry)) in quorum_map.iter().enumerate() {
+                                if ui
+                                    .selectable_label(
+                                        self.selected_quorum_index == Some(q_index),
+                                        format!(
+                                            "Quorum {} Type: {}",
+                                            quorum_hash.to_string().as_str().split_at(5).0,
+                                            QuorumType::from(*llmq_type as u32).to_string()
+                                        ),
+                                    )
+                                    .clicked()
+                                {
+                                    self.selected_quorum_index = Some(q_index);
+                                    self.selected_masternode_index = None;
+                                }
+                            }
+                        }
+                    });
+            }
+        }
+    }
+
+    fn render_masternodes_in_masternode_list(&mut self, ui: &mut Ui) {
+        if let Some(selected_height) = self.selected_dml_height_key {
+            if let Some(mn_list) = self.masternode_list_engine.masternode_lists.get(&selected_height) {
+                ui.heading("Masternodes in List");
+                ScrollArea::vertical()
+                    .id_salt("masternode_list_scroll_area")
+                    .show(ui, |ui| {
+                        for (m_index, (pro_tx_hash, masternode)) in mn_list.masternodes.iter().enumerate() {
+                            if ui
+                                .selectable_label(
+                                    self.selected_masternode_index == Some(m_index),
+                                    format!(
+                                        "{} {} {}",
+                                        if masternode.masternode_list_entry.mn_type == MasternodeType::Regular {
+                                            "MN"
+                                        } else {
+                                            "EN"
+                                        },
+                                        masternode.masternode_list_entry.service_address.ip().to_string(),
+                                        pro_tx_hash.to_string().as_str().split_at(5).0
+                                    ),
+                                )
+                                .clicked()
+                            {
+                                self.selected_quorum_index = None;
+                                self.selected_masternode_index = Some(m_index);
+                            }
+                        }
+                    });
+            }
+        }
+    }
+
+    fn render_masternode_list_page(&mut self, ui: &mut Ui) {
+        ui.columns(3, |cols| {
+            cols[0].with_layout(Layout::top_down(Align::Min), |ui| {
+                self.render_masternode_lists(ui);
+            });
+            cols[1].with_layout(Layout::top_down(Align::Min), |ui| {
+                self.render_selected_masternode_list_items(ui);
+            });
+            cols[2].with_layout(Layout::top_down(Align::Min), |ui| {
+                if self.selected_quorum_index.is_some() {
+                    self.render_quorum_details(ui);
+                } else if self.selected_masternode_index.is_some() {
+                    self.render_mn_details(ui);
+                }
+            });
+        });
+    }
+
+    fn render_selected_tab(&mut self, ui: &mut Ui) {
+        // Define available tabs
+        let tabs = ["Diffs", "Masternode Lists"];
+
+        // Render the selection buttons
+        ui.horizontal(|ui| {
+            for (index, tab) in tabs.iter().enumerate() {
+                if ui
+                    .selectable_label(self.selected_tab == index, *tab)
+                    .clicked()
+                {
+                    self.selected_tab = index;
+                }
+            }
+        });
+
+        ui.separator();
+
+        match self.selected_tab {
+            0 => self.render_diffs(ui), // Existing diffs rendering logic
+            1 => self.render_masternode_list_page(ui),   // Placeholder for masternode list display
+            _ => {}
+        }
+    }
+
+    fn render_diffs(&mut self, ui: &mut Ui) {
+        // Create a three-column layout:
+        // - Left column: list of MNList Diffs (by block height)
+        // - Middle column: list of quorums for the selected DML
+        // - Right column: quorum details
+        ui.columns(3, |cols| {
+            cols[0].with_layout(Layout::top_down(Align::Min), |ui| {
+                self.render_diff_list(ui);
+            });
+            cols[1].with_layout(Layout::top_down(Align::Min), |ui| {
+                self.render_selected_dml_items(ui);
+            });
+            cols[2].with_layout(Layout::top_down(Align::Min), |ui| {
+                if self.selected_quorum_in_diff_index.is_some() {
+                    self.render_quorum_details(ui);
+                } else if self.selected_masternode_in_diff_index.is_some() {
+                    self.render_mn_details(ui);
+                }
+            });
+        });
+    }
+
     fn render_masternode_changes(&mut self, ui: &mut Ui) {
         ui.heading("Masternode changes");
-        if let Some(selected_key) = self.selected_dml_key {
+        if let Some(selected_key) = self.selected_dml_diff_key {
             if let Some(dml) = self.mnlist_diffs.get(&selected_key) {
                 ScrollArea::vertical()
                     .id_salt("quorum_list_scroll_area")
@@ -380,7 +610,7 @@ impl MasternodeListDiffScreen {
                         for (m_index, masternode) in dml.new_masternodes.iter().enumerate() {
                             if ui
                                 .selectable_label(
-                                    self.selected_masternode_index == Some(m_index),
+                                    self.selected_masternode_in_diff_index == Some(m_index),
                                     format!(
                                         "{} {} {}",
                                         if masternode.mn_type == MasternodeType::Regular {
@@ -388,7 +618,7 @@ impl MasternodeListDiffScreen {
                                         } else {
                                             "EN"
                                         },
-                                        masternode.service_address.ip.to_string(),
+                                        masternode.service_address.ip().to_string(),
                                         masternode
                                             .pro_reg_tx_hash
                                             .to_string()
@@ -399,8 +629,8 @@ impl MasternodeListDiffScreen {
                                 )
                                 .clicked()
                             {
-                                self.selected_quorum_index = None;
-                                self.selected_masternode_index = Some(m_index);
+                                self.selected_quorum_in_diff_index = None;
+                                self.selected_masternode_in_diff_index = Some(m_index);
                             }
                         }
                     });
@@ -417,9 +647,7 @@ impl MasternodeListDiffScreen {
         // Define available options for selection
         let options = [
             "New Quorums",
-            "Quorums",
             "Masternode Changes",
-            "Masternode List",
         ];
         let mut selected_index = self.selected_option_index.unwrap_or(0);
 
@@ -438,15 +666,13 @@ impl MasternodeListDiffScreen {
         ui.separator();
 
         // Determine the selected category and display corresponding information
-        if let Some(selected_key) = self.selected_dml_key {
+        if let Some(selected_key) = self.selected_dml_diff_key {
             if let Some(dml) = self.mnlist_diffs.get(&selected_key) {
                 ScrollArea::vertical()
                     .id_salt("dml_items_scroll_area")
                     .show(ui, |ui| match selected_index {
                         0 => self.render_new_quorums(ui),
-                        1 => (),
-                        2 => self.render_masternode_changes(ui),
-                        3 => (), //self.render_masternode_list(ui, dml),
+                        1 => self.render_masternode_changes(ui),
                         _ => (),
                     });
             }
@@ -458,9 +684,9 @@ impl MasternodeListDiffScreen {
     /// Render the details for the selected quorum
     fn render_quorum_details(&mut self, ui: &mut Ui) {
         ui.heading("Quorum Details");
-        if let Some(dml_key) = self.selected_dml_key {
+        if let Some(dml_key) = self.selected_dml_diff_key {
             if let Some(dml) = self.mnlist_diffs.get(&dml_key) {
-                if let Some(q_index) = self.selected_quorum_index {
+                if let Some(q_index) = self.selected_quorum_in_diff_index {
                     if let Some(quorum) = dml.new_quorums.get(q_index) {
                         Frame::none()
                             .stroke(Stroke::new(1.0, Color32::BLACK))
@@ -482,6 +708,36 @@ impl MasternodeListDiffScreen {
                     ui.label("Select a quorum to view details.");
                 }
             }
+        } else if let Some(selected_height) = self.selected_dml_height_key {
+            if let Some(mn_list) = self.masternode_list_engine.masternode_lists.get(&selected_height) {
+                if let Some(q_index) = self.selected_quorum_index {
+                    let mut quorums: Vec<_> = mn_list
+                        .quorums
+                        .iter()
+                        .flat_map(|(_, quorum_map)| quorum_map.values())
+                        .collect();
+
+                    if let Some(quorum) = quorums.get(q_index) {
+                        Frame::none()
+                            .stroke(Stroke::new(1.0, Color32::BLACK))
+                            .show(ui, |ui| {
+                                ui.set_min_size(Vec2::new(ui.available_width(), 300.0));
+                                ScrollArea::vertical().show(ui, |ui| {
+                                    ui.label(format!(
+                                        "Quorum Type: {}\nQuorum Hash: {}\nSigners: {} members\nValid Members: {} members\nQuorum Public Key: {}",
+                                        QuorumType::from(quorum.quorum_entry.llmq_type as u32),
+                                        quorum.quorum_entry.quorum_hash,
+                                        quorum.quorum_entry.signers.len(),
+                                        quorum.quorum_entry.valid_members.len(),
+                                        quorum.quorum_entry.quorum_public_key
+                                    ));
+                                });
+                            });
+                    }
+                } else {
+                    ui.label("Select a quorum to view details.");
+                }
+            }
         } else {
             ui.label("Select a block height and quorum.");
         }
@@ -491,9 +747,9 @@ impl MasternodeListDiffScreen {
     fn render_mn_details(&mut self, ui: &mut Ui) {
         ui.heading("Masternode Details");
 
-        if let Some(dml_key) = self.selected_dml_key {
+        if let Some(dml_key) = self.selected_dml_diff_key {
             if let Some(dml) = self.mnlist_diffs.get(&dml_key) {
-                if let Some(mn_index) = self.selected_masternode_index {
+                if let Some(mn_index) = self.selected_masternode_in_diff_index {
                     if let Some(masternode) = dml.new_masternodes.get(mn_index) {
                         Frame::none()
                             .stroke(Stroke::new(1.0, Color32::BLACK))
@@ -512,8 +768,8 @@ impl MasternodeListDiffScreen {
                                         masternode.version,
                                         masternode.pro_reg_tx_hash,
                                         masternode.confirmed_hash,
-                                        masternode.service_address.ip,
-                                        masternode.service_address.port,
+                                        masternode.service_address.ip(),
+                                        masternode.service_address.port(),
                                         masternode.operator_public_key,
                                         masternode.key_id_voting,
                                         masternode.is_valid,
@@ -579,25 +835,7 @@ impl ScreenLike for MasternodeListDiffScreen {
 
             ui.separator();
 
-            // Create a three-column layout:
-            // - Left column: list of MNList Diffs (by block height)
-            // - Middle column: list of quorums for the selected DML
-            // - Right column: quorum details
-            ui.columns(3, |cols| {
-                cols[0].with_layout(Layout::top_down(Align::Min), |ui| {
-                    self.render_dml_list(ui);
-                });
-                cols[1].with_layout(Layout::top_down(Align::Min), |ui| {
-                    self.render_selected_dml_items(ui);
-                });
-                cols[2].with_layout(Layout::top_down(Align::Min), |ui| {
-                    if self.selected_quorum_index.is_some() {
-                        self.render_quorum_details(ui);
-                    } else if self.selected_masternode_index.is_some() {
-                        self.render_mn_details(ui);
-                    }
-                });
-            });
+            self.render_selected_tab(ui);
         });
         action
     }

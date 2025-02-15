@@ -11,8 +11,6 @@ use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::prelude::CoreBlockHeight;
 use dashcoretemp::hashes::Hash as tempHash;
 use dashcoretemp::network::message_sml::MnListDiff;
-use dashcoretemp::sml::error::SmlError;
-use dashcoretemp::sml::masternode_list::MasternodeList;
 use dashcoretemp::sml::masternode_list_engine::MasternodeListEngine;
 use dashcoretemp::sml::masternode_list_entry::MasternodeType;
 use dashcoretemp::{BlockHash, Network};
@@ -20,6 +18,8 @@ use eframe::egui::{self, Context, ScrollArea, Ui};
 use egui::{Align, Color32, Frame, Layout, Stroke, TextEdit, Vec2};
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use dash_sdk::dpp::dashcore::BlockHash as BlockHash2;
+use dashcoretemp::sml::llmq_type::LLMQType;
 
 /// Screen for viewing MNList diffs (diffs in the masternode list and quorums)
 pub struct MasternodeListDiffScreen {
@@ -74,6 +74,8 @@ impl MasternodeListDiffScreen {
                 block_hashes: Default::default(),
                 block_heights: Default::default(),
                 masternode_lists: Default::default(),
+                known_chain_locks: Default::default(),
+                network: Network::Dash,
             },
             mnlist_diffs: Default::default(),
             selected_dml_diff_key: None,
@@ -159,6 +161,7 @@ impl MasternodeListDiffScreen {
         base_block_height: u32,
         block_hash: BlockHash,
         block_height: u32,
+        validate_quorums: bool,
     ) {
         let list_diff = match p2p_handler.get_dml_diff(base_block_hash, block_hash) {
             Ok(list_diff) => list_diff,
@@ -168,7 +171,7 @@ impl MasternodeListDiffScreen {
             }
         };
 
-        if base_block_height == 0 {
+        if base_block_height == 0 && self.masternode_list_engine.masternode_lists.is_empty() {
             //todo put correct network
             self.masternode_list_engine = match MasternodeListEngine::initialize_with_diff_to_height(
                 list_diff.clone(),
@@ -191,139 +194,200 @@ impl MasternodeListDiffScreen {
             }
         }
 
+        if validate_quorums && !self.masternode_list_engine.masternode_lists.is_empty() {
+            let hashes = self.masternode_list_engine.latest_masternode_list_non_rotating_quorum_hashes(&[LLMQType::Llmqtype50_60, LLMQType::Llmqtype400_85]);
+            let mut hashes_needed_to_validate = BTreeMap::new();
+            for quorum_hash in hashes {
+                let height = match self.app_context.core_client.get_block_header_info(&(BlockHash2::from_byte_array(quorum_hash.to_byte_array()))) {
+                    Ok(header) => {
+                        header.height as CoreBlockHeight
+                    },
+                    Err(e) => {
+                        self.error = Some(e.to_string());
+                        return;
+                    }
+                };
+                let validation_hash = match self.app_context.core_client.get_block_hash(height - 8) {
+                    Ok(block_hash) => BlockHash::from_byte_array(block_hash.to_byte_array()),
+                    Err(e) => {
+                        self.error = Some(e.to_string());
+                        return;
+                    }
+                };
+                hashes_needed_to_validate.insert(height, validation_hash);
+            };
+
+            if let Some((oldest_needed_height, oldest_needed_hash)) = hashes_needed_to_validate.first_key_value() {
+                let (first_engine_height, first_masternode_list) = self.masternode_list_engine.masternode_lists.first_key_value().unwrap();
+                    let (mut base_block_height, mut base_block_hash) = if *first_engine_height < *oldest_needed_height {
+                        (*first_engine_height, first_masternode_list.block_hash)
+                    } else {
+                        let known_genesis_block_hash = match self.masternode_list_engine.network.known_genesis_block_hash() {
+                            None => match self.app_context.core_client.get_block_hash(0) {
+                                Ok(block_hash) => BlockHash::from_byte_array(block_hash.to_byte_array()),
+                                Err(e) => {
+                                    self.error = Some(e.to_string());
+                                    return;
+                                }
+                            },
+                            Some(known_genesis_block_hash) => known_genesis_block_hash,
+                        };
+                        (0, known_genesis_block_hash)
+                    };
+
+                for (core_block_height, block_hash) in hashes_needed_to_validate {
+                    self.fetch_single_dml(
+                        p2p_handler,
+                        base_block_hash,
+                        base_block_height,
+                        block_hash,
+                        core_block_height,
+                        false,
+                    );
+                    base_block_hash = block_hash;
+                    base_block_height = core_block_height;
+                }
+            }
+
+            if let Err(e) = self.masternode_list_engine.verify_masternode_list_quorums(block_height, &[LLMQType::Llmqtype50_60, LLMQType::Llmqtype400_85]) {
+                self.error = Some(e.to_string());
+            }
+        }
+
         self.mnlist_diffs
             .insert((base_block_height, block_height), list_diff);
     }
-    fn fetch_range_dml(&mut self, step: u32, include_at_minus_8: bool, count: u32) {
-        let ((base_block_height, base_block_hash), (block_height, block_hash)) =
-            match self.parse_heights() {
-                Ok(a) => a,
-                Err(e) => {
-                    self.error = Some(e);
-                    return;
-                }
-            };
-
-        let mut p2p_handler = match CoreP2PHandler::new(self.app_context.network, None) {
-            Ok(p2p_handler) => p2p_handler,
-            Err(e) => {
-                self.error = Some(e);
-                return;
-            }
-        };
-
-        let rem = block_height % 24;
-
-        let intermediate_block_height = (block_height - rem).saturating_sub(count * step);
-
-        let intermediate_block_hash = match self
-            .app_context
-            .core_client
-            .get_block_hash(intermediate_block_height)
-        {
-            Ok(block_hash) => BlockHash::from_byte_array(block_hash.to_byte_array()),
-            Err(e) => {
-                self.error = Some(e.to_string());
-                return;
-            }
-        };
-
-        self.fetch_single_dml(
-            &mut p2p_handler,
-            base_block_hash,
-            base_block_height,
-            intermediate_block_hash,
-            intermediate_block_height,
-        );
-
-        let mut last_height = intermediate_block_height;
-        let mut last_block_hash = intermediate_block_hash;
-
-        for _i in 0..count {
-            if include_at_minus_8 {
-                let end_height = last_height + step - 8;
-                let end_block_hash = match self.app_context.core_client.get_block_hash(end_height) {
-                    Ok(block_hash) => BlockHash::from_byte_array(block_hash.to_byte_array()),
-                    Err(e) => {
-                        self.error = Some(e.to_string());
-                        return;
-                    }
-                };
-                self.fetch_single_dml(
-                    &mut p2p_handler,
-                    last_block_hash,
-                    last_height,
-                    end_block_hash,
-                    end_height,
-                );
-                last_height = end_height;
-                last_block_hash = end_block_hash;
-
-                let end_height = last_height + 8;
-                let end_block_hash = match self.app_context.core_client.get_block_hash(end_height) {
-                    Ok(block_hash) => BlockHash::from_byte_array(block_hash.to_byte_array()),
-                    Err(e) => {
-                        self.error = Some(e.to_string());
-                        return;
-                    }
-                };
-                self.fetch_single_dml(
-                    &mut p2p_handler,
-                    last_block_hash,
-                    last_height,
-                    end_block_hash,
-                    end_height,
-                );
-                last_height = end_height;
-                last_block_hash = end_block_hash;
-            } else {
-                let end_height = last_height + step;
-                let end_block_hash = match self.app_context.core_client.get_block_hash(end_height) {
-                    Ok(block_hash) => BlockHash::from_byte_array(block_hash.to_byte_array()),
-                    Err(e) => {
-                        self.error = Some(e.to_string());
-                        return;
-                    }
-                };
-                self.fetch_single_dml(
-                    &mut p2p_handler,
-                    last_block_hash,
-                    last_height,
-                    end_block_hash,
-                    end_height,
-                );
-                last_height = end_height;
-                last_block_hash = end_block_hash;
-            }
-        }
-
-        if rem != 0 {
-            let end_height = last_height + rem;
-            let end_block_hash = match self.app_context.core_client.get_block_hash(end_height) {
-                Ok(block_hash) => BlockHash::from_byte_array(block_hash.to_byte_array()),
-                Err(e) => {
-                    self.error = Some(e.to_string());
-                    return;
-                }
-            };
-            self.fetch_single_dml(
-                &mut p2p_handler,
-                last_block_hash,
-                last_height,
-                end_block_hash,
-                end_height,
-            );
-        }
-
-        // Reset selections when new data is loaded
-        self.selected_dml_diff_key = None;
-        self.selected_quorum_in_diff_index = None;
-    }
+    // fn fetch_range_dml(&mut self, step: u32, include_at_minus_8: bool, count: u32) {
+    //     let ((base_block_height, base_block_hash), (block_height, block_hash)) =
+    //         match self.parse_heights() {
+    //             Ok(a) => a,
+    //             Err(e) => {
+    //                 self.error = Some(e);
+    //                 return;
+    //             }
+    //         };
+    //
+    //     let mut p2p_handler = match CoreP2PHandler::new(self.app_context.network, None) {
+    //         Ok(p2p_handler) => p2p_handler,
+    //         Err(e) => {
+    //             self.error = Some(e);
+    //             return;
+    //         }
+    //     };
+    //
+    //     let rem = block_height % 24;
+    //
+    //     let intermediate_block_height = (block_height - rem).saturating_sub(count * step);
+    //
+    //     let intermediate_block_hash = match self
+    //         .app_context
+    //         .core_client
+    //         .get_block_hash(intermediate_block_height)
+    //     {
+    //         Ok(block_hash) => BlockHash::from_byte_array(block_hash.to_byte_array()),
+    //         Err(e) => {
+    //             self.error = Some(e.to_string());
+    //             return;
+    //         }
+    //     };
+    //
+    //     self.fetch_single_dml(
+    //         &mut p2p_handler,
+    //         base_block_hash,
+    //         base_block_height,
+    //         intermediate_block_hash,
+    //         intermediate_block_height,
+    //         false,
+    //     );
+    //
+    //     let mut last_height = intermediate_block_height;
+    //     let mut last_block_hash = intermediate_block_hash;
+    //
+    //     for _i in 0..count {
+    //         if include_at_minus_8 {
+    //             let end_height = last_height + step - 8;
+    //             let end_block_hash = match self.app_context.core_client.get_block_hash(end_height) {
+    //                 Ok(block_hash) => BlockHash::from_byte_array(block_hash.to_byte_array()),
+    //                 Err(e) => {
+    //                     self.error = Some(e.to_string());
+    //                     return;
+    //                 }
+    //             };
+    //             self.fetch_single_dml(
+    //                 &mut p2p_handler,
+    //                 last_block_hash,
+    //                 last_height,
+    //                 end_block_hash,
+    //                 end_height,
+    //             );
+    //             last_height = end_height;
+    //             last_block_hash = end_block_hash;
+    //
+    //             let end_height = last_height + 8;
+    //             let end_block_hash = match self.app_context.core_client.get_block_hash(end_height) {
+    //                 Ok(block_hash) => BlockHash::from_byte_array(block_hash.to_byte_array()),
+    //                 Err(e) => {
+    //                     self.error = Some(e.to_string());
+    //                     return;
+    //                 }
+    //             };
+    //             self.fetch_single_dml(
+    //                 &mut p2p_handler,
+    //                 last_block_hash,
+    //                 last_height,
+    //                 end_block_hash,
+    //                 end_height,
+    //             );
+    //             last_height = end_height;
+    //             last_block_hash = end_block_hash;
+    //         } else {
+    //             let end_height = last_height + step;
+    //             let end_block_hash = match self.app_context.core_client.get_block_hash(end_height) {
+    //                 Ok(block_hash) => BlockHash::from_byte_array(block_hash.to_byte_array()),
+    //                 Err(e) => {
+    //                     self.error = Some(e.to_string());
+    //                     return;
+    //                 }
+    //             };
+    //             self.fetch_single_dml(
+    //                 &mut p2p_handler,
+    //                 last_block_hash,
+    //                 last_height,
+    //                 end_block_hash,
+    //                 end_height,
+    //             );
+    //             last_height = end_height;
+    //             last_block_hash = end_block_hash;
+    //         }
+    //     }
+    //
+    //     if rem != 0 {
+    //         let end_height = last_height + rem;
+    //         let end_block_hash = match self.app_context.core_client.get_block_hash(end_height) {
+    //             Ok(block_hash) => BlockHash::from_byte_array(block_hash.to_byte_array()),
+    //             Err(e) => {
+    //                 self.error = Some(e.to_string());
+    //                 return;
+    //             }
+    //         };
+    //         self.fetch_single_dml(
+    //             &mut p2p_handler,
+    //             last_block_hash,
+    //             last_height,
+    //             end_block_hash,
+    //             end_height,
+    //         );
+    //     }
+    //
+    //     // Reset selections when new data is loaded
+    //     self.selected_dml_diff_key = None;
+    //     self.selected_quorum_in_diff_index = None;
+    // }
 
     /// Fetch the MNList diffs between the given base and end block heights.
     /// In a real implementation, you would replace the dummy function below with a call to
     /// dash_core’s DB (or other data source) to retrieve the MNList diffs.
-    fn fetch_end_dml_diff(&mut self) {
+    fn fetch_end_dml_diff(&mut self, validate_quorums: bool,) {
         let ((base_block_height, base_block_hash), (block_height, block_hash)) =
             match self.parse_heights() {
                 Ok(a) => a,
@@ -347,6 +411,7 @@ impl MasternodeListDiffScreen {
             base_block_height,
             block_hash,
             block_height,
+            validate_quorums,
         );
 
         // Reset selections when new data is loaded
@@ -362,10 +427,10 @@ impl MasternodeListDiffScreen {
             ui.label("End Block Height:");
             ui.add(TextEdit::singleline(&mut self.end_block_height).desired_width(80.0));
             if ui.button("Get single end DML diff").clicked() {
-                self.fetch_end_dml_diff();
+                self.fetch_end_dml_diff(false);
             }
             if ui.button("Get DMLs and validate").clicked() {
-                self.fetch_range_dml(24, true, 24);
+                self.fetch_end_dml_diff(true);
             }
         });
     }
@@ -749,12 +814,13 @@ impl MasternodeListDiffScreen {
                                 ui.set_min_size(Vec2::new(ui.available_width(), 300.0));
                                 ScrollArea::vertical().show(ui, |ui| {
                                     ui.label(format!(
-                                        "Quorum Type: {}\nQuorum Hash: {}\nSigners: {} members\nValid Members: {} members\nQuorum Public Key: {}",
+                                        "Quorum Type: {}\nQuorum Hash: {}\nSigners: {} members\nValid Members: {} members\nQuorum Public Key: {}\nValidation status: {}",
                                         QuorumType::from(quorum.quorum_entry.llmq_type as u32),
                                         quorum.quorum_entry.quorum_hash,
                                         quorum.quorum_entry.signers.len(),
                                         quorum.quorum_entry.valid_members.len(),
-                                        quorum.quorum_entry.quorum_public_key
+                                        quorum.quorum_entry.quorum_public_key,
+                                        quorum.verified,
                                     ));
                                 });
                             });
@@ -792,7 +858,10 @@ impl MasternodeListDiffScreen {
                                      Masternode Type: {}",
                                         masternode.version,
                                         masternode.pro_reg_tx_hash,
-                                        masternode.confirmed_hash,
+                                        match masternode.confirmed_hash {
+                                            None => "No confirmed hash".to_string(),
+                                            Some(confirmed_hash) => confirmed_hash.to_string(),
+                                        },
                                         masternode.service_address.ip(),
                                         masternode.service_address.port(),
                                         masternode.operator_public_key,

@@ -13,12 +13,13 @@ use dashcoretemp::hashes::Hash as tempHash;
 use dashcoretemp::network::message_sml::MnListDiff;
 use dashcoretemp::sml::masternode_list_engine::MasternodeListEngine;
 use dashcoretemp::sml::masternode_list_entry::MasternodeType;
-use dashcoretemp::{BlockHash, Network};
+use dashcoretemp::{BlockHash, Network, QuorumHash};
 use eframe::egui::{self, Context, ScrollArea, Ui};
 use egui::{Align, Color32, Frame, Layout, Stroke, TextEdit, Vec2};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use dash_sdk::dpp::dashcore::BlockHash as BlockHash2;
+use dashcoretemp::sml::llmq_entry_verification::LLMQEntryVerificationStatus;
 use dashcoretemp::sml::llmq_type::LLMQType;
 
 /// Screen for viewing MNList diffs (diffs in the masternode list and quorums)
@@ -54,7 +55,7 @@ pub struct MasternodeListDiffScreen {
     selected_masternode_in_diff_index: Option<usize>,
 
     /// Selected quorum within the MNList diff
-    selected_quorum_index: Option<usize>,
+    selected_quorum_hash: Option<(LLMQType, QuorumHash)>,
 
     /// Selected masternode within the MNList diff
     selected_masternode_index: Option<usize>,
@@ -83,7 +84,7 @@ impl MasternodeListDiffScreen {
             selected_option_index: None,
             selected_quorum_in_diff_index: None,
             selected_masternode_in_diff_index: None,
-            selected_quorum_index: None,
+            selected_quorum_hash: None,
             selected_masternode_index: None,
             error: None,
         }
@@ -555,21 +556,22 @@ impl MasternodeListDiffScreen {
                     .id_salt("quorum_list_scroll_area")
                     .show(ui, |ui| {
                         for (llmq_type, quorum_map) in &mn_list.quorums {
-                            for (q_index, (quorum_hash, quorum_entry)) in
-                                quorum_map.iter().enumerate()
+                            for (quorum_hash, quorum_entry) in
+                                quorum_map.iter()
                             {
                                 if ui
                                     .selectable_label(
-                                        self.selected_quorum_index == Some(q_index),
+                                        self.selected_quorum_hash == Some((*llmq_type, *quorum_hash)),
                                         format!(
-                                            "Quorum {} Type: {}",
+                                            "Quorum {} Type: {} Valid {}",
                                             quorum_hash.to_string().as_str().split_at(5).0,
-                                            QuorumType::from(*llmq_type as u32).to_string()
+                                            QuorumType::from(*llmq_type as u32).to_string(),
+                                            quorum_entry.verified == LLMQEntryVerificationStatus::Verified
                                         ),
                                     )
                                     .clicked()
                                 {
-                                    self.selected_quorum_index = Some(q_index);
+                                    self.selected_quorum_hash = Some((*llmq_type, *quorum_hash));
                                     self.selected_masternode_index = None;
                                 }
                             }
@@ -615,7 +617,7 @@ impl MasternodeListDiffScreen {
                                 )
                                 .clicked()
                             {
-                                self.selected_quorum_index = None;
+                                self.selected_quorum_hash = None;
                                 self.selected_masternode_index = Some(m_index);
                             }
                         }
@@ -633,7 +635,7 @@ impl MasternodeListDiffScreen {
                 self.render_selected_masternode_list_items(ui);
             });
             cols[2].with_layout(Layout::top_down(Align::Min), |ui| {
-                if self.selected_quorum_index.is_some() {
+                if self.selected_quorum_hash.is_some() {
                     self.render_quorum_details(ui);
                 } else if self.selected_masternode_index.is_some() {
                     self.render_mn_details(ui);
@@ -780,12 +782,12 @@ impl MasternodeListDiffScreen {
                                 ui.set_min_size(Vec2::new(ui.available_width(), 300.0));
                                 ScrollArea::vertical().show(ui, |ui| {
                                     ui.label(format!(
-                                        "Version: {}\nQuorum Hash: {}\nSigners: {} members\nValid Members: {} members\nQuorum Public Key: {}",
+                                        "Version: {}\nQuorum Hash: {}\nSigners: {} members\nValid Members: {} members\nQuorum Public Key: {}\n",
                                         quorum.version,
                                         quorum.quorum_hash,
                                         quorum.signers.len(),
                                         quorum.valid_members.len(),
-                                        quorum.quorum_public_key
+                                        quorum.quorum_public_key,
                                     ));
                                 });
                             });
@@ -800,14 +802,9 @@ impl MasternodeListDiffScreen {
                 .masternode_lists
                 .get(&selected_height)
             {
-                if let Some(q_index) = self.selected_quorum_index {
-                    let mut quorums: Vec<_> = mn_list
-                        .quorums
-                        .iter()
-                        .flat_map(|(_, quorum_map)| quorum_map.values())
-                        .collect();
-
-                    if let Some(quorum) = quorums.get(q_index) {
+                if let Some((llmq_type, quorum_hash)) = self.selected_quorum_hash {
+                    if let Some(quorum) = mn_list
+                        .quorums.get(&llmq_type).and_then(|quorums_by_type| quorums_by_type.get(&quorum_hash)) {
                         Frame::none()
                             .stroke(Stroke::new(1.0, Color32::BLACK))
                             .show(ui, |ui| {

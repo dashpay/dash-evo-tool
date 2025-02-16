@@ -208,6 +208,7 @@ impl MasternodeListDiffScreen {
                         return;
                     }
                 };
+                self.masternode_list_engine.feed_block_height(height, quorum_hash);
                 let validation_hash = match self.app_context.core_client.get_block_hash(height - 8) {
                     Ok(block_hash) => BlockHash::from_byte_array(block_hash.to_byte_array()),
                     Err(e) => {

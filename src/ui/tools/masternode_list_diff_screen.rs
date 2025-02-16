@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use crate::app::AppAction;
 use crate::components::core_p2p_handler::CoreP2PHandler;
 use crate::context::AppContext;
@@ -13,14 +14,17 @@ use dashcoretemp::hashes::Hash as tempHash;
 use dashcoretemp::network::message_sml::MnListDiff;
 use dashcoretemp::sml::masternode_list_engine::MasternodeListEngine;
 use dashcoretemp::sml::masternode_list_entry::MasternodeType;
-use dashcoretemp::{BlockHash, Network, QuorumHash};
+use dashcoretemp::{BlockHash, Network, ProTxHash, QuorumHash};
 use eframe::egui::{self, Context, ScrollArea, Ui};
 use egui::{Align, Color32, Frame, Layout, Stroke, TextEdit, Vec2};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use dash_sdk::dpp::dashcore::BlockHash as BlockHash2;
+use dashcoretemp::bls_sig_utils::BLSSignature;
 use dashcoretemp::sml::llmq_entry_verification::LLMQEntryVerificationStatus;
 use dashcoretemp::sml::llmq_type::LLMQType;
+use dashcoretemp::sml::masternode_list::MasternodeList;
+use dashcoretemp::sml::masternode_list_entry::qualified_masternode_list_entry::QualifiedMasternodeListEntry;
 
 /// Screen for viewing MNList diffs (diffs in the masternode list and quorums)
 pub struct MasternodeListDiffScreen {
@@ -36,6 +40,9 @@ pub struct MasternodeListDiffScreen {
 
     /// The engine to compute masternode lists
     masternode_list_engine: MasternodeListEngine,
+
+    /// The serialized engine to compute masternode lists
+    serialized_masternode_list_engine: Option<String>,
 
     /// The list of MNList diff items (one per block height)
     mnlist_diffs: BTreeMap<(CoreBlockHeight, CoreBlockHeight), MnListDiff>,
@@ -58,7 +65,10 @@ pub struct MasternodeListDiffScreen {
     selected_quorum_hash: Option<(LLMQType, QuorumHash)>,
 
     /// Selected masternode within the MNList diff
-    selected_masternode_index: Option<usize>,
+    selected_masternode_pro_tx_hash: Option<ProTxHash>,
+
+    /// Search term
+    search_term: Option<String>,
 
     error: Option<String>,
 }
@@ -78,6 +88,8 @@ impl MasternodeListDiffScreen {
                 known_chain_locks: Default::default(),
                 network: Network::Dash,
             },
+            search_term: None,
+            serialized_masternode_list_engine: None,
             mnlist_diffs: Default::default(),
             selected_dml_diff_key: None,
             selected_dml_height_key: None,
@@ -85,7 +97,7 @@ impl MasternodeListDiffScreen {
             selected_quorum_in_diff_index: None,
             selected_masternode_in_diff_index: None,
             selected_quorum_hash: None,
-            selected_masternode_index: None,
+            selected_masternode_pro_tx_hash: None,
             error: None,
         }
     }
@@ -155,6 +167,13 @@ impl MasternodeListDiffScreen {
         Ok((base, end))
     }
 
+    fn serialize_masternode_list_engine(&self) -> Result<String, String> {
+        match bincode::encode_to_vec(&self.masternode_list_engine, bincode::config::standard()) {
+            Ok(encoded_bytes) => Ok(hex::encode(encoded_bytes)), // Convert to hex string
+            Err(e) => Err(format!("Serialization failed: {}", e)),
+        }
+    }
+
     fn fetch_single_dml(
         &mut self,
         p2p_handler: &mut CoreP2PHandler,
@@ -210,13 +229,29 @@ impl MasternodeListDiffScreen {
                 };
                 self.masternode_list_engine.feed_block_height(height, quorum_hash);
                 let validation_hash = match self.app_context.core_client.get_block_hash(height - 8) {
-                    Ok(block_hash) => BlockHash::from_byte_array(block_hash.to_byte_array()),
+                    Ok(block_hash) => block_hash,
                     Err(e) => {
                         self.error = Some(e.to_string());
                         return;
                     }
                 };
-                hashes_needed_to_validate.insert(height, validation_hash);
+                let maybe_chain_lock_sig = match self.app_context.core_client.get_block(&validation_hash) {
+                    Ok(block) => {
+                        let Some(coinbase) = block.coinbase().and_then(|coinbase| coinbase.special_transaction_payload.as_ref()).and_then(|payload| payload.clone().to_coinbase_payload().ok()) else {
+                            self.error = Some(format!("coinbase not found on quorum hash {}", quorum_hash));
+                            return;
+                        };
+                        coinbase.best_cl_signature
+                    },
+                    Err(e) => {
+                        self.error = Some(e.to_string());
+                        return;
+                    }
+                };
+                if let Some(maybe_chain_lock_sig) = maybe_chain_lock_sig {
+                    self.masternode_list_engine.feed_chain_lock_sig(BlockHash::from_byte_array(validation_hash.to_byte_array()), BLSSignature::from(maybe_chain_lock_sig.to_bytes()));
+                }
+                hashes_needed_to_validate.insert(height - 8, BlockHash::from_byte_array(validation_hash.to_byte_array()));
             };
 
             if let Some((oldest_needed_height, oldest_needed_hash)) = hashes_needed_to_validate.first_key_value() {
@@ -437,6 +472,23 @@ impl MasternodeListDiffScreen {
         });
     }
 
+    fn render_masternode_list_engine(&mut self, ui: &mut Ui) {
+        ui.heading("Masternode List Engine (Bincode Hex Serialized)");
+        if self.serialized_masternode_list_engine.is_none() {
+            match self.serialize_masternode_list_engine() {
+                Ok(hex_data) => {
+                    self.serialized_masternode_list_engine = Some(hex_data);
+                }
+                Err(err) => {
+                    self.serialized_masternode_list_engine = Some(err);
+                }
+            }
+        }
+        ScrollArea::vertical().show(ui, |ui| {
+            ui.label(self.serialized_masternode_list_engine.as_ref().unwrap());
+        });
+    }
+
     fn render_masternode_lists(&mut self, ui: &mut Ui) {
         ui.heading("Masternode lists");
         ScrollArea::vertical()
@@ -452,6 +504,7 @@ impl MasternodeListDiffScreen {
                         )
                         .clicked()
                     {
+                        self.selected_dml_diff_key = None;
                         self.selected_dml_height_key = Some(*height);
                         self.selected_quorum_in_diff_index = None;
                     }
@@ -473,6 +526,7 @@ impl MasternodeListDiffScreen {
                         .clicked()
                     {
                         self.selected_dml_diff_key = Some(*key);
+                        self.selected_dml_height_key = None;
                         self.selected_quorum_in_diff_index = None;
                     }
                 }
@@ -573,7 +627,8 @@ impl MasternodeListDiffScreen {
                                     .clicked()
                                 {
                                     self.selected_quorum_hash = Some((*llmq_type, *quorum_hash));
-                                    self.selected_masternode_index = None;
+                                    self.selected_masternode_pro_tx_hash = None;
+                                    self.selected_dml_diff_key = None;
                                 }
                             }
                         }
@@ -582,23 +637,99 @@ impl MasternodeListDiffScreen {
         }
     }
 
+    /// Filter masternodes based on the search term
+    fn filter_masternodes(&self, mn_list: & MasternodeList) -> BTreeMap<ProTxHash, QualifiedMasternodeListEntry> {
+        // If no search term, return all masternodes
+        if let Some(search_term) = &self.search_term {
+            let search_term = search_term.to_lowercase();
+
+            if search_term.len() < 3 {
+                return mn_list.masternodes.clone(); // Require at least 3 characters to filter
+            }
+
+            mn_list
+                .masternodes
+                .iter()
+                .filter(|(pro_tx_hash, mn_entry)| {
+                    let masternode = &mn_entry.masternode_list_entry;
+
+                    // Convert fields to lowercase for case-insensitive search
+                    let pro_tx_hash_str = pro_tx_hash.to_string().to_lowercase();
+                    let confirmed_hash_str = masternode
+                        .confirmed_hash
+                        .map(|h| h.to_string().to_lowercase())
+                        .unwrap_or_default();
+                    let service_ip = masternode.service_address.ip().to_string().to_lowercase();
+                    let operator_public_key = masternode.operator_public_key.to_string().to_lowercase();
+                    let voting_key_id = masternode.key_id_voting.to_string().to_lowercase();
+
+                    // Check reversed versions
+                    let pro_tx_hash_reversed = pro_tx_hash.reverse().to_string().to_lowercase();
+                    let confirmed_hash_reversed = masternode
+                        .confirmed_hash
+                        .map(|h| h.reverse().to_string().to_lowercase())
+                        .unwrap_or_default();
+
+                    // Match against search term
+                    pro_tx_hash_str.contains(&search_term)
+                        || confirmed_hash_str.contains(&search_term)
+                        || service_ip.contains(&search_term)
+                        || operator_public_key.contains(&search_term)
+                        || voting_key_id.contains(&search_term)
+                        || pro_tx_hash_reversed.contains(&search_term)
+                        || confirmed_hash_reversed.contains(&search_term)
+                })
+                .map(|(pro_tx_hash, entry)| (*pro_tx_hash, entry.clone()))
+                .collect()
+        } else {
+            mn_list.masternodes.clone()
+        }
+    }
+
+    /// Render search bar
+    fn render_search_bar(&mut self, ui: &mut Ui) {
+        ui.horizontal(|ui| {
+            ui.label("Search:");
+            let mut search_term = self.search_term.clone().unwrap_or_default();
+            let response = ui.add(TextEdit::singleline(&mut search_term).desired_width(200.0));
+
+            if response.changed() {
+                self.search_term = if search_term.trim().is_empty() {
+                    None
+                } else {
+                    Some(search_term)
+                };
+            }
+        });
+    }
+
     fn render_masternodes_in_masternode_list(&mut self, ui: &mut Ui) {
+        if let Some(selected_height) = self.selected_dml_height_key {
+            if self
+                .masternode_list_engine
+                .masternode_lists
+                .contains_key(&selected_height)
+            {
+                ui.heading("Masternodes in List");
+                self.render_search_bar(ui);
+            }
+        }
         if let Some(selected_height) = self.selected_dml_height_key {
             if let Some(mn_list) = self
                 .masternode_list_engine
                 .masternode_lists
                 .get(&selected_height)
             {
-                ui.heading("Masternodes in List");
+                let filtered_masternodes = self.filter_masternodes(mn_list);
                 ScrollArea::vertical()
                     .id_salt("masternode_list_scroll_area")
                     .show(ui, |ui| {
-                        for (m_index, (pro_tx_hash, masternode)) in
-                            mn_list.masternodes.iter().enumerate()
+                        for (pro_tx_hash, masternode) in
+                            filtered_masternodes.iter()
                         {
                             if ui
                                 .selectable_label(
-                                    self.selected_masternode_index == Some(m_index),
+                                    self.selected_masternode_pro_tx_hash == Some(*pro_tx_hash),
                                     format!(
                                         "{} {} {}",
                                         if masternode.masternode_list_entry.mn_type
@@ -619,7 +750,7 @@ impl MasternodeListDiffScreen {
                                 .clicked()
                             {
                                 self.selected_quorum_hash = None;
-                                self.selected_masternode_index = Some(m_index);
+                                self.selected_masternode_pro_tx_hash = Some(*pro_tx_hash);
                             }
                         }
                     });
@@ -628,26 +759,45 @@ impl MasternodeListDiffScreen {
     }
 
     fn render_masternode_list_page(&mut self, ui: &mut Ui) {
-        ui.columns(3, |cols| {
-            cols[0].with_layout(Layout::top_down(Align::Min), |ui| {
-                self.render_masternode_lists(ui);
-            });
-            cols[1].with_layout(Layout::top_down(Align::Min), |ui| {
-                self.render_selected_masternode_list_items(ui);
-            });
-            cols[2].with_layout(Layout::top_down(Align::Min), |ui| {
-                if self.selected_quorum_hash.is_some() {
-                    self.render_quorum_details(ui);
-                } else if self.selected_masternode_index.is_some() {
-                    self.render_mn_details(ui);
-                }
-            });
+        ui.horizontal(|ui| {
+            // Left column (Fixed width: 120px)
+            ui.allocate_ui_with_layout(
+                egui::Vec2::new(120.0, ui.available_height()),
+                Layout::top_down(Align::Min),
+                |ui| {
+                    self.render_masternode_lists(ui);
+                },
+            );
+
+            ui.separator();
+
+            // Middle column (50% of the remaining space)
+            ui.allocate_ui_with_layout(
+                egui::Vec2::new(ui.available_width() * 0.5, ui.available_height()),
+                Layout::top_down(Align::Min),
+                |ui| {
+                    self.render_selected_masternode_list_items(ui);
+                },
+            );
+
+            // Right column (Remaining space)
+            ui.allocate_ui_with_layout(
+                egui::Vec2::new(ui.available_width(), ui.available_height()),
+                Layout::top_down(Align::Min),
+                |ui| {
+                    if self.selected_quorum_hash.is_some() {
+                        self.render_quorum_details(ui);
+                    } else if self.selected_masternode_pro_tx_hash.is_some() {
+                        self.render_mn_details(ui);
+                    }
+                },
+            );
         });
     }
 
     fn render_selected_tab(&mut self, ui: &mut Ui) {
         // Define available tabs
-        let tabs = ["Diffs", "Masternode Lists"];
+        let tabs = ["Diffs", "Masternode Lists", "Masternode List Engine"];
 
         // Render the selection buttons
         ui.horizontal(|ui| {
@@ -666,6 +816,7 @@ impl MasternodeListDiffScreen {
         match self.selected_tab {
             0 => self.render_diffs(ui), // Existing diffs rendering logic
             1 => self.render_masternode_list_page(ui), // Placeholder for masternode list display
+            2 => self.render_masternode_list_engine(ui), // Placeholder for masternode list display
             _ => {}
         }
     }
@@ -675,20 +826,36 @@ impl MasternodeListDiffScreen {
         // - Left column: list of MNList Diffs (by block height)
         // - Middle column: list of quorums for the selected DML
         // - Right column: quorum details
-        ui.columns(3, |cols| {
-            cols[0].with_layout(Layout::top_down(Align::Min), |ui| {
-                self.render_diff_list(ui);
-            });
-            cols[1].with_layout(Layout::top_down(Align::Min), |ui| {
-                self.render_selected_dml_items(ui);
-            });
-            cols[2].with_layout(Layout::top_down(Align::Min), |ui| {
-                if self.selected_quorum_in_diff_index.is_some() {
-                    self.render_quorum_details(ui);
-                } else if self.selected_masternode_in_diff_index.is_some() {
-                    self.render_mn_details(ui);
-                }
-            });
+        ui.horizontal(|ui| {
+            ui.allocate_ui_with_layout(
+                egui::Vec2::new(150.0, ui.available_height()), // Set fixed width for left column
+                Layout::top_down(Align::Min),
+                |ui| {
+                    self.render_diff_list(ui);
+                },
+            );
+
+            ui.separator(); // Optional: Adds a visual separator
+
+            ui.allocate_ui_with_layout(
+                egui::Vec2::new(ui.available_width() * 0.5, ui.available_height()), // Middle column
+                Layout::top_down(Align::Min),
+                |ui| {
+                    self.render_selected_dml_items(ui);
+                },
+            );
+
+            ui.allocate_ui_with_layout(
+                egui::Vec2::new(ui.available_width(), ui.available_height()), // Right column takes remaining space
+                Layout::top_down(Align::Min),
+                |ui| {
+                    if self.selected_quorum_in_diff_index.is_some() {
+                        self.render_quorum_details(ui);
+                    } else if self.selected_masternode_in_diff_index.is_some() {
+                        self.render_mn_details(ui);
+                    }
+                },
+            );
         });
     }
 
@@ -812,9 +979,12 @@ impl MasternodeListDiffScreen {
                                 ui.set_min_size(Vec2::new(ui.available_width(), 300.0));
                                 ScrollArea::vertical().show(ui, |ui| {
                                     ui.label(format!(
-                                        "Quorum Type: {}\nQuorum Hash: {}\nSigners: {} members\nValid Members: {} members\nQuorum Public Key: {}\nValidation status: {}",
+                                        "Quorum Type: {}\nQuorum Hash: {}\nCommitment Hash: {}\nCommitment Data: {}\nEntry Hash: {}\nSigners: {} members\nValid Members: {} members\nQuorum Public Key: {}\nValidation status: {}",
                                         QuorumType::from(quorum.quorum_entry.llmq_type as u32),
                                         quorum.quorum_entry.quorum_hash,
+                                        quorum.commitment_hash,
+                                        hex::encode(quorum.quorum_entry.commitment_data()),
+                                        quorum.entry_hash,
                                         quorum.quorum_entry.signers.len(),
                                         quorum.quorum_entry.valid_members.len(),
                                         quorum.quorum_entry.quorum_public_key,
@@ -883,6 +1053,66 @@ impl MasternodeListDiffScreen {
                     }
                 } else {
                     ui.label("Select a Masternode to view details.");
+                }
+            }
+        } else if let Some(selected_height) = self.selected_dml_height_key {
+            if let Some(mn_list) = self
+                .masternode_list_engine
+                .masternode_lists
+                .get(&selected_height)
+            {
+                if let Some(selected_pro_tx_hash) = self.selected_masternode_pro_tx_hash {
+                    if let Some(qualified_masternode) = mn_list.masternodes.get(&selected_pro_tx_hash) {
+                        let masternode = &qualified_masternode.masternode_list_entry;
+                        Frame::none()
+                            .stroke(Stroke::new(1.0, Color32::BLACK))
+                            .show(ui, |ui| {
+                                ui.set_min_size(Vec2::new(ui.available_width(), 300.0));
+                                ScrollArea::vertical().show(ui, |ui| {
+                                    ui.label(format!(
+                                        "Version: {}\n\
+                                     ProRegTxHash: {}\n\
+                                     Confirmed Hash: {}\n\
+                                     Service Address: {}:{}\n\
+                                     Operator Public Key: {}\n\
+                                     Voting Key ID: {}\n\
+                                     Is Valid: {}\n\
+                                     Masternode Type: {}\n\
+                                     Entry Hash: {}\n\
+                                     Confirmed Hash hashed with ProRegTx: {}\n",
+                                        masternode.version,
+                                        masternode.pro_reg_tx_hash.reverse(),
+                                        match masternode.confirmed_hash {
+                                            None => "No confirmed hash".to_string(),
+                                            Some(confirmed_hash) => confirmed_hash.reverse().to_string(),
+                                        },
+                                        masternode.service_address.ip(),
+                                        masternode.service_address.port(),
+                                        masternode.operator_public_key,
+                                        masternode.key_id_voting,
+                                        masternode.is_valid,
+                                        match masternode.mn_type {
+                                            MasternodeType::Regular => "Regular".to_string(),
+                                            MasternodeType::HighPerformance {
+                                                platform_http_port,
+                                                platform_node_id,
+                                            } => {
+                                                format!(
+                                                    "High Performance (Port: {}, Node ID: {})",
+                                                    platform_http_port, platform_node_id
+                                                )
+                                            }
+                                        },
+                                        hex::encode(qualified_masternode.entry_hash),
+                                        if let Some(hash) = qualified_masternode.confirmed_hash_hashed_with_pro_reg_tx {
+                                            hash.reverse().to_string()
+                                        } else {
+                                            "None".to_string()
+                                        },
+                                    ));
+                                });
+                            });
+                    }
                 }
             }
         } else {

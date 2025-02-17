@@ -1,6 +1,7 @@
 use crate::app::AppAction;
 use crate::backend_task::core::{CoreItem, CoreTask};
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
+use crate::config::Config;
 use crate::context::AppContext;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::top_panel::add_top_panel;
@@ -16,6 +17,7 @@ pub struct NetworkChooserScreen {
     pub testnet_app_context: Option<Arc<AppContext>>,
     pub devnet_app_context: Option<Arc<AppContext>>,
     pub local_app_context: Option<Arc<AppContext>>,
+    pub local_network_dashmate_password: String,
     pub current_network: Network,
     pub mainnet_core_status_online: bool,
     pub testnet_core_status_online: bool,
@@ -37,11 +39,22 @@ impl NetworkChooserScreen {
         custom_dash_qt_path: Option<String>,
         overwrite_dash_conf: bool,
     ) -> Self {
+        let local_network_dashmate_password = if let Ok(config) = Config::load() {
+            if let Some(local_config) = config.config_for_network(Network::Regtest) {
+                local_config.core_rpc_password.clone()
+            } else {
+                "".to_string()
+            }
+        } else {
+            "".to_string()
+        };
+
         Self {
             mainnet_app_context: mainnet_app_context.clone(),
             testnet_app_context: testnet_app_context.cloned(),
             devnet_app_context: devnet_app_context.cloned(),
             local_app_context: local_app_context.cloned(),
+            local_network_dashmate_password,
             current_network,
             mainnet_core_status_online: false,
             testnet_core_status_online: false,
@@ -89,6 +102,11 @@ impl NetworkChooserScreen {
                 // ui.label(egui::RichText::new("Add New Wallet").strong().underline());
                 ui.label(egui::RichText::new("Select").strong().underline());
                 ui.label(egui::RichText::new("Start").strong().underline());
+                ui.label(
+                    egui::RichText::new("Dashmate Password")
+                        .strong()
+                        .underline(),
+                );
                 ui.end_row();
 
                 // Render Mainnet Row
@@ -112,7 +130,6 @@ impl NetworkChooserScreen {
                 egui::Grid::new("advanced_settings")
                     .show(ui, |ui| {
                         ui.label("Custom Dash-QT path:");
-
                         if ui.button("Select file").clicked() {
                             if let Some(path) = rfd::FileDialog::new().pick_file() {
                                 {
@@ -220,28 +237,6 @@ impl NetworkChooserScreen {
             return AppAction::None;
         }
 
-        // // Display wallet count
-        // let wallet_count = format!(
-        //     "{}",
-        //     self.context_for_network(network)
-        //         .wallets
-        //         .read()
-        //         .unwrap()
-        //         .len()
-        // );
-        // ui.label(wallet_count);
-
-        // // Add a button to add a wallet
-        // if ui.button("+").clicked() {
-        //     let context = if network == Network::Dash || self.testnet_app_context.is_none() {
-        //         &self.mainnet_app_context
-        //     } else {
-        //         &self.testnet_app_context.as_ref().unwrap()
-        //     };
-        //     app_action =
-        //         AppAction::AddScreen(Screen::AddNewWalletScreen(AddNewWalletScreen::new(context)));
-        // }
-
         // Network selection
         let mut is_selected = self.current_network == network;
         if ui.checkbox(&mut is_selected, "").clicked() && is_selected {
@@ -266,7 +261,57 @@ impl NetworkChooserScreen {
                     self.overwrite_dash_conf,
                 )));
             }
+        } else {
+            ui.label("     -");
         }
+
+        // Add a text field for the dashmate password
+        if network == Network::Regtest {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 5.0;
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.local_network_dashmate_password)
+                        .desired_width(100.0),
+                );
+                if ui.button("Save").clicked() {
+                    // 1) Reload the config
+                    if let Ok(mut config) = Config::load() {
+                        if let Some(local_cfg) = config.config_for_network(Network::Regtest).clone()
+                        {
+                            let updated_local_config = local_cfg.update_core_rpc_password(
+                                self.local_network_dashmate_password.clone(),
+                            );
+                            config.update_config_for_network(
+                                Network::Regtest,
+                                updated_local_config.clone(),
+                            );
+                            if let Err(e) = config.save() {
+                                eprintln!("Failed to save config to .env: {e}");
+                            }
+
+                            // 5) Update our local AppContext in memory
+                            if let Some(local_app_context) = &self.local_app_context {
+                                {
+                                    // Overwrite the config field with the new password
+                                    let mut cfg_lock = local_app_context.config.write().unwrap();
+                                    *cfg_lock = updated_local_config;
+                                }
+
+                                // 6) Re-init the client & sdk from the updated config
+                                if let Err(e) =
+                                    Arc::clone(local_app_context).reinit_core_client_and_sdk()
+                                {
+                                    eprintln!("Failed to re-init local RPC client and sdk: {}", e);
+                                } else {
+                                    // Trigger SwitchNetworks
+                                    app_action = AppAction::SwitchNetwork(Network::Regtest);
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        };
 
         ui.end_row();
         app_action

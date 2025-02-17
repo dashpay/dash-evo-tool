@@ -42,7 +42,8 @@ impl Provider {
         ac.replace(cloned);
         drop(ac);
 
-        app_context.sdk.set_context_provider(self.clone());
+        let sdk = app_context.sdk.write().expect("lock poisoned");
+        sdk.set_context_provider(self.clone());
     }
 }
 

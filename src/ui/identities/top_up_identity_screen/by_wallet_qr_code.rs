@@ -27,6 +27,8 @@ impl TopUpIdentityScreen {
                         if !has_address {
                             self.app_context
                                 .core_client
+                                .read()
+                                .unwrap()
                                 .import_address(
                                     &receive_address,
                                     Some("Managed by Dash Evo Tool"),
@@ -39,12 +41,16 @@ impl TopUpIdentityScreen {
                         let info = self
                             .app_context
                             .core_client
+                            .read()
+                            .unwrap()
                             .get_address_info(&receive_address)
                             .map_err(|e| e.to_string())?;
 
                         if !(info.is_watchonly || info.is_mine) {
                             self.app_context
                                 .core_client
+                                .read()
+                                .unwrap()
                                 .import_address(
                                     &receive_address,
                                     Some("Managed by Dash Evo Tool"),

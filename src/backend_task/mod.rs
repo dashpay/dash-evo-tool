@@ -102,7 +102,10 @@ impl AppContext {
         task: BackendTask,
         sender: mpsc::Sender<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, String> {
-        let sdk = self.sdk.clone();
+        let sdk = {
+            let guard = self.sdk.read().unwrap();
+            guard.clone()
+        };
         match task {
             BackendTask::ContractTask(contract_task) => {
                 self.run_contract_task(contract_task, &sdk).await

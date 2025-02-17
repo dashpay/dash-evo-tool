@@ -31,7 +31,10 @@ impl AppContext {
             identity_funding_method,
         } = input;
 
-        let sdk = self.sdk.clone();
+        let sdk = {
+            let guard = self.sdk.read().unwrap();
+            guard.clone()
+        };
 
         let (_, metadata) = ExtendedEpochInfo::fetch_with_metadata(&sdk, 0, None)
             .await
@@ -58,6 +61,8 @@ impl AppContext {
                             // we need to make sure the instant send asset lock is recent
                             let raw_transaction_info = self
                                 .core_client
+                                .read()
+                                .unwrap()
                                 .get_raw_transaction_info(&tx_id, None)
                                 .map_err(|e| e.to_string())?;
 
@@ -98,7 +103,11 @@ impl AppContext {
                             Ok(transaction) => transaction,
                             Err(_) => {
                                 wallet
-                                    .reload_utxos(&self.core_client, self.network, Some(self))
+                                    .reload_utxos(
+                                        &self.core_client.read().unwrap(),
+                                        self.network,
+                                        Some(self),
+                                    )
                                     .map_err(|e| e.to_string())?;
                                 wallet.top_up_asset_lock_transaction(
                                     sdk.network,
@@ -126,6 +135,8 @@ impl AppContext {
                     }
 
                     self.core_client
+                        .read()
+                        .unwrap()
                         .send_raw_transaction(&asset_lock_transaction)
                         .map_err(|e| e.to_string())?;
 
@@ -197,6 +208,8 @@ impl AppContext {
                     }
 
                     self.core_client
+                        .read()
+                        .unwrap()
                         .send_raw_transaction(&asset_lock_transaction)
                         .map_err(|e| e.to_string())?;
 

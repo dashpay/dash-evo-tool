@@ -164,7 +164,12 @@ impl AppContext {
             start: None,
         };
 
-        let owned_dpns_names = Document::fetch_many(&self.sdk, dpns_names_document_query)
+        let sdk_guard = {
+            let guard = self.sdk.read().unwrap();
+            guard.clone()
+        };
+
+        let owned_dpns_names = Document::fetch_many(&sdk_guard, dpns_names_document_query)
             .await
             .map(|document_map| {
                 document_map

@@ -37,15 +37,15 @@ pub struct AppContext {
     pub(crate) developer_mode: bool,
     pub(crate) devnet_name: Option<String>,
     pub(crate) db: Arc<Database>,
-    pub(crate) sdk: Sdk,
-    pub(crate) config: NetworkConfig,
+    pub(crate) sdk: RwLock<Sdk>,
+    pub(crate) config: RwLock<NetworkConfig>,
     pub(crate) rx_zmq_status: Receiver<ZMQConnectionEvent>,
     pub(crate) sx_zmq_status: Sender<ZMQConnectionEvent>,
     pub(crate) zmq_connection_status: Mutex<ZMQConnectionEvent>,
     pub(crate) dpns_contract: Arc<DataContract>,
     pub(crate) withdraws_contract: Arc<DataContract>,
     pub(crate) token_history_contract: Arc<DataContract>,
-    pub(crate) core_client: Client,
+    pub(crate) core_client: RwLock<Client>,
     pub(crate) has_wallet: AtomicBool,
     pub(crate) wallets: RwLock<BTreeMap<WalletSeedHash, Arc<RwLock<Wallet>>>>,
     pub(crate) password_info: Option<PasswordInfo>,
@@ -113,14 +113,14 @@ impl AppContext {
             developer_mode: false,
             devnet_name: None,
             db,
-            sdk,
-            config: network_config,
+            sdk: sdk.into(),
+            config: network_config.into(),
             sx_zmq_status,
             rx_zmq_status,
             dpns_contract: Arc::new(dpns_contract),
             withdraws_contract: Arc::new(withdrawal_contract),
             token_history_contract: Arc::new(token_history_contract),
-            core_client,
+            core_client: core_client.into(),
             has_wallet: (!wallets.is_empty()).into(),
             wallets: RwLock::new(wallets),
             password_info,
@@ -133,6 +133,47 @@ impl AppContext {
         provider.bind_app_context(app_context.clone());
 
         Some(app_context)
+    }
+
+    /// Rebuild both the Dash RPC `core_client` and the `Sdk` using the
+    /// updated `NetworkConfig` from `self.config`.
+    pub fn reinit_core_client_and_sdk(self: Arc<Self>) -> Result<(), String> {
+        // 1. Grab a fresh snapshot of your NetworkConfig
+        let cfg = {
+            let cfg_lock = self.config.read().unwrap();
+            cfg_lock.clone()
+        };
+
+        // 2. Rebuild the RPC client with the new password
+        let addr = format!("http://{}:{}", cfg.core_host, cfg.core_rpc_port);
+        let new_client = dash_sdk::dashcore_rpc::Client::new(
+            &addr,
+            dash_sdk::dashcore_rpc::Auth::UserPass(
+                cfg.core_rpc_user.clone(),
+                cfg.core_rpc_password.clone(),
+            ),
+        )
+        .map_err(|e| format!("Failed to create new Core RPC client: {e}"))?;
+
+        // 3. Rebuild the Sdk with the updated config
+        let provider = Provider::new(self.db.clone(), &cfg)
+            .map_err(|e| format!("Failed to init provider: {e}"))?;
+        let new_sdk = initialize_sdk(&cfg, self.network, provider.clone());
+
+        // 4. Swap them in
+        {
+            let mut client_lock = self.core_client.write().unwrap();
+            *client_lock = new_client;
+        }
+        {
+            let mut sdk_lock = self.sdk.write().unwrap();
+            *sdk_lock = new_sdk;
+        }
+
+        // Rebind the provider to the new app context
+        provider.bind_app_context(self.clone());
+
+        Ok(())
     }
 
     pub(crate) fn network_string(&self) -> String {

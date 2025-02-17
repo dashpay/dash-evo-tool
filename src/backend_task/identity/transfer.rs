@@ -16,11 +16,16 @@ impl AppContext {
         credits: Credits,
         id: Option<KeyID>,
     ) -> Result<BackendTaskSuccessResult, String> {
+        let sdk_guard = {
+            let guard = self.sdk.read().unwrap();
+            guard.clone()
+        };
+
         let (sender_balance, receiver_balance) = qualified_identity
             .identity
             .clone()
             .transfer_credits(
-                &self.sdk,
+                &sdk_guard,
                 to_identifier,
                 credits,
                 id.and_then(|key_id| qualified_identity.identity.get_public_key_by_id(key_id)),

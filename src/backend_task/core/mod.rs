@@ -46,6 +46,8 @@ impl AppContext {
         match task {
             CoreTask::GetBestChainLock => self
                 .core_client
+                .read()
+                .unwrap()
                 .get_best_chain_lock()
                 .map(|chain_lock| {
                     BackendTaskSuccessResult::CoreItem(CoreItem::ChainLock(

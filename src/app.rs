@@ -60,11 +60,10 @@ pub struct AppState {
     pub mainnet_core_zmq_listener: CoreZMQListener,
     pub testnet_core_zmq_listener: CoreZMQListener,
     pub devnet_core_zmq_listener: CoreZMQListener,
-    // pub local_core_zmq_listener: CoreZMQListener,
+    pub local_core_zmq_listener: CoreZMQListener,
     pub core_message_receiver: mpsc::Receiver<(ZMQMessage, Network)>,
     pub task_result_sender: tokiompsc::Sender<TaskResult>, // Channel sender for sending task results
     pub task_result_receiver: tokiompsc::Receiver<TaskResult>, // Channel receiver for receiving task results
-    last_repaint: Instant, // Track the last time we requested a repaint
     last_scheduled_vote_check: Instant, // Last time we checked if there are scheduled masternode votes to cast
 }
 
@@ -72,9 +71,6 @@ pub struct AppState {
 pub enum DesiredAppAction {
     None,
     Refresh,
-    PopScreen,
-    GoToMainScreen,
-    SwitchNetwork(Network),
     AddScreenType(ScreenType),
     BackendTask(BackendTask),
     BackendTasks(Vec<BackendTask>, BackendTasksExecutionMode),
@@ -87,8 +83,6 @@ impl DesiredAppAction {
             DesiredAppAction::None => AppAction::None,
             DesiredAppAction::Refresh => AppAction::Refresh,
             DesiredAppAction::Custom(message) => AppAction::Custom(message.clone()),
-            DesiredAppAction::PopScreen => AppAction::PopScreen,
-            DesiredAppAction::GoToMainScreen => AppAction::GoToMainScreen,
             DesiredAppAction::AddScreenType(screen_type) => {
                 AppAction::AddScreen(screen_type.create_screen(app_context))
             }
@@ -98,7 +92,6 @@ impl DesiredAppAction {
             DesiredAppAction::BackendTasks(tasks, mode) => {
                 AppAction::BackendTasks(tasks.clone(), mode.clone())
             }
-            DesiredAppAction::SwitchNetwork(network) => AppAction::SwitchNetwork(*network),
         }
     }
 }
@@ -113,7 +106,6 @@ pub enum BackendTasksExecutionMode {
 pub enum AppAction {
     None,
     Refresh,
-    PopScreen,
     PopScreenAndRefresh,
     GoToMainScreen,
     SwitchNetwork(Network),
@@ -286,9 +278,6 @@ impl AppState {
         // // Create a channel with a buffer size of 32 (adjust as needed)
         let (task_result_sender, task_result_receiver) = tokiompsc::channel(256);
 
-        // Initialize the last repaint time to the current instant
-        let last_repaint = Instant::now();
-
         // Create a channel for communication with the InstantSendListener
         let (core_message_sender, core_message_receiver) = mpsc::channel();
 
@@ -326,18 +315,18 @@ impl AppState {
         )
         .expect("Failed to create devnet InstantSend listener");
 
-        // let local_tx_zmq_status_option = match local_app_context {
-        //     Some(ref context) => Some(context.sx_zmq_status.clone()),
-        //     None => None,
-        // };
+        let local_tx_zmq_status_option = match local_app_context {
+            Some(ref context) => Some(context.sx_zmq_status.clone()),
+            None => None,
+        };
 
-        // let local_core_zmq_listener = CoreZMQListener::spawn_listener(
-        //     Network::Regtest,
-        //     "tcp://127.0.0.1:20302",
-        //     core_message_sender,
-        //     local_tx_zmq_status_option,
-        // )
-        // .expect("Failed to create local InstantSend listener");
+        let local_core_zmq_listener = CoreZMQListener::spawn_listener(
+            Network::Regtest,
+            "tcp://127.0.0.1:20302",
+            core_message_sender,
+            local_tx_zmq_status_option,
+        )
+        .expect("Failed to create local InstantSend listener");
 
         Self {
             main_screens: [
@@ -405,11 +394,10 @@ impl AppState {
             mainnet_core_zmq_listener,
             testnet_core_zmq_listener,
             devnet_core_zmq_listener,
-            // local_core_zmq_listener,
+            local_core_zmq_listener,
             core_message_receiver,
             task_result_sender,
             task_result_receiver,
-            last_repaint,
             last_scheduled_vote_check: Instant::now(),
         }
     }
@@ -467,12 +455,6 @@ impl AppState {
         });
     }
 
-    pub fn active_root_screen(&self) -> &Screen {
-        self.main_screens
-            .get(&self.selected_main_screen)
-            .expect("expected to get screen")
-    }
-
     pub fn active_root_screen_mut(&mut self) -> &mut Screen {
         self.main_screens
             .get_mut(&self.selected_main_screen)
@@ -487,27 +469,11 @@ impl AppState {
         }
     }
 
-    pub fn visible_screen(&self) -> &Screen {
-        if let Some(last_screen) = self.screen_stack.last() {
-            last_screen
-        } else {
-            self.active_root_screen()
-        }
-    }
-
     pub fn visible_screen_mut(&mut self) -> &mut Screen {
         if self.screen_stack.is_empty() {
             self.active_root_screen_mut()
         } else {
             self.screen_stack.last_mut().unwrap()
-        }
-    }
-
-    pub fn visible_screen_type(&self) -> ScreenType {
-        if let Some(last_screen) = self.screen_stack.last() {
-            last_screen.screen_type()
-        } else {
-            self.selected_main_screen.into()
         }
     }
 }
@@ -726,11 +692,6 @@ impl App for AppState {
             AppAction::AddScreen(screen) => self.screen_stack.push(screen),
             AppAction::None => {}
             AppAction::Refresh => self.visible_screen_mut().refresh(),
-            AppAction::PopScreen => {
-                if !self.screen_stack.is_empty() {
-                    self.screen_stack.pop();
-                }
-            }
             AppAction::PopScreenAndRefresh => {
                 if !self.screen_stack.is_empty() {
                     self.screen_stack.pop();

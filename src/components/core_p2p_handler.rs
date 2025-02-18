@@ -5,7 +5,7 @@ use dashcoretemp::consensus::{deserialize, serialize};
 use dashcoretemp::network::constants::ServiceFlags;
 use dashcoretemp::network::message::{NetworkMessage, RawNetworkMessage};
 use dashcoretemp::network::message_sml::{GetMnListDiff, MnListDiff};
-use dashcoretemp::network::{message_network, Address};
+use dashcoretemp::network::{message_network, message_qrinfo, Address};
 use dashcoretemp::BlockHash;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
@@ -14,6 +14,7 @@ use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::thread;
 use std::time::Duration;
+use dashcoretemp::network::message_qrinfo::QRInfo;
 
 #[derive(Debug)]
 pub struct CoreP2PHandler {
@@ -67,7 +68,7 @@ impl CoreP2PHandler {
     }
 
     /// Sends a network message over the provided stream and waits for a response.
-    pub fn send_dml_message(
+    pub fn send_dml_request_message(
         &mut self,
         network_message: NetworkMessage,
     ) -> Result<MnListDiff, String> {
@@ -83,7 +84,7 @@ impl CoreP2PHandler {
         stream
             .write_all(&encoded_message)
             .map_err(|e| format!("Failed to send message: {}", e))?;
-        println!("Sent message to Dash Core");
+        println!("Sent getmnlistdiff message to Dash Core");
 
         let (mut command, mut payload);
         loop {
@@ -96,13 +97,13 @@ impl CoreP2PHandler {
             }
         }
 
-        let log_file_path = app_user_data_file_path("DML.DAT").expect("should create DML.dat");
-        let mut log_file = match std::fs::File::create(log_file_path) {
-            Ok(file) => file,
-            Err(e) => panic!("Failed to create log file: {:?}", e),
-        };
-
-        log_file.write_all(&payload).expect("expected to write");
+        // let log_file_path = app_user_data_file_path("DML.DAT").expect("should create DML.dat");
+        // let mut log_file = match std::fs::File::create(log_file_path) {
+        //     Ok(file) => file,
+        //     Err(e) => panic!("Failed to create log file: {:?}", e),
+        // };
+        //
+        // log_file.write_all(&payload).expect("expected to write");
 
         let response_message: RawNetworkMessage = deserialize(&payload).map_err(|e| {
             format!(
@@ -116,6 +117,61 @@ impl CoreP2PHandler {
             NetworkMessage::MnListDiff(diff) => Ok(diff),
             network_message => Err(format!(
                 "Unexpected response type, expected MnListDiff, got {:?}",
+                network_message
+            )),
+        }
+    }
+
+    /// Sends a network message over the provided stream and waits for a response.
+    pub fn send_qr_info_request_message(
+        &mut self,
+        network_message: NetworkMessage,
+    ) -> Result<QRInfo, String> {
+        if !self.handshake_success {
+            self.handshake()?;
+        }
+        let mut stream = &mut self.stream;
+        let raw_message = RawNetworkMessage {
+            magic: self.network.magic(),
+            payload: network_message,
+        };
+        let encoded_message = serialize(&raw_message);
+        stream
+            .write_all(&encoded_message)
+            .map_err(|e| format!("Failed to send message: {}", e))?;
+        println!("Sent qr info request message to Dash Core");
+
+        let (mut command, mut payload);
+        loop {
+            (command, payload) = self.read_message()?;
+            if command == "qrinfo" {
+                println!("Got qrinfo message");
+                break;
+            } else {
+                thread::sleep(Duration::from_millis(10));
+            }
+        }
+
+        // let log_file_path = app_user_data_file_path("DML.DAT").expect("should create DML.dat");
+        // let mut log_file = match std::fs::File::create(log_file_path) {
+        //     Ok(file) => file,
+        //     Err(e) => panic!("Failed to create log file: {:?}", e),
+        // };
+        //
+        // log_file.write_all(&payload).expect("expected to write");
+
+        let response_message: RawNetworkMessage = deserialize(&payload).map_err(|e| {
+            format!(
+                "Failed to deserialize response: {}, payload {}",
+                e,
+                hex::encode(payload)
+            )
+        })?;
+
+        match response_message.payload {
+            NetworkMessage::QRInfo(qr_info) => Ok(qr_info),
+            network_message => Err(format!(
+                "Unexpected response type, expected QrInfo, got {:?}",
                 network_message
             )),
         }
@@ -275,6 +331,20 @@ impl CoreP2PHandler {
             base_block_hash,
             block_hash,
         });
-        self.send_dml_message(get_mnlist_diff_msg)
+        self.send_dml_request_message(get_mnlist_diff_msg)
+    }
+
+    /// Sends a `GetMnListDiff` request after completing the handshake.
+    pub fn get_qr_info(
+        &mut self,
+        known_block_hashes: Vec<BlockHash>,
+        block_request_hash: BlockHash,
+    ) -> Result<QRInfo, String> {
+        let get_mnlist_diff_msg = NetworkMessage::GetQRInfo(message_qrinfo::GetQRInfo {
+            base_block_hashes: known_block_hashes,
+            block_request_hash,
+            extra_share: false,
+        });
+        self.send_qr_info_request_message(get_mnlist_diff_msg)
     }
 }

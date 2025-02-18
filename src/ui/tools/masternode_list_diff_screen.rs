@@ -21,10 +21,15 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use dash_sdk::dpp::dashcore::BlockHash as BlockHash2;
 use dashcoretemp::bls_sig_utils::BLSSignature;
+use dashcoretemp::hash_types::{ConfirmedHash, ConfirmedHashHashedWithProRegTx};
 use dashcoretemp::sml::llmq_entry_verification::LLMQEntryVerificationStatus;
 use dashcoretemp::sml::llmq_type::LLMQType;
 use dashcoretemp::sml::masternode_list::MasternodeList;
 use dashcoretemp::sml::masternode_list_entry::qualified_masternode_list_entry::QualifiedMasternodeListEntry;
+use dashcoretemp::sml::quorum_entry::qualified_quorum_entry::QualifiedQuorumEntry;
+use dashcoretemp::transaction::special_transaction::quorum_commitment::QuorumEntry;
+use futures::FutureExt;
+use itertools::Itertools;
 
 /// Screen for viewing MNList diffs (diffs in the masternode list and quorums)
 pub struct MasternodeListDiffScreen {
@@ -70,6 +75,12 @@ pub struct MasternodeListDiffScreen {
     /// Search term
     search_term: Option<String>,
 
+    /// The block height cache
+    block_height_cache: BTreeMap<BlockHash, CoreBlockHeight>,
+
+    /// The masternode list quorum hash cache
+    masternode_list_quorum_hash_cache: BTreeMap<BlockHash, BTreeMap<LLMQType, Vec<(CoreBlockHeight, QualifiedQuorumEntry)>>>,
+
     error: Option<String>,
 }
 
@@ -99,7 +110,26 @@ impl MasternodeListDiffScreen {
             selected_quorum_hash: None,
             selected_masternode_pro_tx_hash: None,
             error: None,
+            block_height_cache: Default::default(),
+            masternode_list_quorum_hash_cache: Default::default(),
         }
+    }
+
+    fn get_height(&self, block_hash: &BlockHash) -> Result<CoreBlockHeight, String> {
+        let Some(height) = self.masternode_list_engine.block_heights.get(block_hash) else {
+            let Some(height) = self.block_height_cache.get(block_hash) else {
+                return match self.app_context.core_client.get_block_header_info(&(BlockHash2::from_byte_array(block_hash.to_byte_array()))) {
+                    Ok(block_hash) => {
+                        Ok(block_hash.height as CoreBlockHeight)
+                    },
+                    Err(e) => {
+                        Err(e.to_string())
+                    }
+                }
+            };
+            return Ok(*height)
+        };
+        Ok(*height)
     }
 
     fn parse_heights(&mut self) -> Result<((u32, BlockHash), (u32, BlockHash)), String> {
@@ -254,7 +284,7 @@ impl MasternodeListDiffScreen {
                 hashes_needed_to_validate.insert(height - 8, BlockHash::from_byte_array(validation_hash.to_byte_array()));
             };
 
-            if let Some((oldest_needed_height, oldest_needed_hash)) = hashes_needed_to_validate.first_key_value() {
+            if let Some((oldest_needed_height, _)) = hashes_needed_to_validate.first_key_value() {
                 let (first_engine_height, first_masternode_list) = self.masternode_list_engine.masternode_lists.first_key_value().unwrap();
                     let (mut base_block_height, mut base_block_hash) = if *first_engine_height < *oldest_needed_height {
                         (*first_engine_height, first_masternode_list.block_hash)
@@ -284,6 +314,20 @@ impl MasternodeListDiffScreen {
                     base_block_hash = block_hash;
                     base_block_height = core_block_height;
                 }
+            }
+
+            let hashes = self.masternode_list_engine.latest_masternode_list_rotating_quorum_hashes(&[]);
+            for hash in &hashes {
+                let height = match self.get_height(hash) {
+                    Ok(height) => {
+                        height
+                    },
+                    Err(e) => {
+                        self.error = Some(e.to_string());
+                        return;
+                    }
+                };
+                self.block_height_cache.insert(*hash, height);
             }
 
             if let Err(e) = self.masternode_list_engine.verify_masternode_list_quorums(block_height, &[LLMQType::Llmqtype50_60, LLMQType::Llmqtype400_85]) {
@@ -421,10 +465,29 @@ impl MasternodeListDiffScreen {
     //     self.selected_quorum_in_diff_index = None;
     // }
 
+    fn clear(&mut self) {
+        self.masternode_list_engine = MasternodeListEngine {
+            block_hashes: Default::default(),
+            block_heights: Default::default(),
+            masternode_lists: Default::default(),
+            known_chain_locks: Default::default(),
+            network: Network::Dash};
+
+            self.serialized_masternode_list_engine = None;
+            self.mnlist_diffs= Default::default();
+            self.selected_dml_diff_key= None;
+            self.selected_dml_height_key= None;
+            self.selected_option_index= None;
+            self.selected_quorum_in_diff_index= None;
+            self.selected_masternode_in_diff_index= None;
+            self.selected_quorum_hash= None;
+            self.selected_masternode_pro_tx_hash= None;
+    }
+
     /// Fetch the MNList diffs between the given base and end block heights.
     /// In a real implementation, you would replace the dummy function below with a call to
     /// dash_core’s DB (or other data source) to retrieve the MNList diffs.
-    fn fetch_end_dml_diff(&mut self, validate_quorums: bool,) {
+    fn fetch_end_dml_diff(&mut self, validate_quorums: bool) {
         let ((base_block_height, base_block_hash), (block_height, block_hash)) =
             match self.parse_heights() {
                 Ok(a) => a,
@@ -468,6 +531,9 @@ impl MasternodeListDiffScreen {
             }
             if ui.button("Get DMLs and validate").clicked() {
                 self.fetch_end_dml_diff(true);
+            }
+            if ui.button("Clear").clicked() {
+                self.clear();
             }
         });
     }
@@ -600,33 +666,65 @@ impl MasternodeListDiffScreen {
     }
 
     fn render_quorums_in_masternode_list(&mut self, ui: &mut Ui) {
+        let mut heights : BTreeMap<QuorumHash, CoreBlockHeight> = BTreeMap::new();
+        let mut masternode_block_hash = None;
         if let Some(selected_height) = self.selected_dml_height_key {
             if let Some(mn_list) = self
                 .masternode_list_engine
                 .masternode_lists
                 .get(&selected_height)
             {
+                masternode_block_hash = Some(mn_list.block_hash);
+                for (llmq_type, quorum_map) in &mn_list.quorums {
+                    if llmq_type == &LLMQType::Llmqtype50_60 || llmq_type == &LLMQType::Llmqtype400_85 {
+                        continue;
+                    }
+                    for quorum_hash in quorum_map.keys() {
+                        if let Ok(height) = self.get_height(quorum_hash) {
+                            heights.insert(*quorum_hash, height);
+                        }
+                    }
+                }
+                if !self.masternode_list_quorum_hash_cache.contains_key(&mn_list.block_hash) {
+                    let mut btree_map = BTreeMap::new();
+                    for (llmq_type, quorum_map) in &mn_list.quorums {
+                        let quorums_by_height = quorum_map.iter().map(|(quorum_hash, quorum_entry)| {
+                            (heights.get(quorum_hash).copied().unwrap_or_default(), quorum_entry.clone())
+                        }).collect();
+                        btree_map.insert(*llmq_type, quorums_by_height);
+                    }
+                    self.masternode_list_quorum_hash_cache.insert(mn_list.block_hash, btree_map);
+                }
+            }
+        }
+        if let Some(quorums) = masternode_block_hash.and_then(|block_hash| self.masternode_list_quorum_hash_cache.get(&block_hash))
+            {
+
                 ui.heading("Quorums in Masternode List");
+                ui.label("(excluding 50_60 and 400_85)");
                 ScrollArea::vertical()
                     .id_salt("quorum_list_scroll_area")
                     .show(ui, |ui| {
-                        for (llmq_type, quorum_map) in &mn_list.quorums {
-                            for (quorum_hash, quorum_entry) in
+                        for (llmq_type, quorum_map) in quorums {
+                            if llmq_type == &LLMQType::Llmqtype50_60 || llmq_type == &LLMQType::Llmqtype400_85 {
+                                continue;
+                            }
+                            for (quorum_height, quorum_entry) in
                                 quorum_map.iter()
                             {
                                 if ui
                                     .selectable_label(
-                                        self.selected_quorum_hash == Some((*llmq_type, *quorum_hash)),
+                                        self.selected_quorum_hash == Some((*llmq_type, quorum_entry.quorum_entry.quorum_hash)),
                                         format!(
                                             "Quorum {} Type: {} Valid {}",
-                                            quorum_hash.to_string().as_str().split_at(5).0,
+                                            quorum_height,
                                             QuorumType::from(*llmq_type as u32).to_string(),
                                             quorum_entry.verified == LLMQEntryVerificationStatus::Verified
                                         ),
                                     )
                                     .clicked()
                                 {
-                                    self.selected_quorum_hash = Some((*llmq_type, *quorum_hash));
+                                    self.selected_quorum_hash = Some((*llmq_type, quorum_entry.quorum_entry.quorum_hash));
                                     self.selected_masternode_pro_tx_hash = None;
                                     self.selected_dml_diff_key = None;
                                 }
@@ -634,7 +732,6 @@ impl MasternodeListDiffScreen {
                         }
                     });
             }
-        }
     }
 
     /// Filter masternodes based on the search term
@@ -762,7 +859,7 @@ impl MasternodeListDiffScreen {
         ui.horizontal(|ui| {
             // Left column (Fixed width: 120px)
             ui.allocate_ui_with_layout(
-                egui::Vec2::new(120.0, ui.available_height()),
+                egui::Vec2::new(120.0, 1000.0),
                 Layout::top_down(Align::Min),
                 |ui| {
                     self.render_masternode_lists(ui);
@@ -773,7 +870,7 @@ impl MasternodeListDiffScreen {
 
             // Middle column (50% of the remaining space)
             ui.allocate_ui_with_layout(
-                egui::Vec2::new(ui.available_width() * 0.5, ui.available_height()),
+                egui::Vec2::new(ui.available_width() * 0.5, 1000.0),
                 Layout::top_down(Align::Min),
                 |ui| {
                     self.render_selected_masternode_list_items(ui);
@@ -828,7 +925,7 @@ impl MasternodeListDiffScreen {
         // - Right column: quorum details
         ui.horizontal(|ui| {
             ui.allocate_ui_with_layout(
-                egui::Vec2::new(150.0, ui.available_height()), // Set fixed width for left column
+                egui::Vec2::new(150.0, 800.0), // Set fixed width for left column
                 Layout::top_down(Align::Min),
                 |ui| {
                     self.render_diff_list(ui);
@@ -838,7 +935,7 @@ impl MasternodeListDiffScreen {
             ui.separator(); // Optional: Adds a visual separator
 
             ui.allocate_ui_with_layout(
-                egui::Vec2::new(ui.available_width() * 0.5, ui.available_height()), // Middle column
+                egui::Vec2::new(ui.available_width() * 0.5, 800.0), // Middle column
                 Layout::top_down(Align::Min),
                 |ui| {
                     self.render_selected_dml_items(ui);
@@ -953,8 +1050,8 @@ impl MasternodeListDiffScreen {
                                         "Version: {}\nQuorum Hash: {}\nSigners: {} members\nValid Members: {} members\nQuorum Public Key: {}\n",
                                         quorum.version,
                                         quorum.quorum_hash,
-                                        quorum.signers.len(),
-                                        quorum.valid_members.len(),
+                                        quorum.signers.iter().filter(|&&b| b).count(),
+                                        quorum.valid_members.iter().filter(|&&b| b).count(),
                                         quorum.quorum_public_key,
                                     ));
                                 });
@@ -979,14 +1076,15 @@ impl MasternodeListDiffScreen {
                                 ui.set_min_size(Vec2::new(ui.available_width(), 300.0));
                                 ScrollArea::vertical().show(ui, |ui| {
                                     ui.label(format!(
-                                        "Quorum Type: {}\nQuorum Hash: {}\nCommitment Hash: {}\nCommitment Data: {}\nEntry Hash: {}\nSigners: {} members\nValid Members: {} members\nQuorum Public Key: {}\nValidation status: {}",
+                                        "Quorum Type: {}\nQuorum Height: {}\nQuorum Hash: {}\nCommitment Hash: {}\nCommitment Data: {}\nEntry Hash: {}\nSigners: {} members\nValid Members: {} members\nQuorum Public Key: {}\nValidation status: {}",
                                         QuorumType::from(quorum.quorum_entry.llmq_type as u32),
+                                        self.get_height(&quorum.quorum_entry.quorum_hash).ok().map(|height| format!("{}", height)).unwrap_or("Unknown".to_string()),
                                         quorum.quorum_entry.quorum_hash,
                                         quorum.commitment_hash,
                                         hex::encode(quorum.quorum_entry.commitment_data()),
                                         quorum.entry_hash,
-                                        quorum.quorum_entry.signers.len(),
-                                        quorum.quorum_entry.valid_members.len(),
+                                        quorum.quorum_entry.signers.iter().filter(|&&b| b).count(),
+                                        quorum.quorum_entry.valid_members.iter().filter(|&&b| b).count(),
                                         quorum.quorum_entry.quorum_public_key,
                                         quorum.verified,
                                     ));
@@ -1025,10 +1123,10 @@ impl MasternodeListDiffScreen {
                                      Is Valid: {}\n\
                                      Masternode Type: {}",
                                         masternode.version,
-                                        masternode.pro_reg_tx_hash,
+                                        masternode.pro_reg_tx_hash.reverse(),
                                         match masternode.confirmed_hash {
                                             None => "No confirmed hash".to_string(),
-                                            Some(confirmed_hash) => confirmed_hash.to_string(),
+                                            Some(confirmed_hash) => confirmed_hash.reverse().to_string(),
                                         },
                                         masternode.service_address.ip(),
                                         masternode.service_address.port(),

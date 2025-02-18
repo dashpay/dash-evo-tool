@@ -311,58 +311,86 @@ impl TokensScreen {
             self.sort_vec_of_groups(&mut grouped);
         }
 
+        // Allocate space for refreshing indicator
+        let refreshing_height = 33.0;
+        let mut max_scroll_height = if let RefreshingStatus::Refreshing(_) = self.refreshing_status
+        {
+            ui.available_height() - refreshing_height
+        } else {
+            ui.available_height()
+        };
+
+        // Allocate space for backend message
+        let backend_message_height = 40.0;
+        if let Some((_, _, _)) = self.backend_message.clone() {
+            max_scroll_height -= backend_message_height;
+        }
+
         // A simple table with columns: [Token Name | Token ID | Total Balance]
-        TableBuilder::new(ui)
-            .striped(true)
-            .resizable(true)
-            .cell_layout(egui::Layout::left_to_right(Align::Center))
-            .column(Column::initial(150.0).resizable(true)) // Token Name
-            .column(Column::initial(200.0).resizable(true)) // Token ID
-            .column(Column::initial(80.0).resizable(true)) // Total Balance
-            // .column(Column::initial(80.0).resizable(true)) // Token Info
-            .header(30.0, |mut header| {
-                header.col(|ui| {
-                    if ui.button("Token Name").clicked() {
-                        self.toggle_sort(SortColumn::TokenName);
-                    }
-                });
-                header.col(|ui| {
-                    if ui.button("Token ID").clicked() {
-                        self.toggle_sort(SortColumn::TokenID);
-                    }
-                });
-                header.col(|ui| {
-                    if ui.button("Total Balance").clicked() {
-                        self.toggle_sort(SortColumn::Balance);
-                    }
-                });
-                // header.col(|ui| {
-                //     ui.label("Token Info");
-                // });
-            })
-            .body(|mut body| {
-                for (token_id, token_name, total_balance) in grouped {
-                    body.row(25.0, |mut row| {
-                        row.col(|ui| {
-                            // By making the label into a button or using `ui.selectable_label`,
-                            // we can respond to clicks.
-                            if ui.button(&token_name).clicked() {
-                                self.selected_token_id = Some(token_id.clone());
-                            }
-                        });
-                        row.col(|ui| {
-                            ui.label(token_id.to_string(Encoding::Base58));
-                        });
-                        row.col(|ui| {
-                            ui.label(total_balance.to_string());
-                        });
-                        // row.col(|ui| {
-                        //     if ui.button("Info").clicked() {
-                        //         self.show_token_info = Some(token_id.clone());
-                        //     }
-                        // });
+        egui::ScrollArea::vertical()
+            .max_height(max_scroll_height)
+            .show(ui, |ui| {
+                Frame::group(ui.style())
+                    .fill(ui.visuals().panel_fill)
+                    .stroke(egui::Stroke::new(
+                        1.0,
+                        ui.visuals().widgets.inactive.bg_stroke.color,
+                    ))
+                    .inner_margin(Margin::same(8.0))
+                    .show(ui, |ui| {
+                        TableBuilder::new(ui)
+                            .striped(true)
+                            .resizable(true)
+                            .cell_layout(egui::Layout::left_to_right(Align::Center))
+                            .column(Column::initial(150.0).resizable(true)) // Token Name
+                            .column(Column::initial(200.0).resizable(true)) // Token ID
+                            .column(Column::initial(80.0).resizable(true)) // Total Balance
+                            // .column(Column::initial(80.0).resizable(true)) // Token Info
+                            .header(30.0, |mut header| {
+                                header.col(|ui| {
+                                    if ui.button("Token Name").clicked() {
+                                        self.toggle_sort(SortColumn::TokenName);
+                                    }
+                                });
+                                header.col(|ui| {
+                                    if ui.button("Token ID").clicked() {
+                                        self.toggle_sort(SortColumn::TokenID);
+                                    }
+                                });
+                                header.col(|ui| {
+                                    if ui.button("Total Balance").clicked() {
+                                        self.toggle_sort(SortColumn::Balance);
+                                    }
+                                });
+                                // header.col(|ui| {
+                                //     ui.label("Token Info");
+                                // });
+                            })
+                            .body(|mut body| {
+                                for (token_id, token_name, total_balance) in grouped {
+                                    body.row(25.0, |mut row| {
+                                        row.col(|ui| {
+                                            // By making the label into a button or using `ui.selectable_label`,
+                                            // we can respond to clicks.
+                                            if ui.button(&token_name).clicked() {
+                                                self.selected_token_id = Some(token_id.clone());
+                                            }
+                                        });
+                                        row.col(|ui| {
+                                            ui.label(token_id.to_string(Encoding::Base58));
+                                        });
+                                        row.col(|ui| {
+                                            ui.label(total_balance.to_string());
+                                        });
+                                        // row.col(|ui| {
+                                        //     if ui.button("Info").clicked() {
+                                        //         self.show_token_info = Some(token_id.clone());
+                                        //     }
+                                        // });
+                                    });
+                                }
+                            });
                     });
-                }
             });
     }
 
@@ -384,121 +412,182 @@ impl TokensScreen {
 
         // This is basically your old `render_table_my_token_balances` logic, but
         // limited to just the single token.
-        TableBuilder::new(ui)
-            .striped(true)
-            .resizable(true)
-            .cell_layout(egui::Layout::left_to_right(Align::Center))
-            .column(Column::initial(200.0).resizable(true)) // Identity Alias
-            .column(Column::initial(200.0).resizable(true)) // Identity ID
-            .column(Column::initial(60.0).resizable(true)) // Balance
-            .column(Column::initial(200.0).resizable(true)) // Actions
-            .header(30.0, |mut header| {
-                header.col(|ui| {
-                    if ui.button("Identity Alias").clicked() {
-                        self.toggle_sort(SortColumn::OwnerIdentityAlias);
-                    }
-                });
-                header.col(|ui| {
-                    if ui.button("Identity ID").clicked() {
-                        self.toggle_sort(SortColumn::OwnerIdentity);
-                    }
-                });
-                header.col(|ui| {
-                    if ui.button("Balance").clicked() {
-                        self.toggle_sort(SortColumn::Balance);
-                    }
-                });
-                header.col(|ui| {
-                    ui.label("Actions");
-                });
-            })
-            .body(|mut body| {
-                for itb in &detail_list {
-                    body.row(25.0, |mut row| {
-                        row.col(|ui| {
-                            // Show identity alias or ID
-                            if let Some(alias) = self
-                                .app_context
-                                .get_alias(&itb.identity_id)
-                                .expect("Expected to get alias")
-                            {
-                                ui.label(alias);
-                            } else {
-                                ui.label("");
-                            }
-                        });
-                        row.col(|ui| {
-                            ui.label(itb.identity_id.to_string(Encoding::Base58));
-                        });
-                        row.col(|ui| {
-                            ui.label(itb.balance.to_string());
-                        });
-                        row.col(|ui| {
-                            ui.horizontal(|ui| {
-                                // Transfer
-                                if ui.button("Transfer").clicked() {
-                                    action = AppAction::AddScreen(Screen::TransferTokensScreen(
-                                        TransferTokensScreen::new(itb.clone(), &self.app_context),
-                                    ));
-                                }
+        // Allocate space for refreshing indicator
+        let refreshing_height = 33.0;
+        let mut max_scroll_height = if let RefreshingStatus::Refreshing(_) = self.refreshing_status
+        {
+            ui.available_height() - refreshing_height
+        } else {
+            ui.available_height()
+        };
 
-                                // Expandable advanced actions menu
-                                ui.menu_button("...", |ui| {
-                                    if ui.button("Mint").clicked() {
-                                        action = AppAction::AddScreen(Screen::MintTokensScreen(
-                                            MintTokensScreen::new(itb.clone(), &self.app_context),
-                                        ));
-                                        ui.close_menu();
-                                    }
-                                    if ui.button("Burn").clicked() {
-                                        action = AppAction::AddScreen(Screen::BurnTokensScreen(
-                                            BurnTokensScreen::new(itb.clone(), &self.app_context),
-                                        ));
-                                        ui.close_menu();
-                                    }
-                                    if ui.button("Freeze").clicked() {
-                                        action = AppAction::AddScreen(Screen::FreezeTokensScreen(
-                                            FreezeTokensScreen::new(itb.clone(), &self.app_context),
-                                        ));
-                                        ui.close_menu();
-                                    }
-                                    if ui.button("Destroy").clicked() {
-                                        action =
-                                            AppAction::AddScreen(Screen::DestroyFrozenFundsScreen(
-                                                DestroyFrozenFundsScreen::new(
-                                                    itb.clone(),
-                                                    &self.app_context,
-                                                ),
-                                            ));
-                                        ui.close_menu();
-                                    }
-                                    if ui.button("Unfreeze").clicked() {
-                                        action =
-                                            AppAction::AddScreen(Screen::UnfreezeTokensScreen(
-                                                UnfreezeTokensScreen::new(
-                                                    itb.clone(),
-                                                    &self.app_context,
-                                                ),
-                                            ));
-                                        ui.close_menu();
-                                    }
-                                    if ui.button("Pause").clicked() {
-                                        action = AppAction::AddScreen(Screen::PauseTokensScreen(
-                                            PauseTokensScreen::new(itb.clone(), &self.app_context),
-                                        ));
-                                        ui.close_menu();
-                                    }
-                                    if ui.button("Resume").clicked() {
-                                        action = AppAction::AddScreen(Screen::ResumeTokensScreen(
-                                            ResumeTokensScreen::new(itb.clone(), &self.app_context),
-                                        ));
-                                        ui.close_menu();
+        // Allocate space for backend message
+        let backend_message_height = 40.0;
+        if let Some((_, _, _)) = self.backend_message.clone() {
+            max_scroll_height -= backend_message_height;
+        }
+
+        // A simple table with columns: [Token Name | Token ID | Total Balance]
+        egui::ScrollArea::vertical()
+            .max_height(max_scroll_height)
+            .show(ui, |ui| {
+                Frame::group(ui.style())
+                    .fill(ui.visuals().panel_fill)
+                    .stroke(egui::Stroke::new(
+                        1.0,
+                        ui.visuals().widgets.inactive.bg_stroke.color,
+                    ))
+                    .inner_margin(Margin::same(8.0))
+                    .show(ui, |ui| {
+                        TableBuilder::new(ui)
+                            .striped(true)
+                            .resizable(true)
+                            .cell_layout(egui::Layout::left_to_right(Align::Center))
+                            .column(Column::initial(200.0).resizable(true)) // Identity Alias
+                            .column(Column::initial(200.0).resizable(true)) // Identity ID
+                            .column(Column::initial(60.0).resizable(true)) // Balance
+                            .column(Column::initial(200.0).resizable(true)) // Actions
+                            .header(30.0, |mut header| {
+                                header.col(|ui| {
+                                    if ui.button("Identity Alias").clicked() {
+                                        self.toggle_sort(SortColumn::OwnerIdentityAlias);
                                     }
                                 });
+                                header.col(|ui| {
+                                    if ui.button("Identity ID").clicked() {
+                                        self.toggle_sort(SortColumn::OwnerIdentity);
+                                    }
+                                });
+                                header.col(|ui| {
+                                    if ui.button("Balance").clicked() {
+                                        self.toggle_sort(SortColumn::Balance);
+                                    }
+                                });
+                                header.col(|ui| {
+                                    ui.label("Actions");
+                                });
+                            })
+                            .body(|mut body| {
+                                for itb in &detail_list {
+                                    body.row(25.0, |mut row| {
+                                        row.col(|ui| {
+                                            // Show identity alias or ID
+                                            if let Some(alias) = self
+                                                .app_context
+                                                .get_alias(&itb.identity_id)
+                                                .expect("Expected to get alias")
+                                            {
+                                                ui.label(alias);
+                                            } else {
+                                                ui.label("");
+                                            }
+                                        });
+                                        row.col(|ui| {
+                                            ui.label(itb.identity_id.to_string(Encoding::Base58));
+                                        });
+                                        row.col(|ui| {
+                                            ui.label(itb.balance.to_string());
+                                        });
+                                        row.col(|ui| {
+                                            ui.horizontal(|ui| {
+                                                // Transfer
+                                                if ui.button("Transfer").clicked() {
+                                                    action = AppAction::AddScreen(
+                                                        Screen::TransferTokensScreen(
+                                                            TransferTokensScreen::new(
+                                                                itb.clone(),
+                                                                &self.app_context,
+                                                            ),
+                                                        ),
+                                                    );
+                                                }
+
+                                                // Expandable advanced actions menu
+                                                ui.menu_button("...", |ui| {
+                                                    if ui.button("Mint").clicked() {
+                                                        action = AppAction::AddScreen(
+                                                            Screen::MintTokensScreen(
+                                                                MintTokensScreen::new(
+                                                                    itb.clone(),
+                                                                    &self.app_context,
+                                                                ),
+                                                            ),
+                                                        );
+                                                        ui.close_menu();
+                                                    }
+                                                    if ui.button("Burn").clicked() {
+                                                        action = AppAction::AddScreen(
+                                                            Screen::BurnTokensScreen(
+                                                                BurnTokensScreen::new(
+                                                                    itb.clone(),
+                                                                    &self.app_context,
+                                                                ),
+                                                            ),
+                                                        );
+                                                        ui.close_menu();
+                                                    }
+                                                    if ui.button("Freeze").clicked() {
+                                                        action = AppAction::AddScreen(
+                                                            Screen::FreezeTokensScreen(
+                                                                FreezeTokensScreen::new(
+                                                                    itb.clone(),
+                                                                    &self.app_context,
+                                                                ),
+                                                            ),
+                                                        );
+                                                        ui.close_menu();
+                                                    }
+                                                    if ui.button("Destroy").clicked() {
+                                                        action = AppAction::AddScreen(
+                                                            Screen::DestroyFrozenFundsScreen(
+                                                                DestroyFrozenFundsScreen::new(
+                                                                    itb.clone(),
+                                                                    &self.app_context,
+                                                                ),
+                                                            ),
+                                                        );
+                                                        ui.close_menu();
+                                                    }
+                                                    if ui.button("Unfreeze").clicked() {
+                                                        action = AppAction::AddScreen(
+                                                            Screen::UnfreezeTokensScreen(
+                                                                UnfreezeTokensScreen::new(
+                                                                    itb.clone(),
+                                                                    &self.app_context,
+                                                                ),
+                                                            ),
+                                                        );
+                                                        ui.close_menu();
+                                                    }
+                                                    if ui.button("Pause").clicked() {
+                                                        action = AppAction::AddScreen(
+                                                            Screen::PauseTokensScreen(
+                                                                PauseTokensScreen::new(
+                                                                    itb.clone(),
+                                                                    &self.app_context,
+                                                                ),
+                                                            ),
+                                                        );
+                                                        ui.close_menu();
+                                                    }
+                                                    if ui.button("Resume").clicked() {
+                                                        action = AppAction::AddScreen(
+                                                            Screen::ResumeTokensScreen(
+                                                                ResumeTokensScreen::new(
+                                                                    itb.clone(),
+                                                                    &self.app_context,
+                                                                ),
+                                                            ),
+                                                        );
+                                                        ui.close_menu();
+                                                    }
+                                                });
+                                            });
+                                        });
+                                    });
+                                }
                             });
-                        });
                     });
-                }
             });
 
         action
@@ -1056,6 +1145,7 @@ impl ScreenLike for TokensScreen {
             }
             AppAction::SetMainScreen(_) => {
                 self.refreshing_status = RefreshingStatus::NotRefreshing;
+                self.selected_token_id = None;
             }
             AppAction::Custom(ref s) if s == "Back to tokens" => {
                 self.selected_token_id = None;

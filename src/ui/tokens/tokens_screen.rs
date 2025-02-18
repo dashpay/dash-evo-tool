@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use chrono::{DateTime, Utc};
@@ -71,7 +72,9 @@ pub enum TokenSearchStatus {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SortColumn {
     TokenName,
+    TokenID,
     OwnerIdentity,
+    OwnerIdentityAlias,
     Balance,
 }
 
@@ -88,6 +91,8 @@ pub struct TokensScreen {
     pub app_context: Arc<AppContext>,
     pub tokens_subscreen: TokensSubscreen,
     my_tokens: Arc<Mutex<Vec<IdentityTokenBalance>>>,
+    selected_token_id: Option<Identifier>,
+    show_token_info: Option<Identifier>,
     backend_message: Option<(String, MessageType, DateTime<Utc>)>,
     pending_backend_task: Option<BackendTask>,
     refreshing_status: RefreshingStatus,
@@ -120,6 +125,8 @@ impl TokensScreen {
         let mut screen = Self {
             app_context: app_context.clone(),
             my_tokens,
+            selected_token_id: None,
+            show_token_info: None,
             token_search_query: None,
             token_search_status: TokenSearchStatus::NotStarted,
             search_current_page: 1,
@@ -140,10 +147,10 @@ impl TokensScreen {
             token_to_remove: None,
         };
 
-        if let Ok(saved_ids) = screen.app_context.db.load_token_order() {
-            screen.reorder_vec_to(saved_ids);
-            screen.use_custom_order = true;
-        }
+        // if let Ok(saved_ids) = screen.app_context.db.load_token_order() {
+        //     screen.reorder_vec_to(saved_ids);
+        //     screen.use_custom_order = true;
+        // }
 
         screen
     }
@@ -185,55 +192,6 @@ impl TokensScreen {
             .ok();
     }
 
-    // If user toggles away from sorting to a custom order,
-    // but we've already displayed an ephemeral sort,
-    // we can unify that ephemeral order with the underlying Vec
-    // *before* doing an up/down swap.
-    fn update_vec_to_current_ephemeral(&self, ephemeral_list: Vec<IdentityTokenBalance>) {
-        let mut lock = self.my_tokens.lock().unwrap();
-        // Reorder `lock` to match ephemeral_list:
-        for (desired_idx, ephemeral_token) in ephemeral_list.into_iter().enumerate() {
-            if let Some(current_idx) = lock
-                .iter()
-                .position(|t| t.token_identifier == ephemeral_token.token_identifier)
-            {
-                if current_idx != desired_idx {
-                    lock.swap(current_idx, desired_idx);
-                }
-            }
-        }
-    }
-
-    // Move a token up
-    fn move_token_up(&mut self, token_id: &Identifier, identity_id: &Identifier) {
-        let mut lock = self.my_tokens.lock().unwrap();
-        if let Some(idx) = lock
-            .iter()
-            .position(|t| &t.token_identifier == token_id && t.identity_id == identity_id)
-        {
-            if idx > 0 {
-                lock.swap(idx, idx - 1);
-            }
-        }
-        drop(lock);
-        self.save_current_order();
-    }
-
-    // Move a token down
-    fn move_token_down(&mut self, token_id: &Identifier, identity_id: &Identifier) {
-        let mut lock = self.my_tokens.lock().unwrap();
-        if let Some(idx) = lock
-            .iter()
-            .position(|t| &t.token_identifier == token_id && t.identity_id == identity_id)
-        {
-            if idx + 1 < lock.len() {
-                lock.swap(idx, idx + 1);
-            }
-        }
-        drop(lock);
-        self.save_current_order();
-    }
-
     // ─────────────────────────────────────────────────────────────────
     // Sorting
     // ─────────────────────────────────────────────────────────────────
@@ -244,7 +202,21 @@ impl TokensScreen {
             let ordering = match self.sort_column {
                 SortColumn::Balance => a.balance.cmp(&b.balance),
                 SortColumn::OwnerIdentity => a.identity_id.cmp(&b.identity_id),
+                SortColumn::OwnerIdentityAlias => {
+                    let alias_a = self
+                        .app_context
+                        .get_alias(&a.identity_id)
+                        .expect("Expected to get alias")
+                        .unwrap_or("".to_string());
+                    let alias_b = self
+                        .app_context
+                        .get_alias(&b.identity_id)
+                        .expect("Expected to get alias")
+                        .unwrap_or("".to_string());
+                    alias_a.cmp(&alias_b)
+                }
                 SortColumn::TokenName => a.token_name.cmp(&b.token_name),
+                SortColumn::TokenID => a.token_identifier.cmp(&b.token_identifier),
             };
             match self.sort_order {
                 SortOrder::Ascending => ordering,
@@ -252,6 +224,21 @@ impl TokensScreen {
             }
         });
         self.save_current_order();
+    }
+
+    fn sort_vec_of_groups(&self, list: &mut [(Identifier, String, u64)]) {
+        list.sort_by(|a, b| {
+            let ordering = match self.sort_column {
+                SortColumn::Balance => a.2.cmp(&b.2),
+                SortColumn::TokenName => a.1.cmp(&b.1),
+                SortColumn::TokenID => a.0.cmp(&b.0),
+                _ => a.0.cmp(&b.0),
+            };
+            match self.sort_order {
+                SortOrder::Ascending => ordering,
+                SortOrder::Descending => ordering.reverse(),
+            }
+        });
     }
 
     fn toggle_sort(&mut self, column: SortColumn) {
@@ -267,6 +254,31 @@ impl TokensScreen {
             self.sort_order = SortOrder::Ascending;
             self.save_current_order();
         }
+    }
+
+    /// Group all IdentityTokenBalance objects by token_identifier.
+    /// Returns a Vec of (token_identifier, token_name, total_balance).
+    fn group_tokens_by_identifier(
+        &self,
+        tokens: &[IdentityTokenBalance],
+    ) -> Vec<(Identifier, String, u64)> {
+        let mut map: HashMap<Identifier, (String, u64)> = HashMap::new();
+        for tb in tokens {
+            let entry = map.entry(tb.token_identifier.clone()).or_insert_with(|| {
+                // Store (token_name, running_total_balance)
+                (tb.token_name.clone(), 0u64)
+            });
+            entry.1 += tb.balance;
+        }
+
+        // Convert to a vec for display
+        let mut result = Vec::new();
+        for (identifier, (name, total_balance)) in map {
+            result.push((identifier, name, total_balance));
+        }
+        // Sort by token name, for example
+        result.sort_by(|a, b| a.1.cmp(&b.1));
+        result
     }
 
     // ─────────────────────────────────────────────────────────────────
@@ -291,269 +303,297 @@ impl TokensScreen {
     // Rendering
     // ─────────────────────────────────────────────────────────────────
 
-    fn render_table_my_token_balances(
-        &mut self,
-        ui: &mut Ui,
-        tokens: &[IdentityTokenBalance],
-    ) -> AppAction {
+    /// Renders the top-level token list (one row per unique token).
+    /// When the user clicks on a token, we set `selected_token_id`.
+    fn render_token_list(&mut self, ui: &mut Ui, tokens: &[IdentityTokenBalance]) {
+        let mut grouped = self.group_tokens_by_identifier(tokens);
+        if !self.use_custom_order {
+            self.sort_vec_of_groups(&mut grouped);
+        }
+
+        // A simple table with columns: [Token Name | Token ID | Total Balance]
+        TableBuilder::new(ui)
+            .striped(true)
+            .resizable(true)
+            .cell_layout(egui::Layout::left_to_right(Align::Center))
+            .column(Column::initial(150.0).resizable(true)) // Token Name
+            .column(Column::initial(200.0).resizable(true)) // Token ID
+            .column(Column::initial(80.0).resizable(true)) // Total Balance
+            // .column(Column::initial(80.0).resizable(true)) // Token Info
+            .header(30.0, |mut header| {
+                header.col(|ui| {
+                    if ui.button("Token Name").clicked() {
+                        self.toggle_sort(SortColumn::TokenName);
+                    }
+                });
+                header.col(|ui| {
+                    if ui.button("Token ID").clicked() {
+                        self.toggle_sort(SortColumn::TokenID);
+                    }
+                });
+                header.col(|ui| {
+                    if ui.button("Total Balance").clicked() {
+                        self.toggle_sort(SortColumn::Balance);
+                    }
+                });
+                // header.col(|ui| {
+                //     ui.label("Token Info");
+                // });
+            })
+            .body(|mut body| {
+                for (token_id, token_name, total_balance) in grouped {
+                    body.row(25.0, |mut row| {
+                        row.col(|ui| {
+                            // By making the label into a button or using `ui.selectable_label`,
+                            // we can respond to clicks.
+                            if ui.button(&token_name).clicked() {
+                                self.selected_token_id = Some(token_id.clone());
+                            }
+                        });
+                        row.col(|ui| {
+                            ui.label(token_id.to_string(Encoding::Base58));
+                        });
+                        row.col(|ui| {
+                            ui.label(total_balance.to_string());
+                        });
+                        // row.col(|ui| {
+                        //     if ui.button("Info").clicked() {
+                        //         self.show_token_info = Some(token_id.clone());
+                        //     }
+                        // });
+                    });
+                }
+            });
+    }
+
+    /// Renders details for the selected token_id: a row per identity that holds that token.
+    fn render_token_details(&mut self, ui: &mut Ui, tokens: &[IdentityTokenBalance]) -> AppAction {
         let mut action = AppAction::None;
 
-        let mut display_list = tokens.to_vec();
-        // If user hasn't chosen to keep a custom order, do a normal sort:
+        let token_id = self.selected_token_id.as_ref().unwrap();
+
+        // Filter out only the IdentityTokenBalance for this token_id
+        let mut detail_list: Vec<IdentityTokenBalance> = tokens
+            .iter()
+            .filter(|t| &t.token_identifier == token_id)
+            .cloned()
+            .collect();
         if !self.use_custom_order {
-            self.sort_vec(&mut display_list);
+            self.sort_vec(&mut detail_list);
         }
 
-        // We'll use a scroll area for large lists.
-        let mut max_scroll_height = ui.available_height();
-
-        // If we are refreshing, we want space for that spinner, etc.
-        if let RefreshingStatus::Refreshing(_) = self.refreshing_status {
-            max_scroll_height -= 33.0;
-        }
-        // If there's a message at bottom, allocate space for that.
-        if self.backend_message.is_some() {
-            max_scroll_height -= 47.0;
-        }
-
-        egui::ScrollArea::vertical()
-            .max_height(max_scroll_height)
-            .show(ui, |ui| {
-                Frame::group(ui.style())
-                    .fill(ui.visuals().panel_fill)
-                    .stroke(egui::Stroke::new(
-                        1.0,
-                        ui.visuals().widgets.inactive.bg_stroke.color,
-                    ))
-                    .inner_margin(Margin::same(8.0))
-                    .show(ui, |ui| {
-                        TableBuilder::new(ui)
-                            .striped(true)
-                            .resizable(true)
-                            .cell_layout(egui::Layout::left_to_right(Align::Center))
-                            .column(Column::initial(80.0).resizable(true)) // Token Name
-                            .column(Column::initial(330.0).resizable(true)) // Identity
-                            .column(Column::initial(60.0).resizable(true)) // Balance
-                            .column(Column::initial(80.0).resizable(true)) // Actions
-                            .header(30.0, |mut header| {
-                                header.col(|ui| {
-                                    if ui.button("Token Name").clicked() {
-                                        self.toggle_sort(SortColumn::TokenName);
-                                    }
-                                });
-                                header.col(|ui| {
-                                    if ui.button("Identity").clicked() {
-                                        self.toggle_sort(SortColumn::OwnerIdentity);
-                                    }
-                                });
-                                header.col(|ui| {
-                                    if ui.button("Balance").clicked() {
-                                        self.toggle_sort(SortColumn::Balance);
-                                    }
-                                });
-                                header.col(|ui| {
-                                    ui.label("Actions");
-                                });
-                            })
-                            .body(|mut body| {
-                                for identity_token_balance in &display_list {
-                                    body.row(25.0, |mut row| {
-                                        row.col(|ui| {
-                                            ui.label(&identity_token_balance.token_name);
-                                        });
-                                        row.col(|ui| {
-                                            if let Some(alias) = self
-                                                .app_context
-                                                .get_alias(&identity_token_balance.identity_id)
-                                                .expect("Expected to get alias")
-                                            {
-                                                ui.label(alias);
-                                            } else {
-                                                ui.label(identity_token_balance.identity_id.to_string(Encoding::Base58));
-                                            }
-                                        });
-                                        row.col(|ui| {
-                                            ui.label(identity_token_balance.balance.to_string());
-                                        });
-                                        row.col(|ui| {
-                                            ui.horizontal(|ui| {
-                                                // Up/Down reorder
-                                                if ui.button("⬆").on_hover_text("Move up").clicked() {
-                                                    if !self.use_custom_order {
-                                                        self.update_vec_to_current_ephemeral(
-                                                            display_list.clone(),
-                                                        );
-                                                    }
-                                                    self.use_custom_order = true;
-                                                    self.move_token_up(&identity_token_balance.token_identifier, &identity_token_balance.identity_id);
-                                                }
-                                                if ui.button("⬇").on_hover_text("Move down").clicked() {
-                                                    if !self.use_custom_order {
-                                                        self.update_vec_to_current_ephemeral(
-                                                            display_list.clone(),
-                                                        );
-                                                    }
-                                                    self.use_custom_order = true;
-                                                    self.move_token_down(&identity_token_balance.token_identifier, &identity_token_balance.identity_id);
-                                                }
-                                                if ui.button("X").on_hover_text("Remove identity token balance from DET").clicked() {
-                                                    self.confirm_remove_token_popup = true;
-                                                    self.token_to_remove = Some(identity_token_balance.clone());
-                                                }
-                                                if ui.button("Transfer").on_hover_text("Transfer tokens from this identity to another identity").clicked() {
-                                                    action = AppAction::AddScreen(
-                                                        Screen::TransferTokensScreen(TransferTokensScreen::new(
-                                                            identity_token_balance.clone(),
-                                                            &self.app_context,
-                                                        )),
-                                                    );
-                                                }
-
-                                                // "..." menu button:
-                                                ui.menu_button("...", |ui| {
-                                                    if ui.button("Mint").clicked() {
-                                                        // Instead of directly dispatching a backend action,
-                                                        // open the MintTokensScreen so the user can specify the amount, etc.
-                                                        action = AppAction::AddScreen(Screen::MintTokensScreen(
-                                                            MintTokensScreen::new(identity_token_balance.clone(), &self.app_context),
-                                                        ));
-                                                        ui.close_menu();
-                                                    }
-                                                    if ui.button("Burn").clicked() {
-                                                        // Show the BurnTokensScreen
-                                                        action = AppAction::AddScreen(Screen::BurnTokensScreen(
-                                                            BurnTokensScreen::new(identity_token_balance.clone(), &self.app_context),
-                                                        ));
-                                                        ui.close_menu();
-                                                    }
-                                                    if ui.button("Destroy").clicked() {
-                                                        action = AppAction::AddScreen(Screen::DestroyFrozenFundsScreen(
-                                                            DestroyFrozenFundsScreen::new(identity_token_balance.clone(), &self.app_context),
-                                                        ));
-                                                        ui.close_menu();
-                                                    }
-                                                    if ui.button("Freeze").clicked() {
-                                                        action = AppAction::AddScreen(Screen::FreezeTokensScreen(
-                                                            FreezeTokensScreen::new(identity_token_balance.clone(), &self.app_context),
-                                                        ));
-                                                        ui.close_menu();
-                                                    }
-                                                    if ui.button("Unfreeze").clicked() {
-                                                        action = AppAction::AddScreen(Screen::UnfreezeTokensScreen(
-                                                            UnfreezeTokensScreen::new(identity_token_balance.clone(), &self.app_context),
-                                                        ));
-                                                        ui.close_menu();
-                                                    }
-                                                    if ui.button("Pause").clicked() {
-                                                        action = AppAction::AddScreen(Screen::PauseTokensScreen(
-                                                            PauseTokensScreen::new(identity_token_balance.clone(), &self.app_context),
-                                                        ));
-                                                        ui.close_menu();
-                                                    }
-                                                    if ui.button("Resume").clicked() {
-                                                        action = AppAction::AddScreen(Screen::ResumeTokensScreen(
-                                                            ResumeTokensScreen::new(identity_token_balance.clone(), &self.app_context),
-                                                        ));
-                                                        ui.close_menu();
-                                                    }
-                                                }).response.on_hover_text("Advanced actions");
-                                            });
-                                        });
-                                    });
+        // This is basically your old `render_table_my_token_balances` logic, but
+        // limited to just the single token.
+        TableBuilder::new(ui)
+            .striped(true)
+            .resizable(true)
+            .cell_layout(egui::Layout::left_to_right(Align::Center))
+            .column(Column::initial(200.0).resizable(true)) // Identity Alias
+            .column(Column::initial(200.0).resizable(true)) // Identity ID
+            .column(Column::initial(60.0).resizable(true)) // Balance
+            .column(Column::initial(200.0).resizable(true)) // Actions
+            .header(30.0, |mut header| {
+                header.col(|ui| {
+                    if ui.button("Identity Alias").clicked() {
+                        self.toggle_sort(SortColumn::OwnerIdentityAlias);
+                    }
+                });
+                header.col(|ui| {
+                    if ui.button("Identity ID").clicked() {
+                        self.toggle_sort(SortColumn::OwnerIdentity);
+                    }
+                });
+                header.col(|ui| {
+                    if ui.button("Balance").clicked() {
+                        self.toggle_sort(SortColumn::Balance);
+                    }
+                });
+                header.col(|ui| {
+                    ui.label("Actions");
+                });
+            })
+            .body(|mut body| {
+                for itb in &detail_list {
+                    body.row(25.0, |mut row| {
+                        row.col(|ui| {
+                            // Show identity alias or ID
+                            if let Some(alias) = self
+                                .app_context
+                                .get_alias(&itb.identity_id)
+                                .expect("Expected to get alias")
+                            {
+                                ui.label(alias);
+                            } else {
+                                ui.label("");
+                            }
+                        });
+                        row.col(|ui| {
+                            ui.label(itb.identity_id.to_string(Encoding::Base58));
+                        });
+                        row.col(|ui| {
+                            ui.label(itb.balance.to_string());
+                        });
+                        row.col(|ui| {
+                            ui.horizontal(|ui| {
+                                // Transfer
+                                if ui.button("Transfer").clicked() {
+                                    action = AppAction::AddScreen(Screen::TransferTokensScreen(
+                                        TransferTokensScreen::new(itb.clone(), &self.app_context),
+                                    ));
                                 }
+
+                                // Expandable advanced actions menu
+                                ui.menu_button("...", |ui| {
+                                    if ui.button("Mint").clicked() {
+                                        action = AppAction::AddScreen(Screen::MintTokensScreen(
+                                            MintTokensScreen::new(itb.clone(), &self.app_context),
+                                        ));
+                                        ui.close_menu();
+                                    }
+                                    if ui.button("Burn").clicked() {
+                                        action = AppAction::AddScreen(Screen::BurnTokensScreen(
+                                            BurnTokensScreen::new(itb.clone(), &self.app_context),
+                                        ));
+                                        ui.close_menu();
+                                    }
+                                    if ui.button("Freeze").clicked() {
+                                        action = AppAction::AddScreen(Screen::FreezeTokensScreen(
+                                            FreezeTokensScreen::new(itb.clone(), &self.app_context),
+                                        ));
+                                        ui.close_menu();
+                                    }
+                                    if ui.button("Destroy").clicked() {
+                                        action =
+                                            AppAction::AddScreen(Screen::DestroyFrozenFundsScreen(
+                                                DestroyFrozenFundsScreen::new(
+                                                    itb.clone(),
+                                                    &self.app_context,
+                                                ),
+                                            ));
+                                        ui.close_menu();
+                                    }
+                                    if ui.button("Unfreeze").clicked() {
+                                        action =
+                                            AppAction::AddScreen(Screen::UnfreezeTokensScreen(
+                                                UnfreezeTokensScreen::new(
+                                                    itb.clone(),
+                                                    &self.app_context,
+                                                ),
+                                            ));
+                                        ui.close_menu();
+                                    }
+                                    if ui.button("Pause").clicked() {
+                                        action = AppAction::AddScreen(Screen::PauseTokensScreen(
+                                            PauseTokensScreen::new(itb.clone(), &self.app_context),
+                                        ));
+                                        ui.close_menu();
+                                    }
+                                    if ui.button("Resume").clicked() {
+                                        action = AppAction::AddScreen(Screen::ResumeTokensScreen(
+                                            ResumeTokensScreen::new(itb.clone(), &self.app_context),
+                                        ));
+                                        ui.close_menu();
+                                    }
+                                });
                             });
+                        });
                     });
+                }
             });
 
         action
     }
 
     fn render_token_search(&mut self, ui: &mut Ui) -> AppAction {
-        let mut action = AppAction::None;
+        let action = AppAction::None;
 
         ui.vertical_centered(|ui| {
             ui.add_space(10.0);
-            ui.label("Search for tokens by keyword, name, or ID.");
+            ui.heading("Coming Soon");
             ui.add_space(5.0);
 
-            ui.horizontal(|ui| {
-                ui.label("Search by keyword(s):");
-                ui.text_edit_singleline(self.token_search_query.get_or_insert_with(String::new));
-                if ui.button("Go").clicked() {
-                    // 1) Clear old results, set status
-                    let now = Utc::now().timestamp() as u64;
-                    self.token_search_status = TokenSearchStatus::WaitingForResult(now);
-                    {
-                        let mut sr = self.search_results.lock().unwrap();
-                        sr.clear();
-                    }
-                    self.search_current_page = 1;
-                    self.next_cursors.clear();
-                    self.previous_cursors.clear();
-                    self.search_has_next_page = false;
+            //     ui.add_space(10.0);
+            //     ui.label("Search for tokens by keyword, name, or ID.");
+            //     ui.add_space(5.0);
 
-                    // 2) Dispatch backend request
-                    let query_string = self
-                        .token_search_query
-                        .as_ref()
-                        .map(|s| s.clone())
-                        .unwrap_or_default();
+            //     ui.horizontal(|ui| {
+            //         ui.label("Search by keyword(s):");
+            //         ui.text_edit_singleline(self.token_search_query.get_or_insert_with(String::new));
+            //         if ui.button("Go").clicked() {
+            //             // 1) Clear old results, set status
+            //             let now = Utc::now().timestamp() as u64;
+            //             self.token_search_status = TokenSearchStatus::WaitingForResult(now);
+            //             {
+            //                 let mut sr = self.search_results.lock().unwrap();
+            //                 sr.clear();
+            //             }
+            //             self.search_current_page = 1;
+            //             self.next_cursors.clear();
+            //             self.previous_cursors.clear();
+            //             self.search_has_next_page = false;
 
-                    // Example: if you want paged results from the start:
-                    action = AppAction::BackendTask(BackendTask::TokenTask(
-                        TokenTask::QueryTokensByKeywordPage(query_string, None),
-                    ));
-                }
-            });
+            //             // 2) Dispatch backend request
+            //             let query_string = self
+            //                 .token_search_query
+            //                 .as_ref()
+            //                 .map(|s| s.clone())
+            //                 .unwrap_or_default();
+
+            //             // Example: if you want paged results from the start:
+            //             action = AppAction::BackendTask(BackendTask::TokenTask(
+            //                 TokenTask::QueryTokensByKeywordPage(query_string, None),
+            //             ));
+            //         }
+            //     });
         });
 
-        ui.separator();
-        ui.add_space(10.0);
+        // ui.separator();
+        // ui.add_space(10.0);
 
-        // Show results or messages
-        match self.token_search_status {
-            TokenSearchStatus::WaitingForResult(start_time) => {
-                let now = Utc::now().timestamp() as u64;
-                let elapsed = now - start_time;
-                ui.label(format!("Searching... Time so far: {} seconds", elapsed));
-                ui.add(egui::widgets::Spinner::default().color(Color32::from_rgb(0, 128, 255)));
-            }
-            TokenSearchStatus::Complete => {
-                // Render the results table
-                let tokens = self.search_results.lock().unwrap().clone();
-                if tokens.is_empty() {
-                    ui.label("No tokens match your search.");
-                } else {
-                    // Possibly add a filter input above the table, if you like
-                    action |= self.render_search_results_table(ui, &tokens);
-                }
+        // // Show results or messages
+        // match self.token_search_status {
+        //     TokenSearchStatus::WaitingForResult(start_time) => {
+        //         let now = Utc::now().timestamp() as u64;
+        //         let elapsed = now - start_time;
+        //         ui.label(format!("Searching... Time so far: {} seconds", elapsed));
+        //         ui.add(egui::widgets::Spinner::default().color(Color32::from_rgb(0, 128, 255)));
+        //     }
+        //     TokenSearchStatus::Complete => {
+        //         // Render the results table
+        //         let tokens = self.search_results.lock().unwrap().clone();
+        //         if tokens.is_empty() {
+        //             ui.label("No tokens match your search.");
+        //         } else {
+        //             // Possibly add a filter input above the table, if you like
+        //             action |= self.render_search_results_table(ui, &tokens);
+        //         }
 
-                // Then pagination controls
-                ui.horizontal(|ui| {
-                    // If not on page 1, we can show a “Prev” button
-                    if self.search_current_page > 1 {
-                        if ui.button("Previous Page").clicked() {
-                            action |= self.goto_previous_search_page();
-                        }
-                    }
+        //         // Then pagination controls
+        //         ui.horizontal(|ui| {
+        //             // If not on page 1, we can show a “Prev” button
+        //             if self.search_current_page > 1 {
+        //                 if ui.button("Previous Page").clicked() {
+        //                     action |= self.goto_previous_search_page();
+        //                 }
+        //             }
 
-                    ui.label(format!("Page {}", self.search_current_page));
+        //             ui.label(format!("Page {}", self.search_current_page));
 
-                    // If has_next_page, show “Next Page” button
-                    if self.search_has_next_page {
-                        if ui.button("Next Page").clicked() {
-                            action |= self.goto_next_search_page();
-                        }
-                    }
-                });
-            }
-            TokenSearchStatus::ErrorMessage(ref e) => {
-                ui.colored_label(Color32::DARK_RED, format!("Error: {}", e));
-            }
-            TokenSearchStatus::NotStarted => {
-                ui.label("Enter keywords above and click Go to search tokens.");
-            }
-        }
+        //             // If has_next_page, show “Next Page” button
+        //             if self.search_has_next_page {
+        //                 if ui.button("Next Page").clicked() {
+        //                     action |= self.goto_next_search_page();
+        //                 }
+        //             }
+        //         });
+        //     }
+        //     TokenSearchStatus::ErrorMessage(ref e) => {
+        //         ui.colored_label(Color32::DARK_RED, format!("Error: {}", e));
+        //     }
+        //     TokenSearchStatus::NotStarted => {
+        //         ui.label("Enter keywords above and click Go to search tokens.");
+        //     }
+        // }
 
         action
     }
@@ -585,13 +625,19 @@ impl TokensScreen {
                         .column(Column::initial(80.0).resizable(true)) // Action
                         .header(30.0, |mut header| {
                             header.col(|ui| {
-                                ui.label("Token Name");
+                                if ui.button("Token Name").clicked() {
+                                    self.toggle_sort(SortColumn::TokenName);
+                                }
                             });
                             header.col(|ui| {
-                                ui.label("Token ID");
+                                if ui.button("Token ID").clicked() {
+                                    self.toggle_sort(SortColumn::TokenID);
+                                }
                             });
                             header.col(|ui| {
-                                ui.label("Balance");
+                                if ui.button("Balance").clicked() {
+                                    self.toggle_sort(SortColumn::Balance);
+                                }
                             });
                             header.col(|ui| {
                                 ui.label("Action");
@@ -864,6 +910,8 @@ impl ScreenLike for TokensScreen {
     }
 
     fn ui(&mut self, ctx: &Context) -> AppAction {
+        let mut action = AppAction::None;
+
         self.check_error_expiration();
 
         // Build top-right buttons
@@ -878,12 +926,38 @@ impl ScreenLike for TokensScreen {
         };
 
         // Top panel
-        let mut action = add_top_panel(
-            ctx,
-            &self.app_context,
-            vec![("DPNS", AppAction::None)],
-            right_buttons,
-        );
+        if let Some(token_id) = self.selected_token_id {
+            let token_name: String = self
+                .my_tokens
+                .lock()
+                .unwrap()
+                .iter()
+                .find_map(|t| {
+                    if t.token_identifier == token_id {
+                        Some(t.token_name.clone())
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or_else(|| token_id.to_string(Encoding::Base58));
+
+            action |= add_top_panel(
+                ctx,
+                &self.app_context,
+                vec![
+                    ("Tokens", AppAction::Custom("Back to tokens".to_string())),
+                    (&format!("{token_name}"), AppAction::None),
+                ],
+                right_buttons.clone(),
+            );
+        } else {
+            action |= add_top_panel(
+                ctx,
+                &self.app_context,
+                vec![("Tokens", AppAction::None)],
+                right_buttons.clone(),
+            );
+        }
 
         // Left panel
         match self.tokens_subscreen {
@@ -910,19 +984,19 @@ impl ScreenLike for TokensScreen {
         CentralPanel::default().show(ctx, |ui| {
             match self.tokens_subscreen {
                 TokensSubscreen::MyTokens => {
-                    let tokens_empty = {
-                        let guard = self.my_tokens.lock().unwrap();
-                        guard.is_empty()
-                    };
-
-                    if tokens_empty {
+                    let tokens = self.my_tokens.lock().unwrap().clone();
+                    if tokens.is_empty() {
+                        // If no tokens, show a “no tokens found” message
                         action |= self.render_no_owned_tokens(ui);
                     } else {
-                        let tokens = {
-                            let guard = self.my_tokens.lock().unwrap();
-                            guard.clone()
-                        };
-                        action |= self.render_table_my_token_balances(ui, &tokens);
+                        // Are we showing details for a selected token?
+                        if self.selected_token_id.is_some() {
+                            // Render detail view for one token
+                            action |= self.render_token_details(ui, &tokens);
+                        } else {
+                            // Otherwise, show the list of all tokens
+                            self.render_token_list(ui, &tokens);
+                        }
                     }
                 }
                 TokensSubscreen::SearchTokens => {
@@ -982,6 +1056,9 @@ impl ScreenLike for TokensScreen {
             }
             AppAction::SetMainScreen(_) => {
                 self.refreshing_status = RefreshingStatus::NotRefreshing;
+            }
+            AppAction::Custom(ref s) if s == "Back to tokens" => {
+                self.selected_token_id = None;
             }
             _ => {}
         }

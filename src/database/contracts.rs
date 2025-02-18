@@ -228,10 +228,24 @@ impl Database {
     ) -> rusqlite::Result<()> {
         let network = app_context.network_string();
         let conn = self.conn.lock().unwrap();
-        conn.execute(
-            "DELETE FROM contract WHERE contract_id = ? AND network = ?",
-            rusqlite::params![contract_id, network],
+        let tx = conn.unchecked_transaction()?;
+
+        // 1) remove identity token balances for that contract
+        tx.execute(
+            "DELETE FROM identity_token_balances
+         WHERE data_contract_id = ? AND network = ?",
+            params![contract_id, network],
         )?;
+
+        // 2) remove the contract itself
+        tx.execute(
+            "DELETE FROM contract
+         WHERE contract_id = ? AND network = ?",
+            params![contract_id, network],
+        )?;
+
+        tx.commit()?;
+
         Ok(())
     }
 }

@@ -402,12 +402,11 @@ impl TokensScreen {
                                                 self.token_to_remove = Some(token_id.clone());
                                             }
                                         });
-
-                                        row.col(|ui| {
-                                            if ui.button("Info").clicked() {
-                                                self.show_token_info = Some(token_id.clone());
-                                            }
-                                        });
+                                        // row.col(|ui| {
+                                        //     if ui.button("Info").clicked() {
+                                        //         self.show_token_info = Some(token_id.clone());
+                                        //     }
+                                        // });
                                     });
                                 }
                             });

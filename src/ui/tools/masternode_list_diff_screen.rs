@@ -1,4 +1,3 @@
-use std::borrow::Cow;
 use crate::app::AppAction;
 use crate::components::core_p2p_handler::CoreP2PHandler;
 use crate::context::AppContext;
@@ -21,8 +20,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use dash_sdk::dpp::dashcore::BlockHash as BlockHash2;
 use dashcoretemp::bls_sig_utils::BLSSignature;
-use dashcoretemp::hash_types::{ConfirmedHash, ConfirmedHashHashedWithProRegTx};
-use dashcoretemp::network::message_qrinfo::QRInfo;
+use dashcoretemp::network::message_qrinfo::{QRInfo, QuorumSnapshot};
 use dashcoretemp::sml::llmq_entry_verification::LLMQEntryVerificationStatus;
 use dashcoretemp::sml::llmq_type::LLMQType;
 use dashcoretemp::sml::masternode_list::MasternodeList;
@@ -31,6 +29,12 @@ use dashcoretemp::sml::quorum_entry::qualified_quorum_entry::QualifiedQuorumEntr
 use dashcoretemp::transaction::special_transaction::quorum_commitment::QuorumEntry;
 use futures::FutureExt;
 use itertools::Itertools;
+
+enum SelectedQRItem {
+    SelectedSnapshot(QuorumSnapshot),
+    MNListDiff(MnListDiff),
+    QuorumEntry(QuorumEntry),
+}
 
 /// Screen for viewing MNList diffs (diffs in the masternode list and quorums)
 pub struct MasternodeListDiffScreen {
@@ -90,7 +94,7 @@ pub struct MasternodeListDiffScreen {
     error: Option<String>,
     selected_qr_field: Option<String>,
     selected_qr_list_index: Option<String>,
-    selected_qr_item: Option<String>,
+    selected_qr_item: Option<SelectedQRItem>,
 }
 
 impl MasternodeListDiffScreen {
@@ -107,6 +111,8 @@ impl MasternodeListDiffScreen {
                 block_heights: Default::default(),
                 masternode_lists: Default::default(),
                 known_chain_locks: Default::default(),
+                known_snapshots: Default::default(),
+                last_commitment_entries: Default::default(),
                 network: Network::Dash,
             },
             search_term: None,
@@ -373,7 +379,7 @@ impl MasternodeListDiffScreen {
         } else {
             if let Err(e) =
                 self.masternode_list_engine
-                    .apply_diff(list_diff.clone(), block_height, false)
+                    .apply_diff(list_diff.clone(), Some(block_height), false)
             {
                 self.error = Some(e.to_string());
                 return;
@@ -538,6 +544,8 @@ impl MasternodeListDiffScreen {
             block_heights: Default::default(),
             masternode_lists: Default::default(),
             known_chain_locks: Default::default(),
+            known_snapshots: Default::default(),
+            last_commitment_entries: Default::default(),
             network: Network::Dash};
 
             self.serialized_masternode_list_engine = None;
@@ -654,36 +662,8 @@ impl MasternodeListDiffScreen {
             }
         };
 
-        if let Err(e) = self.masternode_list_engine.apply_diff(qr_info.mn_list_diff_at_h_minus_3c.clone(), self.get_height(&qr_info.mn_list_diff_at_h_minus_3c.block_hash).expect("expected height"), false) {
+        if let Err(e) = self.masternode_list_engine.feed_qr_info(qr_info, true) {
             self.error = Some(e.to_string());
-            return;
-        }
-
-        if let Err(e) = self.masternode_list_engine.apply_diff(qr_info.mn_list_diff_at_h_minus_2c.clone(), self.get_height(&qr_info.mn_list_diff_at_h_minus_2c.block_hash).expect("expected height"), false) {
-            self.error = Some(e.to_string());
-            return;
-        }
-
-        if let Err(e) = self.masternode_list_engine.apply_diff(qr_info.mn_list_diff_at_h_minus_c.clone(), self.get_height(&qr_info.mn_list_diff_at_h_minus_c.block_hash).expect("expected height"), false) {
-            self.error = Some(e.to_string());
-            return;
-        }
-
-        if let Err(e) = self.masternode_list_engine.apply_diff(qr_info.mn_list_diff_h.clone(), self.get_height(&qr_info.mn_list_diff_h.block_hash).expect("expected height"), false) {
-            self.error = Some(e.to_string());
-            return;
-        }
-
-        if let Some((_, mn_list_diff_at_h_minus_4c)) = &qr_info.quorum_snapshot_and_mn_list_diff_at_h_minus_4c {
-            if let Err(e) = self.masternode_list_engine.apply_diff(mn_list_diff_at_h_minus_4c.clone(), self.get_height(&mn_list_diff_at_h_minus_4c.block_hash).expect("expected height"), false) {
-                self.error = Some(e.to_string());
-                return;
-            }
-        }
-
-        if let Err(e) = self.masternode_list_engine.apply_diff(qr_info.mn_list_diff_tip.clone(), self.get_height(&qr_info.mn_list_diff_tip.block_hash).expect("expected height"), false) {
-            self.error = Some(e.to_string());
-            return;
         }
 
         let hashes = self.masternode_list_engine.latest_masternode_list_non_rotating_quorum_hashes(&[LLMQType::Llmqtype50_60, LLMQType::Llmqtype400_85]);
@@ -1269,7 +1249,7 @@ impl MasternodeListDiffScreen {
                             .stroke(Stroke::new(1.0, Color32::BLACK))
                             .show(ui, |ui| {
                                 ui.set_min_size(Vec2::new(ui.available_width(), 300.0));
-                                ScrollArea::vertical().show(ui, |ui| {
+                                ScrollArea::vertical().id_salt("render_quorum_details").show(ui, |ui| {
                                     ui.label(format!(
                                         "Version: {}\nQuorum Hash: {}\nSigners: {} members\nValid Members: {} members\nQuorum Public Key: {}\n",
                                         quorum.version,
@@ -1298,7 +1278,7 @@ impl MasternodeListDiffScreen {
                             .stroke(Stroke::new(1.0, Color32::BLACK))
                             .show(ui, |ui| {
                                 ui.set_min_size(Vec2::new(ui.available_width(), 300.0));
-                                ScrollArea::vertical().show(ui, |ui| {
+                                ScrollArea::vertical().id_salt("render_quorum_details_2").show(ui, |ui| {
                                     ui.label(format!(
                                         "Quorum Type: {}\nQuorum Height: {}\nQuorum Hash: {}\nCommitment Hash: {}\nCommitment Data: {}\nEntry Hash: {}\nSigners: {} members\nValid Members: {} members\nQuorum Public Key: {}\nValidation status: {}",
                                         QuorumType::from(quorum.quorum_entry.llmq_type as u32),
@@ -1336,7 +1316,7 @@ impl MasternodeListDiffScreen {
                             .stroke(Stroke::new(1.0, Color32::BLACK))
                             .show(ui, |ui| {
                                 ui.set_min_size(Vec2::new(ui.available_width(), 300.0));
-                                ScrollArea::vertical().show(ui, |ui| {
+                                ScrollArea::vertical().id_salt("render_mn_details").show(ui, |ui| {
                                     ui.label(format!(
                                         "Version: {}\n\
                                      ProRegTxHash: {}\n\
@@ -1390,7 +1370,7 @@ impl MasternodeListDiffScreen {
                             .stroke(Stroke::new(1.0, Color32::BLACK))
                             .show(ui, |ui| {
                                 ui.set_min_size(Vec2::new(ui.available_width(), 300.0));
-                                ScrollArea::vertical().show(ui, |ui| {
+                                ScrollArea::vertical().id_salt("render_mn_details_2").show(ui, |ui| {
                                     ui.label(format!(
                                         "Version: {}\n\
                                      ProRegTxHash: {}\n\
@@ -1440,6 +1420,46 @@ impl MasternodeListDiffScreen {
         } else {
             ui.label("Select a block height and Masternode.");
         }
+    }
+
+    fn render_selected_shapshot_details(ui: &mut Ui, snapshot: &QuorumSnapshot) {
+        ui.heading("Quorum Snapshot Details");
+
+        // Display Skip List Mode
+        ui.label(format!(
+            "Skip List Mode: {}",
+            snapshot.skip_list_mode
+        ));
+
+        // Display Active Quorum Members (Bitset)
+        ui.label(format!(
+            "Active Quorum Members: {} members",
+            snapshot.active_quorum_members.len()
+        ));
+
+        // Show active members in a scrollable area
+        ScrollArea::vertical().id_salt("render_snapshot_details").show(ui, |ui| {
+            ui.label("Active Quorum Members:");
+            for (i, active) in snapshot.active_quorum_members.iter().enumerate() {
+                ui.label(format!("Member {}: {}", i, if *active { "Active" } else { "Inactive" }));
+            }
+        });
+
+        ui.separator();
+
+        // Display Skip List
+        ui.label(format!(
+            "Skip List: {} entries",
+            snapshot.skip_list.len()
+        ));
+
+        // Show skip list entries
+        ScrollArea::vertical().id_salt("render_snapshot_details_2").show(ui, |ui| {
+            ui.label("Skip List Entries:");
+            for (i, skip_entry) in snapshot.skip_list.iter().enumerate() {
+                ui.label(format!("Entry {}: {}", i, skip_entry));
+            }
+        });
     }
 
     fn render_qr_info(&mut self, ui: &mut Ui) {
@@ -1520,12 +1540,140 @@ impl MasternodeListDiffScreen {
                 Layout::top_down(Align::Min),
                 |ui| {
                     if let Some(selected_item) = &self.selected_qr_item {
-                        self.render_selected_item_details(ui, selected_item.clone());
+                        match selected_item { SelectedQRItem::SelectedSnapshot(snapshot) => {
+                            Self::render_selected_shapshot_details(ui, snapshot);
+                        }
+                            SelectedQRItem::MNListDiff(mn_list_diff) => {
+                                Self::render_selected_mn_list_diff(ui, mn_list_diff);
+                            }
+                            SelectedQRItem::QuorumEntry(quorum_entry) => {
+                                Self::render_selected_quorum_entry(ui, quorum_entry);
+                            }
+                        }
+
                     } else {
                         ui.label("Select an item to view details.");
                     }
                 },
             );
+        });
+    }
+    fn render_selected_mn_list_diff(ui: &mut Ui, mn_list_diff: &MnListDiff) {
+        ui.heading("MNListDiff Details");
+
+        // General MNListDiff Info
+        ui.label(format!(
+            "Version: {}\nBase Block Hash: {}\nBlock Hash: {}",
+            mn_list_diff.version, mn_list_diff.base_block_hash, mn_list_diff.block_hash
+        ));
+
+        ui.label(format!(
+            "Total Transactions: {}",
+            mn_list_diff.total_transactions
+        ));
+
+        ui.separator();
+
+        // Merkle Tree Data
+        ui.heading("Merkle Tree");
+        ui.label(format!(
+            "Merkle Hashes: {} entries",
+            mn_list_diff.merkle_hashes.len()
+        ));
+        ScrollArea::vertical().id_salt("render_selected_mn_list_diff").show(ui, |ui| {
+            for (i, merkle_hash) in mn_list_diff.merkle_hashes.iter().enumerate() {
+                ui.label(format!("{}: {}", i, merkle_hash));
+            }
+        });
+
+        ui.separator();
+        ui.label(format!(
+            "Merkle Flags ({} bytes)",
+            mn_list_diff.merkle_flags.len()
+        ));
+
+        // Coinbase Transaction
+        ui.heading("Coinbase Transaction");
+        ScrollArea::vertical().id_salt("render_selected_mn_list_diff_2").show(ui, |ui| {
+            ui.label(format!(
+                "Coinbase TXID: {}\nSize: {} bytes",
+                mn_list_diff.coinbase_tx.txid(),
+                mn_list_diff.coinbase_tx.get_size()
+            ));
+        });
+
+        ui.separator();
+
+        // Masternode Changes
+        ui.heading("Masternode Changes");
+        ui.label(format!(
+            "New Masternodes: {}\nDeleted Masternodes: {}",
+            mn_list_diff.new_masternodes.len(),
+            mn_list_diff.deleted_masternodes.len(),
+        ));
+
+        ScrollArea::vertical().id_salt("render_selected_mn_list_diff_3").show(ui, |ui| {
+            ui.heading("New Masternodes");
+            for masternode in &mn_list_diff.new_masternodes {
+                ui.label(format!(
+                    "{} {}:{}",
+                    masternode.pro_reg_tx_hash,
+                    masternode.service_address.ip(),
+                    masternode.service_address.port(),
+                ));
+            }
+
+            ui.separator();
+            ui.heading("Removed Masternodes");
+            for removed_pro_tx in &mn_list_diff.deleted_masternodes {
+                ui.label(removed_pro_tx.to_string());
+            }
+        });
+
+        ui.separator();
+
+        // Quorum Changes
+        ui.heading("Quorum Changes");
+        ui.label(format!(
+            "New Quorums: {}\nDeleted Quorums: {}",
+            mn_list_diff.new_quorums.len(),
+            mn_list_diff.deleted_quorums.len()
+        ));
+
+        ScrollArea::vertical().id_salt("render_selected_mn_list_diff_4").show(ui, |ui| {
+            ui.heading("New Quorums");
+            for quorum in &mn_list_diff.new_quorums {
+                ui.label(format!(
+                    "Quorum {} Type: {}",
+                    quorum.quorum_hash,
+                    QuorumType::from(quorum.llmq_type as u32)
+                ));
+            }
+
+            ui.separator();
+            ui.heading("Removed Quorums");
+            for deleted_quorum in &mn_list_diff.deleted_quorums {
+                ui.label(format!(
+                    "Quorum {} Type: {}",
+                    deleted_quorum.quorum_hash,
+                    QuorumType::from(deleted_quorum.llmq_type as u32)
+                ));
+            }
+        });
+
+        ui.separator();
+
+        // Quorums ChainLock Signatures
+        ui.heading("Quorums ChainLock Signatures");
+        ui.label(format!(
+            "Total ChainLock Signatures: {}",
+            mn_list_diff.quorums_chainlock_signatures.len()
+        ));
+
+        ScrollArea::vertical().id_salt("render_selected_mn_list_diff_5").show(ui, |ui| {
+            for (i, cl_sig) in mn_list_diff.quorums_chainlock_signatures.iter().enumerate() {
+                ui.label(format!("Signature {}: {}", i, hex::encode(cl_sig.signature)));
+            }
         });
     }
 
@@ -1541,7 +1689,7 @@ impl MasternodeListDiffScreen {
                 if ui.selectable_label(self.selected_qr_list_index == Some(name.to_string()), *name).clicked()
                 {
                     self.selected_qr_list_index = Some(name.to_string());
-                    self.selected_qr_item = Some(format!("{:?}", snapshot));
+                    self.selected_qr_item = Some(SelectedQRItem::SelectedSnapshot((*snapshot).clone()));
                 }
             });
 
@@ -1550,9 +1698,126 @@ impl MasternodeListDiffScreen {
                 .clicked()
             {
                 self.selected_qr_list_index = Some("Quorum Snapshot h-4c".to_string());
-                self.selected_qr_item = Some(format!("{:?}", qs4c));
+                self.selected_qr_item = Some(SelectedQRItem::SelectedSnapshot((*qs4c).clone()));
             }
         }
+    }
+
+    fn render_selected_quorum_entry(ui: &mut Ui, quorum_entry: &QuorumEntry) {
+        ui.heading("Quorum Entry Details");
+
+        // General Quorum Info
+        ui.label(format!(
+            "Version: {}\nQuorum Type: {}\nQuorum Hash: {}",
+            quorum_entry.version,
+            QuorumType::from(quorum_entry.llmq_type as u32),
+            quorum_entry.quorum_hash
+        ));
+
+        ui.label(format!(
+            "Quorum Index: {}",
+            quorum_entry.quorum_index.map_or("None".to_string(), |idx| idx.to_string())
+        ));
+
+        ui.separator();
+
+        // Signers & Valid Members
+        ui.heading("Quorum Members");
+        ui.label(format!(
+            "Total Signers: {}\nValid Members: {}",
+            quorum_entry.signers.iter().filter(|&&b| b).count(),
+            quorum_entry.valid_members.iter().filter(|&&b| b).count()
+        ));
+
+        ScrollArea::vertical().id_salt("quorum_members_grid").show(ui, |ui| {
+            ui.label(format!(
+                "Total Signers: {}\nValid Members: {}",
+                quorum_entry.signers.iter().filter(|&&b| b).count(),
+                quorum_entry.valid_members.iter().filter(|&&b| b).count()
+            ));
+
+            ui.separator();
+
+            ui.heading("Signers & Valid Members Grid");
+
+            egui::Grid::new("quorum_members_grid")
+                .num_columns(8) // Adjust based on UI width
+                .striped(true)
+                .show(ui, |ui| {
+                    for (i, (is_signer, is_valid)) in quorum_entry
+                        .signers
+                        .iter()
+                        .zip(quorum_entry.valid_members.iter())
+                        .enumerate()
+                    {
+                        let text = match (*is_signer, *is_valid) { (true, true) => "✔✔",
+                            (true, false) => "✔❌",
+                            (false, true) => "❌✔",
+                            (false, false) => "❌❌",
+                        };
+
+                        let response = ui.label(text);
+
+                        // Tooltip on hover to show member index
+                        if response.hovered() {
+                            ui.ctx().debug_painter().text(
+                                response.rect.center(),
+                                egui::Align2::CENTER_CENTER,
+                                format!("Member {}", i),
+                                egui::FontId::proportional(14.0),
+                                egui::Color32::BLUE,
+                            );
+                        }
+
+                        // Create a new row every 8 members
+                        if (i + 1) % 8 == 0 {
+                            ui.end_row();
+                        }
+                    }
+                });
+        });
+
+        ui.separator();
+
+        // Quorum Public Key
+        ui.heading("Quorum Public Key");
+        ScrollArea::vertical().id_salt("render_selected_quorum_entry_2").show(ui, |ui| {
+            ui.label(format!(
+                "Public Key: {}",
+                quorum_entry.quorum_public_key
+            ));
+        });
+
+        ui.separator();
+
+        // Quorum Verification Vector Hash
+        ui.heading("Verification Vector Hash");
+        ui.label(format!(
+            "Quorum VVec Hash: {}",
+            quorum_entry.quorum_vvec_hash
+        ));
+
+        ui.separator();
+
+        // Threshold Signature
+        ui.heading("Threshold Signature");
+        ScrollArea::vertical().id_salt("render_selected_quorum_entry_3").show(ui, |ui| {
+            ui.label(format!(
+                "Signature: {}",
+                hex::encode(quorum_entry.threshold_sig.to_bytes())
+            ));
+        });
+
+        ui.separator();
+
+        // Aggregated Signature
+        ui.heading("All Commitment Aggregated Signature");
+        ScrollArea::vertical().id_salt("render_selected_quorum_entry_4").show(ui, |ui| {
+            ui.label(format!(
+                "Signature: {}",
+                hex::encode(quorum_entry.all_commitment_aggregated_signature.to_bytes())
+            ));
+        });
     }
 
     fn render_mn_list_diffs(&mut self, ui: &mut Ui, qr_info: &QRInfo) {
@@ -1567,7 +1832,7 @@ impl MasternodeListDiffScreen {
         mn_diffs.iter().for_each(|(name, diff)| {
             if ui.selectable_label(self.selected_qr_list_index == Some(name.to_string()), *name).clicked() {
                 self.selected_qr_list_index = Some(name.to_string());
-                self.selected_qr_item = Some(format!("{:?}", diff));
+                self.selected_qr_item = Some(SelectedQRItem::MNListDiff((*diff).clone()));
             }
         });
 
@@ -1577,7 +1842,7 @@ impl MasternodeListDiffScreen {
                 .clicked()
             {
                 self.selected_qr_list_index = Some("MNListDiff h-4c".to_string());
-                self.selected_qr_item = Some(format!("{:?}", mn_diff4c));
+                self.selected_qr_item = Some(SelectedQRItem::MNListDiff((*mn_diff4c).clone()));
             }
         }
     }
@@ -1592,7 +1857,7 @@ impl MasternodeListDiffScreen {
                 .clicked()
             {
                 self.selected_qr_list_index = Some(index.to_string());
-                self.selected_qr_item = Some(format!("{:?}", commitment));
+                self.selected_qr_item = Some(SelectedQRItem::QuorumEntry(commitment.clone()));
             }
         }
     }
@@ -1607,7 +1872,7 @@ impl MasternodeListDiffScreen {
                 .clicked()
             {
                 self.selected_qr_list_index = Some(index.to_string());
-                self.selected_qr_item = Some(format!("{:?}", snapshot));
+                self.selected_qr_item = Some(SelectedQRItem::SelectedSnapshot(snapshot.clone()));
             }
         }
     }
@@ -1622,7 +1887,7 @@ impl MasternodeListDiffScreen {
                 .clicked()
             {
                 self.selected_qr_list_index = Some(index.to_string());
-                self.selected_qr_item = Some(format!("{:?}", diff));
+                self.selected_qr_item = Some(SelectedQRItem::MNListDiff(diff.clone()));
             }
         }
     }

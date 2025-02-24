@@ -17,6 +17,7 @@ use dashcoretemp::{BlockHash, Network, ProTxHash, QuorumHash};
 use eframe::egui::{self, Context, ScrollArea, Ui};
 use egui::{Align, Color32, Frame, Layout, Response, Stroke, TextEdit, Vec2};
 use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
 use std::sync::Arc;
 use dash_sdk::dpp::dashcore::BlockHash as BlockHash2;
 use dashcoretemp::bls_sig_utils::BLSSignature;
@@ -26,9 +27,11 @@ use dashcoretemp::sml::llmq_type::LLMQType;
 use dashcoretemp::sml::masternode_list::MasternodeList;
 use dashcoretemp::sml::masternode_list_entry::qualified_masternode_list_entry::QualifiedMasternodeListEntry;
 use dashcoretemp::sml::quorum_entry::qualified_quorum_entry::QualifiedQuorumEntry;
+use dashcoretemp::sml::quorum_validation_error::{ClientDataRetrievalError, QuorumValidationError};
 use dashcoretemp::transaction::special_transaction::quorum_commitment::QuorumEntry;
 use futures::FutureExt;
 use itertools::Itertools;
+use rfd::FileDialog;
 
 enum SelectedQRItem {
     SelectedSnapshot(QuorumSnapshot),
@@ -52,9 +55,6 @@ pub struct MasternodeListDiffScreen {
 
     /// The engine to compute masternode lists
     masternode_list_engine: MasternodeListEngine,
-
-    /// The serialized engine to compute masternode lists
-    serialized_masternode_list_engine: Option<String>,
 
     /// The list of MNList diff items (one per block height)
     mnlist_diffs: BTreeMap<(CoreBlockHeight, CoreBlockHeight), MnListDiff>,
@@ -119,7 +119,6 @@ impl MasternodeListDiffScreen {
                 network: Network::Dash,
             },
             search_term: None,
-            serialized_masternode_list_engine: None,
             mnlist_diffs: Default::default(),
             qr_infos: Default::default(),
             selected_dml_diff_key: None,
@@ -146,6 +145,26 @@ impl MasternodeListDiffScreen {
                 return match self.app_context.core_client.get_block_header_info(&(BlockHash2::from_byte_array(block_hash.to_byte_array()))) {
                     Ok(block_hash) => {
                         Ok(block_hash.height as CoreBlockHeight)
+                    },
+                    Err(e) => {
+                        Err(e.to_string())
+                    }
+                }
+            };
+            return Ok(*height)
+        };
+        Ok(*height)
+    }
+
+    fn get_height_and_cache(&mut self, block_hash: &BlockHash) -> Result<CoreBlockHeight, String> {
+        let Some(height) = self.masternode_list_engine.block_heights.get(block_hash) else {
+            let Some(height) = self.block_height_cache.get(block_hash) else {
+                println!("asking core for height {} ({})", block_hash, block_hash.reverse());
+                return match self.app_context.core_client.get_block_header_info(&(BlockHash2::from_byte_array(block_hash.to_byte_array()))) {
+                    Ok(result) => {
+                        self.block_height_cache.insert(*block_hash, result.height as CoreBlockHeight);
+                        self.masternode_list_engine.feed_block_height(result.height as CoreBlockHeight, *block_hash);
+                        Ok(result.height as CoreBlockHeight)
                     },
                     Err(e) => {
                         Err(e.to_string())
@@ -346,7 +365,7 @@ impl MasternodeListDiffScreen {
 
     fn insert_mn_list_diff(&mut self, mn_list_diff: &MnListDiff) {
         let base_block_hash = mn_list_diff.base_block_hash;
-        let base_height = match self.get_height(&base_block_hash) {
+        let base_height = match self.get_height_and_cache(&base_block_hash) {
             Ok(height) => height,
             Err(e) => {
                 self.error = Some(e);
@@ -354,7 +373,7 @@ impl MasternodeListDiffScreen {
             }
         };
         let block_hash = mn_list_diff.block_hash;
-        let height = match self.get_height(&block_hash) {
+        let height = match self.get_height_and_cache(&block_hash) {
             Ok(height) => height,
             Err(e) => {
                 self.error = Some(e);
@@ -397,16 +416,15 @@ impl MasternodeListDiffScreen {
     ) {
         let mut hashes_needed_to_validate = BTreeMap::new();
         for quorum_hash in hashes {
-            let height = match self.app_context.core_client.get_block_header_info(&(BlockHash2::from_byte_array(quorum_hash.to_byte_array()))) {
-                Ok(header) => {
-                    header.height as CoreBlockHeight
+            let height = match self.get_height_and_cache(&quorum_hash) {
+                Ok(height) => {
+                    height
                 },
                 Err(e) => {
                     self.error = Some(e.to_string());
                     return;
                 }
             };
-            self.masternode_list_engine.feed_block_height(height, quorum_hash);
             let validation_hash = match self.app_context.core_client.get_block_hash(height - 8) {
                 Ok(block_hash) => block_hash,
                 Err(e) => {
@@ -668,7 +686,6 @@ impl MasternodeListDiffScreen {
             last_commitment_entries: Default::default(),
             network: Network::Dash};
 
-            self.serialized_masternode_list_engine = None;
             self.mnlist_diffs= Default::default();
             self.selected_dml_diff_key= None;
             self.selected_dml_height_key= None;
@@ -770,11 +787,47 @@ impl MasternodeListDiffScreen {
             return;
         };
 
-        self.feed_qr_info_block_heights(&qr_info);
+        // Extracting immutable references before calling `feed_qr_info`
+        let get_height_fn = {
+            let block_height_cache = &self.block_height_cache;
+            let app_context = &self.app_context;
 
-        self.feed_qr_info_cl_sigs(&qr_info);
+            move |block_hash: &BlockHash| {
+                if let Some(height) = block_height_cache.get(block_hash) {
+                    return Ok(*height);
+                }
+                match app_context.core_client.get_block_header_info(&(BlockHash2::from_byte_array(block_hash.to_byte_array()))) {
+                    Ok(block_info) => Ok(block_info.height as CoreBlockHeight),
+                    Err(_) => Err(ClientDataRetrievalError::RequiredBlockNotPresent(*block_hash)),
+                }
+            }
+        };
 
-        if let Err(e) = self.masternode_list_engine.feed_qr_info(qr_info, true) {
+        let get_chain_lock_sig_fn = {
+            let app_context = &self.app_context;
+
+            move |block_hash: &BlockHash| {
+                match app_context.core_client.get_block(&(BlockHash2::from_byte_array(block_hash.to_byte_array()))) {
+                    Ok(block) => {
+                        let Some(coinbase) = block.coinbase()
+                            .and_then(|coinbase| coinbase.special_transaction_payload.as_ref())
+                            .and_then(|payload| payload.clone().to_coinbase_payload().ok())
+                        else {
+                            return Err(ClientDataRetrievalError::CoinbaseNotFoundOnBlock(*block_hash));
+                        };
+                        Ok(coinbase.best_cl_signature.map(|sig| BLSSignature::from(sig.to_bytes())))
+                    },
+                    Err(_) => Err(ClientDataRetrievalError::RequiredBlockNotPresent(*block_hash)),
+                }
+            }
+        };
+
+        if let Err(e) = self.masternode_list_engine.feed_qr_info(
+            qr_info,
+            true,
+            Some(get_height_fn),
+            Some(get_chain_lock_sig_fn),
+        ) {
             self.error = Some(e.to_string());
             return;
         }
@@ -829,21 +882,34 @@ impl MasternodeListDiffScreen {
         });
     }
 
-    fn render_masternode_list_engine(&mut self, ui: &mut Ui) {
-        ui.heading("Masternode List Engine (Bincode Hex Serialized)");
-        if self.serialized_masternode_list_engine.is_none() {
-            match self.serialize_masternode_list_engine() {
-                Ok(hex_data) => {
-                    self.serialized_masternode_list_engine = Some(hex_data);
+    fn save_masternode_list_engine(&mut self, ui: &mut Ui) {
+        // Serialize the masternode list engine
+        let serialized = match self.serialize_masternode_list_engine() {
+            Ok(serialized) => serialized,
+            Err(e) => {
+                self.error = Some(format!("Serialization failed: {}", e));
+                return;
+            }
+        };
+
+        // Open a file save dialog
+        if let Some(path) = FileDialog::new()
+            .set_title("Save Masternode List Engine")
+            .add_filter("JSON", &["hex"])
+            .add_filter("Binary", &["bin"])
+            .set_file_name("masternode_list_engine.hex")
+            .save_file()
+        {
+            // Attempt to write the serialized data to the selected file
+            match fs::write(&path, serialized) {
+                Ok(_) => {
+                    println!("Masternode list engine saved to {:?}", path);
                 }
-                Err(err) => {
-                    self.serialized_masternode_list_engine = Some(err);
+                Err(e) => {
+                    self.error = Some(format!("Failed to save file: {}", e));
                 }
             }
         }
-        ScrollArea::vertical().show(ui, |ui| {
-            ui.label(self.serialized_masternode_list_engine.as_ref().unwrap());
-        });
     }
 
     fn render_masternode_lists(&mut self, ui: &mut Ui) {
@@ -1185,7 +1251,7 @@ impl MasternodeListDiffScreen {
 
     fn render_selected_tab(&mut self, ui: &mut Ui) {
         // Define available tabs
-        let tabs = ["Masternode Lists", "Diffs", "QRInfo", "Known Blocks", "Masternode List Engine"];
+        let tabs = ["Masternode Lists", "Diffs", "QRInfo", "Known Blocks", "Save Masternode List Engine"];
 
         // Render the selection buttons
         ui.horizontal(|ui| {
@@ -1210,7 +1276,6 @@ impl MasternodeListDiffScreen {
             1 => self.render_diffs(ui),
             2 => self.render_qr_info(ui),
             3 => self.render_engine_known_blocks(ui),
-            4 => self.render_masternode_list_engine(ui),
             _ => {}
         }
 
@@ -1221,11 +1286,11 @@ impl MasternodeListDiffScreen {
                 .resizable(false)
                 .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
                 .show(ui.ctx(), |ui| {
-                    ui.label("This operation will take about 30 seconds. Are you sure you wish to continue?");
+                    ui.label("This operation will take about 10 seconds. Are you sure you wish to continue?");
 
                     ui.horizontal(|ui| {
                         if ui.button("Yes").clicked() {
-                            self.selected_tab = 2;
+                            self.save_masternode_list_engine(ui);
                             self.show_popup_for_render_masternode_list_engine = false;
                         }
                         if ui.button("Cancel").clicked() {

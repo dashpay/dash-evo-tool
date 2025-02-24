@@ -152,7 +152,7 @@ impl CoreP2PHandler {
             }
         }
 
-        // let log_file_path = app_user_data_file_path("DML.DAT").expect("should create DML.dat");
+        // let log_file_path = app_user_data_file_path("QR_INFO.DAT").expect("should create DML.dat");
         // let mut log_file = match std::fs::File::create(log_file_path) {
         //     Ok(file) => file,
         //     Err(e) => panic!("Failed to create log file: {:?}", e),
@@ -169,7 +169,17 @@ impl CoreP2PHandler {
         })?;
 
         match response_message.payload {
-            NetworkMessage::QRInfo(qr_info) => Ok(qr_info),
+            NetworkMessage::QRInfo(qr_info) => {
+                // let bytes = serialize(&qr_info);
+                // let log_file_path = app_user_data_file_path("QR_INFO.DAT").expect("should create DML.dat");
+                // let mut log_file = match std::fs::File::create(log_file_path) {
+                //     Ok(file) => file,
+                //     Err(e) => panic!("Failed to create log file: {:?}", e),
+                // };
+                //
+                // log_file.write_all(&bytes).expect("expected to write");
+                Ok(qr_info)
+            },
             network_message => Err(format!(
                 "Unexpected response type, expected QrInfo, got {:?}",
                 network_message

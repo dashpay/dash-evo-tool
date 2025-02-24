@@ -18,9 +18,12 @@ use eframe::egui::{self, Context, ScrollArea, Ui};
 use egui::{Align, Color32, Frame, Layout, Response, Stroke, TextEdit, Vec2};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::path::Path;
 use std::sync::Arc;
 use dash_sdk::dpp::dashcore::BlockHash as BlockHash2;
+use dash_sdk::dpp::dashcore::Network as Network2;
 use dashcoretemp::bls_sig_utils::BLSSignature;
+use dashcoretemp::consensus::{deserialize, serialize};
 use dashcoretemp::network::message_qrinfo::{QRInfo, QuorumSnapshot};
 use dashcoretemp::sml::llmq_entry_verification::LLMQEntryVerificationStatus;
 use dashcoretemp::sml::llmq_type::LLMQType;
@@ -103,13 +106,47 @@ pub struct MasternodeListDiffScreen {
 impl MasternodeListDiffScreen {
     /// Create a new MNListDiffScreen
     pub fn new(app_context: &Arc<AppContext>) -> Self {
-        Self {
-            app_context: app_context.clone(),
-            base_block_height: "".to_string(),
-            end_block_height: "".to_string(),
-            show_popup_for_render_masternode_list_engine: false,
-            selected_tab: 0,
-            masternode_list_engine: MasternodeListEngine {
+        let mut mnlist_diffs = BTreeMap::new();
+        let engine = match app_context.network {
+            Network2::Dash => {
+                use std::env;
+                println!("Current working directory: {:?}", env::current_dir().unwrap());
+                let file_path = "artifacts/mn_list_diff_0_2227096.bin";
+                // Attempt to load and parse the MNListDiff file
+                if Path::new(file_path).exists() {
+                    match fs::read(file_path) {
+                        Ok(bytes) => {
+                            let diff : MnListDiff = deserialize(bytes.as_slice()).expect("expected to deserialize");
+                            mnlist_diffs.insert((0, 2227096), diff.clone());
+                            MasternodeListEngine::initialize_with_diff_to_height(diff, 2227096, Network::Dash).expect("expected to start engine")
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to read MNListDiff file: {}", e);
+                            MasternodeListEngine {
+                                block_hashes: Default::default(),
+                                block_heights: Default::default(),
+                                masternode_lists: Default::default(),
+                                known_chain_locks: Default::default(),
+                                known_snapshots: Default::default(),
+                                last_commitment_entries: Default::default(),
+                                network: Network::Dash,
+                            }
+                        }
+                    }
+                } else {
+                    eprintln!("MNListDiff file not found: {}", file_path);
+                    MasternodeListEngine {
+                        block_hashes: Default::default(),
+                        block_heights: Default::default(),
+                        masternode_lists: Default::default(),
+                        known_chain_locks: Default::default(),
+                        known_snapshots: Default::default(),
+                        last_commitment_entries: Default::default(),
+                        network: Network::Dash,
+                    }
+                }
+            }
+            _ => MasternodeListEngine  {
                 block_hashes: Default::default(),
                 block_heights: Default::default(),
                 masternode_lists: Default::default(),
@@ -117,9 +154,18 @@ impl MasternodeListDiffScreen {
                 known_snapshots: Default::default(),
                 last_commitment_entries: Default::default(),
                 network: Network::Dash,
-            },
+            }
+        };
+
+        Self {
+            app_context: app_context.clone(),
+            base_block_height: "".to_string(),
+            end_block_height: "".to_string(),
+            show_popup_for_render_masternode_list_engine: false,
+            selected_tab: 0,
+            masternode_list_engine: engine,
             search_term: None,
-            mnlist_diffs: Default::default(),
+            mnlist_diffs,
             qr_infos: Default::default(),
             selected_dml_diff_key: None,
             selected_dml_height_key: None,
@@ -387,6 +433,7 @@ impl MasternodeListDiffScreen {
     fn fetch_rotated_quorum_info(&mut self, p2p_handler: &mut CoreP2PHandler, base_block_hash: BlockHash, block_hash: BlockHash) -> Option<QRInfo> {
         let mut known_block_hashes : Vec<_> = self.mnlist_diffs.values().map(|mn_list_diff| mn_list_diff.block_hash).collect();
         known_block_hashes.push(base_block_hash);
+        println!("requesting with known_block_hashes {}", known_block_hashes.iter().map(|bh| bh.to_string()).join(", "));
         let qr_info = match p2p_handler.get_qr_info(known_block_hashes, block_hash) {
             Ok(list_diff) => list_diff,
             Err(e) => {
@@ -697,6 +744,54 @@ impl MasternodeListDiffScreen {
         self.qr_infos = Default::default();
     }
 
+    fn clear_keep_base(&mut self) {
+        let (engine, start_end_diff)  = if let Some(((start, end), oldest_diff)) = self.mnlist_diffs.first_key_value() {
+            if start == &0 {
+                MasternodeListEngine::initialize_with_diff_to_height(oldest_diff.clone(), *end, Network::Dash).map(|engine| (engine, Some(((*start, *end), oldest_diff.clone())))).unwrap_or((MasternodeListEngine {
+                    block_hashes: Default::default(),
+                    block_heights: Default::default(),
+                    masternode_lists: Default::default(),
+                    known_chain_locks: Default::default(),
+                    known_snapshots: Default::default(),
+                    last_commitment_entries: Default::default(),
+                    network: Network::Dash}, None))
+
+            } else {
+                (MasternodeListEngine {
+                    block_hashes: Default::default(),
+                    block_heights: Default::default(),
+                    masternode_lists: Default::default(),
+                    known_chain_locks: Default::default(),
+                    known_snapshots: Default::default(),
+                    last_commitment_entries: Default::default(),
+                    network: Network::Dash}, None)
+            }
+        } else {
+            (MasternodeListEngine {
+                block_hashes: Default::default(),
+                block_heights: Default::default(),
+                masternode_lists: Default::default(),
+                known_chain_locks: Default::default(),
+                known_snapshots: Default::default(),
+                last_commitment_entries: Default::default(),
+                network: Network::Dash}, None)
+        };
+
+        self.masternode_list_engine = engine;
+        self.mnlist_diffs= Default::default();
+        if let Some((key, oldest_diff)) = start_end_diff {
+            self.mnlist_diffs.insert(key, oldest_diff);
+        }
+        self.selected_dml_diff_key= None;
+        self.selected_dml_height_key= None;
+        self.selected_option_index= None;
+        self.selected_quorum_in_diff_index= None;
+        self.selected_masternode_in_diff_index= None;
+        self.selected_quorum_hash= None;
+        self.selected_masternode_pro_tx_hash= None;
+        self.qr_infos = Default::default();
+    }
+
     /// Fetch the MNList diffs between the given base and end block heights.
     /// In a real implementation, you would replace the dummy function below with a call to
     /// dash_core’s DB (or other data source) to retrieve the MNList diffs.
@@ -878,6 +973,9 @@ impl MasternodeListDiffScreen {
             }
             if ui.button("Clear").clicked() {
                 self.clear();
+            }
+            if ui.button("Clear keep base").clicked() {
+                self.clear_keep_base();
             }
         });
     }
@@ -1414,12 +1512,51 @@ impl MasternodeListDiffScreen {
         }
     }
 
+    fn save_mn_list_diff(&mut self, ui: &mut Ui) {
+        let Some(selected_key) = self.selected_dml_diff_key else {
+            self.error = Some("No MNListDiff selected.".to_string());
+            return;
+        };
+
+        let Some(mn_list_diff) = self.mnlist_diffs.get(&selected_key) else {
+            self.error = Some("Failed to retrieve selected MNListDiff.".to_string());
+            return;
+        };
+
+        // Extract block heights from the selected key
+        let (base_block_height, block_height) = selected_key;
+
+        // Serialize the MNListDiff
+        let serialized = serialize(mn_list_diff);
+
+        // Generate the dynamic filename
+        let file_name = format!("mn_list_diff_{}_{}.bin", base_block_height, block_height);
+
+        // Open a file save dialog with the generated file name
+        if let Some(path) = FileDialog::new()
+            .set_title("Save MNListDiff")
+            .add_filter("Binary", &["bin"])
+            .set_file_name(&file_name) // Set the dynamic filename
+            .save_file()
+        {
+            // Attempt to write the serialized data to the selected file
+            match fs::write(&path, serialized) {
+                Ok(_) => {
+                    println!("MNListDiff saved to {:?}", path);
+                }
+                Err(e) => {
+                    self.error = Some(format!("Failed to save file: {}", e));
+                }
+            }
+        }
+    }
+
     /// Render the list of items for the selected DML, with a selector at the top
     fn render_selected_dml_items(&mut self, ui: &mut Ui) {
         ui.heading("Masternode List Diff Explorer");
 
         // Define available options for selection
-        let options = ["New Quorums", "Masternode Changes"];
+        let options = ["New Quorums", "Masternode Changes", "Save Diff"];
         let mut selected_index = self.selected_option_index.unwrap_or(0);
 
         // Render the selection buttons
@@ -1429,7 +1566,12 @@ impl MasternodeListDiffScreen {
                     .selectable_label(selected_index == index, *option)
                     .clicked()
                 {
-                    self.selected_option_index = Some(index);
+                    // If the user selects "Save MNListDiff", trigger save function
+                    if index == 2 {
+                        self.save_mn_list_diff(ui);
+                    } else {
+                        self.selected_option_index = Some(index);
+                    }
                 }
             }
         });

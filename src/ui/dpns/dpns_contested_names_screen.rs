@@ -120,6 +120,9 @@ pub struct DPNSScreen {
     /// Sorting
     sort_column: SortColumn,
     sort_order: SortOrder,
+    active_filter_term: String,
+    past_filter_term: String,
+    owned_filter_term: String,
 
     /// Which sub-screen is active: Active contests, Past, Owned, or Scheduled
     pub dpns_subscreen: DPNSSubscreen,
@@ -130,6 +133,7 @@ pub struct DPNSScreen {
     bulk_identity_options: Vec<VoteOption>,
     bulk_schedule_message: Option<(MessageType, String)>,
     bulk_vote_handling_status: VoteHandlingStatus,
+    set_all_option: VoteOption,
 }
 
 impl DPNSScreen {
@@ -187,6 +191,9 @@ impl DPNSScreen {
             message: None,
             sort_column: SortColumn::ContestedName,
             sort_order: SortOrder::Ascending,
+            active_filter_term: String::new(),
+            past_filter_term: String::new(),
+            owned_filter_term: String::new(),
             scheduled_vote_cast_in_progress: false,
             pending_backend_task: None,
             dpns_subscreen,
@@ -197,6 +204,7 @@ impl DPNSScreen {
             bulk_identity_options,
             bulk_schedule_message: None,
             bulk_vote_handling_status: VoteHandlingStatus::NotStarted,
+            set_all_option: VoteOption::CastNow,
         }
     }
 
@@ -337,9 +345,31 @@ impl DPNSScreen {
 
     /// Show the Active Contests table
     fn render_table_active_contests(&mut self, ui: &mut Ui) {
+        ui.horizontal(|ui| {
+            ui.label("Filter by name:");
+            ui.text_edit_singleline(&mut self.active_filter_term);
+        });
+
         let contested_names = {
             let guard = self.contested_names.lock().unwrap();
             let mut cn = guard.clone();
+            if !self.active_filter_term.is_empty() {
+                let mut filter_lc = self.active_filter_term.to_lowercase();
+                // Convert o and O to 0 and l to 1 in filter_lc
+                filter_lc = filter_lc
+                    .chars()
+                    .map(|c| match c {
+                        'o' | 'O' => '0',
+                        'l' => '1',
+                        _ => c,
+                    })
+                    .collect();
+                cn.retain(|c| {
+                    c.normalized_contested_name
+                        .to_lowercase()
+                        .contains(&filter_lc)
+                });
+            }
             self.sort_contested_names(&mut cn);
             cn
         };
@@ -665,10 +695,34 @@ impl DPNSScreen {
 
     /// Show a Past Contests table
     fn render_table_past_contests(&mut self, ui: &mut Ui) {
+        ui.horizontal(|ui| {
+            ui.label("Filter by name:");
+            ui.text_edit_singleline(&mut self.past_filter_term);
+        });
+
         let contested_names = {
             let guard = self.contested_names.lock().unwrap();
             let mut cn = guard.clone();
             cn.retain(|c| c.awarded_to.is_some() || c.state == ContestState::Locked);
+            // 1) Filter by `past_filter_term`
+            if !self.past_filter_term.is_empty() {
+                let mut filter_lc = self.past_filter_term.to_lowercase();
+                // Convert o and O to 0 and l to 1 in filter_lc
+                filter_lc = filter_lc
+                    .chars()
+                    .map(|c| match c {
+                        'o' | 'O' => '0',
+                        'l' => '1',
+                        _ => c,
+                    })
+                    .collect();
+
+                cn.retain(|c| {
+                    c.normalized_contested_name
+                        .to_lowercase()
+                        .contains(&filter_lc)
+                });
+            }
             self.sort_contested_names(&mut cn);
             cn
         };
@@ -782,7 +836,13 @@ impl DPNSScreen {
                                                 ui.label("Active");
                                             }
                                             ContestState::WonBy(identifier) => {
-                                                ui.label(identifier.to_string(Encoding::Base58));
+                                                ui.add(
+                                                    egui::Label::new(
+                                                        identifier.to_string(Encoding::Base58),
+                                                    )
+                                                    .sense(egui::Sense::hover())
+                                                    .truncate(),
+                                                );
                                             }
                                             ContestState::Locked => {
                                                 ui.label("Locked");
@@ -797,12 +857,22 @@ impl DPNSScreen {
 
     /// Show the Owned DPNS names table
     fn render_table_local_dpns_names(&mut self, ui: &mut Ui) {
-        let mut sorted_names = {
+        ui.horizontal(|ui| {
+            ui.label("Filter by name:");
+            ui.text_edit_singleline(&mut self.owned_filter_term);
+        });
+
+        let mut filtered_names = {
             let guard = self.local_dpns_names.lock().unwrap();
-            guard.clone()
+            let mut name_infos = guard.clone();
+            if !self.owned_filter_term.is_empty() {
+                let filter_lc = self.owned_filter_term.to_lowercase();
+                name_infos.retain(|c| c.1.name.to_lowercase().contains(&filter_lc));
+            }
+            name_infos
         };
         // Sort
-        sorted_names.sort_by(|a, b| match self.sort_column {
+        filtered_names.sort_by(|a, b| match self.sort_column {
             SortColumn::ContestedName => {
                 let order = a.1.name.cmp(&b.1.name);
                 if self.sort_order == SortOrder::Descending {
@@ -880,7 +950,7 @@ impl DPNSScreen {
                                 });
                             })
                             .body(|mut body| {
-                                for (identifier, dpns_info) in sorted_names {
+                                for (identifier, dpns_info) in filtered_names {
                                     body.row(25.0, |mut row| {
                                         row.col(|ui| {
                                             ui.label(dpns_info.name);
@@ -1256,6 +1326,87 @@ impl DPNSScreen {
 
                     // Show each identity + let user pick None / Immediate / Scheduled
                     ui.heading("Select cast method for each node:");
+                    ui.add_space(10.0);
+                    ui.group(|ui| {
+                        ui.horizontal(|ui| {
+                            ui.label("Set all:");
+
+                            // A ComboBox to pick No Vote / Cast Now / Schedule
+                            ComboBox::from_id_salt("set_all_combo")
+                                .width(120.0)
+                                .selected_text(match self.set_all_option {
+                                    VoteOption::NoVote => "No Vote".to_string(),
+                                    VoteOption::CastNow => "Cast Now".to_string(),
+                                    VoteOption::Scheduled { .. } => "Schedule".to_string(),
+                                })
+                                .show_ui(ui, |ui| {
+                                    if ui
+                                        .selectable_label(
+                                            matches!(self.set_all_option, VoteOption::NoVote),
+                                            "No Vote",
+                                        )
+                                        .clicked()
+                                    {
+                                        self.set_all_option = VoteOption::NoVote;
+                                    }
+                                    if ui
+                                        .selectable_label(
+                                            matches!(self.set_all_option, VoteOption::CastNow),
+                                            "Cast Now",
+                                        )
+                                        .clicked()
+                                    {
+                                        self.set_all_option = VoteOption::CastNow;
+                                    }
+                                    if ui
+                                        .selectable_label(
+                                            matches!(
+                                                self.set_all_option,
+                                                VoteOption::Scheduled { .. }
+                                            ),
+                                            "Schedule",
+                                        )
+                                        .clicked()
+                                    {
+                                        // Default scheduled values if none set yet
+                                        let (d, h, m) = match &self.set_all_option {
+                                            VoteOption::Scheduled {
+                                                days,
+                                                hours,
+                                                minutes,
+                                            } => (*days, *hours, *minutes),
+                                            _ => (0, 0, 0),
+                                        };
+                                        self.set_all_option = VoteOption::Scheduled {
+                                            days: d,
+                                            hours: h,
+                                            minutes: m,
+                                        };
+                                    }
+                                });
+
+                            // If scheduling, show the days/hours/minutes widgets inline
+                            if let VoteOption::Scheduled {
+                                ref mut days,
+                                ref mut hours,
+                                ref mut minutes,
+                            } = self.set_all_option
+                            {
+                                ui.label("Schedule In:");
+                                ui.add(egui::DragValue::new(days).prefix("Days: ").range(0..=14));
+                                ui.add(egui::DragValue::new(hours).prefix("Hours: ").range(0..=23));
+                                ui.add(egui::DragValue::new(minutes).prefix("Min: ").range(0..=59));
+                            }
+
+                            // Button to apply the "Set all" choice to each identity in bulk_identity_options
+                            if ui.button("Apply to All").clicked() {
+                                for option in &mut self.bulk_identity_options {
+                                    *option = self.set_all_option.clone();
+                                }
+                            }
+                        });
+                    });
+                    ui.add_space(10.0);
                     for (i, identity) in self.voting_identities.iter().enumerate() {
                         ui.group(|ui| {
                             ui.horizontal(|ui| {

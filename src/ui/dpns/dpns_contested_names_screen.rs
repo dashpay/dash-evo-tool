@@ -120,6 +120,8 @@ pub struct DPNSScreen {
     /// Sorting
     sort_column: SortColumn,
     sort_order: SortOrder,
+    active_filter_term: String,
+    past_filter_term: String,
 
     /// Which sub-screen is active: Active contests, Past, Owned, or Scheduled
     pub dpns_subscreen: DPNSSubscreen,
@@ -188,6 +190,8 @@ impl DPNSScreen {
             message: None,
             sort_column: SortColumn::ContestedName,
             sort_order: SortOrder::Ascending,
+            active_filter_term: String::new(),
+            past_filter_term: String::new(),
             scheduled_vote_cast_in_progress: false,
             pending_backend_task: None,
             dpns_subscreen,
@@ -339,9 +343,31 @@ impl DPNSScreen {
 
     /// Show the Active Contests table
     fn render_table_active_contests(&mut self, ui: &mut Ui) {
+        ui.horizontal(|ui| {
+            ui.label("Filter names:");
+            ui.text_edit_singleline(&mut self.active_filter_term);
+        });
+
         let contested_names = {
             let guard = self.contested_names.lock().unwrap();
             let mut cn = guard.clone();
+            if !self.active_filter_term.is_empty() {
+                let mut filter_lc = self.active_filter_term.to_lowercase();
+                // Convert o and O to 0 and l to 1 in filter_lc
+                filter_lc = filter_lc
+                    .chars()
+                    .map(|c| match c {
+                        'o' | 'O' => '0',
+                        'l' => '1',
+                        _ => c,
+                    })
+                    .collect();
+                cn.retain(|c| {
+                    c.normalized_contested_name
+                        .to_lowercase()
+                        .contains(&filter_lc)
+                });
+            }
             self.sort_contested_names(&mut cn);
             cn
         };
@@ -667,10 +693,34 @@ impl DPNSScreen {
 
     /// Show a Past Contests table
     fn render_table_past_contests(&mut self, ui: &mut Ui) {
+        ui.horizontal(|ui| {
+            ui.label("Filter names:");
+            ui.text_edit_singleline(&mut self.past_filter_term);
+        });
+
         let contested_names = {
             let guard = self.contested_names.lock().unwrap();
             let mut cn = guard.clone();
             cn.retain(|c| c.awarded_to.is_some() || c.state == ContestState::Locked);
+            // 1) Filter by `active_filter_term`
+            if !self.past_filter_term.is_empty() {
+                let mut filter_lc = self.past_filter_term.to_lowercase();
+                // Convert o and O to 0 and l to 1 in filter_lc
+                filter_lc = filter_lc
+                    .chars()
+                    .map(|c| match c {
+                        'o' | 'O' => '0',
+                        'l' => '1',
+                        _ => c,
+                    })
+                    .collect();
+
+                cn.retain(|c| {
+                    c.normalized_contested_name
+                        .to_lowercase()
+                        .contains(&filter_lc)
+                });
+            }
             self.sort_contested_names(&mut cn);
             cn
         };
@@ -784,7 +834,13 @@ impl DPNSScreen {
                                                 ui.label("Active");
                                             }
                                             ContestState::WonBy(identifier) => {
-                                                ui.label(identifier.to_string(Encoding::Base58));
+                                                ui.add(
+                                                    egui::Label::new(
+                                                        identifier.to_string(Encoding::Base58),
+                                                    )
+                                                    .sense(egui::Sense::hover())
+                                                    .truncate(),
+                                                );
                                             }
                                             ContestState::Locked => {
                                                 ui.label("Locked");

@@ -67,6 +67,7 @@ pub enum RootScreenType {
     RootScreenToolsProofVisualizerScreen,
     RootScreenMyTokenBalances,
     RootScreenTokenSearch,
+    RootScreenTokenCreator,
 }
 
 impl RootScreenType {
@@ -87,6 +88,7 @@ impl RootScreenType {
             RootScreenType::RootScreenToolsProofVisualizerScreen => 11,
             RootScreenType::RootScreenMyTokenBalances => 12,
             RootScreenType::RootScreenTokenSearch => 13,
+            RootScreenType::RootScreenTokenCreator => 14,
         }
     }
 
@@ -107,6 +109,7 @@ impl RootScreenType {
             11 => Some(RootScreenType::RootScreenToolsProofVisualizerScreen),
             12 => Some(RootScreenType::RootScreenMyTokenBalances),
             13 => Some(RootScreenType::RootScreenTokenSearch),
+            14 => Some(RootScreenType::RootScreenTokenCreator),
             _ => None,
         }
     }
@@ -130,6 +133,7 @@ impl From<RootScreenType> for ScreenType {
             RootScreenType::RootScreenToolsProofVisualizerScreen => ScreenType::ProofVisualizer,
             RootScreenType::RootScreenMyTokenBalances => ScreenType::TokenBalances,
             RootScreenType::RootScreenTokenSearch => ScreenType::TokenSearch,
+            RootScreenType::RootScreenTokenCreator => ScreenType::TokenCreator,
         }
     }
 }
@@ -169,6 +173,7 @@ pub enum ScreenType {
     // Token Screens
     TokenBalances,
     TokenSearch,
+    TokenCreator,
     TransferTokensScreen(IdentityTokenBalance),
     MintTokensScreen(IdentityTokenBalance),
     BurnTokensScreen(IdentityTokenBalance),
@@ -263,6 +268,10 @@ impl ScreenType {
             ScreenType::TokenSearch => Screen::TokensScreen(TokensScreen::new(
                 app_context,
                 TokensSubscreen::SearchTokens,
+            )),
+            ScreenType::TokenCreator => Screen::TokensScreen(TokensScreen::new(
+                app_context,
+                TokensSubscreen::TokenCreator,
             )),
             ScreenType::TransferTokensScreen(identity_token_balance) => {
                 Screen::TransferTokensScreen(TransferTokensScreen::new(
@@ -465,6 +474,8 @@ impl Screen {
             Screen::ProofLogScreen(_) => ScreenType::ProofLog,
             Screen::AddContractsScreen(_) => ScreenType::AddContracts,
             Screen::ProofVisualizerScreen(_) => ScreenType::ProofVisualizer,
+
+            // Token Screens
             Screen::TokensScreen(TokensScreen {
                 tokens_subscreen: TokensSubscreen::MyTokens,
                 ..
@@ -473,8 +484,10 @@ impl Screen {
                 tokens_subscreen: TokensSubscreen::SearchTokens,
                 ..
             }) => ScreenType::TokenSearch,
-
-            // Token Screens
+            Screen::TokensScreen(TokensScreen {
+                tokens_subscreen: TokensSubscreen::TokenCreator,
+                ..
+            }) => ScreenType::TokenCreator,
             Screen::TransferScreen(screen) => ScreenType::TransferScreen(screen.identity.clone()),
             Screen::TransferTokensScreen(screen) => {
                 ScreenType::TransferTokensScreen(screen.identity_token_balance.clone())

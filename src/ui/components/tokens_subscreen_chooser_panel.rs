@@ -7,12 +7,17 @@ use egui::{Color32, Context, Frame, Margin, RichText, SidePanel};
 pub fn add_tokens_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext) -> AppAction {
     let mut action = AppAction::None;
 
-    let subscreens = vec![TokensSubscreen::MyTokens, TokensSubscreen::SearchTokens];
+    let subscreens = vec![
+        TokensSubscreen::MyTokens,
+        TokensSubscreen::SearchTokens,
+        TokensSubscreen::TokenCreator,
+    ];
 
     let active_screen = match app_context.get_settings() {
         Ok(Some(settings)) => match settings.1 {
             ui::RootScreenType::RootScreenMyTokenBalances => TokensSubscreen::MyTokens,
             ui::RootScreenType::RootScreenTokenSearch => TokensSubscreen::SearchTokens,
+            ui::RootScreenType::RootScreenTokenCreator => TokensSubscreen::TokenCreator,
             _ => TokensSubscreen::MyTokens,
         },
         _ => TokensSubscreen::MyTokens, // Fallback to Active screen if settings unavailable
@@ -54,6 +59,10 @@ pub fn add_tokens_subscreen_chooser_panel(ctx: &Context, app_context: &AppContex
                             TokensSubscreen::SearchTokens => {
                                 action =
                                     AppAction::SetMainScreen(RootScreenType::RootScreenTokenSearch)
+                            }
+                            TokensSubscreen::TokenCreator => {
+                                action =
+                                    AppAction::SetMainScreen(RootScreenType::RootScreenTokenCreator)
                             }
                         }
                     }

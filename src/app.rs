@@ -180,6 +180,8 @@ impl AppState {
             TokensScreen::new(&mainnet_app_context, TokensSubscreen::MyTokens);
         let mut token_search_screen =
             TokensScreen::new(&mainnet_app_context, TokensSubscreen::SearchTokens);
+        let mut token_creator_screen =
+            TokensScreen::new(&mainnet_app_context, TokensSubscreen::TokenCreator);
 
         let (custom_dash_qt_path, overwrite_dash_conf) = match settings.clone() {
             Some((.., db_custom_dash_qt_path, db_overwrite_dash_qt)) => {
@@ -232,6 +234,8 @@ impl AppState {
                     TokensScreen::new(testnet_app_context, TokensSubscreen::MyTokens);
                 token_search_screen =
                     TokensScreen::new(testnet_app_context, TokensSubscreen::SearchTokens);
+                token_creator_screen =
+                    TokensScreen::new(testnet_app_context, TokensSubscreen::TokenCreator);
             } else if chosen_network == Network::Devnet && devnet_app_context.is_some() {
                 let devnet_app_context = devnet_app_context.as_ref().unwrap();
                 identities_screen = IdentitiesScreen::new(devnet_app_context);
@@ -252,6 +256,8 @@ impl AppState {
                     TokensScreen::new(devnet_app_context, TokensSubscreen::MyTokens);
                 token_search_screen =
                     TokensScreen::new(devnet_app_context, TokensSubscreen::SearchTokens);
+                token_creator_screen =
+                    TokensScreen::new(devnet_app_context, TokensSubscreen::TokenCreator);
             } else if chosen_network == Network::Regtest && local_app_context.is_some() {
                 let local_app_context = local_app_context.as_ref().unwrap();
                 identities_screen = IdentitiesScreen::new(local_app_context);
@@ -272,6 +278,8 @@ impl AppState {
                     TokensScreen::new(local_app_context, TokensSubscreen::MyTokens);
                 token_search_screen =
                     TokensScreen::new(local_app_context, TokensSubscreen::SearchTokens);
+                token_creator_screen =
+                    TokensScreen::new(local_app_context, TokensSubscreen::TokenCreator);
             }
         }
 
@@ -381,6 +389,10 @@ impl AppState {
                 (
                     RootScreenType::RootScreenTokenSearch,
                     Screen::TokensScreen(token_search_screen),
+                ),
+                (
+                    RootScreenType::RootScreenTokenCreator,
+                    Screen::TokensScreen(token_creator_screen),
                 ),
             ]
             .into(),

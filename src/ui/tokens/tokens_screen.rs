@@ -1,10 +1,11 @@
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 use chrono::{DateTime, Utc};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
-use dash_sdk::platform::Identifier;
+use dash_sdk::platform::{Identifier, IdentityPublicKey};
 use eframe::egui::{self, CentralPanel, Color32, Context, Frame, Margin, Ui};
 use egui::Align;
 use egui_extras::{Column, TableBuilder};
@@ -13,9 +14,12 @@ use crate::app::{AppAction, DesiredAppAction};
 use crate::backend_task::tokens::TokenTask;
 use crate::backend_task::BackendTask;
 use crate::context::AppContext;
+use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::wallet::Wallet;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
 use crate::ui::{BackendTaskSuccessResult, MessageType, RootScreenType, Screen, ScreenLike};
 
 use super::burn_tokens_screen::BurnTokensScreen;
@@ -43,6 +47,7 @@ pub struct IdentityTokenBalance {
 pub enum TokensSubscreen {
     MyTokens,
     SearchTokens,
+    TokenCreator,
 }
 
 impl TokensSubscreen {
@@ -50,6 +55,7 @@ impl TokensSubscreen {
         match self {
             Self::MyTokens => "My Tokens",
             Self::SearchTokens => "Search Tokens",
+            Self::TokenCreator => "Token Creator",
         }
     }
 }
@@ -67,6 +73,20 @@ pub enum TokenSearchStatus {
     WaitingForResult(u64),
     Complete,
     ErrorMessage(String),
+}
+
+#[derive(Debug, PartialEq)]
+pub enum TokenCreatorStatus {
+    NotStarted,
+    WaitingForResult(u64),
+    Complete,
+    ErrorMessage(String),
+}
+
+impl Default for TokenCreatorStatus {
+    fn default() -> Self {
+        Self::NotStarted
+    }
 }
 
 /// Sorting columns
@@ -117,6 +137,32 @@ pub struct TokensScreen {
     identity_token_balance_to_remove: Option<IdentityTokenBalance>,
     confirm_remove_token_popup: bool,
     token_to_remove: Option<Identifier>,
+
+    /// Token Creator
+    /// Which identity (from local storage) is used to sign/register the contract
+    pub selected_identity: Option<QualifiedIdentity>,
+    /// Which key is used to sign the registration
+    pub selected_key: Option<IdentityPublicKey>,
+    /// The wallet reference if the selected identity/key belongs to a wallet
+    pub selected_wallet: Option<Arc<RwLock<Wallet>>>,
+    /// If the wallet is locked, store the user’s entered password
+    pub wallet_password: String,
+    /// Should the password be displayed in plain text?
+    pub show_password: bool,
+    /// Temporary text fields for user input
+    pub token_name_input: String,
+    pub decimals_input: String,
+    pub base_supply_input: String,
+    pub max_supply_input: String,
+    pub start_as_paused_input: bool,
+    /// Should we expand advanced settings UI?
+    pub show_advanced_creator_settings: bool,
+    /// Show a popup confirming the creation
+    pub show_token_creator_confirmation_popup: bool,
+    /// Overall status for contract creation
+    pub token_creator_status: TokenCreatorStatus,
+    /// Any error messages from the creation flow
+    pub token_creator_error_message: Option<String>,
 }
 
 impl TokensScreen {
@@ -150,6 +196,22 @@ impl TokensScreen {
             identity_token_balance_to_remove: None,
             confirm_remove_token_popup: false,
             token_to_remove: None,
+
+            // Token Creator
+            selected_identity: None,
+            selected_key: None,
+            selected_wallet: None,
+            wallet_password: String::new(),
+            show_password: false,
+            token_name_input: String::new(),
+            decimals_input: "8".to_string(), // Example default
+            base_supply_input: "1000000".to_string(),
+            max_supply_input: "5000000".to_string(),
+            start_as_paused_input: false,
+            show_advanced_creator_settings: false,
+            show_token_creator_confirmation_popup: false,
+            token_creator_status: TokenCreatorStatus::NotStarted,
+            token_creator_error_message: None,
         };
 
         if let Ok(saved_ids) = screen.app_context.db.load_token_order() {
@@ -791,6 +853,310 @@ impl TokensScreen {
         action
     }
 
+    pub fn render_token_creator(&mut self, ui: &mut egui::Ui) -> AppAction {
+        let mut action = AppAction::None;
+
+        // 1) If we've successfully completed contract creation, show a success UI
+        if self.token_creator_status == TokenCreatorStatus::Complete {
+            return self.render_token_creator_success_screen(ui);
+        }
+
+        // 2) Choose identity & key
+        //    We'll show a dropdown of local QualifiedIdentities, then a sub-dropdown of keys
+        ui.heading("Create a New Token Contract");
+        ui.add_space(8.0);
+
+        // Show an error if we have one
+        if let Some(err_msg) = &self.token_creator_error_message {
+            ui.colored_label(egui::Color32::RED, format!("Error: {err_msg}"));
+            ui.add_space(8.0);
+        }
+
+        ui.separator();
+        ui.add_space(4.0);
+        ui.label("1. Select an identity & key to register the contract:");
+        ui.add_space(4.0);
+
+        // Identity selection
+        // Load local identities from app_context
+        let all_identities = match self.app_context.load_local_qualified_identities() {
+            Ok(ids) => ids,
+            Err(_) => {
+                ui.colored_label(egui::Color32::RED, "Error loading identities from local DB");
+                return action;
+            }
+        };
+
+        egui::ComboBox::from_id_salt("token_creator_identity_selector")
+            .selected_text(
+                self.selected_identity
+                    .as_ref()
+                    .map(|qi| {
+                        qi.alias
+                            .clone()
+                            .unwrap_or_else(|| qi.identity.id().to_string(Encoding::Base58))
+                    })
+                    .unwrap_or_else(|| "Select Identity".to_owned()),
+            )
+            .show_ui(ui, |ui| {
+                for identity in all_identities.iter() {
+                    let display = identity
+                        .alias
+                        .clone()
+                        .unwrap_or_else(|| identity.identity.id().to_string(Encoding::Base58));
+                    if ui
+                        .selectable_label(
+                            Some(identity) == self.selected_identity.as_ref(),
+                            display,
+                        )
+                        .clicked()
+                    {
+                        // On select, store it
+                        self.selected_identity = Some(identity.clone());
+                        // Clear the selected key & wallet
+                        self.selected_key = None;
+                        self.selected_wallet = None;
+                        self.token_creator_error_message = None;
+                    }
+                }
+            });
+
+        // Key selection
+        if let Some(ref qid) = self.selected_identity {
+            // Attempt to list available keys (only auth keys in normal mode)
+            let keys = if self.app_context.developer_mode {
+                qid.identity
+                    .public_keys()
+                    .values()
+                    .cloned()
+                    .collect::<Vec<_>>()
+            } else {
+                qid.available_authentication_keys()
+                    .into_iter()
+                    .map(|k| k.identity_public_key.clone())
+                    .collect()
+            };
+
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.label("Key:");
+                egui::ComboBox::from_id_salt("token_creator_key_selector")
+                    .selected_text(match &self.selected_key {
+                        Some(k) => format!("Key #{} (Purpose: {:?})", k.id(), k.purpose()),
+                        None => "Select Key".to_owned(),
+                    })
+                    .show_ui(ui, |ui| {
+                        for k in keys {
+                            let label = format!("Key #{} (Purpose: {:?})", k.id(), k.purpose());
+                            if ui
+                                .selectable_label(
+                                    Some(k.id()) == self.selected_key.as_ref().map(|kk| kk.id()),
+                                    label,
+                                )
+                                .clicked()
+                            {
+                                self.selected_key = Some(k.clone());
+
+                                // If the key belongs to a wallet, set that wallet reference:
+                                self.selected_wallet = crate::ui::identities::get_selected_wallet(
+                                    qid,
+                                    None,
+                                    Some(&k),
+                                    &mut self.token_creator_error_message,
+                                );
+                            }
+                        }
+                    });
+            });
+        } else {
+            ui.label("Select an identity first.");
+        }
+
+        ui.add_space(8.0);
+        ui.separator();
+
+        // 3) If the wallet is locked, show unlock
+        //    But only do this step if we actually have a wallet reference:
+        let mut need_unlock = false;
+        let mut just_unlocked = false;
+
+        if let Some(_) = self.selected_wallet {
+            let (n, j) = self.render_wallet_unlock_if_needed(ui);
+            need_unlock = n;
+            just_unlocked = j;
+        }
+
+        if need_unlock && !just_unlocked {
+            // We must wait for unlock before continuing
+            return action;
+        }
+
+        // 4) Show input fields for token name, decimals, base supply, etc.
+        ui.add_space(8.0);
+        ui.label("2. Enter basic token info:");
+        ui.add_space(4.0);
+
+        // Token name
+        ui.horizontal(|ui| {
+            ui.label("Token Name:");
+            ui.text_edit_singleline(&mut self.token_name_input);
+        });
+
+        // Decimals
+        ui.horizontal(|ui| {
+            ui.label("Decimals:");
+            ui.text_edit_singleline(&mut self.decimals_input);
+        });
+
+        // Base Supply
+        ui.horizontal(|ui| {
+            ui.label("Base Supply:");
+            ui.text_edit_singleline(&mut self.base_supply_input);
+        });
+
+        // Max Supply
+        ui.horizontal(|ui| {
+            ui.label("Max Supply:");
+            ui.text_edit_singleline(&mut self.max_supply_input);
+        });
+
+        // Start as paused
+        ui.checkbox(&mut self.start_as_paused_input, "Start as paused?");
+
+        ui.add_space(8.0);
+        ui.separator();
+
+        // 5) Advanced settings toggle
+        ui.collapsing("Advanced Settings", |ui| {
+            ui.label("In real usage, these might be freeze rules, distribution rules, etc.");
+            ui.label(
+                "For demonstration, we’ll keep them set to default 'ContractOwner' or 'NoOne'.",
+            );
+            // If you actually want to let the user pick these, add more checkboxes/combos here.
+        });
+
+        ui.add_space(8.0);
+        ui.separator();
+
+        // 6) "Create Contract" button
+        ui.add_space(8.0);
+        if ui.button("Create Contract").clicked() {
+            // Validate input & if valid, show confirmation
+            self.show_token_creator_confirmation_popup = true;
+        }
+
+        // 7) If the user pressed "Create Contract," show a popup confirmation
+        if self.show_token_creator_confirmation_popup {
+            action |= self.render_token_creator_confirmation_popup(ui);
+        }
+
+        // 8) If we are waiting, show spinner / time elapsed
+        if let TokenCreatorStatus::WaitingForResult(start_time) = self.token_creator_status {
+            let now = chrono::Utc::now().timestamp() as u64;
+            let elapsed = now - start_time;
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                ui.label(format!("Creating contract... elapsed {}s", elapsed));
+                ui.add(egui::widgets::Spinner::default());
+            });
+        }
+
+        action
+    }
+
+    /// Shows a popup "Are you sure?" for creating the token contract
+    fn render_token_creator_confirmation_popup(&mut self, ui: &mut egui::Ui) -> AppAction {
+        let mut action = AppAction::None;
+        let mut is_open = true;
+
+        egui::Window::new("Confirm Contract Creation")
+            .collapsible(false)
+            .open(&mut is_open)
+            .show(ui.ctx(), |ui| {
+                ui.label(
+                    "Are you sure you want to create a new Token Contract with these settings?",
+                );
+                ui.monospace(format!(
+                    "Name: {}\nDecimals: {}\nBase Supply: {}\nMax Supply: {}\nPaused: {}",
+                    self.token_name_input,
+                    self.decimals_input,
+                    self.base_supply_input,
+                    self.max_supply_input,
+                    self.start_as_paused_input
+                ));
+
+                ui.add_space(10.0);
+
+                // Confirm
+                if ui.button("Confirm").clicked() {
+                    // Attempt to parse fields
+                    let decimals = self.decimals_input.parse::<u8>().unwrap_or(8);
+                    let base_supply = self.base_supply_input.parse::<u64>().unwrap_or(1_000_000);
+                    let max_supply = self.max_supply_input.parse::<u64>().unwrap_or(5_000_000);
+
+                    // We now dispatch a backend task for actually registering the contract.
+                    use crate::app::BackendTasksExecutionMode;
+                    use crate::backend_task::tokens::TokenTask;
+                    use crate::backend_task::BackendTask;
+
+                    // We'll switch status to "Waiting"
+                    self.token_creator_status =
+                        TokenCreatorStatus::WaitingForResult(chrono::Utc::now().timestamp() as u64);
+                    self.show_token_creator_confirmation_popup = false;
+
+                    // Build a new DataContract on the fly (or ask the backend task to do it).
+                    // For example:
+                    let identity = self.selected_identity.clone().unwrap();
+                    let key = self.selected_key.clone().unwrap();
+
+                    let start_paused = self.start_as_paused_input;
+                    let token_name = self.token_name_input.clone();
+
+                    let tasks = vec![
+                        BackendTask::TokenTask(TokenTask::RegisterTokenContract {
+                            identity,
+                            signing_key: key,
+                            token_name,
+                            decimals,
+                            base_supply,
+                            max_supply,
+                            start_paused,
+                            // Here you can pass the advanced config as needed
+                        }),
+                        BackendTask::TokenTask(TokenTask::QueryMyTokenBalances),
+                    ];
+
+                    action = AppAction::BackendTasks(tasks, BackendTasksExecutionMode::Sequential);
+                }
+
+                // Cancel
+                if ui.button("Cancel").clicked() {
+                    self.show_token_creator_confirmation_popup = false;
+                }
+            });
+
+        if !is_open {
+            self.show_token_creator_confirmation_popup = false;
+        }
+
+        action
+    }
+
+    /// Once the contract creation is done (status=Complete),
+    /// render a simple "Success" screen
+    fn render_token_creator_success_screen(&self, ui: &mut egui::Ui) -> AppAction {
+        let mut action = AppAction::None;
+        ui.vertical_centered(|ui| {
+            ui.heading("Contract Created Successfully! 🎉");
+            ui.add_space(10.0);
+            if ui.button("Back to Tokens").clicked() {
+                // We can pop this sub-screen or switch sub-screens
+                action = AppAction::Custom("Back to tokens".to_string());
+            }
+        });
+        action
+    }
+
     fn render_no_owned_tokens(&mut self, ui: &mut Ui) -> AppAction {
         let mut app_action = AppAction::None;
         ui.vertical_centered(|ui| {
@@ -807,6 +1173,14 @@ impl TokensScreen {
                 TokensSubscreen::SearchTokens => {
                     ui.label(
                         egui::RichText::new("No matching tokens found.")
+                            .heading()
+                            .strong()
+                            .color(Color32::GRAY),
+                    );
+                }
+                TokensSubscreen::TokenCreator => {
+                    ui.label(
+                        egui::RichText::new("Cannot render token creator for some reason")
                             .heading()
                             .strong()
                             .color(Color32::GRAY),
@@ -830,6 +1204,9 @@ impl TokensScreen {
                             ));
                         }
                         TokensSubscreen::SearchTokens => {
+                            app_action = AppAction::Refresh;
+                        }
+                        TokensSubscreen::TokenCreator => {
                             app_action = AppAction::Refresh;
                         }
                     }
@@ -1080,6 +1457,15 @@ impl ScreenLike for TokensScreen {
             self.token_search_status = TokenSearchStatus::ErrorMessage(msg.to_string());
             self.backend_message = Some((msg.to_string(), msg_type, Utc::now()));
         }
+
+        // Handle messages from Token Creator
+        if msg.contains("Successfully registered token contract") {
+            self.token_creator_status = TokenCreatorStatus::Complete;
+        }
+        if msg.contains("Error registering token contract") {
+            self.token_creator_status = TokenCreatorStatus::ErrorMessage(msg.to_string());
+            self.token_creator_error_message = Some(msg.to_string());
+        }
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
@@ -1120,6 +1506,7 @@ impl ScreenLike for TokensScreen {
                 )),
             )],
             TokensSubscreen::SearchTokens => vec![("Refresh", DesiredAppAction::Refresh)],
+            TokensSubscreen::TokenCreator => vec![],
         };
 
         // Top panel
@@ -1172,6 +1559,13 @@ impl ScreenLike for TokensScreen {
                     RootScreenType::RootScreenTokenSearch,
                 );
             }
+            TokensSubscreen::TokenCreator => {
+                action |= add_left_panel(
+                    ctx,
+                    &self.app_context,
+                    RootScreenType::RootScreenTokenCreator,
+                );
+            }
         }
 
         // Subscreen chooser
@@ -1198,6 +1592,9 @@ impl ScreenLike for TokensScreen {
                 }
                 TokensSubscreen::SearchTokens => {
                     action |= self.render_token_search(ui);
+                }
+                TokensSubscreen::TokenCreator => {
+                    action |= self.render_token_creator(ui);
                 }
             }
 
@@ -1270,5 +1667,35 @@ impl ScreenLike for TokensScreen {
             }
         }
         action
+    }
+}
+
+impl ScreenWithWalletUnlock for TokensScreen {
+    fn selected_wallet_ref(&self) -> &Option<Arc<RwLock<Wallet>>> {
+        &self.selected_wallet
+    }
+
+    fn wallet_password_ref(&self) -> &String {
+        &self.wallet_password
+    }
+
+    fn wallet_password_mut(&mut self) -> &mut String {
+        &mut self.wallet_password
+    }
+
+    fn show_password(&self) -> bool {
+        self.show_password
+    }
+
+    fn show_password_mut(&mut self) -> &mut bool {
+        &mut self.show_password
+    }
+
+    fn set_error_message(&mut self, error_message: Option<String>) {
+        self.token_creator_error_message = error_message;
+    }
+
+    fn error_message(&self) -> Option<&String> {
+        self.token_creator_error_message.as_ref()
     }
 }

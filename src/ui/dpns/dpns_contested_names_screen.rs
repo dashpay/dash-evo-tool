@@ -130,6 +130,7 @@ pub struct DPNSScreen {
     bulk_identity_options: Vec<VoteOption>,
     bulk_schedule_message: Option<(MessageType, String)>,
     bulk_vote_handling_status: VoteHandlingStatus,
+    set_all_option: VoteOption,
 }
 
 impl DPNSScreen {
@@ -197,6 +198,7 @@ impl DPNSScreen {
             bulk_identity_options,
             bulk_schedule_message: None,
             bulk_vote_handling_status: VoteHandlingStatus::NotStarted,
+            set_all_option: VoteOption::CastNow,
         }
     }
 
@@ -1256,6 +1258,87 @@ impl DPNSScreen {
 
                     // Show each identity + let user pick None / Immediate / Scheduled
                     ui.heading("Select cast method for each node:");
+                    ui.add_space(10.0);
+                    ui.group(|ui| {
+                        ui.horizontal(|ui| {
+                            ui.label("Set all:");
+
+                            // A ComboBox to pick No Vote / Cast Now / Schedule
+                            ComboBox::from_id_salt("set_all_combo")
+                                .width(120.0)
+                                .selected_text(match self.set_all_option {
+                                    VoteOption::NoVote => "No Vote".to_string(),
+                                    VoteOption::CastNow => "Cast Now".to_string(),
+                                    VoteOption::Scheduled { .. } => "Schedule".to_string(),
+                                })
+                                .show_ui(ui, |ui| {
+                                    if ui
+                                        .selectable_label(
+                                            matches!(self.set_all_option, VoteOption::NoVote),
+                                            "No Vote",
+                                        )
+                                        .clicked()
+                                    {
+                                        self.set_all_option = VoteOption::NoVote;
+                                    }
+                                    if ui
+                                        .selectable_label(
+                                            matches!(self.set_all_option, VoteOption::CastNow),
+                                            "Cast Now",
+                                        )
+                                        .clicked()
+                                    {
+                                        self.set_all_option = VoteOption::CastNow;
+                                    }
+                                    if ui
+                                        .selectable_label(
+                                            matches!(
+                                                self.set_all_option,
+                                                VoteOption::Scheduled { .. }
+                                            ),
+                                            "Schedule",
+                                        )
+                                        .clicked()
+                                    {
+                                        // Default scheduled values if none set yet
+                                        let (d, h, m) = match &self.set_all_option {
+                                            VoteOption::Scheduled {
+                                                days,
+                                                hours,
+                                                minutes,
+                                            } => (*days, *hours, *minutes),
+                                            _ => (0, 0, 0),
+                                        };
+                                        self.set_all_option = VoteOption::Scheduled {
+                                            days: d,
+                                            hours: h,
+                                            minutes: m,
+                                        };
+                                    }
+                                });
+
+                            // If scheduling, show the days/hours/minutes widgets inline
+                            if let VoteOption::Scheduled {
+                                ref mut days,
+                                ref mut hours,
+                                ref mut minutes,
+                            } = self.set_all_option
+                            {
+                                ui.label("Schedule In:");
+                                ui.add(egui::DragValue::new(days).prefix("Days: ").range(0..=14));
+                                ui.add(egui::DragValue::new(hours).prefix("Hours: ").range(0..=23));
+                                ui.add(egui::DragValue::new(minutes).prefix("Min: ").range(0..=59));
+                            }
+
+                            // Button to apply the "Set all" choice to each identity in bulk_identity_options
+                            if ui.button("Apply to All").clicked() {
+                                for option in &mut self.bulk_identity_options {
+                                    *option = self.set_all_option.clone();
+                                }
+                            }
+                        });
+                    });
+                    ui.add_space(10.0);
                     for (i, identity) in self.voting_identities.iter().enumerate() {
                         ui.group(|ui| {
                             ui.horizontal(|ui| {

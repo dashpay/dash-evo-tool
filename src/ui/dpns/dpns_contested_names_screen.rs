@@ -122,6 +122,7 @@ pub struct DPNSScreen {
     sort_order: SortOrder,
     active_filter_term: String,
     past_filter_term: String,
+    owned_filter_term: String,
 
     /// Which sub-screen is active: Active contests, Past, Owned, or Scheduled
     pub dpns_subscreen: DPNSSubscreen,
@@ -192,6 +193,7 @@ impl DPNSScreen {
             sort_order: SortOrder::Ascending,
             active_filter_term: String::new(),
             past_filter_term: String::new(),
+            owned_filter_term: String::new(),
             scheduled_vote_cast_in_progress: false,
             pending_backend_task: None,
             dpns_subscreen,
@@ -344,7 +346,7 @@ impl DPNSScreen {
     /// Show the Active Contests table
     fn render_table_active_contests(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
-            ui.label("Filter names:");
+            ui.label("Filter by name:");
             ui.text_edit_singleline(&mut self.active_filter_term);
         });
 
@@ -694,7 +696,7 @@ impl DPNSScreen {
     /// Show a Past Contests table
     fn render_table_past_contests(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
-            ui.label("Filter names:");
+            ui.label("Filter by name:");
             ui.text_edit_singleline(&mut self.past_filter_term);
         });
 
@@ -702,7 +704,7 @@ impl DPNSScreen {
             let guard = self.contested_names.lock().unwrap();
             let mut cn = guard.clone();
             cn.retain(|c| c.awarded_to.is_some() || c.state == ContestState::Locked);
-            // 1) Filter by `active_filter_term`
+            // 1) Filter by `past_filter_term`
             if !self.past_filter_term.is_empty() {
                 let mut filter_lc = self.past_filter_term.to_lowercase();
                 // Convert o and O to 0 and l to 1 in filter_lc
@@ -855,12 +857,22 @@ impl DPNSScreen {
 
     /// Show the Owned DPNS names table
     fn render_table_local_dpns_names(&mut self, ui: &mut Ui) {
-        let mut sorted_names = {
+        ui.horizontal(|ui| {
+            ui.label("Filter by name:");
+            ui.text_edit_singleline(&mut self.owned_filter_term);
+        });
+
+        let mut filtered_names = {
             let guard = self.local_dpns_names.lock().unwrap();
-            guard.clone()
+            let mut name_infos = guard.clone();
+            if !self.owned_filter_term.is_empty() {
+                let filter_lc = self.owned_filter_term.to_lowercase();
+                name_infos.retain(|c| c.1.name.to_lowercase().contains(&filter_lc));
+            }
+            name_infos
         };
         // Sort
-        sorted_names.sort_by(|a, b| match self.sort_column {
+        filtered_names.sort_by(|a, b| match self.sort_column {
             SortColumn::ContestedName => {
                 let order = a.1.name.cmp(&b.1.name);
                 if self.sort_order == SortOrder::Descending {
@@ -938,7 +950,7 @@ impl DPNSScreen {
                                 });
                             })
                             .body(|mut body| {
-                                for (identifier, dpns_info) in sorted_names {
+                                for (identifier, dpns_info) in filtered_names {
                                     body.row(25.0, |mut row| {
                                         row.col(|ui| {
                                             ui.label(dpns_info.name);

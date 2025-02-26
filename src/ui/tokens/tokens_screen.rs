@@ -863,7 +863,9 @@ impl TokensScreen {
 
         // 2) Choose identity & key
         //    We'll show a dropdown of local QualifiedIdentities, then a sub-dropdown of keys
-        ui.heading("Create a New Token Contract");
+        ui.heading("Token Creator");
+        ui.add_space(8.0);
+        ui.separator();
         ui.add_space(8.0);
 
         // Show an error if we have one
@@ -872,13 +874,7 @@ impl TokensScreen {
             ui.add_space(8.0);
         }
 
-        ui.separator();
-        ui.add_space(4.0);
-        ui.label("1. Select an identity & key to register the contract:");
-        ui.add_space(4.0);
-
         // Identity selection
-        // Load local identities from app_context
         let all_identities = match self.app_context.load_local_qualified_identities() {
             Ok(ids) => ids,
             Err(_) => {
@@ -886,40 +882,53 @@ impl TokensScreen {
                 return action;
             }
         };
+        if all_identities.is_empty() {
+            ui.colored_label(
+                        Color32::DARK_RED,
+                        "No identities loaded. Please load or create one to register the token contract with first.",
+                    );
+            return action;
+        }
 
-        egui::ComboBox::from_id_salt("token_creator_identity_selector")
-            .selected_text(
-                self.selected_identity
-                    .as_ref()
-                    .map(|qi| {
-                        qi.alias
+        ui.heading("1. Select an identity & key to register the contract with:");
+        ui.add_space(4.0);
+
+        ui.horizontal(|ui| {
+            ui.label("Identity:");
+            egui::ComboBox::from_id_salt("token_creator_identity_selector")
+                .selected_text(
+                    self.selected_identity
+                        .as_ref()
+                        .map(|qi| {
+                            qi.alias
+                                .clone()
+                                .unwrap_or_else(|| qi.identity.id().to_string(Encoding::Base58))
+                        })
+                        .unwrap_or_else(|| "Select Identity".to_owned()),
+                )
+                .show_ui(ui, |ui| {
+                    for identity in all_identities.iter() {
+                        let display = identity
+                            .alias
                             .clone()
-                            .unwrap_or_else(|| qi.identity.id().to_string(Encoding::Base58))
-                    })
-                    .unwrap_or_else(|| "Select Identity".to_owned()),
-            )
-            .show_ui(ui, |ui| {
-                for identity in all_identities.iter() {
-                    let display = identity
-                        .alias
-                        .clone()
-                        .unwrap_or_else(|| identity.identity.id().to_string(Encoding::Base58));
-                    if ui
-                        .selectable_label(
-                            Some(identity) == self.selected_identity.as_ref(),
-                            display,
-                        )
-                        .clicked()
-                    {
-                        // On select, store it
-                        self.selected_identity = Some(identity.clone());
-                        // Clear the selected key & wallet
-                        self.selected_key = None;
-                        self.selected_wallet = None;
-                        self.token_creator_error_message = None;
+                            .unwrap_or_else(|| identity.identity.id().to_string(Encoding::Base58));
+                        if ui
+                            .selectable_label(
+                                Some(identity) == self.selected_identity.as_ref(),
+                                display,
+                            )
+                            .clicked()
+                        {
+                            // On select, store it
+                            self.selected_identity = Some(identity.clone());
+                            // Clear the selected key & wallet
+                            self.selected_key = None;
+                            self.selected_wallet = None;
+                            self.token_creator_error_message = None;
+                        }
                     }
-                }
-            });
+                });
+        });
 
         // Key selection
         if let Some(ref qid) = self.selected_identity {
@@ -942,12 +951,22 @@ impl TokensScreen {
                 ui.label("Key:");
                 egui::ComboBox::from_id_salt("token_creator_key_selector")
                     .selected_text(match &self.selected_key {
-                        Some(k) => format!("Key #{} (Purpose: {:?})", k.id(), k.purpose()),
+                        Some(k) => format!(
+                            "Key {} (Purpose: {:?}, Security Level: {:?})",
+                            k.id(),
+                            k.purpose(),
+                            k.security_level()
+                        ),
                         None => "Select Key".to_owned(),
                     })
                     .show_ui(ui, |ui| {
                         for k in keys {
-                            let label = format!("Key #{} (Purpose: {:?})", k.id(), k.purpose());
+                            let label = format!(
+                                "Key {} (Purpose: {:?}, Security Level: {:?})",
+                                k.id(),
+                                k.purpose(),
+                                k.security_level()
+                            );
                             if ui
                                 .selectable_label(
                                     Some(k.id()) == self.selected_key.as_ref().map(|kk| kk.id()),
@@ -968,8 +987,10 @@ impl TokensScreen {
                         }
                     });
             });
-        } else {
-            ui.label("Select an identity first.");
+        }
+
+        if self.selected_key.is_none() {
+            return action;
         }
 
         ui.add_space(8.0);
@@ -993,7 +1014,7 @@ impl TokensScreen {
 
         // 4) Show input fields for token name, decimals, base supply, etc.
         ui.add_space(8.0);
-        ui.label("2. Enter basic token info:");
+        ui.heading("2. Enter basic token info:");
         ui.add_space(4.0);
 
         // Token name
@@ -1025,6 +1046,7 @@ impl TokensScreen {
 
         ui.add_space(8.0);
         ui.separator();
+        ui.add_space(8.0);
 
         // 5) Advanced settings toggle
         ui.collapsing("Advanced Settings", |ui| {
@@ -1038,14 +1060,14 @@ impl TokensScreen {
         ui.add_space(8.0);
         ui.separator();
 
-        // 6) "Create Contract" button
+        // 6) "Register Token Contract" button
         ui.add_space(8.0);
-        if ui.button("Create Contract").clicked() {
+        if ui.button("Register Token Contract").clicked() {
             // Validate input & if valid, show confirmation
             self.show_token_creator_confirmation_popup = true;
         }
 
-        // 7) If the user pressed "Create Contract," show a popup confirmation
+        // 7) If the user pressed "Register Token Contract," show a popup confirmation
         if self.show_token_creator_confirmation_popup {
             action |= self.render_token_creator_confirmation_popup(ui);
         }
@@ -1056,7 +1078,10 @@ impl TokensScreen {
             let elapsed = now - start_time;
             ui.add_space(10.0);
             ui.horizontal(|ui| {
-                ui.label(format!("Creating contract... elapsed {}s", elapsed));
+                ui.label(format!(
+                    "Registering token contract... elapsed {}s",
+                    elapsed
+                ));
                 ui.add(egui::widgets::Spinner::default());
             });
         }
@@ -1069,12 +1094,12 @@ impl TokensScreen {
         let mut action = AppAction::None;
         let mut is_open = true;
 
-        egui::Window::new("Confirm Contract Creation")
+        egui::Window::new("Confirm Token Contract Registration")
             .collapsible(false)
             .open(&mut is_open)
             .show(ui.ctx(), |ui| {
                 ui.label(
-                    "Are you sure you want to create a new Token Contract with these settings?",
+                    "Are you sure you want to register a new token contract with these settings?",
                 );
                 ui.monospace(format!(
                     "Name: {}\nDecimals: {}\nBase Supply: {}\nMax Supply: {}\nPaused: {}",
@@ -1090,9 +1115,27 @@ impl TokensScreen {
                 // Confirm
                 if ui.button("Confirm").clicked() {
                     // Attempt to parse fields
-                    let decimals = self.decimals_input.parse::<u8>().unwrap_or(8);
-                    let base_supply = self.base_supply_input.parse::<u64>().unwrap_or(1_000_000);
-                    let max_supply = self.max_supply_input.parse::<u64>().unwrap_or(5_000_000);
+                    let decimals = if let Ok(dec) = self.decimals_input.parse::<u8>() {
+                        dec
+                    } else {
+                        self.token_creator_error_message = Some("Invalid decimals".to_string());
+                        self.show_token_creator_confirmation_popup = false;
+                        return;
+                    };
+                    let base_supply = if let Ok(base) = self.base_supply_input.parse::<u64>() {
+                        base
+                    } else {
+                        self.token_creator_error_message = Some("Invalid base supply".to_string());
+                        self.show_token_creator_confirmation_popup = false;
+                        return;
+                    };
+                    let max_supply = if let Ok(max) = self.max_supply_input.parse::<u64>() {
+                        max
+                    } else {
+                        self.token_creator_error_message = Some("Invalid max supply".to_string());
+                        self.show_token_creator_confirmation_popup = false;
+                        return;
+                    };
 
                     // We now dispatch a backend task for actually registering the contract.
                     use crate::app::BackendTasksExecutionMode;

@@ -139,30 +139,28 @@ pub struct TokensScreen {
     token_to_remove: Option<Identifier>,
 
     /// Token Creator
-    /// Which identity (from local storage) is used to sign/register the contract
     pub selected_identity: Option<QualifiedIdentity>,
-    /// Which key is used to sign the registration
     pub selected_key: Option<IdentityPublicKey>,
-    /// The wallet reference if the selected identity/key belongs to a wallet
     pub selected_wallet: Option<Arc<RwLock<Wallet>>>,
-    /// If the wallet is locked, store the user’s entered password
     pub wallet_password: String,
-    /// Should the password be displayed in plain text?
     pub show_password: bool,
-    /// Temporary text fields for user input
     pub token_name_input: String,
+    pub should_capitalize_input: bool,
     pub decimals_input: String,
     pub base_supply_input: String,
     pub max_supply_input: String,
     pub start_as_paused_input: bool,
-    /// Should we expand advanced settings UI?
     pub show_advanced_creator_settings: bool,
-    /// Show a popup confirming the creation
     pub show_token_creator_confirmation_popup: bool,
-    /// Overall status for contract creation
     pub token_creator_status: TokenCreatorStatus,
-    /// Any error messages from the creation flow
     pub token_creator_error_message: Option<String>,
+    pub advanced_token_keeps_history: bool,
+    pub advanced_allow_manual_mint: bool,
+    pub advanced_allow_manual_burn: bool,
+    pub advanced_allow_freeze: bool,
+    pub advanced_allow_unfreeze: bool,
+    pub advanced_destroy_frozen_funds: bool,
+    // etc...
 }
 
 impl TokensScreen {
@@ -204,7 +202,8 @@ impl TokensScreen {
             wallet_password: String::new(),
             show_password: false,
             token_name_input: String::new(),
-            decimals_input: "8".to_string(), // Example default
+            should_capitalize_input: false,
+            decimals_input: "8".to_string(),
             base_supply_input: "1000000".to_string(),
             max_supply_input: "5000000".to_string(),
             start_as_paused_input: false,
@@ -212,6 +211,12 @@ impl TokensScreen {
             show_token_creator_confirmation_popup: false,
             token_creator_status: TokenCreatorStatus::NotStarted,
             token_creator_error_message: None,
+            advanced_token_keeps_history: false,
+            advanced_allow_manual_mint: false,
+            advanced_allow_manual_burn: false,
+            advanced_allow_freeze: false,
+            advanced_allow_unfreeze: false,
+            advanced_destroy_frozen_funds: false,
         };
 
         if let Ok(saved_ids) = screen.app_context.db.load_token_order() {
@@ -1044,17 +1049,47 @@ impl TokensScreen {
         // Start as paused
         ui.checkbox(&mut self.start_as_paused_input, "Start as paused?");
 
+        // Name should be capitalized?
+        ui.checkbox(
+            &mut self.should_capitalize_input,
+            "Name should be capitalized?",
+        );
+
         ui.add_space(8.0);
         ui.separator();
         ui.add_space(8.0);
 
         // 5) Advanced settings toggle
         ui.collapsing("Advanced Settings", |ui| {
-            ui.label("In real usage, these might be freeze rules, distribution rules, etc.");
-            ui.label(
-                "For demonstration, we’ll keep them set to default 'ContractOwner' or 'NoOne'.",
+            ui.label("Configure advanced rules for your token:");
+
+            // 1) Keep history?
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut self.advanced_token_keeps_history, "Keep History?");
+                ui.label("(If false, old states are pruned.)");
+            });
+
+            // 2) Manual minting/burning
+            ui.checkbox(
+                &mut self.advanced_allow_manual_mint,
+                "Allow Manual Minting by Owner?",
             );
-            // If you actually want to let the user pick these, add more checkboxes/combos here.
+            ui.checkbox(
+                &mut self.advanced_allow_manual_burn,
+                "Allow Manual Burning by Owner?",
+            );
+
+            // 3) Freeze/Unfreeze
+            ui.checkbox(&mut self.advanced_allow_freeze, "Allow Freeze?");
+            ui.checkbox(&mut self.advanced_allow_unfreeze, "Allow Unfreeze?");
+
+            // 4) Destroy Frozen Funds
+            ui.checkbox(
+                &mut self.advanced_destroy_frozen_funds,
+                "Allow Destroy Frozen Funds?",
+            );
+
+            // ... any other toggles you want ...
         });
 
         ui.add_space(8.0);
@@ -1160,11 +1195,18 @@ impl TokensScreen {
                             identity,
                             signing_key: key,
                             token_name,
+                            should_capitalize: self.should_capitalize_input,
                             decimals,
                             base_supply,
                             max_supply,
                             start_paused,
-                            // Here you can pass the advanced config as needed
+                            keeps_history: self.advanced_token_keeps_history,
+                            allow_manual_mint: self.advanced_allow_manual_mint,
+                            allow_manual_burn: self.advanced_allow_manual_burn,
+                            allow_freeze: self.advanced_allow_freeze,
+                            allow_unfreeze: self.advanced_allow_unfreeze,
+                            allow_destroy_frozen_funds: self.advanced_destroy_frozen_funds,
+                            // etc
                         }),
                         BackendTask::TokenTask(TokenTask::QueryMyTokenBalances),
                     ];

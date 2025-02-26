@@ -9,6 +9,10 @@ use dash_sdk::{
                     v0::TokenConfigurationLocalizationsV0, TokenConfigurationConvention,
                 },
             },
+            change_control_rules::{
+                authorized_action_takers::AuthorizedActionTakers, v0::ChangeControlRulesV0,
+                ChangeControlRules,
+            },
             config::DataContractConfig,
             v1::DataContractV1,
             TokenConfiguration, TokenContractPosition,
@@ -39,10 +43,17 @@ pub(crate) enum TokenTask {
         identity: QualifiedIdentity,
         signing_key: IdentityPublicKey,
         token_name: String,
+        should_capitalize: bool,
         decimals: u8,
         base_supply: u64,
         max_supply: u64,
         start_paused: bool,
+        keeps_history: bool,
+        allow_manual_mint: bool,
+        allow_manual_burn: bool,
+        allow_freeze: bool,
+        allow_unfreeze: bool,
+        allow_destroy_frozen_funds: bool,
     },
     QueryMyTokenBalances,
     QueryTokensByKeyword(String),
@@ -117,20 +128,33 @@ impl AppContext {
                 identity,
                 signing_key,
                 token_name,
+                should_capitalize,
                 decimals,
                 base_supply,
                 max_supply,
                 start_paused,
+                keeps_history,
+                allow_manual_mint,
+                allow_manual_burn,
+                allow_freeze,
+                allow_unfreeze,
+                allow_destroy_frozen_funds,
             } => {
-                // 1) Build the DataContract::V1 manually
                 let data_contract = self
                     .build_data_contract_v1_with_one_token(
                         identity.identity.id().clone(),
                         token_name,
+                        *should_capitalize,
                         *decimals,
                         *base_supply,
-                        Some(*max_supply), // or None if you want no max
+                        Some(*max_supply),
                         *start_paused,
+                        *keeps_history,
+                        *allow_manual_mint,
+                        *allow_manual_burn,
+                        *allow_freeze,
+                        *allow_unfreeze,
+                        *allow_destroy_frozen_funds,
                     )
                     .map_err(|e| format!("Error building contract V1: {e}"))?;
 
@@ -326,10 +350,17 @@ impl AppContext {
         &self,
         owner_id: Identifier,
         token_name: &str,
+        should_capitalize: bool,
         decimals: u8,
         base_supply: u64,
         max_supply: Option<u64>,
         start_as_paused: bool,
+        keeps_history: bool,
+        allow_manual_mint: bool,
+        allow_manual_burn: bool,
+        allow_freeze: bool,
+        allow_unfreeze: bool,
+        allow_destroy_frozen_funds: bool,
     ) -> Result<DataContract, ProtocolError> {
         // 1) Create the V1 struct manually, filling in all fields:
         let mut contract_v1 = DataContractV1 {
@@ -372,26 +403,121 @@ impl AppContext {
             conv_v0.localizations.insert(
                 "en".to_string(),
                 TokenConfigurationLocalizationsV0 {
-                    should_capitalize: true,
+                    should_capitalize,
                     singular_form: token_name.to_string(),
                     plural_form: format!("{}s", token_name),
                 },
             );
         }
 
-        // Set base supply
+        // Set config fields
         token_config_v0.base_supply = base_supply;
-
-        // Set max supply
         token_config_v0.max_supply = max_supply;
-
-        // Start paused or not
         token_config_v0.start_as_paused = start_as_paused;
+        token_config_v0.keeps_history = keeps_history;
+
+        // 3) Manual Minting
+        if allow_manual_mint {
+            // Set manualMintingRules to "ContractOwner"
+            token_config_v0.manual_minting_rules = ChangeControlRules::V0(ChangeControlRulesV0 {
+                authorized_to_make_change: AuthorizedActionTakers::ContractOwner,
+                admin_action_takers: AuthorizedActionTakers::NoOne,
+                changing_authorized_action_takers_to_no_one_allowed: false,
+                changing_admin_action_takers_to_no_one_allowed: false,
+                self_changing_admin_action_takers_allowed: false,
+            });
+        } else {
+            // Or set to "NoOne" if disallowed
+            token_config_v0.manual_minting_rules = ChangeControlRules::V0(ChangeControlRulesV0 {
+                authorized_to_make_change: AuthorizedActionTakers::NoOne,
+                admin_action_takers: AuthorizedActionTakers::NoOne,
+                changing_authorized_action_takers_to_no_one_allowed: false,
+                changing_admin_action_takers_to_no_one_allowed: false,
+                self_changing_admin_action_takers_allowed: false,
+            });
+        }
+
+        // 4) Manual Burning
+        if allow_manual_burn {
+            token_config_v0.manual_burning_rules = ChangeControlRules::V0(ChangeControlRulesV0 {
+                authorized_to_make_change: AuthorizedActionTakers::ContractOwner,
+                admin_action_takers: AuthorizedActionTakers::NoOne,
+                changing_authorized_action_takers_to_no_one_allowed: false,
+                changing_admin_action_takers_to_no_one_allowed: false,
+                self_changing_admin_action_takers_allowed: false,
+            });
+        } else {
+            token_config_v0.manual_burning_rules = ChangeControlRules::V0(ChangeControlRulesV0 {
+                authorized_to_make_change: AuthorizedActionTakers::NoOne,
+                admin_action_takers: AuthorizedActionTakers::NoOne,
+                changing_authorized_action_takers_to_no_one_allowed: false,
+                changing_admin_action_takers_to_no_one_allowed: false,
+                self_changing_admin_action_takers_allowed: false,
+            });
+        }
+
+        // 5) Freeze/Unfreeze
+        if allow_freeze {
+            token_config_v0.freeze_rules = ChangeControlRules::V0(ChangeControlRulesV0 {
+                authorized_to_make_change: AuthorizedActionTakers::ContractOwner,
+                admin_action_takers: AuthorizedActionTakers::ContractOwner,
+                changing_authorized_action_takers_to_no_one_allowed: false,
+                changing_admin_action_takers_to_no_one_allowed: false,
+                self_changing_admin_action_takers_allowed: false,
+            });
+        } else {
+            token_config_v0.freeze_rules = ChangeControlRules::V0(ChangeControlRulesV0 {
+                authorized_to_make_change: AuthorizedActionTakers::NoOne,
+                admin_action_takers: AuthorizedActionTakers::NoOne,
+                changing_authorized_action_takers_to_no_one_allowed: false,
+                changing_admin_action_takers_to_no_one_allowed: false,
+                self_changing_admin_action_takers_allowed: false,
+            });
+        }
+
+        if allow_unfreeze {
+            token_config_v0.unfreeze_rules = ChangeControlRules::V0(ChangeControlRulesV0 {
+                authorized_to_make_change: AuthorizedActionTakers::ContractOwner,
+                admin_action_takers: AuthorizedActionTakers::ContractOwner,
+                changing_authorized_action_takers_to_no_one_allowed: false,
+                changing_admin_action_takers_to_no_one_allowed: false,
+                self_changing_admin_action_takers_allowed: false,
+            });
+        } else {
+            token_config_v0.unfreeze_rules = ChangeControlRules::V0(ChangeControlRulesV0 {
+                authorized_to_make_change: AuthorizedActionTakers::NoOne,
+                admin_action_takers: AuthorizedActionTakers::NoOne,
+                changing_authorized_action_takers_to_no_one_allowed: false,
+                changing_admin_action_takers_to_no_one_allowed: false,
+                self_changing_admin_action_takers_allowed: false,
+            });
+        }
+
+        // 6) DestroyFrozenFunds
+        if allow_destroy_frozen_funds {
+            token_config_v0.destroy_frozen_funds_rules =
+                ChangeControlRules::V0(ChangeControlRulesV0 {
+                    authorized_to_make_change: AuthorizedActionTakers::ContractOwner,
+                    admin_action_takers: AuthorizedActionTakers::ContractOwner,
+                    changing_authorized_action_takers_to_no_one_allowed: false,
+                    changing_admin_action_takers_to_no_one_allowed: false,
+                    self_changing_admin_action_takers_allowed: false,
+                });
+        } else {
+            token_config_v0.destroy_frozen_funds_rules =
+                ChangeControlRules::V0(ChangeControlRulesV0 {
+                    authorized_to_make_change: AuthorizedActionTakers::NoOne,
+                    admin_action_takers: AuthorizedActionTakers::NoOne,
+                    changing_authorized_action_takers_to_no_one_allowed: false,
+                    changing_admin_action_takers_to_no_one_allowed: false,
+                    self_changing_admin_action_takers_allowed: false,
+                });
+        }
 
         // Wrap in the enum
         let token_config = TokenConfiguration::V0(token_config_v0);
 
-        // 3) Insert this token config at position 0
+        // 7) Insert this token config at position 0
         contract_v1
             .tokens
             .insert(TokenContractPosition::from(0u16), token_config);

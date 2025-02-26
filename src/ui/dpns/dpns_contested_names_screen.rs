@@ -1667,20 +1667,20 @@ impl DPNSScreen {
             }
 
             ui.add_space(20.0);
-            if ui.button("Go to Scheduled Votes Screen").clicked() {
-                self.show_bulk_schedule_popup = false;
-                self.bulk_vote_handling_status = VoteHandlingStatus::NotStarted;
-                action = AppAction::SetMainScreenThenPopScreen(
-                    RootScreenType::RootScreenDPNSScheduledVotes,
-                );
-            }
-            ui.add_space(5.0);
             if ui.button("Go back to Active Contests").clicked() {
                 self.bulk_vote_handling_status = VoteHandlingStatus::NotStarted;
                 self.show_bulk_schedule_popup = false;
                 action = AppAction::BackendTask(BackendTask::ContestedResourceTask(
                     ContestedResourceTask::QueryDPNSContests,
                 ))
+            }
+            ui.add_space(5.0);
+            if ui.button("Go to Scheduled Votes Screen").clicked() {
+                self.show_bulk_schedule_popup = false;
+                self.bulk_vote_handling_status = VoteHandlingStatus::NotStarted;
+                action = AppAction::SetMainScreenThenPopScreen(
+                    RootScreenType::RootScreenDPNSScheduledVotes,
+                );
             }
         });
 

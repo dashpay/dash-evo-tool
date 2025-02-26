@@ -54,7 +54,6 @@ impl AppContext {
         };
 
         let mut vote_results = vec![];
-        let mut strength = 0;
 
         // Iterate over the provided voters (QualifiedIdentity)
         for qualified_identity in voters.iter() {
@@ -79,7 +78,6 @@ impl AppContext {
                     .map(|_| ())
                     .map_err(|e| format!("Error voting: {}", e));
 
-                strength += qualified_identity.identity_type.vote_strength();
                 vote_results.push((name.clone(), vote_choice, result));
             } else {
                 return Err(format!(
@@ -88,16 +86,6 @@ impl AppContext {
                 ));
             }
         }
-
-        // To do: if the voter already voted previously, the previous vote count should be removed
-        self.db
-            .update_vote_count(
-                name,
-                self.network.to_string().as_str(),
-                strength,
-                vote_choice,
-            )
-            .map_err(|e| format!("Error voting: Error updating vote count: {}", e))?;
 
         Ok(BackendTaskSuccessResult::DPNSVoteResults(vote_results))
     }

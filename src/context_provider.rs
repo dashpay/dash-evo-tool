@@ -42,7 +42,8 @@ impl Provider {
         ac.replace(cloned);
         drop(ac);
 
-        app_context.sdk.set_context_provider(self.clone());
+        let sdk = app_context.sdk.write().expect("lock poisoned");
+        sdk.set_context_provider(self.clone());
     }
 }
 
@@ -58,6 +59,8 @@ impl ContextProvider for Provider {
 
         if data_contract_id == &app_ctx.dpns_contract.id() {
             Ok(Some(app_ctx.dpns_contract.clone()))
+        } else if data_contract_id == &app_ctx.token_history_contract.id() {
+            Ok(Some(app_ctx.token_history_contract.clone()))
         } else {
             let dc = self
                 .db

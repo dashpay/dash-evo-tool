@@ -347,6 +347,19 @@ impl QualifiedIdentity {
 
         keys
     }
+
+    pub fn available_authentication_keys(&self) -> Vec<&QualifiedIdentityPublicKey> {
+        let mut keys = vec![];
+
+        // Check the main identity's public keys
+        for (_, public_key) in self.private_keys.identity_public_keys() {
+            if public_key.identity_public_key.purpose() == Purpose::AUTHENTICATION {
+                keys.push(public_key);
+            }
+        }
+
+        keys
+    }
 }
 
 impl From<Identity> for QualifiedIdentity {

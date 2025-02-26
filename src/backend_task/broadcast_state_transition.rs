@@ -13,7 +13,7 @@ impl AppContext {
         state_transition: StateTransition,
         sdk: &Sdk,
     ) -> Result<BackendTaskSuccessResult, String> {
-        match state_transition.broadcast_and_wait(sdk, None).await {
+        match state_transition.broadcast(sdk, None).await {
             Ok(_) => Ok(BackendTaskSuccessResult::Message(
                 "State transition broadcasted successfully".to_string(),
             )),

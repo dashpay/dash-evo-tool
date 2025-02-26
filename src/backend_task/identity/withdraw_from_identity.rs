@@ -16,11 +16,16 @@ impl AppContext {
         credits: Credits,
         id: Option<KeyID>,
     ) -> Result<BackendTaskSuccessResult, String> {
+        let sdk_guard = {
+            let guard = self.sdk.read().unwrap();
+            guard.clone()
+        };
+
         let remaining_balance = qualified_identity
             .identity
             .clone()
             .withdraw(
-                &self.sdk,
+                &sdk_guard,
                 to_address,
                 credits,
                 Some(1),

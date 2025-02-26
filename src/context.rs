@@ -9,6 +9,7 @@ use crate::model::qualified_contract::QualifiedContract;
 use crate::model::qualified_identity::{DPNSNameInfo, QualifiedIdentity};
 use crate::model::wallet::{Wallet, WalletSeedHash};
 use crate::sdk_wrapper::initialize_sdk;
+use crate::ui::tokens::tokens_screen::IdentityTokenBalance;
 use crate::ui::RootScreenType;
 use crossbeam_channel::{Receiver, Sender};
 use dash_sdk::dashcore_rpc::dashcore::{InstantLock, Transaction};
@@ -36,14 +37,15 @@ pub struct AppContext {
     pub(crate) developer_mode: bool,
     pub(crate) devnet_name: Option<String>,
     pub(crate) db: Arc<Database>,
-    pub(crate) sdk: Sdk,
-    pub(crate) config: NetworkConfig,
+    pub(crate) sdk: RwLock<Sdk>,
+    pub(crate) config: RwLock<NetworkConfig>,
     pub(crate) rx_zmq_status: Receiver<ZMQConnectionEvent>,
     pub(crate) sx_zmq_status: Sender<ZMQConnectionEvent>,
     pub(crate) zmq_connection_status: Mutex<ZMQConnectionEvent>,
     pub(crate) dpns_contract: Arc<DataContract>,
     pub(crate) withdraws_contract: Arc<DataContract>,
-    pub(crate) core_client: Client,
+    pub(crate) token_history_contract: Arc<DataContract>,
+    pub(crate) core_client: RwLock<Client>,
     pub(crate) has_wallet: AtomicBool,
     pub(crate) wallets: RwLock<BTreeMap<WalletSeedHash, Arc<RwLock<Wallet>>>>,
     pub(crate) password_info: Option<PasswordInfo>,
@@ -82,6 +84,10 @@ impl AppContext {
             load_system_data_contract(SystemDataContract::Withdrawals, PlatformVersion::latest())
                 .expect("expected to get withdrawal contract");
 
+        let token_history_contract =
+            load_system_data_contract(SystemDataContract::TokenHistory, PlatformVersion::latest())
+                .expect("expected to get token history contract");
+
         let addr = format!(
             "http://{}:{}",
             network_config.core_host, network_config.core_rpc_port
@@ -107,13 +113,14 @@ impl AppContext {
             developer_mode: false,
             devnet_name: None,
             db,
-            sdk,
-            config: network_config,
+            sdk: sdk.into(),
+            config: network_config.into(),
             sx_zmq_status,
             rx_zmq_status,
             dpns_contract: Arc::new(dpns_contract),
             withdraws_contract: Arc::new(withdrawal_contract),
-            core_client,
+            token_history_contract: Arc::new(token_history_contract),
+            core_client: core_client.into(),
             has_wallet: (!wallets.is_empty()).into(),
             wallets: RwLock::new(wallets),
             password_info,
@@ -128,12 +135,53 @@ impl AppContext {
         Some(app_context)
     }
 
+    /// Rebuild both the Dash RPC `core_client` and the `Sdk` using the
+    /// updated `NetworkConfig` from `self.config`.
+    pub fn reinit_core_client_and_sdk(self: Arc<Self>) -> Result<(), String> {
+        // 1. Grab a fresh snapshot of your NetworkConfig
+        let cfg = {
+            let cfg_lock = self.config.read().unwrap();
+            cfg_lock.clone()
+        };
+
+        // 2. Rebuild the RPC client with the new password
+        let addr = format!("http://{}:{}", cfg.core_host, cfg.core_rpc_port);
+        let new_client = dash_sdk::dashcore_rpc::Client::new(
+            &addr,
+            dash_sdk::dashcore_rpc::Auth::UserPass(
+                cfg.core_rpc_user.clone(),
+                cfg.core_rpc_password.clone(),
+            ),
+        )
+        .map_err(|e| format!("Failed to create new Core RPC client: {e}"))?;
+
+        // 3. Rebuild the Sdk with the updated config
+        let provider = Provider::new(self.db.clone(), &cfg)
+            .map_err(|e| format!("Failed to init provider: {e}"))?;
+        let new_sdk = initialize_sdk(&cfg, self.network, provider.clone());
+
+        // 4. Swap them in
+        {
+            let mut client_lock = self.core_client.write().unwrap();
+            *client_lock = new_client;
+        }
+        {
+            let mut sdk_lock = self.sdk.write().unwrap();
+            *sdk_lock = new_sdk;
+        }
+
+        // Rebind the provider to the new app context
+        provider.bind_app_context(self.clone());
+
+        Ok(())
+    }
+
     pub(crate) fn network_string(&self) -> String {
         match self.network {
             Network::Dash => "dash".to_string(),
             Network::Testnet => "testnet".to_string(),
             Network::Devnet => format!("devnet:{}", self.devnet_name.clone().unwrap_or_default()),
-            Network::Regtest => "regtest".to_string(),
+            Network::Regtest => "local".to_string(),
             _ => "unknown".to_string(),
         }
     }
@@ -168,6 +216,11 @@ impl AppContext {
     /// Sets the alias for an identity
     pub fn set_alias(&self, identifier: &Identifier, new_alias: Option<&str>) -> Result<()> {
         self.db.set_alias(identifier, new_alias)
+    }
+
+    /// Gets the alias for an identity
+    pub fn get_alias(&self, identifier: &Identifier) -> Result<Option<String>> {
+        self.db.get_alias(identifier)
     }
 
     /// This is for before we know if Platform will accept the identity
@@ -457,5 +510,17 @@ impl AppContext {
         }
 
         Ok(())
+    }
+
+    pub fn identity_token_balances(&self) -> Result<Vec<IdentityTokenBalance>> {
+        self.db.get_identity_token_balances(self)
+    }
+
+    pub fn remove_token_balance(
+        &self,
+        token_id: Identifier,
+        identity_id: Identifier,
+    ) -> Result<()> {
+        self.db.remove_token_balance(&token_id, &identity_id, self)
     }
 }

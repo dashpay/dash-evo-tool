@@ -1643,8 +1643,19 @@ impl DPNSScreen {
             ui.add_space(20.0);
             match &self.bulk_vote_handling_status {
                 VoteHandlingStatus::Completed => {
-                    ui.heading("🎉");
-                    ui.heading("Successfully cast and scheduled all votes");
+                    if let Some(message) = &self.bulk_schedule_message {
+                        match message.0 {
+                            MessageType::Error => {
+                                ui.heading("❌");
+                                ui.label(message.1.clone());
+                            }
+                            MessageType::Success => {
+                                ui.heading("🎉");
+                                ui.heading("Successfully casted and scheduled votes");
+                            }
+                            _ => {}
+                        }
+                    }
                 }
                 VoteHandlingStatus::Failed(message) => {
                     ui.heading("❌");
@@ -1782,47 +1793,35 @@ impl ScreenLike for DPNSScreen {
         match backend_task_success_result {
             // If immediate cast finished, see if we have pending to schedule next
             BackendTaskSuccessResult::DPNSVoteResults(results) => {
-                let errors = results
+                let errors: Vec<String> = results
                     .iter()
                     .filter_map(|(_, _, r)| r.as_ref().err().cloned())
-                    .collect::<Vec<_>>();
-                let successes = results
+                    .collect();
+                let successes: Vec<()> = results
                     .iter()
                     .filter_map(|(_, _, r)| r.as_ref().ok().cloned())
-                    .collect::<Vec<_>>();
-                // If there are errors
+                    .collect();
+
                 if !errors.is_empty() {
-                    // And successes
                     if !successes.is_empty() {
+                        // partial success
                         self.bulk_schedule_message = Some((
                             MessageType::Error,
                             format!("Only some votes succeeded. Errors: {:?}", errors),
                         ));
                     } else {
-                        // All errors. We'll just display the first
+                        // all failed
                         self.bulk_schedule_message = Some((
                             MessageType::Error,
-                            format!(
-                                "Error casting votes. No votes succeeded. The first error returned was: {:?}",
-                                errors.first()
-                            ),
+                            format!("No votes succeeded. First error: {}", errors[0]),
                         ));
                     }
                 } else {
-                    // There were no errors.
-                    // If there were successful votes...
-                    if !successes.is_empty() {
-                        self.bulk_schedule_message = Some((
-                            MessageType::Success,
-                            format!("Votes all cast successfully."),
-                        ));
-                    } else {
-                        // No errors no successes
-                        self.bulk_schedule_message = Some((
-                            MessageType::Error,
-                            "No votes cast. Something went wrong.".to_string(),
-                        ));
-                    }
+                    // no errors => all success
+                    self.bulk_schedule_message = Some((
+                        MessageType::Success,
+                        "Votes all cast successfully.".to_string(),
+                    ));
                 }
 
                 self.bulk_vote_handling_status = VoteHandlingStatus::Completed;

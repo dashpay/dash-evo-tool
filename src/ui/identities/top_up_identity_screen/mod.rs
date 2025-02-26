@@ -348,7 +348,7 @@ impl ScreenLike for TopUpIdentityScreen {
             WalletFundedScreenStep::WaitingOnFunds => {
                 if let Some(funding_address) = self.funding_address.as_ref() {
                     if let BackendTaskSuccessResult::CoreItem(
-                        CoreItem::ReceivedAvailableUTXOTransaction(_, outpoints_with_addresses),
+                        CoreItem::InstantLockedTransaction(_, outpoints_with_addresses, _),
                     ) = backend_task_success_result
                     {
                         for (outpoint, tx_out, address) in outpoints_with_addresses {
@@ -364,7 +364,7 @@ impl ScreenLike for TopUpIdentityScreen {
             WalletFundedScreenStep::ReadyToCreate => {}
             WalletFundedScreenStep::WaitingForAssetLock => {
                 if let BackendTaskSuccessResult::CoreItem(
-                    CoreItem::ReceivedAvailableUTXOTransaction(tx, _),
+                    CoreItem::InstantLockedTransaction(tx, _, _),
                 ) = backend_task_success_result
                 {
                     if let Some(TransactionPayload::AssetLockPayloadType(asset_lock_payload)) =

@@ -353,7 +353,7 @@ impl CoreP2PHandler {
         let get_mnlist_diff_msg = NetworkMessage::GetQRInfo(message_qrinfo::GetQRInfo {
             base_block_hashes: known_block_hashes,
             block_request_hash,
-            extra_share: false,
+            extra_share: true,
         });
         self.send_qr_info_request_message(get_mnlist_diff_msg)
     }

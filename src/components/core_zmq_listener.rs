@@ -1,6 +1,6 @@
 use crossbeam_channel::Sender;
 use dash_sdk::dpp::dashcore::consensus::Decodable;
-use dash_sdk::dpp::dashcore::{Block, InstantLock, Network, Transaction};
+use dash_sdk::dpp::dashcore::{Block, ChainLock, InstantLock, Network, Transaction};
 use dash_sdk::dpp::prelude::CoreBlockHeight;
 use std::error::Error;
 use std::io::Cursor;
@@ -32,7 +32,7 @@ pub struct CoreZMQListener {
 
 pub enum ZMQMessage {
     ISLockedTransaction(Transaction, InstantLock),
-    ChainLockedBlock(Block),
+    ChainLockedBlock(Block, ChainLock),
     ChainLockedLockedTransaction(Transaction, CoreBlockHeight),
 }
 
@@ -136,7 +136,7 @@ impl CoreZMQListener {
                                 let data_bytes = data_message.as_bytes();
 
                                 match topic {
-                                    "rawchainlock" => {
+                                    "rawchainlocksig" => {
                                         // println!("Received raw chain locked block:");
                                         // println!("Data (hex): {}", hex::encode(data_bytes));
 
@@ -146,16 +146,27 @@ impl CoreZMQListener {
                                         // Deserialize the LLMQChainLock
                                         match Block::consensus_decode(&mut cursor) {
                                             Ok(block) => {
-                                                // Send the ChainLock and Network back to the main thread
-                                                if let Err(e) = sender_clone.send((
-                                                    ZMQMessage::ChainLockedBlock(block),
-                                                    network,
-                                                )) {
-                                                    eprintln!(
-                                                        "Error sending data to main thread: {}",
-                                                        e
-                                                    );
+                                                match ChainLock::consensus_decode(&mut cursor) {
+                                                    Ok(chain_lock) => {
+                                                        // Send the ChainLock and Network back to the main thread
+                                                        if let Err(e) = sender_clone.send((
+                                                            ZMQMessage::ChainLockedBlock(block, chain_lock),
+                                                            network,
+                                                        )) {
+                                                            eprintln!(
+                                                                "Error sending data to main thread: {}",
+                                                                e
+                                                            );
+                                                        }
+                                                    }
+                                                    Err(e) => {
+                                                        eprintln!(
+                                                            "Error deserializing InstantLock: {}",
+                                                            e
+                                                        );
+                                                    }
                                                 }
+
                                             }
                                             Err(e) => {
                                                 eprintln!(

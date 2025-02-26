@@ -546,10 +546,10 @@ impl App for AppState {
             match message {
                 ZMQMessage::ISLockedTransaction(tx, is_lock) => {
                     // Store the asset lock transaction in the database
-                    match app_context.received_transaction_finality(&tx, Some(is_lock), None) {
+                    match app_context.received_transaction_finality(&tx, Some(is_lock.clone()), None) {
                         Ok(utxos) => {
                             let core_item =
-                                CoreItem::ReceivedAvailableUTXOTransaction(tx.clone(), utxos);
+                                CoreItem::InstantLockedTransaction(tx.clone(), utxos, is_lock);
                             self.visible_screen_mut()
                                 .display_task_result(BackendTaskSuccessResult::CoreItem(core_item));
                         }
@@ -565,7 +565,9 @@ impl App for AppState {
                         eprintln!("Failed to store asset lock: {}", e);
                     }
                 }
-                ZMQMessage::ChainLockedBlock(_) => {}
+                ZMQMessage::ChainLockedBlock(block, chain_lock) => {
+                    self.visible_screen_mut().display_task_result(BackendTaskSuccessResult::CoreItem(CoreItem::ChainLockedBlock(block, chain_lock)));
+                }
             }
         }
 

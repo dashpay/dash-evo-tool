@@ -865,6 +865,7 @@ impl TokensScreen {
         // 1) If we've successfully completed contract creation, show a success UI
         if self.token_creator_status == TokenCreatorStatus::Complete {
             self.render_token_creator_success_screen(ui);
+            return action;
         }
 
         // 2) Choose identity & key
@@ -896,7 +897,7 @@ impl TokensScreen {
             return action;
         }
 
-        ui.heading("1. Select an identity & key to register the token contract with:");
+        ui.heading("1. Select an identity and key to register the token contract with:");
         ui.add_space(4.0);
 
         ui.horizontal(|ui| {
@@ -1243,10 +1244,28 @@ impl TokensScreen {
             ui.add_space(50.0);
             ui.heading("Token Contract Created Successfully! 🎉");
             ui.add_space(10.0);
-            if ui.button("Back to Tokens").clicked() {
-                self.token_creator_status = TokenCreatorStatus::NotStarted;
+            if ui.button("Back").clicked() {
+                self.reset_token_creator();
             }
         });
+    }
+
+    fn reset_token_creator(&mut self) {
+        self.selected_identity = None;
+        self.selected_key = None;
+        self.token_creator_status = TokenCreatorStatus::NotStarted;
+        self.token_name_input = "".to_string();
+        self.decimals_input = "8".to_string();
+        self.base_supply_input = "1000000".to_string();
+        self.max_supply_input = "5000000".to_string();
+        self.start_as_paused_input = false;
+        self.should_capitalize_input = false;
+        self.advanced_token_keeps_history = false;
+        self.advanced_allow_manual_mint = false;
+        self.advanced_allow_manual_burn = false;
+        self.advanced_allow_freeze = false;
+        self.advanced_allow_unfreeze = false;
+        self.advanced_destroy_frozen_funds = false;
     }
 
     fn render_no_owned_tokens(&mut self, ui: &mut Ui) -> AppAction {
@@ -1536,6 +1555,18 @@ impl ScreenLike for TokensScreen {
     }
 
     fn display_message(&mut self, msg: &str, msg_type: MessageType) {
+        if self.tokens_subscreen == TokensSubscreen::TokenCreator {
+            // Handle messages from Token Creator
+            if msg.contains("Successfully registered token contract") {
+                self.token_creator_status = TokenCreatorStatus::Complete;
+            } else if msg.contains("Error registering token contract") {
+                self.token_creator_status = TokenCreatorStatus::ErrorMessage(msg.to_string());
+                self.token_creator_error_message = Some(msg.to_string());
+            } else {
+                return;
+            }
+        }
+
         // Handle messages from querying My Token Balances
         if msg.contains("Successfully fetched token balances")
             | msg.contains("Failed to fetch token balances")
@@ -1548,15 +1579,6 @@ impl ScreenLike for TokensScreen {
         if msg.contains("Error fetching tokens") {
             self.token_search_status = TokenSearchStatus::ErrorMessage(msg.to_string());
             self.backend_message = Some((msg.to_string(), msg_type, Utc::now()));
-        }
-
-        // Handle messages from Token Creator
-        if msg.contains("Successfully registered token contract") {
-            self.token_creator_status = TokenCreatorStatus::Complete;
-        }
-        if msg.contains("Error registering token contract") {
-            self.token_creator_status = TokenCreatorStatus::ErrorMessage(msg.to_string());
-            self.token_creator_error_message = Some(msg.to_string());
         }
     }
 
@@ -1746,6 +1768,7 @@ impl ScreenLike for TokensScreen {
             AppAction::SetMainScreen(_) => {
                 self.refreshing_status = RefreshingStatus::NotRefreshing;
                 self.selected_token_id = None;
+                self.reset_token_creator();
             }
             AppAction::Custom(ref s) if s == "Back to tokens" => {
                 self.selected_token_id = None;

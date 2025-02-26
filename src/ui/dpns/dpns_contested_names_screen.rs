@@ -1643,23 +1643,34 @@ impl DPNSScreen {
             ui.add_space(20.0);
             match &self.bulk_vote_handling_status {
                 VoteHandlingStatus::Completed => {
+                    // This means DET side was successful, but Platform may have returned errors
                     if let Some(message) = &self.bulk_schedule_message {
                         match message.0 {
                             MessageType::Error => {
                                 ui.heading("❌");
+                                if message.1.contains("Successes") {
+                                    ui.heading("Only some votes succeeded");
+                                } else {
+                                    ui.heading("No votes succeeded");
+                                }
+                                ui.add_space(10.0);
                                 ui.label(message.1.clone());
                             }
                             MessageType::Success => {
                                 ui.heading("🎉");
-                                ui.heading("Successfully casted and scheduled votes");
+                                ui.heading("Successfully casted and scheduled all votes");
                             }
                             _ => {}
                         }
                     }
                 }
                 VoteHandlingStatus::Failed(message) => {
+                    // This means there was a DET-side error, not Platform-side
                     ui.heading("❌");
-                    ui.heading(format!("Error casting and scheduling votes: {}", message));
+                    ui.heading(format!(
+                        "Error casting and scheduling votes (DET-side): {}",
+                        message
+                    ));
                 }
                 _ => {
                     // this should not occur
@@ -1797,9 +1808,9 @@ impl ScreenLike for DPNSScreen {
                     .iter()
                     .filter_map(|(_, _, r)| r.as_ref().err().cloned())
                     .collect();
-                let successes: Vec<()> = results
+                let successes: Vec<String> = results
                     .iter()
-                    .filter_map(|(_, _, r)| r.as_ref().ok().cloned())
+                    .filter_map(|(name, _, r)| r.as_ref().ok().map(|_| name.clone()))
                     .collect();
 
                 if !errors.is_empty() {
@@ -1807,14 +1818,17 @@ impl ScreenLike for DPNSScreen {
                         // partial success
                         self.bulk_schedule_message = Some((
                             MessageType::Error,
-                            format!("Only some votes succeeded. Errors: {:?}", errors),
+                            format!(
+                                "Successes: {}/{}\n\nErrors: {:?}",
+                                successes.len(),
+                                successes.len() + errors.len(),
+                                errors
+                            ),
                         ));
                     } else {
                         // all failed
-                        self.bulk_schedule_message = Some((
-                            MessageType::Error,
-                            format!("No votes succeeded. First error: {}", errors[0]),
-                        ));
+                        self.bulk_schedule_message =
+                            Some((MessageType::Error, format!("Errors: {:?}", errors)));
                     }
                 } else {
                     // no errors => all success

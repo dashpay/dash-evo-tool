@@ -1278,9 +1278,6 @@ impl DPNSScreen {
             return action;
         }
 
-        ui.colored_label(Color32::DARK_RED, "NOTE: Dash Evo Tool must remain running and connected for scheduled votes to execute on time.");
-        ui.add_space(10.0);
-
         egui::ScrollArea::vertical().show(ui, |ui| {
             // Define a frame with custom background color and border
             Frame::group(ui.style())
@@ -1507,6 +1504,16 @@ impl DPNSScreen {
                 })
         });
 
+        // If any selected votes are scheduled, show a warning
+        if self
+            .bulk_identity_options
+            .iter()
+            .any(|o| matches!(o, VoteOption::Scheduled { .. }))
+        {
+            ui.colored_label(Color32::DARK_RED, "NOTE: Dash Evo Tool must remain running and connected for scheduled votes to execute on time.");
+            ui.add_space(10.0);
+        }
+
         // "Apply Votes" button
         let button = egui::Button::new(RichText::new("Apply Votes").color(Color32::WHITE))
             .fill(Color32::from_rgb(0, 128, 255))
@@ -1643,12 +1650,33 @@ impl DPNSScreen {
             ui.add_space(20.0);
             match &self.bulk_vote_handling_status {
                 VoteHandlingStatus::Completed => {
-                    ui.heading("🎉");
-                    ui.heading("Successfully cast and scheduled all votes");
+                    // This means DET side was successful, but Platform may have returned errors
+                    if let Some(message) = &self.bulk_schedule_message {
+                        match message.0 {
+                            MessageType::Error => {
+                                ui.heading("❌");
+                                if message.1.contains("Successes") {
+                                    ui.heading("Only some votes succeeded");
+                                } else {
+                                    ui.heading("No votes succeeded");
+                                }
+                                ui.add_space(10.0);
+                                ui.label(message.1.clone());
+                            }
+                            MessageType::Success => {
+                                ui.heading("🎉");
+                                ui.heading("Successfully casted and scheduled all votes");
+                            }
+                            _ => {}
+                        }
+                    }
                 }
                 VoteHandlingStatus::Failed(message) => {
+                    // This means there was a DET-side error, not Platform-side
                     ui.heading("❌");
-                    ui.heading(format!("Error casting and scheduling votes: {}", message));
+                    ui.heading("Error casting and scheduling votes (DET-side)");
+                    ui.add_space(10.0);
+                    ui.label(message);
                 }
                 _ => {
                     // this should not occur
@@ -1656,20 +1684,20 @@ impl DPNSScreen {
             }
 
             ui.add_space(20.0);
-            if ui.button("Go to Scheduled Votes Screen").clicked() {
-                self.show_bulk_schedule_popup = false;
-                self.bulk_vote_handling_status = VoteHandlingStatus::NotStarted;
-                action = AppAction::SetMainScreenThenPopScreen(
-                    RootScreenType::RootScreenDPNSScheduledVotes,
-                );
-            }
-            ui.add_space(5.0);
             if ui.button("Go back to Active Contests").clicked() {
                 self.bulk_vote_handling_status = VoteHandlingStatus::NotStarted;
                 self.show_bulk_schedule_popup = false;
                 action = AppAction::BackendTask(BackendTask::ContestedResourceTask(
                     ContestedResourceTask::QueryDPNSContests,
                 ))
+            }
+            ui.add_space(5.0);
+            if ui.button("Go to Scheduled Votes Screen").clicked() {
+                self.show_bulk_schedule_popup = false;
+                self.bulk_vote_handling_status = VoteHandlingStatus::NotStarted;
+                action = AppAction::SetMainScreenThenPopScreen(
+                    RootScreenType::RootScreenDPNSScheduledVotes,
+                );
             }
         });
 
@@ -1782,47 +1810,39 @@ impl ScreenLike for DPNSScreen {
         match backend_task_success_result {
             // If immediate cast finished, see if we have pending to schedule next
             BackendTaskSuccessResult::DPNSVoteResults(results) => {
-                let errors = results
+                let errors: Vec<String> = results
                     .iter()
                     .filter_map(|(_, _, r)| r.as_ref().err().cloned())
-                    .collect::<Vec<_>>();
-                let successes = results
+                    .collect();
+                let successes: Vec<String> = results
                     .iter()
-                    .filter_map(|(_, _, r)| r.as_ref().ok().cloned())
-                    .collect::<Vec<_>>();
-                // If there are errors
+                    .filter_map(|(name, _, r)| r.as_ref().ok().map(|_| name.clone()))
+                    .collect();
+
                 if !errors.is_empty() {
-                    // And successes
+                    let errors_string = errors.join("\n\n");
                     if !successes.is_empty() {
-                        self.bulk_schedule_message = Some((
-                            MessageType::Error,
-                            format!("Only some votes succeeded. Errors: {:?}", errors),
-                        ));
-                    } else {
-                        // All errors. We'll just display the first
+                        // partial success
                         self.bulk_schedule_message = Some((
                             MessageType::Error,
                             format!(
-                                "Error casting votes. No votes succeeded. The first error returned was: {:?}",
-                                errors.first()
+                                "Successes: {}/{}\n\nErrors:\n\n{:?}",
+                                successes.len(),
+                                successes.len() + errors.len(),
+                                errors_string
                             ),
                         ));
+                    } else {
+                        // all failed
+                        self.bulk_schedule_message =
+                            Some((MessageType::Error, format!("Errors:\n\n{}", errors_string)));
                     }
                 } else {
-                    // There were no errors.
-                    // If there were successful votes...
-                    if !successes.is_empty() {
-                        self.bulk_schedule_message = Some((
-                            MessageType::Success,
-                            format!("Votes all cast successfully."),
-                        ));
-                    } else {
-                        // No errors no successes
-                        self.bulk_schedule_message = Some((
-                            MessageType::Error,
-                            "No votes cast. Something went wrong.".to_string(),
-                        ));
-                    }
+                    // no errors => all success
+                    self.bulk_schedule_message = Some((
+                        MessageType::Success,
+                        "Votes all cast successfully.".to_string(),
+                    ));
                 }
 
                 self.bulk_vote_handling_status = VoteHandlingStatus::Completed;

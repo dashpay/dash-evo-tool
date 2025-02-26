@@ -1278,9 +1278,6 @@ impl DPNSScreen {
             return action;
         }
 
-        ui.colored_label(Color32::DARK_RED, "NOTE: Dash Evo Tool must remain running and connected for scheduled votes to execute on time.");
-        ui.add_space(10.0);
-
         egui::ScrollArea::vertical().show(ui, |ui| {
             // Define a frame with custom background color and border
             Frame::group(ui.style())
@@ -1507,6 +1504,16 @@ impl DPNSScreen {
                 })
         });
 
+        // If any selected votes are scheduled, show a warning
+        if self
+            .bulk_identity_options
+            .iter()
+            .any(|o| matches!(o, VoteOption::Scheduled { .. }))
+        {
+            ui.colored_label(Color32::DARK_RED, "NOTE: Dash Evo Tool must remain running and connected for scheduled votes to execute on time.");
+            ui.add_space(10.0);
+        }
+
         // "Apply Votes" button
         let button = egui::Button::new(RichText::new("Apply Votes").color(Color32::WHITE))
             .fill(Color32::from_rgb(0, 128, 255))
@@ -1667,10 +1674,9 @@ impl DPNSScreen {
                 VoteHandlingStatus::Failed(message) => {
                     // This means there was a DET-side error, not Platform-side
                     ui.heading("❌");
-                    ui.heading(format!(
-                        "Error casting and scheduling votes (DET-side): {}",
-                        message
-                    ));
+                    ui.heading("Error casting and scheduling votes (DET-side)");
+                    ui.add_space(10.0);
+                    ui.label(message);
                 }
                 _ => {
                     // this should not occur
@@ -1814,21 +1820,22 @@ impl ScreenLike for DPNSScreen {
                     .collect();
 
                 if !errors.is_empty() {
+                    let errors_string = errors.join("\n\n");
                     if !successes.is_empty() {
                         // partial success
                         self.bulk_schedule_message = Some((
                             MessageType::Error,
                             format!(
-                                "Successes: {}/{}\n\nErrors: {:?}",
+                                "Successes: {}/{}\n\nErrors:\n\n{:?}",
                                 successes.len(),
                                 successes.len() + errors.len(),
-                                errors
+                                errors_string
                             ),
                         ));
                     } else {
                         // all failed
                         self.bulk_schedule_message =
-                            Some((MessageType::Error, format!("Errors: {:?}", errors)));
+                            Some((MessageType::Error, format!("Errors:\n\n{}", errors_string)));
                     }
                 } else {
                     // no errors => all success

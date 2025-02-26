@@ -1888,7 +1888,7 @@ impl MasternodeListDiffScreen {
                     match self.selected_qr_field.as_deref() {
                         Some("Quorum Snapshots") => self.render_quorum_snapshots(ui, &selected_qr_info),
                         Some("Masternode List Diffs") => self.render_mn_list_diffs(ui, &selected_qr_info),
-                        Some("Rotated Quorums At Index") => self.render_last_commitments(ui),
+                        Some("Rotated Quorums At Index") => self.render_last_commitments(ui, selected_qr_info.last_commitment_per_index.first().map(|entry| entry.quorum_hash)),
                         Some("Quorum Snapshot List") => self.render_quorum_snapshot_list(ui, &selected_qr_info),
                         Some("MN List Diff List") => self.render_mn_list_diff_list(ui, &selected_qr_info),
                         _ => {
@@ -2233,11 +2233,19 @@ impl MasternodeListDiffScreen {
         }
     }
 
-    fn render_last_commitments(&mut self, ui: &mut Ui) {
-        if self.masternode_list_engine.last_commitment_entries.is_empty() {
-            ui.label("Engine does not contain any rotated quorums");
+    fn render_last_commitments(&mut self, ui: &mut Ui, cycle_hash: Option<BlockHash>) {
+        let Some(cycle_hash) = cycle_hash else {
+            ui.label("QR Info had no rotated quorums. This should not happen.");
+            return;
+        };
+        let Some(cycle_quorums) = self.masternode_list_engine.rotated_quorums_per_cycle.get(&cycle_hash) else {
+            ui.label(format!("Engine does not know of cycle {}", cycle_hash));
+            return;
+        };
+        if cycle_quorums.is_empty() {
+            ui.label(format!("Engine does not contain any rotated quorums for cycle {}", cycle_hash));
         }
-        for (index, commitment) in self.masternode_list_engine.last_commitment_entries.iter().enumerate() {
+        for (index, commitment) in cycle_quorums.iter().enumerate() {
             // Determine the appropriate symbol based on verification status
             let verification_symbol = match commitment.verified {
                 LLMQEntryVerificationStatus::Verified => "✔",  // Checkmark
@@ -2349,7 +2357,7 @@ impl MasternodeListDiffScreen {
                                     ui.label("Status");
                                     ui.end_row();
 
-                                    for (quorum_hash, (_, status)) in quorum_map {
+                                    for (quorum_hash, (_, _, status)) in quorum_map {
                                         let hash_label = format!("{}", quorum_hash);
 
                                         // Display quorum hash as selectable
@@ -2397,13 +2405,14 @@ impl MasternodeListDiffScreen {
 
             // Right Column: Heights where selected quorum exists
             ui.allocate_ui_with_layout(
-                egui::Vec2::new(200.0, 800.0),
+                egui::Vec2::new(500.0, 800.0),
                 Layout::top_down(Align::Min),
                 |ui| {
                     ui.heading("Quorum Heights");
 
                     if let Some(selected_quorum_hash) = self.selected_quorum_hash_in_quorum_viewer {
-                        if let Some((heights, status)) = quorum_map.get(&selected_quorum_hash) {
+                        if let Some((heights, key, status)) = quorum_map.get(&selected_quorum_hash) {
+                            ui.label(format!("Public Key: {}", key));
                             ui.label(format!("Verification Status: {}", status));
                             ScrollArea::vertical()
                                 .id_salt("quorum_heights_scroll")
@@ -2567,9 +2576,10 @@ impl MasternodeListDiffScreen {
 
         if let Some((CoreItem::InstantLockedTransaction(transaction, _, instant_lock), is_valid)) = &self.selected_core_item {
             ui.label(format!(
-                "TxID: {}\nValid: {}",
+                "TxID: {}\nValid: {}\nCycle Hash:{}",
                 transaction.txid(),
                 if *is_valid { "✔ Yes" } else { "❌ No" },
+                instant_lock.cyclehash,
             ));
 
             ui.separator();

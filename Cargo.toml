@@ -69,7 +69,7 @@ dashcoretemp = { package = "dashcore", git = "https://github.com/dashpay/rust-da
     "bls",
     "quorum_validation",
     "bincode",
-], default-features = false, rev = "5ff62bb2625a5006ed3407992538b6162a70dd7d" }
+], default-features = false, rev = "f3a9c311013bde58e20a308b04c45abb1fc8a69a" }
 
 [target.'cfg(not(target_os = "windows"))'.dependencies]
 zmq = "0.10"

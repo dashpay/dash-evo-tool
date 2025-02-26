@@ -3,7 +3,7 @@ use dash_sdk::{
         data_contract::accessors::v0::DataContractV0Getters,
         identity::{accessors::IdentityGettersV0, KeyType, Purpose, SecurityLevel},
     },
-    platform::{transition::put_contract::PutContract, DataContract},
+    platform::{transition::put_contract::PutContract, DataContract, IdentityPublicKey},
     Sdk,
 };
 
@@ -17,22 +17,11 @@ impl AppContext {
         data_contract: DataContract,
         alias: String,
         identity: QualifiedIdentity,
+        signing_key: IdentityPublicKey,
         sdk: &Sdk,
     ) -> Result<BackendTaskSuccessResult, String> {
-        let public_key = identity
-            .identity
-            .get_first_public_key_matching(
-                Purpose::AUTHENTICATION,
-                [SecurityLevel::CRITICAL, SecurityLevel::HIGH].into(),
-                KeyType::all_key_types().into(),
-                false,
-            )
-            .ok_or_else(|| {
-                "No public key found for the given identity that can register contracts".to_string()
-            })?;
-
         match data_contract
-            .put_to_platform_and_wait_for_response(&sdk, public_key.clone(), &identity, None)
+            .put_to_platform_and_wait_for_response(&sdk, signing_key.clone(), &identity, None)
             .await
         {
             Ok(returned_contract) => {

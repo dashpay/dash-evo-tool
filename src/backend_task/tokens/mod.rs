@@ -161,8 +161,9 @@ impl AppContext {
                 // 2) Call your existing function that registers the contract
                 self.register_data_contract(
                     data_contract,
-                    token_name.clone(), // alias for your DB
+                    token_name.clone(),
                     identity.clone(),
+                    signing_key.clone(),
                     sdk,
                 )
                 .await
@@ -362,55 +363,31 @@ impl AppContext {
         allow_unfreeze: bool,
         allow_destroy_frozen_funds: bool,
     ) -> Result<DataContract, ProtocolError> {
-        // 1) Create the V1 struct manually, filling in all fields:
+        // 1) Create the V1 struct
         let mut contract_v1 = DataContractV1 {
-            // Unique ID for the contract (you can replace with your own logic)
             id: Identifier::random(),
-
-            // The version of this data contract
             version: 1,
-
-            // The identity that owns the contract
             owner_id,
-
-            // No documents in this example
             document_types: BTreeMap::new(),
-
-            // Optional metadata, e.g. None
             metadata: None,
-
-            // The overall contract config
             config: DataContractConfig::default_for_version(self.platform_version)?,
-
-            // If you need definitions in $defs, put them here. Otherwise None
             schema_defs: None,
-
-            // Groups are advanced multiparty features; we omit them here
             groups: BTreeMap::new(),
-
-            // Finally, the tokens map (we'll fill it below)
             tokens: BTreeMap::new(),
         };
 
         // 2) Build a single TokenConfiguration in V0 format
         let mut token_config_v0 = TokenConfigurationV0::default_most_restrictive();
-
-        // Adjust decimals
-        if let TokenConfigurationConvention::V0(ref mut conv_v0) = token_config_v0.conventions {
-            conv_v0.decimals = decimals as u16;
-
-            // Add localizations or token name references:
-            conv_v0.localizations.insert(
-                "en".to_string(),
-                TokenConfigurationLocalizationsV0 {
-                    should_capitalize,
-                    singular_form: token_name.to_string(),
-                    plural_form: format!("{}s", token_name),
-                },
-            );
-        }
-
-        // Set config fields
+        let TokenConfigurationConvention::V0(ref mut conv_v0) = token_config_v0.conventions;
+        conv_v0.decimals = decimals as u16;
+        conv_v0.localizations.insert(
+            "en".to_string(),
+            TokenConfigurationLocalizationsV0 {
+                should_capitalize,
+                singular_form: token_name.to_string(),
+                plural_form: format!("{}s", token_name),
+            },
+        );
         token_config_v0.base_supply = base_supply;
         token_config_v0.max_supply = max_supply;
         token_config_v0.start_as_paused = start_as_paused;
@@ -460,7 +437,7 @@ impl AppContext {
         if allow_freeze {
             token_config_v0.freeze_rules = ChangeControlRules::V0(ChangeControlRulesV0 {
                 authorized_to_make_change: AuthorizedActionTakers::ContractOwner,
-                admin_action_takers: AuthorizedActionTakers::ContractOwner,
+                admin_action_takers: AuthorizedActionTakers::NoOne,
                 changing_authorized_action_takers_to_no_one_allowed: false,
                 changing_admin_action_takers_to_no_one_allowed: false,
                 self_changing_admin_action_takers_allowed: false,
@@ -478,7 +455,7 @@ impl AppContext {
         if allow_unfreeze {
             token_config_v0.unfreeze_rules = ChangeControlRules::V0(ChangeControlRulesV0 {
                 authorized_to_make_change: AuthorizedActionTakers::ContractOwner,
-                admin_action_takers: AuthorizedActionTakers::ContractOwner,
+                admin_action_takers: AuthorizedActionTakers::NoOne,
                 changing_authorized_action_takers_to_no_one_allowed: false,
                 changing_admin_action_takers_to_no_one_allowed: false,
                 self_changing_admin_action_takers_allowed: false,
@@ -498,7 +475,7 @@ impl AppContext {
             token_config_v0.destroy_frozen_funds_rules =
                 ChangeControlRules::V0(ChangeControlRulesV0 {
                     authorized_to_make_change: AuthorizedActionTakers::ContractOwner,
-                    admin_action_takers: AuthorizedActionTakers::ContractOwner,
+                    admin_action_takers: AuthorizedActionTakers::NoOne,
                     changing_authorized_action_takers_to_no_one_allowed: false,
                     changing_admin_action_takers_to_no_one_allowed: false,
                     self_changing_admin_action_takers_allowed: false,
@@ -522,7 +499,7 @@ impl AppContext {
             .tokens
             .insert(TokenContractPosition::from(0u16), token_config);
 
-        // 4) Wrap the whole struct in DataContract::V1
+        // 8) Wrap the whole struct in DataContract::V1
         Ok(DataContract::V1(contract_v1))
     }
 }

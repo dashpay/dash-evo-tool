@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use chrono::{DateTime, Utc};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+use dash_sdk::dpp::identity::SecurityLevel;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
 use eframe::egui::{self, CentralPanel, Color32, Context, Frame, Margin, Ui};
@@ -863,7 +864,7 @@ impl TokensScreen {
 
         // 1) If we've successfully completed contract creation, show a success UI
         if self.token_creator_status == TokenCreatorStatus::Complete {
-            return self.render_token_creator_success_screen(ui);
+            self.render_token_creator_success_screen(ui);
         }
 
         // 2) Choose identity & key
@@ -895,7 +896,7 @@ impl TokensScreen {
             return action;
         }
 
-        ui.heading("1. Select an identity & key to register the contract with:");
+        ui.heading("1. Select an identity & key to register the token contract with:");
         ui.add_space(4.0);
 
         ui.horizontal(|ui| {
@@ -947,7 +948,15 @@ impl TokensScreen {
             } else {
                 qid.available_authentication_keys()
                     .into_iter()
-                    .map(|k| k.identity_public_key.clone())
+                    .filter_map(|k| {
+                        if k.identity_public_key.security_level() == SecurityLevel::CRITICAL
+                            || k.identity_public_key.security_level() == SecurityLevel::HIGH
+                        {
+                            Some(k.identity_public_key.clone())
+                        } else {
+                            None
+                        }
+                    })
                     .collect()
             };
 
@@ -1229,17 +1238,15 @@ impl TokensScreen {
 
     /// Once the contract creation is done (status=Complete),
     /// render a simple "Success" screen
-    fn render_token_creator_success_screen(&self, ui: &mut egui::Ui) -> AppAction {
-        let mut action = AppAction::None;
+    fn render_token_creator_success_screen(&mut self, ui: &mut egui::Ui) {
         ui.vertical_centered(|ui| {
-            ui.heading("Contract Created Successfully! 🎉");
+            ui.add_space(50.0);
+            ui.heading("Token Contract Created Successfully! 🎉");
             ui.add_space(10.0);
             if ui.button("Back to Tokens").clicked() {
-                // We can pop this sub-screen or switch sub-screens
-                action = AppAction::Custom("Back to tokens".to_string());
+                self.token_creator_status = TokenCreatorStatus::NotStarted;
             }
         });
-        action
     }
 
     fn render_no_owned_tokens(&mut self, ui: &mut Ui) -> AppAction {

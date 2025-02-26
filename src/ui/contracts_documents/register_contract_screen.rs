@@ -38,8 +38,10 @@ pub struct RegisterDataContractScreen {
     broadcast_status: BroadcastStatus,
 
     pub show_identity_selector: bool,
+    pub show_key_selector: bool,
     pub qualified_identities: Vec<(QualifiedIdentity, Vec<IdentityPublicKey>)>,
     pub selected_qualified_identity: Option<(QualifiedIdentity, Vec<IdentityPublicKey>)>,
+    pub selected_key: Option<IdentityPublicKey>,
 
     pub selected_wallet: Option<Arc<RwLock<Wallet>>>,
     wallet_password: String,
@@ -84,6 +86,8 @@ impl RegisterDataContractScreen {
         };
 
         let show_identity_selector = qualified_identities.len() > 1;
+        let show_key_selector = selected_qualified_identity.is_some();
+
         Self {
             app_context: app_context.clone(),
             contract_json_input: String::new(),
@@ -91,8 +95,10 @@ impl RegisterDataContractScreen {
             broadcast_status: BroadcastStatus::Idle,
 
             show_identity_selector,
+            show_key_selector,
             qualified_identities,
             selected_qualified_identity,
+            selected_key: None,
 
             selected_wallet,
             wallet_password: String::new(),
@@ -101,7 +107,7 @@ impl RegisterDataContractScreen {
         }
     }
 
-    fn render_identity_id_selection(&mut self, ui: &mut egui::Ui) {
+    fn render_identity_id_and_key_selection(&mut self, ui: &mut egui::Ui) {
         if self.qualified_identities.len() == 1 {
             // Only one identity, display it directly
             let qualified_identity = &self.qualified_identities[0];
@@ -164,6 +170,76 @@ impl RegisterDataContractScreen {
                                     &qualified_identity.0,
                                     Some(&self.app_context),
                                     None,
+                                    &mut self.error_message,
+                                );
+                                self.show_key_selector = true;
+                            }
+                        }
+                    });
+            });
+        }
+
+        // Key selection
+        if let Some(ref qid) = self.selected_qualified_identity {
+            // Attempt to list available keys (only auth keys in normal mode)
+            let keys = if self.app_context.developer_mode {
+                qid.0
+                    .identity
+                    .public_keys()
+                    .values()
+                    .cloned()
+                    .collect::<Vec<_>>()
+            } else {
+                qid.0
+                    .available_authentication_keys()
+                    .into_iter()
+                    .filter_map(|k| {
+                        if k.identity_public_key.security_level() == SecurityLevel::CRITICAL
+                            || k.identity_public_key.security_level() == SecurityLevel::HIGH
+                        {
+                            Some(k.identity_public_key.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect()
+            };
+
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.label("Key:");
+                egui::ComboBox::from_id_salt("contract_creator_key_selector")
+                    .selected_text(match &self.selected_key {
+                        Some(k) => format!(
+                            "Key {} (Purpose: {:?}, Security Level: {:?})",
+                            k.id(),
+                            k.purpose(),
+                            k.security_level()
+                        ),
+                        None => "Select Key".to_owned(),
+                    })
+                    .show_ui(ui, |ui| {
+                        for k in keys {
+                            let label = format!(
+                                "Key {} (Purpose: {:?}, Security Level: {:?})",
+                                k.id(),
+                                k.purpose(),
+                                k.security_level()
+                            );
+                            if ui
+                                .selectable_label(
+                                    Some(k.id()) == self.selected_key.as_ref().map(|kk| kk.id()),
+                                    label,
+                                )
+                                .clicked()
+                            {
+                                self.selected_key = Some(k.clone());
+
+                                // If the key belongs to a wallet, set that wallet reference:
+                                self.selected_wallet = crate::ui::identities::get_selected_wallet(
+                                    &qid.0,
+                                    None,
+                                    Some(&k),
                                     &mut self.error_message,
                                 );
                             }
@@ -262,6 +338,7 @@ impl RegisterDataContractScreen {
                             contract.clone(),
                             self.contract_alias_input.clone(),
                             self.selected_qualified_identity.clone().unwrap().0, // unwrap should be safe here
+                            self.selected_key.clone().unwrap(), // unwrap should be safe here
                         ),
                     ));
                 }
@@ -288,7 +365,7 @@ impl RegisterDataContractScreen {
 
         match app_action {
             AppAction::BackendTask(BackendTask::ContractTask(
-                ContractTask::RegisterDataContract(_, _, _),
+                ContractTask::RegisterDataContract(_, _, _, _),
             )) => {
                 self.broadcast_status = BroadcastStatus::Broadcasting(
                     SystemTime::now()
@@ -389,13 +466,18 @@ impl ScreenLike for RegisterDataContractScreen {
             // Select the identity to register the name for
             ui.heading("1. Select Identity");
             ui.add_space(5.0);
-            self.render_identity_id_selection(ui);
+            self.render_identity_id_and_key_selection(ui);
             ui.add_space(5.0);
             if let Some(identity) = &self.selected_qualified_identity {
                 ui.label(format!(
                     "Identity balance: {:.6}",
                     identity.0.identity.balance() as f64 * 1e-11
                 ));
+            }
+
+            if self.selected_key.is_none() {
+                action = AppAction::None;
+                return;
             }
 
             // Input for the alias

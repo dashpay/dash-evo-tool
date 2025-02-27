@@ -52,7 +52,7 @@ pub fn add_left_panel(
         ),
         ("Q", RootScreenType::RootScreenDocumentQuery, "doc.png"),
         ("W", RootScreenType::RootScreenWalletsBalances, "wallet.png"),
-        ("O", RootScreenType::RootScreenMyTokenBalances, "wallet.png"),
+        ("O", RootScreenType::RootScreenMyTokenBalances, "tokens.png"),
         (
             "T",
             RootScreenType::RootScreenToolsProofLogScreen,

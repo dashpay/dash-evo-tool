@@ -268,6 +268,10 @@ impl ScreenLike for FreezeTokensScreen {
             &self.app_context,
             vec![
                 ("Tokens", AppAction::GoToMainScreen),
+                (
+                    &self.identity_token_balance.token_name,
+                    AppAction::PopScreen,
+                ),
                 ("Freeze", AppAction::None),
             ],
             vec![],

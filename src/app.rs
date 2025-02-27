@@ -106,6 +106,7 @@ pub enum BackendTasksExecutionMode {
 pub enum AppAction {
     None,
     Refresh,
+    PopScreen,
     PopScreenAndRefresh,
     GoToMainScreen,
     SwitchNetwork(Network),
@@ -704,6 +705,11 @@ impl App for AppState {
             AppAction::AddScreen(screen) => self.screen_stack.push(screen),
             AppAction::None => {}
             AppAction::Refresh => self.visible_screen_mut().refresh(),
+            AppAction::PopScreen => {
+                if !self.screen_stack.is_empty() {
+                    self.screen_stack.pop();
+                }
+            }
             AppAction::PopScreenAndRefresh => {
                 if !self.screen_stack.is_empty() {
                     self.screen_stack.pop();

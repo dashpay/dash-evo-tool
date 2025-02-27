@@ -271,6 +271,10 @@ impl ScreenLike for BurnTokensScreen {
             &self.app_context,
             vec![
                 ("Tokens", AppAction::GoToMainScreen),
+                (
+                    &self.identity_token_balance.token_name,
+                    AppAction::PopScreen,
+                ),
                 ("Burn", AppAction::None),
             ],
             vec![],

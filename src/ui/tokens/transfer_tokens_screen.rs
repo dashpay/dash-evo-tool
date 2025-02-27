@@ -312,6 +312,10 @@ impl ScreenLike for TransferTokensScreen {
             &self.app_context,
             vec![
                 ("Tokens", AppAction::GoToMainScreen),
+                (
+                    &self.identity_token_balance.token_name,
+                    AppAction::PopScreen,
+                ),
                 ("Transfer", AppAction::None),
             ],
             vec![],

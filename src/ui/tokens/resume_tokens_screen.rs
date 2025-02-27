@@ -228,6 +228,10 @@ impl ScreenLike for ResumeTokensScreen {
             &self.app_context,
             vec![
                 ("Tokens", AppAction::GoToMainScreen),
+                (
+                    &self.identity_token_balance.token_name,
+                    AppAction::PopScreen,
+                ),
                 ("Resume", AppAction::None),
             ],
             vec![],

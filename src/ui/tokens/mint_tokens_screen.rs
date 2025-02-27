@@ -12,7 +12,7 @@ use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
 
-use super::tokens_screen::IdentityTokenBalance;
+use super::tokens_screen::{IdentityTokenBalance, TokensScreen, TokensSubscreen};
 use crate::app::{AppAction, BackendTasksExecutionMode};
 use crate::backend_task::tokens::TokenTask;
 use crate::backend_task::BackendTask;
@@ -24,7 +24,7 @@ use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
-use crate::ui::{MessageType, Screen, ScreenLike};
+use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike};
 
 /// Internal states for the mint process.
 #[derive(PartialEq)]
@@ -318,6 +318,10 @@ impl ScreenLike for MintTokensScreen {
             &self.app_context,
             vec![
                 ("Tokens", AppAction::GoToMainScreen),
+                (
+                    &self.identity_token_balance.token_name,
+                    AppAction::PopScreen,
+                ),
                 ("Mint", AppAction::None),
             ],
             vec![],

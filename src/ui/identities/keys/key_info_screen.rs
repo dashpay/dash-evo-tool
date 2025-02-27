@@ -44,6 +44,7 @@ pub struct KeyInfoScreen {
     wallet_open: bool,
     view_private_key_even_if_encrypted_or_in_wallet: bool,
     show_pop_up_info: Option<String>,
+    show_confirm_remove_private_key: bool,
 }
 
 // /// The prefix for signed messages using Dash's message signing protocol.
@@ -217,6 +218,10 @@ impl ScreenLike for KeyInfoScreen {
                                 TextEdit::singleline(&mut private_key_hex.as_str().to_owned())
                                     .desired_width(f32::INFINITY),
                             );
+                            ui.add_space(10.0);
+                            if ui.button("Remove private key from DET").clicked() {
+                                self.show_confirm_remove_private_key = true;
+                            }
                             self.render_sign_input(ui);
                         }
                         PrivateKeyData::Encrypted(_) => {
@@ -343,6 +348,12 @@ impl ScreenLike for KeyInfoScreen {
                             }
                         });
                 }
+
+                // Show the remove private key confirmation popup
+                if self.show_confirm_remove_private_key {
+                    self.render_remove_private_key_confirm(ui);
+                }
+
                 ui.add_space(10.0);
             });
         });
@@ -384,6 +395,7 @@ impl KeyInfoScreen {
             wallet_open: false,
             view_private_key_even_if_encrypted_or_in_wallet: false,
             show_pop_up_info: None,
+            show_confirm_remove_private_key: false,
         }
     }
 
@@ -533,6 +545,42 @@ impl KeyInfoScreen {
         } else {
             self.sign_error_message = Some("Private key is not available.".to_string());
         }
+    }
+
+    fn render_remove_private_key_confirm(&mut self, ui: &mut egui::Ui) {
+        egui::Window::new("Remove Private Key")
+            .collapsible(false) // Prevent collapsing
+            .resizable(false) // Prevent resizing
+            .show(ui.ctx(), |ui| {
+                ui.label("Are you sure you want to remove the private key?");
+                ui.add_space(10.0);
+
+                ui.horizontal(|ui| {
+                    if ui.button("Cancel").clicked() {
+                        self.show_confirm_remove_private_key = false;
+                    }
+                    ui.add_space(3.0);
+                    if ui.button("Remove").clicked() {
+                        self.private_key_data = None;
+                        self.identity
+                            .private_keys
+                            .private_keys
+                            .remove(&(self.key.purpose().into(), self.key.id()));
+                        match self
+                            .app_context
+                            .insert_local_qualified_identity(&self.identity, None)
+                        {
+                            Ok(_) => {
+                                self.error_message = None;
+                            }
+                            Err(e) => {
+                                self.error_message = Some(format!("Issue saving: {}", e));
+                            }
+                        }
+                        self.show_confirm_remove_private_key = false;
+                    }
+                });
+            });
     }
 }
 

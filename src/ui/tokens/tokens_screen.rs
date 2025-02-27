@@ -557,7 +557,7 @@ impl TokensScreen {
                             .striped(true)
                             .resizable(true)
                             .cell_layout(egui::Layout::left_to_right(Align::Center))
-                            .column(Column::initial(200.0).resizable(true)) // Identity Alias
+                            .column(Column::initial(60.0).resizable(true)) // Identity Alias
                             .column(Column::initial(200.0).resizable(true)) // Identity ID
                             .column(Column::initial(60.0).resizable(true)) // Balance
                             .column(Column::initial(200.0).resizable(true)) // Actions
@@ -593,7 +593,7 @@ impl TokensScreen {
                                             {
                                                 ui.label(alias);
                                             } else {
-                                                ui.label("");
+                                                ui.label("-");
                                             }
                                         });
                                         row.col(|ui| {
@@ -604,17 +604,7 @@ impl TokensScreen {
                                         });
                                         row.col(|ui| {
                                             ui.horizontal(|ui| {
-                                                // Remove
-                                                if ui
-                                                    .button("X")
-                                                    .on_hover_text(
-                                                        "Remove identity token balance from DET",
-                                                    )
-                                                    .clicked()
-                                                {
-                                                    self.confirm_remove_identity_token_balance_popup = true;
-                                                    self.identity_token_balance_to_remove = Some(itb.clone());
-                                                }
+                                                ui.spacing_mut().item_spacing.x = 3.0;
 
                                                 // Transfer
                                                 if ui.button("Transfer").clicked() {
@@ -708,6 +698,18 @@ impl TokensScreen {
                                                         ui.close_menu();
                                                     }
                                                 });
+
+                                                // Remove
+                                                if ui
+                                                .button("X")
+                                                .on_hover_text(
+                                                    "Remove identity token balance from DET",
+                                                )
+                                                .clicked()
+                                                {
+                                                    self.confirm_remove_identity_token_balance_popup = true;
+                                                    self.identity_token_balance_to_remove = Some(itb.clone());
+                                                }
                                             });
                                         });
                                     });

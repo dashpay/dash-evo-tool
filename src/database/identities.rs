@@ -29,6 +29,17 @@ impl Database {
 
         Ok(())
     }
+
+    pub fn get_alias(&self, identifier: &Identifier) -> rusqlite::Result<Option<String>> {
+        let id = identifier.to_vec();
+        let conn = self.conn.lock().unwrap();
+
+        let mut stmt = conn.prepare("SELECT alias FROM identity WHERE id = ?")?;
+        let alias: Option<String> = stmt.query_row(params![id], |row| row.get(0)).ok();
+
+        Ok(alias)
+    }
+
     pub fn insert_local_qualified_identity(
         &self,
         qualified_identity: &QualifiedIdentity,

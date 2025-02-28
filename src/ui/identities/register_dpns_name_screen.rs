@@ -84,7 +84,7 @@ impl RegisterDpnsNameScreen {
             None
         };
 
-        let show_identity_selector = qualified_identities.len() > 0;
+        let show_identity_selector = qualified_identities.len() > 1;
         Self {
             show_identity_selector,
             qualified_identities,

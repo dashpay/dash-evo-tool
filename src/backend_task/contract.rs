@@ -1,6 +1,7 @@
 use crate::context::AppContext;
+use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::dpp::system_data_contracts::dpns_contract;
-use dash_sdk::platform::{DataContract, Fetch, FetchMany, Identifier};
+use dash_sdk::platform::{DataContract, Fetch, FetchMany, Identifier, IdentityPublicKey};
 use dash_sdk::Sdk;
 
 use super::BackendTaskSuccessResult;
@@ -11,6 +12,7 @@ pub(crate) enum ContractTask {
     FetchContract(Identifier, Option<String>),
     FetchContracts(Vec<Identifier>),
     RemoveContract(Identifier),
+    RegisterDataContract(DataContract, String, QualifiedIdentity, IdentityPublicKey),
 }
 
 impl AppContext {
@@ -72,6 +74,23 @@ impl AppContext {
                     Ok(None) => Err("No DPNS contract found".to_string()),
                     Err(e) => Err(format!("Error fetching DPNS contract: {}", e.to_string())),
                 }
+            }
+            ContractTask::RegisterDataContract(data_contract, alias, identity, signing_key) => {
+                AppContext::register_data_contract(
+                    &self,
+                    data_contract,
+                    alias,
+                    identity,
+                    signing_key,
+                    sdk,
+                )
+                .await
+                .map(|_| {
+                    BackendTaskSuccessResult::Message(
+                        "Successfully registered contract".to_string(),
+                    )
+                })
+                .map_err(|e| format!("Error registering contract: {}", e.to_string()))
             }
             ContractTask::RemoveContract(identifier) => self
                 .remove_contract(&identifier)

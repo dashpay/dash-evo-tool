@@ -175,6 +175,12 @@ pub struct TokensScreen {
     authorized_pause_resume: AuthorizedActionTakers,
     pause_resume_authorized_identity: Option<String>,
     pause_resume_authorized_group: Option<String>,
+    authorized_max_supply_change: AuthorizedActionTakers,
+    max_supply_change_authorized_identity: Option<String>,
+    max_supply_change_authorized_group: Option<String>,
+    authorized_conventions_change: AuthorizedActionTakers,
+    conventions_change_authorized_identity: Option<String>,
+    conventions_change_authorized_group: Option<String>,
 }
 
 impl TokensScreen {
@@ -244,6 +250,12 @@ impl TokensScreen {
             authorized_pause_resume: AuthorizedActionTakers::NoOne,
             pause_resume_authorized_identity: None,
             pause_resume_authorized_group: None,
+            authorized_max_supply_change: AuthorizedActionTakers::NoOne,
+            max_supply_change_authorized_identity: None,
+            max_supply_change_authorized_group: None,
+            authorized_conventions_change: AuthorizedActionTakers::NoOne,
+            conventions_change_authorized_identity: None,
+            conventions_change_authorized_group: None,
         };
 
         if let Ok(saved_ids) = screen.app_context.db.load_token_order() {
@@ -917,7 +929,7 @@ impl TokensScreen {
         }
 
         ui.heading("1. Select an identity and key to register the token contract with:");
-        ui.add_space(5.0);
+        ui.add_space(10.0);
 
         ui.horizontal(|ui| {
             ui.label("Identity:");
@@ -1023,11 +1035,7 @@ impl TokensScreen {
             });
         }
 
-        if self.selected_key.is_none() {
-            return action;
-        }
-
-        ui.add_space(8.0);
+        ui.add_space(10.0);
         ui.separator();
 
         // 3) If the wallet is locked, show unlock
@@ -1047,9 +1055,9 @@ impl TokensScreen {
         }
 
         // 4) Show input fields for token name, decimals, base supply, etc.
-        ui.add_space(8.0);
+        ui.add_space(10.0);
         ui.heading("2. Enter basic token info:");
-        ui.add_space(4.0);
+        ui.add_space(5.0);
 
         // Token name
         ui.horizontal(|ui| {
@@ -1069,16 +1077,9 @@ impl TokensScreen {
             ui.text_edit_singleline(&mut self.max_supply_input);
         });
 
-        // Name should be capitalized
-        ui.add_space(3.0);
-        ui.checkbox(
-            &mut self.should_capitalize_input,
-            "Name should be capitalized",
-        );
-
-        ui.add_space(8.0);
+        ui.add_space(10.0);
         ui.separator();
-        ui.add_space(8.0);
+        ui.add_space(10.0);
 
         // 5) Advanced settings toggle
         ui.collapsing("Advanced Settings", |ui| {
@@ -1087,6 +1088,13 @@ impl TokensScreen {
 
             // 1) Keep history?
             ui.checkbox(&mut self.token_keeps_history, "Keep history");
+
+            // Name should be capitalized
+            ui.add_space(3.0);
+            ui.checkbox(
+                &mut self.should_capitalize_input,
+                "Name should be capitalized",
+            );
 
             // Decimals
             ui.horizontal(|ui| {
@@ -1098,7 +1106,7 @@ impl TokensScreen {
             ui.horizontal(|ui| {
                 ui.label("Allow manual minting:");
                 egui::ComboBox::from_id_salt("manual_mint_selector")
-                    .selected_text(format!("{:?}", self.authorized_manual_mint))
+                    .selected_text(format!("{}", self.authorized_manual_mint.to_string()))
                     .show_ui(ui, |ui| {
                         ui.selectable_value(
                             &mut self.authorized_manual_mint,
@@ -1159,7 +1167,7 @@ impl TokensScreen {
             ui.horizontal(|ui| {
                 ui.label("Allow manual burning:");
                 egui::ComboBox::from_id_salt("manual_burn_selector")
-                    .selected_text(format!("{:?}", self.authorized_manual_burn))
+                    .selected_text(format!("{}", self.authorized_manual_burn.to_string()))
                     .show_ui(ui, |ui| {
                         ui.selectable_value(
                             &mut self.authorized_manual_burn,
@@ -1217,7 +1225,7 @@ impl TokensScreen {
             ui.horizontal(|ui| {
                 ui.label("Allow identity freeze:");
                 egui::ComboBox::from_id_salt("freeze_selector")
-                    .selected_text(format!("{:?}", self.authorized_freeze))
+                    .selected_text(format!("{}", self.authorized_freeze.to_string()))
                     .show_ui(ui, |ui| {
                         ui.selectable_value(
                             &mut self.authorized_freeze,
@@ -1275,7 +1283,7 @@ impl TokensScreen {
             ui.horizontal(|ui| {
                 ui.label("Allow identity unfreeze:");
                 egui::ComboBox::from_id_salt("unfreeze_selector")
-                    .selected_text(format!("{:?}", self.authorized_unfreeze))
+                    .selected_text(format!("{}", self.authorized_unfreeze.to_string()))
                     .show_ui(ui, |ui| {
                         ui.selectable_value(
                             &mut self.authorized_unfreeze,
@@ -1333,7 +1341,10 @@ impl TokensScreen {
             ui.horizontal(|ui| {
                 ui.label("Allow destroy frozen identity funds:");
                 egui::ComboBox::from_id_salt("destroy_frozen_selector")
-                    .selected_text(format!("{:?}", self.authorized_destroy_frozen_funds))
+                    .selected_text(format!(
+                        "{}",
+                        self.authorized_destroy_frozen_funds.to_string()
+                    ))
                     .show_ui(ui, |ui| {
                         ui.selectable_value(
                             &mut self.authorized_destroy_frozen_funds,
@@ -1391,7 +1402,7 @@ impl TokensScreen {
             ui.horizontal(|ui| {
                 ui.label("Allow token pause and resume:");
                 egui::ComboBox::from_id_salt("pause_resume_selector")
-                    .selected_text(format!("{:?}", self.authorized_pause_resume))
+                    .selected_text(format!("{}", self.authorized_pause_resume.to_string()))
                     .show_ui(ui, |ui| {
                         ui.selectable_value(
                             &mut self.authorized_pause_resume,
@@ -1444,10 +1455,129 @@ impl TokensScreen {
                     _ => {}
                 }
             });
+
+            // Allow max supply changes
+            ui.horizontal(|ui| {
+                ui.label("Allow config updates:");
+                egui::ComboBox::from_id_salt("max_supply_change_selector")
+                    .selected_text(format!("{}", self.authorized_max_supply_change.to_string()))
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut self.authorized_max_supply_change,
+                            AuthorizedActionTakers::NoOne,
+                            "No One",
+                        );
+                        ui.selectable_value(
+                            &mut self.authorized_max_supply_change,
+                            AuthorizedActionTakers::ContractOwner,
+                            "Contract Owner",
+                        );
+                        ui.selectable_value(
+                            &mut self.authorized_max_supply_change,
+                            AuthorizedActionTakers::Identity(Identifier::default()),
+                            "Identity",
+                        );
+                        ui.selectable_value(
+                            &mut self.authorized_max_supply_change,
+                            AuthorizedActionTakers::MainGroup,
+                            "Main Group",
+                        );
+                        ui.selectable_value(
+                            &mut self.authorized_max_supply_change,
+                            AuthorizedActionTakers::Group(0),
+                            "Group",
+                        );
+                    });
+                match &mut self.authorized_max_supply_change {
+                    AuthorizedActionTakers::Identity(_) => {
+                        // Initialize if needed
+                        if self.max_supply_change_authorized_identity.is_none() {
+                            self.max_supply_change_authorized_identity = Some(String::new());
+                        }
+                        if let Some(ref mut id) = self.max_supply_change_authorized_identity {
+                            ui.add(egui::TextEdit::singleline(id).hint_text("Enter base58 id"));
+                        }
+                    }
+                    AuthorizedActionTakers::Group(_) => {
+                        // Initialize if needed
+                        if self.max_supply_change_authorized_group.is_none() {
+                            self.max_supply_change_authorized_group = Some(0.to_string());
+                        }
+                        if let Some(ref mut group) = self.max_supply_change_authorized_group {
+                            ui.add(
+                                egui::TextEdit::singleline(group)
+                                    .hint_text("Enter group contract position"),
+                            );
+                        }
+                    }
+                    _ => {}
+                }
+            });
+
+            // Allow conventions change
+            ui.horizontal(|ui| {
+                ui.label("Allow conventions change:");
+                egui::ComboBox::from_id_salt("conventions_change_selector")
+                    .selected_text(format!(
+                        "{}",
+                        self.authorized_conventions_change.to_string()
+                    ))
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut self.authorized_conventions_change,
+                            AuthorizedActionTakers::NoOne,
+                            "No One",
+                        );
+                        ui.selectable_value(
+                            &mut self.authorized_conventions_change,
+                            AuthorizedActionTakers::ContractOwner,
+                            "Contract Owner",
+                        );
+                        ui.selectable_value(
+                            &mut self.authorized_conventions_change,
+                            AuthorizedActionTakers::Identity(Identifier::default()),
+                            "Identity",
+                        );
+                        ui.selectable_value(
+                            &mut self.authorized_conventions_change,
+                            AuthorizedActionTakers::MainGroup,
+                            "Main Group",
+                        );
+                        ui.selectable_value(
+                            &mut self.authorized_conventions_change,
+                            AuthorizedActionTakers::Group(0),
+                            "Group",
+                        );
+                    });
+                match &mut self.authorized_conventions_change {
+                    AuthorizedActionTakers::Identity(_) => {
+                        // Initialize if needed
+                        if self.conventions_change_authorized_identity.is_none() {
+                            self.conventions_change_authorized_identity = Some(String::new());
+                        }
+                        if let Some(ref mut id) = self.conventions_change_authorized_identity {
+                            ui.add(egui::TextEdit::singleline(id).hint_text("Enter base58 id"));
+                        }
+                    }
+                    AuthorizedActionTakers::Group(_) => {
+                        // Initialize if needed
+                        if self.conventions_change_authorized_group.is_none() {
+                            self.conventions_change_authorized_group = Some(0.to_string());
+                        }
+                        if let Some(ref mut group) = self.conventions_change_authorized_group {
+                            ui.add(
+                                egui::TextEdit::singleline(group)
+                                    .hint_text("Enter group contract position"),
+                            );
+                        }
+                    }
+                    _ => {}
+                }
+            });
         });
 
         // 6) "Register Token Contract" button
-        ui.add_space(8.0);
+        ui.add_space(10.0);
         let button =
             egui::Button::new(RichText::new("Register Token Contract").color(Color32::WHITE))
                 .fill(Color32::from_rgb(0, 128, 255))
@@ -1554,7 +1684,7 @@ impl TokensScreen {
                     let token_name = self.token_name_input.clone();
 
                     match self.authorized_manual_mint {
-                        AuthorizedActionTakers::Identity(id) => {
+                        AuthorizedActionTakers::Identity(_) => {
                             if let Some(ref id_str) = self.manual_mint_authorized_identity {
                                 if let Ok(id) = Identifier::from_string(id_str, Encoding::Base58) {
                                     self.authorized_manual_mint = AuthorizedActionTakers::Identity(id);
@@ -1581,7 +1711,7 @@ impl TokensScreen {
                         _ => {}
                     }
                     match self.authorized_manual_burn {
-                        AuthorizedActionTakers::Identity(id) => {
+                        AuthorizedActionTakers::Identity(_) => {
                             if let Some(ref id_str) = self.manual_burn_authorized_identity {
                                 if let Ok(id) = Identifier::from_string(id_str, Encoding::Base58) {
                                     self.authorized_manual_burn = AuthorizedActionTakers::Identity(id);
@@ -1608,7 +1738,7 @@ impl TokensScreen {
                         _ => {}
                     }
                     match self.authorized_freeze {
-                        AuthorizedActionTakers::Identity(id) => {
+                        AuthorizedActionTakers::Identity(_) => {
                             if let Some(ref id_str) = self.freeze_authorized_identity {
                                 if let Ok(id) = Identifier::from_string(id_str, Encoding::Base58) {
                                     self.authorized_freeze = AuthorizedActionTakers::Identity(id);
@@ -1635,7 +1765,7 @@ impl TokensScreen {
                         _ => {}
                     }
                     match self.authorized_unfreeze {
-                        AuthorizedActionTakers::Identity(id) => {
+                        AuthorizedActionTakers::Identity(_) => {
                             if let Some(ref id_str) = self.unfreeze_authorized_identity {
                                 if let Ok(id) = Identifier::from_string(id_str, Encoding::Base58) {
                                     self.authorized_unfreeze = AuthorizedActionTakers::Identity(id);
@@ -1662,7 +1792,7 @@ impl TokensScreen {
                         _ => {}
                     }
                     match self.authorized_destroy_frozen_funds {
-                        AuthorizedActionTakers::Identity(id) => {
+                        AuthorizedActionTakers::Identity(_) => {
                             if let Some(ref id_str) = self.destroy_frozen_funds_authorized_identity {
                                 if let Ok(id) = Identifier::from_string(id_str, Encoding::Base58) {
                                     self.authorized_destroy_frozen_funds = AuthorizedActionTakers::Identity(id);
@@ -1689,7 +1819,7 @@ impl TokensScreen {
                         _ => {}
                     }
                     match self.authorized_pause_resume {
-                        AuthorizedActionTakers::Identity(id) => {
+                        AuthorizedActionTakers::Identity(_) => {
                             if let Some(ref id_str) = self.pause_resume_authorized_identity {
                                 if let Ok(id) = Identifier::from_string(id_str, Encoding::Base58) {
                                     self.authorized_pause_resume = AuthorizedActionTakers::Identity(id);
@@ -1708,6 +1838,60 @@ impl TokensScreen {
                                 } else {
                                     self.token_creator_error_message = Some(
                                         "Invalid group contract position for pause resume authorized group".to_string(),
+                                    );
+                                    return;
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                    match self.authorized_max_supply_change {
+                        AuthorizedActionTakers::Identity(_) => {
+                            if let Some(ref id_str) = self.max_supply_change_authorized_identity {
+                                if let Ok(id) = Identifier::from_string(id_str, Encoding::Base58) {
+                                    self.authorized_max_supply_change = AuthorizedActionTakers::Identity(id);
+                                } else {
+                                    self.token_creator_error_message = Some(
+                                        "Invalid base58 identifier for config updates authorized identity".to_string(),
+                                    );
+                                    return;
+                                }
+                            }
+                        }
+                        AuthorizedActionTakers::Group(_) => {
+                            if let Some(ref group_str) = self.max_supply_change_authorized_group {
+                                if let Ok(group) = group_str.parse::<u16>() {
+                                    self.authorized_max_supply_change = AuthorizedActionTakers::Group(group);
+                                } else {
+                                    self.token_creator_error_message = Some(
+                                        "Invalid group contract position for config updates authorized group".to_string(),
+                                    );
+                                    return;
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                    match self.authorized_conventions_change {
+                        AuthorizedActionTakers::Identity(_) => {
+                            if let Some(ref id_str) = self.conventions_change_authorized_identity {
+                                if let Ok(id) = Identifier::from_string(id_str, Encoding::Base58) {
+                                    self.authorized_conventions_change = AuthorizedActionTakers::Identity(id);
+                                } else {
+                                    self.token_creator_error_message = Some(
+                                        "Invalid base58 identifier for conventions change authorized identity".to_string(),
+                                    );
+                                    return;
+                                }
+                            }
+                        }
+                        AuthorizedActionTakers::Group(_) => {
+                            if let Some(ref group_str) = self.conventions_change_authorized_group {
+                                if let Ok(group) = group_str.parse::<u16>() {
+                                    self.authorized_conventions_change = AuthorizedActionTakers::Group(group);
+                                } else {
+                                    self.token_creator_error_message = Some(
+                                        "Invalid group contract position for conventions change authorized group".to_string(),
                                     );
                                     return;
                                 }
@@ -1735,6 +1919,8 @@ impl TokensScreen {
                                 .authorized_destroy_frozen_funds
                                 .clone(),
                             pause_and_resume_authorized: self.authorized_pause_resume.clone(),
+                            max_supply_change_authorized: self.authorized_max_supply_change.clone(),
+                            conventions_change_authorized: self.authorized_conventions_change.clone(),
                         }),
                         BackendTask::TokenTask(TokenTask::QueryMyTokenBalances),
                     ];

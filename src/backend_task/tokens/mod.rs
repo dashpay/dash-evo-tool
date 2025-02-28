@@ -55,6 +55,8 @@ pub(crate) enum TokenTask {
         unfreeze_authorized: AuthorizedActionTakers,
         destroy_frozen_funds_authorized: AuthorizedActionTakers,
         pause_and_resume_authorized: AuthorizedActionTakers,
+        max_supply_change_authorized: AuthorizedActionTakers,
+        conventions_change_authorized: AuthorizedActionTakers,
     },
     QueryMyTokenBalances,
     QueryTokensByKeyword(String),
@@ -141,6 +143,8 @@ impl AppContext {
                 unfreeze_authorized,
                 destroy_frozen_funds_authorized,
                 pause_and_resume_authorized,
+                max_supply_change_authorized,
+                conventions_change_authorized,
             } => {
                 let data_contract = self
                     .build_data_contract_v1_with_one_token(
@@ -158,6 +162,8 @@ impl AppContext {
                         unfreeze_authorized.clone(),
                         destroy_frozen_funds_authorized.clone(),
                         pause_and_resume_authorized.clone(),
+                        max_supply_change_authorized.clone(),
+                        conventions_change_authorized.clone(),
                     )
                     .map_err(|e| format!("Error building contract V1: {e}"))?;
 
@@ -366,6 +372,8 @@ impl AppContext {
         unfreeze_authorized: AuthorizedActionTakers,
         destroy_frozen_funds_authorized: AuthorizedActionTakers,
         pause_and_resume_authorized: AuthorizedActionTakers,
+        max_supply_change_authorized: AuthorizedActionTakers,
+        conventions_change_authorized: AuthorizedActionTakers,
     ) -> Result<DataContract, ProtocolError> {
         // 1) Create the V1 struct
         let mut contract_v1 = DataContractV1 {
@@ -444,6 +452,22 @@ impl AppContext {
 
         token_config_v0.emergency_action_rules = ChangeControlRules::V0(ChangeControlRulesV0 {
             authorized_to_make_change: pause_and_resume_authorized,
+            admin_action_takers: AuthorizedActionTakers::NoOne,
+            changing_authorized_action_takers_to_no_one_allowed: false,
+            changing_admin_action_takers_to_no_one_allowed: false,
+            self_changing_admin_action_takers_allowed: false,
+        });
+
+        token_config_v0.max_supply_change_rules = ChangeControlRules::V0(ChangeControlRulesV0 {
+            authorized_to_make_change: max_supply_change_authorized,
+            admin_action_takers: AuthorizedActionTakers::NoOne,
+            changing_authorized_action_takers_to_no_one_allowed: false,
+            changing_admin_action_takers_to_no_one_allowed: false,
+            self_changing_admin_action_takers_allowed: false,
+        });
+
+        token_config_v0.conventions_change_rules = ChangeControlRules::V0(ChangeControlRulesV0 {
+            authorized_to_make_change: conventions_change_authorized,
             admin_action_takers: AuthorizedActionTakers::NoOne,
             changing_authorized_action_takers_to_no_one_allowed: false,
             changing_admin_action_takers_to_no_one_allowed: false,

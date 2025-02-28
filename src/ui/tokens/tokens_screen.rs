@@ -181,6 +181,9 @@ pub struct TokensScreen {
     authorized_conventions_change: AuthorizedActionTakers,
     conventions_change_authorized_identity: Option<String>,
     conventions_change_authorized_group: Option<String>,
+    authorized_main_control_group_change: AuthorizedActionTakers,
+    main_control_group_change_authorized_identity: Option<String>,
+    main_control_group_change_authorized_group: Option<String>,
 }
 
 impl TokensScreen {
@@ -256,6 +259,9 @@ impl TokensScreen {
             authorized_conventions_change: AuthorizedActionTakers::NoOne,
             conventions_change_authorized_identity: None,
             conventions_change_authorized_group: None,
+            authorized_main_control_group_change: AuthorizedActionTakers::NoOne,
+            main_control_group_change_authorized_identity: None,
+            main_control_group_change_authorized_group: None,
         };
 
         if let Ok(saved_ids) = screen.app_context.db.load_token_order() {
@@ -1574,6 +1580,70 @@ impl TokensScreen {
                     _ => {}
                 }
             });
+
+            // Allow modification of the main control group
+            ui.horizontal(|ui| {
+                ui.label("Allow main control group change:");
+                egui::ComboBox::from_id_salt("main_control_group_change_selector")
+                    .selected_text(format!(
+                        "{}",
+                        self.authorized_main_control_group_change.to_string()
+                    ))
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut self.authorized_main_control_group_change,
+                            AuthorizedActionTakers::NoOne,
+                            "No One",
+                        );
+                        ui.selectable_value(
+                            &mut self.authorized_main_control_group_change,
+                            AuthorizedActionTakers::ContractOwner,
+                            "Contract Owner",
+                        );
+                        ui.selectable_value(
+                            &mut self.authorized_main_control_group_change,
+                            AuthorizedActionTakers::Identity(Identifier::default()),
+                            "Identity",
+                        );
+                        ui.selectable_value(
+                            &mut self.authorized_main_control_group_change,
+                            AuthorizedActionTakers::MainGroup,
+                            "Main Group",
+                        );
+                        ui.selectable_value(
+                            &mut self.authorized_main_control_group_change,
+                            AuthorizedActionTakers::Group(0),
+                            "Group",
+                        );
+                    });
+                match &mut self.authorized_main_control_group_change {
+                    AuthorizedActionTakers::Identity(_) => {
+                        // Initialize if needed
+                        if self.main_control_group_change_authorized_identity.is_none() {
+                            self.main_control_group_change_authorized_identity =
+                                Some(String::new());
+                        }
+                        if let Some(ref mut id) = self.main_control_group_change_authorized_identity
+                        {
+                            ui.add(egui::TextEdit::singleline(id).hint_text("Enter base58 id"));
+                        }
+                    }
+                    AuthorizedActionTakers::Group(_) => {
+                        // Initialize if needed
+                        if self.main_control_group_change_authorized_group.is_none() {
+                            self.main_control_group_change_authorized_group = Some(0.to_string());
+                        }
+                        if let Some(ref mut group) = self.main_control_group_change_authorized_group
+                        {
+                            ui.add(
+                                egui::TextEdit::singleline(group)
+                                    .hint_text("Enter group contract position"),
+                            );
+                        }
+                    }
+                    _ => {}
+                }
+            });
         });
 
         // 6) "Register Token Contract" button
@@ -1630,12 +1700,10 @@ impl TokensScreen {
                     "Are you sure you want to register a new token contract with these settings?",
                 );
                 ui.monospace(format!(
-                    "Name: {}\nDecimals: {}\nBase Supply: {}\nMax Supply: {}\nPaused: {}",
+                    "Name: {}\nBase Supply: {}\nMax Supply: {}",
                     self.token_name_input,
-                    self.decimals_input,
                     self.base_supply_input,
                     self.max_supply_input,
-                    self.start_as_paused_input
                 ));
 
                 ui.add_space(10.0);
@@ -1899,6 +1967,33 @@ impl TokensScreen {
                         }
                         _ => {}
                     }
+                    match self.authorized_main_control_group_change {
+                        AuthorizedActionTakers::Identity(_) => {
+                            if let Some(ref id_str) = self.main_control_group_change_authorized_identity {
+                                if let Ok(id) = Identifier::from_string(id_str, Encoding::Base58) {
+                                    self.authorized_main_control_group_change = AuthorizedActionTakers::Identity(id);
+                                } else {
+                                    self.token_creator_error_message = Some(
+                                        "Invalid base58 identifier for main control group change authorized identity".to_string(),
+                                    );
+                                    return;
+                                }
+                            }
+                        }
+                        AuthorizedActionTakers::Group(_) => {
+                            if let Some(ref group_str) = self.main_control_group_change_authorized_group {
+                                if let Ok(group) = group_str.parse::<u16>() {
+                                    self.authorized_main_control_group_change = AuthorizedActionTakers::Group(group);
+                                } else {
+                                    self.token_creator_error_message = Some(
+                                        "Invalid group contract position for main control group change authorized group".to_string(),
+                                    );
+                                    return;
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
 
                     let tasks = vec![
                         BackendTask::TokenTask(TokenTask::RegisterTokenContract {
@@ -1921,6 +2016,9 @@ impl TokensScreen {
                             pause_and_resume_authorized: self.authorized_pause_resume.clone(),
                             max_supply_change_authorized: self.authorized_max_supply_change.clone(),
                             conventions_change_authorized: self.authorized_conventions_change.clone(),
+                            main_control_group_change_authorized: self
+                                .authorized_main_control_group_change
+                                .clone(),
                         }),
                         BackendTask::TokenTask(TokenTask::QueryMyTokenBalances),
                     ];

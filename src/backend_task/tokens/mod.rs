@@ -57,6 +57,7 @@ pub(crate) enum TokenTask {
         pause_and_resume_authorized: AuthorizedActionTakers,
         max_supply_change_authorized: AuthorizedActionTakers,
         conventions_change_authorized: AuthorizedActionTakers,
+        main_control_group_change_authorized: AuthorizedActionTakers,
     },
     QueryMyTokenBalances,
     QueryTokensByKeyword(String),
@@ -145,6 +146,7 @@ impl AppContext {
                 pause_and_resume_authorized,
                 max_supply_change_authorized,
                 conventions_change_authorized,
+                main_control_group_change_authorized,
             } => {
                 let data_contract = self
                     .build_data_contract_v1_with_one_token(
@@ -164,6 +166,7 @@ impl AppContext {
                         pause_and_resume_authorized.clone(),
                         max_supply_change_authorized.clone(),
                         conventions_change_authorized.clone(),
+                        main_control_group_change_authorized.clone(),
                     )
                     .map_err(|e| format!("Error building contract V1: {e}"))?;
 
@@ -374,6 +377,7 @@ impl AppContext {
         pause_and_resume_authorized: AuthorizedActionTakers,
         max_supply_change_authorized: AuthorizedActionTakers,
         conventions_change_authorized: AuthorizedActionTakers,
+        main_control_group_change_authorized: AuthorizedActionTakers,
     ) -> Result<DataContract, ProtocolError> {
         // 1) Create the V1 struct
         let mut contract_v1 = DataContractV1 {
@@ -473,6 +477,8 @@ impl AppContext {
             changing_admin_action_takers_to_no_one_allowed: false,
             self_changing_admin_action_takers_allowed: false,
         });
+
+        token_config_v0.main_control_group_can_be_modified = main_control_group_change_authorized;
 
         // Wrap in the enum
         let token_config = TokenConfiguration::V0(token_config_v0);

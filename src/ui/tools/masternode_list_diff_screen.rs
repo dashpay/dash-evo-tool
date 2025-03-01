@@ -12,8 +12,8 @@ use dash_sdk::dpp::prelude::CoreBlockHeight;
 use dashcoretemp::hashes::Hash as tempHash;
 use dashcoretemp::network::message_sml::MnListDiff;
 use dashcoretemp::sml::masternode_list_engine::MasternodeListEngine;
-use dashcoretemp::sml::masternode_list_entry::MasternodeType;
-use dashcoretemp::{BlockHash, Network, ProTxHash, QuorumHash};
+use dashcoretemp::sml::masternode_list_entry::EntryMasternodeType;
+use dashcoretemp::{BlockHash, InstantLock as InstantLock2, ChainLock as ChainLock2, Network, ProTxHash, QuorumHash};
 use eframe::egui::{self, Context, ScrollArea, Ui};
 use egui::{Align, Color32, Frame, Layout, Response, Stroke, TextEdit, Vec2};
 use std::collections::{BTreeMap, BTreeSet};
@@ -21,6 +21,7 @@ use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 use dash_sdk::dpp::dashcore::{Block, BlockHash as BlockHash2, ChainLock, InstantLock, Transaction};
+use dash_sdk::dpp::dashcore::consensus::{deserialize as deserialize2, serialize as serialize2};
 use dash_sdk::dpp::dashcore::Network as Network2;
 use dashcoretemp::bls_sig_utils::BLSSignature;
 use dashcoretemp::consensus::{deserialize, serialize};
@@ -1285,7 +1286,7 @@ impl MasternodeListDiffScreen {
                                     format!(
                                         "{} {} {}",
                                         if masternode.masternode_list_entry.mn_type
-                                            == MasternodeType::Regular
+                                            == EntryMasternodeType::Regular
                                         {
                                             "MN"
                                         } else {
@@ -1495,7 +1496,7 @@ impl MasternodeListDiffScreen {
                                     self.selected_masternode_in_diff_index == Some(m_index),
                                     format!(
                                         "{} {} {}",
-                                        if masternode.mn_type == MasternodeType::Regular {
+                                        if masternode.mn_type == EntryMasternodeType::Regular {
                                             "MN"
                                         } else {
                                             "EN"
@@ -1704,8 +1705,8 @@ impl MasternodeListDiffScreen {
                                         masternode.key_id_voting,
                                         masternode.is_valid,
                                         match masternode.mn_type {
-                                            MasternodeType::Regular => "Regular".to_string(),
-                                            MasternodeType::HighPerformance {
+                                            EntryMasternodeType::Regular => "Regular".to_string(),
+                                            EntryMasternodeType::HighPerformance {
                                                 platform_http_port,
                                                 platform_node_id,
                                             } => {
@@ -1760,8 +1761,8 @@ impl MasternodeListDiffScreen {
                                         masternode.key_id_voting,
                                         masternode.is_valid,
                                         match masternode.mn_type {
-                                            MasternodeType::Regular => "Regular".to_string(),
-                                            MasternodeType::HighPerformance {
+                                            EntryMasternodeType::Regular => "Regular".to_string(),
+                                            EntryMasternodeType::HighPerformance {
                                                 platform_http_port,
                                                 platform_node_id,
                                             } => {
@@ -2565,6 +2566,58 @@ impl MasternodeListDiffScreen {
                 "Signature: {}",
                 hex::encode(chain_lock.signature.to_bytes())
             ));
+
+            //todo clean this
+            let b =serialize2(chain_lock);
+            let chain_lock_2 : ChainLock2 = deserialize(b.as_slice()).expect("todo");
+            match self.masternode_list_engine.chain_lock_potential_quorum_under(&chain_lock_2) {
+                Ok(Some(quorum)) => {
+                    ui.label(format!(
+                        "Quorum Hash: {}",
+                        quorum.quorum_entry.quorum_hash,
+                    ));
+                    ui.label(format!(
+                        "Request Id: {}",
+                        chain_lock.request_id().expect("expected request id")
+                    ));
+                    let sign_id = chain_lock_2.sign_id(quorum.quorum_entry.llmq_type, quorum.quorum_entry.quorum_hash, None).expect("expected sign id");
+                    ui.label(format!(
+                        "Sign Hash (Sign ID): {}",
+                        sign_id
+                    ));
+                    if let Err(e) = quorum.verify_message_digest(sign_id.to_byte_array(), chain_lock_2.signature) {
+                        ui.label(format!(
+                            "Signature Verification Error: {}",
+                            e
+                        ));
+                    }
+                },
+                Ok(None) => {
+                    ui.label("No quorum".to_string());
+                }
+                Err(err) => {
+                    ui.label(format!(
+                        "Error finding quorum: {}",
+                        err.to_string()
+                    ));
+                }
+            };
+
+            ui.separator();
+
+            ui.heading("Data");
+
+            ui.label(format!(
+                "Block Data {}",
+                hex::encode(serialize2(block)),
+            ));
+
+            ui.label(format!(
+                "Lock Data {}",
+                hex::encode(serialize2(chain_lock)),
+            ));
+
+            ui.separator();
         } else {
             ui.label("No ChainLock selected.");
         }
@@ -2583,6 +2636,7 @@ impl MasternodeListDiffScreen {
             ));
 
             ui.separator();
+
             ui.heading("Transaction Inputs");
             ScrollArea::vertical().id_salt("tx_inputs_scroll").show(ui, |ui| {
                 if transaction.input.is_empty() {
@@ -2613,28 +2667,82 @@ impl MasternodeListDiffScreen {
             });
 
             ui.separator();
+            ui.heading("Signing Info");
+
+            //todo clean this
+            let b =serialize2(instant_lock);
+            let instant_lock_2 : InstantLock2 = deserialize(b.as_slice()).expect("todo");
+            match self.masternode_list_engine.is_lock_quorum(&instant_lock_2) {
+                Ok((quorum, request_sign_id, index)) => {
+                    ui.label(format!(
+                        "Quorum Hash: {} at index {}",
+                        quorum.quorum_entry.quorum_hash,
+                        index,
+                    ));
+                    ui.label(format!(
+                        "Request Id: {}",
+                        request_sign_id
+                    ));
+                    let sign_id = instant_lock_2.sign_id(quorum.quorum_entry.llmq_type, quorum.quorum_entry.quorum_hash, Some(request_sign_id)).expect("expected sign id");
+                    ui.label(format!(
+                        "Sign Hash (Sign ID): {}",
+                        sign_id
+                    ));
+                    if let Err(e) = quorum.verify_message_digest(sign_id.to_byte_array(), instant_lock_2.signature) {
+                        ui.label(format!(
+                            "Signature Verification Error: {}",
+                            e
+                        ));
+                    }
+                },
+                Err(err) => {
+                    ui.label(format!(
+                        "Error finding quorum: {}",
+                        err.to_string()
+                    ));
+                }
+            };
+
+            ui.separator();
             ui.heading("Quorum Signature");
             ui.label(format!(
                 "Signature: {}",
                 hex::encode(instant_lock.signature.to_bytes())
             ));
+
+            ui.separator();
+
+            ui.heading("Data");
+
+            ui.label(format!(
+                "Transaction Data {}",
+                hex::encode(serialize2(transaction)),
+            ));
+
+            ui.label(format!(
+                "Lock Data {}",
+                hex::encode(serialize2(instant_lock)),
+            ));
+
         } else {
             ui.label("No Instant Send transaction selected.");
         }
     }
 
-    fn attempt_verify_chain_lock(&self, block: &Block, chain_lock: &ChainLock) -> bool {
-        //todo
-        false
+    fn attempt_verify_chain_lock(&self, chain_lock: &ChainLock) -> bool {
+        let b =serialize2(chain_lock);
+        let chain_lock_2 : ChainLock2 = deserialize(b.as_slice()).expect("todo");
+        self.masternode_list_engine.verify_chain_lock(&chain_lock_2).is_ok()
     }
 
-    fn attempt_verify_transaction_lock(&self, transaction: &Transaction, instant_lock: &InstantLock) -> bool {
-        //todo
-        false
+    fn attempt_verify_transaction_lock(&self, instant_lock: &InstantLock) -> bool {
+        let b =serialize2(instant_lock);
+        let instant_lock_2 : InstantLock2 = deserialize(b.as_slice()).expect("todo");
+        self.masternode_list_engine.verify_is_lock(&instant_lock_2).is_ok()
     }
 
     fn received_new_block(&mut self, block: Block, chain_lock: ChainLock) {
-        let valid = self.attempt_verify_chain_lock(&block, &chain_lock);
+        let valid = self.attempt_verify_chain_lock(&chain_lock);
         self.end_block_height = chain_lock.block_height.to_string();
         if self.syncing {
             if let Some((base_block_height, masternode_list)) = self.masternode_list_engine.masternode_lists.last_key_value() {
@@ -2676,7 +2784,7 @@ impl ScreenLike for MasternodeListDiffScreen {
             // println!("received core item {:?}", core_item);
             match core_item {
                 CoreItem::InstantLockedTransaction(transaction, _, instant_lock) => {
-                    let valid = self.attempt_verify_transaction_lock(&transaction, &instant_lock);
+                    let valid = self.attempt_verify_transaction_lock(&instant_lock);
                     self.instant_send_transactions.push((transaction, instant_lock, valid));
                 }
                 CoreItem::ChainLockedBlock(block, chain_lock) => {

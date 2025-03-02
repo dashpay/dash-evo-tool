@@ -8,6 +8,7 @@ use dash_sdk::{
                 token_configuration_convention::{
                     v0::TokenConfigurationLocalizationsV0, TokenConfigurationConvention,
                 },
+                token_distribution_rules::TokenDistributionRules,
             },
             change_control_rules::{
                 authorized_action_takers::AuthorizedActionTakers, v0::ChangeControlRulesV0,
@@ -20,6 +21,7 @@ use dash_sdk::{
         identity::accessors::IdentityGettersV0,
         ProtocolError,
     },
+    drive::drive::tokens::distribution,
     platform::{DataContract, Identifier, IdentityPublicKey},
     Sdk,
 };
@@ -58,6 +60,7 @@ pub(crate) enum TokenTask {
         max_supply_change_authorized: AuthorizedActionTakers,
         conventions_change_authorized: AuthorizedActionTakers,
         main_control_group_change_authorized: AuthorizedActionTakers,
+        distribution_rules: TokenDistributionRules,
     },
     QueryMyTokenBalances,
     QueryTokensByKeyword(String),
@@ -147,6 +150,7 @@ impl AppContext {
                 max_supply_change_authorized,
                 conventions_change_authorized,
                 main_control_group_change_authorized,
+                distribution_rules,
             } => {
                 let data_contract = self
                     .build_data_contract_v1_with_one_token(
@@ -167,6 +171,7 @@ impl AppContext {
                         max_supply_change_authorized.clone(),
                         conventions_change_authorized.clone(),
                         main_control_group_change_authorized.clone(),
+                        distribution_rules.clone(),
                     )
                     .map_err(|e| format!("Error building contract V1: {e}"))?;
 
@@ -378,6 +383,7 @@ impl AppContext {
         max_supply_change_authorized: AuthorizedActionTakers,
         conventions_change_authorized: AuthorizedActionTakers,
         main_control_group_change_authorized: AuthorizedActionTakers,
+        distribution_rules: TokenDistributionRules,
     ) -> Result<DataContract, ProtocolError> {
         // 1) Create the V1 struct
         let mut contract_v1 = DataContractV1 {
@@ -479,6 +485,8 @@ impl AppContext {
         });
 
         token_config_v0.main_control_group_can_be_modified = main_control_group_change_authorized;
+
+        token_config_v0.distribution_rules = distribution_rules;
 
         // Wrap in the enum
         let token_config = TokenConfiguration::V0(token_config_v0);

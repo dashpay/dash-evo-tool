@@ -21,6 +21,7 @@ use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
 use eframe::egui::{self, CentralPanel, Color32, Context, Frame, Margin, Ui};
 use egui::{Align, RichText};
+use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
 use egui_extras::{Column, TableBuilder};
 
 use crate::app::{AppAction, DesiredAppAction};
@@ -120,7 +121,7 @@ enum SortOrder {
 
 /// A lightweight enum for the user’s choice of distribution type
 #[derive(Debug, Clone, PartialEq)]
-pub enum PerpetualDistributionTypeUI {
+pub enum PerpetualDistributionIntervalTypeUI {
     None,
     BlockBased,
     TimeBased,
@@ -183,6 +184,7 @@ pub struct TokensScreen {
     token_to_remove: Option<Identifier>,
 
     /// Token Creator
+    show_pop_up_info: Option<String>,
     selected_identity: Option<QualifiedIdentity>,
     selected_key: Option<IdentityPublicKey>,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
@@ -231,20 +233,57 @@ pub struct TokensScreen {
     pub enable_perpetual_distribution: bool,
     pub perpetual_distribution_rules_authorized: AuthorizedActionTakers,
 
-    // Which distribution type is selected?
-    pub perpetual_dist_type: PerpetualDistributionTypeUI,
+    // Which distribution interval type is selected?
+    pub perpetual_dist_type: PerpetualDistributionIntervalTypeUI,
 
     // Block-based / time-based / epoch-based inputs
     pub perpetual_dist_interval_input: String,
-    pub perpetual_dist_emission_amount_input: String,
 
-    // Distribution function selection
-    pub perpetual_dist_function: DistributionFunctionUI, // Some custom enum
-    // For example, if user picks 'FixedAmount', we store the needed field(s)
-    pub perpetual_dist_function_fixed_amount_input: String,
+    // Which distribution is currently selected?
+    pub perpetual_dist_function: DistributionFunctionUI,
 
-    // If the user picks 'StepDecreasingAmount', we'd store step_count, decrease_per_interval, etc.
-    // ...
+    // --- FixedAmount ---
+    pub fixed_amount_input: String,
+
+    // --- StepDecreasingAmount ---
+    pub step_count_input: String,
+    pub decrease_per_interval_input: String,
+    pub step_dec_amount_input: String,
+
+    // --- LinearInteger ---
+    pub linear_int_a_input: String,
+    pub linear_int_b_input: String,
+
+    // --- LinearFloat ---
+    pub linear_float_a_input: String,
+    pub linear_float_b_input: String,
+
+    // --- PolynomialInteger ---
+    pub poly_int_a_input: String,
+    pub poly_int_n_input: String,
+    pub poly_int_b_input: String,
+
+    // --- PolynomialFloat ---
+    pub poly_float_a_input: String,
+    pub poly_float_n_input: String,
+    pub poly_float_b_input: String,
+
+    // --- Exponential ---
+    pub exp_a_input: String,
+    pub exp_b_input: String,
+    pub exp_c_input: String,
+
+    // --- Logarithmic ---
+    pub log_a_input: String,
+    pub log_b_input: String,
+    pub log_c_input: String,
+
+    // --- Stepwise ---
+    // If you want multiple (block, amount) pairs, store them in a Vec.
+    // Each tuple in the Vec can be (String, String) for block + amount
+    // or however you prefer to represent it.
+    pub stepwise_steps: Vec<(String, String)>,
+
     // Similarly for identity recipients, you might store:
     pub perpetual_dist_recipient: TokenDistributionRecipientUI,
     pub perpetual_dist_identity_input: String, // if the user chooses `Identity(...)`
@@ -299,6 +338,7 @@ impl TokensScreen {
             token_to_remove: None,
 
             // Token Creator
+            show_pop_up_info: None,
             selected_identity: None,
             selected_key: None,
             selected_wallet: None,
@@ -348,19 +388,35 @@ impl TokensScreen {
             perpetual_distribution_rules_authorized: AuthorizedActionTakers::NoOne,
 
             // Which distribution type is selected?
-            perpetual_dist_type: PerpetualDistributionTypeUI::None,
+            perpetual_dist_type: PerpetualDistributionIntervalTypeUI::None,
 
             // Block-based / time-based / epoch-based inputs
             perpetual_dist_interval_input: String::new(),
-            perpetual_dist_emission_amount_input: String::new(),
 
             // Distribution function selection
             perpetual_dist_function: DistributionFunctionUI::FixedAmount,
-            // For example, if user picks 'FixedAmount', we store the needed field(s)
-            perpetual_dist_function_fixed_amount_input: String::new(),
+            fixed_amount_input: String::new(),
+            step_count_input: String::new(),
+            decrease_per_interval_input: String::new(),
+            step_dec_amount_input: String::new(),
+            linear_int_a_input: String::new(),
+            linear_int_b_input: String::new(),
+            linear_float_a_input: String::new(),
+            linear_float_b_input: String::new(),
+            poly_int_a_input: String::new(),
+            poly_int_n_input: String::new(),
+            poly_int_b_input: String::new(),
+            poly_float_a_input: String::new(),
+            poly_float_n_input: String::new(),
+            poly_float_b_input: String::new(),
+            exp_a_input: String::new(),
+            exp_b_input: String::new(),
+            exp_c_input: String::new(),
+            log_a_input: String::new(),
+            log_b_input: String::new(),
+            log_c_input: String::new(),
+            stepwise_steps: Vec::new(),
 
-            // If the user picks 'StepDecreasingAmount', we'd store step_count, decrease_per_interval, etc.
-            // ...
             // Similarly for identity recipients, you might store:
             perpetual_dist_recipient: TokenDistributionRecipientUI::ContractOwner,
             perpetual_dist_identity_input: String::new(),
@@ -1826,12 +1882,16 @@ impl TokensScreen {
                         ui.add_space(3.0);
 
                         // PERPETUAL DISTRIBUTION SETTINGS
-                        ui.checkbox(
+                        if ui.checkbox(
                             &mut self.enable_perpetual_distribution,
                             "Enable Perpetual Distribution",
-                        );
+                        ).clicked() {
+                            self.perpetual_dist_type = PerpetualDistributionIntervalTypeUI::BlockBased;
+                            self.enable_pre_programmed_distribution = false;
+                            self.pre_programmed_distribution_json_input = String::new();
+                        };
                         if self.enable_perpetual_distribution {
-                            ui.add_space(5.0);
+                            ui.add_space(2.0);
 
                             // 1) Perpetual Distribution Authorization
                             ui.horizontal(|ui| {
@@ -1881,7 +1941,7 @@ impl TokensScreen {
                                 }
                             });
 
-                            ui.add_space(5.0);
+                            ui.add_space(2.0);
 
                             // 2) Select the distribution type
                             ui.horizontal(|ui| {
@@ -1891,72 +1951,51 @@ impl TokensScreen {
                                     .show_ui(ui, |ui| {
                                         ui.selectable_value(
                                             &mut self.perpetual_dist_type,
-                                            PerpetualDistributionTypeUI::None,
-                                            "None",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.perpetual_dist_type,
-                                            PerpetualDistributionTypeUI::BlockBased,
+                                            PerpetualDistributionIntervalTypeUI::BlockBased,
                                             "Block-Based",
                                         );
                                         ui.selectable_value(
                                             &mut self.perpetual_dist_type,
-                                            PerpetualDistributionTypeUI::TimeBased,
+                                            PerpetualDistributionIntervalTypeUI::TimeBased,
                                             "Time-Based",
                                         );
                                         ui.selectable_value(
                                             &mut self.perpetual_dist_type,
-                                            PerpetualDistributionTypeUI::EpochBased,
+                                            PerpetualDistributionIntervalTypeUI::EpochBased,
                                             "Epoch-Based",
                                         );
-                                        // etc.
                                     });
                             });
 
                             // If user picked a real distribution type:
                             match self.perpetual_dist_type {
-                                PerpetualDistributionTypeUI::BlockBased => {
+                                PerpetualDistributionIntervalTypeUI::BlockBased => {
                                     ui.add_space(2.0);
                                     ui.horizontal(|ui| {
                                         ui.label("        - Block Interval:");
                                         ui.text_edit_singleline(&mut self.perpetual_dist_interval_input);
                                     });
-                                    ui.add_space(2.0);
-                                    ui.horizontal(|ui| {
-                                        ui.label("        - Emission Amount Each Interval:");
-                                        ui.text_edit_singleline(&mut self.perpetual_dist_emission_amount_input);
-                                    });
                                 }
-                                PerpetualDistributionTypeUI::TimeBased => {
+                                PerpetualDistributionIntervalTypeUI::TimeBased => {
                                     ui.add_space(2.0);
                                     ui.horizontal(|ui| {
                                         ui.label("        - Time Interval (ms):");
                                         ui.text_edit_singleline(&mut self.perpetual_dist_interval_input);
                                     });
-                                    ui.add_space(2.0);
-                                    ui.horizontal(|ui| {
-                                        ui.label("        - Emission Amount Each Interval:");
-                                        ui.text_edit_singleline(&mut self.perpetual_dist_emission_amount_input);
-                                    });
                                 }
-                                PerpetualDistributionTypeUI::EpochBased => {
+                                PerpetualDistributionIntervalTypeUI::EpochBased => {
                                     ui.add_space(2.0);
                                     ui.horizontal(|ui| {
                                         ui.label("        - Epoch Interval:");
                                         ui.text_edit_singleline(&mut self.perpetual_dist_interval_input);
                                     });
-                                    ui.add_space(2.0);
-                                    ui.horizontal(|ui| {
-                                        ui.label("        - Emission Amount Each Interval:");
-                                        ui.text_edit_singleline(&mut self.perpetual_dist_emission_amount_input);
-                                    });
                                 }
-                                PerpetualDistributionTypeUI::None => {
+                                PerpetualDistributionIntervalTypeUI::None => {
                                     // Do nothing
                                 }
                             }
 
-                            ui.add_space(5.0);
+                            ui.add_space(2.0);
 
                             // 3) Select the distribution function
                             ui.horizontal(|ui| {
@@ -1979,42 +2018,293 @@ impl TokensScreen {
                                             DistributionFunctionUI::LinearInteger,
                                             "LinearInteger",
                                         );
-                                        // ...
+                                        ui.selectable_value(
+                                            &mut self.perpetual_dist_function,
+                                            DistributionFunctionUI::LinearFloat,
+                                            "LinearFloat",
+                                        );
+                                        ui.selectable_value(
+                                            &mut self.perpetual_dist_function,
+                                            DistributionFunctionUI::PolynomialInteger,
+                                            "PolynomialInteger",
+                                        );
+                                        ui.selectable_value(
+                                            &mut self.perpetual_dist_function,
+                                            DistributionFunctionUI::PolynomialFloat,
+                                            "PolynomialFloat",
+                                        );
+                                        ui.selectable_value(
+                                            &mut self.perpetual_dist_function,
+                                            DistributionFunctionUI::Exponential,
+                                            "Exponential",
+                                        );
+                                        ui.selectable_value(
+                                            &mut self.perpetual_dist_function,
+                                            DistributionFunctionUI::Logarithmic,
+                                            "Logarithmic",
+                                        );
+                                        ui.selectable_value(
+                                            &mut self.perpetual_dist_function,
+                                            DistributionFunctionUI::Stepwise,
+                                            "Stepwise",
+                                        );
                                     });
+
+                                    let info_icon = egui::Label::new("ℹ").sense(egui::Sense::click());
+                                    let response = ui.add(info_icon).on_hover_text("Info about distribution types");
+
+                                    // Check if the label was clicked
+                                    if response.clicked() {
+                                        self.show_pop_up_info = Some(r#"
+### FixedAmount
+
+A fixed amount of tokens is emitted for each period.
+
+- **Formula:** f(x) = n  
+- **Use Case:** Simplicity, stable reward emissions  
+- **Example:** If we emit 5 tokens per block, and 3 blocks have passed, 15 tokens have been released.
+
+---
+
+### StepDecreasingAmount
+
+The amount of tokens decreases in predefined steps at fixed intervals.
+
+- **Formula:** f(x) = n * (1 - decrease_per_interval)^(x / step_count)  
+- **Use Case:** Mimics Bitcoin/Dash models, encourages early participation  
+- **Example:** Bitcoin halves every 210,000 blocks (~4 years)
+
+---
+
+### LinearInteger
+
+A linear function using integer precision.
+
+- **Formula:** f(x) = a * x + b  
+- **Description:**  
+    - a > 0 -> tokens increase over time  
+    - a < 0 -> tokens decrease over time  
+    - b is the initial value  
+- **Use Case:** Incentivize early or match ecosystem growth  
+- **Example:** f(x) = 10x + 50
+
+---
+
+### LinearFloat
+
+A linear function with fractional (floating-point) rates.
+
+- **Formula:** f(x) = a * x + b  
+- **Description:** Similar to LinearInteger, but with fractional slope  
+- **Use Case:** Gradual fractional increases/decreases over time  
+- **Example:** f(x) = 0.5x + 50
+
+---
+
+### PolynomialInteger
+
+A polynomial function (e.g. quadratic, cubic) using integer precision.
+
+- **Formula:** f(x) = a * x^n + b  
+- **Description:** Flexible curves (growth/decay) beyond simple linear.  
+- **Use Case:** Diminishing or accelerating returns as time progresses  
+- **Example:** f(x) = 2x^2 + 20
+
+---
+
+### PolynomialFloat
+
+A polynomial function supporting fractional exponents or coefficients.
+
+- **Formula:** f(x) = a * x^n + b  
+- **Description:** Similar to PolynomialInteger, but with floats  
+- **Example:** f(x) = 0.5x^3 + 20
+
+---
+
+### Exponential
+
+Exponential growth or decay of tokens.
+
+- **Formula:** f(x) = a * e^(b * x) + c  
+- **Description:**  
+    - b > 0 -> rapid growth  
+    - b < 0 -> rapid decay  
+- **Use Case:** Early contributor boosts or quick emission tapering  
+- **Example:** f(x) = 100 * e^(-0.693 * x) + 5
+
+---
+
+### Logarithmic
+
+Logarithmic growth of token emissions.
+
+- **Formula:** f(x) = a * log_b(x) + c  
+- **Description:** Growth slows as x increases.  
+- **Use Case:** Sustainable long-term emission tapering  
+- **Example:** f(x) = 20 * log_2(x) + 5
+
+---
+
+### Stepwise
+
+Emits tokens in fixed amounts for specific intervals.
+
+- **Description:** Emissions remain constant within each step.  
+- **Use Case:** Adjust rewards at specific milestones  
+- **Example:** 100 tokens per block for first 1000 blocks, then 50 tokens thereafter.
+"#
+                                        .to_string())};
                             });
 
-                            ui.add_space(5.0);
+                            ui.add_space(2.0);
 
                             // Based on the user’s chosen function, display relevant fields:
                             match self.perpetual_dist_function {
                                 DistributionFunctionUI::FixedAmount => {
                                     ui.horizontal(|ui| {
                                         ui.label("        - Fixed Amount per Interval:");
-                                        ui.text_edit_singleline(
-                                            &mut self.perpetual_dist_function_fixed_amount_input,
-                                        );
+                                        ui.text_edit_singleline(&mut self.fixed_amount_input);
                                     });
                                 }
+
                                 DistributionFunctionUI::StepDecreasingAmount => {
                                     ui.horizontal(|ui| {
-                                        ui.label("        - To Do:");
-                                        ui.text_edit_singleline(
-                                            &mut self.perpetual_dist_function_fixed_amount_input,
-                                        );
+                                        ui.label("        - Step Count (u64):");
+                                        ui.text_edit_singleline(&mut self.step_count_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Decrease per Interval (float):");
+                                        ui.text_edit_singleline(&mut self.decrease_per_interval_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Initial Amount (n):");
+                                        ui.text_edit_singleline(&mut self.step_dec_amount_input);
                                     });
                                 }
+
                                 DistributionFunctionUI::LinearInteger => {
                                     ui.horizontal(|ui| {
-                                        ui.label("        - To Do:");
-                                        ui.text_edit_singleline(
-                                            &mut self.perpetual_dist_function_fixed_amount_input,
-                                        );
+                                        ui.label("        - Coefficient (a, i64):");
+                                        ui.text_edit_singleline(&mut self.linear_int_a_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Initial Value (b, i64):");
+                                        ui.text_edit_singleline(&mut self.linear_int_b_input);
                                     });
                                 }
-                                _ => {}
+
+                                DistributionFunctionUI::LinearFloat => {
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Coefficient (a, float):");
+                                        ui.text_edit_singleline(&mut self.linear_float_a_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Initial Value (b):");
+                                        ui.text_edit_singleline(&mut self.linear_float_b_input);
+                                    });
+                                }
+
+                                DistributionFunctionUI::PolynomialInteger => {
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Coefficient (a, i64):");
+                                        ui.text_edit_singleline(&mut self.poly_int_a_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Degree (n, i64):");
+                                        ui.text_edit_singleline(&mut self.poly_int_n_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Base Amount (b, i64):");
+                                        ui.text_edit_singleline(&mut self.poly_int_b_input);
+                                    });
+                                }
+
+                                DistributionFunctionUI::PolynomialFloat => {
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Coefficient (a, float):");
+                                        ui.text_edit_singleline(&mut self.poly_float_a_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Degree (n, float):");
+                                        ui.text_edit_singleline(&mut self.poly_float_n_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Base Amount (b):");
+                                        ui.text_edit_singleline(&mut self.poly_float_b_input);
+                                    });
+                                }
+
+                                DistributionFunctionUI::Exponential => {
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Scaling Factor (a, float):");
+                                        ui.text_edit_singleline(&mut self.exp_a_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Growth/Decay Rate (b, float):");
+                                        ui.text_edit_singleline(&mut self.exp_b_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Offset (c):");
+                                        ui.text_edit_singleline(&mut self.exp_c_input);
+                                    });
+                                }
+
+                                DistributionFunctionUI::Logarithmic => {
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Scaling Factor (a, float):");
+                                        ui.text_edit_singleline(&mut self.log_a_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Log Base (b, float):");
+                                        ui.text_edit_singleline(&mut self.log_b_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Offset (c):");
+                                        ui.text_edit_singleline(&mut self.log_c_input);
+                                    });
+                                }
+
+                                DistributionFunctionUI::Stepwise => {
+                                    // Example: multiple steps (u64 block => some token amount).
+                                    // Each element in `stepwise_steps` is (String, String) = (block, amount).
+                                    // You can show them in a loop and let users edit each pair.
+                                    let mut i = 0;
+                                    while i < self.stepwise_steps.len() {
+                                        let (mut block_str, mut amount_str) = self.stepwise_steps[i].clone();
+                                    
+                                        ui.horizontal(|ui| {
+                                            ui.label(format!("Step #{}:", i));
+                                            ui.label("Block (u64):");
+                                            ui.text_edit_singleline(&mut block_str);
+                                    
+                                            ui.label("Amount (n):");
+                                            ui.text_edit_singleline(&mut amount_str);
+                                    
+                                            // If remove is clicked, remove the step at index i
+                                            // and *do not* increment i, because the next element
+                                            // now “shifts” into this index.
+                                            if ui.button("Remove").clicked() {
+                                                self.stepwise_steps.remove(i);
+                                            } else {
+                                                // Otherwise, update the vector with any edits and move to the next step
+                                                self.stepwise_steps[i] = (block_str, amount_str);
+                                                i += 1;
+                                            }
+                                        });
+                                    }
+                                    
+                                    // A button to add new steps
+                                    ui.horizontal(|ui| {
+                                        ui.label("       ");
+                                        if ui.button("Add Step").clicked() {
+                                            self.stepwise_steps.push(("0".to_owned(), "0".to_owned()));
+                                        }    
+                                    });
+                                }
                             }
 
-                            ui.add_space(5.0);
+                            ui.add_space(2.0);
 
                             // 4) Choose the distribution recipient
                             ui.horizontal(|ui| {
@@ -2045,24 +2335,29 @@ impl TokensScreen {
                                 }
                             });
 
-                            ui.add_space(3.0);
+                            ui.add_space(2.0);
+                        } else {
+                            self.perpetual_dist_type = PerpetualDistributionIntervalTypeUI::None;
                         }
 
                         ui.separator();
 
                         // PRE-PROGRAMMED DISTRIBUTION
-                        ui.checkbox(
+                        if ui.checkbox(
                             &mut self.enable_pre_programmed_distribution,
                             "Enable Pre-Programmed Distribution",
-                        );
+                        ).clicked() {
+                            self.enable_perpetual_distribution = false;
+                            self.perpetual_dist_type = PerpetualDistributionIntervalTypeUI::None;
+                        };
                         if self.enable_pre_programmed_distribution {
-                            ui.add_space(5.0);
+                            ui.add_space(2.0);
 
                             ui.label(
                                 "     Enter your distribution schedule as JSON (timestamp -> {identity -> amount}):",
                             );
 
-                            ui.add_space(3.0);
+                            ui.add_space(2.0);
 
                             ui.horizontal(|ui| {
                                 ui.label("  ");
@@ -2070,7 +2365,7 @@ impl TokensScreen {
                                 // You could also do a more elaborate table-like UI if needed.
                             });
 
-                            ui.add_space(3.0);
+                            ui.add_space(2.0);
                         }
 
                         ui.separator();
@@ -2081,7 +2376,7 @@ impl TokensScreen {
                             "Use a default identity to receive newly minted tokens",
                         );
                         if self.new_tokens_destination_identity_enabled {
-                            ui.add_space(5.0);
+                            ui.add_space(2.0);
 
                             // Show text field for ID
                             ui.horizontal(|ui| {
@@ -2118,7 +2413,7 @@ impl TokensScreen {
                                     });
                             });
 
-                            ui.add_space(3.0);
+                            ui.add_space(2.0);
                         }
 
                         ui.separator();
@@ -2129,7 +2424,7 @@ impl TokensScreen {
                             "Allow user to pick a destination identity on each mint",
                         );
                         if self.minting_allow_choosing_destination {
-                            ui.add_space(5.0);
+                            ui.add_space(2.0);
 
                             ui.horizontal(|ui| {
                                 ui.label("     Who can change the 'allow choosing destination' setting?");
@@ -2163,6 +2458,9 @@ impl TokensScreen {
 
                     // 6) "Register Token Contract" button
                     ui.add_space(10.0);
+                    let mut new_style = (**ui.style()).clone();
+                    new_style.spacing.button_padding = egui::vec2(10.0, 5.0);
+                    ui.set_style(new_style);
                     let button =
                         egui::Button::new(RichText::new("Register Token Contract").color(Color32::WHITE))
                             .fill(Color32::from_rgb(0, 128, 255))
@@ -2516,17 +2814,17 @@ impl TokensScreen {
                     let maybe_perpetual_distribution = if self.enable_perpetual_distribution {
                         // Construct the `TokenPerpetualDistributionV0` from your selected type + function
                         let dist_type = match self.perpetual_dist_type {
-                            PerpetualDistributionTypeUI::BlockBased => {
+                            PerpetualDistributionIntervalTypeUI::BlockBased => {
                                 // parse interval, parse emission
                                 // parse distribution function
                                 RewardDistributionType::BlockBasedDistribution(
                                     self.perpetual_dist_interval_input.parse::<u64>().unwrap_or(0),
-                                    self.perpetual_dist_emission_amount_input.parse::<u64>().unwrap_or(0),
+                                    0, // this field should be removed in Platform because the individual functions define it
                                     DistributionFunction::FixedAmount { n: 0 },
                                 )
                             }
                             // ... similarly for TimeBased, EpochBased, etc.
-                            PerpetualDistributionTypeUI::None => {
+                            PerpetualDistributionIntervalTypeUI::None => {
                                 // If we truly want None, skip
                                 // but if user "Enabled" we likely do not expect None
                                 RewardDistributionType::BlockBasedDistribution(0, 0, DistributionFunction::FixedAmount { n: 0 })
@@ -3163,6 +3461,25 @@ impl ScreenLike for TokensScreen {
             }
             if self.confirm_remove_token_popup {
                 self.show_remove_token_popup(ui);
+            }
+
+            // If we have info text, open a pop-up window to show it
+            if let Some(info_text) = self.show_pop_up_info.clone() {
+                egui::Window::new("Distribution Type Info")
+                    .collapsible(false)
+                    .resizable(true)
+                    .show(ui.ctx(), |ui| {
+                        egui::ScrollArea::vertical()
+                            .max_height(600.0)
+                            .show(ui, |ui| {
+                                let mut cache = CommonMarkCache::default();
+                                CommonMarkViewer::new().show(ui, &mut cache, &info_text);
+                            });
+
+                        if ui.button("Close").clicked() {
+                            self.show_pop_up_info = None;
+                        }
+                    });
             }
         });
 

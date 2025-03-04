@@ -1,4 +1,6 @@
 use crate::app::AppAction;
+use crate::backend_task::core::CoreItem;
+use crate::backend_task::BackendTaskSuccessResult;
 use crate::components::core_p2p_handler::CoreP2PHandler;
 use crate::context::AppContext;
 use crate::ui::components::left_panel::add_left_panel;
@@ -7,37 +9,39 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::dashcore_rpc::json::QuorumType;
 use dash_sdk::dashcore_rpc::RpcApi;
+use dash_sdk::dpp::dashcore::consensus::{deserialize as deserialize2, serialize as serialize2};
 use dash_sdk::dpp::dashcore::hashes::Hash;
+use dash_sdk::dpp::dashcore::Network as Network2;
+use dash_sdk::dpp::dashcore::{
+    Block, BlockHash as BlockHash2, ChainLock, InstantLock, Transaction,
+};
 use dash_sdk::dpp::prelude::CoreBlockHeight;
+use dashcoretemp::bls_sig_utils::BLSSignature;
+use dashcoretemp::consensus::{deserialize, serialize};
 use dashcoretemp::hashes::Hash as tempHash;
+use dashcoretemp::network::message_qrinfo::{QRInfo, QuorumSnapshot};
 use dashcoretemp::network::message_sml::MnListDiff;
+use dashcoretemp::sml::llmq_entry_verification::LLMQEntryVerificationStatus;
+use dashcoretemp::sml::llmq_type::LLMQType;
+use dashcoretemp::sml::masternode_list::MasternodeList;
 use dashcoretemp::sml::masternode_list_engine::MasternodeListEngine;
+use dashcoretemp::sml::masternode_list_entry::qualified_masternode_list_entry::QualifiedMasternodeListEntry;
 use dashcoretemp::sml::masternode_list_entry::EntryMasternodeType;
-use dashcoretemp::{BlockHash, InstantLock as InstantLock2, ChainLock as ChainLock2, Network, ProTxHash, QuorumHash};
+use dashcoretemp::sml::quorum_entry::qualified_quorum_entry::QualifiedQuorumEntry;
+use dashcoretemp::sml::quorum_validation_error::{ClientDataRetrievalError, QuorumValidationError};
+use dashcoretemp::transaction::special_transaction::quorum_commitment::QuorumEntry;
+use dashcoretemp::{
+    BlockHash, ChainLock as ChainLock2, InstantLock as InstantLock2, Network, ProTxHash, QuorumHash,
+};
 use eframe::egui::{self, Context, ScrollArea, Ui};
 use egui::{Align, Color32, Frame, Layout, Response, Stroke, TextEdit, Vec2};
+use futures::FutureExt;
+use itertools::Itertools;
+use rfd::FileDialog;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
-use dash_sdk::dpp::dashcore::{Block, BlockHash as BlockHash2, ChainLock, InstantLock, Transaction};
-use dash_sdk::dpp::dashcore::consensus::{deserialize as deserialize2, serialize as serialize2};
-use dash_sdk::dpp::dashcore::Network as Network2;
-use dashcoretemp::bls_sig_utils::BLSSignature;
-use dashcoretemp::consensus::{deserialize, serialize};
-use dashcoretemp::network::message_qrinfo::{QRInfo, QuorumSnapshot};
-use dashcoretemp::sml::llmq_entry_verification::LLMQEntryVerificationStatus;
-use dashcoretemp::sml::llmq_type::LLMQType;
-use dashcoretemp::sml::masternode_list::MasternodeList;
-use dashcoretemp::sml::masternode_list_entry::qualified_masternode_list_entry::QualifiedMasternodeListEntry;
-use dashcoretemp::sml::quorum_entry::qualified_quorum_entry::QualifiedQuorumEntry;
-use dashcoretemp::sml::quorum_validation_error::{ClientDataRetrievalError, QuorumValidationError};
-use dashcoretemp::transaction::special_transaction::quorum_commitment::QuorumEntry;
-use futures::FutureExt;
-use itertools::Itertools;
-use rfd::FileDialog;
-use crate::backend_task::BackendTaskSuccessResult;
-use crate::backend_task::core::CoreItem;
 
 enum SelectedQRItem {
     SelectedSnapshot(QuorumSnapshot),
@@ -116,7 +120,8 @@ pub struct MasternodeListDiffScreen {
     block_hash_cache: BTreeMap<CoreBlockHeight, BlockHash>,
 
     /// The masternode list quorum hash cache
-    masternode_list_quorum_hash_cache: BTreeMap<BlockHash, BTreeMap<LLMQType, Vec<(CoreBlockHeight, QualifiedQuorumEntry)>>>,
+    masternode_list_quorum_hash_cache:
+        BTreeMap<BlockHash, BTreeMap<LLMQType, Vec<(CoreBlockHeight, QualifiedQuorumEntry)>>>,
 
     error: Option<String>,
     selected_qr_field: Option<String>,
@@ -132,15 +137,24 @@ impl MasternodeListDiffScreen {
         let engine = match app_context.network {
             Network2::Dash => {
                 use std::env;
-                println!("Current working directory: {:?}", env::current_dir().unwrap());
+                println!(
+                    "Current working directory: {:?}",
+                    env::current_dir().unwrap()
+                );
                 let file_path = "artifacts/mn_list_diff_0_2227096.bin";
                 // Attempt to load and parse the MNListDiff file
                 if Path::new(file_path).exists() {
                     match fs::read(file_path) {
                         Ok(bytes) => {
-                            let diff : MnListDiff = deserialize(bytes.as_slice()).expect("expected to deserialize");
+                            let diff: MnListDiff =
+                                deserialize(bytes.as_slice()).expect("expected to deserialize");
                             mnlist_diffs.insert((0, 2227096), diff.clone());
-                            MasternodeListEngine::initialize_with_diff_to_height(diff, 2227096, Network::Dash).expect("expected to start engine")
+                            MasternodeListEngine::initialize_with_diff_to_height(
+                                diff,
+                                2227096,
+                                Network::Dash,
+                            )
+                            .expect("expected to start engine")
                         }
                         Err(e) => {
                             eprintln!("Failed to read MNListDiff file: {}", e);
@@ -192,17 +206,19 @@ impl MasternodeListDiffScreen {
     fn get_height(&self, block_hash: &BlockHash) -> Result<CoreBlockHeight, String> {
         let Some(height) = self.masternode_list_engine.block_heights.get(block_hash) else {
             let Some(height) = self.block_height_cache.get(block_hash) else {
-                println!("asking core for height no cache {} ({})", block_hash, block_hash.reverse());
-                return match self.app_context.core_client.get_block_header_info(&(BlockHash2::from_byte_array(block_hash.to_byte_array()))) {
-                    Ok(block_hash) => {
-                        Ok(block_hash.height as CoreBlockHeight)
-                    },
-                    Err(e) => {
-                        Err(e.to_string())
-                    }
-                }
+                println!(
+                    "asking core for height no cache {} ({})",
+                    block_hash,
+                    block_hash.reverse()
+                );
+                return match self.app_context.core_client.get_block_header_info(
+                    &(BlockHash2::from_byte_array(block_hash.to_byte_array())),
+                ) {
+                    Ok(block_hash) => Ok(block_hash.height as CoreBlockHeight),
+                    Err(e) => Err(e.to_string()),
+                };
             };
-            return Ok(*height)
+            return Ok(*height);
         };
         Ok(*height)
     }
@@ -210,19 +226,25 @@ impl MasternodeListDiffScreen {
     fn get_height_and_cache(&mut self, block_hash: &BlockHash) -> Result<CoreBlockHeight, String> {
         let Some(height) = self.masternode_list_engine.block_heights.get(block_hash) else {
             let Some(height) = self.block_height_cache.get(block_hash) else {
-                println!("asking core for height {} ({})", block_hash, block_hash.reverse());
-                return match self.app_context.core_client.get_block_header_info(&(BlockHash2::from_byte_array(block_hash.to_byte_array()))) {
+                println!(
+                    "asking core for height {} ({})",
+                    block_hash,
+                    block_hash.reverse()
+                );
+                return match self.app_context.core_client.get_block_header_info(
+                    &(BlockHash2::from_byte_array(block_hash.to_byte_array())),
+                ) {
                     Ok(result) => {
-                        self.block_height_cache.insert(*block_hash, result.height as CoreBlockHeight);
-                        self.masternode_list_engine.feed_block_height(result.height as CoreBlockHeight, *block_hash);
+                        self.block_height_cache
+                            .insert(*block_hash, result.height as CoreBlockHeight);
+                        self.masternode_list_engine
+                            .feed_block_height(result.height as CoreBlockHeight, *block_hash);
                         Ok(result.height as CoreBlockHeight)
-                    },
-                    Err(e) => {
-                        Err(e.to_string())
                     }
-                }
+                    Err(e) => Err(e.to_string()),
+                };
             };
-            return Ok(*height)
+            return Ok(*height);
         };
         Ok(*height)
     }
@@ -232,15 +254,11 @@ impl MasternodeListDiffScreen {
             let Some(block_hash) = self.block_hash_cache.get(&height) else {
                 println!("asking core for hash of {}", height);
                 return match self.app_context.core_client.get_block_hash(height) {
-                    Ok(block_hash) => {
-                        Ok(BlockHash::from_byte_array(block_hash.to_byte_array()))
-                    },
-                    Err(e) => {
-                        Err(e.to_string())
-                    }
-                }
+                    Ok(block_hash) => Ok(BlockHash::from_byte_array(block_hash.to_byte_array())),
+                    Err(e) => Err(e.to_string()),
+                };
             };
-            return Ok(*block_hash)
+            return Ok(*block_hash);
         };
         Ok(*block_hash)
     }
@@ -261,21 +279,33 @@ impl MasternodeListDiffScreen {
                     return;
                 }
             };
-            let maybe_chain_lock_sig = match self.app_context.core_client.get_block(&(BlockHash2::from_byte_array(block_hash.to_byte_array()))) {
+            let maybe_chain_lock_sig = match self
+                .app_context
+                .core_client
+                .get_block(&(BlockHash2::from_byte_array(block_hash.to_byte_array())))
+            {
                 Ok(block) => {
-                    let Some(coinbase) = block.coinbase().and_then(|coinbase| coinbase.special_transaction_payload.as_ref()).and_then(|payload| payload.clone().to_coinbase_payload().ok()) else {
-                        self.error = Some(format!("coinbase not found on block hash {}", block_hash));
+                    let Some(coinbase) = block
+                        .coinbase()
+                        .and_then(|coinbase| coinbase.special_transaction_payload.as_ref())
+                        .and_then(|payload| payload.clone().to_coinbase_payload().ok())
+                    else {
+                        self.error =
+                            Some(format!("coinbase not found on block hash {}", block_hash));
                         return;
                     };
                     coinbase.best_cl_signature
-                },
+                }
                 Err(e) => {
                     self.error = Some(e.to_string());
                     return;
                 }
             };
             if let Some(maybe_chain_lock_sig) = maybe_chain_lock_sig {
-                self.masternode_list_engine.feed_chain_lock_sig(block_hash, BLSSignature::from(maybe_chain_lock_sig.to_bytes()));
+                self.masternode_list_engine.feed_chain_lock_sig(
+                    block_hash,
+                    BLSSignature::from(maybe_chain_lock_sig.to_bytes()),
+                );
             }
         }
     }
@@ -290,7 +320,9 @@ impl MasternodeListDiffScreen {
         ];
 
         // If h-4c exists, add it to the list
-        if let Some((_, mn_list_diff_h_minus_4c)) = &qr_info.quorum_snapshot_and_mn_list_diff_at_h_minus_4c {
+        if let Some((_, mn_list_diff_h_minus_4c)) =
+            &qr_info.quorum_snapshot_and_mn_list_diff_at_h_minus_4c
+        {
             mn_list_diffs.iter().for_each(|&mn_list_diff| {
                 self.feed_mn_list_diff_heights(mn_list_diff);
             });
@@ -304,9 +336,12 @@ impl MasternodeListDiffScreen {
         }
 
         // Process `last_commitment_per_index` quorum hashes
-        qr_info.last_commitment_per_index.iter().for_each(|quorum_entry| {
-            self.feed_quorum_entry_height(quorum_entry);
-        });
+        qr_info
+            .last_commitment_per_index
+            .iter()
+            .for_each(|quorum_entry| {
+                self.feed_quorum_entry_height(quorum_entry);
+            });
 
         // Process `mn_list_diff_list` (extra diffs)
         qr_info.mn_list_diff_list.iter().for_each(|mn_list_diff| {
@@ -319,26 +354,38 @@ impl MasternodeListDiffScreen {
         // Feed base block hash height
         if let Ok(base_height) = self.get_height(&mn_list_diff.base_block_hash) {
             println!("feeding {} {}", base_height, mn_list_diff.base_block_hash);
-            self.masternode_list_engine.feed_block_height(base_height, mn_list_diff.base_block_hash);
+            self.masternode_list_engine
+                .feed_block_height(base_height, mn_list_diff.base_block_hash);
         } else {
-            self.error = Some(format!("Failed to get height for base block hash: {}", mn_list_diff.base_block_hash));
+            self.error = Some(format!(
+                "Failed to get height for base block hash: {}",
+                mn_list_diff.base_block_hash
+            ));
         }
 
         // Feed block hash height
         if let Ok(block_height) = self.get_height(&mn_list_diff.block_hash) {
             println!("feeding {} {}", block_height, mn_list_diff.block_hash);
-            self.masternode_list_engine.feed_block_height(block_height, mn_list_diff.block_hash);
+            self.masternode_list_engine
+                .feed_block_height(block_height, mn_list_diff.block_hash);
         } else {
-            self.error = Some(format!("Failed to get height for block hash: {}", mn_list_diff.block_hash));
+            self.error = Some(format!(
+                "Failed to get height for block hash: {}",
+                mn_list_diff.block_hash
+            ));
         }
     }
 
     /// **Helper function:** Feeds the quorum hash height of a `QuorumEntry`
     fn feed_quorum_entry_height(&mut self, quorum_entry: &QuorumEntry) {
         if let Ok(height) = self.get_height(&quorum_entry.quorum_hash) {
-            self.masternode_list_engine.feed_block_height(height, quorum_entry.quorum_hash);
+            self.masternode_list_engine
+                .feed_block_height(height, quorum_entry.quorum_hash);
         } else {
-            self.error = Some(format!("Failed to get height for quorum hash: {}", quorum_entry.quorum_hash));
+            self.error = Some(format!(
+                "Failed to get height for quorum hash: {}",
+                quorum_entry.quorum_hash
+            ));
         }
     }
 
@@ -432,13 +479,29 @@ impl MasternodeListDiffScreen {
             }
         };
 
-        self.mnlist_diffs.insert((base_height, height), mn_list_diff.clone());
+        self.mnlist_diffs
+            .insert((base_height, height), mn_list_diff.clone());
     }
 
-    fn fetch_rotated_quorum_info(&mut self, p2p_handler: &mut CoreP2PHandler, base_block_hash: BlockHash, block_hash: BlockHash) -> Option<QRInfo> {
-        let mut known_block_hashes : Vec<_> = self.mnlist_diffs.values().map(|mn_list_diff| mn_list_diff.block_hash).collect();
+    fn fetch_rotated_quorum_info(
+        &mut self,
+        p2p_handler: &mut CoreP2PHandler,
+        base_block_hash: BlockHash,
+        block_hash: BlockHash,
+    ) -> Option<QRInfo> {
+        let mut known_block_hashes: Vec<_> = self
+            .mnlist_diffs
+            .values()
+            .map(|mn_list_diff| mn_list_diff.block_hash)
+            .collect();
         known_block_hashes.push(base_block_hash);
-        println!("requesting with known_block_hashes {}", known_block_hashes.iter().map(|bh| bh.to_string()).join(", "));
+        println!(
+            "requesting with known_block_hashes {}",
+            known_block_hashes
+                .iter()
+                .map(|bh| bh.to_string())
+                .join(", ")
+        );
         let qr_info = match p2p_handler.get_qr_info(known_block_hashes, block_hash) {
             Ok(list_diff) => list_diff,
             Err(e) => {
@@ -451,7 +514,9 @@ impl MasternodeListDiffScreen {
         self.insert_mn_list_diff(&qr_info.mn_list_diff_at_h_minus_c);
         self.insert_mn_list_diff(&qr_info.mn_list_diff_at_h_minus_2c);
         self.insert_mn_list_diff(&qr_info.mn_list_diff_at_h_minus_3c);
-        if let Some((_, mn_list_diff_at_h_minus_4c)) = &qr_info.quorum_snapshot_and_mn_list_diff_at_h_minus_4c {
+        if let Some((_, mn_list_diff_at_h_minus_4c)) =
+            &qr_info.quorum_snapshot_and_mn_list_diff_at_h_minus_4c
+        {
             self.insert_mn_list_diff(mn_list_diff_at_h_minus_4c);
         }
         for diff in &qr_info.mn_list_diff_list {
@@ -469,9 +534,7 @@ impl MasternodeListDiffScreen {
         let mut hashes_needed_to_validate = BTreeMap::new();
         for quorum_hash in hashes {
             let height = match self.get_height_and_cache(&quorum_hash) {
-                Ok(height) => {
-                    height
-                },
+                Ok(height) => height,
                 Err(e) => {
                     self.error = Some(e.to_string());
                     return;
@@ -484,31 +547,53 @@ impl MasternodeListDiffScreen {
                     return;
                 }
             };
-            let maybe_chain_lock_sig = match self.app_context.core_client.get_block(&validation_hash) {
-                Ok(block) => {
-                    let Some(coinbase) = block.coinbase().and_then(|coinbase| coinbase.special_transaction_payload.as_ref()).and_then(|payload| payload.clone().to_coinbase_payload().ok()) else {
-                        self.error = Some(format!("coinbase not found on quorum hash {}", quorum_hash));
+            let maybe_chain_lock_sig =
+                match self.app_context.core_client.get_block(&validation_hash) {
+                    Ok(block) => {
+                        let Some(coinbase) = block
+                            .coinbase()
+                            .and_then(|coinbase| coinbase.special_transaction_payload.as_ref())
+                            .and_then(|payload| payload.clone().to_coinbase_payload().ok())
+                        else {
+                            self.error =
+                                Some(format!("coinbase not found on quorum hash {}", quorum_hash));
+                            return;
+                        };
+                        coinbase.best_cl_signature
+                    }
+                    Err(e) => {
+                        self.error = Some(e.to_string());
                         return;
-                    };
-                    coinbase.best_cl_signature
-                },
-                Err(e) => {
-                    self.error = Some(e.to_string());
-                    return;
-                }
-            };
+                    }
+                };
             if let Some(maybe_chain_lock_sig) = maybe_chain_lock_sig {
-                self.masternode_list_engine.feed_chain_lock_sig(BlockHash::from_byte_array(validation_hash.to_byte_array()), BLSSignature::from(maybe_chain_lock_sig.to_bytes()));
+                self.masternode_list_engine.feed_chain_lock_sig(
+                    BlockHash::from_byte_array(validation_hash.to_byte_array()),
+                    BLSSignature::from(maybe_chain_lock_sig.to_bytes()),
+                );
             }
-            hashes_needed_to_validate.insert(height - 8, BlockHash::from_byte_array(validation_hash.to_byte_array()));
-        };
+            hashes_needed_to_validate.insert(
+                height - 8,
+                BlockHash::from_byte_array(validation_hash.to_byte_array()),
+            );
+        }
 
         if let Some((oldest_needed_height, _)) = hashes_needed_to_validate.first_key_value() {
-            let (first_engine_height, first_masternode_list) = self.masternode_list_engine.masternode_lists.first_key_value().unwrap();
-            let (mut base_block_height, mut base_block_hash) = if *first_engine_height < *oldest_needed_height {
+            let (first_engine_height, first_masternode_list) = self
+                .masternode_list_engine
+                .masternode_lists
+                .first_key_value()
+                .unwrap();
+            let (mut base_block_height, mut base_block_hash) = if *first_engine_height
+                < *oldest_needed_height
+            {
                 (*first_engine_height, first_masternode_list.block_hash)
             } else {
-                let known_genesis_block_hash = match self.masternode_list_engine.network.known_genesis_block_hash() {
+                let known_genesis_block_hash = match self
+                    .masternode_list_engine
+                    .network
+                    .known_genesis_block_hash()
+                {
                     None => match self.app_context.core_client.get_block_hash(0) {
                         Ok(block_hash) => BlockHash::from_byte_array(block_hash.to_byte_array()),
                         Err(e) => {
@@ -577,14 +662,19 @@ impl MasternodeListDiffScreen {
         }
 
         if validate_quorums && !self.masternode_list_engine.masternode_lists.is_empty() {
-            let hashes = self.masternode_list_engine.latest_masternode_list_non_rotating_quorum_hashes(&[LLMQType::Llmqtype50_60, LLMQType::Llmqtype400_85], true);
+            let hashes = self
+                .masternode_list_engine
+                .latest_masternode_list_non_rotating_quorum_hashes(
+                    &[LLMQType::Llmqtype50_60, LLMQType::Llmqtype400_85],
+                    true,
+                );
             self.fetch_diffs_with_hashes(p2p_handler, hashes);
-            let hashes = self.masternode_list_engine.latest_masternode_list_rotating_quorum_hashes(&[]);
+            let hashes = self
+                .masternode_list_engine
+                .latest_masternode_list_rotating_quorum_hashes(&[]);
             for hash in &hashes {
                 let height = match self.get_height(hash) {
-                    Ok(height) => {
-                        height
-                    },
+                    Ok(height) => height,
                     Err(e) => {
                         self.error = Some(e.to_string());
                         return;
@@ -593,7 +683,13 @@ impl MasternodeListDiffScreen {
                 self.block_height_cache.insert(*hash, height);
             }
 
-            if let Err(e) = self.masternode_list_engine.verify_non_rotating_masternode_list_quorums(block_height, &[LLMQType::Llmqtype50_60, LLMQType::Llmqtype400_85]) {
+            if let Err(e) = self
+                .masternode_list_engine
+                .verify_non_rotating_masternode_list_quorums(
+                    block_height,
+                    &[LLMQType::Llmqtype50_60, LLMQType::Llmqtype400_85],
+                )
+            {
                 self.error = Some(e.to_string());
             }
         }
@@ -731,41 +827,56 @@ impl MasternodeListDiffScreen {
     fn clear(&mut self) {
         self.masternode_list_engine = MasternodeListEngine::default_for_network(Network::Dash);
 
-            self.mnlist_diffs= Default::default();
-            self.selected_dml_diff_key= None;
-            self.selected_dml_height_key= None;
-            self.selected_option_index= None;
-            self.selected_quorum_in_diff_index= None;
-            self.selected_masternode_in_diff_index= None;
-            self.selected_quorum_hash_in_mnlist_diff = None;
-            self.selected_masternode_pro_tx_hash= None;
+        self.mnlist_diffs = Default::default();
+        self.selected_dml_diff_key = None;
+        self.selected_dml_height_key = None;
+        self.selected_option_index = None;
+        self.selected_quorum_in_diff_index = None;
+        self.selected_masternode_in_diff_index = None;
+        self.selected_quorum_hash_in_mnlist_diff = None;
+        self.selected_masternode_pro_tx_hash = None;
         self.qr_infos = Default::default();
     }
 
     fn clear_keep_base(&mut self) {
-        let (engine, start_end_diff)  = if let Some(((start, end), oldest_diff)) = self.mnlist_diffs.first_key_value() {
-            if start == &0 {
-                MasternodeListEngine::initialize_with_diff_to_height(oldest_diff.clone(), *end, Network::Dash).map(|engine| (engine, Some(((*start, *end), oldest_diff.clone())))).unwrap_or((MasternodeListEngine::default_for_network(Network::Dash), None))
-
+        let (engine, start_end_diff) =
+            if let Some(((start, end), oldest_diff)) = self.mnlist_diffs.first_key_value() {
+                if start == &0 {
+                    MasternodeListEngine::initialize_with_diff_to_height(
+                        oldest_diff.clone(),
+                        *end,
+                        Network::Dash,
+                    )
+                    .map(|engine| (engine, Some(((*start, *end), oldest_diff.clone()))))
+                    .unwrap_or((
+                        MasternodeListEngine::default_for_network(Network::Dash),
+                        None,
+                    ))
+                } else {
+                    (
+                        MasternodeListEngine::default_for_network(Network::Dash),
+                        None,
+                    )
+                }
             } else {
-                (MasternodeListEngine::default_for_network(Network::Dash), None)
-            }
-        } else {
-            (MasternodeListEngine::default_for_network(Network::Dash), None)
-        };
+                (
+                    MasternodeListEngine::default_for_network(Network::Dash),
+                    None,
+                )
+            };
 
         self.masternode_list_engine = engine;
-        self.mnlist_diffs= Default::default();
+        self.mnlist_diffs = Default::default();
         if let Some((key, oldest_diff)) = start_end_diff {
             self.mnlist_diffs.insert(key, oldest_diff);
         }
-        self.selected_dml_diff_key= None;
-        self.selected_dml_height_key= None;
-        self.selected_option_index= None;
-        self.selected_quorum_in_diff_index= None;
-        self.selected_masternode_in_diff_index= None;
+        self.selected_dml_diff_key = None;
+        self.selected_dml_height_key = None;
+        self.selected_option_index = None;
+        self.selected_quorum_in_diff_index = None;
+        self.selected_masternode_in_diff_index = None;
         self.selected_quorum_hash_in_mnlist_diff = None;
-        self.selected_masternode_pro_tx_hash= None;
+        self.selected_masternode_pro_tx_hash = None;
         self.qr_infos = Default::default();
     }
 
@@ -805,14 +916,13 @@ impl MasternodeListDiffScreen {
     }
 
     fn fetch_end_qr_info(&mut self) {
-        let ((_, base_block_hash), (_, block_hash)) =
-            match self.parse_heights() {
-                Ok(a) => a,
-                Err(e) => {
-                    self.error = Some(e);
-                    return;
-                }
-            };
+        let ((_, base_block_hash), (_, block_hash)) = match self.parse_heights() {
+            Ok(a) => a,
+            Err(e) => {
+                self.error = Some(e);
+                return;
+            }
+        };
 
         let mut p2p_handler = match CoreP2PHandler::new(self.app_context.network, None) {
             Ok(p2p_handler) => p2p_handler,
@@ -822,11 +932,7 @@ impl MasternodeListDiffScreen {
             }
         };
 
-        self.fetch_rotated_quorum_info(
-            &mut p2p_handler,
-            base_block_hash,
-            block_hash,
-        );
+        self.fetch_rotated_quorum_info(&mut p2p_handler, base_block_hash, block_hash);
 
         // Reset selections when new data is loaded
         self.selected_dml_diff_key = None;
@@ -841,14 +947,13 @@ impl MasternodeListDiffScreen {
     }
 
     fn fetch_end_qr_info_with_dmls(&mut self) {
-        let ((_, base_block_hash), (block_height, block_hash)) =
-            match self.parse_heights() {
-                Ok(a) => a,
-                Err(e) => {
-                    self.error = Some(e);
-                    return;
-                }
-            };
+        let ((_, base_block_hash), (block_height, block_hash)) = match self.parse_heights() {
+            Ok(a) => a,
+            Err(e) => {
+                self.error = Some(e);
+                return;
+            }
+        };
 
         let mut p2p_handler = match CoreP2PHandler::new(self.app_context.network, None) {
             Ok(p2p_handler) => p2p_handler,
@@ -858,11 +963,9 @@ impl MasternodeListDiffScreen {
             }
         };
 
-        let Some(qr_info) = self.fetch_rotated_quorum_info(
-            &mut p2p_handler,
-            base_block_hash,
-            block_hash,
-        ) else {
+        let Some(qr_info) =
+            self.fetch_rotated_quorum_info(&mut p2p_handler, base_block_hash, block_hash)
+        else {
             return;
         };
 
@@ -875,9 +978,13 @@ impl MasternodeListDiffScreen {
                 if let Some(height) = block_height_cache.get(block_hash) {
                     return Ok(*height);
                 }
-                match app_context.core_client.get_block_header_info(&(BlockHash2::from_byte_array(block_hash.to_byte_array()))) {
+                match app_context.core_client.get_block_header_info(
+                    &(BlockHash2::from_byte_array(block_hash.to_byte_array())),
+                ) {
                     Ok(block_info) => Ok(block_info.height as CoreBlockHeight),
-                    Err(_) => Err(ClientDataRetrievalError::RequiredBlockNotPresent(*block_hash)),
+                    Err(_) => Err(ClientDataRetrievalError::RequiredBlockNotPresent(
+                        *block_hash,
+                    )),
                 }
             }
         };
@@ -885,19 +992,27 @@ impl MasternodeListDiffScreen {
         let get_chain_lock_sig_fn = {
             let app_context = &self.app_context;
 
-            move |block_hash: &BlockHash| {
-                match app_context.core_client.get_block(&(BlockHash2::from_byte_array(block_hash.to_byte_array()))) {
-                    Ok(block) => {
-                        let Some(coinbase) = block.coinbase()
-                            .and_then(|coinbase| coinbase.special_transaction_payload.as_ref())
-                            .and_then(|payload| payload.clone().to_coinbase_payload().ok())
-                        else {
-                            return Err(ClientDataRetrievalError::CoinbaseNotFoundOnBlock(*block_hash));
-                        };
-                        Ok(coinbase.best_cl_signature.map(|sig| BLSSignature::from(sig.to_bytes())))
-                    },
-                    Err(_) => Err(ClientDataRetrievalError::RequiredBlockNotPresent(*block_hash)),
+            move |block_hash: &BlockHash| match app_context
+                .core_client
+                .get_block(&(BlockHash2::from_byte_array(block_hash.to_byte_array())))
+            {
+                Ok(block) => {
+                    let Some(coinbase) = block
+                        .coinbase()
+                        .and_then(|coinbase| coinbase.special_transaction_payload.as_ref())
+                        .and_then(|payload| payload.clone().to_coinbase_payload().ok())
+                    else {
+                        return Err(ClientDataRetrievalError::CoinbaseNotFoundOnBlock(
+                            *block_hash,
+                        ));
+                    };
+                    Ok(coinbase
+                        .best_cl_signature
+                        .map(|sig| BLSSignature::from(sig.to_bytes())))
                 }
+                Err(_) => Err(ClientDataRetrievalError::RequiredBlockNotPresent(
+                    *block_hash,
+                )),
             }
         };
 
@@ -911,14 +1026,19 @@ impl MasternodeListDiffScreen {
             return;
         }
 
-        let hashes = self.masternode_list_engine.latest_masternode_list_non_rotating_quorum_hashes(&[LLMQType::Llmqtype50_60, LLMQType::Llmqtype400_85], true);
+        let hashes = self
+            .masternode_list_engine
+            .latest_masternode_list_non_rotating_quorum_hashes(
+                &[LLMQType::Llmqtype50_60, LLMQType::Llmqtype400_85],
+                true,
+            );
         self.fetch_diffs_with_hashes(&mut p2p_handler, hashes);
-        let hashes = self.masternode_list_engine.latest_masternode_list_rotating_quorum_hashes(&[]);
+        let hashes = self
+            .masternode_list_engine
+            .latest_masternode_list_rotating_quorum_hashes(&[]);
         for hash in &hashes {
             let height = match self.get_height(hash) {
-                Ok(height) => {
-                    height
-                },
+                Ok(height) => height,
                 Err(e) => {
                     self.error = Some(e.to_string());
                     return;
@@ -927,7 +1047,13 @@ impl MasternodeListDiffScreen {
             self.block_height_cache.insert(*hash, height);
         }
 
-        if let Err(e) = self.masternode_list_engine.verify_non_rotating_masternode_list_quorums(block_height, &[LLMQType::Llmqtype50_60, LLMQType::Llmqtype400_85]) {
+        if let Err(e) = self
+            .masternode_list_engine
+            .verify_non_rotating_masternode_list_quorums(
+                block_height,
+                &[LLMQType::Llmqtype50_60, LLMQType::Llmqtype400_85],
+            )
+        {
             self.error = Some(e.to_string());
         }
 
@@ -1108,14 +1234,25 @@ impl MasternodeListDiffScreen {
     }
 
     fn render_quorums_in_masternode_list(&mut self, ui: &mut Ui) {
-        let mut heights : BTreeMap<QuorumHash, CoreBlockHeight> = BTreeMap::new();
+        let mut heights: BTreeMap<QuorumHash, CoreBlockHeight> = BTreeMap::new();
         let mut masternode_block_hash = None;
         if let Some(selected_height) = self.selected_dml_height_key {
-            if !self.masternode_lists_with_all_quorum_heights_known.contains(&selected_height) {
+            if !self
+                .masternode_lists_with_all_quorum_heights_known
+                .contains(&selected_height)
+            {
                 if let Some(quorum_hashes) = self
                     .masternode_list_engine
                     .masternode_lists
-                    .get(&selected_height).map(|list| list.quorums.values().map(|quorums| quorums.keys()).flatten().copied().collect::<BTreeSet<_>>())
+                    .get(&selected_height)
+                    .map(|list| {
+                        list.quorums
+                            .values()
+                            .map(|quorums| quorums.keys())
+                            .flatten()
+                            .copied()
+                            .collect::<BTreeSet<_>>()
+                    })
                 {
                     for quorum_hash in quorum_hashes.iter() {
                         if let Ok(height) = self.get_height_and_cache(quorum_hash) {
@@ -1123,7 +1260,8 @@ impl MasternodeListDiffScreen {
                         }
                     }
                 }
-                self.masternode_lists_with_all_quorum_heights_known.insert(selected_height);
+                self.masternode_lists_with_all_quorum_heights_known
+                    .insert(selected_height);
             }
             if let Some(mn_list) = self
                 .masternode_list_engine
@@ -1132,7 +1270,9 @@ impl MasternodeListDiffScreen {
             {
                 masternode_block_hash = Some(mn_list.block_hash);
                 for (llmq_type, quorum_map) in &mn_list.quorums {
-                    if llmq_type == &LLMQType::Llmqtype50_60 || llmq_type == &LLMQType::Llmqtype400_85 {
+                    if llmq_type == &LLMQType::Llmqtype50_60
+                        || llmq_type == &LLMQType::Llmqtype400_85
+                    {
                         continue;
                     }
                     for quorum_hash in quorum_map.keys() {
@@ -1141,57 +1281,76 @@ impl MasternodeListDiffScreen {
                         }
                     }
                 }
-                if !self.masternode_list_quorum_hash_cache.contains_key(&mn_list.block_hash) {
+                if !self
+                    .masternode_list_quorum_hash_cache
+                    .contains_key(&mn_list.block_hash)
+                {
                     let mut btree_map = BTreeMap::new();
                     for (llmq_type, quorum_map) in &mn_list.quorums {
-                        let quorums_by_height = quorum_map.iter().map(|(quorum_hash, quorum_entry)| {
-                            (heights.get(quorum_hash).copied().unwrap_or_default(), quorum_entry.clone())
-                        }).collect();
+                        let quorums_by_height = quorum_map
+                            .iter()
+                            .map(|(quorum_hash, quorum_entry)| {
+                                (
+                                    heights.get(quorum_hash).copied().unwrap_or_default(),
+                                    quorum_entry.clone(),
+                                )
+                            })
+                            .collect();
                         btree_map.insert(*llmq_type, quorums_by_height);
                     }
-                    self.masternode_list_quorum_hash_cache.insert(mn_list.block_hash, btree_map);
+                    self.masternode_list_quorum_hash_cache
+                        .insert(mn_list.block_hash, btree_map);
                 }
             }
         }
-        if let Some(quorums) = masternode_block_hash.and_then(|block_hash| self.masternode_list_quorum_hash_cache.get(&block_hash))
-            {
-
-                ui.heading("Quorums in Masternode List");
-                ui.label("(excluding 50_60 and 400_85)");
-                ScrollArea::vertical()
-                    .id_salt("quorum_list_scroll_area")
-                    .show(ui, |ui| {
-                        for (llmq_type, quorum_map) in quorums {
-                            if llmq_type == &LLMQType::Llmqtype50_60 || llmq_type == &LLMQType::Llmqtype400_85 {
-                                continue;
-                            }
-                            for (quorum_height, quorum_entry) in
-                                quorum_map.iter()
+        if let Some(quorums) = masternode_block_hash
+            .and_then(|block_hash| self.masternode_list_quorum_hash_cache.get(&block_hash))
+        {
+            ui.heading("Quorums in Masternode List");
+            ui.label("(excluding 50_60 and 400_85)");
+            ScrollArea::vertical()
+                .id_salt("quorum_list_scroll_area")
+                .show(ui, |ui| {
+                    for (llmq_type, quorum_map) in quorums {
+                        if llmq_type == &LLMQType::Llmqtype50_60
+                            || llmq_type == &LLMQType::Llmqtype400_85
+                        {
+                            continue;
+                        }
+                        for (quorum_height, quorum_entry) in quorum_map.iter() {
+                            if ui
+                                .selectable_label(
+                                    self.selected_quorum_hash_in_mnlist_diff
+                                        == Some((
+                                            *llmq_type,
+                                            quorum_entry.quorum_entry.quorum_hash,
+                                        )),
+                                    format!(
+                                        "Quorum {} Type: {} Valid {}",
+                                        quorum_height,
+                                        QuorumType::from(*llmq_type as u32).to_string(),
+                                        quorum_entry.verified
+                                            == LLMQEntryVerificationStatus::Verified
+                                    ),
+                                )
+                                .clicked()
                             {
-                                if ui
-                                    .selectable_label(
-                                        self.selected_quorum_hash_in_mnlist_diff == Some((*llmq_type, quorum_entry.quorum_entry.quorum_hash)),
-                                        format!(
-                                            "Quorum {} Type: {} Valid {}",
-                                            quorum_height,
-                                            QuorumType::from(*llmq_type as u32).to_string(),
-                                            quorum_entry.verified == LLMQEntryVerificationStatus::Verified
-                                        ),
-                                    )
-                                    .clicked()
-                                {
-                                    self.selected_quorum_hash_in_mnlist_diff = Some((*llmq_type, quorum_entry.quorum_entry.quorum_hash));
-                                    self.selected_masternode_pro_tx_hash = None;
-                                    self.selected_dml_diff_key = None;
-                                }
+                                self.selected_quorum_hash_in_mnlist_diff =
+                                    Some((*llmq_type, quorum_entry.quorum_entry.quorum_hash));
+                                self.selected_masternode_pro_tx_hash = None;
+                                self.selected_dml_diff_key = None;
                             }
                         }
-                    });
-            }
+                    }
+                });
+        }
     }
 
     /// Filter masternodes based on the search term
-    fn filter_masternodes(&self, mn_list: & MasternodeList) -> BTreeMap<ProTxHash, QualifiedMasternodeListEntry> {
+    fn filter_masternodes(
+        &self,
+        mn_list: &MasternodeList,
+    ) -> BTreeMap<ProTxHash, QualifiedMasternodeListEntry> {
         // If no search term, return all masternodes
         if let Some(search_term) = &self.search_term {
             let search_term = search_term.to_lowercase();
@@ -1213,7 +1372,8 @@ impl MasternodeListDiffScreen {
                         .map(|h| h.to_string().to_lowercase())
                         .unwrap_or_default();
                     let service_ip = masternode.service_address.ip().to_string().to_lowercase();
-                    let operator_public_key = masternode.operator_public_key.to_string().to_lowercase();
+                    let operator_public_key =
+                        masternode.operator_public_key.to_string().to_lowercase();
                     let voting_key_id = masternode.key_id_voting.to_string().to_lowercase();
 
                     // Check reversed versions
@@ -1277,9 +1437,7 @@ impl MasternodeListDiffScreen {
                 ScrollArea::vertical()
                     .id_salt("masternode_list_scroll_area")
                     .show(ui, |ui| {
-                        for (pro_tx_hash, masternode) in
-                            filtered_masternodes.iter()
-                        {
+                        for (pro_tx_hash, masternode) in filtered_masternodes.iter() {
                             if ui
                                 .selectable_label(
                                     self.selected_masternode_pro_tx_hash == Some(*pro_tx_hash),
@@ -1350,7 +1508,15 @@ impl MasternodeListDiffScreen {
 
     fn render_selected_tab(&mut self, ui: &mut Ui) {
         // Define available tabs
-        let mut tabs = vec!["Masternode Lists", "Quorums", "Diffs", "QRInfo", "Known Blocks", "Core Items", "Save Masternode List Engine"];
+        let mut tabs = vec![
+            "Masternode Lists",
+            "Quorums",
+            "Diffs",
+            "QRInfo",
+            "Known Blocks",
+            "Core Items",
+            "Save Masternode List Engine",
+        ];
 
         if self.syncing {
             tabs.push("Stop Syncing");
@@ -1413,36 +1579,39 @@ impl MasternodeListDiffScreen {
     fn render_engine_known_blocks(&mut self, ui: &mut Ui) {
         ui.heading("Known Blocks in Masternode List Engine");
 
-        ScrollArea::vertical().id_salt("known_blocks_scroll").show(ui, |ui| {
-            ui.label(format!(
-                "Total Known Blocks: {}",
-                self.masternode_list_engine.block_heights.len()
-            ));
+        ScrollArea::vertical()
+            .id_salt("known_blocks_scroll")
+            .show(ui, |ui| {
+                ui.label(format!(
+                    "Total Known Blocks: {}",
+                    self.masternode_list_engine.block_heights.len()
+                ));
 
-            egui::Grid::new("known_blocks_grid")
-                .num_columns(2) // Two columns: Block Height | Block Hash
-                .striped(true)
-                .show(ui, |ui| {
-                    ui.label("Block Height");
-                    ui.label("Block Hash");
-                    ui.end_row();
-
-                    // Sort block heights for ordered display
-                    let mut known_blocks: Vec<_> = self.masternode_list_engine.block_heights.iter().collect();
-                    known_blocks.sort_by_key(|(_, height)| *height);
-
-                    for (block_hash, height) in known_blocks {
-                        ui.label(format!("{}", height));
-                        let hash_str = format!("{}", block_hash);
-
-                        if ui.selectable_label(false, hash_str.clone()).clicked() {
-                            ui.output_mut(|o| o.copied_text = hash_str.clone());
-                        }
-
+                egui::Grid::new("known_blocks_grid")
+                    .num_columns(2) // Two columns: Block Height | Block Hash
+                    .striped(true)
+                    .show(ui, |ui| {
+                        ui.label("Block Height");
+                        ui.label("Block Hash");
                         ui.end_row();
-                    }
-                });
-        });
+
+                        // Sort block heights for ordered display
+                        let mut known_blocks: Vec<_> =
+                            self.masternode_list_engine.block_heights.iter().collect();
+                        known_blocks.sort_by_key(|(_, height)| *height);
+
+                        for (block_hash, height) in known_blocks {
+                            ui.label(format!("{}", height));
+                            let hash_str = format!("{}", block_hash);
+
+                            if ui.selectable_label(false, hash_str.clone()).clicked() {
+                                ui.output_mut(|o| o.copied_text = hash_str.clone());
+                            }
+
+                            ui.end_row();
+                        }
+                    });
+            });
     }
 
     fn render_diffs(&mut self, ui: &mut Ui) {
@@ -1640,7 +1809,10 @@ impl MasternodeListDiffScreen {
             {
                 if let Some((llmq_type, quorum_hash)) = self.selected_quorum_hash_in_mnlist_diff {
                     if let Some(quorum) = mn_list
-                        .quorums.get(&llmq_type).and_then(|quorums_by_type| quorums_by_type.get(&quorum_hash)) {
+                        .quorums
+                        .get(&llmq_type)
+                        .and_then(|quorums_by_type| quorums_by_type.get(&quorum_hash))
+                    {
                         Frame::none()
                             .stroke(Stroke::new(1.0, Color32::BLACK))
                             .show(ui, |ui| {
@@ -1683,9 +1855,11 @@ impl MasternodeListDiffScreen {
                             .stroke(Stroke::new(1.0, Color32::BLACK))
                             .show(ui, |ui| {
                                 ui.set_min_size(Vec2::new(ui.available_width(), 300.0));
-                                ScrollArea::vertical().id_salt("render_mn_details").show(ui, |ui| {
-                                    ui.label(format!(
-                                        "Version: {}\n\
+                                ScrollArea::vertical().id_salt("render_mn_details").show(
+                                    ui,
+                                    |ui| {
+                                        ui.label(format!(
+                                            "Version: {}\n\
                                      ProRegTxHash: {}\n\
                                      Confirmed Hash: {}\n\
                                      Service Address: {}:{}\n\
@@ -1693,31 +1867,34 @@ impl MasternodeListDiffScreen {
                                      Voting Key ID: {}\n\
                                      Is Valid: {}\n\
                                      Masternode Type: {}",
-                                        masternode.version,
-                                        masternode.pro_reg_tx_hash.reverse(),
-                                        match masternode.confirmed_hash {
-                                            None => "No confirmed hash".to_string(),
-                                            Some(confirmed_hash) => confirmed_hash.reverse().to_string(),
-                                        },
-                                        masternode.service_address.ip(),
-                                        masternode.service_address.port(),
-                                        masternode.operator_public_key,
-                                        masternode.key_id_voting,
-                                        masternode.is_valid,
-                                        match masternode.mn_type {
-                                            EntryMasternodeType::Regular => "Regular".to_string(),
-                                            EntryMasternodeType::HighPerformance {
-                                                platform_http_port,
-                                                platform_node_id,
-                                            } => {
-                                                format!(
-                                                    "High Performance (Port: {}, Node ID: {})",
-                                                    platform_http_port, platform_node_id
-                                                )
+                                            masternode.version,
+                                            masternode.pro_reg_tx_hash.reverse(),
+                                            match masternode.confirmed_hash {
+                                                None => "No confirmed hash".to_string(),
+                                                Some(confirmed_hash) =>
+                                                    confirmed_hash.reverse().to_string(),
+                                            },
+                                            masternode.service_address.ip(),
+                                            masternode.service_address.port(),
+                                            masternode.operator_public_key,
+                                            masternode.key_id_voting,
+                                            masternode.is_valid,
+                                            match masternode.mn_type {
+                                                EntryMasternodeType::Regular =>
+                                                    "Regular".to_string(),
+                                                EntryMasternodeType::HighPerformance {
+                                                    platform_http_port,
+                                                    platform_node_id,
+                                                } => {
+                                                    format!(
+                                                        "High Performance (Port: {}, Node ID: {})",
+                                                        platform_http_port, platform_node_id
+                                                    )
+                                                }
                                             }
-                                        }
-                                    ));
-                                });
+                                        ));
+                                    },
+                                );
                             });
                     }
                 } else {
@@ -1731,15 +1908,19 @@ impl MasternodeListDiffScreen {
                 .get(&selected_height)
             {
                 if let Some(selected_pro_tx_hash) = self.selected_masternode_pro_tx_hash {
-                    if let Some(qualified_masternode) = mn_list.masternodes.get(&selected_pro_tx_hash) {
+                    if let Some(qualified_masternode) =
+                        mn_list.masternodes.get(&selected_pro_tx_hash)
+                    {
                         let masternode = &qualified_masternode.masternode_list_entry;
                         Frame::none()
                             .stroke(Stroke::new(1.0, Color32::BLACK))
                             .show(ui, |ui| {
                                 ui.set_min_size(Vec2::new(ui.available_width(), 300.0));
-                                ScrollArea::vertical().id_salt("render_mn_details_2").show(ui, |ui| {
-                                    ui.label(format!(
-                                        "Version: {}\n\
+                                ScrollArea::vertical().id_salt("render_mn_details_2").show(
+                                    ui,
+                                    |ui| {
+                                        ui.label(format!(
+                                            "Version: {}\n\
                                      ProRegTxHash: {}\n\
                                      Confirmed Hash: {}\n\
                                      Service Address: {}:{}\n\
@@ -1749,37 +1930,42 @@ impl MasternodeListDiffScreen {
                                      Masternode Type: {}\n\
                                      Entry Hash: {}\n\
                                      Confirmed Hash hashed with ProRegTx: {}\n",
-                                        masternode.version,
-                                        masternode.pro_reg_tx_hash.reverse(),
-                                        match masternode.confirmed_hash {
-                                            None => "No confirmed hash".to_string(),
-                                            Some(confirmed_hash) => confirmed_hash.reverse().to_string(),
-                                        },
-                                        masternode.service_address.ip(),
-                                        masternode.service_address.port(),
-                                        masternode.operator_public_key,
-                                        masternode.key_id_voting,
-                                        masternode.is_valid,
-                                        match masternode.mn_type {
-                                            EntryMasternodeType::Regular => "Regular".to_string(),
-                                            EntryMasternodeType::HighPerformance {
-                                                platform_http_port,
-                                                platform_node_id,
-                                            } => {
-                                                format!(
-                                                    "High Performance (Port: {}, Node ID: {})",
-                                                    platform_http_port, platform_node_id
-                                                )
-                                            }
-                                        },
-                                        hex::encode(qualified_masternode.entry_hash),
-                                        if let Some(hash) = qualified_masternode.confirmed_hash_hashed_with_pro_reg_tx {
-                                            hash.reverse().to_string()
-                                        } else {
-                                            "None".to_string()
-                                        },
-                                    ));
-                                });
+                                            masternode.version,
+                                            masternode.pro_reg_tx_hash.reverse(),
+                                            match masternode.confirmed_hash {
+                                                None => "No confirmed hash".to_string(),
+                                                Some(confirmed_hash) =>
+                                                    confirmed_hash.reverse().to_string(),
+                                            },
+                                            masternode.service_address.ip(),
+                                            masternode.service_address.port(),
+                                            masternode.operator_public_key,
+                                            masternode.key_id_voting,
+                                            masternode.is_valid,
+                                            match masternode.mn_type {
+                                                EntryMasternodeType::Regular =>
+                                                    "Regular".to_string(),
+                                                EntryMasternodeType::HighPerformance {
+                                                    platform_http_port,
+                                                    platform_node_id,
+                                                } => {
+                                                    format!(
+                                                        "High Performance (Port: {}, Node ID: {})",
+                                                        platform_http_port, platform_node_id
+                                                    )
+                                                }
+                                            },
+                                            hex::encode(qualified_masternode.entry_hash),
+                                            if let Some(hash) = qualified_masternode
+                                                .confirmed_hash_hashed_with_pro_reg_tx
+                                            {
+                                                hash.reverse().to_string()
+                                            } else {
+                                                "None".to_string()
+                                            },
+                                        ));
+                                    },
+                                );
                             });
                     }
                 }
@@ -1793,10 +1979,7 @@ impl MasternodeListDiffScreen {
         ui.heading("Quorum Snapshot Details");
 
         // Display Skip List Mode
-        ui.label(format!(
-            "Skip List Mode: {}",
-            snapshot.skip_list_mode
-        ));
+        ui.label(format!("Skip List Mode: {}", snapshot.skip_list_mode));
 
         // Display Active Quorum Members (Bitset)
         ui.label(format!(
@@ -1805,28 +1988,33 @@ impl MasternodeListDiffScreen {
         ));
 
         // Show active members in a scrollable area
-        ScrollArea::vertical().id_salt("render_snapshot_details").show(ui, |ui| {
-            ui.label("Active Quorum Members:");
-            for (i, active) in snapshot.active_quorum_members.iter().enumerate() {
-                ui.label(format!("Member {}: {}", i, if *active { "Active" } else { "Inactive" }));
-            }
-        });
+        ScrollArea::vertical()
+            .id_salt("render_snapshot_details")
+            .show(ui, |ui| {
+                ui.label("Active Quorum Members:");
+                for (i, active) in snapshot.active_quorum_members.iter().enumerate() {
+                    ui.label(format!(
+                        "Member {}: {}",
+                        i,
+                        if *active { "Active" } else { "Inactive" }
+                    ));
+                }
+            });
 
         ui.separator();
 
         // Display Skip List
-        ui.label(format!(
-            "Skip List: {} entries",
-            snapshot.skip_list.len()
-        ));
+        ui.label(format!("Skip List: {} entries", snapshot.skip_list.len()));
 
         // Show skip list entries
-        ScrollArea::vertical().id_salt("render_snapshot_details_2").show(ui, |ui| {
-            ui.label("Skip List Entries:");
-            for (i, skip_entry) in snapshot.skip_list.iter().enumerate() {
-                ui.label(format!("Entry {}: {}", i, skip_entry));
-            }
-        });
+        ScrollArea::vertical()
+            .id_salt("render_snapshot_details_2")
+            .show(ui, |ui| {
+                ui.label("Skip List Entries:");
+                for (i, skip_entry) in snapshot.skip_list.iter().enumerate() {
+                    ui.label(format!("Entry {}: {}", i, skip_entry));
+                }
+            });
     }
 
     fn render_qr_info(&mut self, ui: &mut Ui) {
@@ -1887,14 +2075,28 @@ impl MasternodeListDiffScreen {
                     ui.heading("Selected Field Items");
 
                     match self.selected_qr_field.as_deref() {
-                        Some("Quorum Snapshots") => self.render_quorum_snapshots(ui, &selected_qr_info),
-                        Some("Masternode List Diffs") => self.render_mn_list_diffs(ui, &selected_qr_info),
-                        Some("Rotated Quorums At Index") => self.render_last_commitments(ui, selected_qr_info.last_commitment_per_index.first().map(|entry| entry.quorum_hash)),
-                        Some("Quorum Snapshot List") => self.render_quorum_snapshot_list(ui, &selected_qr_info),
-                        Some("MN List Diff List") => self.render_mn_list_diff_list(ui, &selected_qr_info),
+                        Some("Quorum Snapshots") => {
+                            self.render_quorum_snapshots(ui, &selected_qr_info)
+                        }
+                        Some("Masternode List Diffs") => {
+                            self.render_mn_list_diffs(ui, &selected_qr_info)
+                        }
+                        Some("Rotated Quorums At Index") => self.render_last_commitments(
+                            ui,
+                            selected_qr_info
+                                .last_commitment_per_index
+                                .first()
+                                .map(|entry| entry.quorum_hash),
+                        ),
+                        Some("Quorum Snapshot List") => {
+                            self.render_quorum_snapshot_list(ui, &selected_qr_info)
+                        }
+                        Some("MN List Diff List") => {
+                            self.render_mn_list_diff_list(ui, &selected_qr_info)
+                        }
                         _ => {
                             ui.label("Select a field to display.");
-                        },
+                        }
                     }
                 },
             );
@@ -1907,9 +2109,10 @@ impl MasternodeListDiffScreen {
                 Layout::top_down(Align::Min),
                 |ui| {
                     if let Some(selected_item) = &self.selected_qr_item {
-                        match selected_item { SelectedQRItem::SelectedSnapshot(snapshot) => {
-                            Self::render_selected_shapshot_details(ui, snapshot);
-                        }
+                        match selected_item {
+                            SelectedQRItem::SelectedSnapshot(snapshot) => {
+                                Self::render_selected_shapshot_details(ui, snapshot);
+                            }
                             SelectedQRItem::MNListDiff(mn_list_diff) => {
                                 Self::render_selected_mn_list_diff(ui, mn_list_diff);
                             }
@@ -1917,7 +2120,6 @@ impl MasternodeListDiffScreen {
                                 Self::render_selected_quorum_entry(ui, quorum_entry);
                             }
                         }
-
                     } else {
                         ui.label("Select an item to view details.");
                     }
@@ -1947,11 +2149,13 @@ impl MasternodeListDiffScreen {
             "Merkle Hashes: {} entries",
             mn_list_diff.merkle_hashes.len()
         ));
-        ScrollArea::vertical().id_salt("render_selected_mn_list_diff").show(ui, |ui| {
-            for (i, merkle_hash) in mn_list_diff.merkle_hashes.iter().enumerate() {
-                ui.label(format!("{}: {}", i, merkle_hash));
-            }
-        });
+        ScrollArea::vertical()
+            .id_salt("render_selected_mn_list_diff")
+            .show(ui, |ui| {
+                for (i, merkle_hash) in mn_list_diff.merkle_hashes.iter().enumerate() {
+                    ui.label(format!("{}: {}", i, merkle_hash));
+                }
+            });
 
         ui.separator();
         ui.label(format!(
@@ -1961,13 +2165,15 @@ impl MasternodeListDiffScreen {
 
         // Coinbase Transaction
         ui.heading("Coinbase Transaction");
-        ScrollArea::vertical().id_salt("render_selected_mn_list_diff_2").show(ui, |ui| {
-            ui.label(format!(
-                "Coinbase TXID: {}\nSize: {} bytes",
-                mn_list_diff.coinbase_tx.txid(),
-                mn_list_diff.coinbase_tx.get_size()
-            ));
-        });
+        ScrollArea::vertical()
+            .id_salt("render_selected_mn_list_diff_2")
+            .show(ui, |ui| {
+                ui.label(format!(
+                    "Coinbase TXID: {}\nSize: {} bytes",
+                    mn_list_diff.coinbase_tx.txid(),
+                    mn_list_diff.coinbase_tx.get_size()
+                ));
+            });
 
         ui.separator();
 
@@ -1979,23 +2185,25 @@ impl MasternodeListDiffScreen {
             mn_list_diff.deleted_masternodes.len(),
         ));
 
-        ScrollArea::vertical().id_salt("render_selected_mn_list_diff_3").show(ui, |ui| {
-            ui.heading("New Masternodes");
-            for masternode in &mn_list_diff.new_masternodes {
-                ui.label(format!(
-                    "{} {}:{}",
-                    masternode.pro_reg_tx_hash,
-                    masternode.service_address.ip(),
-                    masternode.service_address.port(),
-                ));
-            }
+        ScrollArea::vertical()
+            .id_salt("render_selected_mn_list_diff_3")
+            .show(ui, |ui| {
+                ui.heading("New Masternodes");
+                for masternode in &mn_list_diff.new_masternodes {
+                    ui.label(format!(
+                        "{} {}:{}",
+                        masternode.pro_reg_tx_hash,
+                        masternode.service_address.ip(),
+                        masternode.service_address.port(),
+                    ));
+                }
 
-            ui.separator();
-            ui.heading("Removed Masternodes");
-            for removed_pro_tx in &mn_list_diff.deleted_masternodes {
-                ui.label(removed_pro_tx.to_string());
-            }
-        });
+                ui.separator();
+                ui.heading("Removed Masternodes");
+                for removed_pro_tx in &mn_list_diff.deleted_masternodes {
+                    ui.label(removed_pro_tx.to_string());
+                }
+            });
 
         ui.separator();
 
@@ -2007,26 +2215,28 @@ impl MasternodeListDiffScreen {
             mn_list_diff.deleted_quorums.len()
         ));
 
-        ScrollArea::vertical().id_salt("render_selected_mn_list_diff_4").show(ui, |ui| {
-            ui.heading("New Quorums");
-            for quorum in &mn_list_diff.new_quorums {
-                ui.label(format!(
-                    "Quorum {} Type: {}",
-                    quorum.quorum_hash,
-                    QuorumType::from(quorum.llmq_type as u32)
-                ));
-            }
+        ScrollArea::vertical()
+            .id_salt("render_selected_mn_list_diff_4")
+            .show(ui, |ui| {
+                ui.heading("New Quorums");
+                for quorum in &mn_list_diff.new_quorums {
+                    ui.label(format!(
+                        "Quorum {} Type: {}",
+                        quorum.quorum_hash,
+                        QuorumType::from(quorum.llmq_type as u32)
+                    ));
+                }
 
-            ui.separator();
-            ui.heading("Removed Quorums");
-            for deleted_quorum in &mn_list_diff.deleted_quorums {
-                ui.label(format!(
-                    "Quorum {} Type: {}",
-                    deleted_quorum.quorum_hash,
-                    QuorumType::from(deleted_quorum.llmq_type as u32)
-                ));
-            }
-        });
+                ui.separator();
+                ui.heading("Removed Quorums");
+                for deleted_quorum in &mn_list_diff.deleted_quorums {
+                    ui.label(format!(
+                        "Quorum {} Type: {}",
+                        deleted_quorum.quorum_hash,
+                        QuorumType::from(deleted_quorum.llmq_type as u32)
+                    ));
+                }
+            });
 
         ui.separator();
 
@@ -2037,31 +2247,49 @@ impl MasternodeListDiffScreen {
             mn_list_diff.quorums_chainlock_signatures.len()
         ));
 
-        ScrollArea::vertical().id_salt("render_selected_mn_list_diff_5").show(ui, |ui| {
-            for (i, cl_sig) in mn_list_diff.quorums_chainlock_signatures.iter().enumerate() {
-                ui.label(format!("Signature {}: {}", i, hex::encode(cl_sig.signature)));
-            }
-        });
+        ScrollArea::vertical()
+            .id_salt("render_selected_mn_list_diff_5")
+            .show(ui, |ui| {
+                for (i, cl_sig) in mn_list_diff.quorums_chainlock_signatures.iter().enumerate() {
+                    ui.label(format!(
+                        "Signature {}: {}",
+                        i,
+                        hex::encode(cl_sig.signature)
+                    ));
+                }
+            });
     }
 
     fn render_quorum_snapshots(&mut self, ui: &mut Ui, qr_info: &QRInfo) {
         let snapshots = [
             ("Quorum Snapshot h-c", &qr_info.quorum_snapshot_at_h_minus_c),
-            ("Quorum Snapshot h-2c", &qr_info.quorum_snapshot_at_h_minus_2c),
-            ("Quorum Snapshot h-3c", &qr_info.quorum_snapshot_at_h_minus_3c),
+            (
+                "Quorum Snapshot h-2c",
+                &qr_info.quorum_snapshot_at_h_minus_2c,
+            ),
+            (
+                "Quorum Snapshot h-3c",
+                &qr_info.quorum_snapshot_at_h_minus_3c,
+            ),
         ];
 
         if let Some((qs4c, _)) = &qr_info.quorum_snapshot_and_mn_list_diff_at_h_minus_4c {
             snapshots.iter().for_each(|(name, snapshot)| {
-                if ui.selectable_label(self.selected_qr_list_index == Some(name.to_string()), *name).clicked()
+                if ui
+                    .selectable_label(self.selected_qr_list_index == Some(name.to_string()), *name)
+                    .clicked()
                 {
                     self.selected_qr_list_index = Some(name.to_string());
-                    self.selected_qr_item = Some(SelectedQRItem::SelectedSnapshot((*snapshot).clone()));
+                    self.selected_qr_item =
+                        Some(SelectedQRItem::SelectedSnapshot((*snapshot).clone()));
                 }
             });
 
             if ui
-                .selectable_label(self.selected_qr_list_index == Some("Quorum Snapshot h-4c".to_string()), "Quorum Snapshot h-4c")
+                .selectable_label(
+                    self.selected_qr_list_index == Some("Quorum Snapshot h-4c".to_string()),
+                    "Quorum Snapshot h-4c",
+                )
                 .clicked()
             {
                 self.selected_qr_list_index = Some("Quorum Snapshot h-4c".to_string());
@@ -2083,7 +2311,10 @@ impl MasternodeListDiffScreen {
 
         ui.label(format!(
             "Quorum Index: {}",
-            qualified_quorum_entry.quorum_entry.quorum_index.map_or("None".to_string(), |idx| idx.to_string())
+            qualified_quorum_entry
+                .quorum_entry
+                .quorum_index
+                .map_or("None".to_string(), |idx| idx.to_string())
         ));
 
         ui.separator();
@@ -2101,10 +2332,15 @@ impl MasternodeListDiffScreen {
         ui.separator();
 
         ui.heading("Commitment & Entry Hashes");
-        ScrollArea::vertical().id_salt("commitment_entry_hash").show(ui, |ui| {
-            ui.label(format!("Commitment Hash: {}", qualified_quorum_entry.commitment_hash));
-            ui.label(format!("Entry Hash: {}", qualified_quorum_entry.entry_hash));
-        });
+        ScrollArea::vertical()
+            .id_salt("commitment_entry_hash")
+            .show(ui, |ui| {
+                ui.label(format!(
+                    "Commitment Hash: {}",
+                    qualified_quorum_entry.commitment_hash
+                ));
+                ui.label(format!("Entry Hash: {}", qualified_quorum_entry.entry_hash));
+            });
 
         ui.separator();
 
@@ -2112,68 +2348,94 @@ impl MasternodeListDiffScreen {
         ui.heading("Quorum Members");
         ui.label(format!(
             "Total Signers: {}\nValid Members: {}",
-            qualified_quorum_entry.quorum_entry.signers.iter().filter(|&&b| b).count(),
-            qualified_quorum_entry.quorum_entry.valid_members.iter().filter(|&&b| b).count()
+            qualified_quorum_entry
+                .quorum_entry
+                .signers
+                .iter()
+                .filter(|&&b| b)
+                .count(),
+            qualified_quorum_entry
+                .quorum_entry
+                .valid_members
+                .iter()
+                .filter(|&&b| b)
+                .count()
         ));
 
-        ScrollArea::vertical().id_salt("quorum_members_grid").show(ui, |ui| {
-            ui.label(format!(
-                "Total Signers: {}\nValid Members: {}",
-                qualified_quorum_entry.quorum_entry.signers.iter().filter(|&&b| b).count(),
-                qualified_quorum_entry.quorum_entry.valid_members.iter().filter(|&&b| b).count()
-            ));
-
-            ui.separator();
-
-            ui.heading("Signers & Valid Members Grid");
-
-            egui::Grid::new("quorum_members_grid")
-                .num_columns(8) // Adjust based on UI width
-                .striped(true)
-                .show(ui, |ui| {
-                    for (i, (is_signer, is_valid)) in qualified_quorum_entry.quorum_entry
+        ScrollArea::vertical()
+            .id_salt("quorum_members_grid")
+            .show(ui, |ui| {
+                ui.label(format!(
+                    "Total Signers: {}\nValid Members: {}",
+                    qualified_quorum_entry
+                        .quorum_entry
                         .signers
                         .iter()
-                        .zip(qualified_quorum_entry.quorum_entry.valid_members.iter())
-                        .enumerate()
-                    {
-                        let text = match (*is_signer, *is_valid) { (true, true) => "✔✔",
-                            (true, false) => "✔❌",
-                            (false, true) => "❌✔",
-                            (false, false) => "❌❌",
-                        };
+                        .filter(|&&b| b)
+                        .count(),
+                    qualified_quorum_entry
+                        .quorum_entry
+                        .valid_members
+                        .iter()
+                        .filter(|&&b| b)
+                        .count()
+                ));
 
-                        let response = ui.label(text);
+                ui.separator();
 
-                        // Tooltip on hover to show member index
-                        if response.hovered() {
-                            ui.ctx().debug_painter().text(
-                                response.rect.center(),
-                                egui::Align2::CENTER_CENTER,
-                                format!("Member {}", i),
-                                egui::FontId::proportional(14.0),
-                                egui::Color32::BLUE,
-                            );
+                ui.heading("Signers & Valid Members Grid");
+
+                egui::Grid::new("quorum_members_grid")
+                    .num_columns(8) // Adjust based on UI width
+                    .striped(true)
+                    .show(ui, |ui| {
+                        for (i, (is_signer, is_valid)) in qualified_quorum_entry
+                            .quorum_entry
+                            .signers
+                            .iter()
+                            .zip(qualified_quorum_entry.quorum_entry.valid_members.iter())
+                            .enumerate()
+                        {
+                            let text = match (*is_signer, *is_valid) {
+                                (true, true) => "✔✔",
+                                (true, false) => "✔❌",
+                                (false, true) => "❌✔",
+                                (false, false) => "❌❌",
+                            };
+
+                            let response = ui.label(text);
+
+                            // Tooltip on hover to show member index
+                            if response.hovered() {
+                                ui.ctx().debug_painter().text(
+                                    response.rect.center(),
+                                    egui::Align2::CENTER_CENTER,
+                                    format!("Member {}", i),
+                                    egui::FontId::proportional(14.0),
+                                    egui::Color32::BLUE,
+                                );
+                            }
+
+                            // Create a new row every 8 members
+                            if (i + 1) % 8 == 0 {
+                                ui.end_row();
+                            }
                         }
-
-                        // Create a new row every 8 members
-                        if (i + 1) % 8 == 0 {
-                            ui.end_row();
-                        }
-                    }
-                });
-        });
+                    });
+            });
 
         ui.separator();
 
         // Quorum Public Key
         ui.heading("Quorum Public Key");
-        ScrollArea::vertical().id_salt("render_selected_quorum_entry_2").show(ui, |ui| {
-            ui.label(format!(
-                "Public Key: {}",
-                qualified_quorum_entry.quorum_entry.quorum_public_key
-            ));
-        });
+        ScrollArea::vertical()
+            .id_salt("render_selected_quorum_entry_2")
+            .show(ui, |ui| {
+                ui.label(format!(
+                    "Public Key: {}",
+                    qualified_quorum_entry.quorum_entry.quorum_public_key
+                ));
+            });
 
         ui.separator();
 
@@ -2188,23 +2450,32 @@ impl MasternodeListDiffScreen {
 
         // Threshold Signature
         ui.heading("Threshold Signature");
-        ScrollArea::vertical().id_salt("render_selected_quorum_entry_3").show(ui, |ui| {
-            ui.label(format!(
-                "Signature: {}",
-                hex::encode(qualified_quorum_entry.quorum_entry.threshold_sig.to_bytes())
-            ));
-        });
+        ScrollArea::vertical()
+            .id_salt("render_selected_quorum_entry_3")
+            .show(ui, |ui| {
+                ui.label(format!(
+                    "Signature: {}",
+                    hex::encode(qualified_quorum_entry.quorum_entry.threshold_sig.to_bytes())
+                ));
+            });
 
         ui.separator();
 
         // Aggregated Signature
         ui.heading("All Commitment Aggregated Signature");
-        ScrollArea::vertical().id_salt("render_selected_quorum_entry_4").show(ui, |ui| {
-            ui.label(format!(
-                "Signature: {}",
-                hex::encode(qualified_quorum_entry.quorum_entry.all_commitment_aggregated_signature.to_bytes())
-            ));
-        });
+        ScrollArea::vertical()
+            .id_salt("render_selected_quorum_entry_4")
+            .show(ui, |ui| {
+                ui.label(format!(
+                    "Signature: {}",
+                    hex::encode(
+                        qualified_quorum_entry
+                            .quorum_entry
+                            .all_commitment_aggregated_signature
+                            .to_bytes()
+                    )
+                ));
+            });
     }
 
     fn render_mn_list_diffs(&mut self, ui: &mut Ui, qr_info: &QRInfo) {
@@ -2217,7 +2488,10 @@ impl MasternodeListDiffScreen {
         ];
 
         mn_diffs.iter().for_each(|(name, diff)| {
-            if ui.selectable_label(self.selected_qr_list_index == Some(name.to_string()), *name).clicked() {
+            if ui
+                .selectable_label(self.selected_qr_list_index == Some(name.to_string()), *name)
+                .clicked()
+            {
                 self.selected_qr_list_index = Some(name.to_string());
                 self.selected_qr_item = Some(SelectedQRItem::MNListDiff((*diff).clone()));
             }
@@ -2225,7 +2499,10 @@ impl MasternodeListDiffScreen {
 
         if let Some((_, mn_diff4c)) = &qr_info.quorum_snapshot_and_mn_list_diff_at_h_minus_4c {
             if ui
-                .selectable_label(self.selected_qr_list_index == Some("MNListDiff h-4c".to_string()), "MNListDiff h-4c")
+                .selectable_label(
+                    self.selected_qr_list_index == Some("MNListDiff h-4c".to_string()),
+                    "MNListDiff h-4c",
+                )
                 .clicked()
             {
                 self.selected_qr_list_index = Some("MNListDiff h-4c".to_string());
@@ -2239,19 +2516,28 @@ impl MasternodeListDiffScreen {
             ui.label("QR Info had no rotated quorums. This should not happen.");
             return;
         };
-        let Some(cycle_quorums) = self.masternode_list_engine.rotated_quorums_per_cycle.get(&cycle_hash) else {
+        let Some(cycle_quorums) = self
+            .masternode_list_engine
+            .rotated_quorums_per_cycle
+            .get(&cycle_hash)
+        else {
             ui.label(format!("Engine does not know of cycle {}", cycle_hash));
             return;
         };
         if cycle_quorums.is_empty() {
-            ui.label(format!("Engine does not contain any rotated quorums for cycle {}", cycle_hash));
+            ui.label(format!(
+                "Engine does not contain any rotated quorums for cycle {}",
+                cycle_hash
+            ));
         }
         for (index, commitment) in cycle_quorums.iter().enumerate() {
             // Determine the appropriate symbol based on verification status
             let verification_symbol = match commitment.verified {
-                LLMQEntryVerificationStatus::Verified => "✔",  // Checkmark
+                LLMQEntryVerificationStatus::Verified => "✔", // Checkmark
                 LLMQEntryVerificationStatus::Invalid(_) => "❌", // Cross
-                LLMQEntryVerificationStatus::Unknown | LLMQEntryVerificationStatus::Skipped(_) => "⬜", // Box
+                LLMQEntryVerificationStatus::Unknown | LLMQEntryVerificationStatus::Skipped(_) => {
+                    "⬜"
+                } // Box
             };
 
             let label_text = format!("{} Quorum at Index {}", verification_symbol, index);
@@ -2303,7 +2589,12 @@ impl MasternodeListDiffScreen {
         ui.heading("Quorum Viewer");
 
         // Get all available quorum types
-        let quorum_types: Vec<LLMQType> = self.masternode_list_engine.quorum_statuses.keys().cloned().collect();
+        let quorum_types: Vec<LLMQType> = self
+            .masternode_list_engine
+            .quorum_statuses
+            .keys()
+            .cloned()
+            .collect();
 
         // Ensure a quorum type is selected
         if self.selected_quorum_type_in_quorum_viewer.is_none() {
@@ -2333,7 +2624,11 @@ impl MasternodeListDiffScreen {
             return;
         };
 
-        let Some(quorum_map) = self.masternode_list_engine.quorum_statuses.get(&selected_quorum_type) else {
+        let Some(quorum_map) = self
+            .masternode_list_engine
+            .quorum_statuses
+            .get(&selected_quorum_type)
+        else {
             ui.label("No quorums found for this type.");
             return;
         };
@@ -2363,20 +2658,26 @@ impl MasternodeListDiffScreen {
 
                                         // Display quorum hash as selectable
                                         let hash_response = ui.selectable_label(
-                                            self.selected_quorum_hash_in_quorum_viewer == Some(*quorum_hash),
+                                            self.selected_quorum_hash_in_quorum_viewer
+                                                == Some(*quorum_hash),
                                             hash_label,
                                         );
 
                                         if hash_response.clicked() {
-                                            self.selected_quorum_hash_in_quorum_viewer = Some(*quorum_hash);
+                                            self.selected_quorum_hash_in_quorum_viewer =
+                                                Some(*quorum_hash);
                                         }
 
                                         // Determine status symbol
                                         let (status_symbol, tooltip_text) = match status {
                                             LLMQEntryVerificationStatus::Verified => ("✔", None),
-                                            LLMQEntryVerificationStatus::Invalid(reason) => ("❌", Some(reason.to_string())),
+                                            LLMQEntryVerificationStatus::Invalid(reason) => {
+                                                ("❌", Some(reason.to_string()))
+                                            }
                                             LLMQEntryVerificationStatus::Unknown => ("⬜", None),
-                                            LLMQEntryVerificationStatus::Skipped(reason) => ("⚠", Some(reason.to_string())),
+                                            LLMQEntryVerificationStatus::Skipped(reason) => {
+                                                ("⚠", Some(reason.to_string()))
+                                            }
                                         };
 
                                         // Display small status icon
@@ -2412,7 +2713,8 @@ impl MasternodeListDiffScreen {
                     ui.heading("Quorum Heights");
 
                     if let Some(selected_quorum_hash) = self.selected_quorum_hash_in_quorum_viewer {
-                        if let Some((heights, key, status)) = quorum_map.get(&selected_quorum_hash) {
+                        if let Some((heights, key, status)) = quorum_map.get(&selected_quorum_hash)
+                        {
                             ui.label(format!("Public Key: {}", key));
                             ui.label(format!("Verification Status: {}", status));
                             ScrollArea::vertical()
@@ -2539,7 +2841,9 @@ impl MasternodeListDiffScreen {
     fn render_chain_lock_details(&mut self, ui: &mut Ui) {
         ui.heading("ChainLock Details");
 
-        if let Some((CoreItem::ChainLockedBlock(block, chain_lock), is_valid)) = &self.selected_core_item {
+        if let Some((CoreItem::ChainLockedBlock(block, chain_lock), is_valid)) =
+            &self.selected_core_item
+        {
             ui.label(format!(
                 "Block Height: {}\nBlock Hash: {}\nValid: {}",
                 chain_lock.block_height,
@@ -2550,15 +2854,17 @@ impl MasternodeListDiffScreen {
             ui.separator();
 
             ui.heading("Block Transactions");
-            ScrollArea::vertical().id_salt("block_tx_scroll").show(ui, |ui| {
-                if block.txdata.is_empty() {
-                    ui.label("No transactions in this block.");
-                } else {
-                    for transaction in &block.txdata {
-                        ui.label(format!("TxID: {}", transaction.txid()));
+            ScrollArea::vertical()
+                .id_salt("block_tx_scroll")
+                .show(ui, |ui| {
+                    if block.txdata.is_empty() {
+                        ui.label("No transactions in this block.");
+                    } else {
+                        for transaction in &block.txdata {
+                            ui.label(format!("TxID: {}", transaction.txid()));
+                        }
                     }
-                }
-            });
+                });
 
             ui.separator();
             ui.heading("Quorum Signature");
@@ -2568,38 +2874,37 @@ impl MasternodeListDiffScreen {
             ));
 
             //todo clean this
-            let b =serialize2(chain_lock);
-            let chain_lock_2 : ChainLock2 = deserialize(b.as_slice()).expect("todo");
-            match self.masternode_list_engine.chain_lock_potential_quorum_under(&chain_lock_2) {
+            let b = serialize2(chain_lock);
+            let chain_lock_2: ChainLock2 = deserialize(b.as_slice()).expect("todo");
+            match self
+                .masternode_list_engine
+                .chain_lock_potential_quorum_under(&chain_lock_2)
+            {
                 Ok(Some(quorum)) => {
-                    ui.label(format!(
-                        "Quorum Hash: {}",
-                        quorum.quorum_entry.quorum_hash,
-                    ));
+                    ui.label(format!("Quorum Hash: {}", quorum.quorum_entry.quorum_hash,));
                     ui.label(format!(
                         "Request Id: {}",
                         chain_lock.request_id().expect("expected request id")
                     ));
-                    let sign_id = chain_lock_2.sign_id(quorum.quorum_entry.llmq_type, quorum.quorum_entry.quorum_hash, None).expect("expected sign id");
-                    ui.label(format!(
-                        "Sign Hash (Sign ID): {}",
-                        sign_id
-                    ));
-                    if let Err(e) = quorum.verify_message_digest(sign_id.to_byte_array(), chain_lock_2.signature) {
-                        ui.label(format!(
-                            "Signature Verification Error: {}",
-                            e
-                        ));
+                    let sign_id = chain_lock_2
+                        .sign_id(
+                            quorum.quorum_entry.llmq_type,
+                            quorum.quorum_entry.quorum_hash,
+                            None,
+                        )
+                        .expect("expected sign id");
+                    ui.label(format!("Sign Hash (Sign ID): {}", sign_id));
+                    if let Err(e) = quorum
+                        .verify_message_digest(sign_id.to_byte_array(), chain_lock_2.signature)
+                    {
+                        ui.label(format!("Signature Verification Error: {}", e));
                     }
-                },
+                }
                 Ok(None) => {
                     ui.label("No quorum".to_string());
                 }
                 Err(err) => {
-                    ui.label(format!(
-                        "Error finding quorum: {}",
-                        err.to_string()
-                    ));
+                    ui.label(format!("Error finding quorum: {}", err.to_string()));
                 }
             };
 
@@ -2607,15 +2912,9 @@ impl MasternodeListDiffScreen {
 
             ui.heading("Data");
 
-            ui.label(format!(
-                "Block Data {}",
-                hex::encode(serialize2(block)),
-            ));
+            ui.label(format!("Block Data {}", hex::encode(serialize2(block)),));
 
-            ui.label(format!(
-                "Lock Data {}",
-                hex::encode(serialize2(chain_lock)),
-            ));
+            ui.label(format!("Lock Data {}", hex::encode(serialize2(chain_lock)),));
 
             ui.separator();
         } else {
@@ -2627,7 +2926,9 @@ impl MasternodeListDiffScreen {
     fn render_instant_send_details(&mut self, ui: &mut Ui) {
         ui.heading("Instant Send Details");
 
-        if let Some((CoreItem::InstantLockedTransaction(transaction, _, instant_lock), is_valid)) = &self.selected_core_item {
+        if let Some((CoreItem::InstantLockedTransaction(transaction, _, instant_lock), is_valid)) =
+            &self.selected_core_item
+        {
             ui.label(format!(
                 "TxID: {}\nValid: {}\nCycle Hash:{}",
                 transaction.txid(),
@@ -2638,68 +2939,67 @@ impl MasternodeListDiffScreen {
             ui.separator();
 
             ui.heading("Transaction Inputs");
-            ScrollArea::vertical().id_salt("tx_inputs_scroll").show(ui, |ui| {
-                if transaction.input.is_empty() {
-                    ui.label("No inputs.");
-                } else {
-                    for txin in &transaction.input {
-                        ui.label(format!(
-                            "Input: {}:{}",
-                            txin.previous_output.txid, txin.previous_output.vout
-                        ));
+            ScrollArea::vertical()
+                .id_salt("tx_inputs_scroll")
+                .show(ui, |ui| {
+                    if transaction.input.is_empty() {
+                        ui.label("No inputs.");
+                    } else {
+                        for txin in &transaction.input {
+                            ui.label(format!(
+                                "Input: {}:{}",
+                                txin.previous_output.txid, txin.previous_output.vout
+                            ));
+                        }
                     }
-                }
-            });
+                });
 
             ui.separator();
             ui.heading("Transaction Outputs");
-            ScrollArea::vertical().id_salt("tx_outputs_scroll").show(ui, |ui| {
-                if transaction.output.is_empty() {
-                    ui.label("No outputs.");
-                } else {
-                    for txout in &transaction.output {
-                        ui.label(format!(
-                            "Output: {} sat -> {}",
-                            txout.value, txout.script_pubkey
-                        ));
+            ScrollArea::vertical()
+                .id_salt("tx_outputs_scroll")
+                .show(ui, |ui| {
+                    if transaction.output.is_empty() {
+                        ui.label("No outputs.");
+                    } else {
+                        for txout in &transaction.output {
+                            ui.label(format!(
+                                "Output: {} sat -> {}",
+                                txout.value, txout.script_pubkey
+                            ));
+                        }
                     }
-                }
-            });
+                });
 
             ui.separator();
             ui.heading("Signing Info");
 
             //todo clean this
-            let b =serialize2(instant_lock);
-            let instant_lock_2 : InstantLock2 = deserialize(b.as_slice()).expect("todo");
+            let b = serialize2(instant_lock);
+            let instant_lock_2: InstantLock2 = deserialize(b.as_slice()).expect("todo");
             match self.masternode_list_engine.is_lock_quorum(&instant_lock_2) {
                 Ok((quorum, request_sign_id, index)) => {
                     ui.label(format!(
                         "Quorum Hash: {} at index {}",
-                        quorum.quorum_entry.quorum_hash,
-                        index,
+                        quorum.quorum_entry.quorum_hash, index,
                     ));
-                    ui.label(format!(
-                        "Request Id: {}",
-                        request_sign_id
-                    ));
-                    let sign_id = instant_lock_2.sign_id(quorum.quorum_entry.llmq_type, quorum.quorum_entry.quorum_hash, Some(request_sign_id)).expect("expected sign id");
-                    ui.label(format!(
-                        "Sign Hash (Sign ID): {}",
-                        sign_id
-                    ));
-                    if let Err(e) = quorum.verify_message_digest(sign_id.to_byte_array(), instant_lock_2.signature) {
-                        ui.label(format!(
-                            "Signature Verification Error: {}",
-                            e
-                        ));
+                    ui.label(format!("Request Id: {}", request_sign_id));
+                    let sign_id = instant_lock_2
+                        .sign_id(
+                            quorum.quorum_entry.llmq_type,
+                            quorum.quorum_entry.quorum_hash,
+                            Some(request_sign_id),
+                        )
+                        .expect("expected sign id");
+                    ui.label(format!("Sign Hash (Sign ID): {}", sign_id));
+                    if let Err(e) = quorum
+                        .verify_message_digest(sign_id.to_byte_array(), instant_lock_2.signature)
+                    {
+                        ui.label(format!("Signature Verification Error: {}", e));
                     }
-                },
+                }
                 Err(err) => {
-                    ui.label(format!(
-                        "Error finding quorum: {}",
-                        err.to_string()
-                    ));
+                    ui.label(format!("Error finding quorum: {}", err.to_string()));
                 }
             };
 
@@ -2723,31 +3023,39 @@ impl MasternodeListDiffScreen {
                 "Lock Data {}",
                 hex::encode(serialize2(instant_lock)),
             ));
-
         } else {
             ui.label("No Instant Send transaction selected.");
         }
     }
 
     fn attempt_verify_chain_lock(&self, chain_lock: &ChainLock) -> bool {
-        let b =serialize2(chain_lock);
-        let chain_lock_2 : ChainLock2 = deserialize(b.as_slice()).expect("todo");
-        self.masternode_list_engine.verify_chain_lock(&chain_lock_2).is_ok()
+        let b = serialize2(chain_lock);
+        let chain_lock_2: ChainLock2 = deserialize(b.as_slice()).expect("todo");
+        self.masternode_list_engine
+            .verify_chain_lock(&chain_lock_2)
+            .is_ok()
     }
 
     fn attempt_verify_transaction_lock(&self, instant_lock: &InstantLock) -> bool {
-        let b =serialize2(instant_lock);
-        let instant_lock_2 : InstantLock2 = deserialize(b.as_slice()).expect("todo");
-        self.masternode_list_engine.verify_is_lock(&instant_lock_2).is_ok()
+        let b = serialize2(instant_lock);
+        let instant_lock_2: InstantLock2 = deserialize(b.as_slice()).expect("todo");
+        self.masternode_list_engine
+            .verify_is_lock(&instant_lock_2)
+            .is_ok()
     }
 
     fn received_new_block(&mut self, block: Block, chain_lock: ChainLock) {
         let valid = self.attempt_verify_chain_lock(&chain_lock);
         self.end_block_height = chain_lock.block_height.to_string();
         if self.syncing {
-            if let Some((base_block_height, masternode_list)) = self.masternode_list_engine.masternode_lists.last_key_value() {
+            if let Some((base_block_height, masternode_list)) = self
+                .masternode_list_engine
+                .masternode_lists
+                .last_key_value()
+            {
                 if *base_block_height < chain_lock.block_height {
-                    let mut p2p_handler = match CoreP2PHandler::new(self.app_context.network, None) {
+                    let mut p2p_handler = match CoreP2PHandler::new(self.app_context.network, None)
+                    {
                         Ok(p2p_handler) => p2p_handler,
                         Err(e) => {
                             self.error = Some(e);
@@ -2770,7 +3078,8 @@ impl MasternodeListDiffScreen {
                 }
             }
         }
-        self.chain_locked_blocks.insert(chain_lock.block_height, (block, chain_lock, valid));
+        self.chain_locked_blocks
+            .insert(chain_lock.block_height, (block, chain_lock, valid));
     }
 }
 
@@ -2785,11 +3094,12 @@ impl ScreenLike for MasternodeListDiffScreen {
             match core_item {
                 CoreItem::InstantLockedTransaction(transaction, _, instant_lock) => {
                     let valid = self.attempt_verify_transaction_lock(&instant_lock);
-                    self.instant_send_transactions.push((transaction, instant_lock, valid));
+                    self.instant_send_transactions
+                        .push((transaction, instant_lock, valid));
                 }
                 CoreItem::ChainLockedBlock(block, chain_lock) => {
                     self.received_new_block(block, chain_lock);
-                },
+                }
                 _ => {}
             }
         }

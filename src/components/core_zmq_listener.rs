@@ -150,7 +150,9 @@ impl CoreZMQListener {
                                                     Ok(chain_lock) => {
                                                         // Send the ChainLock and Network back to the main thread
                                                         if let Err(e) = sender_clone.send((
-                                                            ZMQMessage::ChainLockedBlock(block, chain_lock),
+                                                            ZMQMessage::ChainLockedBlock(
+                                                                block, chain_lock,
+                                                            ),
                                                             network,
                                                         )) {
                                                             eprintln!(
@@ -166,7 +168,6 @@ impl CoreZMQListener {
                                                         );
                                                     }
                                                 }
-
                                             }
                                             Err(e) => {
                                                 eprintln!(

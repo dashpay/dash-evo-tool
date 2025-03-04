@@ -4,6 +4,7 @@ use dash_sdk::dpp::dashcore::Network;
 use dashcoretemp::consensus::{deserialize, serialize};
 use dashcoretemp::network::constants::ServiceFlags;
 use dashcoretemp::network::message::{NetworkMessage, RawNetworkMessage};
+use dashcoretemp::network::message_qrinfo::QRInfo;
 use dashcoretemp::network::message_sml::{GetMnListDiff, MnListDiff};
 use dashcoretemp::network::{message_network, message_qrinfo, Address};
 use dashcoretemp::BlockHash;
@@ -14,7 +15,6 @@ use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::thread;
 use std::time::Duration;
-use dashcoretemp::network::message_qrinfo::QRInfo;
 
 #[derive(Debug)]
 pub struct CoreP2PHandler {
@@ -179,7 +179,7 @@ impl CoreP2PHandler {
                 //
                 // log_file.write_all(&bytes).expect("expected to write");
                 Ok(qr_info)
-            },
+            }
             network_message => Err(format!(
                 "Unexpected response type, expected QrInfo, got {:?}",
                 network_message

@@ -45,11 +45,8 @@ chrono = "0.4"
 chrono-humanize = "0.2.3"
 grovedb-version = "2.2.1"
 sha2 = "0.10.8"
-arboard = { version = "3.4.0", default-features = false, features = [
-    "windows-sys",
-] }
+arboard = { version = "3.4.0", default-features = false, features = ["windows-sys"] }
 directories = "5.0"
-
 rusqlite = { version = "0.32.1",  features = ["functions"]}
 serde_yaml = "0.9.34+deprecated"
 image = { version = "0.25.2", default-features = false, features = ["png"] }
@@ -62,6 +59,7 @@ argon2 = "0.5"           # For Argon2 key derivation
 aes-gcm = "0.10" # For AES-256-GCM encryption
 crossbeam-channel = "0.5.13"
 regex = "1.11"
+ordered-float = "4.6.0"
 
 [target.'cfg(not(target_os = "windows"))'.dependencies]
 zmq = "0.10"

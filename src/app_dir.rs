@@ -1,6 +1,7 @@
-use directories::ProjectDirs;
+use directories::{ProjectDirs, UserDirs};
 use std::fs;
 use std::path::PathBuf;
+use dash_sdk::dpp::dashcore::Network;
 
 const QUALIFIER: &str = ""; // Typically empty on macOS and Linux
 const ORGANIZATION: &str = "";
@@ -23,7 +24,36 @@ pub fn app_user_data_dir_path() -> Result<PathBuf, std::io::Error> {
 }
 
 pub fn core_user_data_dir_path() -> Result<PathBuf, std::io::Error> {
-    user_data_dir_path(CORE_APPLICATION)
+    #[cfg(target_os = "linux")]
+    {
+        UserDirs::new()
+            .and_then(|dirs| dirs.home_dir().to_owned().into())
+            .map(|home_dir| home_dir.join(".dashcore"))
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "Failed to determine user home directory",
+                )
+            })
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        user_data_dir_path(CORE_APPLICATION)
+    }
+}
+
+pub fn core_cookie_path(network: Network, devnet_name: &Option<String>) -> Result<PathBuf, std::io::Error> {
+    core_user_data_dir_path().map(|path| {
+        let network_dir = match network {
+            Network::Dash => "",
+            Network::Testnet => "testnet3",
+            Network::Devnet => devnet_name.as_deref().unwrap_or(""),
+            Network::Regtest => "regtest",
+            _ => unimplemented!(),
+        };
+        path.join(network_dir).join(".cookie")
+    })
 }
 
 pub fn create_app_user_data_directory_if_not_exists() -> Result<(), std::io::Error> {

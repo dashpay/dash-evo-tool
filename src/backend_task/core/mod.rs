@@ -1,7 +1,7 @@
 mod refresh_wallet_info;
 mod start_dash_qt;
 
-use crate::app_dir::core_user_data_dir_path;
+use crate::app_dir::{core_cookie_path, core_user_data_dir_path};
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::config::{Config, NetworkConfig};
 use crate::context::AppContext;
@@ -58,10 +58,10 @@ impl AppContext {
 
                 // Get chain locks
                 let mainnet_result =
-                    Self::get_best_chain_lock(config.config_for_network(Network::Dash), "mainnet");
+                    Self::get_best_chain_lock(config.config_for_network(Network::Dash), Network::Dash);
                 let testnet_result = Self::get_best_chain_lock(
                     config.config_for_network(Network::Testnet),
-                    "testnet",
+                    Network::Testnet,
                 );
 
                 // Handle results
@@ -96,7 +96,7 @@ impl AppContext {
 
     fn get_best_chain_lock(
         config: &Option<NetworkConfig>,
-        network_name: &str,
+        network: Network,
     ) -> Result<ChainLock, String> {
         if let Some(network_config) = config {
             let addr = format!(
@@ -104,9 +104,8 @@ impl AppContext {
                 network_config.core_host, network_config.core_rpc_port
             );
 
-            let cookie_path = core_user_data_dir_path()
-                .expect("unable to extract core data dir")
-                .join(".cookie");
+            let cookie_path = core_cookie_path(network, &network_config.devnet_name)
+                .map_err(|e| format!("Failed to get core cookie path: {}", e))?;
 
             // Try cookie authentication first
             let client = match Client::new(&addr, Auth::CookieFile(cookie_path.clone())) {
@@ -125,17 +124,17 @@ impl AppContext {
                     )
                 }
             }
-                .map_err(|_| format!("Failed to create {} client", network_name))?;
+                .map_err(|_| format!("Failed to create {} client", network.to_string()))?;
 
             client.get_best_chain_lock().map_err(|e| {
                 format!(
                     "Failed to get best chain lock for {}: {}",
-                    network_name,
+                    network.to_string(),
                     e.to_string()
                 )
             })
         } else {
-            Err(format!("{} config not found", network_name))
+            Err(format!("{} config not found", network.to_string()))
         }
     }
 }

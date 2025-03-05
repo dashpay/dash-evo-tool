@@ -1,8 +1,9 @@
-use crate::app_dir::core_user_data_dir_path;
-use crate::config::NetworkConfig;
+use crate::app_dir::{core_cookie_path, core_user_data_dir_path};
+use crate::config::{Config, NetworkConfig};
 use crate::context::AppContext;
 use crate::database::Database;
 use dash_sdk::core::LowLevelDashCoreClient as CoreClient;
+use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::error::ContextProviderError;
 use dash_sdk::platform::ContextProvider;
@@ -21,8 +22,9 @@ impl Provider {
     /// Create new ContextProvider.
     ///
     /// Note that you have to bind it to app context using [Provider::set_app_context()].
-    pub fn new(db: Arc<Database>, config: &NetworkConfig) -> Result<Self, String> {
-        let cookie_path = core_user_data_dir_path().unwrap().join(".cookie");
+    pub fn new(db: Arc<Database>, network: Network, config: &NetworkConfig) -> Result<Self, String> {
+        let cookie_path = core_cookie_path(network, &config.devnet_name)
+            .expect("Failed to get core cookie path");
 
         // Read the cookie from disk
         let cookie = std::fs::read_to_string(cookie_path);

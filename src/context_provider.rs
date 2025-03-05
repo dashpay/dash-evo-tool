@@ -1,3 +1,4 @@
+use crate::app_dir::core_user_data_dir_path;
 use crate::config::NetworkConfig;
 use crate::context::AppContext;
 use crate::database::Database;
@@ -7,6 +8,7 @@ use dash_sdk::error::ContextProviderError;
 use dash_sdk::platform::ContextProvider;
 use dash_sdk::platform::DataContract;
 use rusqlite::Result;
+use std::io::BufRead;
 use std::sync::{Arc, Mutex};
 
 pub(crate) struct Provider {
@@ -20,13 +22,26 @@ impl Provider {
     ///
     /// Note that you have to bind it to app context using [Provider::set_app_context()].
     pub fn new(db: Arc<Database>, config: &NetworkConfig) -> Result<Self, String> {
-        let core_client = CoreClient::new(
-            &config.core_host,
-            config.core_rpc_port,
-            &config.core_rpc_user,
-            &config.core_rpc_password,
-        )
-        .map_err(|e| e.to_string())?;
+        let cookie_path = core_user_data_dir_path().unwrap().join(".cookie");
+
+        // Read the cookie from disk
+        let cookie = std::fs::read_to_string(cookie_path);
+        let (user, pass) = if let Ok(cookie) = cookie {
+            // split the cookie at ":", first part is user (__cookie__), second part is password
+            let cookie_parts: Vec<&str> = cookie.split(':').collect();
+            let user = cookie_parts[0];
+            let password = cookie_parts[1];
+            (user.to_string(), password.to_string())
+        } else {
+            // Fall back to the pre-set user / pass if needed
+            (
+                config.core_rpc_user.clone(),
+                config.core_rpc_password.clone(),
+            )
+        };
+
+        let core_client = CoreClient::new(&config.core_host, config.core_rpc_port, &user, &pass)
+            .map_err(|e| e.to_string())?;
 
         Ok(Self {
             db,

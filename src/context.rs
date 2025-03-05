@@ -94,11 +94,9 @@ impl AppContext {
             Ok(client) => Ok(client),
             Err(_) => {
                 // If cookie auth fails, try user/password authentication
-                eprintln!(
-                    "Failed to authenticate using .cookie file at {:?}, falling back to user/pass1, {:?}, {:?}",
+                tracing::info!(
+                    "Failed to authenticate using .cookie file at {:?}, falling back to user/pass",
                     cookie_path,
-                    network_config.core_rpc_user.to_string(),
-                    network_config.core_rpc_password.to_string(),
                 );
                 Client::new(
                     &addr,
@@ -108,12 +106,7 @@ impl AppContext {
                     ),
                 )
             }
-        };
-
-        if core_client.is_ok() {
-            println!("Core client created successfully");
-        }
-        let core_client = core_client.expect("Failed to create CoreClient");
+        }.expect("Failed to create CoreClient");
 
         let wallets: BTreeMap<_, _> = db
             .get_wallets(&network)

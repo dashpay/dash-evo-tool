@@ -4,7 +4,6 @@ use std::sync::{Arc, Mutex, RwLock};
 use chrono::{DateTime, Utc};
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationV0;
-use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::v0::TokenConfigurationConventionV0;
 use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::v0::TokenDistributionRulesV0;
 use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::TokenDistributionRules;
 use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::distribution_function::DistributionFunction;
@@ -3488,6 +3487,33 @@ Emits tokens in fixed amounts for specific intervals.
                         }
                         _ => {}
                     }
+                    match self.admin_action_takers_manual_mint {
+                        AuthorizedActionTakers::Identity(_) => {
+                            if let Some(ref id_str) = self.admin_manual_mint_identity {
+                                if let Ok(id) = Identifier::from_string(id_str, Encoding::Base58) {
+                                    self.admin_action_takers_manual_mint = AuthorizedActionTakers::Identity(id);
+                                } else {
+                                    self.token_creator_error_message = Some(
+                                        "Invalid base58 identifier for manual mint admin identity".to_string(),
+                                    );
+                                    return;
+                                }
+                            }
+                        }
+                        AuthorizedActionTakers::Group(_) => {
+                            if let Some(ref group_str) = self.admin_manual_mint_identity {
+                                if let Ok(group) = group_str.parse::<u16>() {
+                                    self.admin_action_takers_manual_mint = AuthorizedActionTakers::Group(group);
+                                } else {
+                                    self.token_creator_error_message = Some(
+                                        "Invalid group contract position for manual mint admin group".to_string(),
+                                    );
+                                    return;
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
                     match self.authorized_manual_burn {
                         AuthorizedActionTakers::Identity(_) => {
                             if let Some(ref id_str) = self.manual_burn_authorized_identity {
@@ -3886,19 +3912,60 @@ Emits tokens in fixed amounts for specific intervals.
                             max_supply,
                             start_paused,
                             keeps_history: self.token_keeps_history,
+
                             manual_mint_authorized: self.authorized_manual_mint.clone(),
+                            manual_mint_admin: self.admin_action_takers_manual_mint.clone(),
+                            manual_mint_changing_authorized_action_takers_to_no_one_allowed: self.changing_authorized_action_takers_to_no_one_allowed_manual_mint,
+                            manual_mint_changing_admin_action_takers_to_no_one_allowed: self.changing_admin_action_takers_to_no_one_allowed_manual_mint,
+                            manual_mint_self_changing_admin_action_takers_allowed: self.self_changing_admin_action_takers_allowed_manual_mint,
                             manual_burn_authorized: self.authorized_manual_burn.clone(),
+                            manual_burn_admin: self.admin_action_takers_manual_burn.clone(),
+                            manual_burn_changing_admin_action_takers_to_no_one_allowed: self.changing_authorized_action_takers_to_no_one_allowed_manual_burn,
+                            manual_burn_changing_authorized_action_takers_to_no_one_allowed: self.changing_admin_action_takers_to_no_one_allowed_manual_burn,
+                            manual_burn_self_changing_admin_action_takers_allowed: self.self_changing_admin_action_takers_allowed_manual_burn,
                             freeze_authorized: self.authorized_freeze.clone(),
+                            freeze_admin: self.admin_action_takers_freeze.clone(),
+                            freeze_changing_admin_action_takers_to_no_one_allowed: self.changing_authorized_action_takers_to_no_one_allowed_freeze,
+                            freeze_changing_authorized_action_takers_to_no_one_allowed: self.changing_admin_action_takers_to_no_one_allowed_freeze,
+                            freeze_self_changing_admin_action_takers_allowed: self.self_changing_admin_action_takers_allowed_freeze,
                             unfreeze_authorized: self.authorized_unfreeze.clone(),
+                            unfreeze_admin: self.admin_action_takers_unfreeze.clone(),
+                            unfreeze_changing_admin_action_takers_to_no_one_allowed: self.changing_authorized_action_takers_to_no_one_allowed_unfreeze,
+                            unfreeze_changing_authorized_action_takers_to_no_one_allowed: self.changing_admin_action_takers_to_no_one_allowed_unfreeze,
+                            unfreeze_self_changing_admin_action_takers_allowed: self.self_changing_admin_action_takers_allowed_unfreeze,
                             destroy_frozen_funds_authorized: self
                                 .authorized_destroy_frozen_funds
                                 .clone(),
+                            destroy_frozen_funds_admin: self
+                                .admin_action_takers_destroy_frozen_funds
+                                .clone(),
+                            destroy_frozen_funds_changing_admin_action_takers_to_no_one_allowed: self.changing_authorized_action_takers_to_no_one_allowed_destroy_frozen_funds,
+                            destroy_frozen_funds_changing_authorized_action_takers_to_no_one_allowed: self.changing_admin_action_takers_to_no_one_allowed_destroy_frozen_funds,
+                            destroy_frozen_funds_self_changing_admin_action_takers_allowed: self.self_changing_admin_action_takers_allowed_destroy_frozen_funds,
                             pause_and_resume_authorized: self.authorized_pause_resume.clone(),
+                            pause_and_resume_admin: self.admin_action_takers_pause_resume.clone(),
+                            pause_and_resume_changing_admin_action_takers_to_no_one_allowed: self.changing_authorized_action_takers_to_no_one_allowed_pause_resume,
+                            pause_and_resume_changing_authorized_action_takers_to_no_one_allowed: self.changing_admin_action_takers_to_no_one_allowed_pause_resume,
+                            pause_and_resume_self_changing_admin_action_takers_allowed: self.self_changing_admin_action_takers_allowed_pause_resume,
                             max_supply_change_authorized: self.authorized_max_supply_change.clone(),
+                            max_supply_change_admin: self.admin_action_takers_max_supply_change.clone(),
+                            max_supply_change_changing_admin_action_takers_to_no_one_allowed: self.changing_authorized_action_takers_to_no_one_allowed_max_supply_change,
+                            max_supply_change_changing_authorized_action_takers_to_no_one_allowed: self.changing_admin_action_takers_to_no_one_allowed_max_supply_change,
+                            max_supply_change_self_changing_admin_action_takers_allowed: self.self_changing_admin_action_takers_allowed_max_supply_change,
                             conventions_change_authorized: self.authorized_conventions_change.clone(),
+                            conventions_change_admin: self.admin_action_takers_conventions_change.clone(),
+                            conventions_change_changing_admin_action_takers_to_no_one_allowed: self.changing_authorized_action_takers_to_no_one_allowed_conventions_change,
+                            conventions_change_changing_authorized_action_takers_to_no_one_allowed: self.changing_admin_action_takers_to_no_one_allowed_conventions_change,
+                            conventions_change_self_changing_admin_action_takers_allowed: self.self_changing_admin_action_takers_allowed_conventions_change,
                             main_control_group_change_authorized: self
                                 .authorized_main_control_group_change
                                 .clone(),
+                            main_control_group_change_admin: self
+                                .admin_action_takers_main_control_group_change
+                                .clone(),
+                            main_control_group_change_changing_admin_action_takers_to_no_one_allowed: self.changing_authorized_action_takers_to_no_one_allowed_main_control_group_change,
+                            main_control_group_change_changing_authorized_action_takers_to_no_one_allowed: self.changing_admin_action_takers_to_no_one_allowed_main_control_group_change,
+                            main_control_group_change_self_changing_admin_action_takers_allowed: self.self_changing_admin_action_takers_allowed_main_control_group_change,
                             distribution_rules: TokenDistributionRules::V0(dist_rules_v0),
                         }),
                         BackendTask::TokenTask(TokenTask::QueryMyTokenBalances),
@@ -3945,6 +4012,7 @@ Emits tokens in fixed amounts for specific intervals.
         self.should_capitalize_input = false;
         self.token_keeps_history = false;
         self.authorized_manual_mint = AuthorizedActionTakers::NoOne;
+        self.admin_action_takers_manual_mint = AuthorizedActionTakers::NoOne;
         self.manual_mint_authorized_identity = None;
         self.manual_mint_authorized_group = None;
         self.authorized_manual_burn = AuthorizedActionTakers::NoOne;

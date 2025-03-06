@@ -50,6 +50,7 @@ pub(crate) enum TokenTask {
         max_supply: Option<u64>,
         start_paused: bool,
         keeps_history: bool,
+        main_control_group: Option<u16>,
 
         // Manual Mint
         manual_mint_authorized: AuthorizedActionTakers,
@@ -109,10 +110,6 @@ pub(crate) enum TokenTask {
 
         // Main Control Group Change
         main_control_group_change_authorized: AuthorizedActionTakers,
-        main_control_group_change_admin: AuthorizedActionTakers,
-        main_control_group_change_changing_authorized_action_takers_to_no_one_allowed: bool,
-        main_control_group_change_changing_admin_action_takers_to_no_one_allowed: bool,
-        main_control_group_change_self_changing_admin_action_takers_allowed: bool,
 
         distribution_rules: TokenDistributionRules,
     },
@@ -195,6 +192,7 @@ impl AppContext {
                 max_supply,
                 start_paused,
                 keeps_history,
+                main_control_group,
                 manual_mint_authorized,
                 manual_mint_admin,
                 manual_mint_changing_authorized_action_takers_to_no_one_allowed,
@@ -236,10 +234,6 @@ impl AppContext {
                 conventions_change_changing_admin_action_takers_to_no_one_allowed,
                 conventions_change_self_changing_admin_action_takers_allowed,
                 main_control_group_change_authorized,
-                main_control_group_change_admin,
-                main_control_group_change_changing_authorized_action_takers_to_no_one_allowed,
-                main_control_group_change_changing_admin_action_takers_to_no_one_allowed,
-                main_control_group_change_self_changing_admin_action_takers_allowed,
                 distribution_rules,
             } => {
                 let data_contract = self
@@ -252,6 +246,7 @@ impl AppContext {
                         *max_supply,
                         *start_paused,
                         *keeps_history,
+                        *main_control_group,
                         manual_mint_authorized.clone(),
                         manual_mint_admin.clone(),
                         *manual_mint_changing_authorized_action_takers_to_no_one_allowed,
@@ -293,10 +288,6 @@ impl AppContext {
                         *conventions_change_changing_admin_action_takers_to_no_one_allowed,
                         *conventions_change_self_changing_admin_action_takers_allowed,
                         main_control_group_change_authorized.clone(),
-                        main_control_group_change_admin.clone(),
-                        *main_control_group_change_changing_authorized_action_takers_to_no_one_allowed,
-                        *main_control_group_change_changing_admin_action_takers_to_no_one_allowed,
-                        *main_control_group_change_self_changing_admin_action_takers_allowed,
                         distribution_rules.clone(),
                     )
                     .map_err(|e| format!("Error building contract V1: {e}"))?;
@@ -500,6 +491,7 @@ impl AppContext {
         max_supply: Option<u64>,
         start_as_paused: bool,
         keeps_history: bool,
+        main_control_group: Option<u16>,
         manual_mint_authorized: AuthorizedActionTakers,
         manual_mint_admin: AuthorizedActionTakers,
         manual_mint_changing_authorized_action_takers_to_no_one_allowed: bool,
@@ -541,10 +533,6 @@ impl AppContext {
         conventions_change_changing_admin_action_takers_to_no_one_allowed: bool,
         conventions_change_self_changing_admin_action_takers_allowed: bool,
         main_control_group_change_authorized: AuthorizedActionTakers,
-        main_control_group_change_admin: AuthorizedActionTakers,
-        main_control_group_change_changing_authorized_action_takers_to_no_one_allowed: bool,
-        main_control_group_change_changing_admin_action_takers_to_no_one_allowed: bool,
-        main_control_group_change_self_changing_admin_action_takers_allowed: bool,
         distribution_rules: TokenDistributionRules,
     ) -> Result<DataContract, ProtocolError> {
         // 1) Create the V1 struct
@@ -576,6 +564,7 @@ impl AppContext {
         token_config_v0.max_supply = max_supply;
         token_config_v0.start_as_paused = start_as_paused;
         token_config_v0.keeps_history = keeps_history;
+        token_config_v0.main_control_group = main_control_group;
 
         // 3) Manual Minting
         // Set manualMintingRules to "ContractOwner"

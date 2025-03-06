@@ -3149,16 +3149,25 @@ Emits tokens in fixed amounts for specific intervals.
                                             "Some Other Group",
                                         );
                                     });
-                                // If user picks Identity, show a text field for them to enter the identity
-                                if let AuthorizedActionTakers::Identity(_) =
-                                    self.perpetual_distribution_rules_authorized
-                                {
-                                    ui.text_edit_singleline(&mut self.perpetual_dist_identity_input);
-                                }
-                                if let AuthorizedActionTakers::Group(_) =
-                                    self.perpetual_distribution_rules_authorized
-                                {
-                                    ui.text_edit_singleline(&mut self.perpetual_dist_group_input);
+                                // If user selected Identity or Group, show extra text edit
+                                match &mut self.perpetual_distribution_rules_authorized {
+                                    AuthorizedActionTakers::Identity(_) => {
+                                        if self.perpetual_distribution_authorized_identity.is_none() {
+                                            self.perpetual_distribution_authorized_identity = Some(String::new());
+                                        }
+                                        if let Some(ref mut id) = self.perpetual_distribution_authorized_identity {
+                                            ui.add(egui::TextEdit::singleline(id).hint_text("Enter base58 id"));
+                                        }
+                                    }
+                                    AuthorizedActionTakers::Group(_) => {
+                                        if self.perpetual_distribution_authorized_group.is_none() {
+                                            self.perpetual_distribution_authorized_group = Some("0".to_owned());
+                                        }
+                                        if let Some(ref mut group) = self.perpetual_distribution_authorized_group {
+                                            ui.add(egui::TextEdit::singleline(group).hint_text("Group contract position"));
+                                        }
+                                    }
+                                    _ => {}
                                 }
                             });
 
@@ -3331,13 +3340,26 @@ Emits tokens in fixed amounts for specific intervals.
                                         );
                                     });
 
-                                    // If user picks Identity, show a text field for the ID
-                                    if let AuthorizedActionTakers::Identity(_) = self.new_tokens_destination_identity_rules_authorized {
-                                        ui.text_edit_singleline(&mut self.new_tokens_destination_identity_identity_input);
+                                // If user selected Identity or Group, show extra text edit
+                                match &mut self.new_tokens_destination_identity_rules_authorized {
+                                    AuthorizedActionTakers::Identity(_) => {
+                                        if self.new_tokens_destination_identity_rules_authorized_identity.is_none() {
+                                            self.new_tokens_destination_identity_rules_authorized_identity = Some(String::new());
+                                        }
+                                        if let Some(ref mut id) = self.new_tokens_destination_identity_rules_authorized_identity {
+                                            ui.add(egui::TextEdit::singleline(id).hint_text("Enter base58 id"));
+                                        }
                                     }
-                                    if let AuthorizedActionTakers::Group(_) = self.new_tokens_destination_identity_rules_authorized {
-                                        ui.text_edit_singleline(&mut self.new_tokens_destination_identity_group_input);
+                                    AuthorizedActionTakers::Group(_) => {
+                                        if self.new_tokens_destination_identity_rules_authorized_group.is_none() {
+                                            self.new_tokens_destination_identity_rules_authorized_group = Some("0".to_owned());
+                                        }
+                                        if let Some(ref mut group) = self.new_tokens_destination_identity_rules_authorized_group {
+                                            ui.add(egui::TextEdit::singleline(group).hint_text("Group contract position"));
+                                        }
                                     }
+                                    _ => {}
+                                }
                             });
 
                             ui.add_space(2.0);
@@ -3472,13 +3494,26 @@ Emits tokens in fixed amounts for specific intervals.
                                         );
                                     });
 
-                                    // If user picks Identity, show a text field for the ID
-                                    if let AuthorizedActionTakers::Identity(_) = self.minting_allow_choosing_destination_rules_authorized {
-                                        ui.text_edit_singleline(&mut self.minting_allow_choosing_destination_identity_input);
+                                // If user selected Identity or Group, show extra text edit
+                                match &mut self.minting_allow_choosing_destination_rules_authorized {
+                                    AuthorizedActionTakers::Identity(_) => {
+                                        if self.minting_allow_choosing_destination_rules_authorized_identity.is_none() {
+                                            self.minting_allow_choosing_destination_rules_authorized_identity = Some(String::new());
+                                        }
+                                        if let Some(ref mut id) = self.minting_allow_choosing_destination_rules_authorized_identity {
+                                            ui.add(egui::TextEdit::singleline(id).hint_text("Enter base58 id"));
+                                        }
                                     }
-                                    if let AuthorizedActionTakers::Group(_) = self.minting_allow_choosing_destination_rules_authorized {
-                                        ui.text_edit_singleline(&mut self.minting_allow_choosing_destination_group_input);
+                                    AuthorizedActionTakers::Group(_) => {
+                                        if self.minting_allow_choosing_destination_rules_authorized_group.is_none() {
+                                            self.minting_allow_choosing_destination_rules_authorized_group = Some("0".to_owned());
+                                        }
+                                        if let Some(ref mut group) = self.minting_allow_choosing_destination_rules_authorized_group {
+                                            ui.add(egui::TextEdit::singleline(group).hint_text("Group contract position"));
+                                        }
                                     }
+                                    _ => {}
+                                }
                             });
 
                             ui.add_space(2.0);

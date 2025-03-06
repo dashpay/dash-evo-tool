@@ -292,6 +292,8 @@ impl AppContext {
                     )
                     .map_err(|e| format!("Error building contract V1: {e}"))?;
 
+                tracing::info!("Built data contract: {:#?}", data_contract);
+
                 // 2) Call your existing function that registers the contract
                 self.register_data_contract(
                     data_contract,

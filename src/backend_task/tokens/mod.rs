@@ -163,7 +163,7 @@ impl AppContext {
                 let data_contract = self
                     .build_data_contract_v1_with_one_token(
                         identity.identity.id().clone(),
-                        token_name,
+                        token_name.clone(),
                         *should_capitalize,
                         *decimals,
                         *base_supply,
@@ -184,8 +184,6 @@ impl AppContext {
                         groups.clone(),
                     )
                     .map_err(|e| format!("Error building contract V1: {e}"))?;
-
-                tracing::info!("Built data contract: {:#?}", data_contract);
 
                 // 2) Call your existing function that registers the contract
                 self.register_data_contract(
@@ -379,7 +377,7 @@ impl AppContext {
     pub fn build_data_contract_v1_with_one_token(
         &self,
         owner_id: Identifier,
-        token_name: &str,
+        token_name: String,
         should_capitalize: bool,
         decimals: u16,
         base_supply: u64,

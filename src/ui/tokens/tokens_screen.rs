@@ -16,6 +16,7 @@ use dash_sdk::dpp::data_contract::associated_token::token_pre_programmed_distrib
 use dash_sdk::dpp::data_contract::change_control_rules::authorized_action_takers::AuthorizedActionTakers;
 use dash_sdk::dpp::data_contract::change_control_rules::v0::ChangeControlRulesV0;
 use dash_sdk::dpp::data_contract::change_control_rules::ChangeControlRules;
+use dash_sdk::dpp::data_contract::conversion::json::DataContractJsonConversionMethodsV0;
 use dash_sdk::dpp::data_contract::group::v0::GroupV0;
 use dash_sdk::dpp::data_contract::group::{Group, GroupMemberPower, GroupRequiredPower};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -478,6 +479,34 @@ impl GroupConfigUI {
     }
 }
 
+#[derive(Clone)]
+/// All arguments needed by `build_data_contract_v1_with_one_token`.
+pub struct TokenBuildArgs {
+    pub identity_id: Identifier,
+
+    pub token_name: String,
+    pub should_capitalize: bool,
+    pub decimals: u16,
+    pub base_supply: u64,
+    pub max_supply: Option<u64>,
+    pub start_paused: bool,
+    pub keeps_history: bool,
+    pub main_control_group: Option<u16>,
+
+    pub manual_minting_rules: ChangeControlRules,
+    pub manual_burning_rules: ChangeControlRules,
+    pub freeze_rules: ChangeControlRules,
+    pub unfreeze_rules: ChangeControlRules,
+    pub destroy_frozen_funds_rules: ChangeControlRules,
+    pub emergency_action_rules: ChangeControlRules,
+    pub max_supply_change_rules: ChangeControlRules,
+    pub conventions_change_rules: ChangeControlRules,
+    pub main_control_group_change_authorized: AuthorizedActionTakers,
+
+    pub distribution_rules: TokenDistributionRules,
+    pub groups: BTreeMap<u16, Group>,
+}
+
 /// The main, combined TokensScreen:
 /// - Displays token balances or a search UI
 /// - Allows reordering of tokens if desired
@@ -532,6 +561,9 @@ pub struct TokensScreen {
     token_creator_error_message: Option<String>,
     token_keeps_history: bool,
     groups_ui: Vec<GroupConfigUI>,
+    cached_build_args: Option<TokenBuildArgs>,
+    show_json_popup: bool,
+    json_popup_text: String,
 
     // Action Rules
     manual_minting_rules: ChangeControlRulesUI,
@@ -663,6 +695,9 @@ impl TokensScreen {
             token_keeps_history: false,
             main_control_group_input: String::new(),
             groups_ui: Vec::new(),
+            cached_build_args: None,
+            show_json_popup: false,
+            json_popup_text: String::new(),
 
             // Action rules
             manual_minting_rules: ChangeControlRulesUI::default(),
@@ -2339,28 +2374,85 @@ Emits tokens in fixed amounts for specific intervals.
                     let mut new_style = (**ui.style()).clone();
                     new_style.spacing.button_padding = egui::vec2(10.0, 5.0);
                     ui.set_style(new_style);
-                    let button =
-                        egui::Button::new(RichText::new("Register Token Contract").color(Color32::WHITE))
+                    ui.horizontal(|ui| {
+                        let register_button =
+                            egui::Button::new(RichText::new("Register Token Contract").color(Color32::WHITE))
+                                .fill(Color32::from_rgb(0, 128, 255))
+                                .frame(true)
+                                .rounding(3.0);
+                        if ui.add(register_button).clicked() {
+                            match self.parse_token_build_args() {
+                                Ok(args) => {
+                                    // If success, show the "confirmation popup"
+                                    // Or skip the popup entirely and dispatch tasks right now
+                                    self.cached_build_args = Some(args);
+                                    self.token_creator_error_message = None;
+                                    self.show_token_creator_confirmation_popup = true;
+                                },
+                                Err(err) => {
+                                    self.token_creator_error_message = Some(err);
+                                }
+                            }
+                        }
+                        let view_json_button = egui::Button::new(RichText::new("View JSON").color(Color32::WHITE))
                             .fill(Color32::from_rgb(0, 128, 255))
                             .frame(true)
                             .rounding(3.0);
-                    if ui.add(button).clicked() {
-                        if self.selected_key.is_none() || self.selected_identity.is_none() {
-                            self.token_creator_error_message = Some("Please select an identity and key".to_string());
-                        } else if self.token_name_input.len() == 0 {
-                            self.token_creator_error_message = Some("Please enter a token name".to_string());
-                        } else {
-                            // Validate input & if valid, show confirmation
-                            self.token_creator_error_message = None;
-                            self.show_token_creator_confirmation_popup = true;
+                        if ui.add(view_json_button).clicked() {
+                            match self.parse_token_build_args() {
+                                Ok(args) => {
+                                    // We have the parsed token creation arguments
+                                    // We can now call build_data_contract_v1_with_one_token using `args`
+                                    self.cached_build_args = Some(args.clone());
+                                    let data_contract = match self.app_context.build_data_contract_v1_with_one_token(
+                                        args.identity_id,
+                                        args.token_name,
+                                        args.should_capitalize,
+                                        args.decimals,
+                                        args.base_supply,
+                                        args.max_supply,
+                                        args.start_paused,
+                                        args.keeps_history,
+                                        args.main_control_group,
+                                        args.manual_minting_rules,
+                                        args.manual_burning_rules,
+                                        args.freeze_rules,
+                                        args.unfreeze_rules,
+                                        args.destroy_frozen_funds_rules,
+                                        args.emergency_action_rules,
+                                        args.max_supply_change_rules,
+                                        args.conventions_change_rules,
+                                        args.main_control_group_change_authorized,
+                                        args.distribution_rules,
+                                        args.groups,
+                                    ) {
+                                        Ok(dc) => dc,
+                                        Err(e) => {
+                                            self.token_creator_error_message = Some(format!("Error building contract V1: {e}"));
+                                            return;
+                                        }
+                                    };
+                        
+                                    let data_contract_json = data_contract.to_json(self.app_context.platform_version).expect("Expected to map contract to json");
+                                    self.show_json_popup = true;
+                                    self.json_popup_text = serde_json::to_string_pretty(&data_contract_json).expect("Expected to serialize json");
+                                },
+                                Err(err_msg) => {
+                                    self.token_creator_error_message = Some(err_msg);
+                                },
+                            }
                         }
-                    };
+                    });
                 });
         });
 
         // 7) If the user pressed "Register Token Contract," show a popup confirmation
         if self.show_token_creator_confirmation_popup {
             action |= self.render_token_creator_confirmation_popup(ui);
+        }
+
+        if self.show_json_popup {
+            self.render_data_contract_json_popup(ui);
         }
 
         // 8) If we are waiting, show spinner / time elapsed
@@ -2385,6 +2477,52 @@ Emits tokens in fixed amounts for specific intervals.
         }
 
         action
+    }
+
+    /// Renders a popup window displaying the data contract JSON.
+    pub fn render_data_contract_json_popup(&mut self, ui: &mut egui::Ui) {
+        if self.show_json_popup {
+            let mut is_open = true;
+            egui::Window::new("Data Contract JSON")
+                .collapsible(false)
+                .resizable(true)
+                .max_height(600.0)
+                .max_width(800.0)
+                .scroll(true)
+                .open(&mut is_open)
+                .show(ui.ctx(), |ui| {
+                    // Display the JSON in a multiline text box
+                    ui.add_space(4.0);
+                    ui.label("Below is the data contract JSON:");
+                    ui.add_space(4.0);
+
+                    egui::Resize::default()
+                        .id_salt("json_resize_area_for_contract")
+                        .default_size([750.0, 550.0])
+                        .max_height(ui.available_height() - 50.0)
+                        .max_width(ui.available_height() - 20.0)
+                        .show(ui, |ui| {
+                            egui::ScrollArea::vertical()
+                                .auto_shrink([false; 2])
+                                .show(ui, |ui| {
+                                    ui.monospace(&mut self.json_popup_text);
+                                });
+                        });
+
+                    ui.add_space(10.0);
+
+                    // A button to close
+                    if ui.button("Close").clicked() {
+                        self.show_json_popup = false;
+                    }
+                });
+
+            // If the user closed the window via the "x" in the corner
+            // we should reflect that in `show_json_popup`.
+            if !is_open {
+                self.show_json_popup = false;
+            }
+        }
     }
 
     /// Shows a popup "Are you sure?" for creating the token contract
@@ -2415,393 +2553,59 @@ Emits tokens in fixed amounts for specific intervals.
 
                 // Confirm
                 if ui.button("Confirm").clicked() {
-                    // Attempt to parse fields
-                    let decimals = if let Ok(dec) = self.decimals_input.parse::<u16>() {
-                        dec
-                    } else {
-                        8 // default
-                    };
-                    let base_supply = if let Ok(base) = self.base_supply_input.parse::<u64>() {
-                        base
-                    } else {
-                        TokenConfigurationV0::default_most_restrictive().base_supply
-                    };
-                    let max_supply = if let Ok(max) = self.max_supply_input.parse::<u64>() {
-                        Some(max)
-                    } else {
-                        TokenConfigurationV0::default_most_restrictive().max_supply
-                    };
-                    let main_control_group = if let Ok(group) = self.main_control_group_input.parse::<u16>() {
-                        Some(group)
-                    } else {
-                        TokenConfigurationV0::default_most_restrictive().main_control_group
-                    };
-
-                    // We'll switch status to "Waiting"
-                    self.token_creator_status =
-                        TokenCreatorStatus::WaitingForResult(chrono::Utc::now().timestamp() as u64);
-                    self.show_token_creator_confirmation_popup = false;
-
-                    // Build a new DataContract on the fly (or ask the backend task to do it).
-                    // For example:
-                    let identity = self.selected_identity.clone().unwrap();
-                    let key = self.selected_key.clone().unwrap();
-
-                    let start_paused = self.start_as_paused_input;
-                    let token_name = self.token_name_input.clone();
-
-                    match self.manual_minting_rules.authorized {
-                        AuthorizedActionTakers::Identity(_) => {
-                            if let Some(ref id_str) = self.manual_minting_rules.authorized_identity {
-                                if let Ok(id) = Identifier::from_string(id_str, Encoding::Base58) {
-                                    self.manual_minting_rules.authorized = AuthorizedActionTakers::Identity(id);
-                                } else {
-                                    self.token_creator_error_message = Some(
-                                        "Invalid base58 identifier for manual mint authorized identity".to_string(),
-                                    );
-                                    return;
-                                }
-                            }
-                        }
-                        AuthorizedActionTakers::Group(_) => {
-                            if let Some(ref group_str) = self.manual_minting_rules.authorized_group {
-                                if let Ok(group) = group_str.parse::<u16>() {
-                                    self.manual_minting_rules.authorized = AuthorizedActionTakers::Group(group);
-                                } else {
-                                    self.token_creator_error_message = Some(
-                                        "Invalid group contract position for manual mint authorized group".to_string(),
-                                    );
-                                    return;
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
-                    match self.manual_minting_rules.admin_action_takers {
-                        AuthorizedActionTakers::Identity(_) => {
-                            if let Some(ref id_str) = self.manual_minting_rules.admin_identity {
-                                if let Ok(id) = Identifier::from_string(id_str, Encoding::Base58) {
-                                    self.manual_minting_rules.admin_action_takers = AuthorizedActionTakers::Identity(id);
-                                } else {
-                                    self.token_creator_error_message = Some(
-                                        "Invalid base58 identifier for manual mint admin identity".to_string(),
-                                    );
-                                    return;
-                                }
-                            }
-                        }
-                        AuthorizedActionTakers::Group(_) => {
-                            if let Some(ref group_str) = self.manual_minting_rules.admin_group {
-                                if let Ok(group) = group_str.parse::<u16>() {
-                                    self.manual_minting_rules.admin_action_takers = AuthorizedActionTakers::Group(group);
-                                } else {
-                                    self.token_creator_error_message = Some(
-                                        "Invalid group contract position for manual mint admin group".to_string(),
-                                    );
-                                    return;
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
-
-                    // These rules are slightly different than the others (missing the last few fields)
-                    // So we do this manually here, while for the others it's handled in the `render_control_change_rules_ui` function.
-                    match self.authorized_main_control_group_change {
-                        AuthorizedActionTakers::Identity(_) => {
-                            if let Some(ref id_str) = self.main_control_group_change_authorized_identity {
-                                if let Ok(id) = Identifier::from_string(id_str, Encoding::Base58) {
-                                    self.authorized_main_control_group_change = AuthorizedActionTakers::Identity(id);
-                                } else {
-                                    self.token_creator_error_message = Some(
-                                        "Invalid base58 identifier for main control group change authorized identity".to_string(),
-                                    );
-                                    return;
-                                }
-                            }
-                        }
-                        AuthorizedActionTakers::Group(_) => {
-                            if let Some(ref group_str) = self.main_control_group_change_authorized_group {
-                                if let Ok(group) = group_str.parse::<u16>() {
-                                    self.authorized_main_control_group_change = AuthorizedActionTakers::Group(group);
-                                } else {
-                                    self.token_creator_error_message = Some(
-                                        "Invalid group contract position for main control group change authorized group".to_string(),
-                                    );
-                                    return;
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
-
-                    // 1) Validate distribution input, parse numeric fields, etc.
-                    let distribution_function = match self.perpetual_dist_function {
-                        DistributionFunctionUI::FixedAmount => {
-                            DistributionFunction::FixedAmount {
-                                n: self.fixed_amount_input.parse::<u64>().unwrap_or(0),
-                            }
-                        },
-                        DistributionFunctionUI::StepDecreasingAmount => {
-                            DistributionFunction::StepDecreasingAmount {
-                                n: self.step_dec_amount_input.parse::<u64>().unwrap_or(0),
-                                decrease_per_interval: NotNan::new(self.decrease_per_interval_input.parse::<f64>().unwrap_or(0.0)).unwrap(),
-                                step_count: self.step_count_input.parse::<u64>().unwrap_or(0),
-                            }
-                        },
-                        DistributionFunctionUI::LinearInteger => {
-                            DistributionFunction::LinearInteger {
-                                a: self.linear_int_a_input.parse::<i64>().unwrap_or(0),
-                                b: self.linear_int_b_input.parse::<i64>().unwrap_or(0),
-                            }
-                        },
-                        DistributionFunctionUI::LinearFloat => {
-                            DistributionFunction::LinearFloat {
-                                a: NotNan::new(self.linear_float_a_input.parse::<f64>().unwrap_or(0.0)).unwrap(),
-                                b: self.linear_float_b_input.parse::<i64>().unwrap_or(0),
-                            }
-                        },
-                        DistributionFunctionUI::PolynomialInteger => {
-                            DistributionFunction::PolynomialInteger {
-                                a: self.poly_int_a_input.parse::<i64>().unwrap_or(0),
-                                n: self.poly_int_n_input.parse::<i64>().unwrap_or(0),
-                                b: self.poly_int_b_input.parse::<i64>().unwrap_or(0),
-                            }
-                        },
-                        DistributionFunctionUI::PolynomialFloat => {
-                            DistributionFunction::PolynomialFloat {
-                                a: NotNan::new(self.poly_float_a_input.parse::<f64>().unwrap_or(0.0)).unwrap(),
-                                n: NotNan::new(self.poly_float_n_input.parse::<f64>().unwrap_or(0.0)).unwrap(),
-                                b: self.poly_float_b_input.parse::<i64>().unwrap_or(0),
-                            }
-                        },
-                        DistributionFunctionUI::Exponential => {
-                            DistributionFunction::Exponential {
-                                a: NotNan::new(self.exp_a_input.parse::<f64>().unwrap_or(0.0)).unwrap(),
-                                b: NotNan::new(self.exp_b_input.parse::<f64>().unwrap_or(0.0)).unwrap(),
-                                c: self.exp_c_input.parse::<i64>().unwrap_or(0),
-                            }
-                        },
-                        DistributionFunctionUI::Logarithmic => {
-                            DistributionFunction::Logarithmic {
-                                a: NotNan::new(self.log_a_input.parse::<f64>().unwrap_or(0.0)).unwrap(),
-                                b: NotNan::new(self.log_b_input.parse::<f64>().unwrap_or(0.0)).unwrap(),
-                                c: self.log_c_input.parse::<i64>().unwrap_or(0),
-                            }
-                        },
-                        DistributionFunctionUI::Stepwise => {
-                            let mut steps = Vec::new();
-                            for (block_str, amount_str) in self.stepwise_steps.iter() {
-                                if let Ok(block) = block_str.parse::<u64>() {
-                                    if let Ok(amount) = amount_str.parse::<u64>() {
-                                        steps.push((block, amount));
-                                    } else {
-                                        self.token_creator_error_message = Some(
-                                            "Invalid amount in stepwise distribution".to_string(),
-                                        );
-                                        return;
-                                    }
-                                } else {
-                                    self.token_creator_error_message = Some(
-                                        "Invalid block interval in stepwise distribution".to_string(),
-                                    );
-                                    return;
-                                }
-                            }
-                            DistributionFunction::Stepwise(steps)
-                        }
-                    };
-                    let maybe_perpetual_distribution = if self.enable_perpetual_distribution {
-                        // Construct the `TokenPerpetualDistributionV0` from your selected type + function
-                        let dist_type = match self.perpetual_dist_type {
-                            PerpetualDistributionIntervalTypeUI::BlockBased => {
-                                // parse interval, parse emission
-                                // parse distribution function
-                                RewardDistributionType::BlockBasedDistribution(
-                                    self.perpetual_dist_interval_input.parse::<u64>().unwrap_or(0),
-                                    0, // this field should be removed in Platform because the individual functions define it
-                                    distribution_function,
-                                )
-                            }
-                            PerpetualDistributionIntervalTypeUI::EpochBased => {
-                                RewardDistributionType::EpochBasedDistribution(
-                                    self.perpetual_dist_interval_input.parse::<u16>().unwrap_or(0),
-                                    0, // this field should be removed in Platform because the individual functions define it
-                                    distribution_function,
-                                )
-                            }
-                            PerpetualDistributionIntervalTypeUI::TimeBased => {
-                                RewardDistributionType::TimeBasedDistribution(
-                                    self.perpetual_dist_interval_input.parse::<u64>().unwrap_or(0),
-                                    0, // this field should be removed in Platform because the individual functions define it
-                                    distribution_function,
-                                )
-                            }
-                            _ => {
-                                RewardDistributionType::BlockBasedDistribution(0, 0, DistributionFunction::FixedAmount { n: 0 })
-                            }
-                        };
-
-                        let recipient = match self.perpetual_dist_recipient {
-                            TokenDistributionRecipientUI::ContractOwner => TokenDistributionRecipient::ContractOwner,
-                            TokenDistributionRecipientUI::Identity => {
-                                if let Some(id) = self.perpetual_dist_recipient_identity_input.as_ref() {
-                                    let id_res = Identifier::from_string(id, Encoding::Base58);
-                                    TokenDistributionRecipient::Identity(id_res.unwrap_or_default())
-                                } else {
-                                    self.token_creator_error_message = Some(
-                                        "Invalid base58 identifier for perpetual distribution recipient".to_string(),
-                                    );
-                                    return;
-                                }
-                            }
-                            TokenDistributionRecipientUI::EvonodesByParticipation => {
-                                TokenDistributionRecipient::EvonodesByParticipation
-                            }
-                        };
-
-                        Some(TokenPerpetualDistribution::V0(TokenPerpetualDistributionV0 {
-                            distribution_type: dist_type,
-                            distribution_recipient: recipient,
-                        }))
-                    } else {
-                        None
-                    };
-
-                    // 2) Build the distribution rules structure
-                    let dist_rules_v0 = TokenDistributionRulesV0 {
-                        perpetual_distribution: maybe_perpetual_distribution,
-                        perpetual_distribution_rules: self.perpetual_distribution_rules.to_change_control_rules("Perpetual Distribution").unwrap(),
-                        pre_programmed_distribution: if self.enable_pre_programmed_distribution {
-                            let distributions: BTreeMap<u64, BTreeMap<Identifier, u64>> = match self.parse_pre_programmed_distributions() {
-                                Ok(distributions) => distributions.into_iter().map(|(k, v)| (k, std::iter::once(v).collect())).collect(),
+                    let args = match &self.cached_build_args {
+                        Some(args) => args.clone(),
+                        None => {
+                            // fallback if we didn't store them
+                            match self.parse_token_build_args() {
+                                Ok(a) => a,
                                 Err(err) => {
                                     self.token_creator_error_message = Some(err);
+                                    self.show_token_creator_confirmation_popup = false;
+                                    action = AppAction::None;
                                     return;
                                 }
-                            };
-
-                            Some(TokenPreProgrammedDistribution::V0(
-                                TokenPreProgrammedDistributionV0 {
-                                    distributions,
-                                }
-                            ))
-                        } else {
-                            None
-                        },
-                        new_tokens_destination_identity: if self.new_tokens_destination_identity_enabled {
-                            Some(Identifier::from_string(&self.new_tokens_destination_identity, Encoding::Base58).unwrap_or_default())
-                        } else {
-                            None
-                        },
-                        new_tokens_destination_identity_rules: self.new_tokens_destination_identity_rules.to_change_control_rules("New Tokens Destination Identity").unwrap(),
-                        minting_allow_choosing_destination: self.minting_allow_choosing_destination,
-                        minting_allow_choosing_destination_rules: self.minting_allow_choosing_destination_rules.to_change_control_rules("Minting Allow Choosing Destination").unwrap(),
-                    };
-
-                    let manual_minting_rules = match self.manual_minting_rules.to_change_control_rules("Manual Mint") {
-                        Ok(rules) => rules,
-                        Err(err) => {
-                            self.token_creator_error_message = Some(err);
-                            return;
+                            }
                         }
                     };
-                    let manual_burning_rules = match self.manual_burning_rules.to_change_control_rules("Manual Burn") {
-                        Ok(rules) => rules,
-                        Err(err) => {
-                            self.token_creator_error_message = Some(err);
-                            return;
-                        }
-                    };
-                    let freeze_rules = match self.freeze_rules.to_change_control_rules("Freeze") {
-                        Ok(rules) => rules,
-                        Err(err) => {
-                            self.token_creator_error_message = Some(err);
-                            return;
-                        }
-                    };
-                    let unfreeze_rules = match self.unfreeze_rules.to_change_control_rules("Unfreeze") {
-                        Ok(rules) => rules,
-                        Err(err) => {
-                            self.token_creator_error_message = Some(err);
-                            return;
-                        }
-                    };
-                    let destroy_frozen_funds_rules = match self.destroy_frozen_funds_rules.to_change_control_rules("Destroy Frozen Funds") {
-                        Ok(rules) => rules,
-                        Err(err) => {
-                            self.token_creator_error_message = Some(err);
-                            return;
-                        }
-                    };
-                    let emergency_action_rules = match self.emergency_action_rules.to_change_control_rules("Emergency Action") {
-                        Ok(rules) => rules,
-                        Err(err) => {
-                            self.token_creator_error_message = Some(err);
-                            return;
-                        }
-                    };
-                    let max_supply_change_rules = match self.max_supply_change_rules.to_change_control_rules("Max Supply Change") {
-                        Ok(rules) => rules,
-                        Err(err) => {
-                            self.token_creator_error_message = Some(err);
-                            return;
-                        }
-                    };
-                    let conventions_change_rules = match self.conventions_change_rules.to_change_control_rules("Conventions Change") {
-                        Ok(rules) => rules,
-                        Err(err) => {
-                            self.token_creator_error_message = Some(err);
-                            return;
-                        }
-                    };
-
-                    let groups = match self.parse_groups() {
-                        Ok(groups_btree) => {
-                            groups_btree
-                        }
-                        Err(err) => {
-                            self.token_creator_error_message = Some(err);
-                            return;
-                        }
-                    };
-
+                
+                    // Now create your tasks
                     let tasks = vec![
                         BackendTask::TokenTask(TokenTask::RegisterTokenContract {
-                            identity,
-                            signing_key: key,
-                            token_name,
-                            should_capitalize: self.should_capitalize_input,
-                            decimals,
-                            base_supply,
-                            max_supply,
-                            start_paused,
-                            keeps_history: self.token_keeps_history,
-                            main_control_group,
-
-                            manual_minting_rules,
-                            manual_burning_rules,
-                            freeze_rules,
-                            unfreeze_rules,
-                            destroy_frozen_funds_rules,
-                            emergency_action_rules,
-                            max_supply_change_rules,
-                            conventions_change_rules,
-                            main_control_group_change_authorized: self
-                                .authorized_main_control_group_change
-                                .clone(),
-                            distribution_rules: TokenDistributionRules::V0(dist_rules_v0),
-                            groups,
+                            identity: self.selected_identity.clone().unwrap(),
+                            signing_key: self.selected_key.clone().unwrap(),
+                
+                            token_name: args.token_name,
+                            should_capitalize: args.should_capitalize,
+                            decimals: args.decimals,
+                            base_supply: args.base_supply,
+                            max_supply: args.max_supply,
+                            start_paused: args.start_paused,
+                            keeps_history: args.keeps_history,
+                            main_control_group: args.main_control_group,
+                
+                            manual_minting_rules: args.manual_minting_rules,
+                            manual_burning_rules: args.manual_burning_rules,
+                            freeze_rules: args.freeze_rules,
+                            unfreeze_rules: args.unfreeze_rules,
+                            destroy_frozen_funds_rules: args.destroy_frozen_funds_rules,
+                            emergency_action_rules: args.emergency_action_rules,
+                            max_supply_change_rules: args.max_supply_change_rules,
+                            conventions_change_rules: args.conventions_change_rules,
+                            main_control_group_change_authorized: args.main_control_group_change_authorized,
+                            distribution_rules: args.distribution_rules,
+                            groups: args.groups,
                         }),
                         BackendTask::TokenTask(TokenTask::QueryMyTokenBalances),
                     ];
-
+                
                     action = AppAction::BackendTasks(tasks, BackendTasksExecutionMode::Sequential);
                 }
 
                 // Cancel
                 if ui.button("Cancel").clicked() {
                     self.show_token_creator_confirmation_popup = false;
+                    action = AppAction::None;
                 }
             });
 
@@ -2823,6 +2627,300 @@ Emits tokens in fixed amounts for specific intervals.
                 self.reset_token_creator();
             }
         });
+    }
+
+    /// Gathers user input and produces the arguments needed by
+    /// `build_data_contract_v1_with_one_token`.
+    /// Returns Err(error_msg) on invalid input.
+    pub fn parse_token_build_args(&mut self) -> Result<TokenBuildArgs, String> {
+        // 1) We must have a selected identity
+        let identity = self.selected_identity.clone()
+            .ok_or_else(|| "Please select an identity".to_string())?;
+        let identity_id = identity.identity.id().clone();
+
+        // 2) Basic fields
+        if self.token_name_input.is_empty() {
+            return Err("Please enter a token name".to_string());
+        }
+        let token_name = self.token_name_input.clone();
+
+        let decimals = self.decimals_input.parse::<u16>().unwrap_or(8);
+        let base_supply = self.base_supply_input.parse::<u64>().unwrap_or(1000000);
+        let max_supply = if self.max_supply_input.is_empty() {
+            None
+        } else {
+            // If parse fails, error out
+            Some(self.max_supply_input.parse::<u64>()
+                .map_err(|_| "Invalid Max Supply".to_string())?)
+        };
+
+        let start_paused = self.start_as_paused_input;
+        let keeps_history = self.token_keeps_history;
+
+        let main_control_group = if self.main_control_group_input.is_empty() {
+            None
+        } else {
+            Some(self.main_control_group_input.parse::<u16>()
+                .map_err(|_| "Invalid main control group".to_string())?)
+        };
+
+        // 3) Convert your ActionChangeControlUI fields to real rules
+        // (or do the manual parse for each if needed)
+        let manual_minting_rules = self.manual_minting_rules
+            .to_change_control_rules("Manual Mint")?;
+        let manual_burning_rules = self.manual_burning_rules
+            .to_change_control_rules("Manual Burn")?;
+        let freeze_rules = self.freeze_rules
+            .to_change_control_rules("Freeze")?;
+        let unfreeze_rules = self.unfreeze_rules
+            .to_change_control_rules("Unfreeze")?;
+        let destroy_frozen_funds_rules = self.destroy_frozen_funds_rules
+            .to_change_control_rules("Destroy Frozen Funds")?;
+        let emergency_action_rules = self.emergency_action_rules
+            .to_change_control_rules("Emergency Action")?;
+        let max_supply_change_rules = self.max_supply_change_rules
+            .to_change_control_rules("Max Supply Change")?;
+        let conventions_change_rules = self.conventions_change_rules
+            .to_change_control_rules("Conventions Change")?;
+
+        // The main_control_group_change_authorized is done manually in your code,
+        // parse identity or group if needed. Reuse your existing logic:
+        let main_control_group_change_authorized =
+            self.parse_main_control_group_change_authorized()?;
+
+        // 4) Distribution data (perpetual & pre_programmed)
+        let distribution_rules = self.build_distribution_rules()?;
+
+        // 5) Groups
+        let groups = self.parse_groups()?;
+
+        // 6) Put it all in a struct
+        Ok(TokenBuildArgs {
+            identity_id,
+            token_name,
+            should_capitalize: self.should_capitalize_input,
+            decimals,
+            base_supply,
+            max_supply,
+            start_paused,
+            keeps_history,
+            main_control_group,
+
+            manual_minting_rules,
+            manual_burning_rules,
+            freeze_rules,
+            unfreeze_rules,
+            destroy_frozen_funds_rules,
+            emergency_action_rules,
+            max_supply_change_rules,
+            conventions_change_rules,
+            main_control_group_change_authorized,
+
+            distribution_rules: TokenDistributionRules::V0(distribution_rules),
+            groups,
+        })
+    }
+
+    /// Example of pulling out the logic to parse main_control_group_change_authorized
+    fn parse_main_control_group_change_authorized(
+        &mut self
+    ) -> Result<AuthorizedActionTakers, String> {
+        match &mut self.authorized_main_control_group_change {
+            AuthorizedActionTakers::Identity(_) => {
+                if let Some(ref id_str) = self.main_control_group_change_authorized_identity {
+                    if let Ok(id) = Identifier::from_string(id_str, Encoding::Base58) {
+                        Ok(AuthorizedActionTakers::Identity(id))
+                    } else {
+                        Err("Invalid base58 identifier for main control group change authorized identity".to_owned())
+                    }
+                } else {
+                    Ok(AuthorizedActionTakers::Identity(Identifier::default()))
+                }
+            }
+            AuthorizedActionTakers::Group(_) => {
+                if let Some(ref group_str) = self.main_control_group_change_authorized_group {
+                    if let Ok(g) = group_str.parse::<u16>() {
+                        Ok(AuthorizedActionTakers::Group(g))
+                    } else {
+                        Err("Invalid group contract position for main control group".to_owned())
+                    }
+                } else {
+                    Ok(AuthorizedActionTakers::Group(0))
+                }
+            }
+            other => {
+                // For ContractOwner or NoOne, just return them as-is
+                Ok(other.clone())
+            }
+        }
+    }
+
+    fn build_distribution_rules(&mut self) -> Result<TokenDistributionRulesV0, String> {
+        // 1) Validate distribution input, parse numeric fields, etc.
+        let distribution_function = match self.perpetual_dist_function {
+            DistributionFunctionUI::FixedAmount => {
+                DistributionFunction::FixedAmount {
+                    n: self.fixed_amount_input.parse::<u64>().unwrap_or(0),
+                }
+            },
+            DistributionFunctionUI::StepDecreasingAmount => {
+                DistributionFunction::StepDecreasingAmount {
+                    n: self.step_dec_amount_input.parse::<u64>().unwrap_or(0),
+                    decrease_per_interval: NotNan::new(self.decrease_per_interval_input.parse::<f64>().unwrap_or(0.0)).unwrap(),
+                    step_count: self.step_count_input.parse::<u64>().unwrap_or(0),
+                }
+            },
+            DistributionFunctionUI::LinearInteger => {
+                DistributionFunction::LinearInteger {
+                    a: self.linear_int_a_input.parse::<i64>().unwrap_or(0),
+                    b: self.linear_int_b_input.parse::<i64>().unwrap_or(0),
+                }
+            },
+            DistributionFunctionUI::LinearFloat => {
+                DistributionFunction::LinearFloat {
+                    a: NotNan::new(self.linear_float_a_input.parse::<f64>().unwrap_or(0.0)).unwrap(),
+                    b: self.linear_float_b_input.parse::<i64>().unwrap_or(0),
+                }
+            },
+            DistributionFunctionUI::PolynomialInteger => {
+                DistributionFunction::PolynomialInteger {
+                    a: self.poly_int_a_input.parse::<i64>().unwrap_or(0),
+                    n: self.poly_int_n_input.parse::<i64>().unwrap_or(0),
+                    b: self.poly_int_b_input.parse::<i64>().unwrap_or(0),
+                }
+            },
+            DistributionFunctionUI::PolynomialFloat => {
+                DistributionFunction::PolynomialFloat {
+                    a: NotNan::new(self.poly_float_a_input.parse::<f64>().unwrap_or(0.0)).unwrap(),
+                    n: NotNan::new(self.poly_float_n_input.parse::<f64>().unwrap_or(0.0)).unwrap(),
+                    b: self.poly_float_b_input.parse::<i64>().unwrap_or(0),
+                }
+            },
+            DistributionFunctionUI::Exponential => {
+                DistributionFunction::Exponential {
+                    a: NotNan::new(self.exp_a_input.parse::<f64>().unwrap_or(0.0)).unwrap(),
+                    b: NotNan::new(self.exp_b_input.parse::<f64>().unwrap_or(0.0)).unwrap(),
+                    c: self.exp_c_input.parse::<i64>().unwrap_or(0),
+                }
+            },
+            DistributionFunctionUI::Logarithmic => {
+                DistributionFunction::Logarithmic {
+                    a: NotNan::new(self.log_a_input.parse::<f64>().unwrap_or(0.0)).unwrap(),
+                    b: NotNan::new(self.log_b_input.parse::<f64>().unwrap_or(0.0)).unwrap(),
+                    c: self.log_c_input.parse::<i64>().unwrap_or(0),
+                }
+            },
+            DistributionFunctionUI::Stepwise => {
+                let mut steps = Vec::new();
+                for (block_str, amount_str) in self.stepwise_steps.iter() {
+                    if let Ok(block) = block_str.parse::<u64>() {
+                        if let Ok(amount) = amount_str.parse::<u64>() {
+                            steps.push((block, amount));
+                        } else {
+                            self.token_creator_error_message = Some(
+                                "Invalid amount in stepwise distribution".to_string(),
+                            );
+                            return Err("Invalid amount in stepwise distribution".to_string());
+                        }
+                    } else {
+                        self.token_creator_error_message = Some(
+                            "Invalid block interval in stepwise distribution".to_string(),
+                        );
+                        return Err("Invalid block interval in stepwise distribution".to_string());
+                    }
+                }
+                DistributionFunction::Stepwise(steps)
+            }
+        };
+        let maybe_perpetual_distribution = if self.enable_perpetual_distribution {
+            // Construct the `TokenPerpetualDistributionV0` from your selected type + function
+            let dist_type = match self.perpetual_dist_type {
+                PerpetualDistributionIntervalTypeUI::BlockBased => {
+                    // parse interval, parse emission
+                    // parse distribution function
+                    RewardDistributionType::BlockBasedDistribution(
+                        self.perpetual_dist_interval_input.parse::<u64>().unwrap_or(0),
+                        0, // this field should be removed in Platform because the individual functions define it
+                        distribution_function,
+                    )
+                }
+                PerpetualDistributionIntervalTypeUI::EpochBased => {
+                    RewardDistributionType::EpochBasedDistribution(
+                        self.perpetual_dist_interval_input.parse::<u16>().unwrap_or(0),
+                        0, // this field should be removed in Platform because the individual functions define it
+                        distribution_function,
+                    )
+                }
+                PerpetualDistributionIntervalTypeUI::TimeBased => {
+                    RewardDistributionType::TimeBasedDistribution(
+                        self.perpetual_dist_interval_input.parse::<u64>().unwrap_or(0),
+                        0, // this field should be removed in Platform because the individual functions define it
+                        distribution_function,
+                    )
+                }
+                _ => {
+                    RewardDistributionType::BlockBasedDistribution(0, 0, DistributionFunction::FixedAmount { n: 0 })
+                }
+            };
+
+            let recipient = match self.perpetual_dist_recipient {
+                TokenDistributionRecipientUI::ContractOwner => TokenDistributionRecipient::ContractOwner,
+                TokenDistributionRecipientUI::Identity => {
+                    if let Some(id) = self.perpetual_dist_recipient_identity_input.as_ref() {
+                        let id_res = Identifier::from_string(id, Encoding::Base58);
+                        TokenDistributionRecipient::Identity(id_res.unwrap_or_default())
+                    } else {
+                        self.token_creator_error_message = Some(
+                            "Invalid base58 identifier for perpetual distribution recipient".to_string(),
+                        );
+                        return Err("Invalid base58 identifier for perpetual distribution recipient".to_string());
+                    }
+                }
+                TokenDistributionRecipientUI::EvonodesByParticipation => {
+                    TokenDistributionRecipient::EvonodesByParticipation
+                }
+            };
+
+            Some(TokenPerpetualDistribution::V0(TokenPerpetualDistributionV0 {
+                distribution_type: dist_type,
+                distribution_recipient: recipient,
+            }))
+        } else {
+            None
+        };
+
+        // 2) Build the distribution rules structure
+        let dist_rules_v0 = TokenDistributionRulesV0 {
+            perpetual_distribution: maybe_perpetual_distribution,
+            perpetual_distribution_rules: self.perpetual_distribution_rules.to_change_control_rules("Perpetual Distribution").unwrap(),
+            pre_programmed_distribution: if self.enable_pre_programmed_distribution {
+                let distributions: BTreeMap<u64, BTreeMap<Identifier, u64>> = match self.parse_pre_programmed_distributions() {
+                    Ok(distributions) => distributions.into_iter().map(|(k, v)| (k, std::iter::once(v).collect())).collect(),
+                    Err(err) => {
+                        self.token_creator_error_message = Some(err.clone());
+                        return Err(err.to_string());
+                    }
+                };
+
+                Some(TokenPreProgrammedDistribution::V0(
+                    TokenPreProgrammedDistributionV0 {
+                        distributions,
+                    }
+                ))
+            } else {
+                None
+            },
+            new_tokens_destination_identity: if self.new_tokens_destination_identity_enabled {
+                Some(Identifier::from_string(&self.new_tokens_destination_identity, Encoding::Base58).unwrap_or_default())
+            } else {
+                None
+            },
+            new_tokens_destination_identity_rules: self.new_tokens_destination_identity_rules.to_change_control_rules("New Tokens Destination Identity").unwrap(),
+            minting_allow_choosing_destination: self.minting_allow_choosing_destination,
+            minting_allow_choosing_destination_rules: self.minting_allow_choosing_destination_rules.to_change_control_rules("Minting Allow Choosing Destination").unwrap(),
+        };
+
+        Ok(dist_rules_v0)
     }
 
     /// Attempts to parse the `pre_programmed_distributions` into a BTreeMap.

@@ -14,6 +14,7 @@ use dash_sdk::{
                 authorized_action_takers::AuthorizedActionTakers, ChangeControlRules,
             },
             config::DataContractConfig,
+            group::Group,
             v1::DataContractV1,
             TokenConfiguration, TokenContractPosition,
         },
@@ -65,6 +66,7 @@ pub(crate) enum TokenTask {
         main_control_group_change_authorized: AuthorizedActionTakers,
 
         distribution_rules: TokenDistributionRules,
+        groups: BTreeMap<u16, Group>,
     },
     QueryMyTokenBalances,
     QueryTokensByKeyword(String),
@@ -156,6 +158,7 @@ impl AppContext {
                 conventions_change_rules,
                 main_control_group_change_authorized,
                 distribution_rules,
+                groups,
             } => {
                 let data_contract = self
                     .build_data_contract_v1_with_one_token(
@@ -178,6 +181,7 @@ impl AppContext {
                         conventions_change_rules.clone(),
                         main_control_group_change_authorized.clone(),
                         distribution_rules.clone(),
+                        groups.clone(),
                     )
                     .map_err(|e| format!("Error building contract V1: {e}"))?;
 
@@ -393,6 +397,7 @@ impl AppContext {
         conventions_change_rules: ChangeControlRules,
         main_control_group_change_authorized: AuthorizedActionTakers,
         distribution_rules: TokenDistributionRules,
+        groups: BTreeMap<u16, Group>,
     ) -> Result<DataContract, ProtocolError> {
         // 1) Create the V1 struct
         let mut contract_v1 = DataContractV1 {
@@ -442,6 +447,8 @@ impl AppContext {
         contract_v1
             .tokens
             .insert(TokenContractPosition::from(0u16), token_config);
+
+        contract_v1.groups = groups;
 
         // 8) Wrap the whole struct in DataContract::V1
         Ok(DataContract::V1(contract_v1))

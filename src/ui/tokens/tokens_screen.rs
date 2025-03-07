@@ -16,6 +16,8 @@ use dash_sdk::dpp::data_contract::associated_token::token_pre_programmed_distrib
 use dash_sdk::dpp::data_contract::change_control_rules::authorized_action_takers::AuthorizedActionTakers;
 use dash_sdk::dpp::data_contract::change_control_rules::v0::ChangeControlRulesV0;
 use dash_sdk::dpp::data_contract::change_control_rules::ChangeControlRules;
+use dash_sdk::dpp::data_contract::group::v0::GroupV0;
+use dash_sdk::dpp::data_contract::group::{Group, GroupMemberPower, GroupRequiredPower};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::SecurityLevel;
@@ -404,6 +406,78 @@ pub struct DistributionEntry {
     pub amount_str: String,
 }
 
+#[derive(Default, Clone)]
+pub struct GroupMemberUI {
+    /// The base58 identity for this member
+    pub identity_str: String,
+    /// The power (u32) as a string for user input
+    pub power_str: String,
+}
+
+#[derive(Default, Clone)]
+pub struct GroupConfigUI {
+    /// The "position" in the contract's groups map (like 0, 1, etc.)
+    pub group_position_str: String,
+    /// Required power for the group (u32), user enters as string
+    pub required_power_str: String,
+    /// The members for this group
+    pub members: Vec<GroupMemberUI>,
+}
+
+impl GroupConfigUI {
+    /// Try converting this UI struct into a real `Group` (specifically `Group::V0`).
+    /// We also return the `u16` key that this group should be inserted under in the contract’s `groups` map.
+    fn parse_into_group(&self) -> Result<(u16, Group), String> {
+        // 1) Parse group position
+        let group_position = self.group_position_str.parse::<u16>().map_err(|_| {
+            format!(
+                "Invalid group position: '{}'. Must be an unsigned integer.",
+                self.group_position_str
+            )
+        })?;
+
+        // 2) Parse required power
+        let required_power = self.required_power_str.parse::<u32>().map_err(|_| {
+            format!(
+                "Invalid required power: '{}'. Must be an unsigned integer.",
+                self.required_power_str
+            )
+        })? as GroupRequiredPower;
+
+        // 3) Build a BTreeMap<Identifier, u32> for members
+        let mut members_map = BTreeMap::new();
+        for (i, member) in self.members.iter().enumerate() {
+            // A) Parse member identity from base58
+            let id =
+                Identifier::from_string(&member.identity_str, Encoding::Base58).map_err(|_| {
+                    format!(
+                        "Member #{}: invalid base58 identity '{}'",
+                        i + 1,
+                        member.identity_str
+                    )
+                })?;
+
+            // B) Parse power
+            let power =
+                member.power_str.parse::<u32>().map_err(|_| {
+                    format!("Member #{}: invalid power '{}'", i + 1, member.power_str)
+                })? as GroupMemberPower;
+
+            // Insert into the map
+            members_map.insert(id, power);
+        }
+
+        // 4) Construct Group::V0
+        let group_v0 = GroupV0 {
+            members: members_map,
+            required_power,
+        };
+
+        // 5) Return as (group_position, Group::V0 wrapped in Group::V0())
+        Ok((group_position, Group::V0(group_v0)))
+    }
+}
+
 /// The main, combined TokensScreen:
 /// - Displays token balances or a search UI
 /// - Allows reordering of tokens if desired
@@ -457,6 +531,7 @@ pub struct TokensScreen {
     token_creator_status: TokenCreatorStatus,
     token_creator_error_message: Option<String>,
     token_keeps_history: bool,
+    groups_ui: Vec<GroupConfigUI>,
 
     // Action Rules
     manual_minting_rules: ChangeControlRulesUI,
@@ -587,6 +662,7 @@ impl TokensScreen {
             start_as_paused_input: false,
             token_keeps_history: false,
             main_control_group_input: String::new(),
+            groups_ui: Vec::new(),
 
             // Action rules
             manual_minting_rules: ChangeControlRulesUI::default(),
@@ -1353,7 +1429,7 @@ impl TokensScreen {
                     }
 
                     ui.heading("1. Select an identity and key to register the token contract with:");
-                    ui.add_space(10.0);
+                    ui.add_space(5.0);
 
                     ui.horizontal(|ui| {
                         ui.label("Identity:");
@@ -2161,6 +2237,103 @@ Emits tokens in fixed amounts for specific intervals.
                         }
                     });
 
+                    ui.add_space(5.0);
+
+                    ui.collapsing("Groups", |ui| {
+                        ui.add_space(3.0);
+                        ui.label("Define one or more groups for multi-party control of the contract.");
+
+                        ui.add_space(2.0);
+
+                        // Draw each group in a loop
+                        let mut i = 0;
+                        while i < self.groups_ui.len() {
+                            // We’ll clone it so we can safely mutate it
+                            let mut group_ui = self.groups_ui[i].clone();
+
+                            // Create a collapsible for the group: “Group #i”
+                            // or use the group_position_str to label it
+                            egui::collapsing_header::CollapsingState::load_with_default_open(
+                                ui.ctx(),
+                                format!("group_header_{}", i).into(),
+                                true,
+                            )
+                            .show_header(ui, |ui| {
+                                ui.label(format!("Group {}", group_ui.group_position_str));
+                            })
+                            .body(|ui| {
+                                ui.add_space(3.0);
+
+                                ui.horizontal(|ui| {
+                                    ui.label("Group Position (u16):");
+                                    ui.text_edit_singleline(&mut group_ui.group_position_str);
+                                });
+
+                                ui.horizontal(|ui| {
+                                    ui.label("Required Power:");
+                                    ui.text_edit_singleline(&mut group_ui.required_power_str);
+                                });
+
+                                ui.label("Members:");
+                                ui.add_space(3.0);
+
+                                let mut j = 0;
+                                while j < group_ui.members.len() {
+                                    let mut member = group_ui.members[j].clone();
+
+                                    ui.horizontal(|ui| {
+                                        ui.label(format!("Member {}:", j + 1));
+
+                                        ui.label("Identity (base58):");
+                                        ui.text_edit_singleline(&mut member.identity_str);
+
+                                        ui.label("Power (u32):");
+                                        ui.text_edit_singleline(&mut member.power_str);
+
+                                        if ui.button("Remove Member").clicked() {
+                                            group_ui.members.remove(j);
+                                            return; // return so we skip the assignment at the end
+                                        } else {
+                                            // Only assign back if we didn’t remove
+                                            group_ui.members[j] = member;
+                                        }
+                                    });
+
+                                    j += 1;
+                                }
+
+                                ui.add_space(3.0);
+                                if ui.button("Add Member").clicked() {
+                                    group_ui.members.push(GroupMemberUI {
+                                        identity_str: "".to_owned(),
+                                        power_str: "1".to_owned(),
+                                    });
+                                }
+
+                                ui.add_space(3.0);
+
+                                // A remove button for the entire group
+                                if ui.button("Remove This Group").clicked() {
+                                    self.groups_ui.remove(i);
+                                    return;
+                                } else {
+                                    self.groups_ui[i] = group_ui;
+                                }
+                            });
+
+                            i += 1;
+                        }
+
+                        ui.add_space(5.0);
+                        if ui.button("Add New Group").clicked() {
+                            self.groups_ui.push(GroupConfigUI {
+                                group_position_str: (self.groups_ui.len() as u16).to_string(),
+                                required_power_str: "1".to_owned(),
+                                members: vec![],
+                            });
+                        }
+                    });
+
                     // 6) "Register Token Contract" button
                     ui.add_space(10.0);
                     let mut new_style = (**ui.style()).clone();
@@ -2583,6 +2756,16 @@ Emits tokens in fixed amounts for specific intervals.
                         }
                     };
 
+                    let groups = match self.parse_groups() {
+                        Ok(groups_btree) => {
+                            groups_btree
+                        }
+                        Err(err) => {
+                            self.token_creator_error_message = Some(err);
+                            return;
+                        }
+                    };
+
                     let tasks = vec![
                         BackendTask::TokenTask(TokenTask::RegisterTokenContract {
                             identity,
@@ -2608,6 +2791,7 @@ Emits tokens in fixed amounts for specific intervals.
                                 .authorized_main_control_group_change
                                 .clone(),
                             distribution_rules: TokenDistributionRules::V0(dist_rules_v0),
+                            groups,
                         }),
                         BackendTask::TokenTask(TokenTask::QueryMyTokenBalances),
                     ];
@@ -2678,6 +2862,28 @@ Emits tokens in fixed amounts for specific intervals.
 
             // Insert into the map
             map.insert(timestamp, (id, amount));
+        }
+        Ok(map)
+    }
+
+    /// Attempt to parse all group UI data into a BTreeMap<u16, Group>.
+    /// Returns an error if any row fails or duplicates a position, etc.
+    pub fn parse_groups(&self) -> Result<BTreeMap<u16, Group>, String> {
+        let mut map = BTreeMap::new();
+        for (i, g) in self.groups_ui.iter().enumerate() {
+            let (pos, group) = g
+                .parse_into_group()
+                .map_err(|e| format!("Error in Group #{}: {e}", i + 1))?;
+
+            // Check for duplicates
+            if map.contains_key(&pos) {
+                return Err(format!(
+                    "Duplicate group position {pos} in Group #{}",
+                    i + 1
+                ));
+            }
+
+            map.insert(pos, group);
         }
         Ok(map)
     }

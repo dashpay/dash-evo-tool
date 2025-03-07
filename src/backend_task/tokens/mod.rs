@@ -11,8 +11,7 @@ use dash_sdk::{
                 token_distribution_rules::TokenDistributionRules,
             },
             change_control_rules::{
-                authorized_action_takers::AuthorizedActionTakers, v0::ChangeControlRulesV0,
-                ChangeControlRules,
+                authorized_action_takers::AuthorizedActionTakers, ChangeControlRules,
             },
             config::DataContractConfig,
             v1::DataContractV1,
@@ -21,7 +20,7 @@ use dash_sdk::{
         identity::accessors::IdentityGettersV0,
         ProtocolError,
     },
-    platform::{transition::fungible_tokens::freeze, DataContract, Identifier, IdentityPublicKey},
+    platform::{DataContract, Identifier, IdentityPublicKey},
     Sdk,
 };
 use std::{collections::BTreeMap, sync::Arc};
@@ -53,60 +52,14 @@ pub(crate) enum TokenTask {
         main_control_group: Option<u16>,
 
         // Manual Mint
-        manual_mint_authorized: AuthorizedActionTakers,
-        manual_mint_admin: AuthorizedActionTakers,
-        manual_mint_changing_authorized_action_takers_to_no_one_allowed: bool,
-        manual_mint_changing_admin_action_takers_to_no_one_allowed: bool,
-        manual_mint_self_changing_admin_action_takers_allowed: bool,
-
-        // Manual Burn
-        manual_burn_authorized: AuthorizedActionTakers,
-        manual_burn_admin: AuthorizedActionTakers,
-        manual_burn_changing_authorized_action_takers_to_no_one_allowed: bool,
-        manual_burn_changing_admin_action_takers_to_no_one_allowed: bool,
-        manual_burn_self_changing_admin_action_takers_allowed: bool,
-
-        // Freeze
-        freeze_authorized: AuthorizedActionTakers,
-        freeze_admin: AuthorizedActionTakers,
-        freeze_changing_authorized_action_takers_to_no_one_allowed: bool,
-        freeze_changing_admin_action_takers_to_no_one_allowed: bool,
-        freeze_self_changing_admin_action_takers_allowed: bool,
-
-        // Unfreeze
-        unfreeze_authorized: AuthorizedActionTakers,
-        unfreeze_admin: AuthorizedActionTakers,
-        unfreeze_changing_authorized_action_takers_to_no_one_allowed: bool,
-        unfreeze_changing_admin_action_takers_to_no_one_allowed: bool,
-        unfreeze_self_changing_admin_action_takers_allowed: bool,
-
-        // Destroy
-        destroy_frozen_funds_authorized: AuthorizedActionTakers,
-        destroy_frozen_funds_admin: AuthorizedActionTakers,
-        destroy_frozen_funds_changing_authorized_action_takers_to_no_one_allowed: bool,
-        destroy_frozen_funds_changing_admin_action_takers_to_no_one_allowed: bool,
-        destroy_frozen_funds_self_changing_admin_action_takers_allowed: bool,
-
-        // Pause/Resume
-        pause_and_resume_authorized: AuthorizedActionTakers,
-        pause_and_resume_admin: AuthorizedActionTakers,
-        pause_and_resume_changing_authorized_action_takers_to_no_one_allowed: bool,
-        pause_and_resume_changing_admin_action_takers_to_no_one_allowed: bool,
-        pause_and_resume_self_changing_admin_action_takers_allowed: bool,
-
-        // Max Supply Change
-        max_supply_change_authorized: AuthorizedActionTakers,
-        max_supply_change_admin: AuthorizedActionTakers,
-        max_supply_change_changing_authorized_action_takers_to_no_one_allowed: bool,
-        max_supply_change_changing_admin_action_takers_to_no_one_allowed: bool,
-        max_supply_change_self_changing_admin_action_takers_allowed: bool,
-
-        // Conventions Change
-        conventions_change_authorized: AuthorizedActionTakers,
-        conventions_change_admin: AuthorizedActionTakers,
-        conventions_change_changing_authorized_action_takers_to_no_one_allowed: bool,
-        conventions_change_changing_admin_action_takers_to_no_one_allowed: bool,
-        conventions_change_self_changing_admin_action_takers_allowed: bool,
+        manual_minting_rules: ChangeControlRules,
+        manual_burning_rules: ChangeControlRules,
+        freeze_rules: ChangeControlRules,
+        unfreeze_rules: ChangeControlRules,
+        destroy_frozen_funds_rules: ChangeControlRules,
+        emergency_action_rules: ChangeControlRules,
+        max_supply_change_rules: ChangeControlRules,
+        conventions_change_rules: ChangeControlRules,
 
         // Main Control Group Change
         main_control_group_change_authorized: AuthorizedActionTakers,
@@ -193,46 +146,14 @@ impl AppContext {
                 start_paused,
                 keeps_history,
                 main_control_group,
-                manual_mint_authorized,
-                manual_mint_admin,
-                manual_mint_changing_authorized_action_takers_to_no_one_allowed,
-                manual_mint_changing_admin_action_takers_to_no_one_allowed,
-                manual_mint_self_changing_admin_action_takers_allowed,
-                manual_burn_authorized,
-                manual_burn_admin,
-                manual_burn_changing_authorized_action_takers_to_no_one_allowed,
-                manual_burn_changing_admin_action_takers_to_no_one_allowed,
-                manual_burn_self_changing_admin_action_takers_allowed,
-                freeze_authorized,
-                freeze_admin,
-                freeze_changing_authorized_action_takers_to_no_one_allowed,
-                freeze_changing_admin_action_takers_to_no_one_allowed,
-                freeze_self_changing_admin_action_takers_allowed,
-                unfreeze_authorized,
-                unfreeze_admin,
-                unfreeze_changing_authorized_action_takers_to_no_one_allowed,
-                unfreeze_changing_admin_action_takers_to_no_one_allowed,
-                unfreeze_self_changing_admin_action_takers_allowed,
-                destroy_frozen_funds_authorized,
-                destroy_frozen_funds_admin,
-                destroy_frozen_funds_changing_authorized_action_takers_to_no_one_allowed,
-                destroy_frozen_funds_changing_admin_action_takers_to_no_one_allowed,
-                destroy_frozen_funds_self_changing_admin_action_takers_allowed,
-                pause_and_resume_authorized,
-                pause_and_resume_admin,
-                pause_and_resume_changing_authorized_action_takers_to_no_one_allowed,
-                pause_and_resume_changing_admin_action_takers_to_no_one_allowed,
-                pause_and_resume_self_changing_admin_action_takers_allowed,
-                max_supply_change_authorized,
-                max_supply_change_admin,
-                max_supply_change_changing_authorized_action_takers_to_no_one_allowed,
-                max_supply_change_changing_admin_action_takers_to_no_one_allowed,
-                max_supply_change_self_changing_admin_action_takers_allowed,
-                conventions_change_authorized,
-                conventions_change_admin,
-                conventions_change_changing_authorized_action_takers_to_no_one_allowed,
-                conventions_change_changing_admin_action_takers_to_no_one_allowed,
-                conventions_change_self_changing_admin_action_takers_allowed,
+                manual_minting_rules,
+                manual_burning_rules,
+                freeze_rules,
+                unfreeze_rules,
+                destroy_frozen_funds_rules,
+                emergency_action_rules,
+                max_supply_change_rules,
+                conventions_change_rules,
                 main_control_group_change_authorized,
                 distribution_rules,
             } => {
@@ -247,46 +168,14 @@ impl AppContext {
                         *start_paused,
                         *keeps_history,
                         *main_control_group,
-                        manual_mint_authorized.clone(),
-                        manual_mint_admin.clone(),
-                        *manual_mint_changing_authorized_action_takers_to_no_one_allowed,
-                        *manual_mint_changing_admin_action_takers_to_no_one_allowed,
-                        *manual_mint_self_changing_admin_action_takers_allowed,
-                        manual_burn_authorized.clone(),
-                        manual_burn_admin.clone(),
-                        *manual_burn_changing_authorized_action_takers_to_no_one_allowed,
-                        *manual_burn_changing_admin_action_takers_to_no_one_allowed,
-                        *manual_burn_self_changing_admin_action_takers_allowed,
-                        freeze_authorized.clone(),
-                        freeze_admin.clone(),
-                        *freeze_changing_authorized_action_takers_to_no_one_allowed,
-                        *freeze_changing_admin_action_takers_to_no_one_allowed,
-                        *freeze_self_changing_admin_action_takers_allowed,
-                        unfreeze_authorized.clone(),
-                        unfreeze_admin.clone(),
-                        *unfreeze_changing_authorized_action_takers_to_no_one_allowed,
-                        *unfreeze_changing_admin_action_takers_to_no_one_allowed,
-                        *unfreeze_self_changing_admin_action_takers_allowed,
-                        destroy_frozen_funds_authorized.clone(),
-                        destroy_frozen_funds_admin.clone(),
-                        *destroy_frozen_funds_changing_authorized_action_takers_to_no_one_allowed,
-                        *destroy_frozen_funds_changing_admin_action_takers_to_no_one_allowed,
-                        *destroy_frozen_funds_self_changing_admin_action_takers_allowed,
-                        pause_and_resume_authorized.clone(),
-                        pause_and_resume_admin.clone(),
-                        *pause_and_resume_changing_authorized_action_takers_to_no_one_allowed,
-                        *pause_and_resume_changing_admin_action_takers_to_no_one_allowed,
-                        *pause_and_resume_self_changing_admin_action_takers_allowed,
-                        max_supply_change_authorized.clone(),
-                        max_supply_change_admin.clone(),
-                        *max_supply_change_changing_authorized_action_takers_to_no_one_allowed,
-                        *max_supply_change_changing_admin_action_takers_to_no_one_allowed,
-                        *max_supply_change_self_changing_admin_action_takers_allowed,
-                        conventions_change_authorized.clone(),
-                        conventions_change_admin.clone(),
-                        *conventions_change_changing_authorized_action_takers_to_no_one_allowed,
-                        *conventions_change_changing_admin_action_takers_to_no_one_allowed,
-                        *conventions_change_self_changing_admin_action_takers_allowed,
+                        manual_minting_rules.clone(),
+                        manual_burning_rules.clone(),
+                        freeze_rules.clone(),
+                        unfreeze_rules.clone(),
+                        destroy_frozen_funds_rules.clone(),
+                        emergency_action_rules.clone(),
+                        max_supply_change_rules.clone(),
+                        conventions_change_rules.clone(),
                         main_control_group_change_authorized.clone(),
                         distribution_rules.clone(),
                     )
@@ -494,46 +383,14 @@ impl AppContext {
         start_as_paused: bool,
         keeps_history: bool,
         main_control_group: Option<u16>,
-        manual_mint_authorized: AuthorizedActionTakers,
-        manual_mint_admin: AuthorizedActionTakers,
-        manual_mint_changing_authorized_action_takers_to_no_one_allowed: bool,
-        manual_mint_changing_admin_action_takers_to_no_one_allowed: bool,
-        manual_mint_self_changing_admin_action_takers_allowed: bool,
-        manual_burn_authorized: AuthorizedActionTakers,
-        manual_burn_admin: AuthorizedActionTakers,
-        manual_burn_changing_authorized_action_takers_to_no_one_allowed: bool,
-        manual_burn_changing_admin_action_takers_to_no_one_allowed: bool,
-        manual_burn_self_changing_admin_action_takers_allowed: bool,
-        freeze_authorized: AuthorizedActionTakers,
-        freeze_admin: AuthorizedActionTakers,
-        freeze_changing_authorized_action_takers_to_no_one_allowed: bool,
-        freeze_changing_admin_action_takers_to_no_one_allowed: bool,
-        freeze_self_changing_admin_action_takers_allowed: bool,
-        unfreeze_authorized: AuthorizedActionTakers,
-        unfreeze_admin: AuthorizedActionTakers,
-        unfreeze_changing_authorized_action_takers_to_no_one_allowed: bool,
-        unfreeze_changing_admin_action_takers_to_no_one_allowed: bool,
-        unfreeze_self_changing_admin_action_takers_allowed: bool,
-        destroy_frozen_funds_authorized: AuthorizedActionTakers,
-        destroy_frozen_funds_admin: AuthorizedActionTakers,
-        destroy_frozen_funds_changing_authorized_action_takers_to_no_one_allowed: bool,
-        destroy_frozen_funds_changing_admin_action_takers_to_no_one_allowed: bool,
-        destroy_frozen_funds_self_changing_admin_action_takers_allowed: bool,
-        pause_and_resume_authorized: AuthorizedActionTakers,
-        pause_and_resume_admin: AuthorizedActionTakers,
-        pause_and_resume_changing_authorized_action_takers_to_no_one_allowed: bool,
-        pause_and_resume_changing_admin_action_takers_to_no_one_allowed: bool,
-        pause_and_resume_self_changing_admin_action_takers_allowed: bool,
-        max_supply_change_authorized: AuthorizedActionTakers,
-        max_supply_change_admin: AuthorizedActionTakers,
-        max_supply_change_changing_authorized_action_takers_to_no_one_allowed: bool,
-        max_supply_change_changing_admin_action_takers_to_no_one_allowed: bool,
-        max_supply_change_self_changing_admin_action_takers_allowed: bool,
-        conventions_change_authorized: AuthorizedActionTakers,
-        conventions_change_admin: AuthorizedActionTakers,
-        conventions_change_changing_authorized_action_takers_to_no_one_allowed: bool,
-        conventions_change_changing_admin_action_takers_to_no_one_allowed: bool,
-        conventions_change_self_changing_admin_action_takers_allowed: bool,
+        manual_minting_rules: ChangeControlRules,
+        manual_burning_rules: ChangeControlRules,
+        freeze_rules: ChangeControlRules,
+        unfreeze_rules: ChangeControlRules,
+        destroy_frozen_funds_rules: ChangeControlRules,
+        emergency_action_rules: ChangeControlRules,
+        max_supply_change_rules: ChangeControlRules,
+        conventions_change_rules: ChangeControlRules,
         main_control_group_change_authorized: AuthorizedActionTakers,
         distribution_rules: TokenDistributionRules,
     ) -> Result<DataContract, ProtocolError> {
@@ -567,102 +424,15 @@ impl AppContext {
         token_config_v0.start_as_paused = start_as_paused;
         token_config_v0.keeps_history = keeps_history;
         token_config_v0.main_control_group = main_control_group;
-
-        // 3) Manual Minting
-        // Set manualMintingRules to "ContractOwner"
-        token_config_v0.manual_minting_rules = ChangeControlRules::V0(ChangeControlRulesV0 {
-            authorized_to_make_change: manual_mint_authorized,
-            admin_action_takers: manual_mint_admin,
-            changing_authorized_action_takers_to_no_one_allowed:
-                manual_mint_changing_authorized_action_takers_to_no_one_allowed,
-            changing_admin_action_takers_to_no_one_allowed:
-                manual_mint_changing_admin_action_takers_to_no_one_allowed,
-            self_changing_admin_action_takers_allowed:
-                manual_mint_self_changing_admin_action_takers_allowed,
-        });
-
-        // 4) Manual Burning
-        token_config_v0.manual_burning_rules = ChangeControlRules::V0(ChangeControlRulesV0 {
-            authorized_to_make_change: manual_burn_authorized,
-            admin_action_takers: manual_burn_admin,
-            changing_authorized_action_takers_to_no_one_allowed:
-                manual_burn_changing_authorized_action_takers_to_no_one_allowed,
-            changing_admin_action_takers_to_no_one_allowed:
-                manual_burn_changing_admin_action_takers_to_no_one_allowed,
-            self_changing_admin_action_takers_allowed:
-                manual_burn_self_changing_admin_action_takers_allowed,
-        });
-
-        // 5) Freeze/Unfreeze
-        token_config_v0.freeze_rules = ChangeControlRules::V0(ChangeControlRulesV0 {
-            authorized_to_make_change: freeze_authorized,
-            admin_action_takers: freeze_admin,
-            changing_authorized_action_takers_to_no_one_allowed:
-                freeze_changing_authorized_action_takers_to_no_one_allowed,
-            changing_admin_action_takers_to_no_one_allowed:
-                freeze_changing_admin_action_takers_to_no_one_allowed,
-            self_changing_admin_action_takers_allowed:
-                freeze_self_changing_admin_action_takers_allowed,
-        });
-
-        token_config_v0.unfreeze_rules = ChangeControlRules::V0(ChangeControlRulesV0 {
-            authorized_to_make_change: unfreeze_authorized,
-            admin_action_takers: unfreeze_admin,
-            changing_authorized_action_takers_to_no_one_allowed:
-                unfreeze_changing_authorized_action_takers_to_no_one_allowed,
-            changing_admin_action_takers_to_no_one_allowed:
-                unfreeze_changing_admin_action_takers_to_no_one_allowed,
-            self_changing_admin_action_takers_allowed:
-                unfreeze_self_changing_admin_action_takers_allowed,
-        });
-
-        // 6) DestroyFrozenFunds
-        token_config_v0.destroy_frozen_funds_rules = ChangeControlRules::V0(ChangeControlRulesV0 {
-            authorized_to_make_change: destroy_frozen_funds_authorized,
-            admin_action_takers: destroy_frozen_funds_admin,
-            changing_authorized_action_takers_to_no_one_allowed:
-                destroy_frozen_funds_changing_authorized_action_takers_to_no_one_allowed,
-            changing_admin_action_takers_to_no_one_allowed:
-                destroy_frozen_funds_changing_admin_action_takers_to_no_one_allowed,
-            self_changing_admin_action_takers_allowed:
-                destroy_frozen_funds_self_changing_admin_action_takers_allowed,
-        });
-
-        token_config_v0.emergency_action_rules = ChangeControlRules::V0(ChangeControlRulesV0 {
-            authorized_to_make_change: pause_and_resume_authorized,
-            admin_action_takers: pause_and_resume_admin,
-            changing_authorized_action_takers_to_no_one_allowed:
-                pause_and_resume_changing_authorized_action_takers_to_no_one_allowed,
-            changing_admin_action_takers_to_no_one_allowed:
-                pause_and_resume_changing_admin_action_takers_to_no_one_allowed,
-            self_changing_admin_action_takers_allowed:
-                pause_and_resume_self_changing_admin_action_takers_allowed,
-        });
-
-        token_config_v0.max_supply_change_rules = ChangeControlRules::V0(ChangeControlRulesV0 {
-            authorized_to_make_change: max_supply_change_authorized,
-            admin_action_takers: max_supply_change_admin,
-            changing_authorized_action_takers_to_no_one_allowed:
-                max_supply_change_changing_authorized_action_takers_to_no_one_allowed,
-            changing_admin_action_takers_to_no_one_allowed:
-                max_supply_change_changing_admin_action_takers_to_no_one_allowed,
-            self_changing_admin_action_takers_allowed:
-                max_supply_change_self_changing_admin_action_takers_allowed,
-        });
-
-        token_config_v0.conventions_change_rules = ChangeControlRules::V0(ChangeControlRulesV0 {
-            authorized_to_make_change: conventions_change_authorized,
-            admin_action_takers: conventions_change_admin,
-            changing_authorized_action_takers_to_no_one_allowed:
-                conventions_change_changing_authorized_action_takers_to_no_one_allowed,
-            changing_admin_action_takers_to_no_one_allowed:
-                conventions_change_changing_admin_action_takers_to_no_one_allowed,
-            self_changing_admin_action_takers_allowed:
-                conventions_change_self_changing_admin_action_takers_allowed,
-        });
-
+        token_config_v0.manual_minting_rules = manual_minting_rules;
+        token_config_v0.manual_burning_rules = manual_burning_rules;
+        token_config_v0.freeze_rules = freeze_rules;
+        token_config_v0.unfreeze_rules = unfreeze_rules;
+        token_config_v0.destroy_frozen_funds_rules = destroy_frozen_funds_rules;
+        token_config_v0.emergency_action_rules = emergency_action_rules;
+        token_config_v0.max_supply_change_rules = max_supply_change_rules;
+        token_config_v0.conventions_change_rules = conventions_change_rules;
         token_config_v0.main_control_group_can_be_modified = main_control_group_change_authorized;
-
         token_config_v0.distribution_rules = distribution_rules;
 
         // Wrap in the enum

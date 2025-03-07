@@ -123,6 +123,232 @@ enum SortOrder {
     Descending,
 }
 
+#[derive(Clone, PartialEq, Eq, Default)]
+pub struct ChangeControlRulesUI {
+    pub authorized: AuthorizedActionTakers,
+    pub authorized_identity: Option<String>,
+    pub authorized_group: Option<String>,
+
+    pub admin_action_takers: AuthorizedActionTakers,
+    pub admin_identity: Option<String>,
+    pub admin_group: Option<String>,
+
+    pub changing_authorized_action_takers_to_no_one_allowed: bool,
+    pub changing_admin_action_takers_to_no_one_allowed: bool,
+    pub self_changing_admin_action_takers_allowed: bool,
+}
+
+impl ChangeControlRulesUI {
+    /// Renders the UI for a single action’s configuration (mint, burn, freeze, etc.)
+    pub fn render_control_change_rules_ui(&mut self, ui: &mut egui::Ui, action_name: &str) {
+        ui.collapsing(action_name, |ui| {
+            ui.add_space(3.0);
+
+            // Authorized action takers
+            ui.horizontal(|ui| {
+                ui.label("Authorized to perform action:");
+                egui::ComboBox::from_id_salt(format!("Authorized {}", action_name))
+                    .selected_text(self.authorized.to_string())
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut self.authorized,
+                            AuthorizedActionTakers::NoOne,
+                            "No One",
+                        );
+                        ui.selectable_value(
+                            &mut self.authorized,
+                            AuthorizedActionTakers::ContractOwner,
+                            "Contract Owner",
+                        );
+                        ui.selectable_value(
+                            &mut self.authorized,
+                            AuthorizedActionTakers::Identity(Identifier::default()),
+                            "Identity",
+                        );
+                        ui.selectable_value(
+                            &mut self.authorized,
+                            AuthorizedActionTakers::MainGroup,
+                            "Main Group",
+                        );
+                        ui.selectable_value(
+                            &mut self.authorized,
+                            AuthorizedActionTakers::Group(0),
+                            "Group",
+                        );
+                    });
+
+                // If user selected Identity or Group, show text edit
+                match &mut self.authorized {
+                    AuthorizedActionTakers::Identity(_) => {
+                        self.authorized_identity.get_or_insert_with(String::new);
+                        if let Some(ref mut id) = self.authorized_identity {
+                            ui.add(egui::TextEdit::singleline(id).hint_text("Enter base58 id"));
+                        }
+                    }
+                    AuthorizedActionTakers::Group(_) => {
+                        self.authorized_group.get_or_insert_with(|| "0".to_owned());
+                        if let Some(ref mut group_str) = self.authorized_group {
+                            ui.add(
+                                egui::TextEdit::singleline(group_str)
+                                    .hint_text("Group contract position"),
+                            );
+                        }
+                    }
+                    _ => {}
+                }
+            });
+
+            ui.add_space(2.0);
+
+            // Admin action takers
+            ui.horizontal(|ui| {
+                ui.label("Authorized to change rules:");
+                egui::ComboBox::from_id_salt(format!("Admin {}", action_name))
+                    .selected_text(self.admin_action_takers.to_string())
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut self.admin_action_takers,
+                            AuthorizedActionTakers::NoOne,
+                            "No One",
+                        );
+                        ui.selectable_value(
+                            &mut self.admin_action_takers,
+                            AuthorizedActionTakers::ContractOwner,
+                            "Contract Owner",
+                        );
+                        ui.selectable_value(
+                            &mut self.admin_action_takers,
+                            AuthorizedActionTakers::Identity(Identifier::default()),
+                            "Identity",
+                        );
+                        ui.selectable_value(
+                            &mut self.admin_action_takers,
+                            AuthorizedActionTakers::MainGroup,
+                            "Main Group",
+                        );
+                        ui.selectable_value(
+                            &mut self.admin_action_takers,
+                            AuthorizedActionTakers::Group(0),
+                            "Group",
+                        );
+                    });
+
+                match &mut self.admin_action_takers {
+                    AuthorizedActionTakers::Identity(_) => {
+                        self.admin_identity.get_or_insert_with(String::new);
+                        if let Some(ref mut id) = self.admin_identity {
+                            ui.add(egui::TextEdit::singleline(id).hint_text("Enter base58 id"));
+                        }
+                    }
+                    AuthorizedActionTakers::Group(_) => {
+                        self.admin_group.get_or_insert_with(|| "0".to_owned());
+                        if let Some(ref mut group_str) = self.admin_group {
+                            ui.add(
+                                egui::TextEdit::singleline(group_str)
+                                    .hint_text("Group contract position"),
+                            );
+                        }
+                    }
+                    _ => {}
+                }
+            });
+
+            ui.add_space(2.0);
+
+            // Booleans
+            ui.checkbox(
+                &mut self.changing_authorized_action_takers_to_no_one_allowed,
+                "Changing authorized action takers to no one allowed",
+            );
+            ui.checkbox(
+                &mut self.changing_admin_action_takers_to_no_one_allowed,
+                "Changing admin action takers to no one allowed",
+            );
+            ui.checkbox(
+                &mut self.self_changing_admin_action_takers_allowed,
+                "Self-changing admin action takers allowed",
+            );
+
+            ui.add_space(3.0);
+        });
+    }
+
+    pub fn to_change_control_rules(
+        &mut self,
+        action_name: &str,
+    ) -> Result<ChangeControlRules, String> {
+        // 1) Update self.authorized if it’s Identity or Group
+        match self.authorized {
+            AuthorizedActionTakers::Identity(_) => {
+                if let Some(ref id_str) = self.authorized_identity {
+                    let parsed =
+                        Identifier::from_string(id_str, Encoding::Base58).map_err(|_| {
+                            format!(
+                                "Invalid base58 identifier for {} authorized identity",
+                                action_name
+                            )
+                        })?;
+                    self.authorized = AuthorizedActionTakers::Identity(parsed);
+                }
+            }
+            AuthorizedActionTakers::Group(_) => {
+                if let Some(ref group_str) = self.authorized_group {
+                    let parsed = group_str.parse::<u16>().map_err(|_| {
+                        format!(
+                            "Invalid group contract position for {} authorized group",
+                            action_name
+                        )
+                    })?;
+                    self.authorized = AuthorizedActionTakers::Group(parsed);
+                }
+            }
+            _ => {}
+        }
+
+        // 2) Update self.admin_action_takers if it’s Identity or Group
+        match self.admin_action_takers {
+            AuthorizedActionTakers::Identity(_) => {
+                if let Some(ref id_str) = self.admin_identity {
+                    let parsed =
+                        Identifier::from_string(id_str, Encoding::Base58).map_err(|_| {
+                            format!(
+                                "Invalid base58 identifier for {} admin identity",
+                                action_name
+                            )
+                        })?;
+                    self.admin_action_takers = AuthorizedActionTakers::Identity(parsed);
+                }
+            }
+            AuthorizedActionTakers::Group(_) => {
+                if let Some(ref group_str) = self.admin_group {
+                    let parsed = group_str.parse::<u16>().map_err(|_| {
+                        format!(
+                            "Invalid group contract position for {} admin group",
+                            action_name
+                        )
+                    })?;
+                    self.admin_action_takers = AuthorizedActionTakers::Group(parsed);
+                }
+            }
+            _ => {}
+        }
+
+        // 3) Construct the ChangeControlRules
+        let rules = ChangeControlRules::V0(ChangeControlRulesV0 {
+            authorized_to_make_change: self.authorized.clone(),
+            admin_action_takers: self.admin_action_takers.clone(),
+            changing_authorized_action_takers_to_no_one_allowed: self
+                .changing_authorized_action_takers_to_no_one_allowed,
+            changing_admin_action_takers_to_no_one_allowed: self
+                .changing_admin_action_takers_to_no_one_allowed,
+            self_changing_admin_action_takers_allowed: self
+                .self_changing_admin_action_takers_allowed,
+        });
+
+        Ok(rules)
+    }
+}
+
 /// A lightweight enum for the user’s choice of distribution type
 #[derive(Debug, Clone, PartialEq)]
 pub enum PerpetualDistributionIntervalTypeUI {
@@ -152,6 +378,18 @@ pub enum TokenDistributionRecipientUI {
     ContractOwner,
     Identity,
     EvonodesByParticipation,
+}
+
+#[derive(Default, Clone)]
+pub struct DistributionEntry {
+    /// The block timestamp or block height when distribution occurs
+    pub timestamp_str: String,
+
+    /// The base58 identity to receive distribution
+    pub identity_str: String,
+
+    /// The distribution amount
+    pub amount_str: String,
 }
 
 /// The main, combined TokensScreen:
@@ -206,93 +444,15 @@ pub struct TokensScreen {
     token_creator_error_message: Option<String>,
     token_keeps_history: bool,
 
-    // Manual mint rules
-    authorized_manual_mint: AuthorizedActionTakers,
-    manual_mint_authorized_identity: Option<String>,
-    manual_mint_authorized_group: Option<String>,
-    admin_action_takers_manual_mint: AuthorizedActionTakers,
-    admin_manual_mint_identity: Option<String>,
-    admin_manual_mint_group: Option<String>,
-    changing_authorized_action_takers_to_no_one_allowed_manual_mint: bool,
-    changing_admin_action_takers_to_no_one_allowed_manual_mint: bool,
-    self_changing_admin_action_takers_allowed_manual_mint: bool,
-
-    // Manual burn rules
-    authorized_manual_burn: AuthorizedActionTakers,
-    manual_burn_authorized_identity: Option<String>,
-    manual_burn_authorized_group: Option<String>,
-    admin_action_takers_manual_burn: AuthorizedActionTakers,
-    admin_manual_burn_identity: Option<String>,
-    admin_manual_burn_group: Option<String>,
-    changing_authorized_action_takers_to_no_one_allowed_manual_burn: bool,
-    changing_admin_action_takers_to_no_one_allowed_manual_burn: bool,
-    self_changing_admin_action_takers_allowed_manual_burn: bool,
-
-    // Freeze rules
-    authorized_freeze: AuthorizedActionTakers,
-    freeze_authorized_identity: Option<String>,
-    freeze_authorized_group: Option<String>,
-    admin_action_takers_freeze: AuthorizedActionTakers,
-    admin_freeze_identity: Option<String>,
-    admin_freeze_group: Option<String>,
-    changing_authorized_action_takers_to_no_one_allowed_freeze: bool,
-    changing_admin_action_takers_to_no_one_allowed_freeze: bool,
-    self_changing_admin_action_takers_allowed_freeze: bool,
-
-    // Unfreeze rules
-    authorized_unfreeze: AuthorizedActionTakers,
-    unfreeze_authorized_identity: Option<String>,
-    unfreeze_authorized_group: Option<String>,
-    admin_action_takers_unfreeze: AuthorizedActionTakers,
-    admin_unfreeze_identity: Option<String>,
-    admin_unfreeze_group: Option<String>,
-    changing_authorized_action_takers_to_no_one_allowed_unfreeze: bool,
-    changing_admin_action_takers_to_no_one_allowed_unfreeze: bool,
-    self_changing_admin_action_takers_allowed_unfreeze: bool,
-
-    // Destroy frozen funds rules
-    authorized_destroy_frozen_funds: AuthorizedActionTakers,
-    destroy_frozen_funds_authorized_identity: Option<String>,
-    destroy_frozen_funds_authorized_group: Option<String>,
-    admin_action_takers_destroy_frozen_funds: AuthorizedActionTakers,
-    admin_destroy_frozen_funds_identity: Option<String>,
-    admin_destroy_frozen_funds_group: Option<String>,
-    changing_authorized_action_takers_to_no_one_allowed_destroy_frozen_funds: bool,
-    changing_admin_action_takers_to_no_one_allowed_destroy_frozen_funds: bool,
-    self_changing_admin_action_takers_allowed_destroy_frozen_funds: bool,
-
-    // Pause/resume rules
-    authorized_pause_resume: AuthorizedActionTakers,
-    pause_resume_authorized_identity: Option<String>,
-    pause_resume_authorized_group: Option<String>,
-    admin_action_takers_pause_resume: AuthorizedActionTakers,
-    admin_pause_resume_identity: Option<String>,
-    admin_pause_resume_group: Option<String>,
-    changing_authorized_action_takers_to_no_one_allowed_pause_resume: bool,
-    changing_admin_action_takers_to_no_one_allowed_pause_resume: bool,
-    self_changing_admin_action_takers_allowed_pause_resume: bool,
-
-    // Max supply change rules
-    authorized_max_supply_change: AuthorizedActionTakers,
-    max_supply_change_authorized_identity: Option<String>,
-    max_supply_change_authorized_group: Option<String>,
-    admin_action_takers_max_supply_change: AuthorizedActionTakers,
-    admin_max_supply_change_identity: Option<String>,
-    admin_max_supply_change_group: Option<String>,
-    changing_authorized_action_takers_to_no_one_allowed_max_supply_change: bool,
-    changing_admin_action_takers_to_no_one_allowed_max_supply_change: bool,
-    self_changing_admin_action_takers_allowed_max_supply_change: bool,
-
-    // Conventions change rules
-    authorized_conventions_change: AuthorizedActionTakers,
-    conventions_change_authorized_identity: Option<String>,
-    conventions_change_authorized_group: Option<String>,
-    admin_action_takers_conventions_change: AuthorizedActionTakers,
-    admin_conventions_change_identity: Option<String>,
-    admin_conventions_change_group: Option<String>,
-    changing_authorized_action_takers_to_no_one_allowed_conventions_change: bool,
-    changing_admin_action_takers_to_no_one_allowed_conventions_change: bool,
-    self_changing_admin_action_takers_allowed_conventions_change: bool,
+    // Action Rules
+    manual_minting_rules: ChangeControlRulesUI,
+    manual_burning_rules: ChangeControlRulesUI,
+    freeze_rules: ChangeControlRulesUI,
+    unfreeze_rules: ChangeControlRulesUI,
+    destroy_frozen_funds_rules: ChangeControlRulesUI,
+    emergency_action_rules: ChangeControlRulesUI,
+    max_supply_change_rules: ChangeControlRulesUI,
+    conventions_change_rules: ChangeControlRulesUI,
 
     // Main control group change rules
     authorized_main_control_group_change: AuthorizedActionTakers,
@@ -301,15 +461,7 @@ pub struct TokensScreen {
 
     /// Distribution (perpetual) toggles/fields
     pub enable_perpetual_distribution: bool,
-    pub perpetual_distribution_rules_authorized: AuthorizedActionTakers,
-    pub perpetual_distribution_authorized_identity: Option<String>,
-    pub perpetual_distribution_authorized_group: Option<String>,
-    pub admin_action_takers_perpetual_distribution: AuthorizedActionTakers,
-    pub admin_perpetual_distribution_identity: Option<String>,
-    pub admin_perpetual_distribution_group: Option<String>,
-    pub changing_authorized_action_takers_to_no_one_allowed_perpetual_distribution: bool,
-    pub changing_admin_action_takers_to_no_one_allowed_perpetual_distribution: bool,
-    pub self_changing_admin_action_takers_allowed_perpetual_distribution: bool,
+    pub perpetual_distribution_rules: ChangeControlRulesUI,
 
     // Which distribution interval type is selected?
     pub perpetual_dist_type: PerpetualDistributionIntervalTypeUI,
@@ -364,43 +516,20 @@ pub struct TokensScreen {
 
     // Similarly for identity recipients, you might store:
     pub perpetual_dist_recipient: TokenDistributionRecipientUI,
-    pub perpetual_dist_identity_input: String, // if the user chooses `Identity(...)`
-    pub perpetual_dist_group_input: String,    // if the user chooses `Group(...)`
+    pub perpetual_dist_recipient_identity_input: Option<String>,
 
     /// Pre-programmed distribution
     pub enable_pre_programmed_distribution: bool,
-    // Possibly let them paste in a JSON schedule, or some minimal UI for (timestamp -> {id -> amount}).
-    // For an example, we'll keep it simple:
-    pub pre_programmed_distribution_json_input: String,
+    pub pre_programmed_distributions: Vec<DistributionEntry>,
 
     // new_tokens_destination_identity
     pub new_tokens_destination_identity_enabled: bool,
     pub new_tokens_destination_identity: String,
-    pub new_tokens_destination_identity_rules_authorized: AuthorizedActionTakers,
-    pub new_tokens_destination_identity_rules_authorized_identity: Option<String>,
-    pub new_tokens_destination_identity_rules_authorized_group: Option<String>,
-    pub admin_action_takers_new_tokens_destination_identity: AuthorizedActionTakers,
-    pub admin_new_tokens_destination_identity_group: Option<String>,
-    pub admin_new_tokens_destination_identity_identity: Option<String>,
-    pub changing_authorized_action_takers_to_no_one_allowed_new_tokens_destination_identity: bool,
-    pub changing_admin_action_takers_to_no_one_allowed_new_tokens_destination_identity: bool,
-    pub self_changing_admin_action_takers_allowed_new_tokens_destination_identity: bool,
-    pub new_tokens_destination_identity_identity_input: String, // if the user chooses `Identity(...)`
-    pub new_tokens_destination_identity_group_input: String,    // if the user chooses `Group(...)`
+    pub new_tokens_destination_identity_rules: ChangeControlRulesUI,
 
     // minting_allow_choosing_destination
     pub minting_allow_choosing_destination: bool,
-    pub minting_allow_choosing_destination_rules_authorized: AuthorizedActionTakers,
-    pub minting_allow_choosing_destination_rules_authorized_identity: Option<String>,
-    pub minting_allow_choosing_destination_rules_authorized_group: Option<String>,
-    pub admin_action_takers_minting_allow_choosing_destination: AuthorizedActionTakers,
-    pub admin_minting_allow_choosing_destination_identity: Option<String>,
-    pub admin_minting_allow_choosing_destination_group: Option<String>,
-    pub changing_authorized_action_takers_to_no_one_allowed_minting_allow_choosing_destination: bool,
-    pub changing_admin_action_takers_to_no_one_allowed_minting_allow_choosing_destination: bool,
-    pub self_changing_admin_action_takers_allowed_minting_allow_choosing_destination: bool,
-    pub minting_allow_choosing_destination_identity_input: String, // if the user chooses `Identity(...)`
-    pub minting_allow_choosing_destination_group_input: String,    // if the user chooses `Group(...)`
+    pub minting_allow_choosing_destination_rules: ChangeControlRulesUI,
 }
 
 impl TokensScreen {
@@ -456,93 +585,15 @@ impl TokensScreen {
             token_keeps_history: false,
             main_control_group_input: String::new(),
 
-            // Manual mint rules
-            authorized_manual_mint: AuthorizedActionTakers::NoOne,
-            manual_mint_authorized_identity: None,
-            manual_mint_authorized_group: None,
-            admin_action_takers_manual_mint: AuthorizedActionTakers::NoOne,
-            admin_manual_mint_identity: None,
-            admin_manual_mint_group: None,
-            changing_authorized_action_takers_to_no_one_allowed_manual_mint: false,
-            changing_admin_action_takers_to_no_one_allowed_manual_mint: false,
-            self_changing_admin_action_takers_allowed_manual_mint: false,
-
-            // Manual burn rules
-            authorized_manual_burn: AuthorizedActionTakers::NoOne,
-            manual_burn_authorized_identity: None,
-            manual_burn_authorized_group: None,
-            admin_action_takers_manual_burn: AuthorizedActionTakers::NoOne,
-            admin_manual_burn_identity: None,
-            admin_manual_burn_group: None,
-            changing_authorized_action_takers_to_no_one_allowed_manual_burn: false,
-            changing_admin_action_takers_to_no_one_allowed_manual_burn: false,
-            self_changing_admin_action_takers_allowed_manual_burn: false,
-
-            // Freeze rules
-            authorized_freeze: AuthorizedActionTakers::NoOne,
-            freeze_authorized_identity: None,
-            freeze_authorized_group: None,
-            admin_action_takers_freeze: AuthorizedActionTakers::NoOne,
-            admin_freeze_identity: None,
-            admin_freeze_group: None,
-            changing_authorized_action_takers_to_no_one_allowed_freeze: false,
-            changing_admin_action_takers_to_no_one_allowed_freeze: false,
-            self_changing_admin_action_takers_allowed_freeze: false,
-
-            // Unfreeze rules
-            authorized_unfreeze: AuthorizedActionTakers::NoOne,
-            unfreeze_authorized_identity: None,
-            unfreeze_authorized_group: None,
-            admin_action_takers_unfreeze: AuthorizedActionTakers::NoOne,
-            admin_unfreeze_identity: None,
-            admin_unfreeze_group: None,
-            changing_authorized_action_takers_to_no_one_allowed_unfreeze: false,
-            changing_admin_action_takers_to_no_one_allowed_unfreeze: false,
-            self_changing_admin_action_takers_allowed_unfreeze: false,
-
-            // Destroy frozen funds rules
-            authorized_destroy_frozen_funds: AuthorizedActionTakers::NoOne,
-            destroy_frozen_funds_authorized_identity: None,
-            destroy_frozen_funds_authorized_group: None,
-            admin_action_takers_destroy_frozen_funds: AuthorizedActionTakers::NoOne,
-            admin_destroy_frozen_funds_identity: None,
-            admin_destroy_frozen_funds_group: None,
-            changing_authorized_action_takers_to_no_one_allowed_destroy_frozen_funds: false,
-            changing_admin_action_takers_to_no_one_allowed_destroy_frozen_funds: false,
-            self_changing_admin_action_takers_allowed_destroy_frozen_funds: false,
-
-            // Pause/resume rules
-            authorized_pause_resume: AuthorizedActionTakers::NoOne,
-            pause_resume_authorized_identity: None,
-            pause_resume_authorized_group: None,
-            admin_action_takers_pause_resume: AuthorizedActionTakers::NoOne,
-            admin_pause_resume_identity: None,
-            admin_pause_resume_group: None,
-            changing_authorized_action_takers_to_no_one_allowed_pause_resume: false,
-            changing_admin_action_takers_to_no_one_allowed_pause_resume: false,
-            self_changing_admin_action_takers_allowed_pause_resume: false,
-
-            // Max supply change rules
-            authorized_max_supply_change: AuthorizedActionTakers::NoOne,
-            max_supply_change_authorized_identity: None,
-            max_supply_change_authorized_group: None,
-            admin_action_takers_max_supply_change: AuthorizedActionTakers::NoOne,
-            admin_max_supply_change_identity: None,
-            admin_max_supply_change_group: None,
-            changing_authorized_action_takers_to_no_one_allowed_max_supply_change: false,
-            changing_admin_action_takers_to_no_one_allowed_max_supply_change: false,
-            self_changing_admin_action_takers_allowed_max_supply_change: false,
-
-            // Conventions change rules
-            authorized_conventions_change: AuthorizedActionTakers::NoOne,
-            conventions_change_authorized_identity: None,
-            conventions_change_authorized_group: None,
-            admin_action_takers_conventions_change: AuthorizedActionTakers::NoOne,
-            admin_conventions_change_identity: None,
-            admin_conventions_change_group: None,
-            changing_authorized_action_takers_to_no_one_allowed_conventions_change: false,
-            changing_admin_action_takers_to_no_one_allowed_conventions_change: false,
-            self_changing_admin_action_takers_allowed_conventions_change: false,
+            // Action rules
+            manual_minting_rules: ChangeControlRulesUI::default(),
+            manual_burning_rules: ChangeControlRulesUI::default(),
+            freeze_rules: ChangeControlRulesUI::default(),
+            unfreeze_rules: ChangeControlRulesUI::default(),
+            destroy_frozen_funds_rules: ChangeControlRulesUI::default(),
+            emergency_action_rules: ChangeControlRulesUI::default(),
+            max_supply_change_rules: ChangeControlRulesUI::default(),
+            conventions_change_rules: ChangeControlRulesUI::default(),
 
             // Main control group change rules
             authorized_main_control_group_change: AuthorizedActionTakers::NoOne,
@@ -551,15 +602,7 @@ impl TokensScreen {
 
             // Distribution (perpetual) toggles/fields
             enable_perpetual_distribution: false,
-            perpetual_distribution_rules_authorized: AuthorizedActionTakers::NoOne,
-            perpetual_distribution_authorized_identity: None,
-            perpetual_distribution_authorized_group: None,
-            admin_action_takers_perpetual_distribution: AuthorizedActionTakers::NoOne,
-            admin_perpetual_distribution_identity: None,
-            admin_perpetual_distribution_group: None,
-            changing_authorized_action_takers_to_no_one_allowed_perpetual_distribution: false,
-            changing_admin_action_takers_to_no_one_allowed_perpetual_distribution: false,
-            self_changing_admin_action_takers_allowed_perpetual_distribution: false,
+            perpetual_distribution_rules: ChangeControlRulesUI::default(),
 
             // Which distribution type is selected?
             perpetual_dist_type: PerpetualDistributionIntervalTypeUI::None,
@@ -593,43 +636,22 @@ impl TokensScreen {
 
             // Similarly for identity recipients, you might store:
             perpetual_dist_recipient: TokenDistributionRecipientUI::ContractOwner,
-            perpetual_dist_identity_input: String::new(),
-            perpetual_dist_group_input: String::new(),
+            perpetual_dist_recipient_identity_input: None,
 
             // Pre-programmed distribution
             enable_pre_programmed_distribution: false,
             // Possibly let them paste in a JSON schedule, or some minimal UI for (timestamp -> {id -> amount}).
             // For an example, we'll keep it simple:
-            pre_programmed_distribution_json_input: String::new(),
+            pre_programmed_distributions: Vec::new(),
 
             // new_tokens_destination_identity
             new_tokens_destination_identity_enabled: false,
             new_tokens_destination_identity: String::new(),
-            new_tokens_destination_identity_rules_authorized: AuthorizedActionTakers::NoOne,
-            new_tokens_destination_identity_rules_authorized_identity: None,
-            new_tokens_destination_identity_rules_authorized_group: None,
-            admin_action_takers_new_tokens_destination_identity: AuthorizedActionTakers::NoOne,
-            admin_new_tokens_destination_identity_group: None,
-            admin_new_tokens_destination_identity_identity: None,
-            changing_authorized_action_takers_to_no_one_allowed_new_tokens_destination_identity: false,
-            changing_admin_action_takers_to_no_one_allowed_new_tokens_destination_identity: false,
-            self_changing_admin_action_takers_allowed_new_tokens_destination_identity: false,
-            new_tokens_destination_identity_identity_input: String::new(),
-            new_tokens_destination_identity_group_input: String::new(),
+            new_tokens_destination_identity_rules: ChangeControlRulesUI::default(),
 
             // minting_allow_choosing_destination
             minting_allow_choosing_destination: false,
-            minting_allow_choosing_destination_rules_authorized: AuthorizedActionTakers::NoOne,
-            minting_allow_choosing_destination_rules_authorized_identity: None,
-            minting_allow_choosing_destination_rules_authorized_group: None,
-            admin_action_takers_minting_allow_choosing_destination: AuthorizedActionTakers::NoOne,
-            admin_minting_allow_choosing_destination_identity: None,
-            admin_minting_allow_choosing_destination_group: None,
-            changing_authorized_action_takers_to_no_one_allowed_minting_allow_choosing_destination: false,
-            changing_admin_action_takers_to_no_one_allowed_minting_allow_choosing_destination: false,
-            self_changing_admin_action_takers_allowed_minting_allow_choosing_destination: false,
-            minting_allow_choosing_destination_identity_input: String::new(),
-            minting_allow_choosing_destination_group_input: String::new(),
+            minting_allow_choosing_destination_rules: ChangeControlRulesUI::default(),
         };
 
         if let Ok(saved_ids) = screen.app_context.db.load_token_order() {
@@ -1534,1114 +1556,16 @@ impl TokensScreen {
                     ui.collapsing("Action Rules", |ui| {
                         ui.add_space(3.0);
 
-                        // -------------------------------------------------------------------------
-                        // 1) MANUAL MINTING
-                        // -------------------------------------------------------------------------
-                        ui.collapsing("Mint", |ui| {
-                            ui.add_space(3.0);
-
-                            // A) authorized_to_make_change
-                            ui.horizontal(|ui| {
-                                ui.label("Allow manual minting:");
-                                egui::ComboBox::from_id_salt("manual_mint_selector")
-                                    .selected_text(format!("{}", self.authorized_manual_mint.to_string()))
-                                    .show_ui(ui, |ui| {
-                                        ui.selectable_value(
-                                            &mut self.authorized_manual_mint,
-                                            AuthorizedActionTakers::NoOne,
-                                            "No One",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.authorized_manual_mint,
-                                            AuthorizedActionTakers::ContractOwner,
-                                            "Contract Owner",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.authorized_manual_mint,
-                                            AuthorizedActionTakers::Identity(Identifier::default()),
-                                            "Identity",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.authorized_manual_mint,
-                                            AuthorizedActionTakers::MainGroup,
-                                            "Main Group",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.authorized_manual_mint,
-                                            AuthorizedActionTakers::Group(0),
-                                            "Group",
-                                        );
-                                    });
-
-                                // If user selected Identity or Group, show extra text edit
-                                match &mut self.authorized_manual_mint {
-                                    AuthorizedActionTakers::Identity(_) => {
-                                        if self.manual_mint_authorized_identity.is_none() {
-                                            self.manual_mint_authorized_identity = Some(String::new());
-                                        }
-                                        if let Some(ref mut id) = self.manual_mint_authorized_identity {
-                                            ui.add(egui::TextEdit::singleline(id).hint_text("Enter base58 id"));
-                                        }
-                                    }
-                                    AuthorizedActionTakers::Group(_) => {
-                                        if self.manual_mint_authorized_group.is_none() {
-                                            self.manual_mint_authorized_group = Some("0".to_owned());
-                                        }
-                                        if let Some(ref mut group) = self.manual_mint_authorized_group {
-                                            ui.add(egui::TextEdit::singleline(group).hint_text("Group contract position"));
-                                        }
-                                    }
-                                    _ => {}
-                                }
-                            });
-
-                            ui.add_space(2.0);
-
-                            // B) admin_action_takers
-                            ui.horizontal(|ui| {
-                                ui.label("Admin action takers:");
-                                egui::ComboBox::from_id_salt("manual_mint_admin_selector")
-                                    .selected_text(format!("{}", self.admin_action_takers_manual_mint.to_string()))
-                                    .show_ui(ui, |ui| {
-                                        ui.selectable_value(
-                                            &mut self.admin_action_takers_manual_mint,
-                                            AuthorizedActionTakers::NoOne,
-                                            "No One",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.admin_action_takers_manual_mint,
-                                            AuthorizedActionTakers::ContractOwner,
-                                            "Contract Owner",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.admin_action_takers_manual_mint,
-                                            AuthorizedActionTakers::Identity(Identifier::default()),
-                                            "Identity",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.admin_action_takers_manual_mint,
-                                            AuthorizedActionTakers::MainGroup,
-                                            "Main Group",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.admin_action_takers_manual_mint,
-                                            AuthorizedActionTakers::Group(0),
-                                            "Group",
-                                        );
-                                    });
-
-                                // Extra input for Identity / Group
-                                match &mut self.admin_action_takers_manual_mint {
-                                    AuthorizedActionTakers::Identity(_) => {
-                                        if self.admin_manual_mint_identity.is_none() {
-                                            self.admin_manual_mint_identity = Some(String::new());
-                                        }
-                                        if let Some(ref mut id) = self.admin_manual_mint_identity {
-                                            ui.add(egui::TextEdit::singleline(id).hint_text("Enter base58 id"));
-                                        }
-                                    }
-                                    AuthorizedActionTakers::Group(_) => {
-                                        if self.admin_manual_mint_group.is_none() {
-                                            self.admin_manual_mint_group = Some("0".to_owned());
-                                        }
-                                        if let Some(ref mut group_str) = self.admin_manual_mint_group {
-                                            ui.add(egui::TextEdit::singleline(group_str).hint_text("Group contract position"));
-                                        }
-                                    }
-                                    _ => {}
-                                }
-                            });
-
-                            ui.add_space(2.0);
-
-                            // C) booleans
-                            ui.checkbox(
-                                &mut self.changing_authorized_action_takers_to_no_one_allowed_manual_mint,
-                                "Changing authorized action takers to no one allowed",
-                            );
-                            ui.add_space(2.0);
-                            ui.checkbox(
-                                &mut self.changing_admin_action_takers_to_no_one_allowed_manual_mint,
-                                "Changing admin action takers to no one allowed",
-                            );
-                            ui.add_space(2.0);
-                            ui.checkbox(
-                                &mut self.self_changing_admin_action_takers_allowed_manual_mint,
-                                "Self changing admin action takers allowed",
-                            );
-                        });
-
-                        ui.add_space(3.0);
-
-
-                        // -------------------------------------------------------------------------
-                        // 2) MANUAL BURNING
-                        // -------------------------------------------------------------------------
-                        ui.collapsing("Burn", |ui| {
-                            ui.add_space(3.0);
-
-                            // A) authorized_to_make_change
-                            ui.horizontal(|ui| {
-                                ui.label("Allow manual burning:");
-                                egui::ComboBox::from_id_salt("manual_burn_selector")
-                                    .selected_text(format!("{}", self.authorized_manual_burn.to_string()))
-                                    .show_ui(ui, |ui| {
-                                        ui.selectable_value(
-                                            &mut self.authorized_manual_burn,
-                                            AuthorizedActionTakers::NoOne,
-                                            "No One",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.authorized_manual_burn,
-                                            AuthorizedActionTakers::ContractOwner,
-                                            "Contract Owner",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.authorized_manual_burn,
-                                            AuthorizedActionTakers::Identity(Identifier::default()),
-                                            "Identity",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.authorized_manual_burn,
-                                            AuthorizedActionTakers::MainGroup,
-                                            "Main Group",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.authorized_manual_burn,
-                                            AuthorizedActionTakers::Group(0),
-                                            "Group",
-                                        );
-                                    });
-
-                                // Extra input for Identity / Group
-                                match &mut self.authorized_manual_burn {
-                                    AuthorizedActionTakers::Identity(_) => {
-                                        if self.manual_burn_authorized_identity.is_none() {
-                                            self.manual_burn_authorized_identity = Some(String::new());
-                                        }
-                                        if let Some(ref mut id) = self.manual_burn_authorized_identity {
-                                            ui.add(egui::TextEdit::singleline(id).hint_text("base58 id"));
-                                        }
-                                    }
-                                    AuthorizedActionTakers::Group(_) => {
-                                        if self.manual_burn_authorized_group.is_none() {
-                                            self.manual_burn_authorized_group = Some("0".to_string());
-                                        }
-                                        if let Some(ref mut group) = self.manual_burn_authorized_group {
-                                            ui.add(egui::TextEdit::singleline(group).hint_text("group contract position"));
-                                        }
-                                    }
-                                    _ => {}
-                                }
-                            });
-
-                            ui.add_space(2.0);
-
-                            // B) admin_action_takers
-                            ui.horizontal(|ui| {
-                                ui.label("Admin action takers:");
-                                egui::ComboBox::from_id_salt("manual_burn_admin_selector")
-                                    .selected_text(format!("{}", self.admin_action_takers_manual_burn.to_string()))
-                                    .show_ui(ui, |ui| {
-                                        ui.selectable_value(
-                                            &mut self.admin_action_takers_manual_burn,
-                                            AuthorizedActionTakers::NoOne,
-                                            "No One",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.admin_action_takers_manual_burn,
-                                            AuthorizedActionTakers::ContractOwner,
-                                            "Contract Owner",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.admin_action_takers_manual_burn,
-                                            AuthorizedActionTakers::Identity(Identifier::default()),
-                                            "Identity",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.admin_action_takers_manual_burn,
-                                            AuthorizedActionTakers::MainGroup,
-                                            "Main Group",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.admin_action_takers_manual_burn,
-                                            AuthorizedActionTakers::Group(0),
-                                            "Group",
-                                        );
-                                    });
-
-                                // Extra input for Identity / Group
-                                match &mut self.admin_action_takers_manual_burn {
-                                    AuthorizedActionTakers::Identity(_) => {
-                                        if self.admin_manual_burn_identity.is_none() {
-                                            self.admin_manual_burn_identity = Some(String::new());
-                                        }
-                                        if let Some(ref mut id) = self.admin_manual_burn_identity {
-                                            ui.add(egui::TextEdit::singleline(id).hint_text("base58 id"));
-                                        }
-                                    }
-                                    AuthorizedActionTakers::Group(_) => {
-                                        if self.admin_manual_burn_group.is_none() {
-                                            self.admin_manual_burn_group = Some("0".to_string());
-                                        }
-                                        if let Some(ref mut group) = self.admin_manual_burn_group {
-                                            ui.add(egui::TextEdit::singleline(group).hint_text("group contract position"));
-                                        }
-                                    }
-                                    _ => {}
-                                }
-                            });
-
-                            ui.add_space(2.0);
-
-                            // C) booleans
-                                ui.checkbox(
-                                    &mut self.changing_authorized_action_takers_to_no_one_allowed_manual_burn,
-                                    "Changing authorized action takers to no one allowed",
-                                );
-                                ui.add_space(2.0);
-                                ui.checkbox(
-                                    &mut self.changing_admin_action_takers_to_no_one_allowed_manual_burn,
-                                    "Changing admin action takers to no one allowed",
-                                );
-                                ui.add_space(2.0);
-                                ui.checkbox(
-                                    &mut self.self_changing_admin_action_takers_allowed_manual_burn,
-                                    "Self changing admin action takers allowed",
-                                );
-                        });
-
-                        ui.add_space(3.0);
-
-
-                        // -------------------------------------------------------------------------
-                        // 3) FREEZE
-                        // -------------------------------------------------------------------------
-                        ui.collapsing("Freeze", |ui| {
-                            ui.add_space(3.0);
-
-                            // A) authorized_to_make_change (freeze)
-                            ui.horizontal(|ui| {
-                                ui.label("Allow identity freeze:");
-                                egui::ComboBox::from_id_salt("freeze_selector")
-                                    .selected_text(format!("{}", self.authorized_freeze.to_string()))
-                                    .show_ui(ui, |ui| {
-                                        ui.selectable_value(
-                                            &mut self.authorized_freeze,
-                                            AuthorizedActionTakers::NoOne,
-                                            "No One",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.authorized_freeze,
-                                            AuthorizedActionTakers::ContractOwner,
-                                            "Contract Owner",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.authorized_freeze,
-                                            AuthorizedActionTakers::Identity(Identifier::default()),
-                                            "Identity",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.authorized_freeze,
-                                            AuthorizedActionTakers::MainGroup,
-                                            "Main Group",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.authorized_freeze,
-                                            AuthorizedActionTakers::Group(0),
-                                            "Group",
-                                        );
-                                    });
-
-                                // Extra input for Identity / Group
-                                match &mut self.authorized_freeze {
-                                    AuthorizedActionTakers::Identity(_) => {
-                                        if self.freeze_authorized_identity.is_none() {
-                                            self.freeze_authorized_identity = Some(String::new());
-                                        }
-                                        if let Some(ref mut id) = self.freeze_authorized_identity {
-                                            ui.add(egui::TextEdit::singleline(id).hint_text("base58 id"));
-                                        }
-                                    }
-                                    AuthorizedActionTakers::Group(_) => {
-                                        if self.freeze_authorized_group.is_none() {
-                                            self.freeze_authorized_group = Some("0".to_string());
-                                        }
-                                        if let Some(ref mut group) = self.freeze_authorized_group {
-                                            ui.add(egui::TextEdit::singleline(group).hint_text("group contract position"));
-                                        }
-                                    }
-                                    _ => {}
-                                }
-                            });
-
-                            ui.add_space(2.0);
-
-                            // B) admin_action_takers (freeze)
-                            ui.horizontal(|ui| {
-                                ui.label("Admin action takers:");
-                                egui::ComboBox::from_id_salt("freeze_admin_selector")
-                                    .selected_text(format!("{}", self.admin_action_takers_freeze.to_string()))
-                                    .show_ui(ui, |ui| {
-                                        ui.selectable_value(
-                                            &mut self.admin_action_takers_freeze,
-                                            AuthorizedActionTakers::NoOne,
-                                            "No One",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.admin_action_takers_freeze,
-                                            AuthorizedActionTakers::ContractOwner,
-                                            "Contract Owner",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.admin_action_takers_freeze,
-                                            AuthorizedActionTakers::Identity(Identifier::default()),
-                                            "Identity",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.admin_action_takers_freeze,
-                                            AuthorizedActionTakers::MainGroup,
-                                            "Main Group",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.admin_action_takers_freeze,
-                                            AuthorizedActionTakers::Group(0),
-                                            "Group",
-                                        );
-                                    });
-
-                                // Extra input
-                                match &mut self.admin_action_takers_freeze {
-                                    AuthorizedActionTakers::Identity(_) => {
-                                        if self.admin_freeze_identity.is_none() {
-                                            self.admin_freeze_identity = Some(String::new());
-                                        }
-                                        if let Some(ref mut id) = self.admin_freeze_identity {
-                                            ui.add(egui::TextEdit::singleline(id).hint_text("base58 id"));
-                                        }
-                                    }
-                                    AuthorizedActionTakers::Group(_) => {
-                                        if self.admin_freeze_group.is_none() {
-                                            self.admin_freeze_group = Some("0".to_owned());
-                                        }
-                                        if let Some(ref mut group_str) = self.admin_freeze_group {
-                                            ui.add(egui::TextEdit::singleline(group_str).hint_text("group contract position"));
-                                        }
-                                    }
-                                    _ => {}
-                                }
-                            });
-
-                            ui.add_space(2.0);
-
-                            // C) booleans (freeze)
-                                ui.checkbox(
-                                    &mut self.changing_authorized_action_takers_to_no_one_allowed_freeze,
-                                    "Changing authorized action takers to no one allowed",
-                                );
-                                ui.add_space(2.0);
-                                ui.checkbox(
-                                    &mut self.changing_admin_action_takers_to_no_one_allowed_freeze,
-                                    "Changing admin action takers to no one allowed",
-                                );
-                                ui.add_space(2.0);
-                                ui.checkbox(
-                                    &mut self.self_changing_admin_action_takers_allowed_freeze,
-                                    "Self changing admin action takers allowed",
-                                );
-                        });
-
-                        ui.add_space(3.0);
-
-
-                        // -------------------------------------------------------------------------
-                        // 4) UNFREEZE
-                        // -------------------------------------------------------------------------
-                        ui.collapsing("Unfreeze", |ui| {
-                            ui.add_space(3.0);
-
-                            // A) authorized_to_make_change (unfreeze)
-                            ui.horizontal(|ui| {
-                                ui.label("Allow identity unfreeze:");
-                                egui::ComboBox::from_id_salt("unfreeze_selector")
-                                    .selected_text(format!("{}", self.authorized_unfreeze.to_string()))
-                                    .show_ui(ui, |ui| {
-                                        ui.selectable_value(
-                                            &mut self.authorized_unfreeze,
-                                            AuthorizedActionTakers::NoOne,
-                                            "No One",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.authorized_unfreeze,
-                                            AuthorizedActionTakers::ContractOwner,
-                                            "Contract Owner",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.authorized_unfreeze,
-                                            AuthorizedActionTakers::Identity(Identifier::default()),
-                                            "Identity",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.authorized_unfreeze,
-                                            AuthorizedActionTakers::MainGroup,
-                                            "Main Group",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.authorized_unfreeze,
-                                            AuthorizedActionTakers::Group(0),
-                                            "Group",
-                                        );
-                                    });
-
-                                match &mut self.authorized_unfreeze {
-                                    AuthorizedActionTakers::Identity(_) => {
-                                        if self.unfreeze_authorized_identity.is_none() {
-                                            self.unfreeze_authorized_identity = Some(String::new());
-                                        }
-                                        if let Some(ref mut id) = self.unfreeze_authorized_identity {
-                                            ui.add(egui::TextEdit::singleline(id).hint_text("base58 id"));
-                                        }
-                                    }
-                                    AuthorizedActionTakers::Group(_) => {
-                                        if self.unfreeze_authorized_group.is_none() {
-                                            self.unfreeze_authorized_group = Some("0".to_string());
-                                        }
-                                        if let Some(ref mut group) = self.unfreeze_authorized_group {
-                                            ui.add(egui::TextEdit::singleline(group).hint_text("group contract position"));
-                                        }
-                                    }
-                                    _ => {}
-                                }
-                            });
-
-                            ui.add_space(2.0);
-
-                            // B) admin_action_takers (unfreeze)
-                            ui.horizontal(|ui| {
-                                ui.label("Admin action takers:");
-                                egui::ComboBox::from_id_salt("unfreeze_admin_selector")
-                                    .selected_text(format!("{}", self.admin_action_takers_unfreeze.to_string()))
-                                    .show_ui(ui, |ui| {
-                                        ui.selectable_value(
-                                            &mut self.admin_action_takers_unfreeze,
-                                            AuthorizedActionTakers::NoOne,
-                                            "No One",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.admin_action_takers_unfreeze,
-                                            AuthorizedActionTakers::ContractOwner,
-                                            "Contract Owner",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.admin_action_takers_unfreeze,
-                                            AuthorizedActionTakers::Identity(Identifier::default()),
-                                            "Identity",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.admin_action_takers_unfreeze,
-                                            AuthorizedActionTakers::MainGroup,
-                                            "Main Group",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.admin_action_takers_unfreeze,
-                                            AuthorizedActionTakers::Group(0),
-                                            "Group",
-                                        );
-                                    });
-
-                                match &mut self.admin_action_takers_unfreeze {
-                                    AuthorizedActionTakers::Identity(_) => {
-                                        if self.admin_unfreeze_identity.is_none() {
-                                            self.admin_unfreeze_identity = Some(String::new());
-                                        }
-                                        if let Some(ref mut id) = self.admin_unfreeze_identity {
-                                            ui.add(egui::TextEdit::singleline(id).hint_text("base58 id"));
-                                        }
-                                    }
-                                    AuthorizedActionTakers::Group(_) => {
-                                        if self.admin_unfreeze_group.is_none() {
-                                            self.admin_unfreeze_group = Some("0".to_owned());
-                                        }
-                                        if let Some(ref mut group_str) = self.admin_unfreeze_group {
-                                            ui.add(egui::TextEdit::singleline(group_str).hint_text("group contract position"));
-                                        }
-                                    }
-                                    _ => {}
-                                }
-                            });
-
-                            ui.add_space(2.0);
-
-                            // C) booleans (unfreeze)
-                                ui.checkbox(
-                                    &mut self.changing_authorized_action_takers_to_no_one_allowed_unfreeze,
-                                    "Changing authorized action takers to no one allowed",
-                                );
-                                ui.add_space(2.0);
-                                ui.checkbox(
-                                    &mut self.changing_admin_action_takers_to_no_one_allowed_unfreeze,
-                                    "Changing admin action takers to no one allowed",
-                                );
-                                ui.add_space(2.0);
-                                ui.checkbox(
-                                    &mut self.self_changing_admin_action_takers_allowed_unfreeze,
-                                    "Self changing admin action takers allowed",
-                                );
-                        });
-
-                        ui.add_space(3.0);
-
-
-                        // -------------------------------------------------------------------------
-                        // 5) DESTROY FROZEN FUNDS
-                        // -------------------------------------------------------------------------
-                        ui.collapsing("Destroy Frozen Funds", |ui| {
-                            ui.add_space(3.0);
-
-                            // A) authorized_to_make_change
-                            ui.horizontal(|ui| {
-                                ui.label("Allow destroy frozen identity funds:");
-                                egui::ComboBox::from_id_salt("destroy_frozen_selector")
-                                    .selected_text(format!("{}", self.authorized_destroy_frozen_funds.to_string()))
-                                    .show_ui(ui, |ui| {
-                                        ui.selectable_value(
-                                            &mut self.authorized_destroy_frozen_funds,
-                                            AuthorizedActionTakers::NoOne,
-                                            "No One",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.authorized_destroy_frozen_funds,
-                                            AuthorizedActionTakers::ContractOwner,
-                                            "Contract Owner",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.authorized_destroy_frozen_funds,
-                                            AuthorizedActionTakers::Identity(Identifier::default()),
-                                            "Identity",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.authorized_destroy_frozen_funds,
-                                            AuthorizedActionTakers::MainGroup,
-                                            "Main Group",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.authorized_destroy_frozen_funds,
-                                            AuthorizedActionTakers::Group(0),
-                                            "Group",
-                                        );
-                                    });
-                                match &mut self.authorized_destroy_frozen_funds {
-                                    AuthorizedActionTakers::Identity(_) => {
-                                        if self.destroy_frozen_funds_authorized_identity.is_none() {
-                                            self.destroy_frozen_funds_authorized_identity = Some(String::new());
-                                        }
-                                        if let Some(ref mut id) = self.destroy_frozen_funds_authorized_identity {
-                                            ui.add(egui::TextEdit::singleline(id).hint_text("base58 id"));
-                                        }
-                                    }
-                                    AuthorizedActionTakers::Group(_) => {
-                                        if self.destroy_frozen_funds_authorized_group.is_none() {
-                                            self.destroy_frozen_funds_authorized_group = Some("0".to_string());
-                                        }
-                                        if let Some(ref mut group) = self.destroy_frozen_funds_authorized_group {
-                                            ui.add(egui::TextEdit::singleline(group).hint_text("group contract position"));
-                                        }
-                                    }
-                                    _ => {}
-                                }
-                            });
-
-                            ui.add_space(2.0);
-
-                            // B) admin_action_takers
-                            ui.horizontal(|ui| {
-                                ui.label("Admin action takers:");
-                                egui::ComboBox::from_id_salt("destroy_frozen_admin_selector")
-                                    .selected_text(format!("{}", self.admin_action_takers_destroy_frozen_funds.to_string()))
-                                    .show_ui(ui, |ui| {
-                                        ui.selectable_value(
-                                            &mut self.admin_action_takers_destroy_frozen_funds,
-                                            AuthorizedActionTakers::NoOne,
-                                            "No One",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.admin_action_takers_destroy_frozen_funds,
-                                            AuthorizedActionTakers::ContractOwner,
-                                            "Contract Owner",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.admin_action_takers_destroy_frozen_funds,
-                                            AuthorizedActionTakers::Identity(Identifier::default()),
-                                            "Identity",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.admin_action_takers_destroy_frozen_funds,
-                                            AuthorizedActionTakers::MainGroup,
-                                            "Main Group",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.admin_action_takers_destroy_frozen_funds,
-                                            AuthorizedActionTakers::Group(0),
-                                            "Group",
-                                        );
-                                    });
-
-                                match &mut self.admin_action_takers_destroy_frozen_funds {
-                                    AuthorizedActionTakers::Identity(_) => {
-                                        if self.admin_destroy_frozen_funds_identity.is_none() {
-                                            self.admin_destroy_frozen_funds_identity = Some(String::new());
-                                        }
-                                        if let Some(ref mut id) = self.admin_destroy_frozen_funds_identity {
-                                            ui.add(egui::TextEdit::singleline(id).hint_text("base58 id"));
-                                        }
-                                    }
-                                    AuthorizedActionTakers::Group(_) => {
-                                        if self.admin_destroy_frozen_funds_group.is_none() {
-                                            self.admin_destroy_frozen_funds_group = Some("0".to_string());
-                                        }
-                                        if let Some(ref mut group) = self.admin_destroy_frozen_funds_group {
-                                            ui.add(egui::TextEdit::singleline(group).hint_text("group contract position"));
-                                        }
-                                    }
-                                    _ => {}
-                                }
-                            });
-
-                            ui.add_space(2.0);
-
-                            // C) booleans
-                                ui.checkbox(
-                                    &mut self.changing_authorized_action_takers_to_no_one_allowed_destroy_frozen_funds,
-                                    "Changing authorized action takers to no one allowed",
-                                );
-                                ui.add_space(2.0);
-                                ui.checkbox(
-                                    &mut self.changing_admin_action_takers_to_no_one_allowed_destroy_frozen_funds,
-                                    "Changing admin action takers to no one allowed",
-                                );
-                                ui.add_space(2.0);
-                                ui.checkbox(
-                                    &mut self.self_changing_admin_action_takers_allowed_destroy_frozen_funds,
-                                    "Self changing admin action takers allowed",
-                                );
-                        });
-
-                        ui.add_space(3.0);
-
-
-                        // -------------------------------------------------------------------------
-                        // 6) PAUSE/RESUME
-                        // -------------------------------------------------------------------------
-                        ui.collapsing("Pause/Resume", |ui| {
-                            ui.add_space(3.0);
-
-                            // A) authorized_to_make_change
-                            ui.horizontal(|ui| {
-                                ui.label("Allow token pause and resume:");
-                                egui::ComboBox::from_id_salt("pause_resume_selector")
-                                    .selected_text(format!("{}", self.authorized_pause_resume.to_string()))
-                                    .show_ui(ui, |ui| {
-                                        ui.selectable_value(
-                                            &mut self.authorized_pause_resume,
-                                            AuthorizedActionTakers::NoOne,
-                                            "No One",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.authorized_pause_resume,
-                                            AuthorizedActionTakers::ContractOwner,
-                                            "Contract Owner",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.authorized_pause_resume,
-                                            AuthorizedActionTakers::Identity(Identifier::default()),
-                                            "Identity",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.authorized_pause_resume,
-                                            AuthorizedActionTakers::MainGroup,
-                                            "Main Group",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.authorized_pause_resume,
-                                            AuthorizedActionTakers::Group(0),
-                                            "Group",
-                                        );
-                                    });
-                                match &mut self.authorized_pause_resume {
-                                    AuthorizedActionTakers::Identity(_) => {
-                                        if self.pause_resume_authorized_identity.is_none() {
-                                            self.pause_resume_authorized_identity = Some(String::new());
-                                        }
-                                        if let Some(ref mut id) = self.pause_resume_authorized_identity {
-                                            ui.add(egui::TextEdit::singleline(id).hint_text("base58 id"));
-                                        }
-                                    }
-                                    AuthorizedActionTakers::Group(_) => {
-                                        if self.pause_resume_authorized_group.is_none() {
-                                            self.pause_resume_authorized_group = Some("0".to_string());
-                                        }
-                                        if let Some(ref mut group) = self.pause_resume_authorized_group {
-                                            ui.add(egui::TextEdit::singleline(group).hint_text("group contract position"));
-                                        }
-                                    }
-                                    _ => {}
-                                }
-                            });
-
-                            ui.add_space(2.0);
-
-                            // B) admin_action_takers
-                            ui.horizontal(|ui| {
-                                ui.label("Admin action takers:");
-                                egui::ComboBox::from_id_salt("pause_resume_admin_selector")
-                                    .selected_text(format!("{}", self.admin_action_takers_pause_resume.to_string()))
-                                    .show_ui(ui, |ui| {
-                                        ui.selectable_value(
-                                            &mut self.admin_action_takers_pause_resume,
-                                            AuthorizedActionTakers::NoOne,
-                                            "No One",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.admin_action_takers_pause_resume,
-                                            AuthorizedActionTakers::ContractOwner,
-                                            "Contract Owner",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.admin_action_takers_pause_resume,
-                                            AuthorizedActionTakers::Identity(Identifier::default()),
-                                            "Identity",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.admin_action_takers_pause_resume,
-                                            AuthorizedActionTakers::MainGroup,
-                                            "Main Group",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.admin_action_takers_pause_resume,
-                                            AuthorizedActionTakers::Group(0),
-                                            "Group",
-                                        );
-                                    });
-
-                                match &mut self.admin_action_takers_pause_resume {
-                                    AuthorizedActionTakers::Identity(_) => {
-                                        if self.admin_pause_resume_identity.is_none() {
-                                            self.admin_pause_resume_identity = Some(String::new());
-                                        }
-                                        if let Some(ref mut id) = self.admin_pause_resume_identity {
-                                            ui.add(egui::TextEdit::singleline(id).hint_text("base58 id"));
-                                        }
-                                    }
-                                    AuthorizedActionTakers::Group(_) => {
-                                        if self.admin_pause_resume_group.is_none() {
-                                            self.admin_pause_resume_group = Some("0".to_owned());
-                                        }
-                                        if let Some(ref mut group_str) = self.admin_pause_resume_group {
-                                            ui.add(egui::TextEdit::singleline(group_str).hint_text("group contract position"));
-                                        }
-                                    }
-                                    _ => {}
-                                }
-                            });
-
-                            ui.add_space(2.0);
-
-                            // C) booleans
-                                ui.checkbox(
-                                    &mut self.changing_authorized_action_takers_to_no_one_allowed_pause_resume,
-                                    "Changing authorized action takers to no one allowed",
-                                );
-                                ui.add_space(2.0);
-                                ui.checkbox(
-                                    &mut self.changing_admin_action_takers_to_no_one_allowed_pause_resume,
-                                    "Changing admin action takers to no one allowed",
-                                );
-                                ui.add_space(2.0);
-                                ui.checkbox(
-                                    &mut self.self_changing_admin_action_takers_allowed_pause_resume,
-                                    "Self changing admin action takers allowed",
-                                );
-                        });
-
-                        ui.add_space(3.0);
-
-
-                        // -------------------------------------------------------------------------
-                        // 7) ALLOW CONFIG UPDATES (Max Supply Changes)
-                        // -------------------------------------------------------------------------
-                        ui.collapsing("Max Supply Changes", |ui| {
-                            ui.add_space(3.0);
-
-                            // A) authorized_to_make_change
-                            ui.horizontal(|ui| {
-                                ui.label("Allow config (max supply) updates:");
-                                egui::ComboBox::from_id_salt("max_supply_change_selector")
-                                    .selected_text(format!("{}", self.authorized_max_supply_change.to_string()))
-                                    .show_ui(ui, |ui| {
-                                        ui.selectable_value(
-                                            &mut self.authorized_max_supply_change,
-                                            AuthorizedActionTakers::NoOne,
-                                            "No One",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.authorized_max_supply_change,
-                                            AuthorizedActionTakers::ContractOwner,
-                                            "Contract Owner",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.authorized_max_supply_change,
-                                            AuthorizedActionTakers::Identity(Identifier::default()),
-                                            "Identity",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.authorized_max_supply_change,
-                                            AuthorizedActionTakers::MainGroup,
-                                            "Main Group",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.authorized_max_supply_change,
-                                            AuthorizedActionTakers::Group(0),
-                                            "Group",
-                                        );
-                                    });
-                                match &mut self.authorized_max_supply_change {
-                                    AuthorizedActionTakers::Identity(_) => {
-                                        if self.max_supply_change_authorized_identity.is_none() {
-                                            self.max_supply_change_authorized_identity = Some(String::new());
-                                        }
-                                        if let Some(ref mut id) = self.max_supply_change_authorized_identity {
-                                            ui.add(egui::TextEdit::singleline(id).hint_text("base58 id"));
-                                        }
-                                    }
-                                    AuthorizedActionTakers::Group(_) => {
-                                        if self.max_supply_change_authorized_group.is_none() {
-                                            self.max_supply_change_authorized_group = Some("0".to_string());
-                                        }
-                                        if let Some(ref mut group) = self.max_supply_change_authorized_group {
-                                            ui.add(egui::TextEdit::singleline(group).hint_text("group contract position"));
-                                        }
-                                    }
-                                    _ => {}
-                                }
-                            });
-
-                            ui.add_space(2.0);
-
-                            // B) admin_action_takers
-                            ui.horizontal(|ui| {
-                                ui.label("Admin action takers:");
-                                egui::ComboBox::from_id_salt("max_supply_admin_selector")
-                                    .selected_text(format!("{}", self.admin_action_takers_max_supply_change.to_string()))
-                                    .show_ui(ui, |ui| {
-                                        ui.selectable_value(
-                                            &mut self.admin_action_takers_max_supply_change,
-                                            AuthorizedActionTakers::NoOne,
-                                            "No One",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.admin_action_takers_max_supply_change,
-                                            AuthorizedActionTakers::ContractOwner,
-                                            "Contract Owner",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.admin_action_takers_max_supply_change,
-                                            AuthorizedActionTakers::Identity(Identifier::default()),
-                                            "Identity",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.admin_action_takers_max_supply_change,
-                                            AuthorizedActionTakers::MainGroup,
-                                            "Main Group",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.admin_action_takers_max_supply_change,
-                                            AuthorizedActionTakers::Group(0),
-                                            "Group",
-                                        );
-                                    });
-
-                                match &mut self.admin_action_takers_max_supply_change {
-                                    AuthorizedActionTakers::Identity(_) => {
-                                        if self.admin_max_supply_change_identity.is_none() {
-                                            self.admin_max_supply_change_identity = Some(String::new());
-                                        }
-                                        if let Some(ref mut id) = self.admin_max_supply_change_identity {
-                                            ui.add(egui::TextEdit::singleline(id).hint_text("base58 id"));
-                                        }
-                                    }
-                                    AuthorizedActionTakers::Group(_) => {
-                                        if self.admin_max_supply_change_group.is_none() {
-                                            self.admin_max_supply_change_group = Some("0".to_string());
-                                        }
-                                        if let Some(ref mut group) = self.admin_max_supply_change_group {
-                                            ui.add(egui::TextEdit::singleline(group).hint_text("group contract position"));
-                                        }
-                                    }
-                                    _ => {}
-                                }
-                            });
-
-                            ui.add_space(2.0);
-
-                            // C) booleans
-                                ui.checkbox(
-                                    &mut self.changing_authorized_action_takers_to_no_one_allowed_max_supply_change,
-                                    "Changing authorized action takers to no one allowed",
-                                );
-                                ui.add_space(2.0);
-                                ui.checkbox(
-                                    &mut self.changing_admin_action_takers_to_no_one_allowed_max_supply_change,
-                                    "Changing admin action takers to no one allowed",
-                                );
-                                ui.add_space(2.0);
-                                ui.checkbox(
-                                    &mut self.self_changing_admin_action_takers_allowed_max_supply_change,
-                                    "Self changing admin action takers allowed",
-                                );
-                        });
-
-                        ui.add_space(3.0);
-
-
-                        // -------------------------------------------------------------------------
-                        // 8) ALLOW CONVENTIONS CHANGE
-                        // -------------------------------------------------------------------------
-                        ui.collapsing("Conventions Change", |ui| {
-                            ui.add_space(3.0);
-
-                            // A) authorized_to_make_change
-                            ui.horizontal(|ui| {
-                                ui.label("Allow conventions change:");
-                                egui::ComboBox::from_id_salt("conventions_change_selector")
-                                    .selected_text(format!("{}", self.authorized_conventions_change.to_string()))
-                                    .show_ui(ui, |ui| {
-                                        ui.selectable_value(
-                                            &mut self.authorized_conventions_change,
-                                            AuthorizedActionTakers::NoOne,
-                                            "No One",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.authorized_conventions_change,
-                                            AuthorizedActionTakers::ContractOwner,
-                                            "Contract Owner",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.authorized_conventions_change,
-                                            AuthorizedActionTakers::Identity(Identifier::default()),
-                                            "Identity",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.authorized_conventions_change,
-                                            AuthorizedActionTakers::MainGroup,
-                                            "Main Group",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.authorized_conventions_change,
-                                            AuthorizedActionTakers::Group(0),
-                                            "Group",
-                                        );
-                                    });
-                                match &mut self.authorized_conventions_change {
-                                    AuthorizedActionTakers::Identity(_) => {
-                                        if self.conventions_change_authorized_identity.is_none() {
-                                            self.conventions_change_authorized_identity = Some(String::new());
-                                        }
-                                        if let Some(ref mut id) = self.conventions_change_authorized_identity {
-                                            ui.add(egui::TextEdit::singleline(id).hint_text("base58 id"));
-                                        }
-                                    }
-                                    AuthorizedActionTakers::Group(_) => {
-                                        if self.conventions_change_authorized_group.is_none() {
-                                            self.conventions_change_authorized_group = Some("0".to_string());
-                                        }
-                                        if let Some(ref mut group) = self.conventions_change_authorized_group {
-                                            ui.add(egui::TextEdit::singleline(group).hint_text("group contract position"));
-                                        }
-                                    }
-                                    _ => {}
-                                }
-                            });
-
-                            ui.add_space(2.0);
-
-                            // B) admin_action_takers
-                            ui.horizontal(|ui| {
-                                ui.label("Admin action takers:");
-                                egui::ComboBox::from_id_salt("conventions_admin_selector")
-                                    .selected_text(format!("{}", self.admin_action_takers_conventions_change.to_string()))
-                                    .show_ui(ui, |ui| {
-                                        ui.selectable_value(
-                                            &mut self.admin_action_takers_conventions_change,
-                                            AuthorizedActionTakers::NoOne,
-                                            "No One",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.admin_action_takers_conventions_change,
-                                            AuthorizedActionTakers::ContractOwner,
-                                            "Contract Owner",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.admin_action_takers_conventions_change,
-                                            AuthorizedActionTakers::Identity(Identifier::default()),
-                                            "Identity",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.admin_action_takers_conventions_change,
-                                            AuthorizedActionTakers::MainGroup,
-                                            "Main Group",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.admin_action_takers_conventions_change,
-                                            AuthorizedActionTakers::Group(0),
-                                            "Group",
-                                        );
-                                    });
-                                match &mut self.admin_action_takers_conventions_change {
-                                    AuthorizedActionTakers::Identity(_) => {
-                                        if self.admin_conventions_change_identity.is_none() {
-                                            self.admin_conventions_change_identity = Some(String::new());
-                                        }
-                                        if let Some(ref mut id) = self.admin_conventions_change_identity {
-                                            ui.add(egui::TextEdit::singleline(id).hint_text("base58 id"));
-                                        }
-                                    }
-                                    AuthorizedActionTakers::Group(_) => {
-                                        if self.admin_conventions_change_group.is_none() {
-                                            self.admin_conventions_change_group = Some("0".to_owned());
-                                        }
-                                        if let Some(ref mut group_str) = self.admin_conventions_change_group {
-                                            ui.add(egui::TextEdit::singleline(group_str).hint_text("group contract position"));
-                                        }
-                                    }
-                                    _ => {}
-                                }
-                            });
-
-                            ui.add_space(2.0);
-
-                            // C) booleans
-                                ui.checkbox(
-                                    &mut self.changing_authorized_action_takers_to_no_one_allowed_conventions_change,
-                                    "Changing authorized action takers to no one allowed",
-                                );
-                                ui.add_space(2.0);
-                                ui.checkbox(
-                                    &mut self.changing_admin_action_takers_to_no_one_allowed_conventions_change,
-                                    "Changing admin action takers to no one allowed",
-                                );
-                                ui.add_space(2.0);
-                                ui.checkbox(
-                                    &mut self.self_changing_admin_action_takers_allowed_conventions_change,
-                                    "Self changing admin action takers allowed",
-                                );
-                        });
-
-                        ui.add_space(3.0);
-
-
-                        // -------------------------------------------------------------------------
-                        // 9) ALLOW MAIN CONTROL GROUP CHANGE
-                        // -------------------------------------------------------------------------
+                        self.manual_minting_rules.render_control_change_rules_ui(ui, "Manual Mint");
+                        self.manual_burning_rules.render_control_change_rules_ui(ui, "Manual Burn");
+                        self.freeze_rules.render_control_change_rules_ui(ui, "Freeze");
+                        self.unfreeze_rules.render_control_change_rules_ui(ui, "Unfreeze");
+                        self.destroy_frozen_funds_rules.render_control_change_rules_ui(ui, "Destroy Frozen Funds");
+                        self.emergency_action_rules.render_control_change_rules_ui(ui, "Emergency Action");
+                        self.max_supply_change_rules.render_control_change_rules_ui(ui, "Max Supply Change");
+                        self.conventions_change_rules.render_control_change_rules_ui(ui, "Conventions Change");
+
+                        // Main control group change is slightly different so do this one manually.
                         ui.collapsing("Main Control Group Change", |ui| {
                             ui.add_space(3.0);
 
@@ -2705,7 +1629,7 @@ impl TokensScreen {
 
                     ui.add_space(5.0);
 
-                    ui.collapsing("Distribution Rules", |ui| {
+                    ui.collapsing("Distribution", |ui| {
                         ui.add_space(3.0);
 
                         // PERPETUAL DISTRIBUTION SETTINGS
@@ -2715,7 +1639,7 @@ impl TokensScreen {
                         ).clicked() {
                             self.perpetual_dist_type = PerpetualDistributionIntervalTypeUI::BlockBased;
                             self.enable_pre_programmed_distribution = false;
-                            self.pre_programmed_distribution_json_input = String::new();
+                            self.pre_programmed_distributions = Vec::new();
                         };
                         if self.enable_perpetual_distribution {
                             ui.add_space(2.0);
@@ -3106,65 +2030,14 @@ Emits tokens in fixed amounts for specific intervals.
                                         );
                                     });
 
-                                // If user picks Identity, show a text field for the ID
-                                if let TokenDistributionRecipientUI::Identity = self.perpetual_dist_recipient {
-                                    ui.text_edit_singleline(&mut self.perpetual_dist_identity_input);
-                                }
-                            });
-
-                            ui.add_space(2.0);
-
-                            // 1) Perpetual Distribution Authorization
-                            ui.horizontal(|ui| {
-                                ui.label("     Allow distribution rule changes:");
-                                egui::ComboBox::from_id_salt("perpetual_distribution_rules")
-                                    .selected_text(format!(
-                                        "{}",
-                                        self.perpetual_distribution_rules_authorized.to_string()
-                                    ))
-                                    .show_ui(ui, |ui| {
-                                        ui.selectable_value(
-                                            &mut self.perpetual_distribution_rules_authorized,
-                                            AuthorizedActionTakers::NoOne,
-                                            "No One",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.perpetual_distribution_rules_authorized,
-                                            AuthorizedActionTakers::ContractOwner,
-                                            "Contract Owner",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.perpetual_distribution_rules_authorized,
-                                            AuthorizedActionTakers::Identity(Identifier::default()),
-                                            "Specific Identity",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.perpetual_distribution_rules_authorized,
-                                            AuthorizedActionTakers::MainGroup,
-                                            "Main Group",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.perpetual_distribution_rules_authorized,
-                                            AuthorizedActionTakers::Group(0),
-                                            "Some Other Group",
-                                        );
-                                    });
                                 // If user selected Identity or Group, show extra text edit
-                                match &mut self.perpetual_distribution_rules_authorized {
-                                    AuthorizedActionTakers::Identity(_) => {
-                                        if self.perpetual_distribution_authorized_identity.is_none() {
-                                            self.perpetual_distribution_authorized_identity = Some(String::new());
+                                match &mut self.perpetual_dist_recipient {
+                                    TokenDistributionRecipientUI::Identity => {
+                                        if self.perpetual_dist_recipient_identity_input.is_none() {
+                                            self.perpetual_dist_recipient_identity_input = Some(String::new());
                                         }
-                                        if let Some(ref mut id) = self.perpetual_distribution_authorized_identity {
+                                        if let Some(ref mut id) = self.perpetual_dist_recipient_identity_input {
                                             ui.add(egui::TextEdit::singleline(id).hint_text("Enter base58 id"));
-                                        }
-                                    }
-                                    AuthorizedActionTakers::Group(_) => {
-                                        if self.perpetual_distribution_authorized_group.is_none() {
-                                            self.perpetual_distribution_authorized_group = Some("0".to_owned());
-                                        }
-                                        if let Some(ref mut group) = self.perpetual_distribution_authorized_group {
-                                            ui.add(egui::TextEdit::singleline(group).hint_text("Group contract position"));
                                         }
                                     }
                                     _ => {}
@@ -3173,88 +2046,10 @@ Emits tokens in fixed amounts for specific intervals.
 
                             ui.add_space(2.0);
 
-                            // B) admin_action_takers
                             ui.horizontal(|ui| {
-                                ui.label("     Admin action takers:");
-                                egui::ComboBox::from_id_salt("perpetual_distribution_admin_selector")
-                                    .selected_text(format!("{}", self.admin_action_takers_perpetual_distribution.to_string()))
-                                    .show_ui(ui, |ui| {
-                                        ui.selectable_value(
-                                            &mut self.admin_action_takers_perpetual_distribution,
-                                            AuthorizedActionTakers::NoOne,
-                                            "No One",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.admin_action_takers_perpetual_distribution,
-                                            AuthorizedActionTakers::ContractOwner,
-                                            "Contract Owner",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.admin_action_takers_perpetual_distribution,
-                                            AuthorizedActionTakers::Identity(Identifier::default()),
-                                            "Identity",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.admin_action_takers_perpetual_distribution,
-                                            AuthorizedActionTakers::MainGroup,
-                                            "Main Group",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.admin_action_takers_perpetual_distribution,
-                                            AuthorizedActionTakers::Group(0),
-                                            "Group",
-                                        );
-                                    });
-
-                                // Extra input for Identity / Group
-                                match &mut self.admin_action_takers_perpetual_distribution {
-                                    AuthorizedActionTakers::Identity(_) => {
-                                        if self.admin_perpetual_distribution_identity.is_none() {
-                                            self.admin_perpetual_distribution_identity = Some(String::new());
-                                        }
-                                        if let Some(ref mut id) = self.admin_perpetual_distribution_identity {
-                                            ui.add(egui::TextEdit::singleline(id).hint_text("Enter base58 id"));
-                                        }
-                                    }
-                                    AuthorizedActionTakers::Group(_) => {
-                                        if self.admin_perpetual_distribution_group.is_none() {
-                                            self.admin_perpetual_distribution_group = Some("0".to_owned());
-                                        }
-                                        if let Some(ref mut group_str) = self.admin_perpetual_distribution_group {
-                                            ui.add(egui::TextEdit::singleline(group_str).hint_text("Group contract position"));
-                                        }
-                                    }
-                                    _ => {}
-                                }
+                                ui.label(" ");
+                                self.perpetual_distribution_rules.render_control_change_rules_ui(ui, "Perpetual Distribution Rules");
                             });
-
-                            ui.add_space(2.0);
-
-                            // C) booleans
-                            ui.horizontal( |ui| {
-                                ui.label("     ");
-                                ui.checkbox(
-                                    &mut self.changing_authorized_action_takers_to_no_one_allowed_perpetual_distribution,
-                                    "Changing authorized action takers to no one allowed",
-                                );    
-                            });
-                            ui.add_space(2.0);
-                            ui.horizontal( |ui| {
-                                ui.label("     ");
-                                ui.checkbox(
-                                    &mut self.changing_admin_action_takers_to_no_one_allowed_perpetual_distribution,
-                                    "Changing admin action takers to no one allowed",
-                                );
-                            });
-                            ui.add_space(2.0);
-                            ui.horizontal( |ui| {
-                                ui.label("     ");
-                                ui.checkbox(
-                                    &mut self.self_changing_admin_action_takers_allowed_perpetual_distribution,
-                                    "Self changing admin action takers allowed",
-                                );
-                            });
-                            ui.add_space(2.0);
                         } else {
                             self.perpetual_dist_type = PerpetualDistributionIntervalTypeUI::None;
                         }
@@ -3262,29 +2057,66 @@ Emits tokens in fixed amounts for specific intervals.
                         ui.separator();
 
                         // PRE-PROGRAMMED DISTRIBUTION
-                        if ui.checkbox(
-                            &mut self.enable_pre_programmed_distribution,
-                            "Enable Pre-Programmed Distribution",
-                        ).clicked() {
+                        if ui
+                            .checkbox(
+                                &mut self.enable_pre_programmed_distribution,
+                                "Enable Pre-Programmed Distribution",
+                            )
+                            .clicked()
+                        {
+                            // If user turns this on, you could clear the other distribution type
                             self.enable_perpetual_distribution = false;
                             self.perpetual_dist_type = PerpetualDistributionIntervalTypeUI::None;
                         };
+
                         if self.enable_pre_programmed_distribution {
-                            ui.add_space(2.0);
+                            ui.add_space(4.0);
 
-                            ui.label(
-                                "     Enter your distribution schedule as JSON (timestamp -> {identity -> amount}):",
-                            );
+                            ui.collapsing("Pre-Programmed Distribution Schedule", |ui| {
+                                ui.label("Add entries for each scheduled distribution.");
+                                ui.add_space(4.0);
 
-                            ui.add_space(2.0);
+                                let mut i = 0;
+                                while i < self.pre_programmed_distributions.len() {
+                                    // Clone the current entry
+                                    let mut entry = self.pre_programmed_distributions[i].clone();
+                                
+                                    // Render row
+                                    ui.horizontal(|ui| {
+                                        // (1) Update row data
+                                        ui.label(format!("Timestamp #{}:", i + 1));
+                                        ui.text_edit_singleline(&mut entry.timestamp_str);
+                                
+                                        ui.label("Identity:");
+                                        ui.text_edit_singleline(&mut entry.identity_str);
+                                
+                                        ui.label("Amount:");
+                                        ui.text_edit_singleline(&mut entry.amount_str);
+                                
+                                        // (2) Remove button
+                                        if ui.button("Remove").clicked() {
+                                            self.pre_programmed_distributions.remove(i);
+                                            // (3) Stop iterating this frame (avoid indexing out of bounds).
+                                            // egui will re-run this code next frame anyway.
+                                            return;
+                                        }
+                                    });
+                                
+                                    // (4) If we didn’t remove, store back the updated data
+                                    self.pre_programmed_distributions[i] = entry;
+                                    i += 1;
+                                }
+                                
+                                ui.add_space(4.0);
 
-                            ui.horizontal(|ui| {
-                                ui.label("  ");
-                                ui.text_edit_multiline(&mut self.pre_programmed_distribution_json_input);
-                                // You could also do a more elaborate table-like UI if needed.
+                                // Add a button to insert a blank row
+                                if ui.button("Add New Distribution Entry").clicked() {
+                                    self.pre_programmed_distributions
+                                        .push(DistributionEntry::default());
+                                }
+
+                                ui.add_space(4.0);
                             });
-
-                            ui.add_space(2.0);
                         }
 
                         ui.separator();
@@ -3303,149 +2135,7 @@ Emits tokens in fixed amounts for specific intervals.
                                 ui.text_edit_singleline(&mut self.new_tokens_destination_identity);
                             });
 
-                            // Also show who can change this later
-                            ui.horizontal(|ui| {
-                                ui.label("     Who can change the new tokens destination identity?");
-                                egui::ComboBox::from_id_salt("new_tokens_dest_identity_rules")
-                                    .selected_text(format!(
-                                        "{}",
-                                        self.new_tokens_destination_identity_rules_authorized
-                                            .to_string()
-                                    ))
-                                    .show_ui(ui, |ui| {
-                                        ui.selectable_value(
-                                            &mut self.new_tokens_destination_identity_rules_authorized,
-                                            AuthorizedActionTakers::NoOne,
-                                            "No One",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.new_tokens_destination_identity_rules_authorized,
-                                            AuthorizedActionTakers::ContractOwner,
-                                            "Contract Owner",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.new_tokens_destination_identity_rules_authorized,
-                                            AuthorizedActionTakers::Identity(Identifier::default()),
-                                            "Identity",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.new_tokens_destination_identity_rules_authorized,
-                                            AuthorizedActionTakers::MainGroup,
-                                            "Main Group",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.new_tokens_destination_identity_rules_authorized,
-                                            AuthorizedActionTakers::Group(0),
-                                            "Group",
-                                        );
-                                    });
-
-                                // If user selected Identity or Group, show extra text edit
-                                match &mut self.new_tokens_destination_identity_rules_authorized {
-                                    AuthorizedActionTakers::Identity(_) => {
-                                        if self.new_tokens_destination_identity_rules_authorized_identity.is_none() {
-                                            self.new_tokens_destination_identity_rules_authorized_identity = Some(String::new());
-                                        }
-                                        if let Some(ref mut id) = self.new_tokens_destination_identity_rules_authorized_identity {
-                                            ui.add(egui::TextEdit::singleline(id).hint_text("Enter base58 id"));
-                                        }
-                                    }
-                                    AuthorizedActionTakers::Group(_) => {
-                                        if self.new_tokens_destination_identity_rules_authorized_group.is_none() {
-                                            self.new_tokens_destination_identity_rules_authorized_group = Some("0".to_owned());
-                                        }
-                                        if let Some(ref mut group) = self.new_tokens_destination_identity_rules_authorized_group {
-                                            ui.add(egui::TextEdit::singleline(group).hint_text("Group contract position"));
-                                        }
-                                    }
-                                    _ => {}
-                                }
-                            });
-
-                            ui.add_space(2.0);
-
-                            // B) admin_action_takers
-                            ui.horizontal(|ui| {
-                                ui.label("     Admin action takers:");
-                                egui::ComboBox::from_id_salt("new_tokens_destination_identity_admin_selector")
-                                    .selected_text(format!("{}", self.admin_action_takers_new_tokens_destination_identity.to_string()))
-                                    .show_ui(ui, |ui| {
-                                        ui.selectable_value(
-                                            &mut self.admin_action_takers_new_tokens_destination_identity,
-                                            AuthorizedActionTakers::NoOne,
-                                            "No One",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.admin_action_takers_new_tokens_destination_identity,
-                                            AuthorizedActionTakers::ContractOwner,
-                                            "Contract Owner",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.admin_action_takers_new_tokens_destination_identity,
-                                            AuthorizedActionTakers::Identity(Identifier::default()),
-                                            "Identity",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.admin_action_takers_new_tokens_destination_identity,
-                                            AuthorizedActionTakers::MainGroup,
-                                            "Main Group",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.admin_action_takers_new_tokens_destination_identity,
-                                            AuthorizedActionTakers::Group(0),
-                                            "Group",
-                                        );
-                                    });
-
-                                // Extra input for Identity / Group
-                                match &mut self.admin_action_takers_new_tokens_destination_identity {
-                                    AuthorizedActionTakers::Identity(_) => {
-                                        if self.admin_new_tokens_destination_identity_identity.is_none() {
-                                            self.admin_new_tokens_destination_identity_identity = Some(String::new());
-                                        }
-                                        if let Some(ref mut id) = self.admin_new_tokens_destination_identity_identity {
-                                            ui.add(egui::TextEdit::singleline(id).hint_text("Enter base58 id"));
-                                        }
-                                    }
-                                    AuthorizedActionTakers::Group(_) => {
-                                        if self.admin_new_tokens_destination_identity_group.is_none() {
-                                            self.admin_new_tokens_destination_identity_group = Some("0".to_owned());
-                                        }
-                                        if let Some(ref mut group_str) = self.admin_new_tokens_destination_identity_group {
-                                            ui.add(egui::TextEdit::singleline(group_str).hint_text("Group contract position"));
-                                        }
-                                    }
-                                    _ => {}
-                                }
-                            });
-
-                            ui.add_space(2.0);
-
-                            // C) booleans
-                            ui.horizontal( |ui| {
-                                ui.label("     ");
-                                ui.checkbox(
-                                    &mut self.changing_authorized_action_takers_to_no_one_allowed_new_tokens_destination_identity,
-                                    "Changing authorized action takers to no one allowed",
-                                );    
-                            });
-                            ui.add_space(2.0);
-                            ui.horizontal( |ui| {
-                                ui.label("     ");
-                                ui.checkbox(
-                                    &mut self.changing_admin_action_takers_to_no_one_allowed_new_tokens_destination_identity,
-                                    "Changing admin action takers to no one allowed",
-                                );
-                            });
-                            ui.add_space(2.0);
-                            ui.horizontal( |ui| {
-                                ui.label("     ");
-                                ui.checkbox(
-                                    &mut self.self_changing_admin_action_takers_allowed_new_tokens_destination_identity,
-                                    "Self changing admin action takers allowed",
-                                );
-                            });
-                            ui.add_space(2.0);
+                            self.new_tokens_destination_identity_rules.render_control_change_rules_ui(ui, "New Tokens Destination Identity");
                         }
 
                         ui.separator();
@@ -3456,151 +2146,7 @@ Emits tokens in fixed amounts for specific intervals.
                             "Allow user to pick a destination identity on each mint",
                         );
                         if self.minting_allow_choosing_destination {
-                            ui.add_space(2.0);
-
-                            ui.horizontal(|ui| {
-                                ui.label("     Who can change the 'allow choosing destination' setting?");
-                                egui::ComboBox::from_id_salt("minting_allow_choosing_dest_rules_selector")
-                                    .selected_text(format!(
-                                        "{}",
-                                        self.minting_allow_choosing_destination_rules_authorized
-                                            .to_string()
-                                    ))
-                                    .show_ui(ui, |ui| {
-                                        ui.selectable_value(
-                                            &mut self.minting_allow_choosing_destination_rules_authorized,
-                                            AuthorizedActionTakers::NoOne,
-                                            "No One",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.minting_allow_choosing_destination_rules_authorized,
-                                            AuthorizedActionTakers::ContractOwner,
-                                            "Contract Owner",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.minting_allow_choosing_destination_rules_authorized,
-                                            AuthorizedActionTakers::Identity(Identifier::default()),
-                                            "Identity",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.minting_allow_choosing_destination_rules_authorized,
-                                            AuthorizedActionTakers::MainGroup,
-                                            "Main Group",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.minting_allow_choosing_destination_rules_authorized,
-                                            AuthorizedActionTakers::Group(0),
-                                            "Group",
-                                        );
-                                    });
-
-                                // If user selected Identity or Group, show extra text edit
-                                match &mut self.minting_allow_choosing_destination_rules_authorized {
-                                    AuthorizedActionTakers::Identity(_) => {
-                                        if self.minting_allow_choosing_destination_rules_authorized_identity.is_none() {
-                                            self.minting_allow_choosing_destination_rules_authorized_identity = Some(String::new());
-                                        }
-                                        if let Some(ref mut id) = self.minting_allow_choosing_destination_rules_authorized_identity {
-                                            ui.add(egui::TextEdit::singleline(id).hint_text("Enter base58 id"));
-                                        }
-                                    }
-                                    AuthorizedActionTakers::Group(_) => {
-                                        if self.minting_allow_choosing_destination_rules_authorized_group.is_none() {
-                                            self.minting_allow_choosing_destination_rules_authorized_group = Some("0".to_owned());
-                                        }
-                                        if let Some(ref mut group) = self.minting_allow_choosing_destination_rules_authorized_group {
-                                            ui.add(egui::TextEdit::singleline(group).hint_text("Group contract position"));
-                                        }
-                                    }
-                                    _ => {}
-                                }
-                            });
-
-                            ui.add_space(2.0);
-
-                            // B) admin_action_takers
-                            ui.horizontal(|ui| {
-                                ui.label("     Admin action takers:");
-                                egui::ComboBox::from_id_salt("minting_allow_choosing_destination_admin_selector")
-                                    .selected_text(format!("{}", self.admin_action_takers_minting_allow_choosing_destination.to_string()))
-                                    .show_ui(ui, |ui| {
-                                        ui.selectable_value(
-                                            &mut self.admin_action_takers_minting_allow_choosing_destination,
-                                            AuthorizedActionTakers::NoOne,
-                                            "No One",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.admin_action_takers_minting_allow_choosing_destination,
-                                            AuthorizedActionTakers::ContractOwner,
-                                            "Contract Owner",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.admin_action_takers_minting_allow_choosing_destination,
-                                            AuthorizedActionTakers::Identity(Identifier::default()),
-                                            "Identity",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.admin_action_takers_minting_allow_choosing_destination,
-                                            AuthorizedActionTakers::MainGroup,
-                                            "Main Group",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.admin_action_takers_minting_allow_choosing_destination,
-                                            AuthorizedActionTakers::Group(0),
-                                            "Group",
-                                        );
-                                    });
-
-                                // Extra input for Identity / Group
-                                match &mut self.admin_action_takers_minting_allow_choosing_destination {
-                                    AuthorizedActionTakers::Identity(_) => {
-                                        if self.admin_minting_allow_choosing_destination_identity.is_none() {
-                                            self.admin_minting_allow_choosing_destination_identity = Some(String::new());
-                                        }
-                                        if let Some(ref mut id) = self.admin_minting_allow_choosing_destination_identity {
-                                            ui.add(egui::TextEdit::singleline(id).hint_text("Enter base58 id"));
-                                        }
-                                    }
-                                    AuthorizedActionTakers::Group(_) => {
-                                        if self.admin_minting_allow_choosing_destination_group.is_none() {
-                                            self.admin_minting_allow_choosing_destination_group = Some("0".to_owned());
-                                        }
-                                        if let Some(ref mut group_str) = self.admin_minting_allow_choosing_destination_group {
-                                            ui.add(egui::TextEdit::singleline(group_str).hint_text("Group contract position"));
-                                        }
-                                    }
-                                    _ => {}
-                                }
-                            });
-
-                            ui.add_space(2.0);
-
-                            // C) booleans
-                            ui.horizontal( |ui| {
-                                ui.label("     ");
-                                ui.checkbox(
-                                    &mut self.changing_authorized_action_takers_to_no_one_allowed_minting_allow_choosing_destination,
-                                    "Changing authorized action takers to no one allowed",
-                                );    
-                            });
-                            ui.add_space(2.0);
-                            ui.horizontal( |ui| {
-                                ui.label("     ");
-                                ui.checkbox(
-                                    &mut self.changing_admin_action_takers_to_no_one_allowed_minting_allow_choosing_destination,
-                                    "Changing admin action takers to no one allowed",
-                                );
-                            });
-                            ui.add_space(2.0);
-                            ui.horizontal( |ui| {
-                                ui.label("     ");
-                                ui.checkbox(
-                                    &mut self.self_changing_admin_action_takers_allowed_minting_allow_choosing_destination,
-                                    "Self changing admin action takers allowed",
-                                );
-                            });
-
-                            ui.add_space(2.0);                            
+                            self.minting_allow_choosing_destination_rules.render_control_change_rules_ui(ui, "Minting Allow Choosing Destination");
                         }
                     });
 
@@ -3720,11 +2266,11 @@ Emits tokens in fixed amounts for specific intervals.
                     let start_paused = self.start_as_paused_input;
                     let token_name = self.token_name_input.clone();
 
-                    match self.authorized_manual_mint {
+                    match self.manual_minting_rules.authorized {
                         AuthorizedActionTakers::Identity(_) => {
-                            if let Some(ref id_str) = self.manual_mint_authorized_identity {
+                            if let Some(ref id_str) = self.manual_minting_rules.authorized_identity {
                                 if let Ok(id) = Identifier::from_string(id_str, Encoding::Base58) {
-                                    self.authorized_manual_mint = AuthorizedActionTakers::Identity(id);
+                                    self.manual_minting_rules.authorized = AuthorizedActionTakers::Identity(id);
                                 } else {
                                     self.token_creator_error_message = Some(
                                         "Invalid base58 identifier for manual mint authorized identity".to_string(),
@@ -3734,9 +2280,9 @@ Emits tokens in fixed amounts for specific intervals.
                             }
                         }
                         AuthorizedActionTakers::Group(_) => {
-                            if let Some(ref group_str) = self.manual_mint_authorized_group {
+                            if let Some(ref group_str) = self.manual_minting_rules.authorized_group {
                                 if let Ok(group) = group_str.parse::<u16>() {
-                                    self.authorized_manual_mint = AuthorizedActionTakers::Group(group);
+                                    self.manual_minting_rules.authorized = AuthorizedActionTakers::Group(group);
                                 } else {
                                     self.token_creator_error_message = Some(
                                         "Invalid group contract position for manual mint authorized group".to_string(),
@@ -3747,11 +2293,11 @@ Emits tokens in fixed amounts for specific intervals.
                         }
                         _ => {}
                     }
-                    match self.admin_action_takers_manual_mint {
+                    match self.manual_minting_rules.admin_action_takers {
                         AuthorizedActionTakers::Identity(_) => {
-                            if let Some(ref id_str) = self.admin_manual_mint_identity {
+                            if let Some(ref id_str) = self.manual_minting_rules.admin_identity {
                                 if let Ok(id) = Identifier::from_string(id_str, Encoding::Base58) {
-                                    self.admin_action_takers_manual_mint = AuthorizedActionTakers::Identity(id);
+                                    self.manual_minting_rules.admin_action_takers = AuthorizedActionTakers::Identity(id);
                                 } else {
                                     self.token_creator_error_message = Some(
                                         "Invalid base58 identifier for manual mint admin identity".to_string(),
@@ -3761,9 +2307,9 @@ Emits tokens in fixed amounts for specific intervals.
                             }
                         }
                         AuthorizedActionTakers::Group(_) => {
-                            if let Some(ref group_str) = self.admin_manual_mint_identity {
+                            if let Some(ref group_str) = self.manual_minting_rules.admin_group {
                                 if let Ok(group) = group_str.parse::<u16>() {
-                                    self.admin_action_takers_manual_mint = AuthorizedActionTakers::Group(group);
+                                    self.manual_minting_rules.admin_action_takers = AuthorizedActionTakers::Group(group);
                                 } else {
                                     self.token_creator_error_message = Some(
                                         "Invalid group contract position for manual mint admin group".to_string(),
@@ -3774,195 +2320,9 @@ Emits tokens in fixed amounts for specific intervals.
                         }
                         _ => {}
                     }
-                    match self.authorized_manual_burn {
-                        AuthorizedActionTakers::Identity(_) => {
-                            if let Some(ref id_str) = self.manual_burn_authorized_identity {
-                                if let Ok(id) = Identifier::from_string(id_str, Encoding::Base58) {
-                                    self.authorized_manual_burn = AuthorizedActionTakers::Identity(id);
-                                } else {
-                                    self.token_creator_error_message = Some(
-                                        "Invalid base58 identifier for manual burn authorized identity".to_string(),
-                                    );
-                                    return;
-                                }
-                            }
-                        }
-                        AuthorizedActionTakers::Group(_) => {
-                            if let Some(ref group_str) = self.manual_burn_authorized_group {
-                                if let Ok(group) = group_str.parse::<u16>() {
-                                    self.authorized_manual_burn = AuthorizedActionTakers::Group(group);
-                                } else {
-                                    self.token_creator_error_message = Some(
-                                        "Invalid group contract position for manual burn authorized group".to_string(),
-                                    );
-                                    return;
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
-                    match self.authorized_freeze {
-                        AuthorizedActionTakers::Identity(_) => {
-                            if let Some(ref id_str) = self.freeze_authorized_identity {
-                                if let Ok(id) = Identifier::from_string(id_str, Encoding::Base58) {
-                                    self.authorized_freeze = AuthorizedActionTakers::Identity(id);
-                                } else {
-                                    self.token_creator_error_message = Some(
-                                        "Invalid base58 identifier for freeze authorized identity".to_string(),
-                                    );
-                                    return;
-                                }
-                            }
-                        }
-                        AuthorizedActionTakers::Group(_) => {
-                            if let Some(ref group_str) = self.freeze_authorized_group {
-                                if let Ok(group) = group_str.parse::<u16>() {
-                                    self.authorized_freeze = AuthorizedActionTakers::Group(group);
-                                } else {
-                                    self.token_creator_error_message = Some(
-                                        "Invalid group contract position for freeze authorized group".to_string(),
-                                    );
-                                    return;
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
-                    match self.authorized_unfreeze {
-                        AuthorizedActionTakers::Identity(_) => {
-                            if let Some(ref id_str) = self.unfreeze_authorized_identity {
-                                if let Ok(id) = Identifier::from_string(id_str, Encoding::Base58) {
-                                    self.authorized_unfreeze = AuthorizedActionTakers::Identity(id);
-                                } else {
-                                    self.token_creator_error_message = Some(
-                                        "Invalid base58 identifier for unfreeze authorized identity".to_string(),
-                                    );
-                                    return;
-                                }
-                            }
-                        }
-                        AuthorizedActionTakers::Group(_) => {
-                            if let Some(ref group_str) = self.unfreeze_authorized_group {
-                                if let Ok(group) = group_str.parse::<u16>() {
-                                    self.authorized_unfreeze = AuthorizedActionTakers::Group(group);
-                                } else {
-                                    self.token_creator_error_message = Some(
-                                        "Invalid group contract position for unfreeze authorized group".to_string(),
-                                    );
-                                    return;
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
-                    match self.authorized_destroy_frozen_funds {
-                        AuthorizedActionTakers::Identity(_) => {
-                            if let Some(ref id_str) = self.destroy_frozen_funds_authorized_identity {
-                                if let Ok(id) = Identifier::from_string(id_str, Encoding::Base58) {
-                                    self.authorized_destroy_frozen_funds = AuthorizedActionTakers::Identity(id);
-                                } else {
-                                    self.token_creator_error_message = Some(
-                                        "Invalid base58 identifier for destroy frozen funds authorized identity".to_string(),
-                                    );
-                                    return;
-                                }
-                            }
-                        }
-                        AuthorizedActionTakers::Group(_) => {
-                            if let Some(ref group_str) = self.destroy_frozen_funds_authorized_group {
-                                if let Ok(group) = group_str.parse::<u16>() {
-                                    self.authorized_destroy_frozen_funds = AuthorizedActionTakers::Group(group);
-                                } else {
-                                    self.token_creator_error_message = Some(
-                                        "Invalid group contract position for destroy frozen funds authorized group".to_string(),
-                                    );
-                                    return;
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
-                    match self.authorized_pause_resume {
-                        AuthorizedActionTakers::Identity(_) => {
-                            if let Some(ref id_str) = self.pause_resume_authorized_identity {
-                                if let Ok(id) = Identifier::from_string(id_str, Encoding::Base58) {
-                                    self.authorized_pause_resume = AuthorizedActionTakers::Identity(id);
-                                } else {
-                                    self.token_creator_error_message = Some(
-                                        "Invalid base58 identifier for pause resume authorized identity".to_string(),
-                                    );
-                                    return;
-                                }
-                            }
-                        }
-                        AuthorizedActionTakers::Group(_) => {
-                            if let Some(ref group_str) = self.pause_resume_authorized_group {
-                                if let Ok(group) = group_str.parse::<u16>() {
-                                    self.authorized_pause_resume = AuthorizedActionTakers::Group(group);
-                                } else {
-                                    self.token_creator_error_message = Some(
-                                        "Invalid group contract position for pause resume authorized group".to_string(),
-                                    );
-                                    return;
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
-                    match self.authorized_max_supply_change {
-                        AuthorizedActionTakers::Identity(_) => {
-                            if let Some(ref id_str) = self.max_supply_change_authorized_identity {
-                                if let Ok(id) = Identifier::from_string(id_str, Encoding::Base58) {
-                                    self.authorized_max_supply_change = AuthorizedActionTakers::Identity(id);
-                                } else {
-                                    self.token_creator_error_message = Some(
-                                        "Invalid base58 identifier for config updates authorized identity".to_string(),
-                                    );
-                                    return;
-                                }
-                            }
-                        }
-                        AuthorizedActionTakers::Group(_) => {
-                            if let Some(ref group_str) = self.max_supply_change_authorized_group {
-                                if let Ok(group) = group_str.parse::<u16>() {
-                                    self.authorized_max_supply_change = AuthorizedActionTakers::Group(group);
-                                } else {
-                                    self.token_creator_error_message = Some(
-                                        "Invalid group contract position for config updates authorized group".to_string(),
-                                    );
-                                    return;
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
-                    match self.authorized_conventions_change {
-                        AuthorizedActionTakers::Identity(_) => {
-                            if let Some(ref id_str) = self.conventions_change_authorized_identity {
-                                if let Ok(id) = Identifier::from_string(id_str, Encoding::Base58) {
-                                    self.authorized_conventions_change = AuthorizedActionTakers::Identity(id);
-                                } else {
-                                    self.token_creator_error_message = Some(
-                                        "Invalid base58 identifier for conventions change authorized identity".to_string(),
-                                    );
-                                    return;
-                                }
-                            }
-                        }
-                        AuthorizedActionTakers::Group(_) => {
-                            if let Some(ref group_str) = self.conventions_change_authorized_group {
-                                if let Ok(group) = group_str.parse::<u16>() {
-                                    self.authorized_conventions_change = AuthorizedActionTakers::Group(group);
-                                } else {
-                                    self.token_creator_error_message = Some(
-                                        "Invalid group contract position for conventions change authorized group".to_string(),
-                                    );
-                                    return;
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
+
+                    // These rules are slightly different than the others (missing the last few fields)
+                    // So we do this manually here, while for the others it's handled in the `render_control_change_rules_ui` function.
                     match self.authorized_main_control_group_change {
                         AuthorizedActionTakers::Identity(_) => {
                             if let Some(ref id_str) = self.main_control_group_change_authorized_identity {
@@ -4101,8 +2461,15 @@ Emits tokens in fixed amounts for specific intervals.
                         let recipient = match self.perpetual_dist_recipient {
                             TokenDistributionRecipientUI::ContractOwner => TokenDistributionRecipient::ContractOwner,
                             TokenDistributionRecipientUI::Identity => {
-                                let id_res = Identifier::from_string(&self.perpetual_dist_identity_input, Encoding::Base58);
-                                TokenDistributionRecipient::Identity(id_res.unwrap_or_default())
+                                if let Some(id) = self.perpetual_dist_recipient_identity_input.as_ref() {
+                                    let id_res = Identifier::from_string(id, Encoding::Base58);
+                                    TokenDistributionRecipient::Identity(id_res.unwrap_or_default())
+                                } else {
+                                    self.token_creator_error_message = Some(
+                                        "Invalid base58 identifier for perpetual distribution recipient".to_string(),
+                                    );
+                                    return;
+                                }
                             }
                             TokenDistributionRecipientUI::EvonodesByParticipation => {
                                 TokenDistributionRecipient::EvonodesByParticipation
@@ -4117,74 +2484,18 @@ Emits tokens in fixed amounts for specific intervals.
                         None
                     };
 
-                    match self.perpetual_distribution_rules_authorized {
-                        AuthorizedActionTakers::Identity(_) => {
-                            if let Some(ref id_str) = self.perpetual_distribution_authorized_identity {
-                                if let Ok(id) = Identifier::from_string(id_str, Encoding::Base58) {
-                                    self.perpetual_distribution_rules_authorized = AuthorizedActionTakers::Identity(id);
-                                } else {
-                                    self.token_creator_error_message = Some(
-                                        "Invalid base58 identifier for perpetual distribution rules authorized identity".to_string(),
-                                    );
-                                    return;
-                                }
-                            }
-                        }
-                        AuthorizedActionTakers::Group(_) => {
-                            if let Some(ref group_str) = self.perpetual_distribution_authorized_group {
-                                if let Ok(group) = group_str.parse::<u16>() {
-                                    self.perpetual_distribution_rules_authorized = AuthorizedActionTakers::Group(group);
-                                } else {
-                                    self.token_creator_error_message = Some(
-                                        "Invalid group contract position for perpetual distribution rules authorized group".to_string(),
-                                    );
-                                    return;
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
-                    match self.admin_action_takers_perpetual_distribution {
-                        AuthorizedActionTakers::Identity(_) => {
-                            if let Some(ref id_str) = self.admin_perpetual_distribution_identity {
-                                if let Ok(id) = Identifier::from_string(id_str, Encoding::Base58) {
-                                    self.admin_action_takers_perpetual_distribution = AuthorizedActionTakers::Identity(id);
-                                } else {
-                                    self.token_creator_error_message = Some(
-                                        "Invalid base58 identifier for perpetual distribution admin identity".to_string(),
-                                    );
-                                    return;
-                                }
-                            }
-                        }
-                        AuthorizedActionTakers::Group(_) => {
-                            if let Some(ref group_str) = self.admin_perpetual_distribution_group {
-                                if let Ok(group) = group_str.parse::<u16>() {
-                                    self.admin_action_takers_perpetual_distribution = AuthorizedActionTakers::Group(group);
-                                } else {
-                                    self.token_creator_error_message = Some(
-                                        "Invalid group contract position for perpetual distribution admin group".to_string(),
-                                    );
-                                    return;
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
-
                     // 2) Build the distribution rules structure
                     let dist_rules_v0 = TokenDistributionRulesV0 {
                         perpetual_distribution: maybe_perpetual_distribution,
-                        perpetual_distribution_rules: ChangeControlRules::V0(ChangeControlRulesV0 {
-                            authorized_to_make_change: self.perpetual_distribution_rules_authorized.clone(),
-                            admin_action_takers: self.admin_action_takers_perpetual_distribution.clone(),
-                            changing_authorized_action_takers_to_no_one_allowed: self.changing_authorized_action_takers_to_no_one_allowed_perpetual_distribution,
-                            changing_admin_action_takers_to_no_one_allowed: self.changing_admin_action_takers_to_no_one_allowed_perpetual_distribution,
-                            self_changing_admin_action_takers_allowed: self.self_changing_admin_action_takers_allowed_perpetual_distribution,
-                        }),
+                        perpetual_distribution_rules: self.perpetual_distribution_rules.to_change_control_rules("Perpetual Distribution").unwrap(),
                         pre_programmed_distribution: if self.enable_pre_programmed_distribution {
-                            // parse the self.pre_programmed_distribution_json_input
-                            let distributions: BTreeMap<u64, BTreeMap<Identifier, u64>> = serde_json::from_str(&self.pre_programmed_distribution_json_input).unwrap_or_default();
+                            let distributions: BTreeMap<u64, BTreeMap<Identifier, u64>> = match self.parse_pre_programmed_distributions() {
+                                Ok(distributions) => distributions.into_iter().map(|(k, v)| (k, std::iter::once(v).collect())).collect(),
+                                Err(err) => {
+                                    self.token_creator_error_message = Some(err);
+                                    return;
+                                }
+                            };
 
                             Some(TokenPreProgrammedDistribution::V0(
                                 TokenPreProgrammedDistributionV0 {
@@ -4195,25 +2506,70 @@ Emits tokens in fixed amounts for specific intervals.
                             None
                         },
                         new_tokens_destination_identity: if self.new_tokens_destination_identity_enabled {
-                            Some(Identifier::from_string(&self.new_tokens_destination_identity_identity_input, Encoding::Base58).unwrap_or_default())
+                            Some(Identifier::from_string(&self.new_tokens_destination_identity, Encoding::Base58).unwrap_or_default())
                         } else {
                             None
                         },
-                        new_tokens_destination_identity_rules: ChangeControlRules::V0(ChangeControlRulesV0 {
-                            authorized_to_make_change: self.new_tokens_destination_identity_rules_authorized.clone(),
-                            admin_action_takers: self.admin_action_takers_new_tokens_destination_identity.clone(),
-                            changing_authorized_action_takers_to_no_one_allowed: self.changing_authorized_action_takers_to_no_one_allowed_new_tokens_destination_identity,
-                            changing_admin_action_takers_to_no_one_allowed: self.changing_admin_action_takers_to_no_one_allowed_new_tokens_destination_identity,
-                            self_changing_admin_action_takers_allowed: self.self_changing_admin_action_takers_allowed_new_tokens_destination_identity,
-                        }),
+                        new_tokens_destination_identity_rules: self.new_tokens_destination_identity_rules.to_change_control_rules("New Tokens Destination Identity").unwrap(),
                         minting_allow_choosing_destination: self.minting_allow_choosing_destination,
-                        minting_allow_choosing_destination_rules: ChangeControlRules::V0(ChangeControlRulesV0 {
-                            authorized_to_make_change: self.minting_allow_choosing_destination_rules_authorized.clone(),
-                            admin_action_takers: self.admin_action_takers_minting_allow_choosing_destination.clone(),
-                            changing_authorized_action_takers_to_no_one_allowed: self.changing_authorized_action_takers_to_no_one_allowed_minting_allow_choosing_destination,
-                            changing_admin_action_takers_to_no_one_allowed: self.changing_admin_action_takers_to_no_one_allowed_minting_allow_choosing_destination,
-                            self_changing_admin_action_takers_allowed: self.self_changing_admin_action_takers_allowed_minting_allow_choosing_destination,
-                        }),
+                        minting_allow_choosing_destination_rules: self.minting_allow_choosing_destination_rules.to_change_control_rules("Minting Allow Choosing Destination").unwrap(),
+                    };
+
+                    let manual_minting_rules = match self.manual_minting_rules.to_change_control_rules("Manual Mint") {
+                        Ok(rules) => rules,
+                        Err(err) => {
+                            self.token_creator_error_message = Some(err);
+                            return;
+                        }
+                    };
+                    let manual_burning_rules = match self.manual_burning_rules.to_change_control_rules("Manual Burn") {
+                        Ok(rules) => rules,
+                        Err(err) => {
+                            self.token_creator_error_message = Some(err);
+                            return;
+                        }
+                    };
+                    let freeze_rules = match self.freeze_rules.to_change_control_rules("Freeze") {
+                        Ok(rules) => rules,
+                        Err(err) => {
+                            self.token_creator_error_message = Some(err);
+                            return;
+                        }
+                    };
+                    let unfreeze_rules = match self.unfreeze_rules.to_change_control_rules("Unfreeze") {
+                        Ok(rules) => rules,
+                        Err(err) => {
+                            self.token_creator_error_message = Some(err);
+                            return;
+                        }
+                    };
+                    let destroy_frozen_funds_rules = match self.destroy_frozen_funds_rules.to_change_control_rules("Destroy Frozen Funds") {
+                        Ok(rules) => rules,
+                        Err(err) => {
+                            self.token_creator_error_message = Some(err);
+                            return;
+                        }
+                    };
+                    let emergency_action_rules = match self.emergency_action_rules.to_change_control_rules("Emergency Action") {
+                        Ok(rules) => rules,
+                        Err(err) => {
+                            self.token_creator_error_message = Some(err);
+                            return;
+                        }
+                    };
+                    let max_supply_change_rules = match self.max_supply_change_rules.to_change_control_rules("Max Supply Change") {
+                        Ok(rules) => rules,
+                        Err(err) => {
+                            self.token_creator_error_message = Some(err);
+                            return;
+                        }
+                    };
+                    let conventions_change_rules = match self.conventions_change_rules.to_change_control_rules("Conventions Change") {
+                        Ok(rules) => rules,
+                        Err(err) => {
+                            self.token_creator_error_message = Some(err);
+                            return;
+                        }
                     };
 
                     let tasks = vec![
@@ -4229,50 +2585,14 @@ Emits tokens in fixed amounts for specific intervals.
                             keeps_history: self.token_keeps_history,
                             main_control_group,
 
-                            manual_mint_authorized: self.authorized_manual_mint.clone(),
-                            manual_mint_admin: self.admin_action_takers_manual_mint.clone(),
-                            manual_mint_changing_authorized_action_takers_to_no_one_allowed: self.changing_authorized_action_takers_to_no_one_allowed_manual_mint,
-                            manual_mint_changing_admin_action_takers_to_no_one_allowed: self.changing_admin_action_takers_to_no_one_allowed_manual_mint,
-                            manual_mint_self_changing_admin_action_takers_allowed: self.self_changing_admin_action_takers_allowed_manual_mint,
-                            manual_burn_authorized: self.authorized_manual_burn.clone(),
-                            manual_burn_admin: self.admin_action_takers_manual_burn.clone(),
-                            manual_burn_changing_admin_action_takers_to_no_one_allowed: self.changing_authorized_action_takers_to_no_one_allowed_manual_burn,
-                            manual_burn_changing_authorized_action_takers_to_no_one_allowed: self.changing_admin_action_takers_to_no_one_allowed_manual_burn,
-                            manual_burn_self_changing_admin_action_takers_allowed: self.self_changing_admin_action_takers_allowed_manual_burn,
-                            freeze_authorized: self.authorized_freeze.clone(),
-                            freeze_admin: self.admin_action_takers_freeze.clone(),
-                            freeze_changing_admin_action_takers_to_no_one_allowed: self.changing_authorized_action_takers_to_no_one_allowed_freeze,
-                            freeze_changing_authorized_action_takers_to_no_one_allowed: self.changing_admin_action_takers_to_no_one_allowed_freeze,
-                            freeze_self_changing_admin_action_takers_allowed: self.self_changing_admin_action_takers_allowed_freeze,
-                            unfreeze_authorized: self.authorized_unfreeze.clone(),
-                            unfreeze_admin: self.admin_action_takers_unfreeze.clone(),
-                            unfreeze_changing_admin_action_takers_to_no_one_allowed: self.changing_authorized_action_takers_to_no_one_allowed_unfreeze,
-                            unfreeze_changing_authorized_action_takers_to_no_one_allowed: self.changing_admin_action_takers_to_no_one_allowed_unfreeze,
-                            unfreeze_self_changing_admin_action_takers_allowed: self.self_changing_admin_action_takers_allowed_unfreeze,
-                            destroy_frozen_funds_authorized: self
-                                .authorized_destroy_frozen_funds
-                                .clone(),
-                            destroy_frozen_funds_admin: self
-                                .admin_action_takers_destroy_frozen_funds
-                                .clone(),
-                            destroy_frozen_funds_changing_admin_action_takers_to_no_one_allowed: self.changing_authorized_action_takers_to_no_one_allowed_destroy_frozen_funds,
-                            destroy_frozen_funds_changing_authorized_action_takers_to_no_one_allowed: self.changing_admin_action_takers_to_no_one_allowed_destroy_frozen_funds,
-                            destroy_frozen_funds_self_changing_admin_action_takers_allowed: self.self_changing_admin_action_takers_allowed_destroy_frozen_funds,
-                            pause_and_resume_authorized: self.authorized_pause_resume.clone(),
-                            pause_and_resume_admin: self.admin_action_takers_pause_resume.clone(),
-                            pause_and_resume_changing_admin_action_takers_to_no_one_allowed: self.changing_authorized_action_takers_to_no_one_allowed_pause_resume,
-                            pause_and_resume_changing_authorized_action_takers_to_no_one_allowed: self.changing_admin_action_takers_to_no_one_allowed_pause_resume,
-                            pause_and_resume_self_changing_admin_action_takers_allowed: self.self_changing_admin_action_takers_allowed_pause_resume,
-                            max_supply_change_authorized: self.authorized_max_supply_change.clone(),
-                            max_supply_change_admin: self.admin_action_takers_max_supply_change.clone(),
-                            max_supply_change_changing_admin_action_takers_to_no_one_allowed: self.changing_authorized_action_takers_to_no_one_allowed_max_supply_change,
-                            max_supply_change_changing_authorized_action_takers_to_no_one_allowed: self.changing_admin_action_takers_to_no_one_allowed_max_supply_change,
-                            max_supply_change_self_changing_admin_action_takers_allowed: self.self_changing_admin_action_takers_allowed_max_supply_change,
-                            conventions_change_authorized: self.authorized_conventions_change.clone(),
-                            conventions_change_admin: self.admin_action_takers_conventions_change.clone(),
-                            conventions_change_changing_admin_action_takers_to_no_one_allowed: self.changing_authorized_action_takers_to_no_one_allowed_conventions_change,
-                            conventions_change_changing_authorized_action_takers_to_no_one_allowed: self.changing_admin_action_takers_to_no_one_allowed_conventions_change,
-                            conventions_change_self_changing_admin_action_takers_allowed: self.self_changing_admin_action_takers_allowed_conventions_change,
+                            manual_minting_rules,
+                            manual_burning_rules,
+                            freeze_rules,
+                            unfreeze_rules,
+                            destroy_frozen_funds_rules,
+                            emergency_action_rules,
+                            max_supply_change_rules,
+                            conventions_change_rules,
                             main_control_group_change_authorized: self
                                 .authorized_main_control_group_change
                                 .clone(),
@@ -4310,6 +2630,47 @@ Emits tokens in fixed amounts for specific intervals.
         });
     }
 
+    /// Attempts to parse the `pre_programmed_distributions` into a BTreeMap.
+    /// Returns an error string if any row fails.
+    pub fn parse_pre_programmed_distributions(
+        &mut self,
+    ) -> Result<BTreeMap<u64, (Identifier, u64)>, String> {
+        let mut map = BTreeMap::new();
+        for (i, entry) in self.pre_programmed_distributions.iter().enumerate() {
+            // Parse timestamp
+            let timestamp = entry.timestamp_str.parse::<u64>().map_err(|_| {
+                format!(
+                    "Row {}: invalid timestamp (expected u64). Got '{}'",
+                    i + 1,
+                    entry.timestamp_str
+                )
+            })?;
+
+            // Parse identity
+            let id =
+                Identifier::from_string(&entry.identity_str, Encoding::Base58).map_err(|_| {
+                    format!(
+                        "Row {}: invalid base58 identity '{}'",
+                        i + 1,
+                        entry.identity_str
+                    )
+                })?;
+
+            // Parse amount
+            let amount = entry.amount_str.parse::<u64>().map_err(|_| {
+                format!(
+                    "Row {}: invalid distribution amount (expected u64). Got '{}'",
+                    i + 1,
+                    entry.amount_str
+                )
+            })?;
+
+            // Insert into the map
+            map.insert(timestamp, (id, amount));
+        }
+        Ok(map)
+    }
+
     fn reset_token_creator(&mut self) {
         self.selected_identity = None;
         self.selected_key = None;
@@ -4321,31 +2682,14 @@ Emits tokens in fixed amounts for specific intervals.
         self.start_as_paused_input = false;
         self.should_capitalize_input = false;
         self.token_keeps_history = false;
-        self.authorized_manual_mint = AuthorizedActionTakers::NoOne;
-        self.admin_action_takers_manual_mint = AuthorizedActionTakers::NoOne;
-        self.manual_mint_authorized_identity = None;
-        self.manual_mint_authorized_group = None;
-        self.authorized_manual_burn = AuthorizedActionTakers::NoOne;
-        self.manual_burn_authorized_identity = None;
-        self.manual_burn_authorized_group = None;
-        self.authorized_freeze = AuthorizedActionTakers::NoOne;
-        self.freeze_authorized_identity = None;
-        self.freeze_authorized_group = None;
-        self.authorized_unfreeze = AuthorizedActionTakers::NoOne;
-        self.unfreeze_authorized_identity = None;
-        self.unfreeze_authorized_group = None;
-        self.authorized_destroy_frozen_funds = AuthorizedActionTakers::NoOne;
-        self.destroy_frozen_funds_authorized_identity = None;
-        self.destroy_frozen_funds_authorized_group = None;
-        self.authorized_pause_resume = AuthorizedActionTakers::NoOne;
-        self.pause_resume_authorized_identity = None;
-        self.pause_resume_authorized_group = None;
-        self.authorized_max_supply_change = AuthorizedActionTakers::NoOne;
-        self.max_supply_change_authorized_identity = None;
-        self.max_supply_change_authorized_group = None;
-        self.authorized_conventions_change = AuthorizedActionTakers::NoOne;
-        self.conventions_change_authorized_identity = None;
-        self.conventions_change_authorized_group = None;
+        self.manual_minting_rules = ChangeControlRulesUI::default();
+        self.manual_burning_rules = ChangeControlRulesUI::default();
+        self.freeze_rules = ChangeControlRulesUI::default();
+        self.unfreeze_rules = ChangeControlRulesUI::default();
+        self.destroy_frozen_funds_rules = ChangeControlRulesUI::default();
+        self.emergency_action_rules = ChangeControlRulesUI::default();
+        self.max_supply_change_rules = ChangeControlRulesUI::default();
+        self.conventions_change_rules = ChangeControlRulesUI::default();
         self.authorized_main_control_group_change = AuthorizedActionTakers::NoOne;
         self.main_control_group_change_authorized_identity = None;
         self.main_control_group_change_authorized_group = None;
@@ -4375,40 +2719,14 @@ Emits tokens in fixed amounts for specific intervals.
         self.log_c_input = "".to_string();
         self.stepwise_steps = vec![(String::new(), String::new())];
         self.perpetual_dist_recipient = TokenDistributionRecipientUI::ContractOwner;
-        self.perpetual_dist_identity_input = "".to_string();
+        self.perpetual_dist_recipient_identity_input = None;
         self.enable_perpetual_distribution = false;
-        self.perpetual_distribution_rules_authorized = AuthorizedActionTakers::NoOne;
-        self.perpetual_distribution_authorized_identity = None;
-        self.perpetual_distribution_authorized_group = None;
-        self.admin_action_takers_perpetual_distribution = AuthorizedActionTakers::NoOne;
-        self.admin_perpetual_distribution_identity = None;
-        self.admin_perpetual_distribution_group = None;
-        self.changing_authorized_action_takers_to_no_one_allowed_perpetual_distribution = false;
-        self.changing_admin_action_takers_to_no_one_allowed_perpetual_distribution = false;
-        self.self_changing_admin_action_takers_allowed_perpetual_distribution = false;
+        self.perpetual_distribution_rules = ChangeControlRulesUI::default();
         self.enable_pre_programmed_distribution = false;
-        self.pre_programmed_distribution_json_input = "".to_string();
+        self.pre_programmed_distributions = Vec::new();
         self.new_tokens_destination_identity_enabled = false;
-        self.new_tokens_destination_identity_identity_input = "".to_string();
-        self.new_tokens_destination_identity_rules_authorized = AuthorizedActionTakers::NoOne;
-        self.new_tokens_destination_identity_rules_authorized_identity = None;
-        self.new_tokens_destination_identity_rules_authorized_group = None;
-        self.admin_action_takers_new_tokens_destination_identity = AuthorizedActionTakers::NoOne;
-        self.admin_new_tokens_destination_identity_identity = None;
-        self.admin_new_tokens_destination_identity_group = None;
-        self.changing_authorized_action_takers_to_no_one_allowed_new_tokens_destination_identity = false;
-        self.changing_admin_action_takers_to_no_one_allowed_new_tokens_destination_identity = false;
-        self.self_changing_admin_action_takers_allowed_new_tokens_destination_identity = false;
-        self.minting_allow_choosing_destination = false;
-        self.minting_allow_choosing_destination_rules_authorized = AuthorizedActionTakers::NoOne;
-        self.minting_allow_choosing_destination_rules_authorized_identity = None;
-        self.minting_allow_choosing_destination_rules_authorized_group = None;
-        self.admin_action_takers_minting_allow_choosing_destination = AuthorizedActionTakers::NoOne;
-        self.admin_minting_allow_choosing_destination_identity = None;
-        self.admin_minting_allow_choosing_destination_group = None;
-        self.changing_authorized_action_takers_to_no_one_allowed_minting_allow_choosing_destination = false;
-        self.changing_admin_action_takers_to_no_one_allowed_minting_allow_choosing_destination = false;
-        self.self_changing_admin_action_takers_allowed_minting_allow_choosing_destination = false;
+        self.new_tokens_destination_identity_rules = ChangeControlRulesUI::default();
+        self.minting_allow_choosing_destination_rules = ChangeControlRulesUI::default();
         self.show_token_creator_confirmation_popup = false;
         self.token_creator_error_message = None;
     }

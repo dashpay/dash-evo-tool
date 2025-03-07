@@ -426,7 +426,7 @@ pub struct TokensScreen {
     next_cursors: Vec<Identifier>,
     previous_cursors: Vec<Identifier>,
 
-    /// Sorting
+    // Sorting
     sort_column: SortColumn,
     sort_order: SortOrder,
     use_custom_order: bool,
@@ -437,7 +437,9 @@ pub struct TokensScreen {
     confirm_remove_token_popup: bool,
     token_to_remove: Option<Identifier>,
 
-    /// Token Creator
+    // ====================================
+    //           Token Creator
+    // ====================================
     show_pop_up_info: Option<String>,
     selected_identity: Option<QualifiedIdentity>,
     selected_key: Option<IdentityPublicKey>,
@@ -465,24 +467,30 @@ pub struct TokensScreen {
     emergency_action_rules: ChangeControlRulesUI,
     max_supply_change_rules: ChangeControlRulesUI,
     conventions_change_rules: ChangeControlRulesUI,
-
-    // Main control group change rules
     authorized_main_control_group_change: AuthorizedActionTakers,
     main_control_group_change_authorized_identity: Option<String>,
     main_control_group_change_authorized_group: Option<String>,
 
-    /// Distribution (perpetual) toggles/fields
+    // Perpetual Distribution
     pub enable_perpetual_distribution: bool,
     pub perpetual_distribution_rules: ChangeControlRulesUI,
-
-    // Which distribution interval type is selected?
     pub perpetual_dist_type: PerpetualDistributionIntervalTypeUI,
-
-    // Block-based / time-based / epoch-based inputs
     pub perpetual_dist_interval_input: String,
-
-    // Which distribution is currently selected?
     pub perpetual_dist_function: DistributionFunctionUI,
+    pub perpetual_dist_recipient: TokenDistributionRecipientUI,
+    pub perpetual_dist_recipient_identity_input: Option<String>,
+    // Pre-programmed distribution
+    pub enable_pre_programmed_distribution: bool,
+    pub pre_programmed_distributions: Vec<DistributionEntry>,
+
+    // New Tokens Destination Identity
+    pub new_tokens_destination_identity_enabled: bool,
+    pub new_tokens_destination_identity: String,
+    pub new_tokens_destination_identity_rules: ChangeControlRulesUI,
+
+    // Minting Allow Choosing Destination
+    pub minting_allow_choosing_destination: bool,
+    pub minting_allow_choosing_destination_rules: ChangeControlRulesUI,
 
     // --- FixedAmount ---
     pub fixed_amount_input: String,
@@ -525,23 +533,6 @@ pub struct TokensScreen {
     // Each tuple in the Vec can be (String, String) for block + amount
     // or however you prefer to represent it.
     pub stepwise_steps: Vec<(String, String)>,
-
-    // Similarly for identity recipients, you might store:
-    pub perpetual_dist_recipient: TokenDistributionRecipientUI,
-    pub perpetual_dist_recipient_identity_input: Option<String>,
-
-    /// Pre-programmed distribution
-    pub enable_pre_programmed_distribution: bool,
-    pub pre_programmed_distributions: Vec<DistributionEntry>,
-
-    // new_tokens_destination_identity
-    pub new_tokens_destination_identity_enabled: bool,
-    pub new_tokens_destination_identity: String,
-    pub new_tokens_destination_identity_rules: ChangeControlRulesUI,
-
-    // minting_allow_choosing_destination
-    pub minting_allow_choosing_destination: bool,
-    pub minting_allow_choosing_destination_rules: ChangeControlRulesUI,
 }
 
 impl TokensScreen {

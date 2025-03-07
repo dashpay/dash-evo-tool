@@ -1627,13 +1627,6 @@ impl TokensScreen {
                                     ui.text_edit_singleline(&mut self.decimals_input);
                                 });
                                 ui.end_row();
-
-                                // Add main group selection input
-                                ui.horizontal(|ui| {
-                                    ui.label("Main Control Group Position:");
-                                    ui.text_edit_singleline(&mut self.main_control_group_input);
-                                });
-                                ui.end_row();
                             });
                     });
 
@@ -2242,6 +2235,13 @@ Emits tokens in fixed amounts for specific intervals.
                     ui.collapsing("Groups", |ui| {
                         ui.add_space(3.0);
                         ui.label("Define one or more groups for multi-party control of the contract.");
+                        ui.add_space(2.0);
+
+                        // Add main group selection input
+                        ui.horizontal(|ui| {
+                            ui.label("Main Control Group Position:");
+                            ui.text_edit_singleline(&mut self.main_control_group_input);
+                        });                        
 
                         ui.add_space(2.0);
 

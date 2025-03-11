@@ -1,10 +1,10 @@
 [package]
 name = "dash-evo-tool"
-version = "0.8.3"
+version = "0.8.4"
 license = "MIT"
 edition = "2021"
 default-run = "dash-evo-tool"
-rust-version = "1.81"
+rust-version = "1.85"
 build = "build.rs"
 
 [build]

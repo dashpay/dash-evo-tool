@@ -1,3 +1,4 @@
+use crate::app_dir::{core_cookie_path, core_user_data_dir_path};
 use crate::backend_task::contested_names::ScheduledDPNSVote;
 use crate::components::core_zmq_listener::ZMQConnectionEvent;
 use crate::config::{Config, NetworkConfig};
@@ -70,7 +71,7 @@ impl AppContext {
 
         // we create provider, but we need to set app context to it later, as we have a circular dependency
         let provider =
-            Provider::new(db.clone(), &network_config).expect("Failed to initialize SDK");
+            Provider::new(db.clone(), network, &network_config).expect("Failed to initialize SDK");
 
         let sdk = initialize_sdk(&network_config, network, provider.clone());
 
@@ -86,14 +87,26 @@ impl AppContext {
             "http://{}:{}",
             network_config.core_host, network_config.core_rpc_port
         );
-        let core_client = Client::new(
-            &addr,
-            Auth::UserPass(
-                network_config.core_rpc_user.to_string(),
-                network_config.core_rpc_password.to_string(),
-            ),
-        )
-        .ok()?;
+        let cookie_path = core_cookie_path(network, &network_config.devnet_name).expect("expected to get cookie path");
+
+        // Try cookie authentication first
+        let core_client = match Client::new(&addr, Auth::CookieFile(cookie_path.clone())) {
+            Ok(client) => Ok(client),
+            Err(_) => {
+                // If cookie auth fails, try user/password authentication
+                tracing::info!(
+                    "Failed to authenticate using .cookie file at {:?}, falling back to user/pass",
+                    cookie_path,
+                );
+                Client::new(
+                    &addr,
+                    Auth::UserPass(
+                        network_config.core_rpc_user.to_string(),
+                        network_config.core_rpc_password.to_string(),
+                    ),
+                )
+            }
+        }.expect("Failed to create CoreClient");
 
         let wallets: BTreeMap<_, _> = db
             .get_wallets(&network)

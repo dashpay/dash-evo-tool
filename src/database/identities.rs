@@ -296,8 +296,8 @@ impl Database {
             "CREATE TABLE IF NOT EXISTS identity_order (
                 pos INTEGER NOT NULL,
                 identity_id BLOB NOT NULL,
-                PRIMARY KEY(pos)
-             )",
+                PRIMARY KEY(pos),
+                FOREIGN KEY (identity_id) REFERENCES identity(id) ON DELETE CASCADE)",
         )?;
         Ok(())
     }
@@ -328,33 +328,54 @@ impl Database {
         Ok(())
     }
 
-    /// Loads the custom identity order from the DB, returning a list of Identifiers in the stored order.
-    /// If there's no data, returns an empty Vec.
+    /// Loads the user’s custom identity order (the entire list).
+    /// If an identity in the order doesn't exist in the identity table, it is removed.
     pub fn load_identity_order(&self) -> rusqlite::Result<Vec<Identifier>> {
-        // Make sure table exists (in case it doesn't)
+        // Make sure table exists
         self.ensure_identity_order_table_exists()?;
 
         let conn = self.conn.lock().unwrap();
 
         // Read all rows sorted by pos
-        let mut stmt = conn.prepare(
-            "SELECT identity_id FROM identity_order
-             ORDER BY pos ASC",
-        )?;
+        let mut stmt = conn.prepare("SELECT identity_id FROM identity_order ORDER BY pos ASC")?;
 
         let mut rows = stmt.query([])?;
-        let mut result = Vec::new();
+        let mut final_list = Vec::new();
+        let mut to_remove = Vec::new();
 
         while let Some(row) = rows.next()? {
             let id_bytes: Vec<u8> = row.get(0)?;
             // Convert from raw bytes to an Identifier
-            if let Ok(identifier) = Identifier::from_vec(id_bytes) {
-                result.push(identifier);
+            let identifier = match Identifier::from_vec(id_bytes.clone()) {
+                Ok(id) => id,
+                Err(_) => {
+                    // If parsing as an Identifier fails, queue for removal
+                    to_remove.push(id_bytes);
+                    continue;
+                }
+            };
+
+            // Check if the identity is still in 'identity' table
+            let mut check_stmt =
+                conn.prepare("SELECT EXISTS(SELECT 1 FROM identity WHERE id = ?)")?;
+            let exists: i64 = check_stmt.query_row(params![identifier.to_vec()], |r| r.get(0))?;
+            if exists == 1 {
+                // Keep it
+                final_list.push(identifier);
             } else {
-                // If for some reason it fails to parse, skip it or handle error
+                // Queue for removal because it doesn't exist in the identity table
+                to_remove.push(identifier.to_vec());
             }
         }
 
-        Ok(result)
+        // Remove any “dangling” references
+        for id in to_remove {
+            conn.execute(
+                "DELETE FROM identity_order WHERE identity_id = ?",
+                params![id],
+            )?;
+        }
+
+        Ok(final_list)
     }
 }

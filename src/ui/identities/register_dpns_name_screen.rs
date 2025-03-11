@@ -310,11 +310,11 @@ impl ScreenLike for RegisterDpnsNameScreen {
                 ui.label("Name (without \".dash\"):");
                 ui.text_edit_singleline(&mut self.name_input);
             });
-            ui.add_space(10.0);
 
             // Display if the name is contested and the estimated cost
             let name = self.name_input.trim();
             if !name.is_empty() && name.len() >= 3 {
+                ui.add_space(10.0);
                 if is_contested_name(&name.to_lowercase()) {
                     ui.colored_label(
                         egui::Color32::DARK_RED,
@@ -355,6 +355,8 @@ impl ScreenLike for RegisterDpnsNameScreen {
                 self.register_dpns_name_status = RegisterDpnsNameStatus::WaitingForResult(now);
                 action = self.register_dpns_name_clicked();
             }
+
+            ui.add_space(10.0);
 
             // Handle registration status messages
             match &self.register_dpns_name_status {

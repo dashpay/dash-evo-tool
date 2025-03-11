@@ -67,12 +67,23 @@ impl AppContext {
                 // Run all futures concurrently
                 let results = join_all(futures).await;
 
-                // Map them into (name, choice, Ok(())) or (name, choice, Err(String)) tuples
                 let final_results = results
                     .into_iter()
-                    .map(|(name, choice, result)| match result {
-                        Ok(_) => (name.clone(), choice.clone(), Ok(())),
-                        Err(err_msg) => (name.clone(), choice.clone(), Err(err_msg)),
+                    .flat_map(|(name, vote_choice, det_execution_result)| {
+                        match det_execution_result {
+                            Ok(BackendTaskSuccessResult::DPNSVoteResults(platform_results)) => {
+                                // Voting succeeded in DET, return the Platform results
+                                platform_results
+                            }
+                            Err(det_err_msg) => {
+                                // Voting failed in DET, return the error message
+                                vec![(name.clone(), vote_choice.clone(), Err(det_err_msg))]
+                            }
+                            Ok(_) => {
+                                // Got some other BackendTaskSuccessResult, this shouldn't occur
+                                vec![(name.clone(), vote_choice.clone(), Ok(()))]
+                            }
+                        }
                     })
                     .collect::<Vec<_>>();
 

@@ -177,7 +177,10 @@ impl AppContext {
 
         // 4. Swap them in
         {
-            let mut client_lock = self.core_client.write().unwrap();
+            let mut client_lock = self
+                .core_client
+                .write()
+                .expect("Core client lock was poisoned");
             *client_lock = new_client;
         }
         {

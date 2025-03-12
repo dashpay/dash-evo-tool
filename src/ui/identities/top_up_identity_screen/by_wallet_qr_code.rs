@@ -28,7 +28,7 @@ impl TopUpIdentityScreen {
                             self.app_context
                                 .core_client
                                 .read()
-                                .unwrap()
+                                .expect("Core client lock was poisoned")
                                 .import_address(
                                     &receive_address,
                                     Some("Managed by Dash Evo Tool"),
@@ -42,7 +42,7 @@ impl TopUpIdentityScreen {
                             .app_context
                             .core_client
                             .read()
-                            .unwrap()
+                            .expect("Core client lock was poisoned")
                             .get_address_info(&receive_address)
                             .map_err(|e| e.to_string())?;
 
@@ -50,7 +50,7 @@ impl TopUpIdentityScreen {
                             self.app_context
                                 .core_client
                                 .read()
-                                .unwrap()
+                                .expect("Core client lock was poisoned")
                                 .import_address(
                                     &receive_address,
                                     Some("Managed by Dash Evo Tool"),

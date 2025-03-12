@@ -421,7 +421,7 @@ impl Wallet {
                     app_context
                         .core_client
                         .read()
-                        .unwrap()
+                        .expect("Core client lock was poisoned")
                         .import_address(
                             &address,
                             Some(

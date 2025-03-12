@@ -48,7 +48,7 @@ impl AppContext {
             CoreTask::GetBestChainLock => self
                 .core_client
                 .read()
-                .unwrap()
+                .expect("Core client lock was poisoned")
                 .get_best_chain_lock()
                 .map(|chain_lock| {
                     BackendTaskSuccessResult::CoreItem(CoreItem::ChainLock(

@@ -33,7 +33,7 @@ impl AppContext {
             match self
                 .core_client
                 .read()
-                .unwrap()
+                .expect("Core client lock was poisoned")
                 .get_received_by_address(address, None)
             {
                 Ok(new_balance) => {
@@ -53,7 +53,10 @@ impl AppContext {
         let utxo_map = {
             let mut wallet_guard = wallet.write().map_err(|e| e.to_string())?;
             match wallet_guard.reload_utxos(
-                &self.core_client.read().unwrap(),
+                &self
+                    .core_client
+                    .read()
+                    .expect("Core client lock was poisoned"),
                 self.network,
                 Some(self),
             ) {

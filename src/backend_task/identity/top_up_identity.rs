@@ -62,7 +62,7 @@ impl AppContext {
                             let raw_transaction_info = self
                                 .core_client
                                 .read()
-                                .unwrap()
+                                .expect("Core client lock was poisoned")
                                 .get_raw_transaction_info(&tx_id, None)
                                 .map_err(|e| e.to_string())?;
 
@@ -104,7 +104,10 @@ impl AppContext {
                             Err(_) => {
                                 wallet
                                     .reload_utxos(
-                                        &self.core_client.read().unwrap(),
+                                        &self
+                                            .core_client
+                                            .read()
+                                            .expect("Core client lock was poisoned"),
                                         self.network,
                                         Some(self),
                                     )
@@ -136,7 +139,7 @@ impl AppContext {
 
                     self.core_client
                         .read()
-                        .unwrap()
+                        .expect("Core client lock was poisoned")
                         .send_raw_transaction(&asset_lock_transaction)
                         .map_err(|e| e.to_string())?;
 
@@ -209,7 +212,7 @@ impl AppContext {
 
                     self.core_client
                         .read()
-                        .unwrap()
+                        .expect("Core client lock was poisoned")
                         .send_raw_transaction(&asset_lock_transaction)
                         .map_err(|e| e.to_string())?;
 

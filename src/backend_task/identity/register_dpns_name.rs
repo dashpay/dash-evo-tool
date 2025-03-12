@@ -131,8 +131,8 @@ impl AppContext {
                 preorder_document_type.to_owned_document_type(),
                 entropy.0,
                 public_key.clone(),
-                self.dpns_contract.clone(),
                 &qualified_identity,
+                None,
             )
             .await
             .map_err(|e| e.to_string())?;
@@ -143,8 +143,8 @@ impl AppContext {
                 domain_document_type.to_owned_document_type(),
                 entropy.0,
                 public_key.clone(),
-                self.dpns_contract.clone(),
                 &qualified_identity,
+                None,
             )
             .await
             .map_err(|e| e.to_string())?;
@@ -164,7 +164,12 @@ impl AppContext {
             start: None,
         };
 
-        let owned_dpns_names = Document::fetch_many(&self.sdk, dpns_names_document_query)
+        let sdk_guard = {
+            let guard = self.sdk.read().unwrap();
+            guard.clone()
+        };
+
+        let owned_dpns_names = Document::fetch_many(&sdk_guard, dpns_names_document_query)
             .await
             .map(|document_map| {
                 document_map

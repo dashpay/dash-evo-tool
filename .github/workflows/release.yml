@@ -30,7 +30,7 @@ jobs:
             target: "x86_64-unknown-linux-gnu"
             platform: "x86_64-linux"
           - name: "linux-arm64"
-            runs-on: ["self-hosted", "Linux", "ARM64", "ubuntu20.04"]  # Array of tags for ARM64
+            runs-on: "ubuntu-22.04-arm"
             target: "aarch64-unknown-linux-gnu"
             platform: "arm64-linux"
           - name: "macos-x86_64"
@@ -83,7 +83,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config clang cmake unzip libsqlite3-dev gcc-mingw-w64 mingw-w64 libsqlite3-dev mingw-w64-x86-64-dev gcc-aarch64-linux-gnu zip && uname -a && cargo clean
 
       - name: Install protoc (ARM)
-        if: ${{ matrix.platform == 'arm64' }}
+        if: ${{ matrix.platform == 'arm64-linux' }}
         run: curl -OL https://github.com/protocolbuffers/protobuf/releases/download/v25.2/protoc-25.2-linux-aarch_64.zip && sudo unzip -o protoc-25.2-linux-aarch_64.zip -d /usr/local bin/protoc && sudo unzip -o protoc-25.2-linux-aarch_64.zip -d /usr/local 'include/*' && rm -f protoc-25.2-linux-aarch_64.zip
         env:
           PROTOC: /usr/local/bin/protoc

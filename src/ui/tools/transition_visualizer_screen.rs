@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(PartialEq)]
-pub enum TransitionBroadcastStatus {
+enum TransitionBroadcastStatus {
     NotStarted,
     Submitting(TimestampMillis),
     Error(String),

@@ -63,7 +63,6 @@ impl CoreZMQListener {
         let should_stop = Arc::new(AtomicBool::new(false));
         let endpoint = endpoint.to_string();
         let should_stop_clone = Arc::clone(&should_stop);
-        let sender_clone = sender.clone();
 
         let handle = thread::spawn(move || {
             // Create the socket inside the thread.
@@ -147,7 +146,7 @@ impl CoreZMQListener {
                                         match Block::consensus_decode(&mut cursor) {
                                             Ok(block) => {
                                                 // Send the ChainLock and Network back to the main thread
-                                                if let Err(e) = sender_clone.send((
+                                                if let Err(e) = sender.send((
                                                     ZMQMessage::ChainLockedBlock(block),
                                                     network,
                                                 )) {
@@ -179,7 +178,7 @@ impl CoreZMQListener {
                                                 match InstantLock::consensus_decode(&mut cursor) {
                                                     Ok(islock) => {
                                                         // Send the Transaction, InstantLock, and Network back to the main thread
-                                                        if let Err(e) = sender_clone.send((
+                                                        if let Err(e) = sender.send((
                                                             ZMQMessage::ISLockedTransaction(
                                                                 tx, islock,
                                                             ),
@@ -286,7 +285,6 @@ impl CoreZMQListener {
         let should_stop = Arc::new(AtomicBool::new(false));
         let endpoint = endpoint.to_string();
         let should_stop_clone = Arc::clone(&should_stop);
-        let sender_clone = sender.clone();
 
         let handle = thread::spawn(move || {
             // Create the runtime inside the thread.
@@ -336,7 +334,7 @@ impl CoreZMQListener {
                                                         tx.send(ZMQConnectionEvent::Connected)
                                                             .expect("Failed to send connected event");
                                                     }
-                                                    if let Err(e) = sender_clone.send((
+                                                    if let Err(e) = sender.send((
                                                         ZMQMessage::ChainLockedBlock(block),
                                                         network,
                                                     )) {
@@ -367,7 +365,7 @@ impl CoreZMQListener {
                                                                 tx.send(ZMQConnectionEvent::Connected)
                                                                     .expect("Failed to send connected event");
                                                             }
-                                                            if let Err(e) = sender_clone.send((
+                                                            if let Err(e) = sender.send((
                                                                 ZMQMessage::ISLockedTransaction(
                                                                     tx, islock,
                                                                 ),

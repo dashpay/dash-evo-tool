@@ -420,6 +420,8 @@ impl Wallet {
                     let address = Address::p2pkh(&public_key, network);
                     app_context
                         .core_client
+                        .read()
+                        .expect("Core client lock was poisoned")
                         .import_address(
                             &address,
                             Some(

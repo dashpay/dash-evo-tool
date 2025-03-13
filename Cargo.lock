@@ -61,7 +61,7 @@ dependencies = [
  "accesskit",
  "accesskit_consumer",
  "objc2 0.5.2",
- "objc2-app-kit",
+ "objc2-app-kit 0.2.2",
  "objc2-foundation 0.2.2",
  "once_cell",
 ]
@@ -307,7 +307,7 @@ dependencies = [
  "clipboard-win 5.4.0",
  "log",
  "objc2 0.5.2",
- "objc2-app-kit",
+ "objc2-app-kit 0.2.2",
  "objc2-foundation 0.2.2",
  "parking_lot",
  "windows-sys 0.48.0",
@@ -367,16 +367,16 @@ dependencies = [
 
 [[package]]
 name = "ashpd"
-version = "0.10.3"
+version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "de3d60bee1a1d38c2077030f4788e1b4e31058d2e79a8cfc8f2b440bd44db290"
+checksum = "6cbdf310d77fd3aaee6ea2093db7011dc2d35d2eb3481e5607f1f8d942ed99df"
 dependencies = [
  "async-fs 2.1.2",
  "async-net",
  "enumflags2",
  "futures-channel",
  "futures-util",
- "rand",
+ "rand 0.9.0",
  "raw-window-handle 0.6.2",
  "serde",
  "serde_repr",
@@ -798,15 +798,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
-name = "base64-compat"
-version = "1.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5a8d4d2746f89841e49230dd26917df1876050f95abafafbe34f47cb534b88d7"
-dependencies = [
- "byteorder",
-]
-
-[[package]]
 name = "base64ct"
 version = "1.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -854,8 +845,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "33415e24172c1b7d6066f6d999545375ab8e1d95421d6784bdfff9496f292387"
 dependencies = [
  "bitcoin_hashes 0.13.0",
- "rand",
- "rand_core",
+ "rand 0.8.5",
+ "rand_core 0.6.4",
  "serde",
  "unicode-normalization",
 ]
@@ -996,6 +987,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "block2"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1d59b4c170e16f0405a2e95aff44432a0d41aa97675f3d52623effe95792a037"
+dependencies = [
+ "objc2 0.6.0",
+]
+
+[[package]]
 name = "blocking"
 version = "1.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1020,9 +1020,9 @@ dependencies = [
  "hkdf",
  "merlin",
  "pairing",
- "rand",
- "rand_chacha",
- "rand_core",
+ "rand 0.8.5",
+ "rand_chacha 0.3.1",
+ "rand_core 0.6.4",
  "serde",
  "serde_bare",
  "sha2",
@@ -1058,7 +1058,7 @@ dependencies = [
  "ff",
  "group",
  "pairing",
- "rand_core",
+ "rand_core 0.6.4",
  "serde",
  "subtle",
  "zeroize",
@@ -1548,7 +1548,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0dc92fb57ca44df6db8059111ab3af99a63d5d0f8375d9972e319a379c6bab76"
 dependencies = [
  "generic-array 0.14.7",
- "rand_core",
+ "rand_core 0.6.4",
  "serdect",
  "subtle",
  "zeroize",
@@ -1561,7 +1561,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1bfb12502f3fc46cca1bb51ac28df9d618d813cdc3d2f25b9fe775a34af26bb3"
 dependencies = [
  "generic-array 0.14.7",
- "rand_core",
+ "rand_core 0.6.4",
  "typenum",
 ]
 
@@ -1610,7 +1610,7 @@ dependencies = [
 [[package]]
 name = "dapi-grpc"
 version = "1.8.0"
-source = "git+https://github.com/dashpay/platform.git?rev=952b1f26b8d3571aab608d4361263e56ded5f1f5#952b1f26b8d3571aab608d4361263e56ded5f1f5"
+source = "git+https://github.com/dashpay/platform.git?rev=f1bae2dc42ab931154d044bfb2594c1f00961516#f1bae2dc42ab931154d044bfb2594c1f00961516"
 dependencies = [
  "dapi-grpc-macros",
  "futures-core",
@@ -1628,7 +1628,7 @@ dependencies = [
 [[package]]
 name = "dapi-grpc-macros"
 version = "1.8.0"
-source = "git+https://github.com/dashpay/platform.git?rev=952b1f26b8d3571aab608d4361263e56ded5f1f5#952b1f26b8d3571aab608d4361263e56ded5f1f5"
+source = "git+https://github.com/dashpay/platform.git?rev=f1bae2dc42ab931154d044bfb2594c1f00961516#f1bae2dc42ab931154d044bfb2594c1f00961516"
 dependencies = [
  "heck",
  "quote",
@@ -1705,7 +1705,7 @@ dependencies = [
  "native-dialog",
  "ordered-float",
  "qrcode",
- "rand",
+ "rand 0.8.5",
  "raw-cpuid",
  "regex",
  "rfd",
@@ -1730,7 +1730,7 @@ dependencies = [
 [[package]]
 name = "dash-sdk"
 version = "1.8.0"
-source = "git+https://github.com/dashpay/platform.git?rev=952b1f26b8d3571aab608d4361263e56ded5f1f5#952b1f26b8d3571aab608d4361263e56ded5f1f5"
+source = "git+https://github.com/dashpay/platform.git?rev=f1bae2dc42ab931154d044bfb2594c1f00961516#f1bae2dc42ab931154d044bfb2594c1f00961516"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -1764,14 +1764,12 @@ dependencies = [
 
 [[package]]
 name = "dashcore"
-version = "0.37.0"
-source = "git+https://github.com/dashpay/rust-dashcore?tag=v0.37.0#9cb1184f7a4e84b42c800006398520af1d559cf1"
+version = "0.35.0"
+source = "git+https://github.com/dashpay/rust-dashcore?tag=v0.35.0#521a76bfd7eaa90d2d89dc576808ec5772544f07"
 dependencies = [
  "anyhow",
- "base64-compat",
  "bech32",
  "bitflags 2.9.0",
- "blake3",
  "blsful",
  "dashcore-private",
  "dashcore_hashes",
@@ -1784,18 +1782,17 @@ dependencies = [
  "serde",
  "serde_repr",
  "strum",
- "thiserror 1.0.69",
 ]
 
 [[package]]
 name = "dashcore-private"
-version = "0.37.0"
-source = "git+https://github.com/dashpay/rust-dashcore?tag=v0.37.0#9cb1184f7a4e84b42c800006398520af1d559cf1"
+version = "0.1.0"
+source = "git+https://github.com/dashpay/rust-dashcore?tag=v0.35.0#521a76bfd7eaa90d2d89dc576808ec5772544f07"
 
 [[package]]
 name = "dashcore-rpc"
-version = "0.37.0"
-source = "git+https://github.com/dashpay/rust-dashcore?tag=v0.37.0#9cb1184f7a4e84b42c800006398520af1d559cf1"
+version = "0.16.0"
+source = "git+https://github.com/dashpay/rust-dashcore-rpc?tag=v0.16.0#099e871a64bbff1faf9c1d56014b612a1da1f3e0"
 dependencies = [
  "dashcore-rpc-json",
  "hex",
@@ -1807,8 +1804,8 @@ dependencies = [
 
 [[package]]
 name = "dashcore-rpc-json"
-version = "0.37.0"
-source = "git+https://github.com/dashpay/rust-dashcore?tag=v0.37.0#9cb1184f7a4e84b42c800006398520af1d559cf1"
+version = "0.16.0"
+source = "git+https://github.com/dashpay/rust-dashcore-rpc?tag=v0.16.0#099e871a64bbff1faf9c1d56014b612a1da1f3e0"
 dependencies = [
  "bincode",
  "dashcore",
@@ -1821,8 +1818,8 @@ dependencies = [
 
 [[package]]
 name = "dashcore_hashes"
-version = "0.37.0"
-source = "git+https://github.com/dashpay/rust-dashcore?tag=v0.37.0#9cb1184f7a4e84b42c800006398520af1d559cf1"
+version = "0.14.0"
+source = "git+https://github.com/dashpay/rust-dashcore?tag=v0.35.0#521a76bfd7eaa90d2d89dc576808ec5772544f07"
 dependencies = [
  "dashcore-private",
  "secp256k1",
@@ -1845,7 +1842,7 @@ dependencies = [
 [[package]]
 name = "dashpay-contract"
 version = "1.8.0"
-source = "git+https://github.com/dashpay/platform.git?rev=952b1f26b8d3571aab608d4361263e56ded5f1f5#952b1f26b8d3571aab608d4361263e56ded5f1f5"
+source = "git+https://github.com/dashpay/platform.git?rev=f1bae2dc42ab931154d044bfb2594c1f00961516#f1bae2dc42ab931154d044bfb2594c1f00961516"
 dependencies = [
  "platform-value",
  "platform-version",
@@ -1856,7 +1853,7 @@ dependencies = [
 [[package]]
 name = "data-contracts"
 version = "1.8.0"
-source = "git+https://github.com/dashpay/platform.git?rev=952b1f26b8d3571aab608d4361263e56ded5f1f5#952b1f26b8d3571aab608d4361263e56ded5f1f5"
+source = "git+https://github.com/dashpay/platform.git?rev=f1bae2dc42ab931154d044bfb2594c1f00961516#f1bae2dc42ab931154d044bfb2594c1f00961516"
 dependencies = [
  "dashpay-contract",
  "dpns-contract",
@@ -2056,6 +2053,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bd0c93bb4b0c6d9b77f4435b0ae98c24d17f1c45b2ff844c6151a07256ca923b"
 
 [[package]]
+name = "dispatch2"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1a0d569e003ff27784e0e14e4a594048698e0c0f0b66cabcb51511be55a7caa0"
+dependencies = [
+ "bitflags 2.9.0",
+ "block2 0.6.0",
+ "libc",
+ "objc2 0.6.0",
+]
+
+[[package]]
 name = "displaydoc"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2105,7 +2114,7 @@ checksum = "f25c0e292a7ca6d6498557ff1df68f32c99850012b6ea401cf8daf771f22ff53"
 [[package]]
 name = "dpns-contract"
 version = "1.8.0"
-source = "git+https://github.com/dashpay/platform.git?rev=952b1f26b8d3571aab608d4361263e56ded5f1f5#952b1f26b8d3571aab608d4361263e56ded5f1f5"
+source = "git+https://github.com/dashpay/platform.git?rev=f1bae2dc42ab931154d044bfb2594c1f00961516#f1bae2dc42ab931154d044bfb2594c1f00961516"
 dependencies = [
  "platform-value",
  "platform-version",
@@ -2116,7 +2125,7 @@ dependencies = [
 [[package]]
 name = "dpp"
 version = "1.8.0"
-source = "git+https://github.com/dashpay/platform.git?rev=952b1f26b8d3571aab608d4361263e56ded5f1f5#952b1f26b8d3571aab608d4361263e56ded5f1f5"
+source = "git+https://github.com/dashpay/platform.git?rev=f1bae2dc42ab931154d044bfb2594c1f00961516#f1bae2dc42ab931154d044bfb2594c1f00961516"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2145,7 +2154,7 @@ dependencies = [
  "platform-value",
  "platform-version",
  "platform-versioning",
- "rand",
+ "rand 0.8.5",
  "regex",
  "serde",
  "serde_json",
@@ -2158,7 +2167,7 @@ dependencies = [
 [[package]]
 name = "drive"
 version = "1.8.0"
-source = "git+https://github.com/dashpay/platform.git?rev=952b1f26b8d3571aab608d4361263e56ded5f1f5#952b1f26b8d3571aab608d4361263e56ded5f1f5"
+source = "git+https://github.com/dashpay/platform.git?rev=f1bae2dc42ab931154d044bfb2594c1f00961516#f1bae2dc42ab931154d044bfb2594c1f00961516"
 dependencies = [
  "bincode",
  "byteorder",
@@ -2183,7 +2192,7 @@ dependencies = [
 [[package]]
 name = "drive-proof-verifier"
 version = "1.8.0"
-source = "git+https://github.com/dashpay/platform.git?rev=952b1f26b8d3571aab608d4361263e56ded5f1f5#952b1f26b8d3571aab608d4361263e56ded5f1f5"
+source = "git+https://github.com/dashpay/platform.git?rev=f1bae2dc42ab931154d044bfb2594c1f00961516#f1bae2dc42ab931154d044bfb2594c1f00961516"
 dependencies = [
  "bincode",
  "dapi-grpc",
@@ -2251,7 +2260,7 @@ checksum = "4a3daa8e81a3963a60642bcc1f90a670680bd4a77535faa384e9d1c79d620871"
 dependencies = [
  "curve25519-dalek",
  "ed25519",
- "rand_core",
+ "rand_core 0.6.4",
  "serde",
  "sha2",
  "subtle",
@@ -2279,7 +2288,7 @@ dependencies = [
  "js-sys",
  "log",
  "objc2 0.5.2",
- "objc2-app-kit",
+ "objc2-app-kit 0.2.2",
  "objc2-foundation 0.2.2",
  "parking_lot",
  "percent-encoding",
@@ -2424,7 +2433,7 @@ dependencies = [
  "group",
  "hkdf",
  "pkcs8",
- "rand_core",
+ "rand_core 0.6.4",
  "sec1",
  "subtle",
  "tap",
@@ -2689,7 +2698,7 @@ dependencies = [
 [[package]]
 name = "feature-flags-contract"
 version = "1.8.0"
-source = "git+https://github.com/dashpay/platform.git?rev=952b1f26b8d3571aab608d4361263e56ded5f1f5#952b1f26b8d3571aab608d4361263e56ded5f1f5"
+source = "git+https://github.com/dashpay/platform.git?rev=f1bae2dc42ab931154d044bfb2594c1f00961516#f1bae2dc42ab931154d044bfb2594c1f00961516"
 dependencies = [
  "platform-value",
  "platform-version",
@@ -2704,7 +2713,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c0b50bfb653653f9ca9095b427bed08ab8d75a137839d9ad64eb11810d5b6393"
 dependencies = [
  "bitvec",
- "rand_core",
+ "rand_core 0.6.4",
  "subtle",
 ]
 
@@ -3072,7 +3081,7 @@ dependencies = [
  "glutin_wgl_sys",
  "libloading",
  "objc2 0.5.2",
- "objc2-app-kit",
+ "objc2-app-kit 0.2.2",
  "objc2-foundation 0.2.2",
  "once_cell",
  "raw-window-handle 0.6.2",
@@ -3181,8 +3190,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f0f9ef7462f7c099f518d754361858f86d8a07af53ba9af0fe635bbccb151a63"
 dependencies = [
  "ff",
- "rand",
- "rand_core",
+ "rand 0.8.5",
+ "rand_core 0.6.4",
  "rand_xorshift",
  "subtle",
 ]
@@ -4153,7 +4162,7 @@ dependencies = [
 [[package]]
 name = "masternode-reward-shares-contract"
 version = "1.8.0"
-source = "git+https://github.com/dashpay/platform.git?rev=952b1f26b8d3571aab608d4361263e56ded5f1f5#952b1f26b8d3571aab608d4361263e56ded5f1f5"
+source = "git+https://github.com/dashpay/platform.git?rev=f1bae2dc42ab931154d044bfb2594c1f00961516#f1bae2dc42ab931154d044bfb2594c1f00961516"
 dependencies = [
  "platform-value",
  "platform-version",
@@ -4217,7 +4226,7 @@ checksum = "58c38e2799fc0978b65dfff8023ec7843e2330bb462f19198840b34b6582397d"
 dependencies = [
  "byteorder",
  "keccak",
- "rand_core",
+ "rand_core 0.6.4",
  "zeroize",
 ]
 
@@ -4477,7 +4486,7 @@ checksum = "a5e44f723f1133c9deac646763579fdb3ac745e418f2a7af9cd0c431da1f20b9"
 dependencies = [
  "num-integer",
  "num-traits",
- "rand",
+ "rand 0.8.5",
  "serde",
 ]
 
@@ -4488,7 +4497,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "73f88a1307638156682bada9d7604135552957b7818057dcef22705b4d509495"
 dependencies = [
  "num-traits",
- "rand",
+ "rand 0.8.5",
  "serde",
 ]
 
@@ -4654,7 +4663,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e4e89ad9e3d7d297152b17d39ed92cd50ca8063a89a9fa569046d41568891eff"
 dependencies = [
  "bitflags 2.9.0",
- "block2",
+ "block2 0.5.1",
  "libc",
  "objc2 0.5.2",
  "objc2-core-data",
@@ -4664,13 +4673,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "objc2-app-kit"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5906f93257178e2f7ae069efb89fbd6ee94f0592740b5f8a1512ca498814d0fb"
+dependencies = [
+ "bitflags 2.9.0",
+ "block2 0.6.0",
+ "objc2 0.6.0",
+ "objc2-foundation 0.3.0",
+]
+
+[[package]]
 name = "objc2-cloud-kit"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "74dd3b56391c7a0596a295029734d3c1c5e7e510a4cb30245f8221ccea96b009"
 dependencies = [
  "bitflags 2.9.0",
- "block2",
+ "block2 0.5.1",
  "objc2 0.5.2",
  "objc2-core-location",
  "objc2-foundation 0.2.2",
@@ -4682,7 +4703,7 @@ version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a5ff520e9c33812fd374d8deecef01d4a840e7b41862d849513de77e44aa4889"
 dependencies = [
- "block2",
+ "block2 0.5.1",
  "objc2 0.5.2",
  "objc2-foundation 0.2.2",
 ]
@@ -4694,9 +4715,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "617fbf49e071c178c0b24c080767db52958f716d9eabdf0890523aeae54773ef"
 dependencies = [
  "bitflags 2.9.0",
- "block2",
+ "block2 0.5.1",
  "objc2 0.5.2",
  "objc2-foundation 0.2.2",
+]
+
+[[package]]
+name = "objc2-core-foundation"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "daeaf60f25471d26948a1c2f840e3f7d86f4109e3af4e8e4b5cd70c39690d925"
+dependencies = [
+ "bitflags 2.9.0",
+ "objc2 0.6.0",
 ]
 
 [[package]]
@@ -4705,7 +4736,7 @@ version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "55260963a527c99f1819c4f8e3b47fe04f9650694ef348ffd2227e8196d34c80"
 dependencies = [
- "block2",
+ "block2 0.5.1",
  "objc2 0.5.2",
  "objc2-foundation 0.2.2",
  "objc2-metal",
@@ -4717,7 +4748,7 @@ version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "000cfee34e683244f284252ee206a27953279d370e309649dc3ee317b37e5781"
 dependencies = [
- "block2",
+ "block2 0.5.1",
  "objc2 0.5.2",
  "objc2-contacts",
  "objc2-foundation 0.2.2",
@@ -4736,7 +4767,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0ee638a5da3799329310ad4cfa62fbf045d5f56e3ef5ba4149e7452dcf89d5a8"
 dependencies = [
  "bitflags 2.9.0",
- "block2",
+ "block2 0.5.1",
  "dispatch",
  "libc",
  "objc2 0.5.2",
@@ -4750,6 +4781,7 @@ checksum = "3a21c6c9014b82c39515db5b396f91645182611c97d24637cf56ac01e5f8d998"
 dependencies = [
  "bitflags 2.9.0",
  "objc2 0.6.0",
+ "objc2-core-foundation",
 ]
 
 [[package]]
@@ -4758,9 +4790,9 @@ version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a1a1ae721c5e35be65f01a03b6d2ac13a54cb4fa70d8a5da293d7b0020261398"
 dependencies = [
- "block2",
+ "block2 0.5.1",
  "objc2 0.5.2",
- "objc2-app-kit",
+ "objc2-app-kit 0.2.2",
  "objc2-foundation 0.2.2",
 ]
 
@@ -4771,7 +4803,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dd0cba1276f6023976a406a14ffa85e1fdd19df6b0f737b063b95f6c8c7aadd6"
 dependencies = [
  "bitflags 2.9.0",
- "block2",
+ "block2 0.5.1",
  "objc2 0.5.2",
  "objc2-foundation 0.2.2",
 ]
@@ -4783,7 +4815,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e42bee7bff906b14b167da2bac5efe6b6a07e6f7c0a21a7308d40c960242dc7a"
 dependencies = [
  "bitflags 2.9.0",
- "block2",
+ "block2 0.5.1",
  "objc2 0.5.2",
  "objc2-foundation 0.2.2",
  "objc2-metal",
@@ -4806,7 +4838,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b8bb46798b20cd6b91cbd113524c490f1686f4c4e8f49502431415f3512e2b6f"
 dependencies = [
  "bitflags 2.9.0",
- "block2",
+ "block2 0.5.1",
  "objc2 0.5.2",
  "objc2-cloud-kit",
  "objc2-core-data",
@@ -4826,7 +4858,7 @@ version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "44fa5f9748dbfe1ca6c0b79ad20725a11eca7c2218bceb4b005cb1be26273bfe"
 dependencies = [
- "block2",
+ "block2 0.5.1",
  "objc2 0.5.2",
  "objc2-foundation 0.2.2",
 ]
@@ -4838,7 +4870,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "76cfcbf642358e8689af64cee815d139339f3ed8ad05103ed5eaf73db8d84cb3"
 dependencies = [
  "bitflags 2.9.0",
- "block2",
+ "block2 0.5.1",
  "objc2 0.5.2",
  "objc2-core-location",
  "objc2-foundation 0.2.2",
@@ -4940,7 +4972,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7bb71e1b3fa6ca1c61f383464aaf2bb0e2f8e772a1f01d486832464de363b951"
 dependencies = [
  "num-traits",
- "rand",
+ "rand 0.8.5",
  "serde",
 ]
 
@@ -5014,7 +5046,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "346f04948ba92c43e8469c1ee6736c7563d71012b17d40745260fe106aac2166"
 dependencies = [
  "base64ct",
- "rand_core",
+ "rand_core 0.6.4",
  "subtle",
 ]
 
@@ -5102,7 +5134,7 @@ checksum = "7edddbd0b52d732b21ad9a5fab5c704c14cd949e5e9a1ec5929a24fded1b904c"
 [[package]]
 name = "platform-serialization"
 version = "1.8.0"
-source = "git+https://github.com/dashpay/platform.git?rev=952b1f26b8d3571aab608d4361263e56ded5f1f5#952b1f26b8d3571aab608d4361263e56ded5f1f5"
+source = "git+https://github.com/dashpay/platform.git?rev=f1bae2dc42ab931154d044bfb2594c1f00961516#f1bae2dc42ab931154d044bfb2594c1f00961516"
 dependencies = [
  "bincode",
  "platform-version",
@@ -5111,7 +5143,7 @@ dependencies = [
 [[package]]
 name = "platform-serialization-derive"
 version = "1.8.0"
-source = "git+https://github.com/dashpay/platform.git?rev=952b1f26b8d3571aab608d4361263e56ded5f1f5#952b1f26b8d3571aab608d4361263e56ded5f1f5"
+source = "git+https://github.com/dashpay/platform.git?rev=f1bae2dc42ab931154d044bfb2594c1f00961516#f1bae2dc42ab931154d044bfb2594c1f00961516"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -5122,7 +5154,7 @@ dependencies = [
 [[package]]
 name = "platform-value"
 version = "1.8.0"
-source = "git+https://github.com/dashpay/platform.git?rev=952b1f26b8d3571aab608d4361263e56ded5f1f5#952b1f26b8d3571aab608d4361263e56ded5f1f5"
+source = "git+https://github.com/dashpay/platform.git?rev=f1bae2dc42ab931154d044bfb2594c1f00961516#f1bae2dc42ab931154d044bfb2594c1f00961516"
 dependencies = [
  "base64 0.22.1",
  "bincode",
@@ -5132,7 +5164,7 @@ dependencies = [
  "indexmap 2.8.0",
  "platform-serialization",
  "platform-version",
- "rand",
+ "rand 0.8.5",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
@@ -5142,7 +5174,7 @@ dependencies = [
 [[package]]
 name = "platform-version"
 version = "1.8.0"
-source = "git+https://github.com/dashpay/platform.git?rev=952b1f26b8d3571aab608d4361263e56ded5f1f5#952b1f26b8d3571aab608d4361263e56ded5f1f5"
+source = "git+https://github.com/dashpay/platform.git?rev=f1bae2dc42ab931154d044bfb2594c1f00961516#f1bae2dc42ab931154d044bfb2594c1f00961516"
 dependencies = [
  "bincode",
  "grovedb-version 3.0.0",
@@ -5154,7 +5186,7 @@ dependencies = [
 [[package]]
 name = "platform-versioning"
 version = "1.8.0"
-source = "git+https://github.com/dashpay/platform.git?rev=952b1f26b8d3571aab608d4361263e56ded5f1f5#952b1f26b8d3571aab608d4361263e56ded5f1f5"
+source = "git+https://github.com/dashpay/platform.git?rev=f1bae2dc42ab931154d044bfb2594c1f00961516#f1bae2dc42ab931154d044bfb2594c1f00961516"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -5406,9 +5438,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "34af8d1a0e25924bc5b7c43c079c942339d8f0a8b57c39049bef581b46327404"
 dependencies = [
  "libc",
- "rand_chacha",
- "rand_core",
+ "rand_chacha 0.3.1",
+ "rand_core 0.6.4",
  "serde",
+]
+
+[[package]]
+name = "rand"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3779b94aeb87e8bd4e834cee3650289ee9e0d5677f976ecdb6d219e5f4f6cd94"
+dependencies = [
+ "rand_chacha 0.9.0",
+ "rand_core 0.9.3",
+ "zerocopy 0.8.23",
 ]
 
 [[package]]
@@ -5418,7 +5461,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e6c10a63a0fa32252be49d21e7709d4d4baf8d231c2dbce1eaa8141b9b127d88"
 dependencies = [
  "ppv-lite86",
- "rand_core",
+ "rand_core 0.6.4",
+]
+
+[[package]]
+name = "rand_chacha"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d3022b5f1df60f26e1ffddd6c66e8aa15de382ae63b3a0c1bfc0e4d3e3f325cb"
+dependencies = [
+ "ppv-lite86",
+ "rand_core 0.9.3",
 ]
 
 [[package]]
@@ -5432,12 +5485,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "rand_core"
+version = "0.9.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "99d9a13982dcf210057a8a78572b2217b667c3beacbf3a0d8b454f6f82837d38"
+dependencies = [
+ "getrandom 0.3.1",
+]
+
+[[package]]
 name = "rand_xorshift"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d25bf25ec5ae4a3f1b92f929810509a2f53d7dca2f50b794ff57e3face536c8f"
 dependencies = [
- "rand_core",
+ "rand_core 0.6.4",
 ]
 
 [[package]]
@@ -5607,19 +5669,19 @@ dependencies = [
 
 [[package]]
 name = "rfd"
-version = "0.15.2"
+version = "0.15.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6a24763657bff09769a8ccf12c8b8a50416fb035fe199263b4c5071e4e3f006f"
+checksum = "80c844748fdc82aae252ee4594a89b6e7ebef1063de7951545564cbc4e57075d"
 dependencies = [
  "ashpd",
- "block2",
- "core-foundation 0.10.0",
- "core-foundation-sys",
+ "block2 0.6.0",
+ "dispatch2",
  "js-sys",
  "log",
- "objc2 0.5.2",
- "objc2-app-kit",
- "objc2-foundation 0.2.2",
+ "objc2 0.6.0",
+ "objc2-app-kit 0.3.0",
+ "objc2-core-foundation",
+ "objc2-foundation 0.3.0",
  "pollster",
  "raw-window-handle 0.6.2",
  "urlencoding",
@@ -5658,7 +5720,7 @@ dependencies = [
 [[package]]
 name = "rs-dapi-client"
 version = "1.8.0"
-source = "git+https://github.com/dashpay/platform.git?rev=952b1f26b8d3571aab608d4361263e56ded5f1f5#952b1f26b8d3571aab608d4361263e56ded5f1f5"
+source = "git+https://github.com/dashpay/platform.git?rev=f1bae2dc42ab931154d044bfb2594c1f00961516#f1bae2dc42ab931154d044bfb2594c1f00961516"
 dependencies = [
  "backon",
  "chrono",
@@ -5670,7 +5732,7 @@ dependencies = [
  "http",
  "http-serde",
  "lru",
- "rand",
+ "rand 0.8.5",
  "serde",
  "serde_json",
  "sha2",
@@ -5919,7 +5981,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b50c5943d326858130af85e049f2661ba3c78b26589b8ab98e65e80ae44a1252"
 dependencies = [
  "bitcoin_hashes 0.14.0",
- "rand",
+ "rand 0.8.5",
  "secp256k1-sys",
  "serde",
 ]
@@ -6171,7 +6233,7 @@ version = "2.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "77549399552de45a898a580c1b41d445bf730df867cc44e6c0233bbc4b8329de"
 dependencies = [
- "rand_core",
+ "rand_core 0.6.4",
 ]
 
 [[package]]
@@ -6678,7 +6740,7 @@ checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 [[package]]
 name = "token-history-contract"
 version = "1.8.0"
-source = "git+https://github.com/dashpay/platform.git?rev=952b1f26b8d3571aab608d4361263e56ded5f1f5#952b1f26b8d3571aab608d4361263e56ded5f1f5"
+source = "git+https://github.com/dashpay/platform.git?rev=f1bae2dc42ab931154d044bfb2594c1f00961516#f1bae2dc42ab931154d044bfb2594c1f00961516"
 dependencies = [
  "platform-value",
  "platform-version",
@@ -6802,7 +6864,7 @@ dependencies = [
  "serde",
  "serde_spanned",
  "toml_datetime",
- "winnow 0.7.3",
+ "winnow 0.7.4",
 ]
 
 [[package]]
@@ -6889,7 +6951,7 @@ dependencies = [
  "indexmap 1.9.3",
  "pin-project",
  "pin-project-lite",
- "rand",
+ "rand 0.8.5",
  "slab",
  "tokio",
  "tokio-util",
@@ -7120,9 +7182,9 @@ dependencies = [
 
 [[package]]
 name = "ureq-proto"
-version = "0.3.3"
+version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "64adb55464bad1ab1aa9229133d0d59d2f679180f4d15f0d9debe616f541f25e"
+checksum = "135487149f03ef07422c30dba704aeb6c9e1140c9dc50134c9a20937e2d1e9f6"
 dependencies = [
  "base64 0.22.1",
  "http",
@@ -7250,7 +7312,7 @@ dependencies = [
  "generic-array 1.0.0",
  "hex",
  "num",
- "rand_core",
+ "rand_core 0.6.4",
  "serde",
  "sha3",
  "subtle",
@@ -7276,7 +7338,7 @@ dependencies = [
 [[package]]
 name = "wallet-utils-contract"
 version = "1.8.0"
-source = "git+https://github.com/dashpay/platform.git?rev=952b1f26b8d3571aab608d4361263e56ded5f1f5#952b1f26b8d3571aab608d4361263e56ded5f1f5"
+source = "git+https://github.com/dashpay/platform.git?rev=f1bae2dc42ab931154d044bfb2594c1f00961516#f1bae2dc42ab931154d044bfb2594c1f00961516"
 dependencies = [
  "platform-value",
  "platform-version",
@@ -8113,7 +8175,7 @@ dependencies = [
  "android-activity",
  "atomic-waker",
  "bitflags 2.9.0",
- "block2",
+ "block2 0.5.1",
  "bytemuck",
  "calloop",
  "cfg_aliases 0.2.1",
@@ -8127,7 +8189,7 @@ dependencies = [
  "memmap2",
  "ndk",
  "objc2 0.5.2",
- "objc2-app-kit",
+ "objc2-app-kit 0.2.2",
  "objc2-foundation 0.2.2",
  "objc2-ui-kit",
  "orbclient",
@@ -8166,9 +8228,9 @@ dependencies = [
 
 [[package]]
 name = "winnow"
-version = "0.7.3"
+version = "0.7.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0e7f4ea97f6f78012141bcdb6a216b2609f0979ada50b20ca5b52dde2eac2bb1"
+checksum = "0e97b544156e9bebe1a0ffbc03484fc1ffe3100cbce3ffb17eac35f7cdd7ab36"
 dependencies = [
  "memchr",
 ]
@@ -8185,7 +8247,7 @@ dependencies = [
 [[package]]
 name = "withdrawals-contract"
 version = "1.8.0"
-source = "git+https://github.com/dashpay/platform.git?rev=952b1f26b8d3571aab608d4361263e56ded5f1f5#952b1f26b8d3571aab608d4361263e56ded5f1f5"
+source = "git+https://github.com/dashpay/platform.git?rev=f1bae2dc42ab931154d044bfb2594c1f00961516#f1bae2dc42ab931154d044bfb2594c1f00961516"
 dependencies = [
  "num_enum 0.5.11",
  "platform-value",
@@ -8351,7 +8413,7 @@ dependencies = [
  "nix 0.26.4",
  "once_cell",
  "ordered-stream",
- "rand",
+ "rand 0.8.5",
  "serde",
  "serde_repr",
  "sha1",
@@ -8394,7 +8456,7 @@ dependencies = [
  "tracing",
  "uds_windows",
  "windows-sys 0.59.0",
- "winnow 0.7.3",
+ "winnow 0.7.4",
  "xdg-home",
  "zbus_macros 5.5.0",
  "zbus_names 4.2.0",
@@ -8449,7 +8511,7 @@ checksum = "7be68e64bf6ce8db94f63e72f0c7eb9a60d733f7e0499e628dfab0f84d6bcb97"
 dependencies = [
  "serde",
  "static_assertions",
- "winnow 0.7.3",
+ "winnow 0.7.4",
  "zvariant 5.4.0",
 ]
 
@@ -8554,7 +8616,7 @@ dependencies = [
  "num-traits",
  "once_cell",
  "parking_lot",
- "rand",
+ "rand 0.8.5",
  "regex",
  "thiserror 1.0.69",
  "tokio",
@@ -8672,7 +8734,7 @@ dependencies = [
  "serde",
  "static_assertions",
  "url",
- "winnow 0.7.3",
+ "winnow 0.7.4",
  "zvariant_derive 5.4.0",
  "zvariant_utils 3.2.0",
 ]
@@ -8725,7 +8787,7 @@ dependencies = [
  "serde",
  "static_assertions",
  "syn 2.0.100",
- "winnow 0.7.3",
+ "winnow 0.7.4",
 ]
 
 [[package]]

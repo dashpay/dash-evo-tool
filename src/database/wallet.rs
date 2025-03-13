@@ -449,4 +449,34 @@ impl Database {
         // Convert the BTreeMap into a Vec of Wallets.
         Ok(wallets_map.into_values().collect())
     }
+
+    pub fn forget_wallet(&self, seed_hash: &[u8; 32]) -> rusqlite::Result<()> {
+        let conn = self.conn.lock().unwrap();
+
+        // Step 1: Delete the wallet from the wallet table.
+        conn.execute("DELETE FROM wallet WHERE seed_hash = ?", params![seed_hash])?;
+
+        // Step 2: For each address in the wallet, delete all UTXOs associated with that address.
+        conn.execute(
+            "DELETE FROM utxos WHERE address IN (SELECT address FROM wallet_addresses WHERE seed_hash = ?)",
+            params![seed_hash],
+        )?;
+
+        // Step 3: Delete all addresses associated with the wallet.
+        conn.execute(
+            "DELETE FROM wallet_addresses WHERE seed_hash = ?",
+            params![seed_hash],
+        )?;
+
+        // Step 4: Delete all asset lock transactions associated with the wallet.
+        conn.execute(
+            "DELETE FROM asset_lock_transaction WHERE wallet = ?",
+            params![seed_hash],
+        )?;
+
+        // Step 5: Delete all identities associated with the wallet.
+        conn.execute("DELETE FROM identity WHERE wallet = ?", params![seed_hash])?;
+
+        Ok(())
+    }
 }

@@ -162,7 +162,7 @@ impl AddNewWalletScreen {
                 eprintln!("Failed to acquire write lock on wallets");
             }
 
-            Ok(AppAction::GoToMainScreen) // Navigate back to the main screen after saving
+            Ok(AppAction::PopScreenAndRefresh) // Navigate back to the main screen after saving
         } else {
             Ok(AppAction::None) // No action if no seed phrase exists
         }

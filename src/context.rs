@@ -530,6 +530,16 @@ impl AppContext {
         Ok(())
     }
 
+    pub fn forget_wallet(&self, seed_hash: [u8; 32]) -> Result<()> {
+        self.db.forget_wallet(&seed_hash)?;
+        self.wallets.write().unwrap().remove(&seed_hash);
+        if self.wallets.read().unwrap().is_empty() {
+            self.has_wallet
+                .store(false, std::sync::atomic::Ordering::Relaxed);
+        }
+        Ok(())
+    }
+
     pub fn identity_token_balances(&self) -> Result<Vec<IdentityTokenBalance>> {
         self.db.get_identity_token_balances(self)
     }

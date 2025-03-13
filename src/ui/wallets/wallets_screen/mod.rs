@@ -41,6 +41,7 @@ pub struct WalletsBalancesScreen {
     sort_order: SortOrder,
     selected_filters: HashSet<String>,
     refreshing: bool,
+    show_forget_wallet_confirmation_pop_up: bool,
 }
 
 pub trait DerivationPathHelpers {
@@ -128,6 +129,7 @@ impl WalletsBalancesScreen {
             sort_order: SortOrder::Ascending,
             selected_filters,
             refreshing: false,
+            show_forget_wallet_confirmation_pop_up: false,
         }
     }
 
@@ -340,7 +342,7 @@ impl WalletsBalancesScreen {
 
                     let index = derivation_path
                         .into_iter()
-                        .last()
+                        .next()
                         .cloned()
                         .unwrap_or(ChildNumber::Normal { index: 0 });
                     let index = match index {
@@ -675,6 +677,33 @@ impl WalletsBalancesScreen {
             });
     }
 
+    fn show_forget_wallet_confirmation_pop_up(&mut self, ctx: &Context) -> AppAction {
+        let mut action = AppAction::None;
+
+        egui::Window::new("Forget Wallet")
+            .open(&mut self.show_forget_wallet_confirmation_pop_up.clone())
+            .resizable(false)
+            .collapsible(false)
+            .show(ctx, |ui| {
+                ui.label("Are you sure you want to forget this wallet?");
+                ui.horizontal(|ui| {
+                    if ui.button("Cancel").clicked() {
+                        self.show_forget_wallet_confirmation_pop_up = false;
+                    }
+                    if ui.button("Forget").clicked() {
+                        if let Some(wallet) = &self.selected_wallet {
+                            action = AppAction::BackendTask(BackendTask::CoreTask(
+                                CoreTask::ForgetWallet(wallet.clone()),
+                            ));
+                        }
+                        self.show_forget_wallet_confirmation_pop_up = false;
+                    }
+                });
+            });
+
+        action
+    }
+
     fn dismiss_message(&mut self) {
         self.message = None;
     }
@@ -707,6 +736,10 @@ impl ScreenLike for WalletsBalancesScreen {
                         "Create Wallet",
                         DesiredAppAction::AddScreenType(ScreenType::AddNewWallet),
                     ),
+                    (
+                        "Forget Wallet",
+                        DesiredAppAction::Custom("ConfirmForgetWallet".to_string()),
+                    ),
                 ],
                 false => vec![
                     (
@@ -722,6 +755,10 @@ impl ScreenLike for WalletsBalancesScreen {
                     (
                         "Create Wallet",
                         DesiredAppAction::AddScreenType(ScreenType::AddNewWallet),
+                    ),
+                    (
+                        "Forget Wallet",
+                        DesiredAppAction::Custom("ConfirmForgetWallet".to_string()),
                     ),
                 ],
             }
@@ -754,6 +791,10 @@ impl ScreenLike for WalletsBalancesScreen {
             if self.app_context.wallets.read().unwrap().is_empty() {
                 self.render_no_wallets_view(ui);
                 return;
+            }
+
+            if self.show_forget_wallet_confirmation_pop_up {
+                action |= self.show_forget_wallet_confirmation_pop_up(ctx);
             }
 
             ui.add_space(10.0);
@@ -818,6 +859,11 @@ impl ScreenLike for WalletsBalancesScreen {
             AppAction::BackendTask(BackendTask::CoreTask(CoreTask::RefreshWalletInfo(_))) => {
                 self.refreshing = true;
             }
+            AppAction::Custom(ref s) => {
+                if s == "ConfirmForgetWallet" {
+                    self.show_forget_wallet_confirmation_pop_up = true;
+                }
+            }
             _ => {}
         }
 
@@ -830,6 +876,16 @@ impl ScreenLike for WalletsBalancesScreen {
         {
             self.refreshing = false;
         }
+        if message.contains("Wallet forgotten") {
+            self.selected_wallet = self
+                .app_context
+                .wallets
+                .read()
+                .unwrap()
+                .values()
+                .next()
+                .cloned()
+        }
         self.message = Some((message.to_string(), message_type, Utc::now()))
     }
 
@@ -841,7 +897,25 @@ impl ScreenLike for WalletsBalancesScreen {
         // If we don't include this, messages from the ZMQ listener will keep popping up
     }
 
-    fn refresh_on_arrival(&mut self) {}
+    fn refresh_on_arrival(&mut self) {
+        self.selected_wallet = self
+            .app_context
+            .wallets
+            .read()
+            .unwrap()
+            .values()
+            .next()
+            .cloned();
+    }
 
-    fn refresh(&mut self) {}
+    fn refresh(&mut self) {
+        self.selected_wallet = self
+            .app_context
+            .wallets
+            .read()
+            .unwrap()
+            .values()
+            .next()
+            .cloned();
+    }
 }

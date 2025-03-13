@@ -17,7 +17,9 @@ pub(crate) enum CoreTask {
     GetBestChainLocks,
     RefreshWalletInfo(Arc<RwLock<Wallet>>),
     StartDashQT(Network, Option<String>, bool),
+    ForgetWallet(Arc<RwLock<Wallet>>),
 }
+
 impl PartialEq for CoreTask {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
@@ -105,6 +107,16 @@ impl AppContext {
                 .start_dash_qt(network, custom_dash_qt, overwrite_dash_conf)
                 .map_err(|e| e.to_string())
                 .map(|_| BackendTaskSuccessResult::None),
+            CoreTask::ForgetWallet(wallet) => {
+                let seed_hash = wallet
+                    .read()
+                    .expect("Wallet lock was poisoned")
+                    .seed_hash()
+                    .clone();
+                self.forget_wallet(seed_hash)
+                    .map_err(|e| e.to_string())
+                    .map(|_| BackendTaskSuccessResult::Message("Wallet forgotten".to_string()))
+            }
         }
     }
 

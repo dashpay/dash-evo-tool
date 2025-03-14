@@ -5,10 +5,12 @@ use dash_sdk::{
         data_contract::{
             associated_token::{
                 token_configuration::v0::TokenConfigurationV0,
-                token_configuration_convention::{
-                    v0::TokenConfigurationLocalizationsV0, TokenConfigurationConvention,
+                token_configuration_convention::TokenConfigurationConvention,
+                token_configuration_localization::{
+                    v0::TokenConfigurationLocalizationV0, TokenConfigurationLocalization,
                 },
                 token_distribution_rules::TokenDistributionRules,
+                token_keeps_history_rules::{v0::TokenKeepsHistoryRulesV0, TokenKeepsHistoryRules},
             },
             change_control_rules::{
                 authorized_action_takers::AuthorizedActionTakers, ChangeControlRules,
@@ -403,11 +405,16 @@ impl AppContext {
             version: 1,
             owner_id,
             document_types: BTreeMap::new(),
-            metadata: None,
             config: DataContractConfig::default_for_version(self.platform_version)?,
             schema_defs: None,
             groups: BTreeMap::new(),
             tokens: BTreeMap::new(),
+            created_at: None,
+            updated_at: None,
+            created_at_block_height: None,
+            updated_at_block_height: None,
+            created_at_epoch: None,
+            updated_at_epoch: None,
         };
 
         // 2) Build a single TokenConfiguration in V0 format
@@ -416,16 +423,22 @@ impl AppContext {
         conv_v0.decimals = decimals as u16;
         conv_v0.localizations.insert(
             "en".to_string(),
-            TokenConfigurationLocalizationsV0 {
+            TokenConfigurationLocalization::V0(TokenConfigurationLocalizationV0 {
                 should_capitalize,
                 singular_form: token_name.to_string(),
                 plural_form: format!("{}s", token_name),
-            },
+            }),
         );
+        let keeps_history_rules = TokenKeepsHistoryRules::V0(TokenKeepsHistoryRulesV0 {
+            keeps_transfer_history: keeps_history,
+            keeps_minting_history: keeps_history,
+            keeps_burning_history: keeps_history,
+            keeps_freezing_history: keeps_history,
+        });
         token_config_v0.base_supply = base_supply;
         token_config_v0.max_supply = max_supply;
         token_config_v0.start_as_paused = start_as_paused;
-        token_config_v0.keeps_history = keeps_history;
+        token_config_v0.keeps_history = keeps_history_rules;
         token_config_v0.main_control_group = main_control_group;
         token_config_v0.manual_minting_rules = manual_minting_rules;
         token_config_v0.manual_burning_rules = manual_burning_rules;

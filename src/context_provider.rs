@@ -5,6 +5,7 @@ use crate::database::Database;
 use dash_sdk::core::LowLevelDashCoreClient as CoreClient;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::error::ContextProviderError;
 use dash_sdk::platform::ContextProvider;
 use dash_sdk::platform::DataContract;
@@ -71,6 +72,7 @@ impl ContextProvider for Provider {
     fn get_data_contract(
         &self,
         data_contract_id: &dash_sdk::platform::Identifier,
+        _platform_version: &PlatformVersion,
     ) -> Result<Option<Arc<DataContract>>, dash_sdk::error::ContextProviderError> {
         let app_ctx_guard = self.app_context.lock().expect("lock poisoned");
         let app_ctx = app_ctx_guard

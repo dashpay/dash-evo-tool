@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, RwLock};
 
 use chrono::{DateTime, Utc};
+use dash_sdk::dpp::balances::credits::TokenAmount;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationV0;
 use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::v0::TokenDistributionRulesV0;
@@ -41,7 +42,6 @@ use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
 use crate::ui::{BackendTaskSuccessResult, MessageType, RootScreenType, Screen, ScreenLike};
-use ordered_float::NotNan;
 
 use super::burn_tokens_screen::BurnTokensScreen;
 use super::destroy_frozen_funds_screen::DestroyFrozenFundsScreen;
@@ -377,14 +377,14 @@ pub enum PerpetualDistributionIntervalTypeUI {
 #[derive(Debug, Clone, PartialEq)]
 pub enum DistributionFunctionUI {
     FixedAmount,
+    Random,
     StepDecreasingAmount,
-    LinearInteger,
-    LinearFloat,
-    PolynomialInteger,
-    PolynomialFloat,
+    Stepwise,
+    Linear,
+    Polynomial,
     Exponential,
     Logarithmic,
-    Stepwise,
+    InvertedLogarithmic,
 }
 
 /// A lightweight enum for the user’s recipient selection
@@ -602,44 +602,72 @@ pub struct TokensScreen {
     // --- FixedAmount ---
     pub fixed_amount_input: String,
 
+    // --- Random ---
+    pub random_min_input: String,
+    pub random_max_input: String,
+
     // --- StepDecreasingAmount ---
     pub step_count_input: String,
-    pub decrease_per_interval_input: String,
-    pub step_dec_amount_input: String,
+    pub decrease_per_interval_numerator_input: String,
+    pub decrease_per_interval_denominator_input: String,
+    pub step_decreasing_start_period_offset_input: String,
+    pub step_decreasing_initial_emission_input: String,
+    pub step_decreasing_min_value_input: String,
+    
+    // --- Stepwise ---
+    pub stepwise_steps: Vec<(String, String)>,
 
-    // --- LinearInteger ---
+    // --- Linear ---
     pub linear_int_a_input: String,
-    pub linear_int_b_input: String,
-
-    // --- LinearFloat ---
-    pub linear_float_a_input: String,
-    pub linear_float_b_input: String,
-
-    // --- PolynomialInteger ---
+    pub linear_int_d_input: String,
+    pub linear_int_start_step_input: String,
+    pub linear_int_starting_amount_input: String,
+    pub linear_int_min_value_input: String,
+    pub linear_int_max_value_input: String,
+    
+    // --- Polynomial ---
     pub poly_int_a_input: String,
+    pub poly_int_m_input: String,
     pub poly_int_n_input: String,
+    pub poly_int_d_input: String,
+    pub poly_int_s_input: String,
+    pub poly_int_o_input: String,
     pub poly_int_b_input: String,
-
-    // --- PolynomialFloat ---
-    pub poly_float_a_input: String,
-    pub poly_float_n_input: String,
-    pub poly_float_b_input: String,
+    pub poly_int_min_value_input: String,
+    pub poly_int_max_value_input: String,
 
     // --- Exponential ---
     pub exp_a_input: String,
-    pub exp_b_input: String,
+    pub exp_m_input: String,
+    pub exp_n_input: String,
+    pub exp_d_input: String,
+    pub exp_s_input: String,
+    pub exp_o_input: String,
     pub exp_c_input: String,
-
+    pub exp_min_value_input: String,
+    pub exp_max_value_input: String,
+    
     // --- Logarithmic ---
     pub log_a_input: String,
+    pub log_d_input: String,
+    pub log_m_input: String,
+    pub log_n_input: String,
+    pub log_s_input: String,
+    pub log_o_input: String,
     pub log_b_input: String,
-    pub log_c_input: String,
-
-    // --- Stepwise ---
-    // If you want multiple (block, amount) pairs, store them in a Vec.
-    // Each tuple in the Vec can be (String, String) for block + amount
-    // or however you prefer to represent it.
-    pub stepwise_steps: Vec<(String, String)>,
+    pub log_min_value_input: String,
+    pub log_max_value_input: String,
+    
+    // --- Inverted Logarithmic ---
+    pub inv_log_a_input: String,
+    pub inv_log_d_input: String,
+    pub inv_log_m_input: String,
+    pub inv_log_n_input: String,
+    pub inv_log_s_input: String,
+    pub inv_log_o_input: String,
+    pub inv_log_b_input: String,
+    pub inv_log_min_value_input: String,
+    pub inv_log_max_value_input: String,
 }
 
 impl TokensScreen {
@@ -727,26 +755,57 @@ impl TokensScreen {
             // Distribution function selection
             perpetual_dist_function: DistributionFunctionUI::FixedAmount,
             fixed_amount_input: String::new(),
+            random_min_input: String::new(),
+            random_max_input: String::new(),
             step_count_input: String::new(),
-            decrease_per_interval_input: String::new(),
-            step_dec_amount_input: String::new(),
-            linear_int_a_input: String::new(),
-            linear_int_b_input: String::new(),
-            linear_float_a_input: String::new(),
-            linear_float_b_input: String::new(),
-            poly_int_a_input: String::new(),
-            poly_int_n_input: String::new(),
-            poly_int_b_input: String::new(),
-            poly_float_a_input: String::new(),
-            poly_float_n_input: String::new(),
-            poly_float_b_input: String::new(),
-            exp_a_input: String::new(),
-            exp_b_input: String::new(),
-            exp_c_input: String::new(),
-            log_a_input: String::new(),
-            log_b_input: String::new(),
-            log_c_input: String::new(),
+            decrease_per_interval_numerator_input: String::new(),
+            decrease_per_interval_denominator_input: String::new(),
+            step_decreasing_start_period_offset_input: String::new(),
+            step_decreasing_initial_emission_input: String::new(),
+            step_decreasing_min_value_input: String::new(),
             stepwise_steps: Vec::new(),
+            linear_int_a_input: String::new(),
+            linear_int_d_input: String::new(),
+            linear_int_start_step_input: String::new(),
+            linear_int_starting_amount_input: String::new(),
+            linear_int_min_value_input: String::new(),
+            linear_int_max_value_input: String::new(),
+            poly_int_a_input: String::new(),
+            poly_int_m_input: String::new(),
+            poly_int_n_input: String::new(),
+            poly_int_d_input: String::new(),
+            poly_int_s_input: String::new(),
+            poly_int_o_input: String::new(),
+            poly_int_b_input: String::new(),
+            poly_int_min_value_input: String::new(),
+            poly_int_max_value_input: String::new(),
+            exp_a_input: String::new(),
+            exp_m_input: String::new(),
+            exp_n_input: String::new(),
+            exp_d_input: String::new(),
+            exp_s_input: String::new(),
+            exp_o_input: String::new(),
+            exp_c_input: String::new(),
+            exp_min_value_input: String::new(),
+            exp_max_value_input: String::new(),
+            log_a_input: String::new(),
+            log_d_input: String::new(),
+            log_m_input: String::new(),
+            log_n_input: String::new(),
+            log_s_input: String::new(),
+            log_o_input: String::new(),
+            log_b_input: String::new(),
+            log_min_value_input: String::new(),
+            log_max_value_input: String::new(),
+            inv_log_a_input: String::new(),
+            inv_log_d_input: String::new(),
+            inv_log_m_input: String::new(),
+            inv_log_n_input: String::new(),
+            inv_log_s_input: String::new(),
+            inv_log_o_input: String::new(),
+            inv_log_b_input: String::new(),
+            inv_log_min_value_input: String::new(),
+            inv_log_max_value_input: String::new(),
 
             // Similarly for identity recipients, you might store:
             perpetual_dist_recipient: TokenDistributionRecipientUI::ContractOwner,
@@ -1289,7 +1348,7 @@ impl TokensScreen {
         // ui.separator();
         // ui.add_space(10.0);
 
-        // // Show results or messages
+        //// Show results or messages
         // match self.token_search_status {
         //     TokenSearchStatus::WaitingForResult(start_time) => {
         //         let now = Utc::now().timestamp() as u64;
@@ -1825,28 +1884,28 @@ impl TokensScreen {
                                         );
                                         ui.selectable_value(
                                             &mut self.perpetual_dist_function,
+                                            DistributionFunctionUI::Random,
+                                            "Random",
+                                        );
+                                        ui.selectable_value(
+                                            &mut self.perpetual_dist_function,
                                             DistributionFunctionUI::StepDecreasingAmount,
                                             "StepDecreasing",
                                         );
                                         ui.selectable_value(
                                             &mut self.perpetual_dist_function,
-                                            DistributionFunctionUI::LinearInteger,
-                                            "LinearInteger",
+                                            DistributionFunctionUI::Stepwise,
+                                            "Stepwise",
                                         );
                                         ui.selectable_value(
                                             &mut self.perpetual_dist_function,
-                                            DistributionFunctionUI::LinearFloat,
-                                            "LinearFloat",
+                                            DistributionFunctionUI::Linear,
+                                            "Linear",
                                         );
                                         ui.selectable_value(
                                             &mut self.perpetual_dist_function,
-                                            DistributionFunctionUI::PolynomialInteger,
-                                            "PolynomialInteger",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.perpetual_dist_function,
-                                            DistributionFunctionUI::PolynomialFloat,
-                                            "PolynomialFloat",
+                                            DistributionFunctionUI::Polynomial,
+                                            "Polynomial",
                                         );
                                         ui.selectable_value(
                                             &mut self.perpetual_dist_function,
@@ -1860,8 +1919,8 @@ impl TokensScreen {
                                         );
                                         ui.selectable_value(
                                             &mut self.perpetual_dist_function,
-                                            DistributionFunctionUI::Stepwise,
-                                            "Stepwise",
+                                            DistributionFunctionUI::InvertedLogarithmic,
+                                            "InvertedLogarithmic",
                                         );
                                     });
 
@@ -1871,23 +1930,70 @@ impl TokensScreen {
                                     // Check if the label was clicked
                                     if response.clicked() {
                                         self.show_pop_up_info = Some(r#"
-### FixedAmount
+# FixedAmount
 
-A fixed amount of tokens is emitted for each period.
+Emits a constant (fixed) number of tokens for every period.
 
-- **Formula:** f(x) = n  
-- **Use Case:** Simplicity, stable reward emissions  
-- **Example:** If we emit 5 tokens per block, and 3 blocks have passed, 15 tokens have been released.
+### Formula
+For any period `x`, the emitted tokens are:
+
+```text
+f(x) = n
+```
+
+### Use Case
+- When a predictable, unchanging reward is desired.
+- Simplicity and stable emissions.
+
+### Example
+- If `n = 5` tokens per block, then after 3 blocks the total emission is 15 tokens.
 
 ---
 
-### StepDecreasingAmount
+# StepDecreasingAmount
 
-The amount of tokens decreases in predefined steps at fixed intervals.
+Emits a random number of tokens within a specified range.
 
-- **Formula:** f(x) = n * (1 - decrease_per_interval)^(x / step_count)  
-- **Use Case:** Mimics Bitcoin/Dash models, encourages early participation  
-- **Example:** Bitcoin halves every 210,000 blocks (~4 years)
+### Description
+- This function selects a **random** token emission amount between `min` and `max`.
+- The value is drawn **uniformly** between the bounds.
+- The randomness uses a Pseudo Random Function (PRF) from x.
+
+### Formula
+For any period `x`, the emitted tokens follow:
+
+```text
+f(x) ∈ [min, max]
+```
+
+### Parameters
+- `min`: The **minimum** possible number of tokens emitted.
+- `max`: The **maximum** possible number of tokens emitted.
+
+### Use Cases
+- **Stochastic Rewards**: Introduces randomness into rewards to incentivize unpredictability.
+- **Lottery-Based Systems**: Used for randomized emissions, such as block rewards with probabilistic payouts.
+
+### Example
+Suppose a system emits **between 10 and 100 tokens per period**.
+
+```text
+Random { min: 10, max: 100 }
+```
+
+| Period (x) | Emitted Tokens (Random) |
+|------------|------------------------|
+| 1          | 27                     |
+| 2          | 94                     |
+| 3          | 63                     |
+| 4          | 12                     |
+
+- Each period, the function emits a **random number of tokens** between `min = 10` and `max = 100`.
+- Over time, the **average reward trends toward the midpoint** `(min + max) / 2`.
+
+### Constraints
+- **`min` must be ≤ `max`**, otherwise the function is invalid.
+- If `min == max`, this behaves like a `FixedAmount` function with a constant emission.
 
 ---
 
@@ -1983,100 +2089,41 @@ Emits tokens in fixed amounts for specific intervals.
                                     });
                                 }
 
+                                DistributionFunctionUI::Random => {
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Min Amount (n):");
+                                        ui.text_edit_singleline(&mut self.random_min_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Max Amount (n):");
+                                        ui.text_edit_singleline(&mut self.random_max_input);
+                                    });
+                                }
+
                                 DistributionFunctionUI::StepDecreasingAmount => {
                                     ui.horizontal(|ui| {
                                         ui.label("        - Step Count (u64):");
                                         ui.text_edit_singleline(&mut self.step_count_input);
                                     });
                                     ui.horizontal(|ui| {
-                                        ui.label("        - Decrease per Interval (float):");
-                                        ui.text_edit_singleline(&mut self.decrease_per_interval_input);
+                                        ui.label("        - Decrease per Interval Numerator:");
+                                        ui.text_edit_singleline(&mut self.decrease_per_interval_numerator_input);
                                     });
                                     ui.horizontal(|ui| {
-                                        ui.label("        - Initial Amount (n):");
-                                        ui.text_edit_singleline(&mut self.step_dec_amount_input);
-                                    });
-                                }
-
-                                DistributionFunctionUI::LinearInteger => {
-                                    ui.horizontal(|ui| {
-                                        ui.label("        - Coefficient (a, i64):");
-                                        ui.text_edit_singleline(&mut self.linear_int_a_input);
+                                        ui.label("        - Decrease per Interval Denominator:");
+                                        ui.text_edit_singleline(&mut self.decrease_per_interval_denominator_input);
                                     });
                                     ui.horizontal(|ui| {
-                                        ui.label("        - Initial Value (b, i64):");
-                                        ui.text_edit_singleline(&mut self.linear_int_b_input);
-                                    });
-                                }
-
-                                DistributionFunctionUI::LinearFloat => {
-                                    ui.horizontal(|ui| {
-                                        ui.label("        - Coefficient (a, float):");
-                                        ui.text_edit_singleline(&mut self.linear_float_a_input);
+                                        ui.label("        - Start Period Offset (optional):");
+                                        ui.text_edit_singleline(&mut self.step_decreasing_start_period_offset_input);
                                     });
                                     ui.horizontal(|ui| {
-                                        ui.label("        - Initial Value (b):");
-                                        ui.text_edit_singleline(&mut self.linear_float_b_input);
-                                    });
-                                }
-
-                                DistributionFunctionUI::PolynomialInteger => {
-                                    ui.horizontal(|ui| {
-                                        ui.label("        - Coefficient (a, i64):");
-                                        ui.text_edit_singleline(&mut self.poly_int_a_input);
+                                        ui.label("        - Initial Token Emission (n):");
+                                        ui.text_edit_singleline(&mut self.step_decreasing_initial_emission_input);
                                     });
                                     ui.horizontal(|ui| {
-                                        ui.label("        - Degree (n, i64):");
-                                        ui.text_edit_singleline(&mut self.poly_int_n_input);
-                                    });
-                                    ui.horizontal(|ui| {
-                                        ui.label("        - Base Amount (b, i64):");
-                                        ui.text_edit_singleline(&mut self.poly_int_b_input);
-                                    });
-                                }
-
-                                DistributionFunctionUI::PolynomialFloat => {
-                                    ui.horizontal(|ui| {
-                                        ui.label("        - Coefficient (a, float):");
-                                        ui.text_edit_singleline(&mut self.poly_float_a_input);
-                                    });
-                                    ui.horizontal(|ui| {
-                                        ui.label("        - Degree (n, float):");
-                                        ui.text_edit_singleline(&mut self.poly_float_n_input);
-                                    });
-                                    ui.horizontal(|ui| {
-                                        ui.label("        - Base Amount (b):");
-                                        ui.text_edit_singleline(&mut self.poly_float_b_input);
-                                    });
-                                }
-
-                                DistributionFunctionUI::Exponential => {
-                                    ui.horizontal(|ui| {
-                                        ui.label("        - Scaling Factor (a, float):");
-                                        ui.text_edit_singleline(&mut self.exp_a_input);
-                                    });
-                                    ui.horizontal(|ui| {
-                                        ui.label("        - Growth/Decay Rate (b, float):");
-                                        ui.text_edit_singleline(&mut self.exp_b_input);
-                                    });
-                                    ui.horizontal(|ui| {
-                                        ui.label("        - Offset (c):");
-                                        ui.text_edit_singleline(&mut self.exp_c_input);
-                                    });
-                                }
-
-                                DistributionFunctionUI::Logarithmic => {
-                                    ui.horizontal(|ui| {
-                                        ui.label("        - Scaling Factor (a, float):");
-                                        ui.text_edit_singleline(&mut self.log_a_input);
-                                    });
-                                    ui.horizontal(|ui| {
-                                        ui.label("        - Log Base (b, float):");
-                                        ui.text_edit_singleline(&mut self.log_b_input);
-                                    });
-                                    ui.horizontal(|ui| {
-                                        ui.label("        - Offset (c):");
-                                        ui.text_edit_singleline(&mut self.log_c_input);
+                                        ui.label("        - Minimum Emission Value (optional):");
+                                        ui.text_edit_singleline(&mut self.step_decreasing_min_value_input);
                                     });
                                 }
 
@@ -2115,6 +2162,189 @@ Emits tokens in fixed amounts for specific intervals.
                                         if ui.button("Add Step").clicked() {
                                             self.stepwise_steps.push(("0".to_owned(), "0".to_owned()));
                                         }
+                                    });
+                                }
+
+                                DistributionFunctionUI::Linear => {
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Slope Numerator (a, i64):");
+                                        ui.text_edit_singleline(&mut self.linear_int_a_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Slope Divisor (d, i64):");
+                                        ui.text_edit_singleline(&mut self.linear_int_d_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Start Step (s, i64):");
+                                        ui.text_edit_singleline(&mut self.linear_int_start_step_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Starting Amount (b, i64):");
+                                        ui.text_edit_singleline(&mut self.linear_int_starting_amount_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Minimum Emission Value (optional):");
+                                        ui.text_edit_singleline(&mut self.linear_int_min_value_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Maximum Emission Value (optional):");
+                                        ui.text_edit_singleline(&mut self.linear_int_max_value_input);
+                                    });
+                                }
+
+                                DistributionFunctionUI::Polynomial => {
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Scaling Factor (a, i64):");
+                                        ui.text_edit_singleline(&mut self.poly_int_a_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Exponent Numerator (m, i64):");
+                                        ui.text_edit_singleline(&mut self.poly_int_m_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Exponent Denominator (n, i64):");
+                                        ui.text_edit_singleline(&mut self.poly_int_n_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Divisor (d, i64):");
+                                        ui.text_edit_singleline(&mut self.poly_int_d_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Start Period Offset (s, i64):");
+                                        ui.text_edit_singleline(&mut self.poly_int_s_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Offset (o, i64):");
+                                        ui.text_edit_singleline(&mut self.poly_int_o_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Initial Token Emission (b, i64):");
+                                        ui.text_edit_singleline(&mut self.poly_int_b_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Minimum Emission Value (optional):");
+                                        ui.text_edit_singleline(&mut self.poly_int_min_value_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Maximum Emission Value (optional):");
+                                        ui.text_edit_singleline(&mut self.poly_int_max_value_input);
+                                    });
+                                }
+
+                                DistributionFunctionUI::Exponential => {
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Scaling Factor (a, i64):");
+                                        ui.text_edit_singleline(&mut self.exp_a_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Exponent Rate (m, i64):");
+                                        ui.text_edit_singleline(&mut self.exp_m_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Exponent Rate (n, i64):");
+                                        ui.text_edit_singleline(&mut self.exp_n_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Divisor (d, i64):");
+                                        ui.text_edit_singleline(&mut self.exp_d_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Start Period Offset (s, i64):");
+                                        ui.text_edit_singleline(&mut self.exp_s_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Offset (o, i64):");
+                                        ui.text_edit_singleline(&mut self.exp_o_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Offset (c, i64):");
+                                        ui.text_edit_singleline(&mut self.exp_c_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Minimum Emission Value (optional):");
+                                        ui.text_edit_singleline(&mut self.exp_min_value_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Maximum Emission Value (optional):");
+                                        ui.text_edit_singleline(&mut self.exp_max_value_input);
+                                    });
+                                }
+
+                                DistributionFunctionUI::Logarithmic => {
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Scaling Factor (a, i64):");
+                                        ui.text_edit_singleline(&mut self.log_a_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Divisor (d, i64):");
+                                        ui.text_edit_singleline(&mut self.log_d_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Exponent Numerator (m, i64):");
+                                        ui.text_edit_singleline(&mut self.log_m_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Exponent Denominator (n, i64):");
+                                        ui.text_edit_singleline(&mut self.log_n_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Start Period Offset (s, i64):");
+                                        ui.text_edit_singleline(&mut self.log_s_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Offset (o, i64):");
+                                        ui.text_edit_singleline(&mut self.log_o_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Initial Token Emission (b, i64):");
+                                        ui.text_edit_singleline(&mut self.log_b_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Minimum Emission Value (optional):");
+                                        ui.text_edit_singleline(&mut self.log_min_value_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Maximum Emission Value (optional):");
+                                        ui.text_edit_singleline(&mut self.log_max_value_input);
+                                    });
+                                }
+
+                                DistributionFunctionUI::InvertedLogarithmic => {
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Scaling Factor (a, i64):");
+                                        ui.text_edit_singleline(&mut self.inv_log_a_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Divisor (d, i64):");
+                                        ui.text_edit_singleline(&mut self.inv_log_d_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Exponent Numerator (m, i64):");
+                                        ui.text_edit_singleline(&mut self.inv_log_m_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Exponent Denominator (n, i64):");
+                                        ui.text_edit_singleline(&mut self.inv_log_n_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Start Period Offset (s, i64):");
+                                        ui.text_edit_singleline(&mut self.inv_log_s_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Offset (o, i64):");
+                                        ui.text_edit_singleline(&mut self.inv_log_o_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Initial Token Emission (b, i64):");
+                                        ui.text_edit_singleline(&mut self.inv_log_b_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Minimum Emission Value (optional):");
+                                        ui.text_edit_singleline(&mut self.inv_log_min_value_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Maximum Emission Value (optional):");
+                                        ui.text_edit_singleline(&mut self.inv_log_max_value_input);
                                     });
                                 }
                             }
@@ -2760,77 +2990,91 @@ Emits tokens in fixed amounts for specific intervals.
         let distribution_function = match self.perpetual_dist_function {
             DistributionFunctionUI::FixedAmount => {
                 DistributionFunction::FixedAmount {
-                    n: self.fixed_amount_input.parse::<u64>().unwrap_or(0),
+                    amount: self.fixed_amount_input.parse::<u64>().unwrap_or(0),
+                }
+            },
+            DistributionFunctionUI::Random => {
+                DistributionFunction::Random {
+                    min: self.random_min_input.parse::<u64>().unwrap_or(0),
+                    max: self.random_max_input.parse::<u64>().unwrap_or(0),
                 }
             },
             DistributionFunctionUI::StepDecreasingAmount => {
                 DistributionFunction::StepDecreasingAmount {
-                    n: self.step_dec_amount_input.parse::<u64>().unwrap_or(0),
-                    decrease_per_interval: NotNan::new(self.decrease_per_interval_input.parse::<f64>().unwrap_or(0.0)).unwrap(),
-                    step_count: self.step_count_input.parse::<u64>().unwrap_or(0),
+                    step_count: self.step_count_input.parse::<u32>().unwrap_or(0),
+                    decrease_per_interval_numerator: self.decrease_per_interval_numerator_input.parse::<u16>().unwrap_or(0),
+                    decrease_per_interval_denominator: self.decrease_per_interval_denominator_input.parse::<u16>().unwrap_or(0),
+                    s: Some(self.step_decreasing_start_period_offset_input.parse::<u64>().unwrap_or(0)),
+                    n: self.step_decreasing_initial_emission_input.parse::<u64>().unwrap_or(0),
+                    min_value: Some(self.step_decreasing_min_value_input.parse::<u64>().unwrap_or(0)),
                 }
             },
-            DistributionFunctionUI::LinearInteger => {
-                DistributionFunction::LinearInteger {
+            DistributionFunctionUI::Stepwise => {
+                let steps: BTreeMap<u64, TokenAmount> = self.stepwise_steps.iter().map(|(k, v)| (k.parse::<u64>().unwrap_or(0), v.parse::<u64>().unwrap_or(0))).collect();
+                DistributionFunction::Stepwise(steps)
+            },
+            DistributionFunctionUI::Linear => {
+                DistributionFunction::Linear {
                     a: self.linear_int_a_input.parse::<i64>().unwrap_or(0),
-                    b: self.linear_int_b_input.parse::<i64>().unwrap_or(0),
+                    d: self.linear_int_d_input.parse::<u64>().unwrap_or(0),
+                    start_step: Some(self.linear_int_start_step_input.parse::<u64>().unwrap_or(0)),
+                    starting_amount: self.linear_int_starting_amount_input.parse::<u64>().unwrap_or(0),
+                    min_value: Some(self.linear_int_min_value_input.parse::<u64>().unwrap_or(0)),
+                    max_value: Some(self.linear_int_max_value_input.parse::<u64>().unwrap_or(0)),
                 }
             },
-            DistributionFunctionUI::LinearFloat => {
-                DistributionFunction::LinearFloat {
-                    a: NotNan::new(self.linear_float_a_input.parse::<f64>().unwrap_or(0.0)).unwrap(),
-                    b: self.linear_float_b_input.parse::<i64>().unwrap_or(0),
-                }
-            },
-            DistributionFunctionUI::PolynomialInteger => {
-                DistributionFunction::PolynomialInteger {
+            DistributionFunctionUI::Polynomial => {
+                DistributionFunction::Polynomial {
                     a: self.poly_int_a_input.parse::<i64>().unwrap_or(0),
-                    n: self.poly_int_n_input.parse::<i64>().unwrap_or(0),
-                    b: self.poly_int_b_input.parse::<i64>().unwrap_or(0),
-                }
-            },
-            DistributionFunctionUI::PolynomialFloat => {
-                DistributionFunction::PolynomialFloat {
-                    a: NotNan::new(self.poly_float_a_input.parse::<f64>().unwrap_or(0.0)).unwrap(),
-                    n: NotNan::new(self.poly_float_n_input.parse::<f64>().unwrap_or(0.0)).unwrap(),
-                    b: self.poly_float_b_input.parse::<i64>().unwrap_or(0),
+                    m: self.poly_int_m_input.parse::<i64>().unwrap_or(0),
+                    n: self.poly_int_n_input.parse::<u64>().unwrap_or(0),
+                    d: self.poly_int_d_input.parse::<u64>().unwrap_or(0),
+                    start_moment: Some(self.poly_int_s_input.parse::<u64>().unwrap_or(0)),
+                    o: self.poly_int_o_input.parse::<i64>().unwrap_or(0),
+                    b: self.poly_int_b_input.parse::<u64>().unwrap_or(0),
+                    min_value: Some(self.poly_int_min_value_input.parse::<u64>().unwrap_or(0)),
+                    max_value: Some(self.poly_int_max_value_input.parse::<u64>().unwrap_or(0)),
                 }
             },
             DistributionFunctionUI::Exponential => {
                 DistributionFunction::Exponential {
-                    a: NotNan::new(self.exp_a_input.parse::<f64>().unwrap_or(0.0)).unwrap(),
-                    b: NotNan::new(self.exp_b_input.parse::<f64>().unwrap_or(0.0)).unwrap(),
-                    c: self.exp_c_input.parse::<i64>().unwrap_or(0),
+                    a: self.exp_a_input.parse::<u64>().unwrap_or(0),
+                    m: self.exp_m_input.parse::<i64>().unwrap_or(0),
+                    n: self.exp_n_input.parse::<u64>().unwrap_or(0),
+                    d: self.exp_d_input.parse::<u64>().unwrap_or(0),
+                    start_moment: Some(self.exp_s_input.parse::<u64>().unwrap_or(0)),
+                    o: self.exp_o_input.parse::<i64>().unwrap_or(0),
+                    c: self.exp_c_input.parse::<u64>().unwrap_or(0),
+                    min_value: Some(self.exp_min_value_input.parse::<u64>().unwrap_or(0)),
+                    max_value: Some(self.exp_max_value_input.parse::<u64>().unwrap_or(0)),
                 }
             },
             DistributionFunctionUI::Logarithmic => {
                 DistributionFunction::Logarithmic {
-                    a: NotNan::new(self.log_a_input.parse::<f64>().unwrap_or(0.0)).unwrap(),
-                    b: NotNan::new(self.log_b_input.parse::<f64>().unwrap_or(0.0)).unwrap(),
-                    c: self.log_c_input.parse::<i64>().unwrap_or(0),
+                    a: self.log_a_input.parse::<i64>().unwrap_or(0),
+                    d: self.log_d_input.parse::<u64>().unwrap_or(0),
+                    m: self.log_m_input.parse::<u64>().unwrap_or(0),
+                    n: self.log_n_input.parse::<u64>().unwrap_or(0),
+                    start_moment: Some(self.log_s_input.parse::<u64>().unwrap_or(0)),
+                    o: self.log_o_input.parse::<i64>().unwrap_or(0),
+                    b: self.log_b_input.parse::<u64>().unwrap_or(0),
+                    min_value: Some(self.log_min_value_input.parse::<u64>().unwrap_or(0)),
+                    max_value: Some(self.log_max_value_input.parse::<u64>().unwrap_or(0)),
                 }
             },
-            DistributionFunctionUI::Stepwise => {
-                let mut steps = Vec::new();
-                for (block_str, amount_str) in self.stepwise_steps.iter() {
-                    if let Ok(block) = block_str.parse::<u64>() {
-                        if let Ok(amount) = amount_str.parse::<u64>() {
-                            steps.push((block, amount));
-                        } else {
-                            self.token_creator_error_message = Some(
-                                "Invalid amount in stepwise distribution".to_string(),
-                            );
-                            return Err("Invalid amount in stepwise distribution".to_string());
-                        }
-                    } else {
-                        self.token_creator_error_message = Some(
-                            "Invalid block interval in stepwise distribution".to_string(),
-                        );
-                        return Err("Invalid block interval in stepwise distribution".to_string());
-                    }
+            DistributionFunctionUI::InvertedLogarithmic => {
+                DistributionFunction::InvertedLogarithmic {
+                    a: self.inv_log_a_input.parse::<i64>().unwrap_or(0),
+                    d: self.inv_log_d_input.parse::<u64>().unwrap_or(0),
+                    m: self.inv_log_m_input.parse::<u64>().unwrap_or(0),
+                    n: self.inv_log_n_input.parse::<u64>().unwrap_or(0),
+                    start_moment: Some(self.inv_log_s_input.parse::<u64>().unwrap_or(0)),
+                    o: self.inv_log_o_input.parse::<i64>().unwrap_or(0),
+                    b: self.inv_log_b_input.parse::<u64>().unwrap_or(0),
+                    min_value: Some(self.inv_log_min_value_input.parse::<u64>().unwrap_or(0)),
+                    max_value: Some(self.inv_log_max_value_input.parse::<u64>().unwrap_or(0)),
                 }
-                DistributionFunction::Stepwise(steps)
-            }
+            },
         };
         let maybe_perpetual_distribution = if self.enable_perpetual_distribution {
             // Construct the `TokenPerpetualDistributionV0` from your selected type + function
@@ -2838,28 +3082,25 @@ Emits tokens in fixed amounts for specific intervals.
                 PerpetualDistributionIntervalTypeUI::BlockBased => {
                     // parse interval, parse emission
                     // parse distribution function
-                    RewardDistributionType::BlockBasedDistribution(
-                        self.perpetual_dist_interval_input.parse::<u64>().unwrap_or(0),
-                        0, // this field should be removed in Platform because the individual functions define it
-                        distribution_function,
-                    )
+                    RewardDistributionType::BlockBasedDistribution {
+                        interval: self.perpetual_dist_interval_input.parse::<u64>().unwrap_or(0),
+                        function: distribution_function,
+                    }
                 }
                 PerpetualDistributionIntervalTypeUI::EpochBased => {
-                    RewardDistributionType::EpochBasedDistribution(
-                        self.perpetual_dist_interval_input.parse::<u16>().unwrap_or(0),
-                        0, // this field should be removed in Platform because the individual functions define it
-                        distribution_function,
-                    )
+                    RewardDistributionType::EpochBasedDistribution{
+                        interval: self.perpetual_dist_interval_input.parse::<u16>().unwrap_or(0),
+                        function: distribution_function,
+                    }
                 }
                 PerpetualDistributionIntervalTypeUI::TimeBased => {
-                    RewardDistributionType::TimeBasedDistribution(
-                        self.perpetual_dist_interval_input.parse::<u64>().unwrap_or(0),
-                        0, // this field should be removed in Platform because the individual functions define it
-                        distribution_function,
-                    )
+                    RewardDistributionType::TimeBasedDistribution{
+                        interval: self.perpetual_dist_interval_input.parse::<u64>().unwrap_or(0),
+                        function: distribution_function,
+                    }
                 }
                 _ => {
-                    RewardDistributionType::BlockBasedDistribution(0, 0, DistributionFunction::FixedAmount { n: 0 })
+                    RewardDistributionType::BlockBasedDistribution{interval: 0, function: DistributionFunction::FixedAmount { amount: 0 }}
                 }
             };
 
@@ -3013,26 +3254,57 @@ Emits tokens in fixed amounts for specific intervals.
         self.perpetual_dist_type = PerpetualDistributionIntervalTypeUI::None;
         self.perpetual_dist_interval_input = "".to_string();
         self.fixed_amount_input = "".to_string();
-        self.step_dec_amount_input = "".to_string();
-        self.decrease_per_interval_input = "".to_string();
+        self.random_min_input = "".to_string();
+        self.random_max_input = "".to_string();
         self.step_count_input = "".to_string();
-        self.linear_int_a_input = "".to_string();
-        self.linear_int_b_input = "".to_string();
-        self.linear_float_a_input = "".to_string();
-        self.linear_float_b_input = "".to_string();
-        self.poly_int_a_input = "".to_string();
-        self.poly_int_n_input = "".to_string();
-        self.poly_int_b_input = "".to_string();
-        self.poly_float_a_input = "".to_string();
-        self.poly_float_n_input = "".to_string();
-        self.poly_float_b_input = "".to_string();
-        self.exp_a_input = "".to_string();
-        self.exp_b_input = "".to_string();
-        self.exp_c_input = "".to_string();
-        self.log_a_input = "".to_string();
-        self.log_b_input = "".to_string();
-        self.log_c_input = "".to_string();
+        self.decrease_per_interval_numerator_input = "".to_string();
+        self.decrease_per_interval_denominator_input = "".to_string();
+        self.step_decreasing_start_period_offset_input = "".to_string();
+        self.step_decreasing_initial_emission_input = "".to_string();
+        self.step_decreasing_min_value_input = "".to_string();
         self.stepwise_steps = vec![(String::new(), String::new())];
+        self.linear_int_a_input = "".to_string();
+        self.linear_int_d_input = "".to_string();
+        self.linear_int_start_step_input = "".to_string();
+        self.linear_int_starting_amount_input = "".to_string();
+        self.linear_int_min_value_input = "".to_string();
+        self.linear_int_max_value_input = "".to_string();
+        self.poly_int_a_input = "".to_string();
+        self.poly_int_m_input = "".to_string();
+        self.poly_int_n_input = "".to_string();
+        self.poly_int_d_input = "".to_string();
+        self.poly_int_s_input = "".to_string();
+        self.poly_int_o_input = "".to_string();
+        self.poly_int_b_input = "".to_string();
+        self.poly_int_min_value_input = "".to_string();
+        self.poly_int_max_value_input = "".to_string();
+        self.exp_a_input = "".to_string();
+        self.exp_m_input = "".to_string();
+        self.exp_n_input = "".to_string();
+        self.exp_d_input = "".to_string();
+        self.exp_s_input = "".to_string();
+        self.exp_o_input = "".to_string();
+        self.exp_c_input = "".to_string();
+        self.exp_min_value_input = "".to_string();
+        self.exp_max_value_input = "".to_string();
+        self.log_a_input = "".to_string();
+        self.log_d_input = "".to_string();
+        self.log_m_input = "".to_string();
+        self.log_n_input = "".to_string();
+        self.log_s_input = "".to_string();
+        self.log_o_input = "".to_string();
+        self.log_b_input = "".to_string();
+        self.log_min_value_input = "".to_string();
+        self.log_max_value_input = "".to_string();
+        self.inv_log_a_input = "".to_string();
+        self.inv_log_d_input = "".to_string();
+        self.inv_log_m_input = "".to_string();
+        self.inv_log_n_input = "".to_string();
+        self.inv_log_s_input = "".to_string();
+        self.inv_log_o_input = "".to_string();
+        self.inv_log_b_input = "".to_string();
+        self.inv_log_min_value_input = "".to_string();
+        self.inv_log_max_value_input = "".to_string();
         self.perpetual_dist_recipient = TokenDistributionRecipientUI::ContractOwner;
         self.perpetual_dist_recipient_identity_input = None;
         self.enable_perpetual_distribution = false;

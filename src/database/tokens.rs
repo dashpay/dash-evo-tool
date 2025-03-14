@@ -11,6 +11,7 @@ use dash_sdk::{
 use rusqlite::params;
 
 use crate::{context::AppContext, ui::tokens::tokens_screen::IdentityTokenBalance};
+use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::accessors::v0::TokenConfigurationConventionV0Getters;
 
 use super::Database;
 
@@ -116,17 +117,9 @@ impl Database {
                     let conventions = match &token_configuration.conventions {
                         TokenConfigurationConvention::V0(conventions) => conventions,
                     };
-                    match conventions
-                        .localizations
-                        .get("en")
-                        .map(|l| l.singular_form.clone())
-                    {
-                        Some(token_name) => token_name,
-                        None => token_identifier
-                            .clone()
-                            .expect("Expected to convert token_identifier from vec to Identifier")
-                            .to_string(Encoding::Base58),
-                    }
+                    conventions
+                        .singular_form_by_language_code_or_default("en")
+                        .to_string()
                 }
                 _ => token_identifier
                     .clone()

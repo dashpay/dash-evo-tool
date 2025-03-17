@@ -479,7 +479,7 @@ impl GroupConfigUI {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 /// All arguments needed by `build_data_contract_v1_with_one_token`.
 pub struct TokenBuildArgs {
     pub identity_id: Identifier,
@@ -3882,5 +3882,453 @@ impl ScreenWithWalletUnlock for TokensScreen {
 
     fn error_message(&self) -> Option<&String> {
         self.token_creator_error_message.as_ref()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use crate::database::Database;
+    use crate::model::qualified_identity::encrypted_key_storage::KeyStorage;
+
+    use super::*; use dash_sdk::dpp::dashcore::Network;
+    use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::TokenConfigurationConvention;
+    use dash_sdk::dpp::data_contract::associated_token::token_configuration_localization::accessors::v0::TokenConfigurationLocalizationV0Getters;
+    use dash_sdk::dpp::data_contract::associated_token::token_keeps_history_rules::TokenKeepsHistoryRules;
+    use dash_sdk::dpp::data_contract::group::accessors::v0::GroupV0Getters;
+    use dash_sdk::dpp::data_contract::TokenConfiguration;
+    use dash_sdk::dpp::identifier::Identifier;
+    use dash_sdk::platform::{DataContract, Identity};
+
+    impl ChangeControlRulesUI {
+        /// Sets every field to some dummy/test value to ensure coverage in tests.
+        pub fn set_all_fields_for_testing(&mut self) {
+            self.authorized = AuthorizedActionTakers::Identity(Identifier::default());
+            self.authorized_identity = Some("ACMnPwQZcH3RP9atgkmvtmN45QrVcYvh5cmUYARHBTu9".to_owned());
+            self.authorized_group = None;
+
+            self.admin_action_takers = AuthorizedActionTakers::Identity(Identifier::default());
+            self.admin_identity = Some("CCMnPwQZcH3RP9atgkmvtmN45QrVcYvh5cmUYARHBTu9".to_owned());
+            self.admin_group = None;
+
+            self.changing_authorized_action_takers_to_no_one_allowed = true;
+            self.changing_admin_action_takers_to_no_one_allowed = true;
+            self.self_changing_admin_action_takers_allowed = true;
+        }    
+    }
+    
+    #[test]
+    fn test_token_creator_ui_builds_correct_contract() {
+        let db_file_path = "test_db";
+        let db = Arc::new(Database::new(&db_file_path).unwrap());
+        db.initialize(Path::new(&db_file_path)).unwrap();
+
+        let app_context = AppContext::new(Network::Regtest, db, None).expect("Expected to create AppContext");
+        let mut token_creator_ui = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
+
+        // Identity selection
+        let test_identity_id = Identifier::from_string(
+            "BCMnPwQZcH3RP9atgkmvtmN45QrVcYvh5cmUYARHBTu9",
+            Encoding::Base58
+        ).unwrap();
+        let mock = Identity::create_basic_identity(test_identity_id, app_context.platform_version).expect("Expected to create Identity");
+        let mock_identity = QualifiedIdentity {
+            identity: mock,
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: crate::model::qualified_identity::IdentityType::User,
+            alias: None,
+            private_keys: KeyStorage { private_keys: BTreeMap::new() },
+            dpns_names: vec![],
+            associated_wallets: BTreeMap::new(),
+            wallet_index: None,
+            top_ups: BTreeMap::new(),
+        };
+
+        token_creator_ui.selected_identity = Some(mock_identity);
+
+        // Key selection
+        let mock_key = IdentityPublicKey::random_key(0, None, app_context.platform_version);
+        token_creator_ui.selected_key = Some(mock_key);        
+
+        // Basic token info
+        token_creator_ui.token_name_input = "AcmeCoin".to_string();
+        token_creator_ui.base_supply_input = "5000000".to_string();
+        token_creator_ui.max_supply_input = "10000000".to_string();
+        token_creator_ui.decimals_input = "8".to_string();
+        token_creator_ui.start_as_paused_input = true;
+        token_creator_ui.token_keeps_history = true;
+        token_creator_ui.should_capitalize_input = true;
+
+        // Main control group
+        token_creator_ui.main_control_group_input = "2".to_string();
+
+        // Each action's rules
+        token_creator_ui.manual_minting_rules.set_all_fields_for_testing();
+        token_creator_ui.manual_burning_rules.set_all_fields_for_testing();
+        token_creator_ui.freeze_rules.set_all_fields_for_testing();
+        token_creator_ui.unfreeze_rules.set_all_fields_for_testing();
+        token_creator_ui.destroy_frozen_funds_rules.set_all_fields_for_testing();
+        token_creator_ui.emergency_action_rules.set_all_fields_for_testing();
+        token_creator_ui.max_supply_change_rules.set_all_fields_for_testing();
+        token_creator_ui.conventions_change_rules.set_all_fields_for_testing();
+
+        // main_control_group_change_authorized
+        token_creator_ui.authorized_main_control_group_change = AuthorizedActionTakers::Group(99);
+        token_creator_ui.main_control_group_change_authorized_group = Some("99".to_string());
+
+        // -------------------------------------------------
+        // Distribution
+        // -------------------------------------------------
+        // Perpetual distribution
+        token_creator_ui.enable_perpetual_distribution = true;
+        token_creator_ui.perpetual_dist_type = PerpetualDistributionIntervalTypeUI::BlockBased;
+        token_creator_ui.perpetual_dist_interval_input = "42".to_string();
+        token_creator_ui.perpetual_dist_function = DistributionFunctionUI::FixedAmount;
+        token_creator_ui.fixed_amount_input = "12345".to_string();
+        token_creator_ui.perpetual_dist_recipient = TokenDistributionRecipientUI::Identity;
+        token_creator_ui.perpetual_dist_recipient_identity_input = Some(
+            "DCMnPwQZcH3RP9atgkmvtmN45QrVcYvh5cmUYARHBTu9".to_string()
+        );
+        token_creator_ui.perpetual_distribution_rules.set_all_fields_for_testing();
+
+        // Pre-programmed distribution
+        token_creator_ui.enable_pre_programmed_distribution = true;
+        token_creator_ui.pre_programmed_distributions = vec![
+            DistributionEntry {
+                timestamp_str: "1234567890".to_string(),
+                identity_str: "ECMnPwQZcH3RP9atgkmvtmN45QrVcYvh5cmUYARHBTu9".to_string(),
+                amount_str: "11111".to_string(),
+            },
+            DistributionEntry {
+                timestamp_str: "9876543210".to_string(),
+                identity_str: "FCMnPwQZcH3RP9atgkmvtmN45QrVcYvh5cmUYARHBTu9".to_string(),
+                amount_str: "22222".to_string(),
+            },
+        ];
+
+        // new_tokens_destination_identity
+        token_creator_ui.new_tokens_destination_identity_enabled = true;
+        token_creator_ui.new_tokens_destination_identity =
+            "GCMnPwQZcH3RP9atgkmvtmN45QrVcYvh5cmUYARHBTu9".to_string();
+        token_creator_ui.new_tokens_destination_identity_rules.set_all_fields_for_testing();
+
+        // minting_allow_choosing_destination
+        token_creator_ui.minting_allow_choosing_destination = true;
+        token_creator_ui.minting_allow_choosing_destination_rules.set_all_fields_for_testing();
+
+        // -------------------------------------------------
+        // Groups
+        // -------------------------------------------------
+        // We'll define 2 groups for testing: positions 2 (main) and 7
+        token_creator_ui.groups_ui = vec![
+            GroupConfigUI {
+                group_position_str: "2".to_string(),
+                required_power_str: "2".to_string(),
+                members: vec![
+                    GroupMemberUI {
+                        identity_str: "HCMnPwQZcH3RP9atgkmvtmN45QrVcYvh5cmUYARHBTu9".to_string(),
+                        power_str: "5".to_string(),
+                    },
+                    GroupMemberUI {
+                        identity_str: "JCMnPwQZcH3RP9atgkmvtmN45QrVcYvh5cmUYARHBTu9".to_string(),
+                        power_str: "5".to_string(),
+                    },
+                ],
+            },
+            GroupConfigUI {
+                group_position_str: "7".to_string(),
+                required_power_str: "1".to_string(),
+                members: vec![],
+            },
+        ];
+
+        // -------------------------------------------------
+        // 3) Parse arguments, then build the DataContract
+        // -------------------------------------------------
+        let build_args = token_creator_ui.parse_token_build_args()
+            .expect("parse_token_build_args should succeed");
+        let data_contract = app_context
+            .build_data_contract_v1_with_one_token(
+                build_args.identity_id,
+                build_args.token_name,
+                build_args.should_capitalize,
+                build_args.decimals,
+                build_args.base_supply,
+                build_args.max_supply,
+                build_args.start_paused,
+                build_args.keeps_history,
+                build_args.main_control_group,
+                build_args.manual_minting_rules,
+                build_args.manual_burning_rules,
+                build_args.freeze_rules,
+                build_args.unfreeze_rules,
+                build_args.destroy_frozen_funds_rules,
+                build_args.emergency_action_rules,
+                build_args.max_supply_change_rules,
+                build_args.conventions_change_rules,
+                build_args.main_control_group_change_authorized,
+                build_args.distribution_rules,
+                build_args.groups,
+            )
+            .expect("Contract build failed");
+
+        // -------------------------------------------------
+        // 4) Validate the result
+        // -------------------------------------------------
+        // Unwrap it to the V1
+        let DataContract::V1(contract_v1) = data_contract else {
+            panic!("Expected DataContract::V1");
+        };
+
+        // A) Check the top-level fields
+        assert_eq!(contract_v1.version, 1);
+        assert!(contract_v1.tokens.len() == 1, "We expected exactly one token config");
+
+        // B) Check the token config
+        let (token_pos, token_config) = contract_v1.tokens.iter().next().unwrap();
+        assert_eq!(*token_pos as u16, 0, "Should be at position 0 by default");
+
+        let TokenConfiguration::V0(token_v0) = token_config;
+        let TokenConfigurationConvention::V0(conv_v0) = &token_v0.conventions;
+
+        assert_eq!(conv_v0.decimals, 8, "Decimals from UI not matched");
+        assert_eq!(
+            conv_v0.localizations["en"].singular_form(), "AcmeCoin",
+            "Token name did not match"
+        );
+        assert_eq!(
+            conv_v0.localizations["en"].plural_form(), "AcmeCoins",
+            "Plural form not automatically set in test"
+        );
+        let keeps_history_rules = &token_v0.keeps_history;
+        let TokenKeepsHistoryRules::V0(keeps_history_v0) = keeps_history_rules;
+        assert_eq!(keeps_history_v0.keeps_transfer_history, true);
+        assert_eq!(keeps_history_v0.keeps_freezing_history, true);
+        assert_eq!(token_v0.base_supply, 5_000_000);
+        assert_eq!(token_v0.max_supply, Some(10_000_000));
+        assert_eq!(token_v0.start_as_paused, true);
+        assert_eq!(token_v0.main_control_group, Some(2), "Parsed main control group mismatch");
+
+        // C) Check each ChangeControlRules field
+        assert_eq!(
+            *token_v0.manual_minting_rules.authorized_to_make_change_action_takers(),
+            token_creator_ui.manual_minting_rules.authorized
+        );
+        // ... etc.
+
+        // D) Check main_control_group_can_be_modified
+        match token_v0.main_control_group_can_be_modified {
+            AuthorizedActionTakers::Group(group_id) => {
+                assert_eq!(group_id, 99, "Expected group 99 from UI");
+            },
+            _ => panic!("Expected group(99) from the UI but got something else"),
+        }
+
+        // E) Check distribution rules
+        let TokenDistributionRules::V0(dist_rules_v0) = &token_v0.distribution_rules;
+        // -- Perpetual
+        let Some(TokenPerpetualDistribution::V0(perp_v0)) = &dist_rules_v0.perpetual_distribution else {
+            panic!("Expected Some(TokenPerpetualDistribution::V0)");
+        };
+        match &perp_v0.distribution_type {
+            RewardDistributionType::BlockBasedDistribution { interval, function } => {
+                assert_eq!(*interval, 42, "Interval mismatch");
+                match function {
+                    DistributionFunction::FixedAmount { amount } => {
+                        assert_eq!(*amount, 12345, "Fixed amount mismatch");
+                    },
+                    _ => panic!("Expected DistributionFunction::FixedAmount"),
+                }
+            },
+            _ => panic!("Expected a BlockBasedDistribution"),
+        }
+        match &perp_v0.distribution_recipient {
+            TokenDistributionRecipient::Identity(rec_id) => {
+                assert_eq!(
+                    rec_id.to_string(Encoding::Base58),
+                    "DCMnPwQZcH3RP9atgkmvtmN45QrVcYvh5cmUYARHBTu9"
+                );
+            },
+            _ => panic!("Expected distribution recipient Identity(...)"),
+        }
+
+        // -- Pre-programmed
+        let Some(TokenPreProgrammedDistribution::V0(preprog_v0)) = &dist_rules_v0.pre_programmed_distribution else {
+            panic!("Expected Some(TokenPreProgrammedDistribution::V0)");
+        };
+        assert_eq!(preprog_v0.distributions.len(), 2);
+        assert!(preprog_v0.distributions.contains_key(&1234567890));
+        let map1 = &preprog_v0.distributions[&1234567890];
+        assert_eq!(map1.len(), 1);
+        let identity_1 = Identifier::from_string("ECMnPwQZcH3RP9atgkmvtmN45QrVcYvh5cmUYARHBTu9", Encoding::Base58).unwrap();
+        assert_eq!(map1[&identity_1], 11111);
+
+        assert!(preprog_v0.distributions.contains_key(&9876543210));
+        let map2 = &preprog_v0.distributions[&9876543210];
+        assert_eq!(map2.len(), 1);
+        let identity_2 = Identifier::from_string("FCMnPwQZcH3RP9atgkmvtmN45QrVcYvh5cmUYARHBTu9", Encoding::Base58).unwrap();
+        assert_eq!(map2[&identity_2], 22222);
+
+        // -- New tokens destination
+        let Some(new_dest_id) = &dist_rules_v0.new_tokens_destination_identity else {
+            panic!("Expected new_tokens_destination_identity to be Some(...)");
+        };
+        assert_eq!(
+            new_dest_id.to_string(Encoding::Base58),
+            "GCMnPwQZcH3RP9atgkmvtmN45QrVcYvh5cmUYARHBTu9"
+        );
+        assert_eq!(dist_rules_v0.minting_allow_choosing_destination, true);
+
+        // F) Check the Groups
+        //    (Positions 2 and 7, from above)
+        assert_eq!(contract_v1.groups.len(), 2, "We added two groups in the UI");
+        let group2 = contract_v1.groups.get(&2).expect("Expected group pos=2");
+        assert_eq!(group2.required_power(), 2, "Group #2 required_power mismatch");
+        let members = &group2.members();
+        assert_eq!(members.len(), 2);
+
+        let group7 = contract_v1.groups.get(&7).expect("Expected group pos=7");
+        assert_eq!(group7.required_power(), 1);
+        assert_eq!(group7.members().len(), 0);
+    }
+
+    #[test]
+    fn test_distribution_function_random() {
+        let db_file_path = "test_db";
+        let db = Arc::new(Database::new(&db_file_path).unwrap());
+        db.initialize(Path::new(&db_file_path)).unwrap();
+
+        let app_context = AppContext::new(Network::Regtest, db, None).expect("Expected to create AppContext");
+        let mut token_creator_ui = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
+
+        // Identity selection
+        let test_identity_id = Identifier::from_string(
+            "BCMnPwQZcH3RP9atgkmvtmN45QrVcYvh5cmUYARHBTu9",
+            Encoding::Base58
+        ).unwrap();
+        let mock = Identity::create_basic_identity(test_identity_id, app_context.platform_version).expect("Expected to create Identity");
+        let mock_identity = QualifiedIdentity {
+            identity: mock,
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: crate::model::qualified_identity::IdentityType::User,
+            alias: None,
+            private_keys: KeyStorage { private_keys: BTreeMap::new() },
+            dpns_names: vec![],
+            associated_wallets: BTreeMap::new(),
+            wallet_index: None,
+            top_ups: BTreeMap::new(),
+        };
+
+        token_creator_ui.selected_identity = Some(mock_identity);
+
+        // Key selection
+        let mock_key = IdentityPublicKey::random_key(0, None, app_context.platform_version);
+        token_creator_ui.selected_key = Some(mock_key);        
+
+        token_creator_ui.token_name_input = "TestToken".to_owned();
+
+        // Enable perpetual distribution, select Random
+        token_creator_ui.enable_perpetual_distribution = true;
+        token_creator_ui.perpetual_dist_type = PerpetualDistributionIntervalTypeUI::TimeBased;
+        token_creator_ui.perpetual_dist_interval_input = "60000".to_string();
+        token_creator_ui.perpetual_dist_function = DistributionFunctionUI::Random;
+        token_creator_ui.random_min_input = "100".to_string();
+        token_creator_ui.random_max_input = "200".to_string();
+
+        // Parse + build
+        let build_args = token_creator_ui.parse_token_build_args().expect("Should parse");
+        let data_contract = app_context
+            .build_data_contract_v1_with_one_token(
+                build_args.identity_id,
+                build_args.token_name,
+                build_args.should_capitalize,
+                build_args.decimals,
+                build_args.base_supply,
+                build_args.max_supply,
+                build_args.start_paused,
+                build_args.keeps_history,
+                build_args.main_control_group,
+                build_args.manual_minting_rules,
+                build_args.manual_burning_rules,
+                build_args.freeze_rules,
+                build_args.unfreeze_rules,
+                build_args.destroy_frozen_funds_rules,
+                build_args.emergency_action_rules,
+                build_args.max_supply_change_rules,
+                build_args.conventions_change_rules,
+                build_args.main_control_group_change_authorized,
+                build_args.distribution_rules,
+                build_args.groups,
+            )
+            .expect("Should build successfully");
+        let contract_v1 = data_contract.as_v1().expect("Expected DataContract::V1");
+
+        let TokenConfiguration::V0(ref token_v0) = contract_v1.tokens[&(0u16.into())];
+        let TokenDistributionRules::V0(dist_rules_v0) = &token_v0.distribution_rules;
+        let Some(TokenPerpetualDistribution::V0(perp_v0)) = &dist_rules_v0.perpetual_distribution else {
+            panic!("Expected a perpetual distribution");
+        };
+
+        match &perp_v0.distribution_type {
+            RewardDistributionType::TimeBasedDistribution { interval, function } => {
+                assert_eq!(*interval, 60000, "Expected 60s (in ms)");
+                match function {
+                    DistributionFunction::Random { min, max } => {
+                        assert_eq!(*min, 100);
+                        assert_eq!(*max, 200);
+                    },
+                    _ => panic!("Expected DistributionFunction::Random"),
+                }
+            },
+            _ => panic!("Expected TimeBasedDistribution"),
+        }
+    }
+
+    #[test]
+    fn test_parse_token_build_args_fails_with_empty_token_name() {
+        let db_file_path = "test_db";
+        let db = Arc::new(Database::new(&db_file_path).unwrap());
+        db.initialize(Path::new(&db_file_path)).unwrap();
+
+        let app_context = AppContext::new(Network::Regtest, db, None).expect("Expected to create AppContext");
+        let mut token_creator_ui = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
+
+        // Identity selection
+        let test_identity_id = Identifier::from_string(
+            "BCMnPwQZcH3RP9atgkmvtmN45QrVcYvh5cmUYARHBTu9",
+            Encoding::Base58
+        ).unwrap();
+        let mock = Identity::create_basic_identity(test_identity_id, app_context.platform_version).expect("Expected to create Identity");
+        let mock_identity = QualifiedIdentity {
+            identity: mock,
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: crate::model::qualified_identity::IdentityType::User,
+            alias: None,
+            private_keys: KeyStorage { private_keys: BTreeMap::new() },
+            dpns_names: vec![],
+            associated_wallets: BTreeMap::new(),
+            wallet_index: None,
+            top_ups: BTreeMap::new(),
+        };
+
+        token_creator_ui.selected_identity = Some(mock_identity);
+
+        // Key selection
+        let mock_key = IdentityPublicKey::random_key(0, None, app_context.platform_version);
+        token_creator_ui.selected_key = Some(mock_key);        
+
+        // Intentionally leave token_name_input empty
+        token_creator_ui.token_name_input = "".to_owned();
+
+        let err = token_creator_ui.parse_token_build_args()
+            .expect_err("Should fail if token name is empty");
+        assert_eq!(err, "Please enter a token name");
     }
 }

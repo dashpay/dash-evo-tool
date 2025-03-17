@@ -1,8 +1,4 @@
 use dash_sdk::{
-    dpp::{
-        data_contract::accessors::v0::DataContractV0Getters,
-        identity::{accessors::IdentityGettersV0, KeyType, Purpose, SecurityLevel},
-    },
     platform::{transition::put_contract::PutContract, DataContract, IdentityPublicKey},
     Sdk,
 };

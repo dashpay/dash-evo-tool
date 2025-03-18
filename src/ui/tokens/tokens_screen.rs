@@ -1502,9 +1502,6 @@ impl TokensScreen {
                     ui.visuals().widgets.inactive.bg_stroke.color,
                 ))
                 .show(ui, |ui| {
-                    // 2) Choose identity & key
-                    //    We'll show a dropdown of local QualifiedIdentities, then a sub-dropdown of keys
-
                     // Identity selection
                     ui.add_space(10.0);
                     let all_identities = match self.app_context.load_local_qualified_identities() {
@@ -2662,7 +2659,7 @@ Emits tokens in fixed amounts for specific intervals.
                                             return;
                                         }
                                     };
-                        
+
                                     let data_contract_json = data_contract.to_json(self.app_context.platform_version).expect("Expected to map contract to json");
                                     self.show_json_popup = true;
                                     self.json_popup_text = serde_json::to_string_pretty(&data_contract_json).expect("Expected to serialize json");
@@ -2830,6 +2827,9 @@ Emits tokens in fixed amounts for specific intervals.
                     ];
                 
                     action = AppAction::BackendTasks(tasks, BackendTasksExecutionMode::Sequential);
+                    self.show_token_creator_confirmation_popup = false;
+                    let now = Utc::now().timestamp() as u64;
+                    self.token_creator_status = TokenCreatorStatus::WaitingForResult(now);
                 }
 
                 // Cancel
@@ -3253,6 +3253,7 @@ Emits tokens in fixed amounts for specific intervals.
         self.perpetual_dist_function = DistributionFunctionUI::FixedAmount;
         self.perpetual_dist_type = PerpetualDistributionIntervalTypeUI::None;
         self.perpetual_dist_interval_input = "".to_string();
+
         self.fixed_amount_input = "".to_string();
         self.random_min_input = "".to_string();
         self.random_max_input = "".to_string();
@@ -3313,6 +3314,7 @@ Emits tokens in fixed amounts for specific intervals.
         self.pre_programmed_distributions = Vec::new();
         self.new_tokens_destination_identity_enabled = false;
         self.new_tokens_destination_identity_rules = ChangeControlRulesUI::default();
+        self.new_tokens_destination_identity = "".to_string();
         self.minting_allow_choosing_destination_rules = ChangeControlRulesUI::default();
         self.show_token_creator_confirmation_popup = false;
         self.token_creator_error_message = None;
@@ -3610,7 +3612,10 @@ impl ScreenLike for TokensScreen {
             // Handle messages from Token Creator
             if msg.contains("Successfully registered token contract") {
                 self.token_creator_status = TokenCreatorStatus::Complete;
-            } else if msg.contains("Error registering token contract") {
+            } else if msg.contains("Failed to register token contract") {
+                self.token_creator_status = TokenCreatorStatus::ErrorMessage(msg.to_string());
+                self.token_creator_error_message = Some(msg.to_string());
+            } else if msg.contains("Error building contract V1") {
                 self.token_creator_status = TokenCreatorStatus::ErrorMessage(msg.to_string());
                 self.token_creator_error_message = Some(msg.to_string());
             } else {

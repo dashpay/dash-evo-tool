@@ -187,7 +187,6 @@ impl AppContext {
                     )
                     .map_err(|e| format!("Error building contract V1: {e}"))?;
 
-                // 2) Call your existing function that registers the contract
                 self.register_data_contract(
                     data_contract,
                     token_name.clone(),

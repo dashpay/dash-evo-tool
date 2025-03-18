@@ -12,7 +12,7 @@ use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
 
-use super::tokens_screen::{IdentityTokenBalance, TokensScreen, TokensSubscreen};
+use super::tokens_screen::IdentityTokenBalance;
 use crate::app::{AppAction, BackendTasksExecutionMode};
 use crate::backend_task::tokens::TokenTask;
 use crate::backend_task::BackendTask;
@@ -24,7 +24,7 @@ use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
-use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike};
+use crate::ui::{MessageType, Screen, ScreenLike};
 
 /// Internal states for the mint process.
 #[derive(PartialEq)]
@@ -38,11 +38,9 @@ pub enum MintTokensStatus {
 /// A UI Screen for minting tokens from an existing token contract
 pub struct MintTokensScreen {
     pub identity: QualifiedIdentity,
-    pub identity_token_balance: IdentityTokenBalance, // Info on which token contract to mint from
+    pub identity_token_balance: IdentityTokenBalance,
     selected_key: Option<IdentityPublicKey>,
 
-    /// If the contract allows it, you can optionally mint to a specific identity.
-    /// If omitted, minted tokens are credited to the issuer's identity.
     recipient_identity_id: String,
 
     amount_to_mint: String,
@@ -177,7 +175,7 @@ impl MintTokensScreen {
                 }
 
                 let maybe_identifier = if self.recipient_identity_id.trim().is_empty() {
-                    Some(self.identity.identity.id())
+                    None
                 } else {
                     // Attempt to parse from base58 or hex
                     match Identifier::from_string_try_encodings(
@@ -207,7 +205,7 @@ impl MintTokensScreen {
                         recipient_id.to_string(Encoding::Base58)
                     ));
                 } else {
-                    ui.label("No recipient specified; tokens will be minted to your identity.");
+                    ui.label("No recipient specified; tokens will be minted to default identity.");
                 }
 
                 ui.add_space(10.0);

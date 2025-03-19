@@ -127,6 +127,12 @@ fn main() {
     }
     "#;
 
-    let block: BitcoinBlock = serde_json::from_str(data).unwrap();
+    let block: BitcoinBlock = match serde_json::from_str(data) {
+        Ok(block) => block,
+        Err(e) => {
+            eprintln!("Failed to parse Bitcoin block data: {}", e);
+            return;
+        }
+    };
     println!("{:#?}", block);
 }

@@ -187,7 +187,6 @@ impl AppContext {
                     )
                     .map_err(|e| format!("Error building contract V1: {e}"))?;
 
-                // 2) Call your existing function that registers the contract
                 self.register_data_contract(
                     data_contract,
                     token_name.clone(),
@@ -407,7 +406,7 @@ impl AppContext {
             document_types: BTreeMap::new(),
             config: DataContractConfig::default_for_version(self.platform_version)?,
             schema_defs: None,
-            groups: BTreeMap::new(),
+            groups,
             tokens: BTreeMap::new(),
             created_at: None,
             updated_at: None,
@@ -419,6 +418,7 @@ impl AppContext {
 
         // 2) Build a single TokenConfiguration in V0 format
         let mut token_config_v0 = TokenConfigurationV0::default_most_restrictive();
+
         let TokenConfigurationConvention::V0(ref mut conv_v0) = token_config_v0.conventions;
         conv_v0.decimals = decimals as u16;
         conv_v0.localizations.insert(
@@ -429,12 +429,14 @@ impl AppContext {
                 plural_form: format!("{}s", token_name),
             }),
         );
+
         let keeps_history_rules = TokenKeepsHistoryRules::V0(TokenKeepsHistoryRulesV0 {
             keeps_transfer_history: keeps_history,
             keeps_minting_history: keeps_history,
             keeps_burning_history: keeps_history,
             keeps_freezing_history: keeps_history,
         });
+
         token_config_v0.base_supply = base_supply;
         token_config_v0.max_supply = max_supply;
         token_config_v0.start_as_paused = start_as_paused;
@@ -451,15 +453,12 @@ impl AppContext {
         token_config_v0.main_control_group_can_be_modified = main_control_group_change_authorized;
         token_config_v0.distribution_rules = distribution_rules;
 
-        // Wrap in the enum
         let token_config = TokenConfiguration::V0(token_config_v0);
 
         // 7) Insert this token config at position 0
         contract_v1
             .tokens
             .insert(TokenContractPosition::from(0u16), token_config);
-
-        contract_v1.groups = groups;
 
         // 8) Wrap the whole struct in DataContract::V1
         Ok(DataContract::V1(contract_v1))

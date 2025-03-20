@@ -613,7 +613,7 @@ pub struct TokensScreen {
     pub step_decreasing_start_period_offset_input: String,
     pub step_decreasing_initial_emission_input: String,
     pub step_decreasing_min_value_input: String,
-    
+
     // --- Stepwise ---
     pub stepwise_steps: Vec<(String, String)>,
 
@@ -624,7 +624,7 @@ pub struct TokensScreen {
     pub linear_int_starting_amount_input: String,
     pub linear_int_min_value_input: String,
     pub linear_int_max_value_input: String,
-    
+
     // --- Polynomial ---
     pub poly_int_a_input: String,
     pub poly_int_m_input: String,
@@ -646,7 +646,7 @@ pub struct TokensScreen {
     pub exp_c_input: String,
     pub exp_min_value_input: String,
     pub exp_max_value_input: String,
-    
+
     // --- Logarithmic ---
     pub log_a_input: String,
     pub log_d_input: String,
@@ -657,7 +657,7 @@ pub struct TokensScreen {
     pub log_b_input: String,
     pub log_min_value_input: String,
     pub log_max_value_input: String,
-    
+
     // --- Inverted Logarithmic ---
     pub inv_log_a_input: String,
     pub inv_log_d_input: String,
@@ -2503,7 +2503,7 @@ Emits tokens in fixed amounts for specific intervals.
                         ui.horizontal(|ui| {
                             ui.label("Main Control Group Position:");
                             ui.text_edit_singleline(&mut self.main_control_group_input);
-                        });                        
+                        });
 
                         ui.add_space(2.0);
 
@@ -2771,9 +2771,7 @@ Emits tokens in fixed amounts for specific intervals.
                 };
                 ui.label(format!(
                     "Name: {}\nBase Supply: {}\nMax Supply: {}",
-                    self.token_name_input,
-                    self.base_supply_input,
-                    max_supply_display,
+                    self.token_name_input, self.base_supply_input, max_supply_display,
                 ));
 
                 ui.add_space(10.0);
@@ -2795,13 +2793,13 @@ Emits tokens in fixed amounts for specific intervals.
                             }
                         }
                     };
-                
+
                     // Now create your tasks
                     let tasks = vec![
                         BackendTask::TokenTask(TokenTask::RegisterTokenContract {
                             identity: self.selected_identity.clone().unwrap(),
                             signing_key: self.selected_key.clone().unwrap(),
-                
+
                             token_name: args.token_name,
                             should_capitalize: args.should_capitalize,
                             decimals: args.decimals,
@@ -2810,7 +2808,7 @@ Emits tokens in fixed amounts for specific intervals.
                             start_paused: args.start_paused,
                             keeps_history: args.keeps_history,
                             main_control_group: args.main_control_group,
-                
+
                             manual_minting_rules: args.manual_minting_rules,
                             manual_burning_rules: args.manual_burning_rules,
                             freeze_rules: args.freeze_rules,
@@ -2819,13 +2817,14 @@ Emits tokens in fixed amounts for specific intervals.
                             emergency_action_rules: args.emergency_action_rules,
                             max_supply_change_rules: args.max_supply_change_rules,
                             conventions_change_rules: args.conventions_change_rules,
-                            main_control_group_change_authorized: args.main_control_group_change_authorized,
+                            main_control_group_change_authorized: args
+                                .main_control_group_change_authorized,
                             distribution_rules: args.distribution_rules,
                             groups: args.groups,
                         }),
                         BackendTask::TokenTask(TokenTask::QueryMyTokenBalances),
                     ];
-                
+
                     action = AppAction::BackendTasks(tasks, BackendTasksExecutionMode::Sequential);
                     self.show_token_creator_confirmation_popup = false;
                     let now = Utc::now().timestamp() as u64;
@@ -2864,7 +2863,9 @@ Emits tokens in fixed amounts for specific intervals.
     /// Returns Err(error_msg) on invalid input.
     pub fn parse_token_build_args(&mut self) -> Result<TokenBuildArgs, String> {
         // 1) We must have a selected identity
-        let identity = self.selected_identity.clone()
+        let identity = self
+            .selected_identity
+            .clone()
             .ok_or_else(|| "Please select an identity".to_string())?;
         let identity_id = identity.identity.id().clone();
 
@@ -2880,8 +2881,11 @@ Emits tokens in fixed amounts for specific intervals.
             None
         } else {
             // If parse fails, error out
-            Some(self.max_supply_input.parse::<u64>()
-                .map_err(|_| "Invalid Max Supply".to_string())?)
+            Some(
+                self.max_supply_input
+                    .parse::<u64>()
+                    .map_err(|_| "Invalid Max Supply".to_string())?,
+            )
         };
 
         let start_paused = self.start_as_paused_input;
@@ -2890,27 +2894,34 @@ Emits tokens in fixed amounts for specific intervals.
         let main_control_group = if self.main_control_group_input.is_empty() {
             None
         } else {
-            Some(self.main_control_group_input.parse::<u16>()
-                .map_err(|_| "Invalid main control group".to_string())?)
+            Some(
+                self.main_control_group_input
+                    .parse::<u16>()
+                    .map_err(|_| "Invalid main control group".to_string())?,
+            )
         };
 
         // 3) Convert your ActionChangeControlUI fields to real rules
         // (or do the manual parse for each if needed)
-        let manual_minting_rules = self.manual_minting_rules
+        let manual_minting_rules = self
+            .manual_minting_rules
             .to_change_control_rules("Manual Mint")?;
-        let manual_burning_rules = self.manual_burning_rules
+        let manual_burning_rules = self
+            .manual_burning_rules
             .to_change_control_rules("Manual Burn")?;
-        let freeze_rules = self.freeze_rules
-            .to_change_control_rules("Freeze")?;
-        let unfreeze_rules = self.unfreeze_rules
-            .to_change_control_rules("Unfreeze")?;
-        let destroy_frozen_funds_rules = self.destroy_frozen_funds_rules
+        let freeze_rules = self.freeze_rules.to_change_control_rules("Freeze")?;
+        let unfreeze_rules = self.unfreeze_rules.to_change_control_rules("Unfreeze")?;
+        let destroy_frozen_funds_rules = self
+            .destroy_frozen_funds_rules
             .to_change_control_rules("Destroy Frozen Funds")?;
-        let emergency_action_rules = self.emergency_action_rules
+        let emergency_action_rules = self
+            .emergency_action_rules
             .to_change_control_rules("Emergency Action")?;
-        let max_supply_change_rules = self.max_supply_change_rules
+        let max_supply_change_rules = self
+            .max_supply_change_rules
             .to_change_control_rules("Max Supply Change")?;
-        let conventions_change_rules = self.conventions_change_rules
+        let conventions_change_rules = self
+            .conventions_change_rules
             .to_change_control_rules("Conventions Change")?;
 
         // The main_control_group_change_authorized is done manually in your code,
@@ -2953,7 +2964,7 @@ Emits tokens in fixed amounts for specific intervals.
 
     /// Example of pulling out the logic to parse main_control_group_change_authorized
     fn parse_main_control_group_change_authorized(
-        &mut self
+        &mut self,
     ) -> Result<AuthorizedActionTakers, String> {
         match &mut self.authorized_main_control_group_change {
             AuthorizedActionTakers::Identity(_) => {
@@ -2988,79 +2999,91 @@ Emits tokens in fixed amounts for specific intervals.
     fn build_distribution_rules(&mut self) -> Result<TokenDistributionRulesV0, String> {
         // 1) Validate distribution input, parse numeric fields, etc.
         let distribution_function = match self.perpetual_dist_function {
-            DistributionFunctionUI::FixedAmount => {
-                DistributionFunction::FixedAmount {
-                    amount: self.fixed_amount_input.parse::<u64>().unwrap_or(0),
-                }
+            DistributionFunctionUI::FixedAmount => DistributionFunction::FixedAmount {
+                amount: self.fixed_amount_input.parse::<u64>().unwrap_or(0),
             },
-            DistributionFunctionUI::Random => {
-                DistributionFunction::Random {
-                    min: self.random_min_input.parse::<u64>().unwrap_or(0),
-                    max: self.random_max_input.parse::<u64>().unwrap_or(0),
-                }
+            DistributionFunctionUI::Random => DistributionFunction::Random {
+                min: self.random_min_input.parse::<u64>().unwrap_or(0),
+                max: self.random_max_input.parse::<u64>().unwrap_or(0),
             },
             DistributionFunctionUI::StepDecreasingAmount => {
                 DistributionFunction::StepDecreasingAmount {
                     step_count: self.step_count_input.parse::<u32>().unwrap_or(0),
-                    decrease_per_interval_numerator: self.decrease_per_interval_numerator_input.parse::<u16>().unwrap_or(0),
-                    decrease_per_interval_denominator: self.decrease_per_interval_denominator_input.parse::<u16>().unwrap_or(0),
-                    s: Some(self.step_decreasing_start_period_offset_input.parse::<u64>().unwrap_or(0)),
-                    n: self.step_decreasing_initial_emission_input.parse::<u64>().unwrap_or(0),
-                    min_value: Some(self.step_decreasing_min_value_input.parse::<u64>().unwrap_or(0)),
+                    decrease_per_interval_numerator: self
+                        .decrease_per_interval_numerator_input
+                        .parse::<u16>()
+                        .unwrap_or(0),
+                    decrease_per_interval_denominator: self
+                        .decrease_per_interval_denominator_input
+                        .parse::<u16>()
+                        .unwrap_or(0),
+                    s: Some(
+                        self.step_decreasing_start_period_offset_input
+                            .parse::<u64>()
+                            .unwrap_or(0),
+                    ),
+                    n: self
+                        .step_decreasing_initial_emission_input
+                        .parse::<u64>()
+                        .unwrap_or(0),
+                    min_value: Some(
+                        self.step_decreasing_min_value_input
+                            .parse::<u64>()
+                            .unwrap_or(0),
+                    ),
                 }
-            },
+            }
             DistributionFunctionUI::Stepwise => {
-                let steps: BTreeMap<u64, TokenAmount> = self.stepwise_steps.iter().map(|(k, v)| (k.parse::<u64>().unwrap_or(0), v.parse::<u64>().unwrap_or(0))).collect();
+                let steps: BTreeMap<u64, TokenAmount> = self
+                    .stepwise_steps
+                    .iter()
+                    .map(|(k, v)| (k.parse::<u64>().unwrap_or(0), v.parse::<u64>().unwrap_or(0)))
+                    .collect();
                 DistributionFunction::Stepwise(steps)
+            }
+            DistributionFunctionUI::Linear => DistributionFunction::Linear {
+                a: self.linear_int_a_input.parse::<i64>().unwrap_or(0),
+                d: self.linear_int_d_input.parse::<u64>().unwrap_or(0),
+                start_step: Some(self.linear_int_start_step_input.parse::<u64>().unwrap_or(0)),
+                starting_amount: self
+                    .linear_int_starting_amount_input
+                    .parse::<u64>()
+                    .unwrap_or(0),
+                min_value: Some(self.linear_int_min_value_input.parse::<u64>().unwrap_or(0)),
+                max_value: Some(self.linear_int_max_value_input.parse::<u64>().unwrap_or(0)),
             },
-            DistributionFunctionUI::Linear => {
-                DistributionFunction::Linear {
-                    a: self.linear_int_a_input.parse::<i64>().unwrap_or(0),
-                    d: self.linear_int_d_input.parse::<u64>().unwrap_or(0),
-                    start_step: Some(self.linear_int_start_step_input.parse::<u64>().unwrap_or(0)),
-                    starting_amount: self.linear_int_starting_amount_input.parse::<u64>().unwrap_or(0),
-                    min_value: Some(self.linear_int_min_value_input.parse::<u64>().unwrap_or(0)),
-                    max_value: Some(self.linear_int_max_value_input.parse::<u64>().unwrap_or(0)),
-                }
+            DistributionFunctionUI::Polynomial => DistributionFunction::Polynomial {
+                a: self.poly_int_a_input.parse::<i64>().unwrap_or(0),
+                m: self.poly_int_m_input.parse::<i64>().unwrap_or(0),
+                n: self.poly_int_n_input.parse::<u64>().unwrap_or(0),
+                d: self.poly_int_d_input.parse::<u64>().unwrap_or(0),
+                start_moment: Some(self.poly_int_s_input.parse::<u64>().unwrap_or(0)),
+                o: self.poly_int_o_input.parse::<i64>().unwrap_or(0),
+                b: self.poly_int_b_input.parse::<u64>().unwrap_or(0),
+                min_value: Some(self.poly_int_min_value_input.parse::<u64>().unwrap_or(0)),
+                max_value: Some(self.poly_int_max_value_input.parse::<u64>().unwrap_or(0)),
             },
-            DistributionFunctionUI::Polynomial => {
-                DistributionFunction::Polynomial {
-                    a: self.poly_int_a_input.parse::<i64>().unwrap_or(0),
-                    m: self.poly_int_m_input.parse::<i64>().unwrap_or(0),
-                    n: self.poly_int_n_input.parse::<u64>().unwrap_or(0),
-                    d: self.poly_int_d_input.parse::<u64>().unwrap_or(0),
-                    start_moment: Some(self.poly_int_s_input.parse::<u64>().unwrap_or(0)),
-                    o: self.poly_int_o_input.parse::<i64>().unwrap_or(0),
-                    b: self.poly_int_b_input.parse::<u64>().unwrap_or(0),
-                    min_value: Some(self.poly_int_min_value_input.parse::<u64>().unwrap_or(0)),
-                    max_value: Some(self.poly_int_max_value_input.parse::<u64>().unwrap_or(0)),
-                }
+            DistributionFunctionUI::Exponential => DistributionFunction::Exponential {
+                a: self.exp_a_input.parse::<u64>().unwrap_or(0),
+                m: self.exp_m_input.parse::<i64>().unwrap_or(0),
+                n: self.exp_n_input.parse::<u64>().unwrap_or(0),
+                d: self.exp_d_input.parse::<u64>().unwrap_or(0),
+                start_moment: Some(self.exp_s_input.parse::<u64>().unwrap_or(0)),
+                o: self.exp_o_input.parse::<i64>().unwrap_or(0),
+                c: self.exp_c_input.parse::<u64>().unwrap_or(0),
+                min_value: Some(self.exp_min_value_input.parse::<u64>().unwrap_or(0)),
+                max_value: Some(self.exp_max_value_input.parse::<u64>().unwrap_or(0)),
             },
-            DistributionFunctionUI::Exponential => {
-                DistributionFunction::Exponential {
-                    a: self.exp_a_input.parse::<u64>().unwrap_or(0),
-                    m: self.exp_m_input.parse::<i64>().unwrap_or(0),
-                    n: self.exp_n_input.parse::<u64>().unwrap_or(0),
-                    d: self.exp_d_input.parse::<u64>().unwrap_or(0),
-                    start_moment: Some(self.exp_s_input.parse::<u64>().unwrap_or(0)),
-                    o: self.exp_o_input.parse::<i64>().unwrap_or(0),
-                    c: self.exp_c_input.parse::<u64>().unwrap_or(0),
-                    min_value: Some(self.exp_min_value_input.parse::<u64>().unwrap_or(0)),
-                    max_value: Some(self.exp_max_value_input.parse::<u64>().unwrap_or(0)),
-                }
-            },
-            DistributionFunctionUI::Logarithmic => {
-                DistributionFunction::Logarithmic {
-                    a: self.log_a_input.parse::<i64>().unwrap_or(0),
-                    d: self.log_d_input.parse::<u64>().unwrap_or(0),
-                    m: self.log_m_input.parse::<u64>().unwrap_or(0),
-                    n: self.log_n_input.parse::<u64>().unwrap_or(0),
-                    start_moment: Some(self.log_s_input.parse::<u64>().unwrap_or(0)),
-                    o: self.log_o_input.parse::<i64>().unwrap_or(0),
-                    b: self.log_b_input.parse::<u64>().unwrap_or(0),
-                    min_value: Some(self.log_min_value_input.parse::<u64>().unwrap_or(0)),
-                    max_value: Some(self.log_max_value_input.parse::<u64>().unwrap_or(0)),
-                }
+            DistributionFunctionUI::Logarithmic => DistributionFunction::Logarithmic {
+                a: self.log_a_input.parse::<i64>().unwrap_or(0),
+                d: self.log_d_input.parse::<u64>().unwrap_or(0),
+                m: self.log_m_input.parse::<u64>().unwrap_or(0),
+                n: self.log_n_input.parse::<u64>().unwrap_or(0),
+                start_moment: Some(self.log_s_input.parse::<u64>().unwrap_or(0)),
+                o: self.log_o_input.parse::<i64>().unwrap_or(0),
+                b: self.log_b_input.parse::<u64>().unwrap_or(0),
+                min_value: Some(self.log_min_value_input.parse::<u64>().unwrap_or(0)),
+                max_value: Some(self.log_max_value_input.parse::<u64>().unwrap_or(0)),
             },
             DistributionFunctionUI::InvertedLogarithmic => {
                 DistributionFunction::InvertedLogarithmic {
@@ -3074,7 +3097,7 @@ Emits tokens in fixed amounts for specific intervals.
                     min_value: Some(self.inv_log_min_value_input.parse::<u64>().unwrap_or(0)),
                     max_value: Some(self.inv_log_max_value_input.parse::<u64>().unwrap_or(0)),
                 }
-            },
+            }
         };
         let maybe_perpetual_distribution = if self.enable_perpetual_distribution {
             // Construct the `TokenPerpetualDistributionV0` from your selected type + function
@@ -3083,38 +3106,54 @@ Emits tokens in fixed amounts for specific intervals.
                     // parse interval, parse emission
                     // parse distribution function
                     RewardDistributionType::BlockBasedDistribution {
-                        interval: self.perpetual_dist_interval_input.parse::<u64>().unwrap_or(0),
+                        interval: self
+                            .perpetual_dist_interval_input
+                            .parse::<u64>()
+                            .unwrap_or(0),
                         function: distribution_function,
                     }
                 }
                 PerpetualDistributionIntervalTypeUI::EpochBased => {
-                    RewardDistributionType::EpochBasedDistribution{
-                        interval: self.perpetual_dist_interval_input.parse::<u16>().unwrap_or(0),
+                    RewardDistributionType::EpochBasedDistribution {
+                        interval: self
+                            .perpetual_dist_interval_input
+                            .parse::<u16>()
+                            .unwrap_or(0),
                         function: distribution_function,
                     }
                 }
                 PerpetualDistributionIntervalTypeUI::TimeBased => {
-                    RewardDistributionType::TimeBasedDistribution{
-                        interval: self.perpetual_dist_interval_input.parse::<u64>().unwrap_or(0),
+                    RewardDistributionType::TimeBasedDistribution {
+                        interval: self
+                            .perpetual_dist_interval_input
+                            .parse::<u64>()
+                            .unwrap_or(0),
                         function: distribution_function,
                     }
                 }
-                _ => {
-                    RewardDistributionType::BlockBasedDistribution{interval: 0, function: DistributionFunction::FixedAmount { amount: 0 }}
-                }
+                _ => RewardDistributionType::BlockBasedDistribution {
+                    interval: 0,
+                    function: DistributionFunction::FixedAmount { amount: 0 },
+                },
             };
 
             let recipient = match self.perpetual_dist_recipient {
-                TokenDistributionRecipientUI::ContractOwner => TokenDistributionRecipient::ContractOwner,
+                TokenDistributionRecipientUI::ContractOwner => {
+                    TokenDistributionRecipient::ContractOwner
+                }
                 TokenDistributionRecipientUI::Identity => {
                     if let Some(id) = self.perpetual_dist_recipient_identity_input.as_ref() {
                         let id_res = Identifier::from_string(id, Encoding::Base58);
                         TokenDistributionRecipient::Identity(id_res.unwrap_or_default())
                     } else {
                         self.token_creator_error_message = Some(
-                            "Invalid base58 identifier for perpetual distribution recipient".to_string(),
+                            "Invalid base58 identifier for perpetual distribution recipient"
+                                .to_string(),
                         );
-                        return Err("Invalid base58 identifier for perpetual distribution recipient".to_string());
+                        return Err(
+                            "Invalid base58 identifier for perpetual distribution recipient"
+                                .to_string(),
+                        );
                     }
                 }
                 TokenDistributionRecipientUI::EvonodesByParticipation => {
@@ -3122,10 +3161,12 @@ Emits tokens in fixed amounts for specific intervals.
                 }
             };
 
-            Some(TokenPerpetualDistribution::V0(TokenPerpetualDistributionV0 {
-                distribution_type: dist_type,
-                distribution_recipient: recipient,
-            }))
+            Some(TokenPerpetualDistribution::V0(
+                TokenPerpetualDistributionV0 {
+                    distribution_type: dist_type,
+                    distribution_recipient: recipient,
+                },
+            ))
         } else {
             None
         };
@@ -3133,32 +3174,49 @@ Emits tokens in fixed amounts for specific intervals.
         // 2) Build the distribution rules structure
         let dist_rules_v0 = TokenDistributionRulesV0 {
             perpetual_distribution: maybe_perpetual_distribution,
-            perpetual_distribution_rules: self.perpetual_distribution_rules.to_change_control_rules("Perpetual Distribution").unwrap(),
+            perpetual_distribution_rules: self
+                .perpetual_distribution_rules
+                .to_change_control_rules("Perpetual Distribution")
+                .unwrap(),
             pre_programmed_distribution: if self.enable_pre_programmed_distribution {
-                let distributions: BTreeMap<u64, BTreeMap<Identifier, u64>> = match self.parse_pre_programmed_distributions() {
-                    Ok(distributions) => distributions.into_iter().map(|(k, v)| (k, std::iter::once(v).collect())).collect(),
-                    Err(err) => {
-                        self.token_creator_error_message = Some(err.clone());
-                        return Err(err.to_string());
-                    }
-                };
+                let distributions: BTreeMap<u64, BTreeMap<Identifier, u64>> =
+                    match self.parse_pre_programmed_distributions() {
+                        Ok(distributions) => distributions
+                            .into_iter()
+                            .map(|(k, v)| (k, std::iter::once(v).collect()))
+                            .collect(),
+                        Err(err) => {
+                            self.token_creator_error_message = Some(err.clone());
+                            return Err(err.to_string());
+                        }
+                    };
 
                 Some(TokenPreProgrammedDistribution::V0(
-                    TokenPreProgrammedDistributionV0 {
-                        distributions,
-                    }
+                    TokenPreProgrammedDistributionV0 { distributions },
                 ))
             } else {
                 None
             },
             new_tokens_destination_identity: if self.new_tokens_destination_identity_enabled {
-                Some(Identifier::from_string(&self.new_tokens_destination_identity, Encoding::Base58).unwrap_or_default())
+                Some(
+                    Identifier::from_string(
+                        &self.new_tokens_destination_identity,
+                        Encoding::Base58,
+                    )
+                    .unwrap_or_default(),
+                )
             } else {
                 None
             },
-            new_tokens_destination_identity_rules: self.new_tokens_destination_identity_rules.to_change_control_rules("New Tokens Destination Identity").unwrap(),
+            new_tokens_destination_identity_rules: self
+                .new_tokens_destination_identity_rules
+                .to_change_control_rules("New Tokens Destination Identity")
+                .unwrap(),
             minting_allow_choosing_destination: self.minting_allow_choosing_destination,
-            minting_allow_choosing_destination_rules: self.minting_allow_choosing_destination_rules.to_change_control_rules("Minting Allow Choosing Destination").unwrap(),
+            minting_allow_choosing_destination_rules: self
+                .minting_allow_choosing_destination_rules
+                .to_change_control_rules("Minting Allow Choosing Destination")
+                .unwrap(),
         };
 
         Ok(dist_rules_v0)
@@ -3315,6 +3373,7 @@ Emits tokens in fixed amounts for specific intervals.
         self.new_tokens_destination_identity_enabled = false;
         self.new_tokens_destination_identity_rules = ChangeControlRulesUI::default();
         self.new_tokens_destination_identity = "".to_string();
+        self.minting_allow_choosing_destination = false;
         self.minting_allow_choosing_destination_rules = ChangeControlRulesUI::default();
         self.show_token_creator_confirmation_popup = false;
         self.token_creator_error_message = None;
@@ -3910,7 +3969,8 @@ mod tests {
         /// Sets every field to some dummy/test value to ensure coverage in tests.
         pub fn set_all_fields_for_testing(&mut self) {
             self.authorized = AuthorizedActionTakers::Identity(Identifier::default());
-            self.authorized_identity = Some("ACMnPwQZcH3RP9atgkmvtmN45QrVcYvh5cmUYARHBTu9".to_owned());
+            self.authorized_identity =
+                Some("ACMnPwQZcH3RP9atgkmvtmN45QrVcYvh5cmUYARHBTu9".to_owned());
             self.authorized_group = None;
 
             self.admin_action_takers = AuthorizedActionTakers::Identity(Identifier::default());
@@ -3920,24 +3980,27 @@ mod tests {
             self.changing_authorized_action_takers_to_no_one_allowed = true;
             self.changing_admin_action_takers_to_no_one_allowed = true;
             self.self_changing_admin_action_takers_allowed = true;
-        }    
+        }
     }
-    
+
     #[test]
     fn test_token_creator_ui_builds_correct_contract() {
         let db_file_path = "test_db";
         let db = Arc::new(Database::new(&db_file_path).unwrap());
         db.initialize(Path::new(&db_file_path)).unwrap();
 
-        let app_context = AppContext::new(Network::Regtest, db, None).expect("Expected to create AppContext");
+        let app_context =
+            AppContext::new(Network::Regtest, db, None).expect("Expected to create AppContext");
         let mut token_creator_ui = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
 
         // Identity selection
         let test_identity_id = Identifier::from_string(
             "BCMnPwQZcH3RP9atgkmvtmN45QrVcYvh5cmUYARHBTu9",
-            Encoding::Base58
-        ).unwrap();
-        let mock = Identity::create_basic_identity(test_identity_id, app_context.platform_version).expect("Expected to create Identity");
+            Encoding::Base58,
+        )
+        .unwrap();
+        let mock = Identity::create_basic_identity(test_identity_id, app_context.platform_version)
+            .expect("Expected to create Identity");
         let mock_identity = QualifiedIdentity {
             identity: mock,
             associated_voter_identity: None,
@@ -3945,7 +4008,9 @@ mod tests {
             associated_owner_key_id: None,
             identity_type: crate::model::qualified_identity::IdentityType::User,
             alias: None,
-            private_keys: KeyStorage { private_keys: BTreeMap::new() },
+            private_keys: KeyStorage {
+                private_keys: BTreeMap::new(),
+            },
             dpns_names: vec![],
             associated_wallets: BTreeMap::new(),
             wallet_index: None,
@@ -3956,7 +4021,7 @@ mod tests {
 
         // Key selection
         let mock_key = IdentityPublicKey::random_key(0, None, app_context.platform_version);
-        token_creator_ui.selected_key = Some(mock_key);        
+        token_creator_ui.selected_key = Some(mock_key);
 
         // Basic token info
         token_creator_ui.token_name_input = "AcmeCoin".to_string();
@@ -3971,14 +4036,26 @@ mod tests {
         token_creator_ui.main_control_group_input = "2".to_string();
 
         // Each action's rules
-        token_creator_ui.manual_minting_rules.set_all_fields_for_testing();
-        token_creator_ui.manual_burning_rules.set_all_fields_for_testing();
+        token_creator_ui
+            .manual_minting_rules
+            .set_all_fields_for_testing();
+        token_creator_ui
+            .manual_burning_rules
+            .set_all_fields_for_testing();
         token_creator_ui.freeze_rules.set_all_fields_for_testing();
         token_creator_ui.unfreeze_rules.set_all_fields_for_testing();
-        token_creator_ui.destroy_frozen_funds_rules.set_all_fields_for_testing();
-        token_creator_ui.emergency_action_rules.set_all_fields_for_testing();
-        token_creator_ui.max_supply_change_rules.set_all_fields_for_testing();
-        token_creator_ui.conventions_change_rules.set_all_fields_for_testing();
+        token_creator_ui
+            .destroy_frozen_funds_rules
+            .set_all_fields_for_testing();
+        token_creator_ui
+            .emergency_action_rules
+            .set_all_fields_for_testing();
+        token_creator_ui
+            .max_supply_change_rules
+            .set_all_fields_for_testing();
+        token_creator_ui
+            .conventions_change_rules
+            .set_all_fields_for_testing();
 
         // main_control_group_change_authorized
         token_creator_ui.authorized_main_control_group_change = AuthorizedActionTakers::Group(99);
@@ -3994,10 +4071,11 @@ mod tests {
         token_creator_ui.perpetual_dist_function = DistributionFunctionUI::FixedAmount;
         token_creator_ui.fixed_amount_input = "12345".to_string();
         token_creator_ui.perpetual_dist_recipient = TokenDistributionRecipientUI::Identity;
-        token_creator_ui.perpetual_dist_recipient_identity_input = Some(
-            "DCMnPwQZcH3RP9atgkmvtmN45QrVcYvh5cmUYARHBTu9".to_string()
-        );
-        token_creator_ui.perpetual_distribution_rules.set_all_fields_for_testing();
+        token_creator_ui.perpetual_dist_recipient_identity_input =
+            Some("DCMnPwQZcH3RP9atgkmvtmN45QrVcYvh5cmUYARHBTu9".to_string());
+        token_creator_ui
+            .perpetual_distribution_rules
+            .set_all_fields_for_testing();
 
         // Pre-programmed distribution
         token_creator_ui.enable_pre_programmed_distribution = true;
@@ -4018,11 +4096,15 @@ mod tests {
         token_creator_ui.new_tokens_destination_identity_enabled = true;
         token_creator_ui.new_tokens_destination_identity =
             "GCMnPwQZcH3RP9atgkmvtmN45QrVcYvh5cmUYARHBTu9".to_string();
-        token_creator_ui.new_tokens_destination_identity_rules.set_all_fields_for_testing();
+        token_creator_ui
+            .new_tokens_destination_identity_rules
+            .set_all_fields_for_testing();
 
         // minting_allow_choosing_destination
         token_creator_ui.minting_allow_choosing_destination = true;
-        token_creator_ui.minting_allow_choosing_destination_rules.set_all_fields_for_testing();
+        token_creator_ui
+            .minting_allow_choosing_destination_rules
+            .set_all_fields_for_testing();
 
         // -------------------------------------------------
         // Groups
@@ -4053,7 +4135,8 @@ mod tests {
         // -------------------------------------------------
         // 3) Parse arguments, then build the DataContract
         // -------------------------------------------------
-        let build_args = token_creator_ui.parse_token_build_args()
+        let build_args = token_creator_ui
+            .parse_token_build_args()
             .expect("parse_token_build_args should succeed");
         let data_contract = app_context
             .build_data_contract_v1_with_one_token(
@@ -4090,7 +4173,10 @@ mod tests {
 
         // A) Check the top-level fields
         assert_eq!(contract_v1.version, 1);
-        assert!(contract_v1.tokens.len() == 1, "We expected exactly one token config");
+        assert!(
+            contract_v1.tokens.len() == 1,
+            "We expected exactly one token config"
+        );
 
         // B) Check the token config
         let (token_pos, token_config) = contract_v1.tokens.iter().next().unwrap();
@@ -4101,11 +4187,13 @@ mod tests {
 
         assert_eq!(conv_v0.decimals, 8, "Decimals from UI not matched");
         assert_eq!(
-            conv_v0.localizations["en"].singular_form(), "AcmeCoin",
+            conv_v0.localizations["en"].singular_form(),
+            "AcmeCoin",
             "Token name did not match"
         );
         assert_eq!(
-            conv_v0.localizations["en"].plural_form(), "AcmeCoins",
+            conv_v0.localizations["en"].plural_form(),
+            "AcmeCoins",
             "Plural form not automatically set in test"
         );
         let keeps_history_rules = &token_v0.keeps_history;
@@ -4115,11 +4203,17 @@ mod tests {
         assert_eq!(token_v0.base_supply, 5_000_000);
         assert_eq!(token_v0.max_supply, Some(10_000_000));
         assert_eq!(token_v0.start_as_paused, true);
-        assert_eq!(token_v0.main_control_group, Some(2), "Parsed main control group mismatch");
+        assert_eq!(
+            token_v0.main_control_group,
+            Some(2),
+            "Parsed main control group mismatch"
+        );
 
         // C) Check each ChangeControlRules field
         assert_eq!(
-            *token_v0.manual_minting_rules.authorized_to_make_change_action_takers(),
+            *token_v0
+                .manual_minting_rules
+                .authorized_to_make_change_action_takers(),
             token_creator_ui.manual_minting_rules.authorized
         );
         // ... etc.
@@ -4128,14 +4222,15 @@ mod tests {
         match token_v0.main_control_group_can_be_modified {
             AuthorizedActionTakers::Group(group_id) => {
                 assert_eq!(group_id, 99, "Expected group 99 from UI");
-            },
+            }
             _ => panic!("Expected group(99) from the UI but got something else"),
         }
 
         // E) Check distribution rules
         let TokenDistributionRules::V0(dist_rules_v0) = &token_v0.distribution_rules;
         // -- Perpetual
-        let Some(TokenPerpetualDistribution::V0(perp_v0)) = &dist_rules_v0.perpetual_distribution else {
+        let Some(TokenPerpetualDistribution::V0(perp_v0)) = &dist_rules_v0.perpetual_distribution
+        else {
             panic!("Expected Some(TokenPerpetualDistribution::V0)");
         };
         match &perp_v0.distribution_type {
@@ -4144,10 +4239,10 @@ mod tests {
                 match function {
                     DistributionFunction::FixedAmount { amount } => {
                         assert_eq!(*amount, 12345, "Fixed amount mismatch");
-                    },
+                    }
                     _ => panic!("Expected DistributionFunction::FixedAmount"),
                 }
-            },
+            }
             _ => panic!("Expected a BlockBasedDistribution"),
         }
         match &perp_v0.distribution_recipient {
@@ -4156,25 +4251,35 @@ mod tests {
                     rec_id.to_string(Encoding::Base58),
                     "DCMnPwQZcH3RP9atgkmvtmN45QrVcYvh5cmUYARHBTu9"
                 );
-            },
+            }
             _ => panic!("Expected distribution recipient Identity(...)"),
         }
 
         // -- Pre-programmed
-        let Some(TokenPreProgrammedDistribution::V0(preprog_v0)) = &dist_rules_v0.pre_programmed_distribution else {
+        let Some(TokenPreProgrammedDistribution::V0(preprog_v0)) =
+            &dist_rules_v0.pre_programmed_distribution
+        else {
             panic!("Expected Some(TokenPreProgrammedDistribution::V0)");
         };
         assert_eq!(preprog_v0.distributions.len(), 2);
         assert!(preprog_v0.distributions.contains_key(&1234567890));
         let map1 = &preprog_v0.distributions[&1234567890];
         assert_eq!(map1.len(), 1);
-        let identity_1 = Identifier::from_string("ECMnPwQZcH3RP9atgkmvtmN45QrVcYvh5cmUYARHBTu9", Encoding::Base58).unwrap();
+        let identity_1 = Identifier::from_string(
+            "ECMnPwQZcH3RP9atgkmvtmN45QrVcYvh5cmUYARHBTu9",
+            Encoding::Base58,
+        )
+        .unwrap();
         assert_eq!(map1[&identity_1], 11111);
 
         assert!(preprog_v0.distributions.contains_key(&9876543210));
         let map2 = &preprog_v0.distributions[&9876543210];
         assert_eq!(map2.len(), 1);
-        let identity_2 = Identifier::from_string("FCMnPwQZcH3RP9atgkmvtmN45QrVcYvh5cmUYARHBTu9", Encoding::Base58).unwrap();
+        let identity_2 = Identifier::from_string(
+            "FCMnPwQZcH3RP9atgkmvtmN45QrVcYvh5cmUYARHBTu9",
+            Encoding::Base58,
+        )
+        .unwrap();
         assert_eq!(map2[&identity_2], 22222);
 
         // -- New tokens destination
@@ -4191,7 +4296,11 @@ mod tests {
         //    (Positions 2 and 7, from above)
         assert_eq!(contract_v1.groups.len(), 2, "We added two groups in the UI");
         let group2 = contract_v1.groups.get(&2).expect("Expected group pos=2");
-        assert_eq!(group2.required_power(), 2, "Group #2 required_power mismatch");
+        assert_eq!(
+            group2.required_power(),
+            2,
+            "Group #2 required_power mismatch"
+        );
         let members = &group2.members();
         assert_eq!(members.len(), 2);
 
@@ -4206,15 +4315,18 @@ mod tests {
         let db = Arc::new(Database::new(&db_file_path).unwrap());
         db.initialize(Path::new(&db_file_path)).unwrap();
 
-        let app_context = AppContext::new(Network::Regtest, db, None).expect("Expected to create AppContext");
+        let app_context =
+            AppContext::new(Network::Regtest, db, None).expect("Expected to create AppContext");
         let mut token_creator_ui = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
 
         // Identity selection
         let test_identity_id = Identifier::from_string(
             "BCMnPwQZcH3RP9atgkmvtmN45QrVcYvh5cmUYARHBTu9",
-            Encoding::Base58
-        ).unwrap();
-        let mock = Identity::create_basic_identity(test_identity_id, app_context.platform_version).expect("Expected to create Identity");
+            Encoding::Base58,
+        )
+        .unwrap();
+        let mock = Identity::create_basic_identity(test_identity_id, app_context.platform_version)
+            .expect("Expected to create Identity");
         let mock_identity = QualifiedIdentity {
             identity: mock,
             associated_voter_identity: None,
@@ -4222,7 +4334,9 @@ mod tests {
             associated_owner_key_id: None,
             identity_type: crate::model::qualified_identity::IdentityType::User,
             alias: None,
-            private_keys: KeyStorage { private_keys: BTreeMap::new() },
+            private_keys: KeyStorage {
+                private_keys: BTreeMap::new(),
+            },
             dpns_names: vec![],
             associated_wallets: BTreeMap::new(),
             wallet_index: None,
@@ -4233,7 +4347,7 @@ mod tests {
 
         // Key selection
         let mock_key = IdentityPublicKey::random_key(0, None, app_context.platform_version);
-        token_creator_ui.selected_key = Some(mock_key);        
+        token_creator_ui.selected_key = Some(mock_key);
 
         token_creator_ui.token_name_input = "TestToken".to_owned();
 
@@ -4246,7 +4360,9 @@ mod tests {
         token_creator_ui.random_max_input = "200".to_string();
 
         // Parse + build
-        let build_args = token_creator_ui.parse_token_build_args().expect("Should parse");
+        let build_args = token_creator_ui
+            .parse_token_build_args()
+            .expect("Should parse");
         let data_contract = app_context
             .build_data_contract_v1_with_one_token(
                 build_args.identity_id,
@@ -4275,7 +4391,8 @@ mod tests {
 
         let TokenConfiguration::V0(ref token_v0) = contract_v1.tokens[&(0u16.into())];
         let TokenDistributionRules::V0(dist_rules_v0) = &token_v0.distribution_rules;
-        let Some(TokenPerpetualDistribution::V0(perp_v0)) = &dist_rules_v0.perpetual_distribution else {
+        let Some(TokenPerpetualDistribution::V0(perp_v0)) = &dist_rules_v0.perpetual_distribution
+        else {
             panic!("Expected a perpetual distribution");
         };
 
@@ -4286,10 +4403,10 @@ mod tests {
                     DistributionFunction::Random { min, max } => {
                         assert_eq!(*min, 100);
                         assert_eq!(*max, 200);
-                    },
+                    }
                     _ => panic!("Expected DistributionFunction::Random"),
                 }
-            },
+            }
             _ => panic!("Expected TimeBasedDistribution"),
         }
     }
@@ -4300,15 +4417,18 @@ mod tests {
         let db = Arc::new(Database::new(&db_file_path).unwrap());
         db.initialize(Path::new(&db_file_path)).unwrap();
 
-        let app_context = AppContext::new(Network::Regtest, db, None).expect("Expected to create AppContext");
+        let app_context =
+            AppContext::new(Network::Regtest, db, None).expect("Expected to create AppContext");
         let mut token_creator_ui = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
 
         // Identity selection
         let test_identity_id = Identifier::from_string(
             "BCMnPwQZcH3RP9atgkmvtmN45QrVcYvh5cmUYARHBTu9",
-            Encoding::Base58
-        ).unwrap();
-        let mock = Identity::create_basic_identity(test_identity_id, app_context.platform_version).expect("Expected to create Identity");
+            Encoding::Base58,
+        )
+        .unwrap();
+        let mock = Identity::create_basic_identity(test_identity_id, app_context.platform_version)
+            .expect("Expected to create Identity");
         let mock_identity = QualifiedIdentity {
             identity: mock,
             associated_voter_identity: None,
@@ -4316,7 +4436,9 @@ mod tests {
             associated_owner_key_id: None,
             identity_type: crate::model::qualified_identity::IdentityType::User,
             alias: None,
-            private_keys: KeyStorage { private_keys: BTreeMap::new() },
+            private_keys: KeyStorage {
+                private_keys: BTreeMap::new(),
+            },
             dpns_names: vec![],
             associated_wallets: BTreeMap::new(),
             wallet_index: None,
@@ -4327,12 +4449,13 @@ mod tests {
 
         // Key selection
         let mock_key = IdentityPublicKey::random_key(0, None, app_context.platform_version);
-        token_creator_ui.selected_key = Some(mock_key);        
+        token_creator_ui.selected_key = Some(mock_key);
 
         // Intentionally leave token_name_input empty
         token_creator_ui.token_name_input = "".to_owned();
 
-        let err = token_creator_ui.parse_token_build_args()
+        let err = token_creator_ui
+            .parse_token_build_args()
             .expect_err("Should fail if token name is empty");
         assert_eq!(err, "Please enter a token name");
     }

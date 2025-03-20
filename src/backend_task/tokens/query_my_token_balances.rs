@@ -73,18 +73,18 @@ impl AppContext {
                             self,
                         ) {
                             return Err(format!(
-                                "Failed to insert token balance into local database: {:?}",
-                                e
+                                "Failed to insert token balance into local database: {}",
+                                e.to_string()
                             ));
                         };
                         sender
                             .send(TaskResult::Refresh)
                             .await
-                            .map_err(|e| format!("Failed to send refresh message after successful Platform query and local database insert: {:?}", e))?;
+                            .map_err(|e| format!("Failed to send refresh message after successful Platform query and local database insert: {}", e.to_string()))?;
                     }
                 }
                 Err(e) => {
-                    return Err(format!("Failed to query token balances: {:?}", e));
+                    return Err(format!("Failed to query token balances: {}", e.to_string()));
                 }
             }
         }

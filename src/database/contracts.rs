@@ -56,8 +56,8 @@ impl Database {
                             )
                             .map_err(|e| {
                                 format!(
-                                    "Failed to insert token balance into local database: {:?}",
-                                    e
+                                    "Failed to insert token balance into local database: {}",
+                                    e.to_string()
                                 )
                             });
                     }

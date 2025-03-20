@@ -34,7 +34,12 @@ impl AppContext {
         let state_transition = builder
             .sign(sdk, &signing_key, actor_identity, self.platform_version)
             .await
-            .map_err(|e| format!("Error signing DestroyFrozenFunds transition: {:?}", e))?;
+            .map_err(|e| {
+                format!(
+                    "Error signing DestroyFrozenFunds transition: {}",
+                    e.to_string()
+                )
+            })?;
 
         // Broadcast
         let _proof_result = state_transition

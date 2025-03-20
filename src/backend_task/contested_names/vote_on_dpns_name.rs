@@ -5,6 +5,7 @@ use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::platform_value::Value;
 use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
 use dash_sdk::dpp::voting::vote_polls::contested_document_resource_vote_poll::ContestedDocumentResourceVotePoll;
@@ -81,8 +82,8 @@ impl AppContext {
                 vote_results.push((name.clone(), vote_choice, result));
             } else {
                 return Err(format!(
-                    "Error voting: No associated voter identity for qualified identity: {:?}",
-                    qualified_identity.identity.id()
+                    "Error voting: No associated voter identity for qualified identity: {}",
+                    qualified_identity.identity.id().to_string(Encoding::Base58)
                 ));
             }
         }

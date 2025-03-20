@@ -44,7 +44,11 @@ impl AppContext {
                     }
                 }
                 Err(e) => {
-                    eprintln!("Error fetching balance for address {}: {:?}", address, e);
+                    eprintln!(
+                        "Error fetching balance for address {}: {}",
+                        address,
+                        e.to_string()
+                    );
                 }
             }
         }

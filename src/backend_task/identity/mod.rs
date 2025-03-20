@@ -458,7 +458,7 @@ impl AppContext {
             IdentityTask::RefreshIdentity(qualified_identity) => self
                 .refresh_identity(sdk, qualified_identity, sender)
                 .await
-                .map_err(|e| format!("Error refreshing identity: {:?}", e)),
+                .map_err(|e| format!("Error refreshing identity: {}", e.to_string())),
             IdentityTask::Transfer(qualified_identity, to_identifier, credits, id) => {
                 self.transfer_to_identity(qualified_identity, to_identifier, credits, id)
                     .await

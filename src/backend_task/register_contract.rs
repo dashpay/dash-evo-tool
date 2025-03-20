@@ -62,16 +62,16 @@ impl AppContext {
                         .ok_or("Failed to get contract ID from proof error")?;
                     let id = Identifier::from_string(id_str, Encoding::Base58).map_err(|e| {
                         format!(
-                            "Failed to convert contract ID from string to Identifier: {:?}",
-                            e
+                            "Failed to convert contract ID from string to Identifier: {}",
+                            e.to_string()
                         )
                     })?;
                     let maybe_contract = match DataContract::fetch(sdk, id).await {
                         Ok(contract) => contract,
                         Err(e) => {
                             return Err(format!(
-                                "Failed to fetch contract from Platform state: {:?}",
-                                e
+                                "Failed to fetch contract from Platform state: {}",
+                                e.to_string()
                             ))
                         }
                     };
@@ -93,15 +93,21 @@ impl AppContext {
                                     e.to_string()
                                 )
                             })?;
-                        println!("DataContract successfully registered but the proof was wrong. Please report to Dash Core Group. Error: {:?}", e);
+                        println!("DataContract successfully registered but the proof was wrong. Please report to Dash Core Group. Error: {}", e.to_string());
                         Ok(BackendTaskSuccessResult::Message(format!(
                             "DataContract successfully registered"
                         )))
                     } else {
-                        Err(format!("Failed to register DataContract: {:?}", e))
+                        Err(format!(
+                            "Failed to register DataContract: {}",
+                            e.to_string()
+                        ))
                     }
                 } else {
-                    Err(format!("Failed to register DataContract: {:?}", e))
+                    Err(format!(
+                        "Failed to register DataContract: {}",
+                        e.to_string()
+                    ))
                 }
             }
         }

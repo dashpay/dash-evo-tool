@@ -1,3 +1,0 @@
-[dependencies]
-bitcoin = "0.26.0"
-bitcoin-wallet = "0.29.0"

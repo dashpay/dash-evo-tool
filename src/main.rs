@@ -19,7 +19,9 @@ mod utils;
 
 include!(concat!(env!("OUT_DIR"), "/version.rs"));
 
-fn main() -> eframe::Result<()> {
+fn main() {
+    // Your new implementation
+}
     create_app_user_data_directory_if_not_exists()
         .expect("Failed to create app user_data directory");
     let app_data_dir =

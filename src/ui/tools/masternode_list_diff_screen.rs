@@ -237,7 +237,7 @@ impl MasternodeListDiffScreen {
                     block_hash,
                     block_hash.reverse()
                 );
-                return match self.app_context.core_client.get_block_header_info(
+                return match self.app_context.core_client.read().unwrap().get_block_header_info(
                     &(BlockHash2::from_byte_array(block_hash.to_byte_array())),
                 ) {
                     Ok(block_hash) => Ok(block_hash.height as CoreBlockHeight),
@@ -268,7 +268,7 @@ impl MasternodeListDiffScreen {
                     block_hash,
                     block_hash.reverse()
                 );
-                return match self.app_context.core_client.get_block_header_info(
+                return match self.app_context.core_client.read().unwrap().get_block_header_info(
                     &(BlockHash2::from_byte_array(block_hash.to_byte_array())),
                 ) {
                     Ok(result) => {
@@ -298,6 +298,7 @@ impl MasternodeListDiffScreen {
             let block = self
                 .app_context
                 .core_client
+                .read().unwrap()
                 .get_block(&(BlockHash2::from_byte_array(block_hash.to_byte_array())))
                 .map_err(|e| e.to_string())?;
             let Some(coinbase) = block
@@ -335,6 +336,7 @@ impl MasternodeListDiffScreen {
             let block = self
                 .app_context
                 .core_client
+                .read().unwrap()
                 .get_block(&(BlockHash2::from_byte_array(block_hash.to_byte_array())))
                 .map_err(|e| e.to_string())?;
             let Some(coinbase) = block
@@ -361,7 +363,7 @@ impl MasternodeListDiffScreen {
         else {
             let Some(block_hash) = self.block_hash_cache.get(&height) else {
                 println!("asking core for hash of {}", height);
-                return match self.app_context.core_client.get_block_hash(height) {
+                return match self.app_context.core_client.read().unwrap().get_block_hash(height) {
                     Ok(block_hash) => Ok(BlockHash::from_byte_array(block_hash.to_byte_array())),
                     Err(e) => Err(e.to_string()),
                 };
@@ -388,7 +390,7 @@ impl MasternodeListDiffScreen {
 
         // If not cached, retrieve from core client and insert into cache.
         println!("Asking core for hash of {} and caching it", height);
-        match self.app_context.core_client.get_block_hash(height) {
+        match self.app_context.core_client.read().unwrap().get_block_hash(height) {
             Ok(core_block_hash) => {
                 let block_hash = BlockHash::from_byte_array(core_block_hash.to_byte_array());
                 self.block_hash_cache.insert(height, block_hash);
@@ -527,7 +529,7 @@ impl MasternodeListDiffScreen {
     fn parse_heights(&mut self) -> Result<((u32, BlockHash), (u32, BlockHash)), String> {
         let base = if self.base_block_height.is_empty() {
             self.base_block_height = "0".to_string();
-            match self.app_context.core_client.get_block_hash(0) {
+            match self.app_context.core_client.read().unwrap().get_block_hash(0) {
                 Ok(block_hash) => (0, BlockHash::from_byte_array(block_hash.to_byte_array())),
                 Err(e) => {
                     return Err(e.to_string());
@@ -535,7 +537,7 @@ impl MasternodeListDiffScreen {
             }
         } else {
             match self.base_block_height.trim().parse() {
-                Ok(start) => match self.app_context.core_client.get_block_hash(start) {
+                Ok(start) => match self.app_context.core_client.read().unwrap().get_block_hash(start) {
                     Ok(block_hash) => (
                         start,
                         BlockHash::from_byte_array(block_hash.to_byte_array()),
@@ -550,11 +552,12 @@ impl MasternodeListDiffScreen {
             }
         };
         let end = if self.end_block_height.is_empty() {
-            match self.app_context.core_client.get_best_block_hash() {
+            match self.app_context.core_client.read().unwrap().get_best_block_hash() {
                 Ok(block_hash) => {
                     match self
                         .app_context
                         .core_client
+                        .read().unwrap()
                         .get_block_header_info(&block_hash)
                     {
                         Ok(header) => {
@@ -575,7 +578,7 @@ impl MasternodeListDiffScreen {
             }
         } else {
             match self.end_block_height.trim().parse() {
-                Ok(end) => match self.app_context.core_client.get_block_hash(end) {
+                Ok(end) => match self.app_context.core_client.read().unwrap().get_block_hash(end) {
                     Ok(block_hash) => (end, BlockHash::from_byte_array(block_hash.to_byte_array())),
                     Err(e) => {
                         return Err(e.to_string());
@@ -675,7 +678,7 @@ impl MasternodeListDiffScreen {
                     return;
                 }
             };
-            let validation_hash = match self.app_context.core_client.get_block_hash(height - 8) {
+            let validation_hash = match self.app_context.core_client.read().unwrap().get_block_hash(height - 8) {
                 Ok(block_hash) => block_hash,
                 Err(e) => {
                     self.error = Some(e.to_string());
@@ -729,7 +732,7 @@ impl MasternodeListDiffScreen {
                     .network
                     .known_genesis_block_hash()
                 {
-                    None => match self.app_context.core_client.get_block_hash(0) {
+                    None => match self.app_context.core_client.read().unwrap().get_block_hash(0) {
                         Ok(block_hash) => BlockHash::from_byte_array(block_hash.to_byte_array()),
                         Err(e) => {
                             self.error = Some(e.to_string());
@@ -883,7 +886,7 @@ impl MasternodeListDiffScreen {
     //     for _i in 0..count {
     //         if include_at_minus_8 {
     //             let end_height = last_height + step - 8;
-    //             let end_block_hash = match self.app_context.core_client.get_block_hash(end_height) {
+    //             let end_block_hash = match self.app_context.core_client.read().unwrap().get_block_hash(end_height) {
     //                 Ok(block_hash) => BlockHash::from_byte_array(block_hash.to_byte_array()),
     //                 Err(e) => {
     //                     self.error = Some(e.to_string());
@@ -901,7 +904,7 @@ impl MasternodeListDiffScreen {
     //             last_block_hash = end_block_hash;
     //
     //             let end_height = last_height + 8;
-    //             let end_block_hash = match self.app_context.core_client.get_block_hash(end_height) {
+    //             let end_block_hash = match self.app_context.core_client.read().unwrap().get_block_hash(end_height) {
     //                 Ok(block_hash) => BlockHash::from_byte_array(block_hash.to_byte_array()),
     //                 Err(e) => {
     //                     self.error = Some(e.to_string());
@@ -919,7 +922,7 @@ impl MasternodeListDiffScreen {
     //             last_block_hash = end_block_hash;
     //         } else {
     //             let end_height = last_height + step;
-    //             let end_block_hash = match self.app_context.core_client.get_block_hash(end_height) {
+    //             let end_block_hash = match self.app_context.core_client.read().unwrap().get_block_hash(end_height) {
     //                 Ok(block_hash) => BlockHash::from_byte_array(block_hash.to_byte_array()),
     //                 Err(e) => {
     //                     self.error = Some(e.to_string());
@@ -940,7 +943,7 @@ impl MasternodeListDiffScreen {
     //
     //     if rem != 0 {
     //         let end_height = last_height + rem;
-    //         let end_block_hash = match self.app_context.core_client.get_block_hash(end_height) {
+    //         let end_block_hash = match self.app_context.core_client.read().unwrap().get_block_hash(end_height) {
     //             Ok(block_hash) => BlockHash::from_byte_array(block_hash.to_byte_array()),
     //             Err(e) => {
     //                 self.error = Some(e.to_string());
@@ -1142,7 +1145,7 @@ impl MasternodeListDiffScreen {
                 if let Some(height) = block_height_cache.get(block_hash) {
                     return Ok(*height);
                 }
-                match app_context.core_client.get_block_header_info(
+                match app_context.core_client.read().unwrap().get_block_header_info(
                     &(BlockHash2::from_byte_array(block_hash.to_byte_array())),
                 ) {
                     Ok(block_info) => Ok(block_info.height as CoreBlockHeight),
@@ -1158,6 +1161,7 @@ impl MasternodeListDiffScreen {
 
             move |block_hash: &BlockHash| match app_context
                 .core_client
+                .read().unwrap()
                 .get_block(&(BlockHash2::from_byte_array(block_hash.to_byte_array())))
             {
                 Ok(block) => {
@@ -1185,7 +1189,6 @@ impl MasternodeListDiffScreen {
             false,
             true,
             Some(get_height_fn),
-            Some(get_chain_lock_sig_fn),
         ) {
             self.error = Some(e.to_string());
             return;

@@ -1,7 +1,9 @@
+use crate::app_dir::core_cookie_path;
 use crate::config::NetworkConfig;
 use crate::context::AppContext;
 use crate::database::Database;
 use dash_sdk::core::LowLevelDashCoreClient as CoreClient;
+use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::error::ContextProviderError;
 use dash_sdk::platform::ContextProvider;
@@ -19,14 +21,32 @@ impl Provider {
     /// Create new ContextProvider.
     ///
     /// Note that you have to bind it to app context using [Provider::set_app_context()].
-    pub fn new(db: Arc<Database>, config: &NetworkConfig) -> Result<Self, String> {
-        let core_client = CoreClient::new(
-            &config.core_host,
-            config.core_rpc_port,
-            &config.core_rpc_user,
-            &config.core_rpc_password,
-        )
-        .map_err(|e| e.to_string())?;
+    pub fn new(
+        db: Arc<Database>,
+        network: Network,
+        config: &NetworkConfig,
+    ) -> Result<Self, String> {
+        let cookie_path =
+            core_cookie_path(network, &config.devnet_name).expect("Failed to get core cookie path");
+
+        // Read the cookie from disk
+        let cookie = std::fs::read_to_string(cookie_path);
+        let (user, pass) = if let Ok(cookie) = cookie {
+            // split the cookie at ":", first part is user (__cookie__), second part is password
+            let cookie_parts: Vec<&str> = cookie.split(':').collect();
+            let user = cookie_parts[0];
+            let password = cookie_parts[1];
+            (user.to_string(), password.to_string())
+        } else {
+            // Fall back to the pre-set user / pass if needed
+            (
+                config.core_rpc_user.clone(),
+                config.core_rpc_password.clone(),
+            )
+        };
+
+        let core_client = CoreClient::new(&config.core_host, config.core_rpc_port, &user, &pass)
+            .map_err(|e| e.to_string())?;
 
         Ok(Self {
             db,
@@ -42,7 +62,8 @@ impl Provider {
         ac.replace(cloned);
         drop(ac);
 
-        app_context.sdk.set_context_provider(self.clone());
+        let sdk = app_context.sdk.write().expect("lock poisoned");
+        sdk.set_context_provider(self.clone());
     }
 }
 
@@ -58,6 +79,8 @@ impl ContextProvider for Provider {
 
         if data_contract_id == &app_ctx.dpns_contract.id() {
             Ok(Some(app_ctx.dpns_contract.clone()))
+        } else if data_contract_id == &app_ctx.token_history_contract.id() {
+            Ok(Some(app_ctx.token_history_contract.clone()))
         } else {
             let dc = self
                 .db

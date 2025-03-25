@@ -539,15 +539,19 @@ impl ScreenLike for DocumentQueryScreen {
 
     fn ui(&mut self, ctx: &Context) -> AppAction {
         self.check_error_expiration();
-        let add_contract_button = (
-            "Add Contracts",
+        let load_contract_button = (
+            "Load Contracts",
             DesiredAppAction::AddScreenType(ScreenType::AddContracts),
+        );
+        let register_contract_button = (
+            "Register Contract",
+            DesiredAppAction::AddScreenType(ScreenType::RegisterContract),
         );
         let mut action = add_top_panel(
             ctx,
             &self.app_context,
             vec![("Contracts", AppAction::None)],
-            vec![add_contract_button],
+            vec![load_contract_button, register_contract_button],
         );
 
         action |= add_left_panel(

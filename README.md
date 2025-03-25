@@ -240,3 +240,4 @@ For assistance:
 ## Security Note
 
 Keep your private keys and identity information secure. Do not share them with untrusted parties or applications.
+![CodeRabbit Pull Request Reviews](https://img.shields.io/coderabbit/prs/github/asalomeri/dash-evo-tool?utm_source=oss&utm_medium=github&utm_campaign=asalomeri%2Fdash-evo-tool&labelColor=171717&color=FF570A&link=https%3A%2F%2Fcoderabbit.ai&label=CodeRabbit+Reviews)

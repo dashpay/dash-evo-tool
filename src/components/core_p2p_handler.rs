@@ -1,13 +1,16 @@
 use crate::app_dir::app_user_data_file_path;
 use chrono::Utc;
 use dash_sdk::dpp::dashcore::Network;
+use dashcoretemp::bip158::BlockFilter;
 use dashcoretemp::consensus::{deserialize, serialize};
 use dashcoretemp::network::constants::ServiceFlags;
 use dashcoretemp::network::message::{NetworkMessage, RawNetworkMessage};
+use dashcoretemp::network::message_blockdata::GetBlocksMessage;
 use dashcoretemp::network::message_qrinfo::QRInfo;
 use dashcoretemp::network::message_sml::{GetMnListDiff, MnListDiff};
 use dashcoretemp::network::{message_network, message_qrinfo, Address};
-use dashcoretemp::BlockHash;
+use dashcoretemp::transaction::special_transaction::coinbase::CoinbasePayload;
+use dashcoretemp::{BlockHash, MerkleBlock, Transaction};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use sha2::{Digest, Sha256};

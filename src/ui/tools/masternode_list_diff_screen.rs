@@ -17,7 +17,7 @@ use dash_sdk::dpp::dashcore::{
 };
 use dash_sdk::dpp::prelude::CoreBlockHeight;
 use dashcoretemp::bls_sig_utils::BLSSignature;
-use dashcoretemp::consensus::{deserialize, serialize};
+use dashcoretemp::consensus::{deserialize, serialize, Decodable};
 use dashcoretemp::hashes::Hash as tempHash;
 use dashcoretemp::network::message_qrinfo::{QRInfo, QuorumSnapshot};
 use dashcoretemp::network::message_sml::MnListDiff;
@@ -47,6 +47,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
+use dashcoretemp::consensus::encode::Error;
 
 enum SelectedQRItem {
     SelectedSnapshot(QuorumSnapshot),
@@ -685,31 +686,6 @@ impl MasternodeListDiffScreen {
                     return;
                 }
             };
-            // let maybe_chain_lock_sig =
-            //     match self.app_context.core_client.get_block(&validation_hash) {
-            //         Ok(block) => {
-            //             let Some(coinbase) = block
-            //                 .coinbase()
-            //                 .and_then(|coinbase| coinbase.special_transaction_payload.as_ref())
-            //                 .and_then(|payload| payload.clone().to_coinbase_payload().ok())
-            //             else {
-            //                 self.error =
-            //                     Some(format!("coinbase not found on quorum hash {}", quorum_hash));
-            //                 return;
-            //             };
-            //             coinbase.best_cl_signature
-            //         }
-            //         Err(e) => {
-            //             self.error = Some(e.to_string());
-            //             return;
-            //         }
-            //     };
-            // if let Some(maybe_chain_lock_sig) = maybe_chain_lock_sig {
-            //     self.masternode_list_engine.feed_chain_lock_sig(
-            //         BlockHash::from_byte_array(validation_hash.to_byte_array()),
-            //         BLSSignature::from(maybe_chain_lock_sig.to_bytes()),
-            //     );
-            // }
             hashes_needed_to_validate.insert(
                 height - 8,
                 BlockHash::from_byte_array(validation_hash.to_byte_array()),
@@ -1136,6 +1112,24 @@ impl MasternodeListDiffScreen {
             return;
         };
 
+        self.feed_qr_info_and_get_dmls(qr_info, Some(p2p_handler))
+    }
+
+    fn feed_qr_info_and_get_dmls(&mut self, qr_info: QRInfo, core_p2phandler: Option<CoreP2PHandler>) {
+
+        let mut p2p_handler = match core_p2phandler {
+            None => {
+                match CoreP2PHandler::new(self.app_context.network, None) {
+                    Ok(p2p_handler) => p2p_handler,
+                    Err(e) => {
+                        self.error = Some(e);
+                        return;
+                    }
+                }
+            }
+            Some(core_p2phandler) => core_p2phandler,
+        };
+
         // Extracting immutable references before calling `feed_qr_info`
         let get_height_fn = {
             let block_height_cache = &self.block_height_cache;
@@ -1153,34 +1147,6 @@ impl MasternodeListDiffScreen {
                         *block_hash,
                     )),
                 }
-            }
-        };
-
-        let get_chain_lock_sig_fn = {
-            let app_context = &self.app_context;
-
-            move |block_hash: &BlockHash| match app_context
-                .core_client
-                .read().unwrap()
-                .get_block(&(BlockHash2::from_byte_array(block_hash.to_byte_array())))
-            {
-                Ok(block) => {
-                    let Some(coinbase) = block
-                        .coinbase()
-                        .and_then(|coinbase| coinbase.special_transaction_payload.as_ref())
-                        .and_then(|payload| payload.clone().to_coinbase_payload().ok())
-                    else {
-                        return Err(ClientDataRetrievalError::CoinbaseNotFoundOnBlock(
-                            *block_hash,
-                        ));
-                    };
-                    Ok(coinbase
-                        .best_cl_signature
-                        .map(|sig| BLSSignature::from(sig.to_bytes())))
-                }
-                Err(_) => Err(ClientDataRetrievalError::RequiredBlockNotPresent(
-                    *block_hash,
-                )),
             }
         };
 
@@ -1215,14 +1181,16 @@ impl MasternodeListDiffScreen {
             self.block_height_cache.insert(*hash, height);
         }
 
-        if let Err(e) = self
-            .masternode_list_engine
-            .verify_non_rotating_masternode_list_quorums(
-                block_height,
-                &[LLMQType::Llmqtype50_60, LLMQType::Llmqtype400_85],
-            )
-        {
-            self.error = Some(e.to_string());
+        if let Some(latest_masternode_list) = self.masternode_list_engine.latest_masternode_list() {
+            if let Err(e) = self
+                .masternode_list_engine
+                .verify_non_rotating_masternode_list_quorums(
+                    latest_masternode_list.known_height,
+                    &[LLMQType::Llmqtype50_60, LLMQType::Llmqtype400_85],
+                )
+            {
+                self.error = Some(e.to_string());
+            }
         }
 
         // Reset selections when new data is loaded
@@ -1262,6 +1230,26 @@ impl MasternodeListDiffScreen {
                 self.clear_keep_base();
             }
         });
+    }
+
+    fn load_masternode_list_engine(&mut self) {
+        if let Some(path) = rfd::FileDialog::new().add_filter("Binary", &["dat"]).pick_file() {
+            match std::fs::read(&path) {
+                Ok(bytes) => {
+                    match bincode::decode_from_slice::<MasternodeListEngine, _>(&bytes, bincode::config::standard()) {
+                        Ok((engine, _)) => {
+                            self.masternode_list_engine = engine;
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to decode QRInfo: {}", e);
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Failed to read file: {:?}", e);
+                }
+            }
+        }
     }
 
     fn save_masternode_list_engine(&mut self, ui: &mut Ui) {
@@ -1759,6 +1747,7 @@ impl MasternodeListDiffScreen {
             "Known Chain Lock Sigs",
             "Core Items",
             "Save Masternode List Engine",
+            "Load Masternode List Engine",
         ];
 
         if self.syncing {
@@ -1777,6 +1766,9 @@ impl MasternodeListDiffScreen {
                             self.show_popup_for_render_masternode_list_engine = true;
                         }
                         8 => {
+                            self.load_masternode_list_engine();
+                        }
+                        9 => {
                             self.syncing = false;
                         }
                         index => self.selected_tab = index,
@@ -2526,6 +2518,40 @@ impl MasternodeListDiffScreen {
         let selected_qr_info = {
             let Some((_, selected_qr_info)) = self.qr_infos.first_key_value() else {
                 ui.label("No QRInfo available.");
+                if ui.button("Load QR Info").clicked() {
+                    if let Some(path) = FileDialog::new()
+                        .add_filter("Data Files", &["dat"])
+                        .pick_file()
+                    {
+                        match std::fs::read(&path) {
+                            Ok(bytes) => {
+                                // Let's first try consensus decode
+                                match QRInfo::consensus_decode(&mut std::io::Cursor::new(&bytes)) {
+                                    Ok(qr_info) => {
+                                        let key = qr_info.mn_list_diff_tip.block_hash;
+                                        self.qr_infos.insert(key, qr_info.clone());
+                                        self.feed_qr_info_and_get_dmls(qr_info, None);
+                                    }
+                                    Err(_) => {
+                                        match bincode::decode_from_slice::<QRInfo, _>(&bytes, bincode::config::standard()) {
+                                            Ok((qr_info, _)) => {
+                                                let key = qr_info.mn_list_diff_tip.block_hash;
+                                                self.qr_infos.insert(key, qr_info);
+                                            }
+                                            Err(e) => {
+                                                eprintln!("Failed to decode QRInfo: {}", e);
+                                            }
+                                        }
+                                    }
+                                }
+
+                            }
+                            Err(e) => {
+                                eprintln!("Failed to read file: {}", e);
+                            }
+                        }
+                    }
+                }
                 return;
             };
             selected_qr_info.clone()
@@ -3138,7 +3164,9 @@ impl MasternodeListDiffScreen {
             .rotated_quorums_per_cycle
             .get(&cycle_hash)
         else {
-            ui.label(format!("Engine does not know of cycle {}", cycle_hash));
+            ui.label(format!("Engine does not know of cycle {} at height {}, we know of cycles [{}]", cycle_hash, self.get_height_or_error_as_string(&cycle_hash), self
+                .masternode_list_engine
+                .rotated_quorums_per_cycle.keys().map(|key| format!("{}, {}", self.get_height_or_error_as_string(key),  key.to_string())).join(", ")));
             return;
         };
         if cycle_quorums.is_empty() {

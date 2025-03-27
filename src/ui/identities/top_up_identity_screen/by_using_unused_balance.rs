@@ -1,7 +1,7 @@
 use crate::app::AppAction;
 use crate::ui::identities::add_new_identity_screen::FundingMethod;
 use crate::ui::identities::top_up_identity_screen::{TopUpIdentityScreen, WalletFundedScreenStep};
-use egui::Ui;
+use egui::{Color32, RichText, Ui};
 
 impl TopUpIdentityScreen {
     fn show_wallet_balance(&self, ui: &mut egui::Ui) {
@@ -23,20 +23,18 @@ impl TopUpIdentityScreen {
     pub fn render_ui_by_using_unused_balance(
         &mut self,
         ui: &mut Ui,
-        mut step_number: u32,
+        step_number: u32,
     ) -> AppAction {
         let mut action = AppAction::None;
-
-        self.show_wallet_balance(ui);
-
-        ui.add_space(10.0);
 
         ui.heading(format!(
             "{}. How much of your wallet balance would you like to transfer?",
             step_number
         ));
 
-        step_number += 1;
+        ui.add_space(10.0);
+        self.show_wallet_balance(ui);
+        ui.add_space(5.0);
 
         self.top_up_funding_amount_input(ui);
 
@@ -47,28 +45,46 @@ impl TopUpIdentityScreen {
             return action;
         };
 
-        if ui.button("Top Up Identity").clicked() {
+        // Top up button
+        let mut new_style = (**ui.style()).clone();
+        new_style.spacing.button_padding = egui::vec2(10.0, 5.0);
+        ui.set_style(new_style);
+        let button = egui::Button::new(RichText::new("Top Up Identity").color(Color32::WHITE))
+            .fill(Color32::from_rgb(0, 128, 255))
+            .frame(true)
+            .rounding(3.0);
+        if ui.add(button).clicked() {
             self.error_message = None;
             action = self.top_up_identity_clicked(FundingMethod::UseWalletBalance);
         }
 
-        match step {
-            WalletFundedScreenStep::WaitingForAssetLock => {
-                ui.heading("Waiting for Core Chain to produce proof of transfer of funds.");
-            }
-            WalletFundedScreenStep::WaitingForPlatformAcceptance => {
-                ui.heading("Waiting for Platform acknowledgement");
-            }
-            WalletFundedScreenStep::Success => {
-                ui.heading("...Success...");
-            }
-            _ => {}
-        }
+        ui.add_space(20.0);
 
         if let Some(error_message) = self.error_message.as_ref() {
-            ui.heading(error_message);
+            ui.colored_label(Color32::DARK_RED, error_message);
+            ui.add_space(20.0);
         }
 
+        ui.vertical_centered(|ui| {
+            match step {
+                WalletFundedScreenStep::WaitingForAssetLock => {
+                    ui.heading("=> Waiting for Core Chain to produce proof of transfer of funds. <=");
+                    ui.add_space(20.0);
+                    ui.label("NOTE: If this gets stuck, the funds were likely either transferred to the wallet or asset locked,\nand you can use the funding method selector in step 1 to change the method and use those funds to complete the process.");
+                }
+                WalletFundedScreenStep::WaitingForPlatformAcceptance => {
+                    ui.heading("=> Waiting for Platform acknowledgement <=");
+                    ui.add_space(20.0);
+                    ui.label("NOTE: If this gets stuck, the funds were likely either transferred to the wallet or asset locked,\nand you can use the funding method selector in step 1 to change the method and use those funds to complete the process.");
+                }
+                WalletFundedScreenStep::Success => {
+                    ui.heading("...Success...");
+                }
+                _ => {}
+            };
+        });
+
+        ui.add_space(40.0);
         action
     }
 }

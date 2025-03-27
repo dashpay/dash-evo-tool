@@ -57,11 +57,6 @@ pub fn add_left_panel(
             RootScreenType::RootScreenToolsProofLogScreen,
             "tools.png",
         ),
-        (
-            "W",
-            RootScreenType::RootScreenWithdrawsStatus,
-            "withdraws.png",
-        ),
         ("N", RootScreenType::RootScreenNetworkChooser, "config.png"),
     ];
 
@@ -82,13 +77,6 @@ pub fn add_left_panel(
         .show(ctx, |ui| {
             ui.vertical_centered(|ui| {
                 for (label, screen_type, icon_path) in buttons.iter() {
-                    if *screen_type == RootScreenType::RootScreenDocumentQuery {
-                        continue; // Skip rendering the document button for now
-                    }
-                    if *screen_type == RootScreenType::RootScreenWithdrawsStatus {
-                        continue; // Skip rendering the withdrawals button for now
-                    }
-
                     let texture: Option<TextureHandle> = load_icon(ctx, icon_path);
                     let is_selected = selected_screen == *screen_type;
                     let button_color = if is_selected {

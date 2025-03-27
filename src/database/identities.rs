@@ -6,7 +6,7 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::platform::Identifier;
 use rusqlite::params;
 use std::collections::BTreeMap;
-use std::sync::{Arc, RwLock, RwLockReadGuard};
+use std::sync::{Arc, RwLock};
 
 impl Database {
     /// Updates the alias of a specified identity.
@@ -274,5 +274,97 @@ impl Database {
         )?;
 
         Ok(())
+    }
+
+    /// Creates the identity_order table if it doesn't already exist
+    /// with two columns: `pos` (int) and `identity_id` (blob).
+    /// pos is the "position" in the custom ordering.
+    fn ensure_identity_order_table_exists(&self) -> rusqlite::Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS identity_order (
+                pos INTEGER NOT NULL,
+                identity_id BLOB NOT NULL,
+                PRIMARY KEY(pos),
+                FOREIGN KEY (identity_id) REFERENCES identity(id) ON DELETE CASCADE)",
+        )?;
+        Ok(())
+    }
+
+    /// Saves the user’s custom identity order (the entire list).
+    /// This method overwrites whatever was there before.
+    pub fn save_identity_order(&self, all_ids: Vec<Identifier>) -> rusqlite::Result<()> {
+        // Make sure table exists
+        self.ensure_identity_order_table_exists()?;
+
+        let conn = self.conn.lock().unwrap();
+        let tx = conn.unchecked_transaction()?;
+
+        // Clear existing rows
+        tx.execute("DELETE FROM identity_order", [])?;
+
+        // Insert each ID with a numeric pos = 0..N
+        for (pos, id) in all_ids.iter().enumerate() {
+            let id_bytes = id.to_vec();
+            tx.execute(
+                "INSERT INTO identity_order (pos, identity_id)
+                 VALUES (?1, ?2)",
+                params![pos as i64, id_bytes],
+            )?;
+        }
+
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Loads the user’s custom identity order (the entire list).
+    /// If an identity in the order doesn't exist in the identity table, it is removed.
+    pub fn load_identity_order(&self) -> rusqlite::Result<Vec<Identifier>> {
+        // Make sure table exists
+        self.ensure_identity_order_table_exists()?;
+
+        let conn = self.conn.lock().unwrap();
+
+        // Read all rows sorted by pos
+        let mut stmt = conn.prepare("SELECT identity_id FROM identity_order ORDER BY pos ASC")?;
+
+        let mut rows = stmt.query([])?;
+        let mut final_list = Vec::new();
+        let mut to_remove = Vec::new();
+
+        while let Some(row) = rows.next()? {
+            let id_bytes: Vec<u8> = row.get(0)?;
+            // Convert from raw bytes to an Identifier
+            let identifier = match Identifier::from_vec(id_bytes.clone()) {
+                Ok(id) => id,
+                Err(_) => {
+                    // If parsing as an Identifier fails, queue for removal
+                    to_remove.push(id_bytes);
+                    continue;
+                }
+            };
+
+            // Check if the identity is still in 'identity' table
+            let mut check_stmt =
+                conn.prepare("SELECT EXISTS(SELECT 1 FROM identity WHERE id = ?)")?;
+            let exists: i64 = check_stmt.query_row(params![identifier.to_vec()], |r| r.get(0))?;
+            if exists == 1 {
+                // Keep it
+                final_list.push(identifier);
+            } else {
+                // Queue for removal because it doesn't exist in the identity table
+                to_remove.push(identifier.to_vec());
+            }
+        }
+
+        // Remove any “dangling” references
+        for id in to_remove {
+            conn.execute(
+                "DELETE FROM identity_order WHERE identity_id = ?",
+                params![id],
+            )?;
+        }
+
+        Ok(final_list)
     }
 }

@@ -1,3 +1,4 @@
+use crate::app_dir::{core_cookie_path, core_user_data_dir_path};
 use crate::backend_task::contested_names::ScheduledDPNSVote;
 use crate::components::core_zmq_listener::ZMQConnectionEvent;
 use crate::config::{Config, NetworkConfig};
@@ -70,7 +71,7 @@ impl AppContext {
 
         // we create provider, but we need to set app context to it later, as we have a circular dependency
         let provider =
-            Provider::new(db.clone(), &network_config).expect("Failed to initialize SDK");
+            Provider::new(db.clone(), network, &network_config).expect("Failed to initialize SDK");
 
         let sdk = initialize_sdk(&network_config, network, provider.clone());
 
@@ -86,14 +87,26 @@ impl AppContext {
             "http://{}:{}",
             network_config.core_host, network_config.core_rpc_port
         );
-        let core_client = Client::new(
-            &addr,
-            Auth::UserPass(
-                network_config.core_rpc_user.to_string(),
-                network_config.core_rpc_password.to_string(),
-            ),
-        )
-        .ok()?;
+        let cookie_path = core_cookie_path(network, &network_config.devnet_name).expect("expected to get cookie path");
+
+        // Try cookie authentication first
+        let core_client = match Client::new(&addr, Auth::CookieFile(cookie_path.clone())) {
+            Ok(client) => Ok(client),
+            Err(_) => {
+                // If cookie auth fails, try user/password authentication
+                tracing::info!(
+                    "Failed to authenticate using .cookie file at {:?}, falling back to user/pass",
+                    cookie_path,
+                );
+                Client::new(
+                    &addr,
+                    Auth::UserPass(
+                        network_config.core_rpc_user.to_string(),
+                        network_config.core_rpc_password.to_string(),
+                    ),
+                )
+            }
+        }.expect("Failed to create CoreClient");
 
         let wallets: BTreeMap<_, _> = db
             .get_wallets(&network)
@@ -143,6 +156,7 @@ impl AppContext {
             .insert_local_qualified_identity(&identity.clone().into(), None, self)
     }
 
+    /// Inserts a local qualified identity into the database
     pub fn insert_local_qualified_identity(
         &self,
         qualified_identity: &QualifiedIdentity,
@@ -155,6 +169,7 @@ impl AppContext {
         )
     }
 
+    /// Updates a local qualified identity in the database
     pub fn update_local_qualified_identity(
         &self,
         qualified_identity: &QualifiedIdentity,
@@ -163,6 +178,7 @@ impl AppContext {
             .update_local_qualified_identity(qualified_identity, self)
     }
 
+    /// Sets the alias for an identity
     pub fn set_alias(&self, identifier: &Identifier, new_alias: Option<&str>) -> Result<()> {
         self.db.set_alias(identifier, new_alias)
     }
@@ -182,44 +198,54 @@ impl AppContext {
         )
     }
 
+    /// Fetches all local qualified identities from the database
     pub fn load_local_qualified_identities(&self) -> Result<Vec<QualifiedIdentity>> {
         let wallets = self.wallets.read().unwrap();
         self.db.get_local_qualified_identities(self, &wallets)
     }
 
+    /// Fetches all voting identities from the database
     pub fn load_local_voting_identities(&self) -> Result<Vec<QualifiedIdentity>> {
         self.db.get_local_voting_identities(self)
     }
 
+    /// Fetches all contested names from the database including past and active ones
     pub fn all_contested_names(&self) -> Result<Vec<ContestedName>> {
         self.db.get_all_contested_names(self)
     }
 
+    /// Fetches all ongoing contested names from the database
     pub fn ongoing_contested_names(&self) -> Result<Vec<ContestedName>> {
         self.db.get_ongoing_contested_names(self)
     }
 
+    /// Inserts scheduled votes into the database
     pub fn insert_scheduled_votes(&self, scheduled_votes: &Vec<ScheduledDPNSVote>) -> Result<()> {
         self.db.insert_scheduled_votes(self, &scheduled_votes)
     }
 
+    /// Fetches all scheduled votes from the database
     pub fn get_scheduled_votes(&self) -> Result<Vec<ScheduledDPNSVote>> {
         self.db.get_scheduled_votes(&self)
     }
 
+    /// Clears all scheduled votes from the database
     pub fn clear_all_scheduled_votes(&self) -> Result<()> {
         self.db.clear_all_scheduled_votes(self)
     }
 
+    /// Clears all executed scheduled votes from the database
     pub fn clear_executed_scheduled_votes(&self) -> Result<()> {
         self.db.clear_executed_scheduled_votes(self)
     }
 
+    /// Deletes a scheduled vote from the database
     pub fn delete_scheduled_vote(&self, identity_id: &[u8], contested_name: &String) -> Result<()> {
         self.db
             .delete_scheduled_vote(self, identity_id, &contested_name)
     }
 
+    /// Marks a scheduled vote as executed in the database
     pub fn mark_vote_executed(&self, identity_id: &[u8], contested_name: String) -> Result<()> {
         self.db
             .mark_vote_executed(self, identity_id, contested_name)
@@ -270,7 +296,7 @@ impl AppContext {
         self.db.get_settings()
     }
 
-    /// Retrieves the DPNS contract along with other contracts from the database.
+    /// Retrieves all contracts from the database plus the DPNS contract from app context.
     pub fn get_contracts(
         &self,
         limit: Option<u32>,
@@ -289,6 +315,11 @@ impl AppContext {
         contracts.insert(0, dpns_contract);
 
         Ok(contracts)
+    }
+
+    // Remove contract from the database by ID
+    pub fn remove_contract(&self, contract_id: &Identifier) -> Result<()> {
+        self.db.remove_contract(contract_id.as_bytes(), &self)
     }
 
     pub(crate) fn received_transaction_finality(

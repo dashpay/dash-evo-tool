@@ -82,12 +82,8 @@ impl TopUpIdentityScreen {
                     .and_then(|wallet| wallet.read().ok()?.alias.clone())
                     .unwrap_or_else(|| "Select".to_string());
 
-                ui.heading("1. Choose the wallet to use to top up this identity.");
-
-                ui.add_space(10.0);
-
                 // Display the ComboBox for wallet selection
-                ComboBox::from_label("Select Wallet")
+                ComboBox::from_id_salt("select_wallet")
                     .selected_text(selected_wallet_alias)
                     .show_ui(ui, |ui| {
                         for wallet in wallets.values() {
@@ -108,7 +104,6 @@ impl TopUpIdentityScreen {
                             }
                         }
                     });
-                ui.add_space(10.0);
                 true
             } else if let Some(wallet) = wallets.values().next() {
                 if self.wallet.is_none() {
@@ -131,7 +126,7 @@ impl TopUpIdentityScreen {
         let funding_method_arc = self.funding_method.clone();
         let mut funding_method = funding_method_arc.write().unwrap(); // Write lock on funding_method
 
-        ComboBox::from_label("Funding Method")
+        ComboBox::from_id_salt("funding_method")
             .selected_text(format!("{}", *funding_method))
             .show_ui(ui, |ui| {
                 ui.selectable_value(
@@ -266,7 +261,7 @@ impl TopUpIdentityScreen {
         let funding_method = self.funding_method.read().unwrap(); // Read lock on funding_method
 
         ui.horizontal(|ui| {
-            ui.label("Funding Amount (DASH):");
+            ui.label("Amount (DASH):");
 
             // Render the text input field for the funding amount
             let amount_input = ui
@@ -303,6 +298,8 @@ impl TopUpIdentityScreen {
                 }
             }
         });
+
+        ui.add_space(10.0);
     }
 }
 
@@ -425,40 +422,54 @@ impl ScreenLike for TopUpIdentityScreen {
                     action |= self.show_success(ui);
                     return;
                 }
+
                 ui.add_space(10.0);
                 ui.heading("Follow these steps to top up your identity:");
                 ui.add_space(15.0);
 
                 let mut step_number = 1;
-
-                if self.render_wallet_selection(ui) {
-                    // We had more than 1 wallet
-                    step_number += 1;
-                }
-
-                if self.wallet.is_none() {
-                    return;
-                };
-
-                let (needed_unlock, just_unlocked) = self.render_wallet_unlock_if_needed(ui);
-
-                if needed_unlock && !just_unlocked {
-                    return;
-                }
-
-                ui.add_space(10.0);
-
                 ui.heading(format!("{}. Choose your funding method.", step_number).as_str());
                 step_number += 1;
+                ui.add_space(10.0);
+
+                self.render_funding_method(ui);
 
                 ui.add_space(10.0);
-                self.render_funding_method(ui);
+                ui.separator();
+                ui.add_space(10.0);
 
                 // Extract the funding method from the RwLock to minimize borrow scope
                 let funding_method = self.funding_method.read().unwrap().clone();
-
                 if funding_method == FundingMethod::NoSelection {
                     return;
+                }
+
+                if funding_method == FundingMethod::UseWalletBalance
+                    || funding_method == FundingMethod::UseUnusedAssetLock
+                {
+                    ui.heading(format!(
+                        "{}. Choose the wallet to use to top up this identity.",
+                        step_number
+                    ));
+                    step_number += 1;
+
+                    ui.add_space(10.0);
+
+                    self.render_wallet_selection(ui);
+
+                    if self.wallet.is_none() {
+                        return;
+                    };
+
+                    let (needed_unlock, just_unlocked) = self.render_wallet_unlock_if_needed(ui);
+
+                    if needed_unlock && !just_unlocked {
+                        return;
+                    }
+
+                    ui.add_space(10.0);
+                    ui.separator();
+                    ui.add_space(10.0);
                 }
 
                 match funding_method {

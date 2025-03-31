@@ -27,7 +27,8 @@ impl Database {
                 data_contract_id BLOB NOT NULL,
                 token_position INTEGER NOT NULL,
                 network TEXT NOT NULL,
-                PRIMARY KEY(token_id, identity_id, network)
+                PRIMARY KEY(token_id, identity_id, network),
+                FOREIGN KEY (identity_id) REFERENCES identity(id) ON DELETE CASCADE
              )",
         )?;
         Ok(())

@@ -586,6 +586,7 @@ pub struct TokensScreen {
     pub perpetual_dist_function: DistributionFunctionUI,
     pub perpetual_dist_recipient: TokenDistributionRecipientUI,
     pub perpetual_dist_recipient_identity_input: Option<String>,
+
     // Pre-programmed distribution
     pub enable_pre_programmed_distribution: bool,
     pub pre_programmed_distributions: Vec<DistributionEntry>,
@@ -3308,10 +3309,11 @@ Emits tokens in fixed amounts for specific intervals.
         self.main_control_group_change_authorized_identity = None;
         self.main_control_group_change_authorized_group = None;
         self.main_control_group_input = "".to_string();
+        self.groups_ui = vec![];
+
         self.perpetual_dist_function = DistributionFunctionUI::FixedAmount;
         self.perpetual_dist_type = PerpetualDistributionIntervalTypeUI::None;
         self.perpetual_dist_interval_input = "".to_string();
-
         self.fixed_amount_input = "".to_string();
         self.random_min_input = "".to_string();
         self.random_max_input = "".to_string();
@@ -3375,6 +3377,7 @@ Emits tokens in fixed amounts for specific intervals.
         self.new_tokens_destination_identity = "".to_string();
         self.minting_allow_choosing_destination = false;
         self.minting_allow_choosing_destination_rules = ChangeControlRulesUI::default();
+
         self.show_token_creator_confirmation_popup = false;
         self.token_creator_error_message = None;
     }

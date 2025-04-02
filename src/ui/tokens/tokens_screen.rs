@@ -44,6 +44,7 @@ use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
 use crate::ui::{BackendTaskSuccessResult, MessageType, RootScreenType, Screen, ScreenLike};
 
 use super::burn_tokens_screen::BurnTokensScreen;
+use super::claim_tokens_screen::ClaimTokensScreen;
 use super::destroy_frozen_funds_screen::DestroyFrozenFundsScreen;
 use super::freeze_tokens_screen::FreezeTokensScreen;
 use super::mint_tokens_screen::MintTokensScreen;
@@ -1272,6 +1273,17 @@ impl TokensScreen {
                                                         action = AppAction::AddScreen(
                                                             Screen::ResumeTokensScreen(
                                                                 ResumeTokensScreen::new(
+                                                                    itb.clone(),
+                                                                    &self.app_context,
+                                                                ),
+                                                            ),
+                                                        );
+                                                        ui.close_menu();
+                                                    }
+                                                    if ui.button("Claim").clicked() {
+                                                        action = AppAction::AddScreen(
+                                                            Screen::ClaimTokensScreen(
+                                                                ClaimTokensScreen::new(
                                                                     itb.clone(),
                                                                     &self.app_context,
                                                                 ),

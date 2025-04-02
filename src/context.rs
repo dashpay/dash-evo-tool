@@ -354,7 +354,7 @@ impl AppContext {
         self.db.get_settings()
     }
 
-    /// Retrieves all contracts from the database plus the DPNS contract from app context.
+    /// Retrieves all contracts from the database plus the system contracts from app context.
     pub fn get_contracts(
         &self,
         limit: Option<u32>,
@@ -366,11 +366,29 @@ impl AppContext {
         // Add the DPNS contract to the list
         let dpns_contract = QualifiedContract {
             contract: Arc::clone(&self.dpns_contract).as_ref().clone(),
-            alias: Some("dpns".to_string()), // You can adjust the alias as needed
+            alias: Some("dpns".to_string()),
         };
 
-        // Insert the DPNS contract at the beginning
+        // Insert the DPNS contract at 0
         contracts.insert(0, dpns_contract);
+
+        // Add the token history contract to the list
+        let token_history_contract = QualifiedContract {
+            contract: Arc::clone(&self.token_history_contract).as_ref().clone(),
+            alias: Some("token_history".to_string()),
+        };
+
+        // Insert the token history contract at 1
+        contracts.insert(1, token_history_contract);
+
+        // Add the withdrawal contract to the list
+        let withdraws_contract = QualifiedContract {
+            contract: Arc::clone(&self.withdraws_contract).as_ref().clone(),
+            alias: Some("withdrawals".to_string()),
+        };
+
+        // Insert the withdrawal contract at 2
+        contracts.insert(2, withdraws_contract);
 
         Ok(contracts)
     }

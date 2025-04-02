@@ -33,6 +33,7 @@ use std::fmt;
 use std::hash::Hash;
 use std::sync::Arc;
 use tokens::burn_tokens_screen::BurnTokensScreen;
+use tokens::claim_tokens_screen::ClaimTokensScreen;
 use tokens::destroy_frozen_funds_screen::DestroyFrozenFundsScreen;
 use tokens::freeze_tokens_screen::FreezeTokensScreen;
 use tokens::mint_tokens_screen::MintTokensScreen;
@@ -182,6 +183,7 @@ pub enum ScreenType {
     UnfreezeTokensScreen(IdentityTokenBalance),
     PauseTokensScreen(IdentityTokenBalance),
     ResumeTokensScreen(IdentityTokenBalance),
+    ClaimTokensScreen(IdentityTokenBalance),
 }
 
 impl ScreenType {
@@ -315,6 +317,9 @@ impl ScreenType {
                     app_context,
                 ))
             }
+            ScreenType::ClaimTokensScreen(identity_token_balance) => Screen::ClaimTokensScreen(
+                ClaimTokensScreen::new(identity_token_balance.clone(), app_context),
+            ),
         }
     }
 }
@@ -352,6 +357,7 @@ pub enum Screen {
     UnfreezeTokensScreen(UnfreezeTokensScreen),
     PauseTokensScreen(PauseTokensScreen),
     ResumeTokensScreen(ResumeTokensScreen),
+    ClaimTokensScreen(ClaimTokensScreen),
 }
 
 impl Screen {
@@ -389,6 +395,7 @@ impl Screen {
             Screen::UnfreezeTokensScreen(screen) => screen.app_context = app_context,
             Screen::PauseTokensScreen(screen) => screen.app_context = app_context,
             Screen::ResumeTokensScreen(screen) => screen.app_context = app_context,
+            Screen::ClaimTokensScreen(screen) => screen.app_context = app_context,
         }
     }
 }
@@ -513,6 +520,9 @@ impl Screen {
             Screen::ResumeTokensScreen(screen) => {
                 ScreenType::ResumeTokensScreen(screen.identity_token_balance.clone())
             }
+            Screen::ClaimTokensScreen(screen) => {
+                ScreenType::ClaimTokensScreen(screen.identity_token_balance.clone())
+            }
         }
     }
 }
@@ -552,6 +562,7 @@ impl ScreenLike for Screen {
             Screen::UnfreezeTokensScreen(screen) => screen.refresh(),
             Screen::PauseTokensScreen(screen) => screen.refresh(),
             Screen::ResumeTokensScreen(screen) => screen.refresh(),
+            Screen::ClaimTokensScreen(screen) => screen.refresh(),
         }
     }
 
@@ -589,6 +600,7 @@ impl ScreenLike for Screen {
             Screen::UnfreezeTokensScreen(screen) => screen.refresh_on_arrival(),
             Screen::PauseTokensScreen(screen) => screen.refresh_on_arrival(),
             Screen::ResumeTokensScreen(screen) => screen.refresh_on_arrival(),
+            Screen::ClaimTokensScreen(screen) => screen.refresh_on_arrival(),
         }
     }
 
@@ -626,6 +638,7 @@ impl ScreenLike for Screen {
             Screen::UnfreezeTokensScreen(screen) => screen.ui(ctx),
             Screen::PauseTokensScreen(screen) => screen.ui(ctx),
             Screen::ResumeTokensScreen(screen) => screen.ui(ctx),
+            Screen::ClaimTokensScreen(screen) => screen.ui(ctx),
         }
     }
 
@@ -671,6 +684,7 @@ impl ScreenLike for Screen {
             Screen::UnfreezeTokensScreen(screen) => screen.display_message(message, message_type),
             Screen::PauseTokensScreen(screen) => screen.display_message(message, message_type),
             Screen::ResumeTokensScreen(screen) => screen.display_message(message, message_type),
+            Screen::ClaimTokensScreen(screen) => screen.display_message(message, message_type),
         }
     }
 
@@ -766,6 +780,9 @@ impl ScreenLike for Screen {
             Screen::ResumeTokensScreen(screen) => {
                 screen.display_task_result(backend_task_success_result.clone())
             }
+            Screen::ClaimTokensScreen(screen) => {
+                screen.display_task_result(backend_task_success_result.clone())
+            }
         }
     }
 
@@ -803,6 +820,7 @@ impl ScreenLike for Screen {
             Screen::UnfreezeTokensScreen(screen) => screen.pop_on_success(),
             Screen::PauseTokensScreen(screen) => screen.pop_on_success(),
             Screen::ResumeTokensScreen(screen) => screen.pop_on_success(),
+            Screen::ClaimTokensScreen(screen) => screen.pop_on_success(),
         }
     }
 }

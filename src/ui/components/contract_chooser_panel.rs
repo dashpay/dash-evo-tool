@@ -306,8 +306,10 @@ pub fn add_contract_chooser_panel(
 
                             // Right‐aligned Remove button
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-                                // Only show the remove button for non-DPNS contracts
-                                if contract.alias != Some("dpns".to_string()) {
+                                if contract.alias != Some("dpns".to_string())
+                                    && contract.alias != Some("token_history".to_string())
+                                    && contract.alias != Some("withdrawals".to_string())
+                                {
                                     if ui.button("X").clicked() {
                                         action |=
                                             AppAction::BackendTask(BackendTask::ContractTask(

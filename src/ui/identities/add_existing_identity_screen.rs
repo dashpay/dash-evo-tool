@@ -449,6 +449,20 @@ impl AddExistingIdentityScreen {
 
             ui.add_space(20.0);
 
+            if ui.button("Load Another").clicked() {
+                self.identity_id_input.clear();
+                self.alias_input.clear();
+                self.voting_private_key_input.clear();
+                self.owner_private_key_input.clear();
+                self.payout_address_private_key_input.clear();
+                self.keys_input = vec![String::new(), String::new(), String::new()];
+                self.identity_index_input.clear();
+                self.error_message = None;
+                self.show_pop_up_info = None;
+                self.add_identity_status = AddIdentityStatus::NotStarted;
+            }
+            ui.add_space(5.0);
+
             if ui.button("Back to Identities Screen").clicked() {
                 action = AppAction::PopScreenAndRefresh;
             }

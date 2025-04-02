@@ -9,6 +9,7 @@ use dash_sdk::{
                 token_configuration_localization::{
                     v0::TokenConfigurationLocalizationV0, TokenConfigurationLocalization,
                 },
+                token_distribution_key::TokenDistributionType,
                 token_distribution_rules::TokenDistributionRules,
                 token_keeps_history_rules::{v0::TokenKeepsHistoryRulesV0, TokenKeepsHistoryRules},
             },
@@ -30,6 +31,7 @@ use std::{collections::BTreeMap, sync::Arc};
 use tokio::sync::mpsc;
 
 mod burn_tokens;
+mod claim_tokens;
 mod destroy_frozen_funds;
 mod freeze_tokens;
 mod mint_tokens;
@@ -127,6 +129,13 @@ pub(crate) enum TokenTask {
         actor_identity: QualifiedIdentity,
         data_contract: DataContract,
         token_position: u16,
+        signing_key: IdentityPublicKey,
+    },
+    ClaimTokens {
+        data_contract: DataContract,
+        token_position: u16,
+        actor_identity: QualifiedIdentity,
+        distribution_type: TokenDistributionType,
         signing_key: IdentityPublicKey,
     },
 }
@@ -366,6 +375,23 @@ impl AppContext {
                 )
                 .await
                 .map_err(|e| format!("Failed to resume tokens: {e}")),
+            TokenTask::ClaimTokens {
+                data_contract,
+                token_position,
+                actor_identity,
+                distribution_type,
+                signing_key,
+            } => self
+                .claim_tokens(
+                    data_contract,
+                    *token_position,
+                    actor_identity,
+                    *distribution_type,
+                    signing_key.clone(),
+                    sdk,
+                )
+                .await
+                .map_err(|e| format!("Failed to claim tokens: {e}")),
         }
     }
 

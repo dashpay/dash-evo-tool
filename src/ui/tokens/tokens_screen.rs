@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, RwLock};
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use dash_sdk::dpp::balances::credits::TokenAmount;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationV0;
@@ -24,6 +24,7 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::SecurityLevel;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::Start;
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
 use eframe::egui::{self, CentralPanel, Color32, Context, Frame, Margin, Ui};
 use egui::{Align, RichText};
@@ -52,6 +53,15 @@ use super::pause_tokens_screen::PauseTokensScreen;
 use super::resume_tokens_screen::ResumeTokensScreen;
 use super::transfer_tokens_screen::TransferTokensScreen;
 use super::unfreeze_tokens_screen::UnfreezeTokensScreen;
+
+/// Token info
+#[derive(Clone, Debug, PartialEq)]
+pub struct TokenInfo {
+    pub token_identifier: Identifier,
+    pub token_name: String,
+    pub data_contract_id: Identifier,
+    pub token_position: u16,
+}
 
 /// A token owned by an identity.
 #[derive(Clone, Debug, PartialEq)]
@@ -119,6 +129,7 @@ enum SortColumn {
     OwnerIdentity,
     OwnerIdentityAlias,
     Balance,
+    ContractID,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -398,8 +409,10 @@ pub enum TokenDistributionRecipientUI {
 
 #[derive(Default, Clone)]
 pub struct DistributionEntry {
-    /// The block timestamp or block height when distribution occurs
-    pub timestamp_str: String,
+    /// Time from token contract registration when the distribution should occur
+    pub days: i32,
+    pub hours: i32,
+    pub minutes: i32,
 
     /// The base58 identity to receive distribution
     pub identity_str: String,
@@ -523,12 +536,12 @@ pub struct TokensScreen {
 
     // Token Search
     token_search_query: Option<String>,
-    search_results: Arc<Mutex<Vec<IdentityTokenBalance>>>,
+    search_results: Arc<Mutex<Vec<TokenInfo>>>,
     token_search_status: TokenSearchStatus,
     search_current_page: usize,
     search_has_next_page: bool,
-    next_cursors: Vec<Identifier>,
-    previous_cursors: Vec<Identifier>,
+    next_cursors: Vec<Start>,
+    previous_cursors: Vec<Start>,
 
     // Sorting
     sort_column: SortColumn,
@@ -899,6 +912,7 @@ impl TokensScreen {
                 }
                 SortColumn::TokenName => a.token_name.cmp(&b.token_name),
                 SortColumn::TokenID => a.token_identifier.cmp(&b.token_identifier),
+                SortColumn::ContractID => a.data_contract_id.cmp(&b.data_contract_id),
             };
             match self.sort_order {
                 SortOrder::Ascending => ordering,
@@ -1201,6 +1215,19 @@ impl TokensScreen {
                                                     );
                                                 }
 
+                                                // Claim
+                                                if ui.button("Claim").clicked() {
+                                                    action = AppAction::AddScreen(
+                                                        Screen::ClaimTokensScreen(
+                                                            ClaimTokensScreen::new(
+                                                                itb.clone(),
+                                                                &self.app_context,
+                                                            ),
+                                                        ),
+                                                    );
+                                                    ui.close_menu();
+                                                }
+
                                                 // Expandable advanced actions menu
                                                 ui.menu_button("...", |ui| {
                                                     if ui.button("Mint").clicked() {
@@ -1280,17 +1307,6 @@ impl TokensScreen {
                                                         );
                                                         ui.close_menu();
                                                     }
-                                                    if ui.button("Claim").clicked() {
-                                                        action = AppAction::AddScreen(
-                                                            Screen::ClaimTokensScreen(
-                                                                ClaimTokensScreen::new(
-                                                                    itb.clone(),
-                                                                    &self.app_context,
-                                                                ),
-                                                            ),
-                                                        );
-                                                        ui.close_menu();
-                                                    }
                                                 });
 
                                                 // Remove
@@ -1315,108 +1331,98 @@ impl TokensScreen {
         action
     }
 
-    fn render_token_search(&mut self, ui: &mut Ui) -> AppAction {
-        let action = AppAction::None;
+    fn render_token_search(&mut self, ui: &mut egui::Ui) -> AppAction {
+        let mut action = AppAction::None;
 
-        ui.vertical_centered(|ui| {
-            ui.add_space(10.0);
-            ui.heading("Coming Soon");
-            ui.add_space(5.0);
+        // 1) Input & “Go” button
+        ui.heading("Search Tokens by Keyword");
+        ui.add_space(5.0);
 
-            //     ui.add_space(10.0);
-            //     ui.label("Search for tokens by keyword, name, or ID.");
-            //     ui.add_space(5.0);
+        ui.horizontal(|ui| {
+            ui.label("Enter Keyword:");
+            let query_ref = self
+                .token_search_query
+                .get_or_insert_with(|| "".to_string());
+            ui.text_edit_singleline(query_ref);
 
-            //     ui.horizontal(|ui| {
-            //         ui.label("Search by keyword(s):");
-            //         ui.text_edit_singleline(self.token_search_query.get_or_insert_with(String::new));
-            //         if ui.button("Go").clicked() {
-            //             // 1) Clear old results, set status
-            //             let now = Utc::now().timestamp() as u64;
-            //             self.token_search_status = TokenSearchStatus::WaitingForResult(now);
-            //             {
-            //                 let mut sr = self.search_results.lock().unwrap();
-            //                 sr.clear();
-            //             }
-            //             self.search_current_page = 1;
-            //             self.next_cursors.clear();
-            //             self.previous_cursors.clear();
-            //             self.search_has_next_page = false;
+            if ui.button("Go").clicked() {
+                // Clear old results, set status
+                self.search_results.lock().unwrap().clear();
+                let now = chrono::Utc::now().timestamp() as u64;
+                self.token_search_status = TokenSearchStatus::WaitingForResult(now);
+                self.search_current_page = 1;
+                self.next_cursors.clear();
+                self.previous_cursors.clear();
+                self.search_has_next_page = false;
 
-            //             // 2) Dispatch backend request
-            //             let query_string = self
-            //                 .token_search_query
-            //                 .as_ref()
-            //                 .map(|s| s.clone())
-            //                 .unwrap_or_default();
-
-            //             // Example: if you want paged results from the start:
-            //             action = AppAction::BackendTask(BackendTask::TokenTask(
-            //                 TokenTask::QueryTokensByKeywordPage(query_string, None),
-            //             ));
-            //         }
-            //     });
+                // Dispatch a backend task to do the actual keyword => token retrieval
+                let keyword = query_ref.clone();
+                action = AppAction::BackendTask(BackendTask::TokenTask(
+                    TokenTask::QueryTokensByKeyword(keyword, None),
+                ));
+            }
         });
 
-        // ui.separator();
-        // ui.add_space(10.0);
+        ui.add_space(10.0);
 
-        //// Show results or messages
-        // match self.token_search_status {
-        //     TokenSearchStatus::WaitingForResult(start_time) => {
-        //         let now = Utc::now().timestamp() as u64;
-        //         let elapsed = now - start_time;
-        //         ui.label(format!("Searching... Time so far: {} seconds", elapsed));
-        //         ui.add(egui::widgets::Spinner::default().color(Color32::from_rgb(0, 128, 255)));
-        //     }
-        //     TokenSearchStatus::Complete => {
-        //         // Render the results table
-        //         let tokens = self.search_results.lock().unwrap().clone();
-        //         if tokens.is_empty() {
-        //             ui.label("No tokens match your search.");
-        //         } else {
-        //             // Possibly add a filter input above the table, if you like
-        //             action |= self.render_search_results_table(ui, &tokens);
-        //         }
+        // 2) Display status
+        match &self.token_search_status {
+            TokenSearchStatus::NotStarted => {
+                ui.label("Enter a keyword above and click Go.");
+            }
+            TokenSearchStatus::WaitingForResult(start_time) => {
+                let now = chrono::Utc::now().timestamp() as u64;
+                let elapsed = now - start_time;
+                ui.horizontal(|ui| {
+                    ui.label(format!("Searching... {} seconds", elapsed));
+                    ui.add(egui::widgets::Spinner::default().color(Color32::from_rgb(0, 128, 255)));
+                });
+            }
+            TokenSearchStatus::Complete => {
+                // Show the results
+                let results = self.search_results.lock().unwrap().clone();
+                if results.is_empty() {
+                    ui.label("No tokens match your keyword.");
+                } else {
+                    action |= self.render_search_results_table(ui, &results);
+                }
 
-        //         // Then pagination controls
-        //         ui.horizontal(|ui| {
-        //             // If not on page 1, we can show a “Prev” button
-        //             if self.search_current_page > 1 {
-        //                 if ui.button("Previous Page").clicked() {
-        //                     action |= self.goto_previous_search_page();
-        //                 }
-        //             }
+                // Pagination controls
+                ui.horizontal(|ui| {
+                    if self.search_current_page > 1 {
+                        if ui.button("Previous").clicked() {
+                            // Go to previous page
+                            action = self.goto_previous_search_page();
+                        }
+                    }
 
-        //             ui.label(format!("Page {}", self.search_current_page));
+                    if !(self.next_cursors.is_empty() && self.previous_cursors.is_empty()) {
+                        ui.label(format!("Page {}", self.search_current_page));
+                    }
 
-        //             // If has_next_page, show “Next Page” button
-        //             if self.search_has_next_page {
-        //                 if ui.button("Next Page").clicked() {
-        //                     action |= self.goto_next_search_page();
-        //                 }
-        //             }
-        //         });
-        //     }
-        //     TokenSearchStatus::ErrorMessage(ref e) => {
-        //         ui.colored_label(Color32::DARK_RED, format!("Error: {}", e));
-        //     }
-        //     TokenSearchStatus::NotStarted => {
-        //         ui.label("Enter keywords above and click Go to search tokens.");
-        //     }
-        // }
+                    if self.search_has_next_page {
+                        if ui.button("Next").clicked() {
+                            // Go to next page
+                            action = self.goto_next_search_page();
+                        }
+                    }
+                });
+            }
+            TokenSearchStatus::ErrorMessage(e) => {
+                ui.colored_label(egui::Color32::RED, format!("Error: {}", e));
+            }
+        }
 
         action
     }
 
     fn render_search_results_table(
         &mut self,
-        ui: &mut Ui,
-        search_results: &[IdentityTokenBalance],
+        ui: &mut egui::Ui,
+        search_results: &[TokenInfo],
     ) -> AppAction {
         let action = AppAction::None;
 
-        // In your DocumentQueryScreen code, you also had a ScrollArea
         egui::ScrollArea::vertical().show(ui, |ui| {
             Frame::group(ui.style())
                 .fill(ui.visuals().panel_fill)
@@ -1431,8 +1437,8 @@ impl TokensScreen {
                         .resizable(true)
                         .cell_layout(egui::Layout::left_to_right(Align::Center))
                         .column(Column::initial(80.0).resizable(true)) // Token Name
-                        .column(Column::initial(330.0).resizable(true)) // Identity
-                        .column(Column::initial(60.0).resizable(true)) // Balance
+                        .column(Column::initial(330.0).resizable(true)) // Token ID
+                        .column(Column::initial(60.0).resizable(true)) // Contract ID
                         .column(Column::initial(80.0).resizable(true)) // Action
                         .header(30.0, |mut header| {
                             header.col(|ui| {
@@ -1446,8 +1452,8 @@ impl TokensScreen {
                                 }
                             });
                             header.col(|ui| {
-                                if ui.button("Balance").clicked() {
-                                    self.toggle_sort(SortColumn::Balance);
+                                if ui.button("Contract ID").clicked() {
+                                    self.toggle_sort(SortColumn::ContractID);
                                 }
                             });
                             header.col(|ui| {
@@ -1461,14 +1467,19 @@ impl TokensScreen {
                                         ui.label(&token.token_name);
                                     });
                                     row.col(|ui| {
-                                        ui.label(token.identity_id.to_string(Encoding::Base58));
+                                        ui.label(
+                                            token.token_identifier.to_string(Encoding::Base58),
+                                        );
                                     });
                                     row.col(|ui| {
-                                        ui.label(token.balance.to_string());
+                                        ui.label(
+                                            token.data_contract_id.to_string(Encoding::Base58),
+                                        );
                                     });
                                     row.col(|ui| {
+                                        // Example "Add" button
                                         if ui.button("Add").clicked() {
-                                            // Add to my_tokens
+                                            // Add to MyTokens or do something with it
                                             self.add_token_to_my_tokens(token.clone());
                                         }
                                     });
@@ -1947,9 +1958,7 @@ Emits a constant (fixed) number of tokens for every period.
 ### Formula
 For any period `x`, the emitted tokens are:
 
-```text
-f(x) = n
-```
+`f(x) = n`
 
 ### Use Case
 - When a predictable, unchanging reward is desired.
@@ -1972,9 +1981,7 @@ Emits a random number of tokens within a specified range.
 ### Formula
 For any period `x`, the emitted tokens follow:
 
-```text
-f(x) ∈ [min, max]
-```
+`f(x) ∈ [min, max]`
 
 ### Parameters
 - `min`: The **minimum** possible number of tokens emitted.
@@ -1987,9 +1994,7 @@ f(x) ∈ [min, max]
 ### Example
 Suppose a system emits **between 10 and 100 tokens per period**.
 
-```text
-Random { min: 10, max: 100 }
-```
+`Random { min: 10, max: 100 }`
 
 | Period (x) | Emitted Tokens (Random) |
 |------------|------------------------|
@@ -2435,8 +2440,24 @@ Emits tokens in fixed amounts for specific intervals.
 
                                 // Render row
                                 ui.horizontal(|ui| {
-                                    ui.label(format!("      Timestamp #{}:", i + 1));
-                                    ui.text_edit_singleline(&mut entry.timestamp_str);
+                                    ui.label(format!("Timestamp #{}:", i + 1));
+
+                                    // Replace text-edit timestamp with days/hours/minutes
+                                    ui.add(
+                                        egui::DragValue::new(&mut entry.days)
+                                            .prefix("Days: ")
+                                            .range(0..=3650),
+                                    );
+                                    ui.add(
+                                        egui::DragValue::new(&mut entry.hours)
+                                            .prefix("Hours: ")
+                                            .range(0..=23),
+                                    );
+                                    ui.add(
+                                        egui::DragValue::new(&mut entry.minutes)
+                                            .prefix("Minutes: ")
+                                            .range(0..=59),
+                                    );
 
                                     ui.label("Identity:");
                                     ui.text_edit_singleline(&mut entry.identity_str);
@@ -2444,6 +2465,7 @@ Emits tokens in fixed amounts for specific intervals.
                                     ui.label("Amount:");
                                     ui.text_edit_singleline(&mut entry.amount_str);
 
+                                    // Remove button
                                     if ui.button("Remove").clicked() {
                                         self.pre_programmed_distributions.remove(i);
                                     } else {
@@ -2460,8 +2482,7 @@ Emits tokens in fixed amounts for specific intervals.
                             ui.horizontal(|ui| {
                                 ui.label("   ");
                                 if ui.button("Add New Distribution Entry").clicked() {
-                                    self.pre_programmed_distributions
-                                        .push(DistributionEntry::default());
+                                    self.pre_programmed_distributions.push(DistributionEntry::default());
                                 }
                             });
 
@@ -3241,15 +3262,15 @@ Emits tokens in fixed amounts for specific intervals.
         &mut self,
     ) -> Result<BTreeMap<u64, (Identifier, u64)>, String> {
         let mut map = BTreeMap::new();
+
+        let now = Utc::now();
+
         for (i, entry) in self.pre_programmed_distributions.iter().enumerate() {
-            // Parse timestamp
-            let timestamp = entry.timestamp_str.parse::<u64>().map_err(|_| {
-                format!(
-                    "Row {}: invalid timestamp (expected u64). Got '{}'",
-                    i + 1,
-                    entry.timestamp_str
-                )
-            })?;
+            // Convert days/hours/minutes into a timestamp.
+            let offset = Duration::days(entry.days as i64)
+                + Duration::hours(entry.hours as i64)
+                + Duration::minutes(entry.minutes as i64);
+            let timestamp = (now + offset).timestamp_millis() as u64;
 
             // Parse identity
             let id =
@@ -3454,15 +3475,35 @@ Emits tokens in fixed amounts for specific intervals.
         app_action
     }
 
-    fn add_token_to_my_tokens(&self, token: IdentityTokenBalance) {
-        let mut my_tokens = self.my_tokens.lock().unwrap();
-        // Prevent duplicates
-        if !my_tokens
-            .iter()
-            .any(|t| t.token_identifier == token.token_identifier)
+    fn add_token_to_my_tokens(&self, token_info: TokenInfo) {
+        let mut tokens = Vec::new();
+        for identity in self
+            .app_context
+            .load_local_qualified_identities()
+            .expect("Expected to load identities")
         {
-            my_tokens.push(token);
+            let token = IdentityTokenBalance {
+                token_identifier: token_info.token_identifier,
+                token_name: token_info.token_name.clone(),
+                identity_id: identity.identity.id(),
+                balance: 0,
+                data_contract_id: token_info.data_contract_id,
+                token_position: token_info.token_position,
+            };
+
+            tokens.push(token);
         }
+        let mut my_tokens = self.my_tokens.lock().unwrap();
+
+        // Prevent duplicates
+        for token in tokens {
+            if !my_tokens.iter().any(|t| {
+                t.token_identifier == token.token_identifier && t.identity_id == token.identity_id
+            }) {
+                my_tokens.push(token);
+            }
+        }
+
         // Save the new order
         self.save_current_order();
     }
@@ -3488,7 +3529,7 @@ Emits tokens in fixed amounts for specific intervals.
                 .unwrap_or_default();
 
             return AppAction::BackendTask(BackendTask::TokenTask(
-                TokenTask::QueryTokensByKeywordPage(query_string, Some(next_cursor)),
+                TokenTask::QueryTokensByKeyword(query_string, Some(next_cursor)),
             ));
         }
         AppAction::None
@@ -3511,7 +3552,7 @@ Emits tokens in fixed amounts for specific intervals.
                     .map(|s| s.clone())
                     .unwrap_or_default();
                 return AppAction::BackendTask(BackendTask::TokenTask(
-                    TokenTask::QueryTokensByKeywordPage(query_string, Some(prev_cursor)),
+                    TokenTask::QueryTokensByKeyword(query_string, Some(prev_cursor)),
                 ));
             }
         }
@@ -3714,23 +3755,15 @@ impl ScreenLike for TokensScreen {
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         match backend_task_success_result {
-            BackendTaskSuccessResult::TokensByKeyword(tokens) => {
-                // This might be a “full” result (no paging).
-                let mut srch = self.search_results.lock().unwrap();
-                *srch = tokens;
-                self.token_search_status = TokenSearchStatus::Complete;
-            }
-            BackendTaskSuccessResult::TokensByKeywordPage(tokens, next_cursor) => {
-                // Paged result
-                let mut srch = self.search_results.lock().unwrap();
-                *srch = tokens;
+            BackendTaskSuccessResult::TokensByKeyword(tokens, next_cursor) => {
+                let mut sr = self.search_results.lock().unwrap();
+                *sr = tokens;
                 self.search_has_next_page = next_cursor.is_some();
-
                 if let Some(cursor) = next_cursor {
-                    // Save it for “next page” retrieval
                     self.next_cursors.push(cursor);
                 }
                 self.token_search_status = TokenSearchStatus::Complete;
+                self.refreshing_status = RefreshingStatus::NotRefreshing;
             }
             _ => {}
         }
@@ -3907,10 +3940,6 @@ impl ScreenLike for TokensScreen {
         // Post-processing on user actions
         match action {
             AppAction::BackendTask(BackendTask::TokenTask(TokenTask::QueryMyTokenBalances)) => {
-                self.refreshing_status =
-                    RefreshingStatus::Refreshing(Utc::now().timestamp() as u64);
-            }
-            AppAction::BackendTask(BackendTask::TokenTask(TokenTask::QueryTokensByKeyword(_))) => {
                 self.refreshing_status =
                     RefreshingStatus::Refreshing(Utc::now().timestamp() as u64);
             }
@@ -4092,21 +4121,6 @@ mod tests {
             .perpetual_distribution_rules
             .set_all_fields_for_testing();
 
-        // Pre-programmed distribution
-        token_creator_ui.enable_pre_programmed_distribution = true;
-        token_creator_ui.pre_programmed_distributions = vec![
-            DistributionEntry {
-                timestamp_str: "1234567890".to_string(),
-                identity_str: "ECMnPwQZcH3RP9atgkmvtmN45QrVcYvh5cmUYARHBTu9".to_string(),
-                amount_str: "11111".to_string(),
-            },
-            DistributionEntry {
-                timestamp_str: "9876543210".to_string(),
-                identity_str: "FCMnPwQZcH3RP9atgkmvtmN45QrVcYvh5cmUYARHBTu9".to_string(),
-                amount_str: "22222".to_string(),
-            },
-        ];
-
         // new_tokens_destination_identity
         token_creator_ui.new_tokens_destination_identity_enabled = true;
         token_creator_ui.new_tokens_destination_identity =
@@ -4269,33 +4283,6 @@ mod tests {
             }
             _ => panic!("Expected distribution recipient Identity(...)"),
         }
-
-        // -- Pre-programmed
-        let Some(TokenPreProgrammedDistribution::V0(preprog_v0)) =
-            &dist_rules_v0.pre_programmed_distribution
-        else {
-            panic!("Expected Some(TokenPreProgrammedDistribution::V0)");
-        };
-        assert_eq!(preprog_v0.distributions.len(), 2);
-        assert!(preprog_v0.distributions.contains_key(&1234567890));
-        let map1 = &preprog_v0.distributions[&1234567890];
-        assert_eq!(map1.len(), 1);
-        let identity_1 = Identifier::from_string(
-            "ECMnPwQZcH3RP9atgkmvtmN45QrVcYvh5cmUYARHBTu9",
-            Encoding::Base58,
-        )
-        .unwrap();
-        assert_eq!(map1[&identity_1], 11111);
-
-        assert!(preprog_v0.distributions.contains_key(&9876543210));
-        let map2 = &preprog_v0.distributions[&9876543210];
-        assert_eq!(map2.len(), 1);
-        let identity_2 = Identifier::from_string(
-            "FCMnPwQZcH3RP9atgkmvtmN45QrVcYvh5cmUYARHBTu9",
-            Encoding::Base58,
-        )
-        .unwrap();
-        assert_eq!(map2[&identity_2], 22222);
 
         // -- New tokens destination
         let Some(new_dest_id) = &dist_rules_v0.new_tokens_destination_identity else {

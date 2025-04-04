@@ -309,6 +309,7 @@ pub fn add_contract_chooser_panel(
                                 if contract.alias != Some("dpns".to_string())
                                     && contract.alias != Some("token_history".to_string())
                                     && contract.alias != Some("withdrawals".to_string())
+                                    && contract.alias != Some("keyword_search".to_string())
                                 {
                                     if ui.button("X").clicked() {
                                         action |=

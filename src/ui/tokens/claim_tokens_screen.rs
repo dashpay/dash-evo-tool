@@ -12,7 +12,7 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 
-use crate::app::AppAction;
+use crate::app::{AppAction, BackendTasksExecutionMode};
 use crate::backend_task::tokens::TokenTask;
 use crate::backend_task::BackendTask;
 use crate::context::AppContext;
@@ -179,14 +179,19 @@ impl ClaimTokensScreen {
                         .contract
                         .clone();
 
-                    action =
-                        AppAction::BackendTask(BackendTask::TokenTask(TokenTask::ClaimTokens {
-                            data_contract,
-                            token_position: self.identity_token_balance.token_position,
-                            actor_identity: self.identity.clone(),
-                            distribution_type: distribution_type,
-                            signing_key: self.selected_key.clone().expect("No key selected"),
-                        }));
+                    action = AppAction::BackendTasks(
+                        vec![
+                            BackendTask::TokenTask(TokenTask::ClaimTokens {
+                                data_contract,
+                                token_position: self.identity_token_balance.token_position,
+                                actor_identity: self.identity.clone(),
+                                distribution_type: distribution_type,
+                                signing_key: self.selected_key.clone().expect("No key selected"),
+                            }),
+                            BackendTask::TokenTask(TokenTask::QueryMyTokenBalances),
+                        ],
+                        BackendTasksExecutionMode::Sequential,
+                    );
                 }
 
                 if ui.button("Cancel").clicked() {

@@ -24,7 +24,10 @@ use dash_sdk::{
         identity::accessors::IdentityGettersV0,
         ProtocolError,
     },
-    platform::{DataContract, Identifier, IdentityPublicKey},
+    platform::{
+        proto::get_documents_request::get_documents_request_v0::Start, DataContract, Identifier,
+        IdentityPublicKey,
+    },
     Sdk,
 };
 use std::{collections::BTreeMap, sync::Arc};
@@ -73,8 +76,7 @@ pub(crate) enum TokenTask {
         groups: BTreeMap<u16, Group>,
     },
     QueryMyTokenBalances,
-    QueryTokensByKeyword(String),
-    QueryTokensByKeywordPage(String, Option<Identifier>),
+    QueryTokensByKeyword(String, Option<Start>),
     MintTokens {
         sending_identity: QualifiedIdentity,
         data_contract: DataContract,
@@ -215,13 +217,6 @@ impl AppContext {
                 .query_my_token_balances(sdk, sender)
                 .await
                 .map_err(|e| format!("Failed to fetch token balances: {e}")),
-            TokenTask::QueryTokensByKeyword(_query) => {
-                // Placeholder
-                Ok(BackendTaskSuccessResult::Message("QueryTokens".to_string()))
-
-                // Actually do this
-                // self.query_tokens(query, sdk, sender).await
-            }
             TokenTask::MintTokens {
                 sending_identity,
                 data_contract,
@@ -242,15 +237,10 @@ impl AppContext {
                 )
                 .await
                 .map_err(|e| format!("Failed to mint tokens: {e}")),
-            TokenTask::QueryTokensByKeywordPage(_query, _cursor) => {
-                // Placeholder
-                Ok(BackendTaskSuccessResult::Message(
-                    "QueryTokensByKeywordPage".to_string(),
-                ))
-
-                // Actually do this
-                // self.query_tokens_page(query, cursor, sdk, sender).await
-            }
+            TokenTask::QueryTokensByKeyword(keyword, cursor) => self
+                .query_tokens_by_keyword(&keyword, cursor, sdk)
+                .await
+                .map_err(|e| format!("Failed to query tokens by keyword: {e}")),
             TokenTask::TransferTokens {
                 sending_identity,
                 recipient_id,
@@ -434,6 +424,7 @@ impl AppContext {
             schema_defs: None,
             groups,
             tokens: BTreeMap::new(),
+            keywords: Vec::new(),
             created_at: None,
             updated_at: None,
             created_at_block_height: None,

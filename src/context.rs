@@ -17,7 +17,7 @@ use dash_sdk::dashcore_rpc::dashcore::{InstantLock, Transaction};
 use dash_sdk::dashcore_rpc::{Auth, Client};
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::transaction::special_transaction::TransactionPayload::AssetLockPayloadType;
-use dash_sdk::dpp::dashcore::{Address, Network, OutPoint, TxOut, Txid};
+use dash_sdk::dpp::dashcore::{key, Address, Network, OutPoint, TxOut, Txid};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::state_transition::asset_lock_proof::chain::ChainAssetLockProof;
 use dash_sdk::dpp::identity::state_transition::asset_lock_proof::InstantAssetLockProof;
@@ -46,6 +46,7 @@ pub struct AppContext {
     pub(crate) dpns_contract: Arc<DataContract>,
     pub(crate) withdraws_contract: Arc<DataContract>,
     pub(crate) token_history_contract: Arc<DataContract>,
+    pub(crate) keyword_search_contract: Arc<DataContract>,
     pub(crate) core_client: RwLock<Client>,
     pub(crate) has_wallet: AtomicBool,
     pub(crate) wallets: RwLock<BTreeMap<WalletSeedHash, Arc<RwLock<Wallet>>>>,
@@ -88,6 +89,10 @@ impl AppContext {
         let token_history_contract =
             load_system_data_contract(SystemDataContract::TokenHistory, PlatformVersion::latest())
                 .expect("expected to get token history contract");
+
+        let keyword_search_contract =
+            load_system_data_contract(SystemDataContract::Search, PlatformVersion::latest())
+                .expect("expected to get keyword search contract");
 
         let addr = format!(
             "http://{}:{}",
@@ -135,6 +140,7 @@ impl AppContext {
             dpns_contract: Arc::new(dpns_contract),
             withdraws_contract: Arc::new(withdrawal_contract),
             token_history_contract: Arc::new(token_history_contract),
+            keyword_search_contract: Arc::new(keyword_search_contract),
             core_client: core_client.into(),
             has_wallet: (!wallets.is_empty()).into(),
             wallets: RwLock::new(wallets),
@@ -389,6 +395,15 @@ impl AppContext {
 
         // Insert the withdrawal contract at 2
         contracts.insert(2, withdraws_contract);
+
+        // Add the keyword search contract to the list
+        let keyword_search_contract = QualifiedContract {
+            contract: Arc::clone(&self.keyword_search_contract).as_ref().clone(),
+            alias: Some("keyword_search".to_string()),
+        };
+
+        // Insert the keyword search contract at 3
+        contracts.insert(3, keyword_search_contract);
 
         Ok(contracts)
     }

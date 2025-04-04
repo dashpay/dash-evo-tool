@@ -1868,6 +1868,7 @@ dependencies = [
  "masternode-reward-shares-contract",
  "platform-value",
  "platform-version",
+ "search-contract",
  "serde_json",
  "thiserror 1.0.69",
  "token-history-contract",
@@ -5949,6 +5950,16 @@ dependencies = [
  "memmap2",
  "smithay-client-toolkit",
  "tiny-skia",
+]
+
+[[package]]
+name = "search-contract"
+version = "2.0.0-dev.1"
+dependencies = [
+ "platform-value",
+ "platform-version",
+ "serde_json",
+ "thiserror 1.0.69",
 ]
 
 [[package]]

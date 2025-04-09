@@ -5,6 +5,7 @@ use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::tokens::tokens_screen::{ContractDescriptionInfo, TokenInfo};
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
+use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::accessors::v0::TokenConfigurationConventionV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::TokenConfigurationConvention;
 use dash_sdk::dpp::document::DocumentV0Getters;
@@ -106,9 +107,7 @@ impl AppContext {
                                         token_name,
                                         data_contract_id: contract.id(),
                                         token_position: *token.0,
-                                        description: Some(
-                                            "Token description goes here".to_string(),
-                                        ),
+                                        description: token.1.description(),
                                     };
 
                                     token_infos.push(token_info);

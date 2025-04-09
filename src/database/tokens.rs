@@ -147,6 +147,13 @@ impl Database {
             params![token_identifier_vec, identity_id_vec, network],
         )?;
 
+        // Also remove from the order table
+        self.execute(
+            "DELETE FROM token_order
+             WHERE token_id = ? AND identity_id = ?",
+            params![token_identifier_vec, identity_id_vec],
+        )?;
+
         Ok(())
     }
 

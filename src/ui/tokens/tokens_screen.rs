@@ -1348,7 +1348,9 @@ impl TokensScreen {
     }
 
     /// Renders details for the selected_contract_id.
-    fn render_contract_details(&mut self, ui: &mut Ui, contract_id: &Identifier) {
+    fn render_contract_details(&mut self, ui: &mut Ui, contract_id: &Identifier) -> AppAction {
+        let mut action = AppAction::None;
+
         if let Some(description) = &self.selected_contract_description {
             ui.heading("Contract Description:");
             ui.label(description.description.clone());
@@ -1384,11 +1386,13 @@ impl TokensScreen {
             // Add button to add token to my tokens
             if ui.button("Add to My Tokens").clicked() {
                 // Add token to my tokens
-                self.add_token_to_my_tokens(token.clone());
+                action |= self.add_token_to_my_tokens(token.clone());
             }
 
             ui.add_space(10.0);
         }
+
+        action
     }
 
     fn render_keyword_search(&mut self, ui: &mut egui::Ui) -> AppAction {
@@ -3532,7 +3536,8 @@ Emits tokens in fixed amounts for specific intervals.
         app_action
     }
 
-    fn add_token_to_my_tokens(&mut self, token_info: TokenInfo) {
+    fn add_token_to_my_tokens(&mut self, token_info: TokenInfo) -> AppAction {
+        let mut action = AppAction::None;
         let mut tokens = Vec::new();
         for identity in self
             .app_context
@@ -3563,12 +3568,18 @@ Emits tokens in fixed amounts for specific intervals.
                     &token.data_contract_id,
                     token.token_position,
                 );
+                action |=
+                    AppAction::BackendTask(BackendTask::TokenTask(TokenTask::QueryMyTokenBalances));
                 self.display_message("Added token", MessageType::Success);
+            } else {
+                self.display_message("Token already added", MessageType::Error);
             }
         }
 
         // Save the new order
         self.save_current_order();
+
+        action
     }
 
     fn goto_next_search_page(&mut self) -> AppAction {
@@ -3802,11 +3813,13 @@ impl ScreenLike for TokensScreen {
         }
 
         // Handle messages from querying My Token Balances
-        if msg.contains("Successfully fetched token balances")
-            | msg.contains("Failed to fetch token balances")
-        {
-            self.backend_message = Some((msg.to_string(), msg_type, Utc::now()));
-            self.refreshing_status = RefreshingStatus::NotRefreshing;
+        if self.tokens_subscreen == TokensSubscreen::MyTokens {
+            if msg.contains("Successfully fetched token balances")
+                | msg.contains("Failed to fetch token balances")
+            {
+                self.backend_message = Some((msg.to_string(), msg_type, Utc::now()));
+                self.refreshing_status = RefreshingStatus::NotRefreshing;
+            }
         }
 
         // Handle messages from Token Search
@@ -3815,6 +3828,9 @@ impl ScreenLike for TokensScreen {
             self.backend_message = Some((msg.to_string(), msg_type, Utc::now()));
         }
         if msg.contains("Added token") {
+            self.backend_message = Some((msg.to_string(), msg_type, Utc::now()));
+        }
+        if msg.contains("Token already added") {
             self.backend_message = Some((msg.to_string(), msg_type, Utc::now()));
         }
     }
@@ -3967,7 +3983,8 @@ impl ScreenLike for TokensScreen {
                 }
                 TokensSubscreen::SearchTokens => {
                     if self.selected_contract_id.is_some() {
-                        self.render_contract_details(ui, &self.selected_contract_id.unwrap());
+                        action |=
+                            self.render_contract_details(ui, &self.selected_contract_id.unwrap());
                     } else {
                         action |= self.render_keyword_search(ui);
                     }

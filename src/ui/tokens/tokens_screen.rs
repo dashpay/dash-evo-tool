@@ -3818,8 +3818,12 @@ impl ScreenLike for TokensScreen {
                 | msg.contains("Failed to fetch token balances")
             {
                 self.backend_message = Some((msg.to_string(), msg_type, Utc::now()));
-                self.refreshing_status = RefreshingStatus::NotRefreshing;
             }
+        }
+        if msg.contains("Successfully fetched token balances")
+            | msg.contains("Failed to fetch token balances")
+        {
+            self.refreshing_status = RefreshingStatus::NotRefreshing;
         }
 
         // Handle messages from Token Search
@@ -4064,8 +4068,17 @@ impl ScreenLike for TokensScreen {
             }
             AppAction::SetMainScreen(_) => {
                 self.refreshing_status = RefreshingStatus::NotRefreshing;
+
+                // should put these in a fn
                 self.selected_token_id = None;
                 self.selected_contract_id = None;
+                self.token_search_query = None;
+                self.search_current_page = 1;
+                self.search_has_next_page = false;
+                self.search_results = Arc::new(Mutex::new(vec![]));
+                self.selected_contract_id = None;
+                self.selected_contract_description = None;
+
                 self.reset_token_creator();
             }
             AppAction::Custom(ref s) if s == "Back to tokens" => {

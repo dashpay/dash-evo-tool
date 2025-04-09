@@ -4,6 +4,7 @@ use crate::model::qualified_contract::QualifiedContract;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
+use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::accessors::v0::TokenConfigurationConventionV0Getters;
 use dash_sdk::dpp::data_contract::DataContract;
 use dash_sdk::dpp::identifier::Identifier;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -39,6 +40,10 @@ impl Database {
                 let wallets = app_context.wallets.read().unwrap();
                 let identities = self.get_local_qualified_identities(app_context, &wallets)?;
                 if let Some(token_id) = data_contract.token_id(*token.0) {
+                    let token_name = token
+                        .1
+                        .conventions()
+                        .plural_form_by_language_code_or_default("en");
                     for identity in identities {
                         let balance = if data_contract.owner_id() == identity.identity.id() {
                             token.1.base_supply()
@@ -48,6 +53,7 @@ impl Database {
                         let _ = self
                             .insert_identity_token_balance(
                                 &token_id,
+                                token_name,
                                 &identity.identity.id(),
                                 balance,
                                 &data_contract.id(),

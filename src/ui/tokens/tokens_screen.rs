@@ -31,6 +31,7 @@ use egui::{Align, RichText};
 use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
 use egui_extras::{Column, TableBuilder};
 use crate::app::BackendTasksExecutionMode;
+use crate::backend_task::contract::ContractTask;
 use crate::backend_task::tokens::TokenTask;
 use crate::backend_task::BackendTask;
 
@@ -61,6 +62,13 @@ pub struct TokenInfo {
     pub token_name: String,
     pub data_contract_id: Identifier,
     pub token_position: u16,
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ContractDescriptionInfo {
+    pub data_contract_id: Identifier,
+    pub description: String,
 }
 
 /// A token owned by an identity.
@@ -100,7 +108,7 @@ pub enum RefreshingStatus {
 
 /// Represents the status of the user’s search
 #[derive(PartialEq, Eq, Clone)]
-pub enum TokenSearchStatus {
+pub enum ContractSearchStatus {
     NotStarted,
     WaitingForResult(u64),
     Complete,
@@ -534,10 +542,15 @@ pub struct TokensScreen {
     pending_backend_task: Option<BackendTask>,
     refreshing_status: RefreshingStatus,
 
+    // Contract Search
+    pub selected_contract_id: Option<Identifier>,
+    selected_contract_description: Option<ContractDescriptionInfo>,
+    selected_token_infos: Vec<TokenInfo>,
+    search_results: Arc<Mutex<Vec<ContractDescriptionInfo>>>,
+    contract_search_status: ContractSearchStatus,
+
     // Token Search
     token_search_query: Option<String>,
-    search_results: Arc<Mutex<Vec<TokenInfo>>>,
-    token_search_status: TokenSearchStatus,
     search_current_page: usize,
     search_has_next_page: bool,
     next_cursors: Vec<Start>,
@@ -695,9 +708,12 @@ impl TokensScreen {
             app_context: app_context.clone(),
             my_tokens,
             selected_token_id: None,
+            selected_contract_id: None,
+            selected_contract_description: None,
+            selected_token_infos: Vec::new(),
             show_token_info: None,
             token_search_query: None,
-            token_search_status: TokenSearchStatus::NotStarted,
+            contract_search_status: ContractSearchStatus::NotStarted,
             search_current_page: 1,
             search_has_next_page: false,
             next_cursors: vec![],
@@ -1331,7 +1347,51 @@ impl TokensScreen {
         action
     }
 
-    fn render_token_search(&mut self, ui: &mut egui::Ui) -> AppAction {
+    /// Renders details for the selected_contract_id.
+    fn render_contract_details(&mut self, ui: &mut Ui, contract_id: &Identifier) {
+        if let Some(description) = &self.selected_contract_description {
+            ui.heading("Contract Description:");
+            ui.label(description.description.clone());
+        }
+
+        ui.add_space(10.0);
+
+        ui.heading("Tokens:");
+        let token_infos = self
+            .selected_token_infos
+            .iter()
+            .filter(|token| token.data_contract_id == *contract_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        for token in token_infos {
+            if token.data_contract_id == *contract_id {
+                ui.heading(token.token_name.clone());
+                ui.label(format!(
+                    "ID: {}",
+                    token.token_identifier.to_string(Encoding::Base58)
+                ));
+                ui.label(format!(
+                    "Description: {}",
+                    token
+                        .description
+                        .clone()
+                        .unwrap_or("No description".to_string())
+                ));
+            }
+
+            ui.add_space(5.0);
+
+            // Add button to add token to my tokens
+            if ui.button("Add to My Tokens").clicked() {
+                // Add token to my tokens
+                self.add_token_to_my_tokens(token.clone());
+            }
+
+            ui.add_space(10.0);
+        }
+    }
+
+    fn render_keyword_search(&mut self, ui: &mut egui::Ui) -> AppAction {
         let mut action = AppAction::None;
 
         // 1) Input & “Go” button
@@ -1349,7 +1409,7 @@ impl TokensScreen {
                 // Clear old results, set status
                 self.search_results.lock().unwrap().clear();
                 let now = chrono::Utc::now().timestamp() as u64;
-                self.token_search_status = TokenSearchStatus::WaitingForResult(now);
+                self.contract_search_status = ContractSearchStatus::WaitingForResult(now);
                 self.search_current_page = 1;
                 self.next_cursors.clear();
                 self.previous_cursors.clear();
@@ -1358,7 +1418,7 @@ impl TokensScreen {
                 // Dispatch a backend task to do the actual keyword => token retrieval
                 let keyword = query_ref.clone();
                 action = AppAction::BackendTask(BackendTask::TokenTask(
-                    TokenTask::QueryTokensByKeyword(keyword, None),
+                    TokenTask::QueryDescriptionsByKeyword(keyword, None),
                 ));
             }
         });
@@ -1366,11 +1426,11 @@ impl TokensScreen {
         ui.add_space(10.0);
 
         // 2) Display status
-        match &self.token_search_status {
-            TokenSearchStatus::NotStarted => {
+        match &self.contract_search_status {
+            ContractSearchStatus::NotStarted => {
                 ui.label("Enter a keyword above and click Go.");
             }
-            TokenSearchStatus::WaitingForResult(start_time) => {
+            ContractSearchStatus::WaitingForResult(start_time) => {
                 let now = chrono::Utc::now().timestamp() as u64;
                 let elapsed = now - start_time;
                 ui.horizontal(|ui| {
@@ -1378,7 +1438,7 @@ impl TokensScreen {
                     ui.add(egui::widgets::Spinner::default().color(Color32::from_rgb(0, 128, 255)));
                 });
             }
-            TokenSearchStatus::Complete => {
+            ContractSearchStatus::Complete => {
                 // Show the results
                 let results = self.search_results.lock().unwrap().clone();
                 if results.is_empty() {
@@ -1408,7 +1468,7 @@ impl TokensScreen {
                     }
                 });
             }
-            TokenSearchStatus::ErrorMessage(e) => {
+            ContractSearchStatus::ErrorMessage(e) => {
                 ui.colored_label(egui::Color32::RED, format!("Error: {}", e));
             }
         }
@@ -1419,9 +1479,9 @@ impl TokensScreen {
     fn render_search_results_table(
         &mut self,
         ui: &mut egui::Ui,
-        search_results: &[TokenInfo],
+        search_results: &[ContractDescriptionInfo],
     ) -> AppAction {
-        let action = AppAction::None;
+        let mut action = AppAction::None;
 
         egui::ScrollArea::vertical().show(ui, |ui| {
             Frame::group(ui.style())
@@ -1436,51 +1496,48 @@ impl TokensScreen {
                         .striped(true)
                         .resizable(true)
                         .cell_layout(egui::Layout::left_to_right(Align::Center))
-                        .column(Column::initial(80.0).resizable(true)) // Token Name
-                        .column(Column::initial(330.0).resizable(true)) // Token ID
                         .column(Column::initial(60.0).resizable(true)) // Contract ID
+                        .column(Column::initial(200.0).resizable(true)) // Contract Description
                         .column(Column::initial(80.0).resizable(true)) // Action
                         .header(30.0, |mut header| {
                             header.col(|ui| {
-                                if ui.button("Token Name").clicked() {
-                                    self.toggle_sort(SortColumn::TokenName);
-                                }
+                                ui.label("Contract ID");
                             });
                             header.col(|ui| {
-                                if ui.button("Token ID").clicked() {
-                                    self.toggle_sort(SortColumn::TokenID);
-                                }
-                            });
-                            header.col(|ui| {
-                                if ui.button("Contract ID").clicked() {
-                                    self.toggle_sort(SortColumn::ContractID);
-                                }
+                                ui.label("Contract Description");
                             });
                             header.col(|ui| {
                                 ui.label("Action");
                             });
                         })
                         .body(|mut body| {
-                            for token in search_results {
+                            for contract in search_results {
                                 body.row(25.0, |mut row| {
                                     row.col(|ui| {
-                                        ui.label(&token.token_name);
-                                    });
-                                    row.col(|ui| {
                                         ui.label(
-                                            token.token_identifier.to_string(Encoding::Base58),
+                                            contract.data_contract_id.to_string(Encoding::Base58),
                                         );
                                     });
                                     row.col(|ui| {
-                                        ui.label(
-                                            token.data_contract_id.to_string(Encoding::Base58),
-                                        );
+                                        ui.label(contract.description.clone());
                                     });
                                     row.col(|ui| {
                                         // Example "Add" button
-                                        if ui.button("Add").clicked() {
-                                            // Add to MyTokens or do something with it
-                                            self.add_token_to_my_tokens(token.clone());
+                                        if ui.button("More Info").clicked() {
+                                            // Show more info about the token
+                                            self.selected_contract_id =
+                                                Some(contract.data_contract_id.clone());
+                                            action =
+                                                AppAction::BackendTask(BackendTask::ContractTask(
+                                                    ContractTask::FetchContractsWithDescriptions(
+                                                        vec![contract.data_contract_id.clone()],
+                                                    ),
+                                                ));
+
+                                            // // Add to MyTokens or do something with it
+                                            // // Note this is implemented but we will add it back later!
+                                            // // We changed to searching contracts instead of tokens for now
+                                            // self.add_token_to_my_tokens(token.clone());
                                         }
                                     });
                                 });
@@ -3475,14 +3532,14 @@ Emits tokens in fixed amounts for specific intervals.
         app_action
     }
 
-    fn add_token_to_my_tokens(&self, token_info: TokenInfo) {
+    fn add_token_to_my_tokens(&mut self, token_info: TokenInfo) {
         let mut tokens = Vec::new();
         for identity in self
             .app_context
             .load_local_qualified_identities()
             .expect("Expected to load identities")
         {
-            let token = IdentityTokenBalance {
+            let identity_token_balance = IdentityTokenBalance {
                 token_identifier: token_info.token_identifier,
                 token_name: token_info.token_name.clone(),
                 identity_id: identity.identity.id(),
@@ -3491,16 +3548,22 @@ Emits tokens in fixed amounts for specific intervals.
                 token_position: token_info.token_position,
             };
 
-            tokens.push(token);
+            tokens.push(identity_token_balance);
         }
-        let mut my_tokens = self.my_tokens.lock().unwrap();
+        let my_tokens_clone = self.my_tokens.lock().unwrap().clone();
 
         // Prevent duplicates
         for token in tokens {
-            if !my_tokens.iter().any(|t| {
+            if !my_tokens_clone.iter().any(|t| {
                 t.token_identifier == token.token_identifier && t.identity_id == token.identity_id
             }) {
-                my_tokens.push(token);
+                self.app_context.insert_token(
+                    &token.token_identifier,
+                    &token.token_name,
+                    &token.data_contract_id,
+                    token.token_position,
+                );
+                self.display_message("Added token", MessageType::Success);
             }
         }
 
@@ -3513,7 +3576,7 @@ Emits tokens in fixed amounts for specific intervals.
         if let Some(next_cursor) = self.next_cursors.last().cloned() {
             // set status
             let now = Utc::now().timestamp() as u64;
-            self.token_search_status = TokenSearchStatus::WaitingForResult(now);
+            self.contract_search_status = ContractSearchStatus::WaitingForResult(now);
 
             // push the current one onto “previous” so we can go back
             // if the user is on page N, and we have a nextCursor in next_cursors[N - 1] or so
@@ -3529,7 +3592,7 @@ Emits tokens in fixed amounts for specific intervals.
                 .unwrap_or_default();
 
             return AppAction::BackendTask(BackendTask::TokenTask(
-                TokenTask::QueryTokensByKeyword(query_string, Some(next_cursor)),
+                TokenTask::QueryDescriptionsByKeyword(query_string, Some(next_cursor)),
             ));
         }
         AppAction::None
@@ -3540,7 +3603,7 @@ Emits tokens in fixed amounts for specific intervals.
             // Move to (page - 1)
             self.search_current_page -= 1;
             let now = Utc::now().timestamp() as u64;
-            self.token_search_status = TokenSearchStatus::WaitingForResult(now);
+            self.contract_search_status = ContractSearchStatus::WaitingForResult(now);
 
             // The “last” previous_cursors item is the new page’s state
             if let Some(prev_cursor) = self.previous_cursors.pop() {
@@ -3552,7 +3615,7 @@ Emits tokens in fixed amounts for specific intervals.
                     .map(|s| s.clone())
                     .unwrap_or_default();
                 return AppAction::BackendTask(BackendTask::TokenTask(
-                    TokenTask::QueryTokensByKeyword(query_string, Some(prev_cursor)),
+                    TokenTask::QueryDescriptionsByKeyword(query_string, Some(prev_cursor)),
                 ));
             }
         }
@@ -3748,21 +3811,34 @@ impl ScreenLike for TokensScreen {
 
         // Handle messages from Token Search
         if msg.contains("Error fetching tokens") {
-            self.token_search_status = TokenSearchStatus::ErrorMessage(msg.to_string());
+            self.contract_search_status = ContractSearchStatus::ErrorMessage(msg.to_string());
+            self.backend_message = Some((msg.to_string(), msg_type, Utc::now()));
+        }
+        if msg.contains("Added token") {
             self.backend_message = Some((msg.to_string(), msg_type, Utc::now()));
         }
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         match backend_task_success_result {
-            BackendTaskSuccessResult::TokensByKeyword(tokens, next_cursor) => {
+            BackendTaskSuccessResult::DescriptionsByKeyword(descriptions, next_cursor) => {
                 let mut sr = self.search_results.lock().unwrap();
-                *sr = tokens;
+                *sr = descriptions;
                 self.search_has_next_page = next_cursor.is_some();
                 if let Some(cursor) = next_cursor {
                     self.next_cursors.push(cursor);
                 }
-                self.token_search_status = TokenSearchStatus::Complete;
+                self.contract_search_status = ContractSearchStatus::Complete;
+                self.refreshing_status = RefreshingStatus::NotRefreshing;
+            }
+            BackendTaskSuccessResult::ContractsWithDescriptions(contracts_with_descriptions) => {
+                let default_info = (None, vec![]);
+                let info = contracts_with_descriptions
+                    .get(&self.selected_contract_id.unwrap())
+                    .unwrap_or(&default_info);
+
+                self.selected_contract_description = info.0.clone();
+                self.selected_token_infos = info.1.clone();
                 self.refreshing_status = RefreshingStatus::NotRefreshing;
             }
             _ => {}
@@ -3808,6 +3884,28 @@ impl ScreenLike for TokensScreen {
                 vec![
                     ("Tokens", AppAction::Custom("Back to tokens".to_string())),
                     (&format!("{token_name}"), AppAction::None),
+                ],
+                right_buttons.clone(),
+            );
+        } else if let Some(contract_id) = self.selected_contract_id {
+            let contract_name = format!(
+                "{}...",
+                contract_id
+                    .to_string(Encoding::Base58)
+                    .chars()
+                    .take(6)
+                    .collect::<String>()
+            );
+
+            action |= add_top_panel(
+                ctx,
+                &self.app_context,
+                vec![
+                    (
+                        "Tokens",
+                        AppAction::Custom("Back to tokens from contract".to_string()),
+                    ),
+                    (&format!("Contract {contract_name}"), AppAction::None),
                 ],
                 right_buttons.clone(),
             );
@@ -3868,7 +3966,11 @@ impl ScreenLike for TokensScreen {
                     }
                 }
                 TokensSubscreen::SearchTokens => {
-                    action |= self.render_token_search(ui);
+                    if self.selected_contract_id.is_some() {
+                        self.render_contract_details(ui, &self.selected_contract_id.unwrap());
+                    } else {
+                        action |= self.render_keyword_search(ui);
+                    }
                 }
                 TokensSubscreen::TokenCreator => {
                     action |= self.render_token_creator(ui);
@@ -3946,10 +4048,14 @@ impl ScreenLike for TokensScreen {
             AppAction::SetMainScreen(_) => {
                 self.refreshing_status = RefreshingStatus::NotRefreshing;
                 self.selected_token_id = None;
+                self.selected_contract_id = None;
                 self.reset_token_creator();
             }
             AppAction::Custom(ref s) if s == "Back to tokens" => {
                 self.selected_token_id = None;
+            }
+            AppAction::Custom(ref s) if s == "Back to tokens from contract" => {
+                self.selected_contract_id = None;
             }
             _ => {}
         }

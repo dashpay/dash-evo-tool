@@ -1,133 +1,105 @@
 //! Execute token query by keyword on Platform
 
 use dash_sdk::{
-    dpp::{
-        data_contract::{
-            accessors::{v0::DataContractV0Getters, v1::DataContractV1Getters},
-            associated_token::{
-                token_configuration::accessors::v0::TokenConfigurationV0Getters,
-                token_configuration_convention::accessors::v0::TokenConfigurationConventionV0Getters,
-            },
-        },
-        document::DocumentV0Getters,
-        platform_value::Value,
-    },
+    dpp::{document::DocumentV0Getters, platform_value::Value},
     drive::query::{WhereClause, WhereOperator},
     platform::{
-        proto::get_documents_request::get_documents_request_v0::Start, DataContract, Document,
-        DocumentQuery, FetchMany, Identifier,
+        proto::get_documents_request::get_documents_request_v0::Start, Document, DocumentQuery,
+        FetchMany, Identifier,
     },
-    query_types::IndexMap,
     Sdk,
 };
 
 use crate::{
     backend_task::BackendTaskSuccessResult, context::AppContext,
-    ui::tokens::tokens_screen::TokenInfo,
+    ui::tokens::tokens_screen::ContractDescriptionInfo,
 };
 
 impl AppContext {
-    /// First we query the search contract by keyword to get the documents with keyword and contractId
-    /// Then we do a DataContract::fetch_many using a vector of contract IDs
-    /// Then we return the tokens for each contract
-    pub async fn query_tokens_by_keyword(
+    /// 1. Fetch all **contractKeywords** docs that match `keyword` from the Search Contract
+    /// 2. For every `contractId` found, fetch its **shortDescription** document from the Search Contract
+    /// 3. Return the `(contractId, description)` tuples plus the pagination cursor
+    pub async fn query_descriptions_by_keyword(
         &self,
-        keyword: &String,
+        keyword: &str,
         cursor: &Option<Start>,
         sdk: &Sdk,
     ) -> Result<BackendTaskSuccessResult, String> {
-        // First query the documents from the search contract to get the contract IDs
-        let mut document_query =
-            DocumentQuery::new(self.keyword_search_contract.clone(), "contract")
-                .expect("Expected to create a new DocumentQuery");
-
-        document_query.limit = 100;
-        document_query.start = cursor.clone();
-        document_query = document_query.with_where(WhereClause {
-            field: "keyword".to_string(),
+        // ── 1. fetch keyword → contractId docs ────────────────────────────────
+        let mut kw_query =
+            DocumentQuery::new(self.keyword_search_contract.clone(), "contractKeywords")
+                .expect("create query");
+        kw_query.limit = 100;
+        kw_query.start = cursor.clone();
+        kw_query = kw_query.with_where(WhereClause {
+            field: "keyword".into(),
             operator: WhereOperator::Equal,
-            value: Value::Text(keyword.clone()),
+            value: Value::Text(keyword.to_owned()),
         });
 
-        // Initialize an empty IndexMap to accumulate documents for this page
-        let mut page_docs: IndexMap<Identifier, Option<Document>> = IndexMap::new();
-
-        // Fetch a single page
-        let docs_batch_result = Document::fetch_many(sdk, document_query.clone())
+        let kw_docs = Document::fetch_many(sdk, kw_query.clone())
             .await
-            .map_err(|e| format!("Error fetching documents: {}", e))?;
+            .map_err(|e| format!("Error fetching keyword docs: {e}"))?;
 
-        let batch_len = docs_batch_result.len();
-
-        // Insert the batch into the page map
-        for (id, doc_opt) in docs_batch_result {
-            page_docs.insert(id, doc_opt);
-        }
-
-        // Determine if there's a next page
-        let has_next_page = batch_len == 100;
-
-        // If there's a next page, set the 'start' parameter for the next cursor, to be returned
-        let next_cursor = if has_next_page {
-            page_docs.keys().last().cloned().map(|last_doc_id| {
-                let id_bytes = last_doc_id.to_buffer();
-                Start::StartAfter(id_bytes.to_vec())
-            })
-        } else {
-            None
-        };
-
-        // Now we have the docs, extract the contract IDs and query each contract for its tokens
-        let mut discovered_tokens: Vec<TokenInfo> = Vec::new();
-        let contract_ids = page_docs
-            .iter()
-            .filter_map(|(_, doc_opt)| {
-                if let Some(doc) = doc_opt {
-                    // Extract the contract ID from the document
-                    if let Some(contract_id) = doc.get("contractId") {
-                        return Some(
-                            contract_id
-                                .to_identifier()
-                                .expect("Expected to get convert ID"),
-                        );
-                    }
-                }
-                None
-            })
-            .collect::<Vec<Identifier>>();
-
-        // Fetch the contracts using the contract IDs
-        let contracts_batch_result = DataContract::fetch_many(sdk, contract_ids)
-            .await
-            .map_err(|e| format!("Error fetching contracts: {}", e))?;
-
-        // Iterate over the contracts and extract the tokens
-        for (_, contract_opt) in contracts_batch_result {
-            if let Some(contract) = contract_opt {
-                // Extract the tokens from the contract
-                let tokens = contract.tokens();
-                for token in tokens {
-                    let token_info = TokenInfo {
-                        token_identifier: contract
-                            .token_id(*token.0)
-                            .expect("Expected to get token ID"),
-                        token_name: token
-                            .1
-                            .conventions()
-                            .plural_form_by_language_code_or_default("en")
-                            .to_string(),
-                        token_position: *token.0,
-                        data_contract_id: contract.id(),
-                    };
-                    // Create an IdentityTokenBalance object and add it to the discovered tokens
-                    discovered_tokens.push(token_info);
+        // store the order for deterministic pagination
+        let mut contract_ids: Vec<Identifier> = Vec::with_capacity(kw_docs.len());
+        for (_doc_id, doc_opt) in kw_docs.iter() {
+            if let Some(doc) = doc_opt {
+                if let Some(cid_val) = doc.get("contractId") {
+                    contract_ids.push(
+                        cid_val
+                            .to_identifier()
+                            .map_err(|e| format!("Bad contractId: {e}"))?,
+                    );
                 }
             }
         }
 
-        // Return the discovered tokens and the next cursor
-        Ok(BackendTaskSuccessResult::TokensByKeyword(
-            discovered_tokens,
+        // Determine next‑page cursor before we start any second‑phase queries
+        let has_next_page = kw_docs.len() == 100;
+        let next_cursor = if has_next_page {
+            kw_docs
+                .keys()
+                .last()
+                .cloned()
+                .map(|last_id| Start::StartAfter(last_id.to_buffer().to_vec()))
+        } else {
+            None
+        };
+
+        // ── 2. for every contractId, fetch its shortDescription doc ───────────
+        let mut descriptions: Vec<ContractDescriptionInfo> = Vec::with_capacity(contract_ids.len());
+
+        for cid in &contract_ids {
+            // build a WHERE contractId == cid query
+            let mut desc_query =
+                DocumentQuery::new(self.keyword_search_contract.clone(), "shortDescription")
+                    .expect("create desc query");
+            desc_query.limit = 1; // only one per contract (schema‑unique)
+            desc_query = desc_query.with_where(WhereClause {
+                field: "contractId".into(),
+                operator: WhereOperator::Equal,
+                value: Value::Identifier(cid.to_owned().into()),
+            });
+
+            if let Some((_, Some(desc_doc))) = Document::fetch_many(sdk, desc_query)
+                .await
+                .map_err(|e| format!("Error fetching description doc: {e}"))?
+                .into_iter()
+                .next()
+            {
+                if let Some(Value::Text(desc_txt)) = desc_doc.get("description") {
+                    descriptions.push(ContractDescriptionInfo {
+                        data_contract_id: *cid,
+                        description: desc_txt.to_owned(),
+                    });
+                }
+            }
+        }
+
+        // ── 3. return result ────────────────────────────────────────────────
+        Ok(BackendTaskSuccessResult::DescriptionsByKeyword(
+            descriptions,
             next_cursor,
         ))
     }

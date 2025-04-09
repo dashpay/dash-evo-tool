@@ -6,7 +6,7 @@ use crate::backend_task::document::DocumentTask;
 use crate::backend_task::identity::IdentityTask;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
-use crate::ui::tokens::tokens_screen::{IdentityTokenBalance, TokenInfo};
+use crate::ui::tokens::tokens_screen::{ContractDescriptionInfo, TokenInfo};
 use contested_names::ScheduledDPNSVote;
 use dash_sdk::dpp::prelude::DataContract;
 use dash_sdk::dpp::state_transition::StateTransition;
@@ -16,6 +16,7 @@ use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::
 use dash_sdk::platform::{Document, Identifier};
 use dash_sdk::query_types::{Documents, IndexMap};
 use futures::future::join_all;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use tokens::TokenTask;
 use tokio::sync::mpsc;
@@ -56,6 +57,10 @@ pub(crate) enum BackendTaskSuccessResult {
     FetchedContracts(Vec<Option<DataContract>>),
     PageDocuments(IndexMap<Identifier, Option<Document>>, Option<Start>),
     TokensByKeyword(Vec<TokenInfo>, Option<Start>),
+    DescriptionsByKeyword(Vec<ContractDescriptionInfo>, Option<Start>),
+    ContractsWithDescriptions(
+        BTreeMap<Identifier, (Option<ContractDescriptionInfo>, Vec<TokenInfo>)>,
+    ),
 }
 
 impl BackendTaskSuccessResult {}

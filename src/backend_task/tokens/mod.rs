@@ -76,7 +76,7 @@ pub(crate) enum TokenTask {
         groups: BTreeMap<u16, Group>,
     },
     QueryMyTokenBalances,
-    QueryTokensByKeyword(String, Option<Start>),
+    QueryDescriptionsByKeyword(String, Option<Start>),
     MintTokens {
         sending_identity: QualifiedIdentity,
         data_contract: DataContract,
@@ -237,8 +237,8 @@ impl AppContext {
                 )
                 .await
                 .map_err(|e| format!("Failed to mint tokens: {e}")),
-            TokenTask::QueryTokensByKeyword(keyword, cursor) => self
-                .query_tokens_by_keyword(&keyword, cursor, sdk)
+            TokenTask::QueryDescriptionsByKeyword(keyword, cursor) => self
+                .query_descriptions_by_keyword(&keyword, cursor, sdk)
                 .await
                 .map_err(|e| format!("Failed to query tokens by keyword: {e}")),
             TokenTask::TransferTokens {
@@ -431,6 +431,7 @@ impl AppContext {
             updated_at_block_height: None,
             created_at_epoch: None,
             updated_at_epoch: None,
+            description: None,
         };
 
         // 2) Build a single TokenConfiguration in V0 format

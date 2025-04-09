@@ -408,6 +408,22 @@ impl AppContext {
         Ok(contracts)
     }
 
+    pub fn get_contract_by_id(
+        &self,
+        contract_id: &Identifier,
+    ) -> Result<Option<QualifiedContract>> {
+        // Get the contract from the database
+        let contract = self.db.get_contract_by_id(*contract_id, self)?;
+
+        // If the contract is not found in the database, return None
+        if contract.is_none() {
+            return Ok(None);
+        }
+
+        // If the contract is found, return it
+        Ok(Some(contract.unwrap()))
+    }
+
     // Remove contract from the database by ID
     pub fn remove_contract(&self, contract_id: &Identifier) -> Result<()> {
         self.db.remove_contract(contract_id.as_bytes(), &self)
@@ -573,5 +589,27 @@ impl AppContext {
         identity_id: Identifier,
     ) -> Result<()> {
         self.db.remove_token_balance(&token_id, &identity_id, self)
+    }
+
+    pub fn insert_token(
+        &self,
+        token_id: &Identifier,
+        token_name: &str,
+        contract_id: &Identifier,
+        token_position: u16,
+    ) -> Result<()> {
+        for identity in self.load_local_qualified_identities()? {
+            self.db.insert_identity_token_balance(
+                token_id,
+                token_name,
+                &identity.identity.id(),
+                0,
+                contract_id,
+                token_position,
+                self,
+            )?;
+        }
+
+        Ok(())
     }
 }

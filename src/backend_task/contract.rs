@@ -107,7 +107,7 @@ impl AppContext {
                                         token_name,
                                         data_contract_id: contract.id(),
                                         token_position: *token.0,
-                                        description: token.1.description(),
+                                        description: token.1.description().clone(),
                                     };
 
                                     token_infos.push(token_info);

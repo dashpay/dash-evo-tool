@@ -2760,7 +2760,7 @@ Emits tokens in fixed amounts for specific intervals.
         let distribution_function = match self.perpetual_dist_function {
             DistributionFunctionUI::FixedAmount => {
                 DistributionFunction::FixedAmount {
-                    n: self.fixed_amount_input.parse::<u64>().unwrap_or(0),
+                    amount: self.fixed_amount_input.parse::<u64>().unwrap_or(0),
                 }
             },
             DistributionFunctionUI::StepDecreasingAmount => {

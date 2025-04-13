@@ -35,7 +35,7 @@ use dashcoretemp::sml::quorum_entry::qualified_quorum_entry::{
 use dashcoretemp::sml::quorum_validation_error::{ClientDataRetrievalError, QuorumValidationError};
 use dashcoretemp::transaction::special_transaction::quorum_commitment::QuorumEntry;
 use dashcoretemp::{
-    BlockHash, ChainLock as ChainLock2, InstantLock as InstantLock2, MerkleBlock, Network,
+    BlockHash, ChainLock as ChainLock2, InstantLock as InstantLock2, Network,
     ProTxHash, QuorumHash,
 };
 use eframe::egui::{self, Context, ScrollArea, Ui};
@@ -47,7 +47,6 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
-use dashcoretemp::consensus::encode::Error;
 
 enum SelectedQRItem {
     SelectedSnapshot(QuorumSnapshot),
@@ -247,7 +246,7 @@ impl MasternodeListDiffScreen {
             };
             return Ok(*height);
         };
-        Ok(*height)
+        Ok(height)
     }
 
     fn get_height_and_cache_or_error_as_string(&mut self, block_hash: &BlockHash) -> String {
@@ -284,7 +283,7 @@ impl MasternodeListDiffScreen {
             };
             return Ok(*height);
         };
-        Ok(*height)
+        Ok(height)
     }
 
     fn get_chain_lock_sig_and_cache(
@@ -1136,6 +1135,9 @@ impl MasternodeListDiffScreen {
             let app_context = &self.app_context;
 
             move |block_hash: &BlockHash| {
+                if block_hash.as_byte_array() == &[0;32] {
+                    return Ok(0);
+                }
                 if let Some(height) = block_height_cache.get(block_hash) {
                     return Ok(*height);
                 }
@@ -2806,9 +2808,10 @@ impl MasternodeListDiffScreen {
             .show(ui, |ui| {
                 for (i, cl_sig) in mn_list_diff.quorums_chainlock_signatures.iter().enumerate() {
                     ui.label(format!(
-                        "Signature {}: {}",
+                        "Signature {}: {} for indexes [{}]",
                         i,
-                        hex::encode(cl_sig.signature)
+                        hex::encode(cl_sig.signature),
+                        cl_sig.index_set.iter().map(|index| index.to_string()).collect::<Vec<_>>().join("-")
                     ));
                 }
             });
@@ -3708,14 +3711,22 @@ impl MasternodeListDiffScreen {
                         }
                     };
 
-                    self.fetch_single_dml(
-                        &mut p2p_handler,
-                        masternode_list.block_hash,
-                        *base_block_height,
-                        BlockHash::from_byte_array(chain_lock.block_hash.to_byte_array()),
-                        chain_lock.block_height,
-                        true,
-                    );
+                    let Some(qr_info) =
+                        self.fetch_rotated_quorum_info(&mut p2p_handler, masternode_list.block_hash, chain_lock.block_hash.to_byte_array().into())
+                    else {
+                        return;
+                    };
+
+                    self.feed_qr_info_and_get_dmls(qr_info, Some(p2p_handler));
+
+                    // self.fetch_single_dml(
+                    //     &mut p2p_handler,
+                    //     masternode_list.block_hash,
+                    //     *base_block_height,
+                    //     BlockHash::from_byte_array(chain_lock.block_hash.to_byte_array()),
+                    //     chain_lock.block_height,
+                    //     true,
+                    // );
 
                     // Reset selections when new data is loaded
                     self.selected_dml_diff_key = None;

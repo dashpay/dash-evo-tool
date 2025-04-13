@@ -6,7 +6,7 @@ use dash_sdk::{
             associated_token::{
                 token_configuration::v0::TokenConfigurationV0,
                 token_configuration_convention::{
-                    v0::TokenConfigurationLocalizationsV0, TokenConfigurationConvention,
+                    TokenConfigurationConvention,
                 },
                 token_distribution_rules::TokenDistributionRules,
             },
@@ -25,6 +25,7 @@ use dash_sdk::{
     Sdk,
 };
 use std::{collections::BTreeMap, sync::Arc};
+use dash_sdk::dpp::data_contract::associated_token::token_configuration_localization::v0::TokenConfigurationLocalizationV0;
 use tokio::sync::mpsc;
 
 mod burn_tokens;
@@ -403,9 +404,14 @@ impl AppContext {
             version: 1,
             owner_id,
             document_types: BTreeMap::new(),
-            metadata: None,
             config: DataContractConfig::default_for_version(self.platform_version)?,
             schema_defs: None,
+            created_at: None,
+            updated_at: None,
+            created_at_block_height: None,
+            updated_at_block_height: None,
+            created_at_epoch: None,
+            updated_at_epoch: None,
             groups: BTreeMap::new(),
             tokens: BTreeMap::new(),
         };
@@ -416,11 +422,11 @@ impl AppContext {
         conv_v0.decimals = decimals as u16;
         conv_v0.localizations.insert(
             "en".to_string(),
-            TokenConfigurationLocalizationsV0 {
+            TokenConfigurationLocalizationV0 {
                 should_capitalize,
                 singular_form: token_name.to_string(),
                 plural_form: format!("{}s", token_name),
-            },
+            }.into(),
         );
         token_config_v0.base_supply = base_supply;
         token_config_v0.max_supply = max_supply;

@@ -3312,6 +3312,10 @@ Emits tokens in fixed amounts for specific intervals.
                 .minting_allow_choosing_destination_rules
                 .to_change_control_rules("Minting Allow Choosing Destination")
                 .unwrap(),
+            change_direct_purchase_pricing_rules: self
+                .minting_allow_choosing_destination_rules // TODO!
+                .to_change_control_rules("Change Direct Purchase Pricing")
+                .unwrap(),
         };
 
         Ok(dist_rules_v0)

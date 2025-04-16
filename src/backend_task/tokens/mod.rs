@@ -453,6 +453,8 @@ impl AppContext {
             keeps_minting_history: keeps_history,
             keeps_burning_history: keeps_history,
             keeps_freezing_history: keeps_history,
+            keeps_direct_pricing_history: keeps_history,
+            keeps_direct_purchase_history: keeps_history,
         });
 
         token_config_v0.base_supply = base_supply;

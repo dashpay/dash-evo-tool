@@ -91,7 +91,7 @@ impl AppContext {
                 .expect("expected to get token history contract");
 
         let keyword_search_contract =
-            load_system_data_contract(SystemDataContract::Search, PlatformVersion::latest())
+            load_system_data_contract(SystemDataContract::KeywordSearch, PlatformVersion::latest())
                 .expect("expected to get keyword search contract");
 
         let addr = format!(

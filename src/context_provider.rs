@@ -5,6 +5,7 @@ use crate::database::Database;
 use dash_sdk::core::LowLevelDashCoreClient as CoreClient;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::error::ContextProviderError;
 use dash_sdk::platform::ContextProvider;
 use dash_sdk::platform::DataContract;
@@ -22,9 +23,13 @@ impl Provider {
     /// Create new ContextProvider.
     ///
     /// Note that you have to bind it to app context using [Provider::set_app_context()].
-    pub fn new(db: Arc<Database>, network: Network, config: &NetworkConfig) -> Result<Self, String> {
-        let cookie_path = core_cookie_path(network, &config.devnet_name)
-            .expect("Failed to get core cookie path");
+    pub fn new(
+        db: Arc<Database>,
+        network: Network,
+        config: &NetworkConfig,
+    ) -> Result<Self, String> {
+        let cookie_path =
+            core_cookie_path(network, &config.devnet_name).expect("Failed to get core cookie path");
 
         // Read the cookie from disk
         let cookie = std::fs::read_to_string(cookie_path);
@@ -67,6 +72,7 @@ impl ContextProvider for Provider {
     fn get_data_contract(
         &self,
         data_contract_id: &dash_sdk::platform::Identifier,
+        platform_version: &PlatformVersion,
     ) -> Result<Option<Arc<DataContract>>, dash_sdk::error::ContextProviderError> {
         let app_ctx_guard = self.app_context.lock().expect("lock poisoned");
         let app_ctx = app_ctx_guard

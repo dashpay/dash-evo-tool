@@ -61,15 +61,12 @@ impl AppContext {
                 }
                 Err(e) => {
                     tracing::error!("Error fetching vote contenders: {}", e);
-                    if let dash_sdk::Error::Proof(
-                        dash_sdk::ProofVerifierError::GroveDBProofVerificationError {
-                            proof_bytes,
-                            path_query,
-                            height,
-                            time_ms,
-                            error,
-                        },
-                    ) = &e
+                    if let dash_sdk::Error::Proof(dash_sdk::ProofVerifierError::GroveDBError {
+                        proof_bytes,
+                        height,
+                        time_ms,
+                        error,
+                    }) = &e
                     {
                         // Encode the query using bincode
                         let encoded_query = match bincode::encode_to_vec(
@@ -84,23 +81,25 @@ impl AppContext {
                             Err(e) => return Err(e),
                         };
 
-                        // Encode the path_query using bincode
-                        let verification_path_query_bytes =
-                            match bincode::encode_to_vec(&path_query, bincode::config::standard())
-                                .map_err(|encode_err| {
-                                    tracing::error!("Error encoding path_query: {}", encode_err);
-                                    format!("Error encoding path_query: {}", encode_err)
-                                }) {
-                                Ok(encoded_path_query) => encoded_path_query,
-                                Err(e) => return Err(e),
-                            };
+                        // // Encode the path_query using bincode
+                        // let verification_path_query_bytes =
+                        //     match bincode::encode_to_vec(&path_query, bincode::config::standard())
+                        //         .map_err(|encode_err| {
+                        //             tracing::error!("Error encoding path_query: {}", encode_err);
+                        //             format!("Error encoding path_query: {}", encode_err)
+                        //         }) {
+                        //         Ok(encoded_path_query) => encoded_path_query,
+                        //         Err(e) => {
+                        //             return Err(format!("Contested resource query failed: {}", e))
+                        //         }
+                        //     };
 
                         if let Err(e) = self
                             .db
                             .insert_proof_log_item(ProofLogItem {
                                 request_type: RequestType::GetContestedResourceIdentityVotes,
                                 request_bytes: encoded_query,
-                                verification_path_query_bytes,
+                                verification_path_query_bytes: vec![],
                                 height: *height,
                                 time_ms: *time_ms,
                                 proof_bytes: proof_bytes.clone(),
@@ -108,7 +107,7 @@ impl AppContext {
                             })
                             .map_err(|e| e.to_string())
                         {
-                            return Err(e);
+                            return Err(format!("Contested resource query failed: {}", e));
                         }
                     }
                     let error_str = e.to_string();

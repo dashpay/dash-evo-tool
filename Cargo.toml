@@ -1,10 +1,10 @@
 [package]
 name = "dash-evo-tool"
-version = "0.8.4"
+version = "0.8.5"
 license = "MIT"
 edition = "2021"
 default-run = "dash-evo-tool"
-rust-version = "1.83"
+rust-version = "1.85"
 build = "build.rs"
 
 [build]
@@ -25,7 +25,7 @@ strum = { version = "0.26.1", features = ["derive"] }
 bs58 = "0.5.0"
 base64 = "0.22.1"
 copypasta = "0.10.1"
-dash-sdk = { git = "https://github.com/dashpay/platform", rev = "v1.8.0" }
+dash-sdk = { git = "https://github.com/dashpay/platform", rev = "db1fcb806f051bbb20b9393392e06b45ca91395c" }
 thiserror = "1"
 serde = "1.0.197"
 serde_json = "1.0.120"

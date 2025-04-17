@@ -8,6 +8,8 @@ use dash_sdk::{
     },
     platform::Identifier,
 };
+use dash_sdk::dpp::data_contract::associated_token::token_configuration_localization::accessors::v0::TokenConfigurationLocalizationV0Getters;
+use egui::TextBuffer;
 use rusqlite::params;
 
 use crate::{context::AppContext, ui::tokens::tokens_screen::IdentityTokenBalance};
@@ -119,7 +121,7 @@ impl Database {
                     match conventions
                         .localizations
                         .get("en")
-                        .map(|l| l.singular_form.clone())
+                        .map(|l| l.singular_form().to_string())
                     {
                         Some(token_name) => token_name,
                         None => token_identifier

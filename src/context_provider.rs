@@ -10,6 +10,7 @@ use dash_sdk::platform::ContextProvider;
 use dash_sdk::platform::DataContract;
 use rusqlite::Result;
 use std::sync::{Arc, Mutex};
+use dash_sdk::dpp::version::PlatformVersion;
 
 pub(crate) struct Provider {
     db: Arc<Database>,
@@ -71,6 +72,7 @@ impl ContextProvider for Provider {
     fn get_data_contract(
         &self,
         data_contract_id: &dash_sdk::platform::Identifier,
+        platform_version: &PlatformVersion,
     ) -> Result<Option<Arc<DataContract>>, dash_sdk::error::ContextProviderError> {
         let app_ctx_guard = self.app_context.lock().expect("lock poisoned");
         let app_ctx = app_ctx_guard

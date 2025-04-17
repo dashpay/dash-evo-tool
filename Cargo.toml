@@ -62,7 +62,7 @@ dashcoretemp = { package = "dashcore", git = "https://github.com/dashpay/rust-da
     "quorum_validation",
     "bincode",
     "message_verification"
-], default-features = false, rev = "5ad7f1d62b47b5c0e5d126cc3aa1fd920cbfe520" }
+], default-features = false, rev = "aea64024b20d37b200c440fd802b22bb0840a645" }
 
 ordered-float = "4.6.0"
 

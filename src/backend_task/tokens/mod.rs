@@ -26,6 +26,8 @@ use dash_sdk::{
 };
 use std::{collections::BTreeMap, sync::Arc};
 use dash_sdk::dpp::data_contract::associated_token::token_configuration_localization::v0::TokenConfigurationLocalizationV0;
+use dash_sdk::dpp::data_contract::associated_token::token_keeps_history_rules::TokenKeepsHistoryRules;
+use dash_sdk::dpp::data_contract::associated_token::token_keeps_history_rules::v0::TokenKeepsHistoryRulesV0;
 use tokio::sync::mpsc;
 
 mod burn_tokens;
@@ -428,10 +430,20 @@ impl AppContext {
                 plural_form: format!("{}s", token_name),
             }.into(),
         );
+
+        let keeps_history_rules = TokenKeepsHistoryRules::V0(TokenKeepsHistoryRulesV0 {
+            keeps_transfer_history: keeps_history,
+            keeps_minting_history: keeps_history,
+            keeps_burning_history: keeps_history,
+            keeps_direct_pricing_history: keeps_history,
+            keeps_freezing_history: keeps_history,
+            keeps_direct_purchase_history: keeps_history,
+        });
+
         token_config_v0.base_supply = base_supply;
         token_config_v0.max_supply = max_supply;
         token_config_v0.start_as_paused = start_as_paused;
-        token_config_v0.keeps_history = keeps_history;
+        token_config_v0.keeps_history = keeps_history_rules;
         token_config_v0.main_control_group = main_control_group;
         token_config_v0.manual_minting_rules = manual_minting_rules;
         token_config_v0.manual_burning_rules = manual_burning_rules;

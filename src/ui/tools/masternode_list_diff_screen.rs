@@ -9,7 +9,7 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::dashcore_rpc::json::QuorumType;
 use dash_sdk::dashcore_rpc::RpcApi;
-use dash_sdk::dpp::dashcore::consensus::{deserialize as deserialize2, serialize as serialize2};
+use dash_sdk::dpp::dashcore::consensus::{serialize as serialize2};
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::Network as Network2;
 use dash_sdk::dpp::dashcore::{
@@ -40,7 +40,6 @@ use dashcoretemp::{
 };
 use eframe::egui::{self, Context, ScrollArea, Ui};
 use egui::{Align, Color32, Frame, Layout, Response, Stroke, TextEdit, Vec2};
-use futures::FutureExt;
 use itertools::Itertools;
 use rfd::FileDialog;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -3355,7 +3354,7 @@ impl MasternodeListDiffScreen {
 
             // Right Column: Heights where selected quorum exists
             ui.allocate_ui_with_layout(
-                egui::Vec2::new(500.0, 800.0),
+                Vec2::new(500.0, 800.0),
                 Layout::top_down(Align::Min),
                 |ui| {
                     ui.heading("Quorum Heights");
@@ -3399,7 +3398,7 @@ impl MasternodeListDiffScreen {
         ui.horizontal(|ui| {
             // Left Column: Chain Locked Blocks
             ui.allocate_ui_with_layout(
-                egui::Vec2::new(200.0, 1000.0),
+                Vec2::new(200.0, 1000.0),
                 Layout::top_down(Align::Min),
                 |ui| {
                     ui.heading("ChainLocked Blocks");

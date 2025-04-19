@@ -137,7 +137,6 @@ enum SortColumn {
     OwnerIdentity,
     OwnerIdentityAlias,
     Balance,
-    ContractID,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -641,6 +640,8 @@ pub struct TokensScreen {
     pub step_decreasing_start_period_offset_input: String,
     pub step_decreasing_initial_emission_input: String,
     pub step_decreasing_min_value_input: String,
+    pub step_decreasing_max_interval_count_input: String,
+    pub step_decreasing_trailing_distribution_interval_amount_input: String,
 
     // --- Stepwise ---
     pub stepwise_steps: Vec<(String, String)>,
@@ -671,7 +672,7 @@ pub struct TokensScreen {
     pub exp_d_input: String,
     pub exp_s_input: String,
     pub exp_o_input: String,
-    pub exp_c_input: String,
+    pub exp_b_input: String,
     pub exp_min_value_input: String,
     pub exp_max_value_input: String,
 
@@ -794,6 +795,8 @@ impl TokensScreen {
             step_decreasing_start_period_offset_input: String::new(),
             step_decreasing_initial_emission_input: String::new(),
             step_decreasing_min_value_input: String::new(),
+            step_decreasing_max_interval_count_input: String::new(),
+            step_decreasing_trailing_distribution_interval_amount_input: String::new(),
             stepwise_steps: Vec::new(),
             linear_int_a_input: String::new(),
             linear_int_d_input: String::new(),
@@ -816,7 +819,7 @@ impl TokensScreen {
             exp_d_input: String::new(),
             exp_s_input: String::new(),
             exp_o_input: String::new(),
-            exp_c_input: String::new(),
+            exp_b_input: String::new(),
             exp_min_value_input: String::new(),
             exp_max_value_input: String::new(),
             log_a_input: String::new(),
@@ -928,7 +931,6 @@ impl TokensScreen {
                 }
                 SortColumn::TokenName => a.token_name.cmp(&b.token_name),
                 SortColumn::TokenID => a.token_identifier.cmp(&b.token_identifier),
-                SortColumn::ContractID => a.data_contract_id.cmp(&b.data_contract_id),
             };
             match self.sort_order {
                 SortOrder::Ascending => ordering,
@@ -2201,6 +2203,14 @@ Emits tokens in fixed amounts for specific intervals.
                                         ui.label("        - Minimum Emission Value (optional):");
                                         ui.text_edit_singleline(&mut self.step_decreasing_min_value_input);
                                     });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Maximum Interval Count (optional):");
+                                        ui.text_edit_singleline(&mut self.step_decreasing_max_interval_count_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Trailing Distribution Interval Amount:");
+                                        ui.text_edit_singleline(&mut self.step_decreasing_trailing_distribution_interval_amount_input);
+                                    });
                                 }
 
                                 DistributionFunctionUI::Stepwise => {
@@ -2334,7 +2344,7 @@ Emits tokens in fixed amounts for specific intervals.
                                     });
                                     ui.horizontal(|ui| {
                                         ui.label("        - Offset (c, i64):");
-                                        ui.text_edit_singleline(&mut self.exp_c_input);
+                                        ui.text_edit_singleline(&mut self.exp_b_input);
                                     });
                                     ui.horizontal(|ui| {
                                         ui.label("        - Minimum Emission Value (optional):");
@@ -3112,20 +3122,47 @@ Emits tokens in fixed amounts for specific intervals.
                         .decrease_per_interval_denominator_input
                         .parse::<u16>()
                         .unwrap_or(0),
-                    s: Some(
-                        self.step_decreasing_start_period_offset_input
-                            .parse::<u64>()
-                            .unwrap_or(0),
-                    ),
-                    n: self
+                    start_decreasing_offset: match self
+                        .step_decreasing_start_period_offset_input
+                        .parse::<u64>()
+                    {
+                        Ok(0) => None,
+                        Ok(v) => Some(v),
+                        Err(_) => {
+                            return Err("Invalid start decreasing offset for StepDecreasingAmount distribution. Put 0 for None.".to_string());
+                        }
+                    },
+                    distribution_start_amount: self
                         .step_decreasing_initial_emission_input
                         .parse::<u64>()
                         .unwrap_or(0),
-                    min_value: Some(
-                        self.step_decreasing_min_value_input
-                            .parse::<u64>()
-                            .unwrap_or(0),
-                    ),
+                    min_value: match self.step_decreasing_min_value_input.parse::<u64>() {
+                        Ok(0) => None,
+                        Ok(v) => Some(v),
+                        Err(_) => {
+                            return Err(
+                                "Invalid min value for StepDecreasingAmount distribution. Put 0 for None."
+                                    .to_string(),
+                            );
+                        }
+                    },
+                    max_interval_count: match self
+                        .step_decreasing_max_interval_count_input
+                        .parse::<u16>()
+                    {
+                        Ok(0) => None,
+                        Ok(v) => Some(v),
+                        Err(_) => {
+                            return Err(
+                                "Invalid max interval count for StepDecreasingAmount distribution. Put 0 for None."
+                                    .to_string(),
+                            );
+                        }
+                    },
+                    trailing_distribution_interval_amount: self
+                        .step_decreasing_trailing_distribution_interval_amount_input
+                        .parse::<u64>()
+                        .unwrap_or(0),
                 }
             }
             DistributionFunctionUI::Stepwise => {
@@ -3160,12 +3197,12 @@ Emits tokens in fixed amounts for specific intervals.
             },
             DistributionFunctionUI::Exponential => DistributionFunction::Exponential {
                 a: self.exp_a_input.parse::<u64>().unwrap_or(0),
+                d: self.exp_d_input.parse::<u64>().unwrap_or(0),
                 m: self.exp_m_input.parse::<i64>().unwrap_or(0),
                 n: self.exp_n_input.parse::<u64>().unwrap_or(0),
-                d: self.exp_d_input.parse::<u64>().unwrap_or(0),
-                start_moment: Some(self.exp_s_input.parse::<u64>().unwrap_or(0)),
                 o: self.exp_o_input.parse::<i64>().unwrap_or(0),
-                c: self.exp_c_input.parse::<u64>().unwrap_or(0),
+                start_moment: Some(self.exp_s_input.parse::<u64>().unwrap_or(0)),
+                b: self.exp_b_input.parse::<u64>().unwrap_or(0),
                 min_value: Some(self.exp_min_value_input.parse::<u64>().unwrap_or(0)),
                 max_value: Some(self.exp_max_value_input.parse::<u64>().unwrap_or(0)),
             },
@@ -3421,6 +3458,8 @@ Emits tokens in fixed amounts for specific intervals.
         self.step_decreasing_start_period_offset_input = "".to_string();
         self.step_decreasing_initial_emission_input = "".to_string();
         self.step_decreasing_min_value_input = "".to_string();
+        self.step_decreasing_max_interval_count_input = "".to_string();
+        self.step_decreasing_trailing_distribution_interval_amount_input = "".to_string();
         self.stepwise_steps = vec![(String::new(), String::new())];
         self.linear_int_a_input = "".to_string();
         self.linear_int_d_input = "".to_string();
@@ -3443,7 +3482,7 @@ Emits tokens in fixed amounts for specific intervals.
         self.exp_d_input = "".to_string();
         self.exp_s_input = "".to_string();
         self.exp_o_input = "".to_string();
-        self.exp_c_input = "".to_string();
+        self.exp_b_input = "".to_string();
         self.exp_min_value_input = "".to_string();
         self.exp_max_value_input = "".to_string();
         self.log_a_input = "".to_string();
@@ -3566,7 +3605,7 @@ Emits tokens in fixed amounts for specific intervals.
             if !my_tokens_clone.iter().any(|t| {
                 t.token_identifier == token.token_identifier && t.identity_id == token.identity_id
             }) {
-                self.app_context.insert_token(
+                let _ = self.app_context.insert_token(
                     &token.token_identifier,
                     &token.token_name,
                     &token.data_contract_id,

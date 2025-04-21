@@ -50,15 +50,13 @@ impl AppContext {
                 Ok(contested_resources) => contested_resources,
                 Err(e) => {
                     tracing::error!("Error fetching contested resources: {}", e);
-                    if let dash_sdk::Error::Proof(
-                        dash_sdk::ProofVerifierError::GroveDBProofVerificationError {
-                            proof_bytes,
-                            path_query,
-                            height,
-                            time_ms,
-                            error,
-                        },
-                    ) = &e
+                    if let dash_sdk::Error::Proof(dash_sdk::ProofVerifierError::GroveDBError {
+                        proof_bytes,
+                        path_query,
+                        height,
+                        time_ms,
+                        error,
+                    }) = &e
                     {
                         // Encode the query using bincode
                         let encoded_query =

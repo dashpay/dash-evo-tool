@@ -247,6 +247,7 @@ impl AppContext {
                 asset_lock_proof.clone(),
                 &asset_lock_proof_private_key,
                 None,
+                None,
             )
             .await
         {
@@ -259,6 +260,7 @@ impl AppContext {
                             &sdk,
                             asset_lock_proof.clone(),
                             &asset_lock_proof_private_key,
+                            None,
                             None,
                         )
                         .await

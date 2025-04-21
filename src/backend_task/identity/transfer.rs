@@ -29,7 +29,7 @@ impl AppContext {
             )
             .await
             .map_err(|e| format!("Transfer error: {}", e))?;
-        qualified_identity.identity.set_balance(remaining_balance);
+        qualified_identity.identity.set_balance(remaining_balance.0);
 
         // If the receiver is a local qualified identity, update its balance too
         if let Some(receiver) = self

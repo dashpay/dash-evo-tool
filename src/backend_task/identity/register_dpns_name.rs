@@ -131,8 +131,8 @@ impl AppContext {
                 preorder_document_type.to_owned_document_type(),
                 entropy.0,
                 public_key.clone(),
-                self.dpns_contract.clone(),
                 &qualified_identity,
+                None,
             )
             .await
             .map_err(|e| e.to_string())?;
@@ -143,8 +143,8 @@ impl AppContext {
                 domain_document_type.to_owned_document_type(),
                 entropy.0,
                 public_key.clone(),
-                self.dpns_contract.clone(),
                 &qualified_identity,
+                None,
             )
             .await
             .map_err(|e| e.to_string())?;

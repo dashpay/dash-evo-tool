@@ -62,15 +62,13 @@ impl AppContext {
                 }
                 Err(e) => {
                     tracing::error!("Error fetching vote polls: {}", e);
-                    if let dash_sdk::Error::Proof(
-                        dash_sdk::ProofVerifierError::GroveDBProofVerificationError {
-                            proof_bytes,
-                            path_query,
-                            height,
-                            time_ms,
-                            error,
-                        },
-                    ) = &e
+                    if let dash_sdk::Error::Proof(dash_sdk::ProofVerifierError::GroveDBError {
+                        proof_bytes,
+                        path_query,
+                        height,
+                        time_ms,
+                        error,
+                    }) = &e
                     {
                         // Encode the query using bincode
                         let encoded_query = match bincode::encode_to_vec(
@@ -93,7 +91,9 @@ impl AppContext {
                                     format!("Error encoding path_query: {}", encode_err)
                                 }) {
                                 Ok(encoded_path_query) => encoded_path_query,
-                                Err(e) => return Err(e),
+                                Err(e) => {
+                                    return Err(format!("Contested resource query failed: {}", e))
+                                }
                             };
 
                         if let Err(e) = self
@@ -109,7 +109,7 @@ impl AppContext {
                             })
                             .map_err(|e| e.to_string())
                         {
-                            return Err(e);
+                            return Err(format!("Contested resource query failed: {}", e));
                         }
                     }
                     if e.to_string().contains("try another server")

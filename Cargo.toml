@@ -25,7 +25,7 @@ strum = { version = "0.26.1", features = ["derive"] }
 bs58 = "0.5.0"
 base64 = "0.22.1"
 copypasta = "0.10.1"
-dash-sdk = { git = "https://github.com/dashpay/platform", rev = "db1fcb806f051bbb20b9393392e06b45ca91395c" }
+dash-sdk = { git = "https://github.com/dashpay/platform", rev = "83a660fb3c861527315891cdae1d2089ab92d181" }
 thiserror = "1"
 serde = "1.0.197"
 serde_json = "1.0.120"

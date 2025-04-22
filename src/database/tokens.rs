@@ -1,65 +1,58 @@
 use dash_sdk::platform::Identifier;
+use dash_sdk::query_types::IndexMap;
 use rusqlite::params;
 
+use super::Database;
+use crate::ui::tokens::tokens_screen::IdentityTokenIdentifier;
 use crate::{context::AppContext, ui::tokens::tokens_screen::IdentityTokenBalance};
 
-use super::Database;
-
 impl Database {
-    /// Creates the identity_token_balances table if it doesn't already exist
-    fn ensure_identity_token_balances_table_exists(&self) -> rusqlite::Result<()> {
-        let conn = self.conn.lock().unwrap();
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS identity_token_balances (
-                token_id BLOB NOT NULL,
-                token_name TEXT NOT NULL,
-                identity_id BLOB NOT NULL,
-                balance INTEGER NOT NULL,
+    pub fn initialize_token_table(&self) -> rusqlite::Result<()> {
+        // Create the token table
+        self.execute(
+            "CREATE TABLE IF NOT EXISTS token (
+                id BLOB PRIMARY KEY,
+                token_alias TEXT NOT NULL,
+                token_config BLOB NOT NULL,
                 data_contract_id BLOB NOT NULL,
                 token_position INTEGER NOT NULL,
                 network TEXT NOT NULL,
-                PRIMARY KEY(token_id, identity_id, network),
-                FOREIGN KEY (identity_id) REFERENCES identity(id) ON DELETE CASCADE
-             )",
+                FOREIGN KEY (data_contract_id, network)
+                    REFERENCES contract(contract_id, network)
+                    ON DELETE CASCADE
+            )",
+            [],
         )?;
         Ok(())
     }
 
-    pub fn insert_identity_token_balance(
+    pub fn insert_token(
         &self,
-        token_identifier: &Identifier,
-        token_name: &str,
-        identity_id: &Identifier,
-        balance: u64,
+        token_id: &Identifier,
+        token_alias: &str,
+        token_config: &[u8],
         data_contract_id: &Identifier,
         token_position: u16,
         app_context: &AppContext,
     ) -> rusqlite::Result<()> {
-        // make sure the table / PK exists
-        self.ensure_identity_token_balances_table_exists()?;
-
-        // prepare values
         let network = app_context.network_string();
-        let token_id_bytes = token_identifier.to_vec();
-        let identity_id_bytes = identity_id.to_vec();
+        let token_id_bytes = token_id.to_vec();
         let data_contract_bytes = data_contract_id.to_vec();
 
-        // `token_name` is only in the INSERT part – not in the UPDATE part
         self.execute(
-            "INSERT INTO identity_token_balances
-                  (token_id, token_name, identity_id, balance,
-                   data_contract_id, token_position, network)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-            ON CONFLICT(token_id, identity_id, network) DO UPDATE SET
-                  balance          = excluded.balance,
-                  data_contract_id = excluded.data_contract_id,
-                  token_position   = excluded.token_position
-                  -- token_name intentionally left unchanged",
+            "INSERT INTO token
+              (id, token_alias, token_config, data_contract_id, token_position, network)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+         ON CONFLICT(id) DO UPDATE SET
+              token_alias = excluded.token_alias,
+              token_config = excluded.token_config,
+              data_contract_id = excluded.data_contract_id,
+              token_position = excluded.token_position,
+              network = excluded.network",
             params![
                 token_id_bytes,
-                token_name,
-                identity_id_bytes,
-                balance,
+                token_alias,
+                token_config,
                 data_contract_bytes,
                 token_position,
                 network
@@ -69,22 +62,69 @@ impl Database {
         Ok(())
     }
 
+    /// Creates the identity_token_balances table if it doesn't already exist
+    pub fn drop_identity_token_balances_table(&self) -> rusqlite::Result<()> {
+        // Drop existing token table (if necessary to enforce schema update)
+        self.execute("DROP TABLE IF EXISTS identity_token_balances", [])?;
+
+        Ok(())
+    }
+
+    /// Creates the identity_token_balances table if it doesn't already exist
+    pub fn initialize_identity_token_balances_table(&self) -> rusqlite::Result<()> {
+        self.execute(
+            "CREATE TABLE IF NOT EXISTS identity_token_balances (
+                token_id BLOB NOT NULL,
+                identity_id BLOB NOT NULL,
+                balance INTEGER NOT NULL,
+                network TEXT NOT NULL,
+                PRIMARY KEY(token_id, identity_id, network),
+                FOREIGN KEY (identity_id) REFERENCES identity(id) ON DELETE CASCADE,
+                FOREIGN KEY (token_id) REFERENCES token(id) ON DELETE CASCADE
+             )",
+            [],
+        )?;
+        Ok(())
+    }
+
+    pub fn insert_identity_token_balance(
+        &self,
+        token_identifier: &Identifier,
+        identity_id: &Identifier,
+        balance: u64,
+        app_context: &AppContext,
+    ) -> rusqlite::Result<()> {
+        let network = app_context.network_string();
+        let token_id_bytes = token_identifier.to_vec();
+        let identity_id_bytes = identity_id.to_vec();
+
+        self.execute(
+            "INSERT INTO identity_token_balances
+              (token_id, identity_id, balance, network)
+        VALUES (?1, ?2, ?3, ?4)
+        ON CONFLICT(token_id, identity_id, network) DO UPDATE SET
+              balance = excluded.balance",
+            params![token_id_bytes, identity_id_bytes, balance, network],
+        )?;
+
+        Ok(())
+    }
+
     pub fn get_identity_token_balances(
         &self,
         app_context: &AppContext,
-    ) -> rusqlite::Result<Vec<IdentityTokenBalance>> {
+    ) -> rusqlite::Result<IndexMap<IdentityTokenIdentifier, IdentityTokenBalance>> {
         let network = app_context.network_string();
 
-        // 1) Lock and read everything into memory first.
         let rows_data = {
             let conn = self.conn.lock().unwrap();
             let mut stmt = conn.prepare(
-                "SELECT *
-             FROM identity_token_balances
-             WHERE network = ?",
+                "SELECT b.token_id, t.token_alias, b.identity_id, b.balance, t.data_contract_id, t.token_position
+             FROM identity_token_balances AS b
+             JOIN token AS t ON b.token_id = t.id
+             WHERE b.network = ?",
             )?;
 
-            // Map all the rows into a Vec in memory.
             let rows = stmt.query_map(params![network], |row| {
                 Ok((
                     Identifier::from_vec(row.get(0)?),
@@ -101,31 +141,39 @@ impl Database {
                 temp.push(row?);
             }
             temp
-        }; // <- The lock is dropped here because `conn` goes out of scope.
+        };
 
-        let mut result = Vec::new();
+        let mut result = IndexMap::new();
         for (
-            token_identifier,
+            token_id_res,
             token_name,
-            identity_id,
+            identity_id_res,
             balance,
-            data_contract_id,
+            data_contract_id_res,
             token_position,
         ) in rows_data
         {
+            let token_id = token_id_res.expect("Failed to parse token_identifier");
+            let identity_id = identity_id_res.expect("Failed to parse identity_id");
+            let data_contract_id = data_contract_id_res.expect("Failed to parse data_contract_id");
+
             let identity_token_balance = IdentityTokenBalance {
-                token_identifier: token_identifier
-                    .clone()
-                    .expect("Expected to convert token_identifier from vec to Identifier"),
+                token_identifier: token_id,
                 token_name,
-                identity_id: identity_id
-                    .expect("Expected to convert identity_id from vec to Identifier"),
+                identity_id,
                 balance,
-                data_contract_id: data_contract_id
-                    .expect("Expected to convert data_contract_id from vec to Identifier"),
+                estimated_unclaimed_rewards: None,
+                data_contract_id,
                 token_position,
             };
-            result.push(identity_token_balance);
+
+            result.insert(
+                IdentityTokenIdentifier {
+                    identity_id,
+                    token_id,
+                },
+                identity_token_balance,
+            );
         }
 
         Ok(result)
@@ -157,28 +205,32 @@ impl Database {
         Ok(())
     }
 
-    /// Creates the identity_order table if it doesn't already exist
-    /// with two columns: `pos` (int) and `identity_id` (blob).
-    /// pos is the "position" in the custom ordering.
-    fn ensure_token_order_table_exists(&self) -> rusqlite::Result<()> {
+    /// (Re)creates the `token_order` table with proper foreign keys.
+    pub fn initialize_token_order_table(&self) -> rusqlite::Result<()> {
         let conn = self.conn.lock().unwrap();
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS token_order (
-                pos INTEGER NOT NULL,
-                token_id BLOB NOT NULL,
-                identity_id BLOB NOT NULL,
-                PRIMARY KEY(pos)
-             )",
+
+        // Drop the table if it already exists
+        conn.execute("DROP TABLE IF EXISTS token_order", [])?;
+
+        // Recreate with foreign keys
+        conn.execute(
+            "CREATE TABLE token_order (
+            pos INTEGER NOT NULL,
+            token_id BLOB NOT NULL,
+            identity_id BLOB NOT NULL,
+            PRIMARY KEY(pos, token_id),
+            FOREIGN KEY (token_id) REFERENCES token(id) ON DELETE CASCADE,
+            FOREIGN KEY (identity_id) REFERENCES identity(id) ON DELETE CASCADE
+        )",
+            [],
         )?;
+
         Ok(())
     }
 
     /// Saves the user’s custom identity order (the entire list).
     /// This method overwrites whatever was there before.
     pub fn save_token_order(&self, all_ids: Vec<(Identifier, Identifier)>) -> rusqlite::Result<()> {
-        // Make sure table exists
-        self.ensure_token_order_table_exists()?;
-
         let conn = self.conn.lock().unwrap();
         let tx = conn.unchecked_transaction()?;
 
@@ -203,9 +255,6 @@ impl Database {
     /// Loads the custom identity order from the DB, returning a list of Identifiers in the stored order.
     /// If there's no data, returns an empty Vec.
     pub fn load_token_order(&self) -> rusqlite::Result<Vec<(Identifier, Identifier)>> {
-        // Make sure table exists (in case it doesn't)
-        self.ensure_token_order_table_exists()?;
-
         let conn = self.conn.lock().unwrap();
 
         // Read all rows sorted by pos

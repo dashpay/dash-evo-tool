@@ -33,7 +33,7 @@ impl AppContext {
             let token_infos = self
                 .identity_token_balances()
                 .map_err(|e| format!("Failed to load identity token balances: {e}"))?
-                .iter()
+                .values()
                 .filter(|t| t.identity_id == identity_id)
                 .map(|t| {
                     (
@@ -71,17 +71,10 @@ impl AppContext {
                             Some(b) => *b,
                             None => 0,
                         };
-                        let associated_contract_and_position = token_infos
-                            .iter()
-                            .find(|(id, _, _)| id == token_id)
-                            .expect("Expected to find associated contract and position");
                         if let Err(e) = self.db.insert_identity_token_balance(
                             token_id,
-                            &token_id.to_string(Encoding::Base58),
                             &identity_id,
                             balance,
-                            &associated_contract_and_position.1,
-                            associated_contract_and_position.2,
                             self,
                         ) {
                             return Err(format!(

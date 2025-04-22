@@ -1,5 +1,6 @@
 use crate::app::AppAction;
 use crate::backend_task::core::{CoreItem, CoreTask};
+use crate::backend_task::system_task::SystemTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::config::Config;
 use crate::context::AppContext;
@@ -107,6 +108,7 @@ impl NetworkChooserScreen {
                         .strong()
                         .underline(),
                 );
+                ui.label(egui::RichText::new("Actions").strong().underline());
                 ui.end_row();
 
                 // Render Mainnet Row
@@ -312,6 +314,13 @@ impl NetworkChooserScreen {
                 }
             });
         };
+
+        if network == Network::Devnet {
+            if ui.button("Clear local Platform data").clicked() {
+                app_action =
+                    AppAction::BackendTask(BackendTask::SystemTask(SystemTask::WipePlatformData));
+            }
+        }
 
         ui.end_row();
         app_action

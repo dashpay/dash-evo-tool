@@ -10,14 +10,16 @@ use crate::model::qualified_contract::QualifiedContract;
 use crate::model::qualified_identity::{DPNSNameInfo, QualifiedIdentity};
 use crate::model::wallet::{Wallet, WalletSeedHash};
 use crate::sdk_wrapper::initialize_sdk;
-use crate::ui::tokens::tokens_screen::IdentityTokenBalance;
+use crate::ui::tokens::tokens_screen::{IdentityTokenBalance, IdentityTokenIdentifier};
 use crate::ui::RootScreenType;
+use bincode::config;
 use crossbeam_channel::{Receiver, Sender};
 use dash_sdk::dashcore_rpc::dashcore::{InstantLock, Transaction};
 use dash_sdk::dashcore_rpc::{Auth, Client};
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::transaction::special_transaction::TransactionPayload::AssetLockPayloadType;
 use dash_sdk::dpp::dashcore::{key, Address, Network, OutPoint, TxOut, Txid};
+use dash_sdk::dpp::data_contract::TokenConfiguration;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::state_transition::asset_lock_proof::chain::ChainAssetLockProof;
 use dash_sdk::dpp::identity::state_transition::asset_lock_proof::InstantAssetLockProof;
@@ -26,6 +28,7 @@ use dash_sdk::dpp::prelude::{AssetLockProof, CoreBlockHeight};
 use dash_sdk::dpp::system_data_contracts::{load_system_data_contract, SystemDataContract};
 use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::platform::{DataContract, Identifier};
+use dash_sdk::query_types::IndexMap;
 use dash_sdk::Sdk;
 use rusqlite::Result;
 use std::collections::{BTreeMap, HashMap};
@@ -167,12 +170,9 @@ impl AppContext {
 
         // 2. Rebuild the RPC client with the new password
         let addr = format!("http://{}:{}", cfg.core_host, cfg.core_rpc_port);
-        let new_client = dash_sdk::dashcore_rpc::Client::new(
+        let new_client = Client::new(
             &addr,
-            dash_sdk::dashcore_rpc::Auth::UserPass(
-                cfg.core_rpc_user.clone(),
-                cfg.core_rpc_password.clone(),
-            ),
+            Auth::UserPass(cfg.core_rpc_user.clone(), cfg.core_rpc_password.clone()),
         )
         .map_err(|e| format!("Failed to create new Core RPC client: {e}"))?;
 
@@ -434,7 +434,7 @@ impl AppContext {
         tx: &Transaction,
         islock: Option<InstantLock>,
         chain_locked_height: Option<CoreBlockHeight>,
-    ) -> rusqlite::Result<Vec<(OutPoint, TxOut, Address)>> {
+    ) -> Result<Vec<(OutPoint, TxOut, Address)>> {
         // Initialize a vector to collect wallet outpoints
         let mut wallet_outpoints = Vec::new();
 
@@ -498,7 +498,7 @@ impl AppContext {
         tx: &Transaction,
         islock: Option<InstantLock>,
         chain_locked_height: Option<CoreBlockHeight>,
-    ) -> rusqlite::Result<()> {
+    ) -> Result<()> {
         // Extract the asset lock payload from the transaction
         let Some(AssetLockPayloadType(payload)) = tx.special_transaction_payload.as_ref() else {
             return Ok(());
@@ -579,7 +579,9 @@ impl AppContext {
         Ok(())
     }
 
-    pub fn identity_token_balances(&self) -> Result<Vec<IdentityTokenBalance>> {
+    pub fn identity_token_balances(
+        &self,
+    ) -> Result<IndexMap<IdentityTokenIdentifier, IdentityTokenBalance>> {
         self.db.get_identity_token_balances(self)
     }
 
@@ -595,20 +597,38 @@ impl AppContext {
         &self,
         token_id: &Identifier,
         token_name: &str,
+        token_configuration: TokenConfiguration,
         contract_id: &Identifier,
         token_position: u16,
     ) -> Result<()> {
-        for identity in self.load_local_qualified_identities()? {
-            self.db.insert_identity_token_balance(
-                token_id,
-                token_name,
-                &identity.identity.id(),
-                0,
-                contract_id,
-                token_position,
-                self,
-            )?;
-        }
+        let config = config::standard();
+        let Some(serialized_token_configuration) =
+            bincode::encode_to_vec(&token_configuration, config).ok()
+        else {
+            // We should always be able to serialize
+            return Ok(());
+        };
+
+        self.db.insert_token(
+            token_id,
+            token_name,
+            serialized_token_configuration.as_slice(),
+            contract_id,
+            token_position,
+            self,
+        )?;
+
+        Ok(())
+    }
+
+    pub fn insert_token_identity_balance(
+        &self,
+        token_id: &Identifier,
+        identity_id: &Identifier,
+        balance: u64,
+    ) -> Result<()> {
+        self.db
+            .insert_identity_token_balance(token_id, identity_id, balance, self)?;
 
         Ok(())
     }

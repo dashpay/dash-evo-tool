@@ -26,10 +26,13 @@ use dash_sdk::dpp::identity::SecurityLevel;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::Start;
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
+use dash_sdk::query_types::IndexMap;
 use eframe::egui::{self, CentralPanel, Color32, Context, Frame, Margin, Ui};
-use egui::{Align, RichText};
+use eframe::glow::Texture;
+use egui::{Align, ColorImage, RichText, TextureHandle};
 use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
-use egui_extras::{Column, TableBuilder};
+use egui_extras::{Column, RetainedImage, TableBuilder};
+use image::ImageReader;
 use crate::app::BackendTasksExecutionMode;
 use crate::backend_task::contract::ContractTask;
 use crate::backend_task::tokens::TokenTask;
@@ -55,6 +58,26 @@ use super::resume_tokens_screen::ResumeTokensScreen;
 use super::transfer_tokens_screen::TransferTokensScreen;
 use super::unfreeze_tokens_screen::UnfreezeTokensScreen;
 
+const EXP_FORMULA_PNG: &[u8] = include_bytes!("../../../assets/exp_function.png");
+const INV_LOG_FORMULA_PNG: &[u8] = include_bytes!("../../../assets/inv_log_function.png");
+const LOG_FORMULA_PNG: &[u8] = include_bytes!("../../../assets/log_function.png");
+const LINEAR_FORMULA_PNG: &[u8] = include_bytes!("../../../assets/linear_function.png");
+const POLYNOMIAL_FORMULA_PNG: &[u8] = include_bytes!("../../../assets/polynomial_function.png");
+
+pub fn load_formula_image(bytes: &[u8]) -> ColorImage {
+    let image = ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .expect("Failed to guess image format")
+        .decode()
+        .expect("Failed to decode image")
+        .to_rgba8();
+
+    let size = [image.width() as usize, image.height() as usize];
+    let pixels = image.as_flat_samples();
+    let color_image = ColorImage::from_rgba_unmultiplied(size, pixels.as_slice());
+    color_image
+}
+
 /// Token info
 #[derive(Clone, Debug, PartialEq)]
 pub struct TokenInfo {
@@ -71,13 +94,20 @@ pub struct ContractDescriptionInfo {
     pub description: String,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
+pub struct IdentityTokenIdentifier {
+    pub identity_id: Identifier,
+    pub token_id: Identifier,
+}
+
 /// A token owned by an identity.
 #[derive(Clone, Debug, PartialEq)]
 pub struct IdentityTokenBalance {
     pub token_identifier: Identifier,
     pub token_name: String,
     pub identity_id: Identifier,
-    pub balance: u64,
+    pub balance: TokenAmount,
+    pub estimated_unclaimed_rewards: Option<TokenAmount>,
     pub data_contract_id: Identifier,
     pub token_position: u16,
 }
@@ -393,7 +423,7 @@ pub enum PerpetualDistributionIntervalTypeUI {
 }
 
 /// A lightweight enum for the user’s choice of distribution function
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Ord, PartialOrd, Eq, Hash)]
 pub enum DistributionFunctionUI {
     FixedAmount,
     Random,
@@ -404,6 +434,22 @@ pub enum DistributionFunctionUI {
     Exponential,
     Logarithmic,
     InvertedLogarithmic,
+}
+
+impl DistributionFunctionUI {
+    pub(crate) fn name(&self) -> &str {
+        match self {
+            DistributionFunctionUI::FixedAmount => "fixed_amount",
+            DistributionFunctionUI::Random => "random",
+            DistributionFunctionUI::StepDecreasingAmount => "step_decreasing_amount",
+            DistributionFunctionUI::Stepwise => "stepwise",
+            DistributionFunctionUI::Linear => "linear",
+            DistributionFunctionUI::Polynomial => "polynomial",
+            DistributionFunctionUI::Exponential => "exponential",
+            DistributionFunctionUI::Logarithmic => "logarithmic",
+            DistributionFunctionUI::InvertedLogarithmic => "inverted_logarithmic",
+        }
+    }
 }
 
 /// A lightweight enum for the user’s recipient selection
@@ -534,7 +580,7 @@ pub struct TokenBuildArgs {
 pub struct TokensScreen {
     pub app_context: Arc<AppContext>,
     pub tokens_subscreen: TokensSubscreen,
-    my_tokens: Arc<Mutex<Vec<IdentityTokenBalance>>>,
+    my_tokens: Arc<Mutex<IndexMap<IdentityTokenIdentifier, IdentityTokenBalance>>>,
     pub selected_token_id: Option<Identifier>,
     show_token_info: Option<Identifier>,
     backend_message: Option<(String, MessageType, DateTime<Utc>)>,
@@ -697,6 +743,9 @@ pub struct TokensScreen {
     pub inv_log_b_input: String,
     pub inv_log_min_value_input: String,
     pub inv_log_max_value_input: String,
+
+    pub function_images: BTreeMap<DistributionFunctionUI, ColorImage>,
+    pub function_textures: BTreeMap<DistributionFunctionUI, TextureHandle>,
 }
 
 impl TokensScreen {
@@ -704,6 +753,29 @@ impl TokensScreen {
         let my_tokens = Arc::new(Mutex::new(
             app_context.identity_token_balances().unwrap_or_default(),
         ));
+
+        let mut function_images = BTreeMap::new();
+
+        function_images.insert(
+            DistributionFunctionUI::Exponential,
+            load_formula_image(EXP_FORMULA_PNG),
+        );
+        function_images.insert(
+            DistributionFunctionUI::Logarithmic,
+            load_formula_image(LOG_FORMULA_PNG),
+        );
+        function_images.insert(
+            DistributionFunctionUI::InvertedLogarithmic,
+            load_formula_image(INV_LOG_FORMULA_PNG),
+        );
+        function_images.insert(
+            DistributionFunctionUI::Polynomial,
+            load_formula_image(POLYNOMIAL_FORMULA_PNG),
+        );
+        function_images.insert(
+            DistributionFunctionUI::Linear,
+            load_formula_image(LINEAR_FORMULA_PNG),
+        );
 
         let mut screen = Self {
             app_context: app_context.clone(),
@@ -859,6 +931,8 @@ impl TokensScreen {
             // minting_allow_choosing_destination
             minting_allow_choosing_destination: false,
             minting_allow_choosing_destination_rules: ChangeControlRulesUI::default(),
+            function_images,
+            function_textures: BTreeMap::default(),
         };
 
         if let Ok(saved_ids) = screen.app_context.db.load_token_order() {
@@ -876,26 +950,33 @@ impl TokensScreen {
     /// Reorder `my_tokens` to match a given list of (token_id, identity_id).
     fn reorder_vec_to(&self, new_order: Vec<(Identifier, Identifier)>) {
         let mut lock = self.my_tokens.lock().unwrap();
-        for (desired_idx, (token_id, identity_id)) in new_order.iter().enumerate() {
-            if let Some(current_idx) = lock
+
+        // Create a temporary new IndexMap in the desired order
+        let mut reordered = IndexMap::with_capacity(lock.len());
+
+        for (token_id, identity_id) in new_order {
+            if let Some((key, value)) = lock
                 .iter()
-                .position(|t| t.token_identifier == *token_id && t.identity_id == *identity_id)
+                .find(|(_, v)| v.token_identifier == token_id && v.identity_id == identity_id)
+                .map(|(k, v)| (k.clone(), v.clone()))
             {
-                if current_idx != desired_idx && current_idx < lock.len() {
-                    lock.swap(current_idx, desired_idx);
-                }
+                reordered.insert(key, value);
             }
         }
+
+        // Replace the original with the reordered map
+        *lock = reordered;
     }
 
-    /// Save the current vector's order of token IDs to the DB
+    /// Save the current map's order of token IDs to the DB
     fn save_current_order(&self) {
         let lock = self.my_tokens.lock().unwrap();
         let all_ids = lock
             .iter()
-            .map(|token| (token.token_identifier.clone(), token.identity_id.clone()))
+            .map(|(_, token)| (token.token_identifier.clone(), token.identity_id.clone()))
             .collect::<Vec<_>>();
         drop(lock);
+
         self.app_context
             .db
             .save_token_order(all_ids)
@@ -974,10 +1055,10 @@ impl TokensScreen {
     /// Returns a Vec of (token_identifier, token_name, total_balance).
     fn group_tokens_by_identifier(
         &self,
-        tokens: &[IdentityTokenBalance],
+        tokens: &IndexMap<IdentityTokenIdentifier, IdentityTokenBalance>,
     ) -> Vec<(Identifier, String, u64)> {
         let mut map: HashMap<Identifier, (String, u64)> = HashMap::new();
-        for tb in tokens {
+        for tb in tokens.values() {
             let entry = map.entry(tb.token_identifier.clone()).or_insert_with(|| {
                 // Store (token_name, running_total_balance)
                 (tb.token_name.clone(), 0u64)
@@ -1019,7 +1100,11 @@ impl TokensScreen {
 
     /// Renders the top-level token list (one row per unique token).
     /// When the user clicks on a token, we set `selected_token_id`.
-    fn render_token_list(&mut self, ui: &mut Ui, tokens: &[IdentityTokenBalance]) {
+    fn render_token_list(
+        &mut self,
+        ui: &mut Ui,
+        tokens: &IndexMap<IdentityTokenIdentifier, IdentityTokenBalance>,
+    ) {
         let mut grouped = self.group_tokens_by_identifier(tokens);
         if !self.use_custom_order {
             self.sort_vec_of_groups(&mut grouped);
@@ -1124,14 +1209,18 @@ impl TokensScreen {
     }
 
     /// Renders details for the selected token_id: a row per identity that holds that token.
-    fn render_token_details(&mut self, ui: &mut Ui, tokens: &[IdentityTokenBalance]) -> AppAction {
+    fn render_token_details(
+        &mut self,
+        ui: &mut Ui,
+        tokens: &IndexMap<IdentityTokenIdentifier, IdentityTokenBalance>,
+    ) -> AppAction {
         let mut action = AppAction::None;
 
         let token_id = self.selected_token_id.as_ref().unwrap();
 
         // Filter out only the IdentityTokenBalance for this token_id
         let mut detail_list: Vec<IdentityTokenBalance> = tokens
-            .iter()
+            .values()
             .filter(|t| &t.token_identifier == token_id)
             .cloned()
             .collect();
@@ -1175,6 +1264,7 @@ impl TokensScreen {
                             .column(Column::initial(60.0).resizable(true)) // Identity Alias
                             .column(Column::initial(200.0).resizable(true)) // Identity ID
                             .column(Column::initial(60.0).resizable(true)) // Balance
+                            .column(Column::initial(60.0).resizable(true)) // Estimated Rewards
                             .column(Column::initial(200.0).resizable(true)) // Actions
                             .header(30.0, |mut header| {
                                 header.col(|ui| {
@@ -1191,6 +1281,9 @@ impl TokensScreen {
                                     if ui.button("Balance").clicked() {
                                         self.toggle_sort(SortColumn::Balance);
                                     }
+                                });
+                                header.col(|ui| {
+                                    ui.label("Estimated Unclaimed Rewards");
                                 });
                                 header.col(|ui| {
                                     ui.label("Actions");
@@ -1216,6 +1309,18 @@ impl TokensScreen {
                                         });
                                         row.col(|ui| {
                                             ui.label(itb.balance.to_string());
+                                        });
+                                        row.col(|ui| {
+                                            if let Some(known_rewards) = itb.estimated_unclaimed_rewards {
+                                                ui.label(known_rewards.to_string());
+                                            } else {
+                                                if ui.button("Estimate Unclaimed Rewards").clicked() {
+                                                    action = AppAction::BackendTask(BackendTask::TokenTask(TokenTask::EstimatePerpetualTokenRewards {
+                                                        identity_id: itb.identity_id,
+                                                        token_id: itb.token_identifier,
+                                                    }))
+                                                }
+                                            }
                                         });
                                         row.col(|ui| {
                                             ui.horizontal(|ui| {
@@ -1315,6 +1420,17 @@ impl TokensScreen {
                                                         ui.close_menu();
                                                     }
                                                     if ui.button("Resume").clicked() {
+                                                        action = AppAction::AddScreen(
+                                                            Screen::ResumeTokensScreen(
+                                                                ResumeTokensScreen::new(
+                                                                    itb.clone(),
+                                                                    &self.app_context,
+                                                                ),
+                                                            ),
+                                                        );
+                                                        ui.close_menu();
+                                                    }
+                                                    if ui.button("View Claims").clicked() {
                                                         action = AppAction::AddScreen(
                                                             Screen::ResumeTokensScreen(
                                                                 ResumeTokensScreen::new(
@@ -1555,7 +1671,7 @@ impl TokensScreen {
         action
     }
 
-    pub fn render_token_creator(&mut self, ui: &mut egui::Ui) -> AppAction {
+    pub fn render_token_creator(&mut self, context: &Context, ui: &mut egui::Ui) -> AppAction {
         let mut action = AppAction::None;
 
         // 1) If we've successfully completed contract creation, show a success UI
@@ -2158,6 +2274,24 @@ Emits tokens in fixed amounts for specific intervals.
 
                             ui.add_space(2.0);
 
+                            if let Some(texture) = self.function_textures.get(&self.perpetual_dist_function) {
+                                ui.add_space(10.0);
+                                ui.horizontal(|ui| {
+                                    ui.add_space(50.0); // Shift image right
+                                    ui.image(texture);
+                                });
+                                ui.add_space(10.0);
+                            } else if let Some(image) = self.function_images.get(&self.perpetual_dist_function) {
+                                let texture = context.load_texture(self.perpetual_dist_function.name(), image.clone(), Default::default());
+                                self.function_textures.insert(self.perpetual_dist_function.clone(), texture.clone());
+                                ui.add_space(10.0);
+                                ui.horizontal(|ui| {
+                                    ui.add_space(50.0); // Shift image right
+                                    ui.image(&texture);
+                                });
+                                ui.add_space(10.0);
+                            }
+
                             // Based on the user’s chosen function, display relevant fields:
                             match self.perpetual_dist_function {
                                 DistributionFunctionUI::FixedAmount => {
@@ -2319,19 +2453,19 @@ Emits tokens in fixed amounts for specific intervals.
 
                                 DistributionFunctionUI::Exponential => {
                                     ui.horizontal(|ui| {
-                                        ui.label("        - Scaling Factor (a, i64):");
+                                        ui.label("        - Scaling Factor (a, { 0 < a ≤ 256) }):");
                                         ui.text_edit_singleline(&mut self.exp_a_input);
                                     });
                                     ui.horizontal(|ui| {
-                                        ui.label("        - Exponent Rate (m, i64):");
+                                        ui.label("        - Exponent Rate (m, { -8 ≤ m ≤ 8 ; m ≠ 0 }):");
                                         ui.text_edit_singleline(&mut self.exp_m_input);
                                     });
                                     ui.horizontal(|ui| {
-                                        ui.label("        - Exponent Rate (n, i64):");
+                                        ui.label("        - Exponent Rate (n, 0 < a ≤ 32):");
                                         ui.text_edit_singleline(&mut self.exp_n_input);
                                     });
                                     ui.horizontal(|ui| {
-                                        ui.label("        - Divisor (d, i64):");
+                                        ui.label("        - Divisor (d, {u64 ; d ≠ 0 }):");
                                         ui.text_edit_singleline(&mut self.exp_d_input);
                                     });
                                     ui.horizontal(|ui| {
@@ -2343,7 +2477,7 @@ Emits tokens in fixed amounts for specific intervals.
                                         ui.text_edit_singleline(&mut self.exp_o_input);
                                     });
                                     ui.horizontal(|ui| {
-                                        ui.label("        - Offset (c, i64):");
+                                        ui.label("        - Offset (b, i64):");
                                         ui.text_edit_singleline(&mut self.exp_b_input);
                                     });
                                     ui.horizontal(|ui| {
@@ -3592,6 +3726,7 @@ Emits tokens in fixed amounts for specific intervals.
                 token_name: token_info.token_name.clone(),
                 identity_id: identity.identity.id(),
                 balance: 0,
+                estimated_unclaimed_rewards: None,
                 data_contract_id: token_info.data_contract_id,
                 token_position: token_info.token_position,
             };
@@ -3601,15 +3736,14 @@ Emits tokens in fixed amounts for specific intervals.
         let my_tokens_clone = self.my_tokens.lock().unwrap().clone();
 
         // Prevent duplicates
-        for token in tokens {
-            if !my_tokens_clone.iter().any(|t| {
-                t.token_identifier == token.token_identifier && t.identity_id == token.identity_id
+        for itb in tokens {
+            if !my_tokens_clone.values().any(|t| {
+                t.token_identifier == itb.token_identifier && t.identity_id == itb.identity_id
             }) {
-                let _ = self.app_context.insert_token(
-                    &token.token_identifier,
-                    &token.token_name,
-                    &token.data_contract_id,
-                    token.token_position,
+                let _ = self.app_context.insert_token_identity_balance(
+                    &itb.token_identifier,
+                    &itb.identity_id,
+                    0,
                 );
                 action |=
                     AppAction::BackendTask(BackendTask::TokenTask(TokenTask::QueryMyTokenBalances));
@@ -3747,7 +3881,7 @@ Emits tokens in fixed amounts for specific intervals.
             .my_tokens
             .lock()
             .unwrap()
-            .iter()
+            .values()
             .find_map(|t| {
                 if t.token_identifier == token_to_remove {
                     Some(t.token_name.clone())
@@ -3904,6 +4038,15 @@ impl ScreenLike for TokensScreen {
                 self.selected_token_infos = info.1.clone();
                 self.refreshing_status = RefreshingStatus::NotRefreshing;
             }
+            BackendTaskSuccessResult::TokenEstimatedNonClaimedPerpetualDistributionAmount(
+                identity_token_id,
+                amount,
+            ) => {
+                let mut tokens = self.my_tokens.lock().unwrap();
+                if let Some(itb) = tokens.get_mut(&identity_token_id) {
+                    itb.estimated_unclaimed_rewards = Some(amount)
+                }
+            }
             _ => {}
         }
     }
@@ -3931,7 +4074,7 @@ impl ScreenLike for TokensScreen {
                 .my_tokens
                 .lock()
                 .unwrap()
-                .iter()
+                .values()
                 .find_map(|t| {
                     if t.token_identifier == token_id {
                         Some(t.token_name.clone())
@@ -4037,7 +4180,7 @@ impl ScreenLike for TokensScreen {
                     }
                 }
                 TokensSubscreen::TokenCreator => {
-                    action |= self.render_token_creator(ui);
+                    action |= self.render_token_creator(ctx, ui);
                 }
             }
 

@@ -1,6 +1,7 @@
 use crate::context::AppContext;
 use crate::database::Database;
 use crate::model::qualified_contract::QualifiedContract;
+use bincode::config;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
@@ -34,39 +35,28 @@ impl Database {
             params![contract_id, contract_bytes, contract_name, network],
         )?;
 
-        // Next, if the contract has tokens, add the tokens to identity_token_balances
+        // Next, if the contract has tokens, add the tokens
         if !data_contract.tokens().is_empty() {
-            for token in data_contract.tokens().iter() {
-                let wallets = app_context.wallets.read().unwrap();
-                let identities = self.get_local_qualified_identities(app_context, &wallets)?;
-                if let Some(token_id) = data_contract.token_id(*token.0) {
-                    let token_name = token
-                        .1
+            for (token_contract_position, token_configuration) in data_contract.tokens().iter() {
+                if let Some(token_id) = data_contract.token_id(*token_contract_position) {
+                    let config = config::standard();
+                    let Some(serialized_token_configuration) =
+                        bincode::encode_to_vec(&token_configuration, config).ok()
+                    else {
+                        // We should always be able to serialize
+                        return Ok(());
+                    };
+                    let token_name = token_configuration
                         .conventions()
                         .plural_form_by_language_code_or_default("en");
-                    for identity in identities {
-                        let balance = if data_contract.owner_id() == identity.identity.id() {
-                            token.1.base_supply()
-                        } else {
-                            0
-                        };
-                        let _ = self
-                            .insert_identity_token_balance(
-                                &token_id,
-                                token_name,
-                                &identity.identity.id(),
-                                balance,
-                                &data_contract.id(),
-                                *token.0,
-                                app_context,
-                            )
-                            .map_err(|e| {
-                                format!(
-                                    "Failed to insert token balance into local database: {}",
-                                    e.to_string()
-                                )
-                            });
-                    }
+                    self.insert_token(
+                        &token_id,
+                        token_name,
+                        serialized_token_configuration.as_slice(),
+                        &data_contract.id(),
+                        *token_contract_position,
+                        app_context,
+                    )?;
                 }
             }
         }

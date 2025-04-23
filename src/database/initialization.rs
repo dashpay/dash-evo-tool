@@ -4,7 +4,7 @@ use rusqlite::{params, Connection};
 use std::fs;
 use std::path::Path;
 
-pub const DEFAULT_DB_VERSION: u16 = 6;
+pub const DEFAULT_DB_VERSION: u16 = 7;
 
 pub const DEFAULT_NETWORK: &str = "dash";
 
@@ -34,6 +34,9 @@ impl Database {
 
     fn apply_version_changes(&self, version: u16) -> rusqlite::Result<()> {
         match version {
+            7 => {
+                self.migrate_asset_lock_fk_to_set_null()?;
+            }
             6 => {
                 self.update_scheduled_votes_table()?;
                 self.initialize_token_table()?;
@@ -272,8 +275,8 @@ impl Database {
                         identity_id_potentially_in_creation BLOB,
                         wallet BLOB NOT NULL,
                         network TEXT NOT NULL,
-                        FOREIGN KEY (identity_id) REFERENCES identity(id) ON DELETE CASCADE,
-                        FOREIGN KEY (identity_id_potentially_in_creation) REFERENCES identity(id),
+                        FOREIGN KEY (identity_id) REFERENCES identity(id) ON DELETE SET NULL,
+                        FOREIGN KEY (identity_id_potentially_in_creation) REFERENCES identity(id) ON DELETE SET NULL,
                         FOREIGN KEY (wallet) REFERENCES wallet(seed_hash) ON DELETE CASCADE
                     )",
             [],

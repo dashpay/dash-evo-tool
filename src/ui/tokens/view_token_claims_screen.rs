@@ -72,7 +72,7 @@ impl ViewTokenClaimsScreen {
 }
 
 impl ScreenLike for ViewTokenClaimsScreen {
-    fn display_message(&mut self, message: &str, message_type: MessageType) {
+    fn display_message(&mut self, _message: &str, message_type: MessageType) {
         match message_type {
             MessageType::Success => {}
             MessageType::Error => {}

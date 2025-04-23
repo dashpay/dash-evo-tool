@@ -3,19 +3,8 @@
 use crate::model::qualified_identity::IdentityType;
 use crate::ui::tokens::tokens_screen::IdentityTokenIdentifier;
 use crate::{backend_task::BackendTaskSuccessResult, context::AppContext};
-use dash_sdk::dpp::block::extended_epoch_info::v0::ExtendedEpochInfoV0Getters;
-use dash_sdk::dpp::block::extended_epoch_info::ExtendedEpochInfo;
-use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
-use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
-use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::accessors::v0::TokenDistributionRulesV0Getters;
-use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::methods::v0::TokenPerpetualDistributionV0Accessors;
-use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::distribution_recipient::TokenDistributionRecipient;
-use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::reward_distribution_moment::RewardDistributionMoment;
-use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-use dash_sdk::platform::fetch_current_no_parameters::FetchCurrent;
-use dash_sdk::platform::query::TokenLastClaimQuery;
-use dash_sdk::platform::{Fetch, Identifier};
-use dash_sdk::Sdk;
+use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
+use dash_sdk::{platform::Identifier, Sdk};
 
 impl AppContext {
     pub async fn query_token_non_claimed_perpetual_distribution_rewards(

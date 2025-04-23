@@ -9,9 +9,9 @@ use dash_sdk::{
 };
 use tokio::time::sleep;
 
-use crate::{context::AppContext, model::qualified_identity::QualifiedIdentity};
-
 use super::BackendTaskSuccessResult;
+use crate::database::contracts::InsertTokensToo::AllTokensShouldBeAdded;
+use crate::{context::AppContext, model::qualified_identity::QualifiedIdentity};
 
 impl AppContext {
     pub async fn register_data_contract(
@@ -35,6 +35,7 @@ impl AppContext {
                     .insert_contract_if_not_exists(
                         &returned_contract,
                         optional_alias.as_deref(),
+                        AllTokensShouldBeAdded,
                         self,
                     )
                     .map_err(|e| {
@@ -85,6 +86,7 @@ impl AppContext {
                             .insert_contract_if_not_exists(
                                 &contract,
                                 optional_alias.as_deref(),
+                                AllTokensShouldBeAdded,
                                 self,
                             )
                             .map_err(|e| {
@@ -94,9 +96,9 @@ impl AppContext {
                                 )
                             })?;
                         println!("DataContract successfully registered but the proof was wrong. Please report to Dash Core Group. Error: {}", e.to_string());
-                        Ok(BackendTaskSuccessResult::Message(format!(
-                            "DataContract successfully registered"
-                        )))
+                        Ok(BackendTaskSuccessResult::Message(
+                            "DataContract successfully registered".to_string(),
+                        ))
                     } else {
                         Err(format!(
                             "Failed to register DataContract: {}",

@@ -1,5 +1,5 @@
 use dash_sdk::dpp::dashcore::Network;
-use directories::{ProjectDirs, UserDirs};
+use directories::ProjectDirs;
 use std::fs;
 use std::path::PathBuf;
 

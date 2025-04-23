@@ -10,29 +10,25 @@ use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::ac
 use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::distribution_recipient::TokenDistributionRecipient;
 use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::methods::v0::TokenPerpetualDistributionV0Accessors;
 use dash_sdk::dpp::data_contract::TokenConfiguration;
-use dash_sdk::dpp::data_contract::v0::DataContractV0;
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
+use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use eframe::egui::{self, Color32, Context, Ui};
 use egui::RichText;
-
 use crate::app::{AppAction, BackendTasksExecutionMode};
-use crate::backend_task::tokens::TokenTask;
 use crate::backend_task::BackendTask;
+use crate::backend_task::tokens::TokenTask;
 use crate::context::AppContext;
 use crate::model::qualified_contract::QualifiedContract;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
+use crate::ui::{MessageType, Screen, ScreenLike};
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
-use crate::ui::{MessageType, Screen, ScreenLike};
-use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
-use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
-use dash_sdk::platform::DataContract;
-
 use super::tokens_screen::IdentityTokenBalance;
 
 /// States for the claim flow
@@ -261,7 +257,7 @@ impl ClaimTokensScreen {
                                 data_contract,
                                 token_position: self.identity_token_balance.token_position,
                                 actor_identity: self.identity.clone(),
-                                distribution_type: distribution_type,
+                                distribution_type,
                                 signing_key: self.selected_key.clone().expect("No key selected"),
                             }),
                             BackendTask::TokenTask(TokenTask::QueryMyTokenBalances),

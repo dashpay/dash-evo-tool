@@ -1,3 +1,4 @@
+pub mod add_token_by_id_screen;
 pub mod burn_tokens_screen;
 pub mod claim_tokens_screen;
 pub mod destroy_frozen_funds_screen;

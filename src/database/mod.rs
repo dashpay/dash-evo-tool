@@ -1,6 +1,6 @@
 mod asset_lock_transaction;
 mod contested_names;
-mod contracts;
+pub(crate) mod contracts;
 mod identities;
 mod initialization;
 mod proof_log;

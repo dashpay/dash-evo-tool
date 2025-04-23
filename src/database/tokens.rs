@@ -1,7 +1,10 @@
+use bincode::{self, config::standard};
+use dash_sdk::dpp::data_contract::TokenConfiguration;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::platform::Identifier;
 use dash_sdk::query_types::IndexMap;
 use rusqlite::params;
+use rusqlite::OptionalExtension;
 
 use super::Database;
 use crate::ui::tokens::tokens_screen::{IdentityTokenIdentifier, TokenInfo};
@@ -25,6 +28,65 @@ impl Database {
             [],
         )?;
         Ok(())
+    }
+
+    pub fn get_token_config_for_id(
+        &self,
+        token_id: &Identifier,
+        app_context: &AppContext,
+    ) -> rusqlite::Result<Option<TokenConfiguration>> {
+        let network = app_context.network_string();
+        let token_id_bytes = token_id.to_vec();
+
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT token_config
+             FROM token
+             WHERE id = ? AND network = ?",
+        )?;
+
+        let token_config_bytes: Option<Vec<u8>> = stmt
+            .query_row(params![token_id_bytes, network], |row| row.get(0))
+            .optional()?;
+
+        match token_config_bytes {
+            Some(bytes) => {
+                match bincode::decode_from_slice::<TokenConfiguration, _>(&bytes, standard()) {
+                    Ok((config, _)) => Ok(Some(config)),
+                    Err(_) => Ok(None),
+                }
+            }
+            None => Ok(None),
+        }
+    }
+
+    pub fn get_contract_id_by_token_id(
+        &self,
+        token_id: &Identifier,
+        app_context: &AppContext,
+    ) -> rusqlite::Result<Option<Identifier>> {
+        let network = app_context.network_string();
+        let token_id_bytes = token_id.to_vec();
+
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT data_contract_id
+             FROM token
+             WHERE id = ? AND network = ?",
+        )?;
+
+        let contract_id_bytes: Option<Vec<u8>> = stmt
+            .query_row(params![token_id_bytes, network], |row| row.get(0))
+            .optional()?;
+
+        match contract_id_bytes {
+            Some(bytes) => {
+                Ok(Some(Identifier::from_vec(bytes).map_err(|e| {
+                    rusqlite::Error::ToSqlConversionFailure(Box::new(e))
+                })?))
+            }
+            None => Ok(None),
+        }
     }
 
     pub fn insert_token(

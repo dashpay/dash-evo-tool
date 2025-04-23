@@ -1,24 +1,32 @@
 use crate::context::AppContext;
 use crate::database::Database;
 use crate::model::qualified_contract::QualifiedContract;
+use bincode::config;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::accessors::v0::TokenConfigurationConventionV0Getters;
-use dash_sdk::dpp::data_contract::DataContract;
+use dash_sdk::dpp::data_contract::{DataContract, TokenContractPosition};
 use dash_sdk::dpp::identifier::Identifier;
-use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::serialization::{
     PlatformDeserializableWithPotentialValidationFromVersionedStructure,
     PlatformSerializableWithPlatformVersion,
 };
 use rusqlite::{params, params_from_iter, Result};
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InsertTokensToo {
+    AllTokensShouldBeAdded,
+    NoTokensShouldBeAdded,
+    SomeTokensShouldBeAdded(Vec<TokenContractPosition>),
+}
+
 impl Database {
     pub fn insert_contract_if_not_exists(
         &self,
         data_contract: &DataContract,
         contract_name: Option<&str>,
+        insert_tokens_too: InsertTokensToo,
         app_context: &AppContext,
     ) -> Result<()> {
         // Serialize the contract
@@ -34,38 +42,40 @@ impl Database {
             params![contract_id, contract_bytes, contract_name, network],
         )?;
 
-        // Next, if the contract has tokens, add the tokens to identity_token_balances
+        // Next, if the contract has tokens, add the tokens
         if !data_contract.tokens().is_empty() {
-            for token in data_contract.tokens().iter() {
-                let wallets = app_context.wallets.read().unwrap();
-                let identities = self.get_local_qualified_identities(app_context, &wallets)?;
-                if let Some(token_id) = data_contract.token_id(*token.0) {
-                    let token_name = token
-                        .1
-                        .conventions()
-                        .plural_form_by_language_code_or_default("en");
-                    for identity in identities {
-                        let balance = if data_contract.owner_id() == identity.identity.id() {
-                            token.1.base_supply()
-                        } else {
-                            0
+            let positions = match insert_tokens_too {
+                InsertTokensToo::AllTokensShouldBeAdded => {
+                    data_contract.tokens().keys().cloned().collect()
+                }
+                InsertTokensToo::NoTokensShouldBeAdded => {
+                    return Ok(());
+                }
+                InsertTokensToo::SomeTokensShouldBeAdded(positions) => positions,
+            };
+            for token_contract_position in positions {
+                if let Some(token_id) = data_contract.token_id(token_contract_position) {
+                    if let Ok(token_configuration) =
+                        data_contract.expected_token_configuration(token_contract_position)
+                    {
+                        let config = config::standard();
+                        let Some(serialized_token_configuration) =
+                            bincode::encode_to_vec(&token_configuration, config).ok()
+                        else {
+                            // We should always be able to serialize
+                            return Ok(());
                         };
-                        let _ = self
-                            .insert_identity_token_balance(
-                                &token_id,
-                                token_name,
-                                &identity.identity.id(),
-                                balance,
-                                &data_contract.id(),
-                                *token.0,
-                                app_context,
-                            )
-                            .map_err(|e| {
-                                format!(
-                                    "Failed to insert token balance into local database: {}",
-                                    e.to_string()
-                                )
-                            });
+                        let token_name = token_configuration
+                            .conventions()
+                            .plural_form_by_language_code_or_default("en");
+                        self.insert_token(
+                            &token_id,
+                            token_name,
+                            serialized_token_configuration.as_slice(),
+                            &data_contract.id(),
+                            token_contract_position,
+                            app_context,
+                        )?;
                     }
                 }
             }
@@ -233,24 +243,13 @@ impl Database {
         app_context: &AppContext,
     ) -> rusqlite::Result<()> {
         let network = app_context.network_string();
-        let conn = self.conn.lock().unwrap();
-        let tx = conn.unchecked_transaction()?;
 
-        // 1) remove identity token balances for that contract
-        tx.execute(
-            "DELETE FROM identity_token_balances
-         WHERE data_contract_id = ? AND network = ?",
-            params![contract_id, network],
-        )?;
-
-        // 2) remove the contract itself
-        tx.execute(
+        // 1) remove the contract itself
+        self.execute(
             "DELETE FROM contract
          WHERE contract_id = ? AND network = ?",
             params![contract_id, network],
         )?;
-
-        tx.commit()?;
 
         Ok(())
     }

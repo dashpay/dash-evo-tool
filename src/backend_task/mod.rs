@@ -4,10 +4,14 @@ use crate::backend_task::contract::ContractTask;
 use crate::backend_task::core::{CoreItem, CoreTask};
 use crate::backend_task::document::DocumentTask;
 use crate::backend_task::identity::IdentityTask;
+use crate::backend_task::system_task::SystemTask;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
-use crate::ui::tokens::tokens_screen::{ContractDescriptionInfo, TokenInfo};
+use crate::ui::tokens::tokens_screen::{
+    ContractDescriptionInfo, IdentityTokenIdentifier, TokenInfo,
+};
 use contested_names::ScheduledDPNSVote;
+use dash_sdk::dpp::balances::credits::TokenAmount;
 use dash_sdk::dpp::prelude::DataContract;
 use dash_sdk::dpp::state_transition::StateTransition;
 use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
@@ -28,6 +32,7 @@ pub mod core;
 pub mod document;
 pub mod identity;
 pub mod register_contract;
+pub mod system_task;
 pub mod tokens;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -39,6 +44,7 @@ pub(crate) enum BackendTask {
     CoreTask(CoreTask),
     BroadcastStateTransition(StateTransition),
     TokenTask(TokenTask),
+    SystemTask(SystemTask),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -58,6 +64,7 @@ pub(crate) enum BackendTaskSuccessResult {
     PageDocuments(IndexMap<Identifier, Option<Document>>, Option<Start>),
     TokensByKeyword(Vec<TokenInfo>, Option<Start>),
     DescriptionsByKeyword(Vec<ContractDescriptionInfo>, Option<Start>),
+    TokenEstimatedNonClaimedPerpetualDistributionAmount(IdentityTokenIdentifier, TokenAmount),
     ContractsWithDescriptions(
         BTreeMap<Identifier, (Option<ContractDescriptionInfo>, Vec<TokenInfo>)>,
     ),
@@ -132,6 +139,7 @@ impl AppContext {
             BackendTask::TokenTask(token_task) => {
                 self.run_token_task(token_task, &sdk, sender).await
             }
+            BackendTask::SystemTask(system_task) => self.run_system_task(system_task, sender).await,
         }
     }
 }

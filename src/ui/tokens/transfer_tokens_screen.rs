@@ -68,7 +68,7 @@ impl TransferTokensScreen {
             .get_identity_token_balances(app_context)
             .expect("Token balances not loaded");
         let max_amount = token_balances
-            .iter()
+            .values()
             .find(|balance| balance.identity_id == identity.identity.id())
             .map(|balance| balance.balance)
             .unwrap_or(0);
@@ -299,7 +299,7 @@ impl ScreenLike for TransferTokensScreen {
             .get_identity_token_balances(&self.app_context)
             .expect("Token balances not loaded");
         self.max_amount = token_balances
-            .iter()
+            .values()
             .find(|balance| balance.identity_id == self.identity.identity.id())
             .map(|balance| balance.balance)
             .unwrap_or(0);

@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use chrono::{DateTime, Duration, Utc};
 use dash_sdk::dpp::balances::credits::TokenAmount;
+use dash_sdk::dpp::dashcore::Network::Devnet;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationV0;
 use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::v0::TokenDistributionRulesV0;
@@ -26,10 +27,13 @@ use dash_sdk::dpp::identity::SecurityLevel;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::Start;
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
+use dash_sdk::query_types::IndexMap;
 use eframe::egui::{self, CentralPanel, Color32, Context, Frame, Margin, Ui};
-use egui::{Align, RichText};
+use eframe::glow::Texture;
+use egui::{Align, ColorImage, RichText, TextureHandle};
 use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
-use egui_extras::{Column, TableBuilder};
+use egui_extras::{Column, RetainedImage, TableBuilder};
+use image::ImageReader;
 use crate::app::BackendTasksExecutionMode;
 use crate::backend_task::contract::ContractTask;
 use crate::backend_task::tokens::TokenTask;
@@ -43,7 +47,9 @@ use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
-use crate::ui::{BackendTaskSuccessResult, MessageType, RootScreenType, Screen, ScreenLike};
+use crate::ui::{
+    BackendTaskSuccessResult, MessageType, RootScreenType, Screen, ScreenLike, ScreenType,
+};
 
 use super::burn_tokens_screen::BurnTokensScreen;
 use super::claim_tokens_screen::ClaimTokensScreen;
@@ -55,10 +61,30 @@ use super::resume_tokens_screen::ResumeTokensScreen;
 use super::transfer_tokens_screen::TransferTokensScreen;
 use super::unfreeze_tokens_screen::UnfreezeTokensScreen;
 
+const EXP_FORMULA_PNG: &[u8] = include_bytes!("../../../assets/exp_function.png");
+const INV_LOG_FORMULA_PNG: &[u8] = include_bytes!("../../../assets/inv_log_function.png");
+const LOG_FORMULA_PNG: &[u8] = include_bytes!("../../../assets/log_function.png");
+const LINEAR_FORMULA_PNG: &[u8] = include_bytes!("../../../assets/linear_function.png");
+const POLYNOMIAL_FORMULA_PNG: &[u8] = include_bytes!("../../../assets/polynomial_function.png");
+
+pub fn load_formula_image(bytes: &[u8]) -> ColorImage {
+    let image = ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .expect("Failed to guess image format")
+        .decode()
+        .expect("Failed to decode image")
+        .to_rgba8();
+
+    let size = [image.width() as usize, image.height() as usize];
+    let pixels = image.as_flat_samples();
+    let color_image = ColorImage::from_rgba_unmultiplied(size, pixels.as_slice());
+    color_image
+}
+
 /// Token info
 #[derive(Clone, Debug, PartialEq)]
 pub struct TokenInfo {
-    pub token_identifier: Identifier,
+    pub token_id: Identifier,
     pub token_name: String,
     pub data_contract_id: Identifier,
     pub token_position: u16,
@@ -71,13 +97,60 @@ pub struct ContractDescriptionInfo {
     pub description: String,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
+pub struct IdentityTokenIdentifier {
+    pub identity_id: Identifier,
+    pub token_id: Identifier,
+}
+
+impl From<IdentityTokenBalance> for IdentityTokenIdentifier {
+    fn from(value: IdentityTokenBalance) -> Self {
+        let IdentityTokenBalance {
+            token_id,
+            identity_id,
+            ..
+        } = value;
+
+        IdentityTokenIdentifier {
+            identity_id,
+            token_id,
+        }
+    }
+}
+
+impl From<IdentityTokenMaybeBalance> for IdentityTokenIdentifier {
+    fn from(value: IdentityTokenMaybeBalance) -> Self {
+        let IdentityTokenMaybeBalance {
+            token_id,
+            identity_id,
+            ..
+        } = value;
+
+        IdentityTokenIdentifier {
+            identity_id,
+            token_id,
+        }
+    }
+}
+
+/// A token owned by an identity.
+#[derive(Clone, Debug, PartialEq)]
+pub struct IdentityTokenMaybeBalance {
+    pub token_id: Identifier,
+    pub token_name: String,
+    pub identity_id: Identifier,
+    pub identity_alias: Option<String>,
+    pub balance: Option<IdentityTokenBalance>,
+}
+
 /// A token owned by an identity.
 #[derive(Clone, Debug, PartialEq)]
 pub struct IdentityTokenBalance {
-    pub token_identifier: Identifier,
+    pub token_id: Identifier,
     pub token_name: String,
     pub identity_id: Identifier,
-    pub balance: u64,
+    pub balance: TokenAmount,
+    pub estimated_unclaimed_rewards: Option<TokenAmount>,
     pub data_contract_id: Identifier,
     pub token_position: u16,
 }
@@ -393,7 +466,7 @@ pub enum PerpetualDistributionIntervalTypeUI {
 }
 
 /// A lightweight enum for the user’s choice of distribution function
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Ord, PartialOrd, Eq, Hash)]
 pub enum DistributionFunctionUI {
     FixedAmount,
     Random,
@@ -404,6 +477,22 @@ pub enum DistributionFunctionUI {
     Exponential,
     Logarithmic,
     InvertedLogarithmic,
+}
+
+impl DistributionFunctionUI {
+    pub(crate) fn name(&self) -> &str {
+        match self {
+            DistributionFunctionUI::FixedAmount => "fixed_amount",
+            DistributionFunctionUI::Random => "random",
+            DistributionFunctionUI::StepDecreasingAmount => "step_decreasing_amount",
+            DistributionFunctionUI::Stepwise => "stepwise",
+            DistributionFunctionUI::Linear => "linear",
+            DistributionFunctionUI::Polynomial => "polynomial",
+            DistributionFunctionUI::Exponential => "exponential",
+            DistributionFunctionUI::Logarithmic => "logarithmic",
+            DistributionFunctionUI::InvertedLogarithmic => "inverted_logarithmic",
+        }
+    }
 }
 
 /// A lightweight enum for the user’s recipient selection
@@ -534,7 +623,9 @@ pub struct TokenBuildArgs {
 pub struct TokensScreen {
     pub app_context: Arc<AppContext>,
     pub tokens_subscreen: TokensSubscreen,
-    my_tokens: Arc<Mutex<Vec<IdentityTokenBalance>>>,
+    all_known_tokens: IndexMap<Identifier, TokenInfo>,
+    identities: IndexMap<Identifier, QualifiedIdentity>,
+    my_tokens: IndexMap<IdentityTokenIdentifier, IdentityTokenBalance>,
     pub selected_token_id: Option<Identifier>,
     show_token_info: Option<Identifier>,
     backend_message: Option<(String, MessageType, DateTime<Utc>)>,
@@ -697,16 +788,57 @@ pub struct TokensScreen {
     pub inv_log_b_input: String,
     pub inv_log_min_value_input: String,
     pub inv_log_max_value_input: String,
+
+    pub function_images: BTreeMap<DistributionFunctionUI, ColorImage>,
+    pub function_textures: BTreeMap<DistributionFunctionUI, TextureHandle>,
 }
 
 impl TokensScreen {
     pub fn new(app_context: &Arc<AppContext>, tokens_subscreen: TokensSubscreen) -> Self {
-        let my_tokens = Arc::new(Mutex::new(
-            app_context.identity_token_balances().unwrap_or_default(),
-        ));
+        let identities = app_context
+            .load_local_qualified_identities()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|qi| (qi.identity.id(), qi))
+            .collect();
+        let all_known_tokens = app_context
+            .db
+            .get_all_known_tokens(&app_context)
+            .unwrap_or_default();
+
+        let my_tokens = app_context.identity_token_balances().unwrap_or_default();
+
+        if app_context.network == Devnet {
+            println!("my tokens {}", my_tokens.len());
+        }
+
+        let mut function_images = BTreeMap::new();
+
+        function_images.insert(
+            DistributionFunctionUI::Exponential,
+            load_formula_image(EXP_FORMULA_PNG),
+        );
+        function_images.insert(
+            DistributionFunctionUI::Logarithmic,
+            load_formula_image(LOG_FORMULA_PNG),
+        );
+        function_images.insert(
+            DistributionFunctionUI::InvertedLogarithmic,
+            load_formula_image(INV_LOG_FORMULA_PNG),
+        );
+        function_images.insert(
+            DistributionFunctionUI::Polynomial,
+            load_formula_image(POLYNOMIAL_FORMULA_PNG),
+        );
+        function_images.insert(
+            DistributionFunctionUI::Linear,
+            load_formula_image(LINEAR_FORMULA_PNG),
+        );
 
         let mut screen = Self {
             app_context: app_context.clone(),
+            identities,
+            all_known_tokens,
             my_tokens,
             selected_token_id: None,
             selected_contract_id: None,
@@ -859,6 +991,8 @@ impl TokensScreen {
             // minting_allow_choosing_destination
             minting_allow_choosing_destination: false,
             minting_allow_choosing_destination_rules: ChangeControlRulesUI::default(),
+            function_images,
+            function_textures: BTreeMap::default(),
         };
 
         if let Ok(saved_ids) = screen.app_context.db.load_token_order() {
@@ -874,28 +1008,33 @@ impl TokensScreen {
     // ─────────────────────────────────────────────────────────────────
 
     /// Reorder `my_tokens` to match a given list of (token_id, identity_id).
-    fn reorder_vec_to(&self, new_order: Vec<(Identifier, Identifier)>) {
-        let mut lock = self.my_tokens.lock().unwrap();
-        for (desired_idx, (token_id, identity_id)) in new_order.iter().enumerate() {
-            if let Some(current_idx) = lock
+    fn reorder_vec_to(&mut self, new_order: Vec<(Identifier, Identifier)>) {
+        // Create a temporary new IndexMap in the desired order
+        let mut reordered = IndexMap::with_capacity(self.my_tokens.len());
+
+        for (token_id, identity_id) in new_order {
+            if let Some((key, value)) = self
+                .my_tokens
                 .iter()
-                .position(|t| t.token_identifier == *token_id && t.identity_id == *identity_id)
+                .find(|(_, v)| v.token_id == token_id && v.identity_id == identity_id)
+                .map(|(k, v)| (*k, v.clone()))
             {
-                if current_idx != desired_idx && current_idx < lock.len() {
-                    lock.swap(current_idx, desired_idx);
-                }
+                reordered.insert(key, value);
             }
         }
+
+        // Replace the original with the reordered map
+        //self.my_tokens = reordered;
     }
 
-    /// Save the current vector's order of token IDs to the DB
+    /// Save the current map's order of token IDs to the DB
     fn save_current_order(&self) {
-        let lock = self.my_tokens.lock().unwrap();
-        let all_ids = lock
+        let all_ids = self
+            .my_tokens
             .iter()
-            .map(|token| (token.token_identifier.clone(), token.identity_id.clone()))
+            .map(|(_, token)| (token.token_id.clone(), token.identity_id.clone()))
             .collect::<Vec<_>>();
-        drop(lock);
+
         self.app_context
             .db
             .save_token_order(all_ids)
@@ -930,7 +1069,7 @@ impl TokensScreen {
                     alias_a.cmp(&alias_b)
                 }
                 SortColumn::TokenName => a.token_name.cmp(&b.token_name),
-                SortColumn::TokenID => a.token_identifier.cmp(&b.token_identifier),
+                SortColumn::TokenID => a.token_id.cmp(&b.token_id),
             };
             match self.sort_order {
                 SortOrder::Ascending => ordering,
@@ -974,11 +1113,11 @@ impl TokensScreen {
     /// Returns a Vec of (token_identifier, token_name, total_balance).
     fn group_tokens_by_identifier(
         &self,
-        tokens: &[IdentityTokenBalance],
+        tokens: &IndexMap<IdentityTokenIdentifier, IdentityTokenBalance>,
     ) -> Vec<(Identifier, String, u64)> {
         let mut map: HashMap<Identifier, (String, u64)> = HashMap::new();
-        for tb in tokens {
-            let entry = map.entry(tb.token_identifier.clone()).or_insert_with(|| {
+        for tb in tokens.values() {
+            let entry = map.entry(tb.token_id.clone()).or_insert_with(|| {
                 // Store (token_name, running_total_balance)
                 (tb.token_name.clone(), 0u64)
             });
@@ -1019,12 +1158,7 @@ impl TokensScreen {
 
     /// Renders the top-level token list (one row per unique token).
     /// When the user clicks on a token, we set `selected_token_id`.
-    fn render_token_list(&mut self, ui: &mut Ui, tokens: &[IdentityTokenBalance]) {
-        let mut grouped = self.group_tokens_by_identifier(tokens);
-        if !self.use_custom_order {
-            self.sort_vec_of_groups(&mut grouped);
-        }
-
+    fn render_token_list(&mut self, ui: &mut Ui) {
         // Allocate space for refreshing indicator
         let refreshing_height = 33.0;
         let mut max_scroll_height = if let RefreshingStatus::Refreshing(_) = self.refreshing_status
@@ -1058,39 +1192,36 @@ impl TokensScreen {
                             .cell_layout(egui::Layout::left_to_right(Align::Center))
                             .column(Column::initial(150.0).resizable(true)) // Token Name
                             .column(Column::initial(200.0).resizable(true)) // Token ID
-                            .column(Column::initial(80.0).resizable(true)) // Total Balance
+                            .column(Column::initial(80.0).resizable(true)) // Description
                             .column(Column::initial(80.0).resizable(true)) // Actions
                             // .column(Column::initial(80.0).resizable(true)) // Token Info
                             .header(30.0, |mut header| {
                                 header.col(|ui| {
-                                    if ui.button("Token Name").clicked() {
-                                        self.toggle_sort(SortColumn::TokenName);
-                                    }
+                                    ui.label("Token Name");
                                 });
                                 header.col(|ui| {
-                                    if ui.button("Token ID").clicked() {
-                                        self.toggle_sort(SortColumn::TokenID);
-                                    }
+                                    ui.label("Token ID");
                                 });
                                 header.col(|ui| {
-                                    if ui.button("Total Balance").clicked() {
-                                        self.toggle_sort(SortColumn::Balance);
-                                    }
+                                    ui.label("Description");
                                 });
                                 header.col(|ui| {
                                     ui.label("Actions");
                                 });
-                                // header.col(|ui| {
-                                //     ui.label("Token Info");
-                                // });
                             })
                             .body(|mut body| {
-                                for (token_id, token_name, total_balance) in grouped {
+                                for (TokenInfo {
+                                    token_id,
+                                    token_name,
+                                    description,
+                                    ..
+                                }) in self.all_known_tokens.values()
+                                {
                                     body.row(25.0, |mut row| {
                                         row.col(|ui| {
                                             // By making the label into a button or using `ui.selectable_label`,
                                             // we can respond to clicks.
-                                            if ui.button(&token_name).clicked() {
+                                            if ui.button(token_name).clicked() {
                                                 self.selected_token_id = Some(token_id.clone());
                                             }
                                         });
@@ -1098,7 +1229,9 @@ impl TokensScreen {
                                             ui.label(token_id.to_string(Encoding::Base58));
                                         });
                                         row.col(|ui| {
-                                            ui.label(total_balance.to_string());
+                                            ui.label(
+                                                description.as_ref().unwrap_or(&String::new()),
+                                            );
                                         });
                                         row.col(|ui| {
                                             // Remove
@@ -1111,11 +1244,6 @@ impl TokensScreen {
                                                 self.token_to_remove = Some(token_id.clone());
                                             }
                                         });
-                                        // row.col(|ui| {
-                                        //     if ui.button("Info").clicked() {
-                                        //         self.show_token_info = Some(token_id.clone());
-                                        //     }
-                                        // });
                                     });
                                 }
                             });
@@ -1124,20 +1252,49 @@ impl TokensScreen {
     }
 
     /// Renders details for the selected token_id: a row per identity that holds that token.
-    fn render_token_details(&mut self, ui: &mut Ui, tokens: &[IdentityTokenBalance]) -> AppAction {
+    fn render_token_details(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
 
-        let token_id = self.selected_token_id.as_ref().unwrap();
+        let Some(token_id) = self.selected_token_id.as_ref() else {
+            return action;
+        };
 
-        // Filter out only the IdentityTokenBalance for this token_id
-        let mut detail_list: Vec<IdentityTokenBalance> = tokens
-            .iter()
-            .filter(|t| &t.token_identifier == token_id)
-            .cloned()
-            .collect();
-        if !self.use_custom_order {
-            self.sort_vec(&mut detail_list);
+        let Some(token_info) = self.all_known_tokens.get(token_id) else {
+            return action;
+        };
+
+        let identities = &self.identities;
+
+        let mut detail_list: Vec<IdentityTokenMaybeBalance> = vec![];
+
+        for (identity_id, identity) in identities {
+            let record = if let Some(known_token_balance) =
+                self.my_tokens.get(&IdentityTokenIdentifier {
+                    identity_id: *identity_id,
+                    token_id: *token_id,
+                }) {
+                IdentityTokenMaybeBalance {
+                    token_id: *token_id,
+                    token_name: token_info.token_name.clone(),
+                    identity_id: *identity_id,
+                    identity_alias: identity.alias.clone(),
+                    balance: Some(known_token_balance.clone()),
+                }
+            } else {
+                IdentityTokenMaybeBalance {
+                    token_id: *token_id,
+                    token_name: token_info.token_name.clone(),
+                    identity_id: *identity_id,
+                    identity_alias: identity.alias.clone(),
+                    balance: None,
+                }
+            };
+            detail_list.push(record);
         }
+
+        // if !self.use_custom_order {
+        //     self.sort_vec(&mut detail_list);
+        // }
 
         // This is basically your old `render_table_my_token_balances` logic, but
         // limited to just the single token.
@@ -1175,6 +1332,7 @@ impl TokensScreen {
                             .column(Column::initial(60.0).resizable(true)) // Identity Alias
                             .column(Column::initial(200.0).resizable(true)) // Identity ID
                             .column(Column::initial(60.0).resizable(true)) // Balance
+                            .column(Column::initial(60.0).resizable(true)) // Estimated Rewards
                             .column(Column::initial(200.0).resizable(true)) // Actions
                             .header(30.0, |mut header| {
                                 header.col(|ui| {
@@ -1191,6 +1349,9 @@ impl TokensScreen {
                                     if ui.button("Balance").clicked() {
                                         self.toggle_sort(SortColumn::Balance);
                                     }
+                                });
+                                header.col(|ui| {
+                                    ui.label("Estimated Unclaimed Rewards");
                                 });
                                 header.col(|ui| {
                                     ui.label("Actions");
@@ -1215,128 +1376,161 @@ impl TokensScreen {
                                             ui.label(itb.identity_id.to_string(Encoding::Base58));
                                         });
                                         row.col(|ui| {
-                                            ui.label(itb.balance.to_string());
+                                            if let Some(balance) = itb.balance.as_ref().map(|balance| balance.balance.to_string()) {
+                                                ui.label(balance);
+                                            } else {
+                                                if ui.button("Check").clicked() {
+                                                    action = AppAction::BackendTask(BackendTask::TokenTask(TokenTask::QueryIdentityTokenBalance(itb.clone().into())));
+                                                }
+                                            }
+                                        });
+                                        row.col(|ui| {
+                                            if let Some(known_rewards) = itb.balance.as_ref().map(|itb| itb.estimated_unclaimed_rewards) {
+                                                if let Some(known_rewards) = known_rewards {
+                                                    ui.label(known_rewards.to_string());
+                                                } else {
+                                                    if ui.button("Estimate Unclaimed Rewards").clicked() {
+                                                        action = AppAction::BackendTask(BackendTask::TokenTask(TokenTask::EstimatePerpetualTokenRewards {
+                                                            identity_id: itb.identity_id,
+                                                            token_id: itb.token_id,
+                                                        }))
+                                                    }
+                                                }
+                                            }
                                         });
                                         row.col(|ui| {
                                             ui.horizontal(|ui| {
                                                 ui.spacing_mut().item_spacing.x = 3.0;
 
-                                                // Transfer
-                                                if ui.button("Transfer").clicked() {
-                                                    action = AppAction::AddScreen(
-                                                        Screen::TransferTokensScreen(
-                                                            TransferTokensScreen::new(
-                                                                itb.clone(),
-                                                                &self.app_context,
+                                                if let Some(itb) = itb.balance.as_ref() {
+                                                    // Transfer
+                                                    if ui.button("Transfer").clicked() {
+                                                        action = AppAction::AddScreen(
+                                                            Screen::TransferTokensScreen(
+                                                                TransferTokensScreen::new(
+                                                                    itb.clone(),
+                                                                    &self.app_context,
+                                                                ),
                                                             ),
-                                                        ),
-                                                    );
-                                                }
+                                                        );
+                                                    }
 
-                                                // Claim
-                                                if ui.button("Claim").clicked() {
-                                                    action = AppAction::AddScreen(
-                                                        Screen::ClaimTokensScreen(
-                                                            ClaimTokensScreen::new(
-                                                                itb.clone(),
-                                                                &self.app_context,
+                                                    // Claim
+                                                    if ui.button("Claim").clicked() {
+                                                        action = AppAction::AddScreen(
+                                                            Screen::ClaimTokensScreen(
+                                                                ClaimTokensScreen::new(
+                                                                    itb.clone(),
+                                                                    &self.app_context,
+                                                                ),
                                                             ),
-                                                        ),
-                                                    );
-                                                    ui.close_menu();
-                                                }
+                                                        );
+                                                        ui.close_menu();
+                                                    }
 
-                                                // Expandable advanced actions menu
-                                                ui.menu_button("...", |ui| {
-                                                    if ui.button("Mint").clicked() {
-                                                        action = AppAction::AddScreen(
-                                                            Screen::MintTokensScreen(
-                                                                MintTokensScreen::new(
-                                                                    itb.clone(),
-                                                                    &self.app_context,
+                                                    // Expandable advanced actions menu
+                                                    ui.menu_button("...", |ui| {
+                                                        if ui.button("Mint").clicked() {
+                                                            action = AppAction::AddScreen(
+                                                                Screen::MintTokensScreen(
+                                                                    MintTokensScreen::new(
+                                                                        itb.clone(),
+                                                                        &self.app_context,
+                                                                    ),
                                                                 ),
-                                                            ),
-                                                        );
-                                                        ui.close_menu();
-                                                    }
-                                                    if ui.button("Burn").clicked() {
-                                                        action = AppAction::AddScreen(
-                                                            Screen::BurnTokensScreen(
-                                                                BurnTokensScreen::new(
-                                                                    itb.clone(),
-                                                                    &self.app_context,
+                                                            );
+                                                            ui.close_menu();
+                                                        }
+                                                        if ui.button("Burn").clicked() {
+                                                            action = AppAction::AddScreen(
+                                                                Screen::BurnTokensScreen(
+                                                                    BurnTokensScreen::new(
+                                                                        itb.clone(),
+                                                                        &self.app_context,
+                                                                    ),
                                                                 ),
-                                                            ),
-                                                        );
-                                                        ui.close_menu();
-                                                    }
-                                                    if ui.button("Freeze").clicked() {
-                                                        action = AppAction::AddScreen(
-                                                            Screen::FreezeTokensScreen(
-                                                                FreezeTokensScreen::new(
-                                                                    itb.clone(),
-                                                                    &self.app_context,
+                                                            );
+                                                            ui.close_menu();
+                                                        }
+                                                        if ui.button("Freeze").clicked() {
+                                                            action = AppAction::AddScreen(
+                                                                Screen::FreezeTokensScreen(
+                                                                    FreezeTokensScreen::new(
+                                                                        itb.clone(),
+                                                                        &self.app_context,
+                                                                    ),
                                                                 ),
-                                                            ),
-                                                        );
-                                                        ui.close_menu();
-                                                    }
-                                                    if ui.button("Destroy").clicked() {
-                                                        action = AppAction::AddScreen(
-                                                            Screen::DestroyFrozenFundsScreen(
-                                                                DestroyFrozenFundsScreen::new(
-                                                                    itb.clone(),
-                                                                    &self.app_context,
+                                                            );
+                                                            ui.close_menu();
+                                                        }
+                                                        if ui.button("Destroy").clicked() {
+                                                            action = AppAction::AddScreen(
+                                                                Screen::DestroyFrozenFundsScreen(
+                                                                    DestroyFrozenFundsScreen::new(
+                                                                        itb.clone(),
+                                                                        &self.app_context,
+                                                                    ),
                                                                 ),
-                                                            ),
-                                                        );
-                                                        ui.close_menu();
-                                                    }
-                                                    if ui.button("Unfreeze").clicked() {
-                                                        action = AppAction::AddScreen(
-                                                            Screen::UnfreezeTokensScreen(
-                                                                UnfreezeTokensScreen::new(
-                                                                    itb.clone(),
-                                                                    &self.app_context,
+                                                            );
+                                                            ui.close_menu();
+                                                        }
+                                                        if ui.button("Unfreeze").clicked() {
+                                                            action = AppAction::AddScreen(
+                                                                Screen::UnfreezeTokensScreen(
+                                                                    UnfreezeTokensScreen::new(
+                                                                        itb.clone(),
+                                                                        &self.app_context,
+                                                                    ),
                                                                 ),
-                                                            ),
-                                                        );
-                                                        ui.close_menu();
-                                                    }
-                                                    if ui.button("Pause").clicked() {
-                                                        action = AppAction::AddScreen(
-                                                            Screen::PauseTokensScreen(
-                                                                PauseTokensScreen::new(
-                                                                    itb.clone(),
-                                                                    &self.app_context,
+                                                            );
+                                                            ui.close_menu();
+                                                        }
+                                                        if ui.button("Pause").clicked() {
+                                                            action = AppAction::AddScreen(
+                                                                Screen::PauseTokensScreen(
+                                                                    PauseTokensScreen::new(
+                                                                        itb.clone(),
+                                                                        &self.app_context,
+                                                                    ),
                                                                 ),
-                                                            ),
-                                                        );
-                                                        ui.close_menu();
-                                                    }
-                                                    if ui.button("Resume").clicked() {
-                                                        action = AppAction::AddScreen(
-                                                            Screen::ResumeTokensScreen(
-                                                                ResumeTokensScreen::new(
-                                                                    itb.clone(),
-                                                                    &self.app_context,
+                                                            );
+                                                            ui.close_menu();
+                                                        }
+                                                        if ui.button("Resume").clicked() {
+                                                            action = AppAction::AddScreen(
+                                                                Screen::ResumeTokensScreen(
+                                                                    ResumeTokensScreen::new(
+                                                                        itb.clone(),
+                                                                        &self.app_context,
+                                                                    ),
                                                                 ),
-                                                            ),
-                                                        );
-                                                        ui.close_menu();
-                                                    }
-                                                });
+                                                            );
+                                                            ui.close_menu();
+                                                        }
+                                                        if ui.button("View Claims").clicked() {
+                                                            action = AppAction::AddScreen(
+                                                                Screen::ResumeTokensScreen(
+                                                                    ResumeTokensScreen::new(
+                                                                        itb.clone(),
+                                                                        &self.app_context,
+                                                                    ),
+                                                                ),
+                                                            );
+                                                            ui.close_menu();
+                                                        }
+                                                    });
 
-                                                // Remove
-                                                if ui
-                                                .button("X")
-                                                .on_hover_text(
-                                                    "Remove identity token balance from DET",
-                                                )
-                                                .clicked()
-                                                {
-                                                    self.confirm_remove_identity_token_balance_popup = true;
-                                                    self.identity_token_balance_to_remove = Some(itb.clone());
+                                                    // Remove
+                                                    if ui
+                                                        .button("X")
+                                                        .on_hover_text(
+                                                            "Remove identity token balance from DET",
+                                                        )
+                                                        .clicked()
+                                                    {
+                                                        self.confirm_remove_identity_token_balance_popup = true;
+                                                        self.identity_token_balance_to_remove = Some(itb.clone());
+                                                    }
                                                 }
                                             });
                                         });
@@ -1372,7 +1566,7 @@ impl TokensScreen {
                 ui.heading(token.token_name.clone());
                 ui.label(format!(
                     "ID: {}",
-                    token.token_identifier.to_string(Encoding::Base58)
+                    token.token_id.to_string(Encoding::Base58)
                 ));
                 ui.label(format!(
                     "Description: {}",
@@ -1555,7 +1749,7 @@ impl TokensScreen {
         action
     }
 
-    pub fn render_token_creator(&mut self, ui: &mut egui::Ui) -> AppAction {
+    pub fn render_token_creator(&mut self, context: &Context, ui: &mut egui::Ui) -> AppAction {
         let mut action = AppAction::None;
 
         // 1) If we've successfully completed contract creation, show a success UI
@@ -2158,6 +2352,24 @@ Emits tokens in fixed amounts for specific intervals.
 
                             ui.add_space(2.0);
 
+                            if let Some(texture) = self.function_textures.get(&self.perpetual_dist_function) {
+                                ui.add_space(10.0);
+                                ui.horizontal(|ui| {
+                                    ui.add_space(50.0); // Shift image right
+                                    ui.image(texture);
+                                });
+                                ui.add_space(10.0);
+                            } else if let Some(image) = self.function_images.get(&self.perpetual_dist_function) {
+                                let texture = context.load_texture(self.perpetual_dist_function.name(), image.clone(), Default::default());
+                                self.function_textures.insert(self.perpetual_dist_function.clone(), texture.clone());
+                                ui.add_space(10.0);
+                                ui.horizontal(|ui| {
+                                    ui.add_space(50.0); // Shift image right
+                                    ui.image(&texture);
+                                });
+                                ui.add_space(10.0);
+                            }
+
                             // Based on the user’s chosen function, display relevant fields:
                             match self.perpetual_dist_function {
                                 DistributionFunctionUI::FixedAmount => {
@@ -2319,19 +2531,19 @@ Emits tokens in fixed amounts for specific intervals.
 
                                 DistributionFunctionUI::Exponential => {
                                     ui.horizontal(|ui| {
-                                        ui.label("        - Scaling Factor (a, i64):");
+                                        ui.label("        - Scaling Factor (a, { 0 < a ≤ 256) }):");
                                         ui.text_edit_singleline(&mut self.exp_a_input);
                                     });
                                     ui.horizontal(|ui| {
-                                        ui.label("        - Exponent Rate (m, i64):");
+                                        ui.label("        - Exponent Rate (m, { -8 ≤ m ≤ 8 ; m ≠ 0 }):");
                                         ui.text_edit_singleline(&mut self.exp_m_input);
                                     });
                                     ui.horizontal(|ui| {
-                                        ui.label("        - Exponent Rate (n, i64):");
+                                        ui.label("        - Exponent Rate (n, 0 < a ≤ 32):");
                                         ui.text_edit_singleline(&mut self.exp_n_input);
                                     });
                                     ui.horizontal(|ui| {
-                                        ui.label("        - Divisor (d, i64):");
+                                        ui.label("        - Divisor (d, {u64 ; d ≠ 0 }):");
                                         ui.text_edit_singleline(&mut self.exp_d_input);
                                     });
                                     ui.horizontal(|ui| {
@@ -2343,7 +2555,7 @@ Emits tokens in fixed amounts for specific intervals.
                                         ui.text_edit_singleline(&mut self.exp_o_input);
                                     });
                                     ui.horizontal(|ui| {
-                                        ui.label("        - Offset (c, i64):");
+                                        ui.label("        - Offset (b, i64):");
                                         ui.text_edit_singleline(&mut self.exp_b_input);
                                     });
                                     ui.horizontal(|ui| {
@@ -3122,41 +3334,54 @@ Emits tokens in fixed amounts for specific intervals.
                         .decrease_per_interval_denominator_input
                         .parse::<u16>()
                         .unwrap_or(0),
-                    start_decreasing_offset: match self
+                    start_decreasing_offset: if self
                         .step_decreasing_start_period_offset_input
-                        .parse::<u64>()
+                        .is_empty()
                     {
-                        Ok(0) => None,
-                        Ok(v) => Some(v),
-                        Err(_) => {
-                            return Err("Invalid start decreasing offset for StepDecreasingAmount distribution. Put 0 for None.".to_string());
+                        None
+                    } else {
+                        match self
+                            .step_decreasing_start_period_offset_input
+                            .parse::<u64>()
+                        {
+                            Ok(0) => None,
+                            Ok(v) => Some(v),
+                            Err(_) => {
+                                return Err("Invalid start decreasing offset for StepDecreasingAmount distribution. Put 0 for None.".to_string());
+                            }
                         }
                     },
                     distribution_start_amount: self
                         .step_decreasing_initial_emission_input
                         .parse::<u64>()
                         .unwrap_or(0),
-                    min_value: match self.step_decreasing_min_value_input.parse::<u64>() {
-                        Ok(0) => None,
-                        Ok(v) => Some(v),
-                        Err(_) => {
-                            return Err(
-                                "Invalid min value for StepDecreasingAmount distribution. Put 0 for None."
-                                    .to_string(),
-                            );
+                    min_value: if self.step_decreasing_start_period_offset_input.is_empty() {
+                        None
+                    } else {
+                        match self.step_decreasing_min_value_input.parse::<u64>() {
+                            Ok(0) => None,
+                            Ok(v) => Some(v),
+                            Err(_) => {
+                                return Err(
+                                    "Invalid min value for StepDecreasingAmount distribution. Put 0 for None."
+                                        .to_string(),
+                                );
+                            }
                         }
                     },
-                    max_interval_count: match self
-                        .step_decreasing_max_interval_count_input
-                        .parse::<u16>()
+                    max_interval_count: if self.step_decreasing_start_period_offset_input.is_empty()
                     {
-                        Ok(0) => None,
-                        Ok(v) => Some(v),
-                        Err(_) => {
-                            return Err(
-                                "Invalid max interval count for StepDecreasingAmount distribution. Put 0 for None."
-                                    .to_string(),
-                            );
+                        None
+                    } else {
+                        match self.step_decreasing_max_interval_count_input.parse::<u16>() {
+                            Ok(0) => None,
+                            Ok(v) => Some(v),
+                            Err(_) => {
+                                return Err(
+                                    "Invalid max interval count for StepDecreasingAmount distribution. Put 0 for None."
+                                        .to_string(),
+                                );
+                            }
                         }
                     },
                     trailing_distribution_interval_amount: self
@@ -3526,7 +3751,7 @@ Emits tokens in fixed amounts for specific intervals.
             match self.tokens_subscreen {
                 TokensSubscreen::MyTokens => {
                     ui.label(
-                        egui::RichText::new("No owned tokens found.")
+                        egui::RichText::new("No tracked tokens.")
                             .heading()
                             .strong()
                             .color(Color32::GRAY),
@@ -3588,28 +3813,29 @@ Emits tokens in fixed amounts for specific intervals.
             .expect("Expected to load identities")
         {
             let identity_token_balance = IdentityTokenBalance {
-                token_identifier: token_info.token_identifier,
+                token_id: token_info.token_id,
                 token_name: token_info.token_name.clone(),
                 identity_id: identity.identity.id(),
                 balance: 0,
+                estimated_unclaimed_rewards: None,
                 data_contract_id: token_info.data_contract_id,
                 token_position: token_info.token_position,
             };
 
             tokens.push(identity_token_balance);
         }
-        let my_tokens_clone = self.my_tokens.lock().unwrap().clone();
+        let my_tokens_clone = self.my_tokens.clone();
 
         // Prevent duplicates
-        for token in tokens {
-            if !my_tokens_clone.iter().any(|t| {
-                t.token_identifier == token.token_identifier && t.identity_id == token.identity_id
-            }) {
-                let _ = self.app_context.insert_token(
-                    &token.token_identifier,
-                    &token.token_name,
-                    &token.data_contract_id,
-                    token.token_position,
+        for itb in tokens {
+            if !my_tokens_clone
+                .values()
+                .any(|t| t.token_id == itb.token_id && t.identity_id == itb.identity_id)
+            {
+                let _ = self.app_context.insert_token_identity_balance(
+                    &itb.token_id,
+                    &itb.identity_id,
+                    0,
                 );
                 action |=
                     AppAction::BackendTask(BackendTask::TokenTask(TokenTask::QueryMyTokenBalances));
@@ -3688,12 +3914,12 @@ Emits tokens in fixed amounts for specific intervals.
 
         let mut is_open = true;
 
-        egui::Window::new("Confirm Remove Balance")
+        egui::Window::new("Confirm Stop Tracking Balance")
             .collapsible(false)
             .open(&mut is_open)
             .show(ui.ctx(), |ui| {
                 ui.label(format!(
-                    "Are you sure you want to remove identity token balance \"{}\" for identity \"{}\"?",
+                    "Are you sure you want to stop tracking the token \"{}\" for identity \"{}\"?",
                     token_to_remove.token_name,
                     token_to_remove.identity_id.to_string(Encoding::Base58)
                 ));
@@ -3701,7 +3927,7 @@ Emits tokens in fixed amounts for specific intervals.
                 // Confirm button
                 if ui.button("Confirm").clicked() {
                     if let Err(e) = self.app_context.remove_token_balance(
-                        token_to_remove.token_identifier,
+                        token_to_remove.token_id,
                         token_to_remove.identity_id.clone(),
                     ) {
                         self.backend_message = Some((
@@ -3744,17 +3970,9 @@ Emits tokens in fixed amounts for specific intervals.
 
         // find the token name from one of the identity token balances in my tokens
         let token_name = self
-            .my_tokens
-            .lock()
-            .unwrap()
-            .iter()
-            .find_map(|t| {
-                if t.token_identifier == token_to_remove {
-                    Some(t.token_name.clone())
-                } else {
-                    None
-                }
-            })
+            .all_known_tokens
+            .get(&token_to_remove)
+            .map(|t| t.token_name.clone())
             .unwrap_or_else(|| token_to_remove.to_string(Encoding::Base58));
 
         let mut is_open = true;
@@ -3764,7 +3982,7 @@ Emits tokens in fixed amounts for specific intervals.
             .open(&mut is_open)
             .show(ui.ctx(), |ui| {
                 ui.label(format!(
-                    "Are you sure you want to remove token \"{}\" for all identities?",
+                    "Are you sure you want to stop tracking the token \"{}\"? You can re-add it later. Your actual token balance will not change with this action",
                     token_name,
                 ));
 
@@ -3814,14 +4032,27 @@ Emits tokens in fixed amounts for specific intervals.
 // ─────────────────────────────────────────────────────────────────
 impl ScreenLike for TokensScreen {
     fn refresh(&mut self) {
-        self.my_tokens = Arc::new(Mutex::new(
-            self.app_context
-                .identity_token_balances()
-                .unwrap_or_default(),
-        ));
+        self.my_tokens = self
+            .app_context
+            .identity_token_balances()
+            .unwrap_or_default();
+
+        self.all_known_tokens = self
+            .app_context
+            .db
+            .get_all_known_tokens(&self.app_context)
+            .unwrap_or_default();
+        self.identities = self
+            .app_context
+            .load_local_qualified_identities()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|qi| (qi.identity.id(), qi))
+            .collect();
         match self.app_context.db.load_token_order() {
             Ok(saved_ids) => {
                 self.reorder_vec_to(saved_ids);
+
                 self.use_custom_order = true;
             }
             Err(e) => {
@@ -3832,11 +4063,23 @@ impl ScreenLike for TokensScreen {
 
     fn refresh_on_arrival(&mut self) {
         self.selected_token_id = None;
-        self.my_tokens = Arc::new(Mutex::new(
-            self.app_context
-                .identity_token_balances()
-                .unwrap_or_default(),
-        ));
+        self.my_tokens = self
+            .app_context
+            .identity_token_balances()
+            .unwrap_or_default();
+
+        self.all_known_tokens = self
+            .app_context
+            .db
+            .get_all_known_tokens(&self.app_context)
+            .unwrap_or_default();
+        self.identities = self
+            .app_context
+            .load_local_qualified_identities()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|qi| (qi.identity.id(), qi))
+            .collect();
     }
 
     fn display_message(&mut self, msg: &str, msg_type: MessageType) {
@@ -3904,6 +4147,14 @@ impl ScreenLike for TokensScreen {
                 self.selected_token_infos = info.1.clone();
                 self.refreshing_status = RefreshingStatus::NotRefreshing;
             }
+            BackendTaskSuccessResult::TokenEstimatedNonClaimedPerpetualDistributionAmount(
+                identity_token_id,
+                amount,
+            ) => {
+                if let Some(itb) = self.my_tokens.get_mut(&identity_token_id) {
+                    itb.estimated_unclaimed_rewards = Some(amount)
+                }
+            }
             _ => {}
         }
     }
@@ -3915,12 +4166,18 @@ impl ScreenLike for TokensScreen {
 
         // Build top-right buttons
         let right_buttons = match self.tokens_subscreen {
-            TokensSubscreen::MyTokens => vec![(
-                "Refresh",
-                DesiredAppAction::BackendTask(BackendTask::TokenTask(
-                    TokenTask::QueryMyTokenBalances,
-                )),
-            )],
+            TokensSubscreen::MyTokens => vec![
+                (
+                    "Add",
+                    DesiredAppAction::AddScreenType(ScreenType::AddTokenById),
+                ),
+                (
+                    "Refresh",
+                    DesiredAppAction::BackendTask(BackendTask::TokenTask(
+                        TokenTask::QueryMyTokenBalances,
+                    )),
+                ),
+            ],
             TokensSubscreen::SearchTokens => vec![("Refresh", DesiredAppAction::Refresh)],
             TokensSubscreen::TokenCreator => vec![],
         };
@@ -3928,17 +4185,9 @@ impl ScreenLike for TokensScreen {
         // Top panel
         if let Some(token_id) = self.selected_token_id {
             let token_name: String = self
-                .my_tokens
-                .lock()
-                .unwrap()
-                .iter()
-                .find_map(|t| {
-                    if t.token_identifier == token_id {
-                        Some(t.token_name.clone())
-                    } else {
-                        None
-                    }
-                })
+                .all_known_tokens
+                .get(&token_id)
+                .map(|t| t.token_name.clone())
                 .unwrap_or_else(|| token_id.to_string(Encoding::Base58));
 
             action |= add_top_panel(
@@ -4013,18 +4262,17 @@ impl ScreenLike for TokensScreen {
         CentralPanel::default().show(ctx, |ui| {
             match self.tokens_subscreen {
                 TokensSubscreen::MyTokens => {
-                    let tokens = self.my_tokens.lock().unwrap().clone();
-                    if tokens.is_empty() {
+                    if self.all_known_tokens.is_empty() {
                         // If no tokens, show a “no tokens found” message
                         action |= self.render_no_owned_tokens(ui);
                     } else {
                         // Are we showing details for a selected token?
                         if self.selected_token_id.is_some() {
                             // Render detail view for one token
-                            action |= self.render_token_details(ui, &tokens);
+                            action |= self.render_token_details(ui);
                         } else {
                             // Otherwise, show the list of all tokens
-                            self.render_token_list(ui, &tokens);
+                            self.render_token_list(ui);
                         }
                     }
                 }
@@ -4037,7 +4285,7 @@ impl ScreenLike for TokensScreen {
                     }
                 }
                 TokensSubscreen::TokenCreator => {
-                    action |= self.render_token_creator(ui);
+                    action |= self.render_token_creator(ctx, ui);
                 }
             }
 

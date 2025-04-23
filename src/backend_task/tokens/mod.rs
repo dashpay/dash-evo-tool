@@ -1,5 +1,9 @@
 use super::BackendTaskSuccessResult;
+use crate::ui::tokens::tokens_screen::IdentityTokenIdentifier;
 use crate::{app::TaskResult, context::AppContext, model::qualified_identity::QualifiedIdentity};
+use dash_sdk::dpp::balances::credits::TokenAmount;
+use dash_sdk::dpp::data_contract::GroupContractPosition;
+use dash_sdk::platform::Fetch;
 use dash_sdk::{
     dpp::{
         data_contract::{
@@ -40,6 +44,7 @@ mod freeze_tokens;
 mod mint_tokens;
 mod pause_tokens;
 mod query_my_token_balances;
+mod query_token_non_claimed_perpetual_distribution_rewards;
 mod query_tokens;
 mod resume_tokens;
 mod transfer_tokens;
@@ -53,11 +58,11 @@ pub(crate) enum TokenTask {
         token_name: String,
         should_capitalize: bool,
         decimals: u16,
-        base_supply: u64,
-        max_supply: Option<u64>,
+        base_supply: TokenAmount,
+        max_supply: Option<TokenAmount>,
         start_paused: bool,
         keeps_history: bool,
-        main_control_group: Option<u16>,
+        main_control_group: Option<GroupContractPosition>,
 
         // Manual Mint
         manual_minting_rules: ChangeControlRules,
@@ -73,72 +78,78 @@ pub(crate) enum TokenTask {
         main_control_group_change_authorized: AuthorizedActionTakers,
 
         distribution_rules: TokenDistributionRules,
-        groups: BTreeMap<u16, Group>,
+        groups: BTreeMap<GroupContractPosition, Group>,
     },
     QueryMyTokenBalances,
+    QueryIdentityTokenBalance(IdentityTokenIdentifier),
     QueryDescriptionsByKeyword(String, Option<Start>),
+    FetchTokenByContractId(Identifier),
     MintTokens {
         sending_identity: QualifiedIdentity,
         data_contract: DataContract,
-        token_position: u16,
+        token_position: TokenContractPosition,
         signing_key: IdentityPublicKey,
-        amount: u64,
+        amount: TokenAmount,
         recipient_id: Option<Identifier>,
     },
     TransferTokens {
         sending_identity: QualifiedIdentity,
         recipient_id: Identifier,
-        amount: u64,
+        amount: TokenAmount,
         data_contract: DataContract,
-        token_position: u16,
+        token_position: TokenContractPosition,
         signing_key: IdentityPublicKey,
     },
     BurnTokens {
         owner_identity: QualifiedIdentity,
         data_contract: DataContract,
-        token_position: u16,
+        token_position: TokenContractPosition,
         signing_key: IdentityPublicKey,
-        amount: u64,
+        amount: TokenAmount,
     },
     DestroyFrozenFunds {
         actor_identity: QualifiedIdentity,
         data_contract: DataContract,
-        token_position: u16,
+        token_position: TokenContractPosition,
         signing_key: IdentityPublicKey,
         frozen_identity: Identifier,
     },
     FreezeTokens {
         actor_identity: QualifiedIdentity,
         data_contract: DataContract,
-        token_position: u16,
+        token_position: TokenContractPosition,
         signing_key: IdentityPublicKey,
         freeze_identity: Identifier,
     },
     UnfreezeTokens {
         actor_identity: QualifiedIdentity,
         data_contract: DataContract,
-        token_position: u16,
+        token_position: TokenContractPosition,
         signing_key: IdentityPublicKey,
         unfreeze_identity: Identifier,
     },
     PauseTokens {
         actor_identity: QualifiedIdentity,
         data_contract: DataContract,
-        token_position: u16,
+        token_position: TokenContractPosition,
         signing_key: IdentityPublicKey,
     },
     ResumeTokens {
         actor_identity: QualifiedIdentity,
         data_contract: DataContract,
-        token_position: u16,
+        token_position: TokenContractPosition,
         signing_key: IdentityPublicKey,
     },
     ClaimTokens {
         data_contract: DataContract,
-        token_position: u16,
+        token_position: TokenContractPosition,
         actor_identity: QualifiedIdentity,
         distribution_type: TokenDistributionType,
         signing_key: IdentityPublicKey,
+    },
+    EstimatePerpetualTokenRewards {
+        identity_id: Identifier,
+        token_id: Identifier,
     },
 }
 
@@ -382,6 +393,37 @@ impl AppContext {
                 )
                 .await
                 .map_err(|e| format!("Failed to claim tokens: {e}")),
+            TokenTask::EstimatePerpetualTokenRewards {
+                identity_id,
+                token_id,
+            } => self
+                .query_token_non_claimed_perpetual_distribution_rewards(
+                    *identity_id,
+                    *token_id,
+                    sdk,
+                )
+                .await
+                .map_err(|e| format!("Failed to claim tokens: {e}")),
+            TokenTask::QueryIdentityTokenBalance(identity_token_pair) => self
+                .query_token_balance(
+                    sdk,
+                    identity_token_pair.identity_id,
+                    identity_token_pair.token_id,
+                    sender,
+                )
+                .await
+                .map_err(|e| format!("Failed to fetch token balance: {e}")),
+            TokenTask::FetchTokenByContractId(contract_id) => {
+                match DataContract::fetch_by_identifier(sdk, *contract_id).await {
+                    Ok(Some(data_contract)) => {
+                        Ok(BackendTaskSuccessResult::FetchedContract(data_contract))
+                    }
+                    Ok(None) => Ok(BackendTaskSuccessResult::Message(
+                        "Contract not found".to_string(),
+                    )),
+                    Err(e) => Err(format!("Error fetching contracts: {}", e.to_string())),
+                }
+            }
         }
     }
 

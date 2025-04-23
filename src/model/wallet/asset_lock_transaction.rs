@@ -199,7 +199,10 @@ impl Wallet {
 
                 let private_key = self
                     .private_key_for_address(&input_address, network)?
-                    .ok_or("Expected address to be in wallet")?;
+                    .ok_or(format!(
+                        "Expected address {} to be in wallet",
+                        input_address
+                    ))?;
 
                 // Sign the message with the private key
                 let sig = secp.sign_ecdsa(&message, &private_key.inner);
@@ -343,7 +346,10 @@ impl Wallet {
 
                 let private_key = self
                     .private_key_for_address(&input_address, network)?
-                    .ok_or("Expected address to be in wallet")?;
+                    .ok_or(format!(
+                        "Expected address {} to be in wallet for input",
+                        input_address
+                    ))?;
 
                 // Sign the message with the private key
                 let sig = secp.sign_ecdsa(&message, &private_key.inner);

@@ -3,7 +3,6 @@
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::context::AppContext;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::tokens::identity_token_balances::{
     IdentityTokenBalances, IdentityTokenBalancesQuery,
 };
@@ -33,11 +32,11 @@ impl AppContext {
             let token_infos = self
                 .identity_token_balances()
                 .map_err(|e| format!("Failed to load identity token balances: {e}"))?
-                .iter()
+                .values()
                 .filter(|t| t.identity_id == identity_id)
                 .map(|t| {
                     (
-                        t.token_identifier.clone(),
+                        t.token_id.clone(),
                         t.data_contract_id.clone(),
                         t.token_position,
                     )
@@ -71,17 +70,10 @@ impl AppContext {
                             Some(b) => *b,
                             None => 0,
                         };
-                        let associated_contract_and_position = token_infos
-                            .iter()
-                            .find(|(id, _, _)| id == token_id)
-                            .expect("Expected to find associated contract and position");
                         if let Err(e) = self.db.insert_identity_token_balance(
                             token_id,
-                            &token_id.to_string(Encoding::Base58),
                             &identity_id,
                             balance,
-                            &associated_contract_and_position.1,
-                            associated_contract_and_position.2,
                             self,
                         ) {
                             return Err(format!(
@@ -98,6 +90,56 @@ impl AppContext {
                 Err(e) => {
                     return Err(format!("Failed to query token balances: {}", e.to_string()));
                 }
+            }
+        }
+
+        Ok(BackendTaskSuccessResult::Message(
+            "Successfully fetched token balances".to_string(),
+        ))
+    }
+
+    pub async fn query_token_balance(
+        &self,
+        sdk: &Sdk,
+        identity_id: Identifier,
+        token_id: Identifier,
+        sender: mpsc::Sender<TaskResult>,
+    ) -> Result<BackendTaskSuccessResult, String> {
+        let query = IdentityTokenBalancesQuery {
+            identity_id,
+            token_ids: vec![token_id],
+        };
+
+        let balances_result: Result<IdentityTokenBalances, String> =
+            TokenAmount::fetch_many(sdk, query)
+                .await
+                .map_err(|e| e.to_string());
+
+        match balances_result {
+            Ok(token_balances) => {
+                for balance in token_balances.iter() {
+                    let token_id = balance.0;
+                    let balance = match balance.1 {
+                        Some(b) => *b,
+                        None => 0,
+                    };
+                    if let Err(e) =
+                        self.db
+                            .insert_identity_token_balance(token_id, &identity_id, balance, self)
+                    {
+                        return Err(format!(
+                            "Failed to insert token balance into local database: {}",
+                            e.to_string()
+                        ));
+                    };
+                    sender
+                            .send(TaskResult::Refresh)
+                            .await
+                            .map_err(|e| format!("Failed to send refresh message after successful Platform query and local database insert: {}", e.to_string()))?;
+                }
+            }
+            Err(e) => {
+                return Err(format!("Failed to query token balances: {}", e.to_string()));
             }
         }
 

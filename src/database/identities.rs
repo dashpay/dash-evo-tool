@@ -2,6 +2,7 @@ use crate::context::AppContext;
 use crate::database::Database;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::{Wallet, WalletSeedHash};
+use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::platform::Identifier;
 use rusqlite::params;
@@ -287,27 +288,53 @@ impl Database {
         Ok(())
     }
 
+    /// Deletes a local qualified identity with the given identifier from the database.
+    pub fn delete_all_local_qualified_identities_in_devnet(
+        &self,
+        app_context: &AppContext,
+    ) -> rusqlite::Result<()> {
+        if app_context.network != Network::Devnet {
+            return Ok(());
+        }
+        let network = app_context.network_string();
+
+        let conn = self.conn.lock().unwrap();
+
+        // Perform the deletion only if the identity is marked as local
+        conn.execute(
+            "DELETE FROM identity WHERE network = ? AND is_local = 1",
+            params![network],
+        )?;
+
+        Ok(())
+    }
+
     /// Creates the identity_order table if it doesn't already exist
     /// with two columns: `pos` (int) and `identity_id` (blob).
     /// pos is the "position" in the custom ordering.
-    fn ensure_identity_order_table_exists(&self) -> rusqlite::Result<()> {
+    pub fn initialize_identity_order_table(&self) -> rusqlite::Result<()> {
         let conn = self.conn.lock().unwrap();
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS identity_order (
-                pos INTEGER NOT NULL,
-                identity_id BLOB NOT NULL,
-                PRIMARY KEY(pos),
-                FOREIGN KEY (identity_id) REFERENCES identity(id) ON DELETE CASCADE)",
+
+        // Drop the table if it already exists
+        conn.execute("DROP TABLE IF EXISTS identity_order", [])?;
+
+        // Recreate with foreign key enforcement
+        conn.execute(
+            "CREATE TABLE identity_order (
+            pos INTEGER NOT NULL,
+            identity_id BLOB NOT NULL,
+            PRIMARY KEY(pos),
+            FOREIGN KEY (identity_id) REFERENCES identity(id) ON DELETE CASCADE
+        )",
+            [],
         )?;
+
         Ok(())
     }
 
     /// Saves the user’s custom identity order (the entire list).
     /// This method overwrites whatever was there before.
     pub fn save_identity_order(&self, all_ids: Vec<Identifier>) -> rusqlite::Result<()> {
-        // Make sure table exists
-        self.ensure_identity_order_table_exists()?;
-
         let conn = self.conn.lock().unwrap();
         let tx = conn.unchecked_transaction()?;
 
@@ -331,9 +358,6 @@ impl Database {
     /// Loads the user’s custom identity order (the entire list).
     /// If an identity in the order doesn't exist in the identity table, it is removed.
     pub fn load_identity_order(&self) -> rusqlite::Result<Vec<Identifier>> {
-        // Make sure table exists
-        self.ensure_identity_order_table_exists()?;
-
         let conn = self.conn.lock().unwrap();
 
         // Read all rows sorted by pos

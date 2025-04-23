@@ -1,6 +1,9 @@
 use std::collections::BTreeMap;
 
+use super::BackendTaskSuccessResult;
 use crate::context::AppContext;
+use crate::database::contracts::InsertTokensToo;
+use crate::database::contracts::InsertTokensToo::NoTokensShouldBeAdded;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::tokens::tokens_screen::{ContractDescriptionInfo, TokenInfo};
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
@@ -16,14 +19,13 @@ use dash_sdk::platform::{
 };
 use dash_sdk::Sdk;
 
-use super::BackendTaskSuccessResult;
-
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum ContractTask {
     FetchContracts(Vec<Identifier>),
     FetchContractsWithDescriptions(Vec<Identifier>),
     RemoveContract(Identifier),
     RegisterDataContract(DataContract, String, QualifiedIdentity, IdentityPublicKey),
+    SaveDataContract(DataContract, Option<String>, InsertTokensToo),
 }
 
 impl AppContext {
@@ -40,7 +42,12 @@ impl AppContext {
                         for data_contract in data_contracts {
                             if let Some(contract) = &data_contract.1 {
                                 self.db
-                                    .insert_contract_if_not_exists(contract, None, self)
+                                    .insert_contract_if_not_exists(
+                                        contract,
+                                        None,
+                                        NoTokensShouldBeAdded,
+                                        self,
+                                    )
                                     .map_err(|e| {
                                         format!(
                                             "Error inserting contract into the database: {}",
@@ -101,9 +108,7 @@ impl AppContext {
                                     };
 
                                     let token_info = TokenInfo {
-                                        token_identifier: contract
-                                            .token_id(*token.0)
-                                            .unwrap_or_default(),
+                                        token_id: contract.token_id(*token.0).unwrap_or_default(),
                                         token_name,
                                         data_contract_id: contract.id(),
                                         token_position: *token.0,
@@ -158,6 +163,24 @@ impl AppContext {
                     BackendTaskSuccessResult::Message("Successfully removed contract".to_string())
                 })
                 .map_err(|e| format!("Error removing contract: {}", e.to_string())),
+            ContractTask::SaveDataContract(data_contract, alias, insert_tokens_too) => {
+                self.db
+                    .insert_contract_if_not_exists(
+                        &data_contract,
+                        alias.as_deref(),
+                        insert_tokens_too,
+                        self,
+                    )
+                    .map_err(|e| {
+                        format!(
+                            "Error inserting contract into the database: {}",
+                            e.to_string()
+                        )
+                    })?;
+                Ok(BackendTaskSuccessResult::Message(
+                    "DataContract successfully saved".to_string(),
+                ))
+            }
         }
     }
 }

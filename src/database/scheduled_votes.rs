@@ -21,10 +21,75 @@ impl Database {
                 time INTEGER NOT NULL,
                 executed INTEGER NOT NULL DEFAULT 0,
                 network TEXT NOT NULL,
-                PRIMARY KEY (identity_id, contested_name)
+                PRIMARY KEY (identity_id, contested_name),
+                FOREIGN KEY (identity_id) REFERENCES identity(id) ON DELETE CASCADE
             )",
             [],
         )?;
+        Ok(())
+    }
+
+    pub fn update_scheduled_votes_table(&self) -> rusqlite::Result<()> {
+        let mut conn = self.conn.lock().unwrap();
+
+        {
+            // Check if the foreign key already exists
+            let mut stmt = conn.prepare("PRAGMA foreign_key_list('scheduled_votes')")?;
+            let fk_exists = stmt
+                .query_map([], |row| Ok(row.get::<_, String>(2)?))?
+                .any(|table_name_result| table_name_result.ok().as_deref() == Some("identity"));
+
+            if fk_exists {
+                // Foreign key already exists, no need to alter the table
+                return Ok(());
+            }
+        }
+
+        // SQLite doesn't directly support adding foreign keys to existing tables.
+        // We need to recreate the table.
+
+        conn.execute("PRAGMA foreign_keys = OFF", [])?;
+
+        // Start a transaction to ensure atomicity
+        let tx = conn.transaction()?;
+
+        // Rename existing table
+        tx.execute(
+            "ALTER TABLE scheduled_votes RENAME TO scheduled_votes_old",
+            [],
+        )?;
+
+        // Create the new table with the foreign key constraint
+        tx.execute(
+            "CREATE TABLE scheduled_votes (
+            identity_id BLOB NOT NULL,
+            contested_name TEXT NOT NULL,
+            vote_choice TEXT NOT NULL,
+            time INTEGER NOT NULL,
+            executed INTEGER NOT NULL DEFAULT 0,
+            network TEXT NOT NULL,
+            PRIMARY KEY (identity_id, contested_name),
+            FOREIGN KEY (identity_id) REFERENCES identity(id) ON DELETE CASCADE
+        )",
+            [],
+        )?;
+
+        // Copy data from old to new table
+        tx.execute(
+            "INSERT INTO scheduled_votes (identity_id, contested_name, vote_choice, time, executed, network)
+         SELECT identity_id, contested_name, vote_choice, time, executed, network
+         FROM scheduled_votes_old",
+            [],
+        )?;
+
+        // Drop the old table
+        tx.execute("DROP TABLE scheduled_votes_old", [])?;
+
+        // Commit the transaction
+        tx.commit()?;
+
+        conn.execute("PRAGMA foreign_keys = ON", [])?;
+
         Ok(())
     }
 

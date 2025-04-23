@@ -3,28 +3,32 @@ use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
+use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_distribution_key::TokenDistributionType;
+use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::accessors::v0::TokenDistributionRulesV0Getters;
+use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::distribution_recipient::TokenDistributionRecipient;
+use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::methods::v0::TokenPerpetualDistributionV0Accessors;
+use dash_sdk::dpp::data_contract::TokenConfiguration;
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
+use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use eframe::egui::{self, Color32, Context, Ui};
 use egui::RichText;
-
-use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
-use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
-
 use crate::app::{AppAction, BackendTasksExecutionMode};
-use crate::backend_task::tokens::TokenTask;
 use crate::backend_task::BackendTask;
+use crate::backend_task::tokens::TokenTask;
 use crate::context::AppContext;
+use crate::model::qualified_contract::QualifiedContract;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
+use crate::ui::{MessageType, Screen, ScreenLike};
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
-use crate::ui::{MessageType, Screen, ScreenLike};
-
 use super::tokens_screen::IdentityTokenBalance;
 
 /// States for the claim flow
@@ -40,6 +44,8 @@ pub struct ClaimTokensScreen {
     pub identity: QualifiedIdentity,
     pub identity_token_balance: IdentityTokenBalance,
     selected_key: Option<dash_sdk::platform::IdentityPublicKey>,
+    token_contract: Option<QualifiedContract>,
+    token_configuration: Option<TokenConfiguration>,
     distribution_type: Option<TokenDistributionType>,
     status: ClaimTokensStatus,
     error_message: Option<String>,
@@ -78,10 +84,29 @@ impl ClaimTokensScreen {
         let selected_wallet =
             get_selected_wallet(&identity, None, possible_key.clone(), &mut error_message);
 
+        let token_contract = app_context
+            .db
+            .get_contract_by_id(identity_token_balance.data_contract_id, app_context)
+            .ok()
+            .flatten();
+
+        let token_configuration = token_contract
+            .as_ref()
+            .map(|contract| {
+                contract
+                    .contract
+                    .expected_token_configuration(identity_token_balance.token_position)
+                    .ok()
+            })
+            .flatten()
+            .cloned();
+
         Self {
             identity,
             identity_token_balance,
             selected_key: possible_key.cloned(),
+            token_contract,
+            token_configuration,
             distribution_type: None,
             status: ClaimTokensStatus::NotStarted,
             error_message: None,
@@ -112,6 +137,12 @@ impl ClaimTokensScreen {
                     } else {
                         // Show only "available" auth keys
                         for key_wrapper in self.identity.available_authentication_keys() {
+                            if key_wrapper.identity_public_key.security_level()
+                                == SecurityLevel::MASTER
+                            {
+                                // Master keys can't sign claims
+                                continue;
+                            }
                             let key = &key_wrapper.identity_public_key;
                             let label =
                                 format!("Key ID: {} (Purpose: {:?})", key.id(), key.purpose());
@@ -123,6 +154,40 @@ impl ClaimTokensScreen {
     }
 
     fn render_token_distribution_type_selector(&mut self, ui: &mut Ui) {
+        let show_perpetual = self
+            .token_configuration
+            .as_ref()
+            .map(|t| {
+                if let Some(perpetual_distribution) =
+                    t.distribution_rules().perpetual_distribution()
+                {
+                    match perpetual_distribution.distribution_recipient() {
+                        TokenDistributionRecipient::ContractOwner => {
+                            if let Some(contract) = &self.token_contract {
+                                contract.contract.owner_id() == self.identity.identity.id()
+                            } else {
+                                true
+                            }
+                        }
+                        TokenDistributionRecipient::Identity(id) => {
+                            self.identity.identity.id() == id
+                        }
+                        TokenDistributionRecipient::EvonodesByParticipation => true,
+                    }
+                } else {
+                    false
+                }
+            })
+            .unwrap_or(true);
+        let show_pre_programmed = self
+            .token_configuration
+            .as_ref()
+            .map(|t| {
+                t.distribution_rules()
+                    .pre_programmed_distribution()
+                    .is_some()
+            })
+            .unwrap_or(true);
         ui.horizontal(|ui| {
             ui.label("Select Distribution Type:");
             egui::ComboBox::from_id_salt("claim_distribution_type_selector")
@@ -132,16 +197,23 @@ impl ClaimTokensScreen {
                     None => "Select a type".to_string(),
                 })
                 .show_ui(ui, |ui| {
-                    ui.selectable_value(
-                        &mut self.distribution_type,
-                        Some(TokenDistributionType::Perpetual),
-                        "Perpetual",
-                    );
-                    ui.selectable_value(
-                        &mut self.distribution_type,
-                        Some(TokenDistributionType::PreProgrammed),
-                        "PreProgrammed",
-                    );
+                    if !show_perpetual && !show_pre_programmed {
+                        ui.label("No distributions to potentially claim for this token");
+                    }
+                    if show_perpetual {
+                        ui.selectable_value(
+                            &mut self.distribution_type,
+                            Some(TokenDistributionType::Perpetual),
+                            "Perpetual",
+                        );
+                    }
+                    if show_pre_programmed {
+                        ui.selectable_value(
+                            &mut self.distribution_type,
+                            Some(TokenDistributionType::PreProgrammed),
+                            "PreProgrammed",
+                        );
+                    }
                 });
         });
     }
@@ -185,7 +257,7 @@ impl ClaimTokensScreen {
                                 data_contract,
                                 token_position: self.identity_token_balance.token_position,
                                 actor_identity: self.identity.clone(),
-                                distribution_type: distribution_type,
+                                distribution_type,
                                 signing_key: self.selected_key.clone().expect("No key selected"),
                             }),
                             BackendTask::TokenTask(TokenTask::QueryMyTokenBalances),

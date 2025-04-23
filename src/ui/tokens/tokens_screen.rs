@@ -28,10 +28,9 @@ use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
 use dash_sdk::query_types::IndexMap;
 use eframe::egui::{self, CentralPanel, Color32, Context, Frame, Margin, Ui};
-use eframe::glow::Texture;
 use egui::{Align, ColorImage, RichText, TextureHandle};
 use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
-use egui_extras::{Column, RetainedImage, TableBuilder};
+use egui_extras::{Column, TableBuilder};
 use image::ImageReader;
 use crate::app::BackendTasksExecutionMode;
 use crate::backend_task::contract::ContractTask;
@@ -552,6 +551,7 @@ pub struct TokenBuildArgs {
     pub identity_id: Identifier,
 
     pub token_name: String,
+    pub contract_keywords: Vec<String>,
     pub should_capitalize: bool,
     pub decimals: u16,
     pub base_supply: u64,
@@ -622,6 +622,7 @@ pub struct TokensScreen {
     wallet_password: String,
     show_password: bool,
     token_name_input: String,
+    contract_keywords_input: String,
     should_capitalize_input: bool,
     decimals_input: String,
     base_supply_input: String,
@@ -817,6 +818,7 @@ impl TokensScreen {
             token_creator_status: TokenCreatorStatus::NotStarted,
             token_creator_error_message: None,
             token_name_input: String::new(),
+            contract_keywords_input: String::new(),
             should_capitalize_input: false,
             decimals_input: 8.to_string(),
             base_supply_input: TokenConfigurationV0::default_most_restrictive()
@@ -1884,6 +1886,11 @@ impl TokensScreen {
                             ui.label("Max Supply (optional):");
                             ui.text_edit_singleline(&mut self.max_supply_input);
                             ui.end_row();
+
+                            // Row 4: Contract Keywords
+                            ui.label("Contract Keywords (optional, comma separated):");
+                            ui.text_edit_singleline(&mut self.contract_keywords_input);
+                            ui.end_row();
                         });
 
                     ui.add_space(10.0);
@@ -2873,6 +2880,7 @@ Emits tokens in fixed amounts for specific intervals.
                                     let data_contract = match self.app_context.build_data_contract_v1_with_one_token(
                                         args.identity_id,
                                         args.token_name,
+                                        args.contract_keywords,
                                         args.should_capitalize,
                                         args.decimals,
                                         args.base_supply,
@@ -3040,6 +3048,7 @@ Emits tokens in fixed amounts for specific intervals.
                             signing_key: self.selected_key.clone().unwrap(),
 
                             token_name: args.token_name,
+                            contract_keywords: args.contract_keywords,
                             should_capitalize: args.should_capitalize,
                             decimals: args.decimals,
                             base_supply: args.base_supply,
@@ -3114,6 +3123,12 @@ Emits tokens in fixed amounts for specific intervals.
         }
         let token_name = self.token_name_input.clone();
 
+        // Remove whitespace and parse the comma separated string into a vec
+        let contract_keywords = self
+            .contract_keywords_input
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .collect::<Vec<String>>();
         let decimals = self.decimals_input.parse::<u16>().unwrap_or(8);
         let base_supply = self.base_supply_input.parse::<u64>().unwrap_or(1000000);
         let max_supply = if self.max_supply_input.is_empty() {
@@ -3178,6 +3193,7 @@ Emits tokens in fixed amounts for specific intervals.
         Ok(TokenBuildArgs {
             identity_id,
             token_name,
+            contract_keywords,
             should_capitalize: self.should_capitalize_input,
             decimals,
             base_supply,
@@ -3560,6 +3576,7 @@ Emits tokens in fixed amounts for specific intervals.
         self.selected_key = None;
         self.token_creator_status = TokenCreatorStatus::NotStarted;
         self.token_name_input = "".to_string();
+        self.contract_keywords_input = "".to_string();
         self.decimals_input = "8".to_string();
         self.base_supply_input = "100000".to_string();
         self.max_supply_input = "".to_string();
@@ -4493,6 +4510,7 @@ mod tests {
             .build_data_contract_v1_with_one_token(
                 build_args.identity_id,
                 build_args.token_name,
+                build_args.contract_keywords,
                 build_args.should_capitalize,
                 build_args.decimals,
                 build_args.base_supply,
@@ -4691,6 +4709,7 @@ mod tests {
             .build_data_contract_v1_with_one_token(
                 build_args.identity_id,
                 build_args.token_name,
+                build_args.contract_keywords,
                 build_args.should_capitalize,
                 build_args.decimals,
                 build_args.base_supply,

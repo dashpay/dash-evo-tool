@@ -20,6 +20,22 @@ impl AppContext {
         token_id: Identifier,
         sdk: &Sdk,
     ) -> Result<BackendTaskSuccessResult, String> {
+        let token_config = self
+            .db
+            .get_token_config_for_id(&token_id, self)
+            .map_err(|e| format!("Failed to get token config: {e}"))?
+            .ok_or("Token config not found")?;
+        let perpetual_distribution = token_config
+            .distribution_rules()
+            .perpetual_distribution()
+            .ok_or("Perpetual distribution function not found")?;
+
+        let recipient = perpetual_distribution.distribution_recipient();
+
+        // todo: see if the identity ID is even a recipient
+
+        let function = perpetual_distribution.distribution_type();
+
         let query = TokenLastClaimQuery {
             identity_id,
             token_id,
@@ -33,17 +49,6 @@ impl AppContext {
             })?;
 
         // Calculate how much the user has to claim based on the last time they claimed and the distribution function
-        let token_config = self
-            .db
-            .get_token_config_for_id(&token_id, self)
-            .map_err(|e| format!("Failed to get token config: {e}"))?
-            .ok_or("Token config not found")?;
-        let function = token_config
-            .distribution_rules()
-            .perpetual_distribution()
-            .ok_or("Perpetual distribution function not found")?
-            .distribution_type();
-
         // Get the current moment (block, time, or epoch)
         let current_epoch_with_metadata = ExtendedEpochInfo::fetch_current_with_metadata(sdk)
             .await

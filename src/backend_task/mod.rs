@@ -7,11 +7,8 @@ use crate::backend_task::identity::IdentityTask;
 use crate::backend_task::system_task::SystemTask;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
-use crate::ui::tokens::tokens_screen::{
-    ContractDescriptionInfo, IdentityTokenIdentifier, TokenInfo,
-};
+use crate::ui::tokens::tokens_screen::{ContractDescriptionInfo, IdentityTokenIdentifier, TokenInfo};
 use contested_names::ScheduledDPNSVote;
-use dash_sdk::dpp::balances::credits::TokenAmount;
 use dash_sdk::dpp::prelude::DataContract;
 use dash_sdk::dpp::state_transition::StateTransition;
 use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
@@ -22,6 +19,7 @@ use dash_sdk::query_types::{Documents, IndexMap};
 use futures::future::join_all;
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use dash_sdk::dpp::balances::credits::TokenAmount;
 use tokens::TokenTask;
 use tokio::sync::mpsc;
 

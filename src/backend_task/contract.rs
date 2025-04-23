@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use super::BackendTaskSuccessResult;
 use crate::context::AppContext;
 use crate::database::contracts::InsertTokensToo;
-use crate::database::contracts::InsertTokensToo::{AllTokensShouldBeAdded, NoTokensShouldBeAdded};
+use crate::database::contracts::InsertTokensToo::NoTokensShouldBeAdded;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::tokens::tokens_screen::{ContractDescriptionInfo, TokenInfo};
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;

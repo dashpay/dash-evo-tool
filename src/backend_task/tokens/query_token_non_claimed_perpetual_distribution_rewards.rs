@@ -33,6 +33,10 @@ impl AppContext {
         let recipient = perpetual_distribution.distribution_recipient();
 
         // todo: see if the identity ID is even a recipient
+        // it may also not be as simple as calculating the amount distributed since last claim
+        // what if the recipient has changed? for example, since this identity's last claim,
+        // the recipient changed to a different identity for half the time, they claimed the rewards,
+        // now we are calculating since last claim but the amount is actually only half of what we calculate.
 
         let function = perpetual_distribution.distribution_type();
 

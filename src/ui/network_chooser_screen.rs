@@ -313,13 +313,17 @@ impl NetworkChooserScreen {
                     }
                 }
             });
-        };
+        } else {
+            ui.label("     -");
+        }
 
         if network == Network::Devnet {
             if ui.button("Clear local Platform data").clicked() {
                 app_action =
                     AppAction::BackendTask(BackendTask::SystemTask(SystemTask::WipePlatformData));
             }
+        } else {
+            ui.label("     -");
         }
 
         ui.end_row();

@@ -289,7 +289,7 @@ impl Database {
     }
 
     /// Deletes a local qualified identity with the given identifier from the database.
-    pub fn delete_all_local_qualified_identity_in_devnet(
+    pub fn delete_all_local_qualified_identities_in_devnet(
         &self,
         app_context: &AppContext,
     ) -> rusqlite::Result<()> {

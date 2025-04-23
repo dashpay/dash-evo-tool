@@ -22,7 +22,11 @@ impl AppContext {
 
     pub fn wipe_devnet(self: &Arc<Self>) -> Result<BackendTaskSuccessResult, String> {
         self.db
-            .delete_all_local_qualified_identity_in_devnet(self)
+            .delete_all_local_qualified_identities_in_devnet(self)
+            .map_err(|e| e.to_string())?;
+
+        self.db
+            .delete_all_local_qualified_identities_in_devnet(self)
             .map_err(|e| e.to_string())?;
 
         Ok(BackendTaskSuccessResult::Refresh)

@@ -29,7 +29,7 @@ impl AppContext {
         identity_index: IdentityIndex,
     ) -> Result<BackendTaskSuccessResult, String> {
         let public_key = {
-            let mut wallet = wallet_arc_ref.wallet.write().unwrap();
+            let wallet = wallet_arc_ref.wallet.write().unwrap();
             wallet.identity_authentication_ecdsa_public_key(self.network, identity_index, 0)?
         };
 

@@ -345,7 +345,7 @@ impl ScreenLike for RegisterDpnsNameScreen {
             let button = egui::Button::new(RichText::new("Register Name").color(Color32::WHITE))
                 .fill(Color32::from_rgb(0, 128, 255))
                 .frame(true)
-                .rounding(3.0);
+                .corner_radius(3.0);
             if ui.add(button).clicked() {
                 // Set the status to waiting and capture the current time
                 let now = SystemTime::now()

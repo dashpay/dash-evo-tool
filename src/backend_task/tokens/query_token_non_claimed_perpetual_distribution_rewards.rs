@@ -3,7 +3,6 @@
 use crate::model::qualified_identity::IdentityType;
 use crate::ui::tokens::tokens_screen::IdentityTokenIdentifier;
 use crate::{backend_task::BackendTaskSuccessResult, context::AppContext};
-use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
 use dash_sdk::{platform::Identifier, Sdk};
 use dash_sdk::dpp::block::extended_epoch_info::ExtendedEpochInfo;
 use dash_sdk::dpp::block::extended_epoch_info::v0::ExtendedEpochInfoV0Getters;

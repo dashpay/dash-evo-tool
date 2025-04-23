@@ -70,7 +70,6 @@ use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::prelude::AssetLockProof;
 use dash_sdk::platform::Identity;
-use egui::epaint::tessellator::PathType;
 use zeroize::Zeroize;
 
 bitflags! {

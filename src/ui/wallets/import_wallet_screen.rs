@@ -332,7 +332,7 @@ impl ScreenLike for ImportWalletScreen {
                             RichText::new("Save Wallet").strong().size(30.0),
                         )
                             .min_size(Vec2::new(300.0, 60.0))
-                            .rounding(10.0)
+                            .corner_radius(10.0)
                             .stroke(Stroke::new(1.5, Color32::WHITE))
                             .sense(if self.seed_phrase.is_some() {
                                 egui::Sense::click()

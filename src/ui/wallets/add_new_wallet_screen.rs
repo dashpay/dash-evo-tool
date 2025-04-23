@@ -1,7 +1,7 @@
 use crate::app::AppAction;
 use crate::context::AppContext;
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::{wallets, ScreenLike};
+use crate::ui::ScreenLike;
 use eframe::egui::Context;
 
 use crate::model::wallet::encryption::{encrypt_message, DASH_SECRET_MESSAGE};
@@ -231,7 +231,7 @@ impl AddNewWalletScreen {
                         let generate_button =
                             egui::Button::new(RichText::new("Generate").strong().size(24.0))
                                 .min_size(Vec2::new(150.0, 30.0))
-                                .rounding(5.0)
+                                .corner_radius(5.0)
                                 .stroke(Stroke::new(1.0, Color32::WHITE));
 
                         if ui.add(generate_button).clicked() {
@@ -249,11 +249,11 @@ impl AddNewWalletScreen {
                 Vec2::new(frame_width, 260.0), // Set width and height of the container
                 egui::Layout::top_down(egui::Align::Center),
                 |ui| {
-                    Frame::none()
+                    Frame::new()
                         .fill(Color32::WHITE)
                         .stroke(Stroke::new(1.0, Color32::BLACK))
-                        .rounding(5.0)
-                        .inner_margin(Margin::same(10.0))
+                        .corner_radius(5.0)
+                        .inner_margin(Margin::same(10))
                         .show(ui, |ui| {
                             let columns = 6;
                             let rows = 24 / columns;
@@ -447,7 +447,7 @@ impl ScreenLike for AddNewWalletScreen {
                             RichText::new("Save Wallet").strong().size(30.0),
                         )
                             .min_size(Vec2::new(300.0, 60.0))
-                            .rounding(10.0)
+                            .corner_radius(10.0)
                             .stroke(Stroke::new(1.5, Color32::WHITE))
                             .sense(if self.wrote_it_down && self.seed_phrase.is_some() {
                                 egui::Sense::click()

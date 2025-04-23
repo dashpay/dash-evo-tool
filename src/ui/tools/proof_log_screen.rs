@@ -330,10 +330,10 @@ impl ProofLogScreen {
                 let font_id = TextStyle::Monospace.resolve(ui.style());
                 let layout_job = Self::highlight_proof_text(&proof_display, &hashes, font_id);
 
-                let frame = Frame::none()
+                let frame = Frame::new()
                     .stroke(Stroke::new(1.0, Color32::BLACK))
                     .fill(Color32::TRANSPARENT)
-                    .rounding(2.0); // Set margins to zero
+                    .corner_radius(2.0); // Set margins to zero
 
                 frame.show(ui, |ui| {
                     ui.set_min_size(Vec2::new(ui.available_width(), 300.0));

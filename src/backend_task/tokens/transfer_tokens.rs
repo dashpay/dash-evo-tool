@@ -22,7 +22,7 @@ impl AppContext {
         token_position: u16,
         signing_key: IdentityPublicKey,
         sdk: &Sdk,
-        sender: mpsc::Sender<TaskResult>,
+        _sender: mpsc::Sender<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, String> {
         let builder = TokenTransferTransitionBuilder::new(
             data_contract,

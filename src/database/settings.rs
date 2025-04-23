@@ -3,7 +3,6 @@ use crate::model::password_info::PasswordInfo;
 use crate::ui::RootScreenType;
 use dash_sdk::dpp::dashcore::Network;
 use rusqlite::{params, Result};
-use std::path::PathBuf;
 use std::str::FromStr;
 
 impl Database {

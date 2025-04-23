@@ -13,7 +13,7 @@ impl AppContext {
     pub async fn run_system_task(
         self: &Arc<Self>,
         task: SystemTask,
-        sender: mpsc::Sender<TaskResult>,
+        _sender: mpsc::Sender<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, String> {
         match task {
             SystemTask::WipePlatformData => self.wipe_devnet(),

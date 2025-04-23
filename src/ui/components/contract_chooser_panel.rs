@@ -55,9 +55,9 @@ pub fn add_contract_chooser_panel(
         .resizable(true)
         .default_width(250.0)
         .frame(
-            Frame::none()
+            Frame::new()
                 .fill(ctx.style().visuals.panel_fill)
-                .inner_margin(Margin::same(10.0)),
+                .inner_margin(Margin::same(10)),
         )
         .show(ctx, |panel_ui| {
             // Make the whole panel scrollable (if it overflows vertically)

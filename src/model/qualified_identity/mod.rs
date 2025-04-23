@@ -3,7 +3,7 @@ pub mod qualified_identity_public_key;
 
 use crate::model::qualified_identity::encrypted_key_storage::KeyStorage;
 use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
-use crate::model::wallet::{Wallet, WalletSeed, WalletSeedHash};
+use crate::model::wallet::{Wallet, WalletSeedHash};
 use bincode::{Decode, Encode};
 use dash_sdk::dashcore_rpc::dashcore::{signer, PubkeyHash};
 use dash_sdk::dpp::bls_signatures::{Bls12381G2Impl, SignatureSchemes};

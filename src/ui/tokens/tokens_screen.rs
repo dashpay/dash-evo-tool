@@ -1186,7 +1186,7 @@ impl TokensScreen {
                         1.0,
                         ui.visuals().widgets.inactive.bg_stroke.color,
                     ))
-                    .inner_margin(Margin::same(8.0))
+                    .inner_margin(Margin::same(8))
                     .show(ui, |ui| {
                         TableBuilder::new(ui)
                             .striped(true)
@@ -1212,12 +1212,12 @@ impl TokensScreen {
                                 });
                             })
                             .body(|mut body| {
-                                for (TokenInfo {
+                                for TokenInfo {
                                     token_id,
                                     token_name,
                                     description,
                                     ..
-                                }) in self.all_known_tokens.values()
+                                } in self.all_known_tokens.values()
                                 {
                                     body.row(25.0, |mut row| {
                                         row.col(|ui| {
@@ -1325,7 +1325,7 @@ impl TokensScreen {
                         1.0,
                         ui.visuals().widgets.inactive.bg_stroke.color,
                     ))
-                    .inner_margin(Margin::same(8.0))
+                    .inner_margin(Margin::same(8))
                     .show(ui, |ui| {
                         TableBuilder::new(ui)
                             .striped(true)
@@ -1692,7 +1692,7 @@ impl TokensScreen {
                     1.0,
                     ui.visuals().widgets.inactive.bg_stroke.color,
                 ))
-                .inner_margin(Margin::same(8.0))
+                .inner_margin(Margin::same(8))
                 .show(ui, |ui| {
                     TableBuilder::new(ui)
                         .striped(true)
@@ -2930,7 +2930,7 @@ Emits tokens in fixed amounts for specific intervals.
                             egui::Button::new(RichText::new("Register Token Contract").color(Color32::WHITE))
                                 .fill(Color32::from_rgb(0, 128, 255))
                                 .frame(true)
-                                .rounding(3.0);
+                                .corner_radius(3.0);
                         if ui.add(register_button).clicked() {
                             match self.parse_token_build_args() {
                                 Ok(args) => {
@@ -2948,7 +2948,7 @@ Emits tokens in fixed amounts for specific intervals.
                         let view_json_button = egui::Button::new(RichText::new("View JSON").color(Color32::WHITE))
                             .fill(Color32::from_rgb(0, 128, 255))
                             .frame(true)
-                            .rounding(3.0);
+                            .corner_radius(3.0);
                         if ui.add(view_json_button).clicked() {
                             match self.parse_token_build_args() {
                                 Ok(args) => {

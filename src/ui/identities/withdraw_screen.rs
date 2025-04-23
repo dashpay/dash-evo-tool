@@ -439,7 +439,7 @@ impl ScreenLike for WithdrawalScreen {
                 let button = egui::Button::new(RichText::new("Withdraw").color(Color32::WHITE))
                     .fill(Color32::from_rgb(0, 128, 255))
                     .frame(true)
-                    .rounding(3.0)
+                    .corner_radius(3.0)
                     .min_size(egui::vec2(60.0, 30.0));
 
                 if ui.add(button).clicked() {

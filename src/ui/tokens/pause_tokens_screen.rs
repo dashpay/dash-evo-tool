@@ -325,7 +325,7 @@ impl ScreenLike for PauseTokensScreen {
 
                 let button = egui::Button::new(RichText::new("Pause").color(Color32::WHITE))
                     .fill(Color32::from_rgb(192, 0, 0))
-                    .rounding(3.0);
+                    .corner_radius(3.0);
 
                 if ui.add(button).clicked() {
                     self.show_confirmation_popup = true;

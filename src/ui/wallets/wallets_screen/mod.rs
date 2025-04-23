@@ -634,8 +634,8 @@ impl WalletsBalancesScreen {
         // Optionally put everything in a framed "card"-like container
         Frame::group(ui.style())
             .fill(ui.visuals().extreme_bg_color) // background color
-            .rounding(5.0) // rounded corners
-            .outer_margin(Margin::same(20.0)) // space around the frame
+            .corner_radius(5.0) // rounded corners
+            .outer_margin(Margin::same(20)) // space around the frame
             .shadow(ui.visuals().window_shadow) // drop shadow
             .show(ui, |ui| {
                 ui.vertical_centered(|ui| {

@@ -28,9 +28,9 @@ pub fn add_dpns_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext)
     SidePanel::left("dpns_subscreen_chooser_panel")
         .default_width(250.0)
         .frame(
-            Frame::none()
+            Frame::new()
                 .fill(ctx.style().visuals.panel_fill)
-                .inner_margin(Margin::same(10.0)),
+                .inner_margin(Margin::same(10)),
         )
         .show(ctx, |ui| {
             // Display subscreen names

@@ -397,7 +397,7 @@ impl DPNSScreen {
                         1.0,
                         ui.visuals().widgets.inactive.bg_stroke.color,
                     ))
-                    .inner_margin(Margin::same(8.0))
+                    .inner_margin(Margin::same(8))
                     .show(ui, |ui| {
                         TableBuilder::new(ui)
                             .striped(true)
@@ -751,7 +751,7 @@ impl DPNSScreen {
                         1.0,
                         ui.visuals().widgets.inactive.bg_stroke.color,
                     ))
-                    .inner_margin(Margin::same(8.0))
+                    .inner_margin(Margin::same(8))
                     .show(ui, |ui| {
                         TableBuilder::new(ui)
                             .striped(true)
@@ -923,7 +923,7 @@ impl DPNSScreen {
                         1.0,
                         ui.visuals().widgets.inactive.bg_stroke.color,
                     ))
-                    .inner_margin(Margin::same(8.0))
+                    .inner_margin(Margin::same(8))
                     .show(ui, |ui| {
                         TableBuilder::new(ui)
                             .striped(true)
@@ -998,7 +998,7 @@ impl DPNSScreen {
                     1.0,
                     ui.visuals().widgets.inactive.bg_stroke.color,
                 ))
-                .inner_margin(Margin::same(8.0))
+                .inner_margin(Margin::same(8))
                 .show(ui, |ui| {
                     TableBuilder::new(ui)
                         .striped(true)
@@ -1286,7 +1286,7 @@ impl DPNSScreen {
                     1.0,
                     ui.visuals().widgets.inactive.bg_stroke.color,
                 ))
-                .inner_margin(Margin::same(8.0))
+                .inner_margin(Margin::same(8))
                 .show(ui, |ui| {
                     // Show which votes were clicked
                     ui.group(|ui| {
@@ -1517,7 +1517,7 @@ impl DPNSScreen {
         // "Apply Votes" button
         let button = egui::Button::new(RichText::new("Apply Votes").color(Color32::WHITE))
             .fill(Color32::from_rgb(0, 128, 255))
-            .rounding(3.0);
+            .corner_radius(3.0);
         if ui.add(button).clicked() {
             action = self.bulk_apply_votes();
         }

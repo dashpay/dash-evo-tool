@@ -177,7 +177,7 @@ impl DocumentQueryScreen {
             )
             .fill(egui::Color32::from_rgb(0, 128, 255))
             .frame(true)
-            .rounding(3.0);
+            .corner_radius(3.0);
             if ui.add(button).clicked() {
                 self.selected_document_type = self.pending_document_type.clone();
                 self.document_fields_selection = self.pending_fields_selection.clone();
@@ -583,9 +583,9 @@ impl ScreenLike for DocumentQueryScreen {
 
         egui::CentralPanel::default()
             .frame(
-                Frame::none()
+                Frame::new()
                     .fill(ctx.style().visuals.panel_fill)
-                    .inner_margin(Margin::same(10.0)),
+                    .inner_margin(Margin::same(10)),
             )
             .show(ctx, |ui| {
                 action |= self.show_input_field(ui);

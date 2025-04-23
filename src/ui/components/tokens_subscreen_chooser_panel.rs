@@ -26,9 +26,9 @@ pub fn add_tokens_subscreen_chooser_panel(ctx: &Context, app_context: &AppContex
     SidePanel::left("tokens_subscreen_chooser_panel")
         .default_width(250.0)
         .frame(
-            Frame::none()
+            Frame::new()
                 .fill(ctx.style().visuals.panel_fill)
-                .inner_margin(Margin::same(10.0)),
+                .inner_margin(Margin::same(10)),
         )
         .show(ctx, |ui| {
             // Display subscreen names

@@ -85,7 +85,7 @@ impl ScreenLike for ViewTokenClaimsScreen {
     fn refresh(&mut self) {}
 
     fn ui(&mut self, ctx: &Context) -> AppAction {
-        let mut action = add_top_panel(
+        let action = add_top_panel(
             ctx,
             &self.app_context,
             vec![

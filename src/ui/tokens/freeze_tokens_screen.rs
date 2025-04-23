@@ -373,7 +373,7 @@ impl ScreenLike for FreezeTokensScreen {
                 // Freeze button
                 let button = egui::Button::new(RichText::new("Freeze").color(Color32::WHITE))
                     .fill(Color32::from_rgb(64, 64, 255))
-                    .rounding(3.0);
+                    .corner_radius(3.0);
 
                 if ui.add(button).clicked() {
                     self.show_confirmation_popup = true;

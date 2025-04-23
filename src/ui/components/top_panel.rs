@@ -138,9 +138,9 @@ pub fn add_top_panel(
 
     TopBottomPanel::top("top_panel")
         .frame(
-            Frame::none()
+            Frame::new()
                 .fill(color)
-                .inner_margin(Margin::symmetric(10.0, 10.0)),
+                .inner_margin(Margin::symmetric(10, 10)),
         )
         .exact_height(50.0)
         .show(ctx, |ui| {
@@ -173,7 +173,7 @@ pub fn add_top_panel(
                         let button = egui::Button::new(RichText::new(text).color(Color32::WHITE))
                             .fill(Color32::from_rgb(0, 128, 255)) // Button background color
                             .frame(true) // Button frame
-                            .rounding(3.0) // Rounded corners
+                            .corner_radius(3.0) // Rounded corners
                             .stroke(Stroke::new(1.0, Color32::WHITE)) // Border stroke
                             .min_size(egui::vec2(button_width, 30.0));
 

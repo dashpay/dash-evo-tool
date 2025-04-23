@@ -144,7 +144,7 @@ impl AddContractsScreen {
                 egui::Button::new(RichText::new("Back to Contracts").color(Color32::WHITE))
                     .fill(Color32::from_rgb(0, 128, 255))
                     .frame(true)
-                    .rounding(3.0);
+                    .corner_radius(3.0);
             if ui.add(button).clicked() {
                 // Return to previous screen
                 action = AppAction::PopScreenAndRefresh;
@@ -224,7 +224,7 @@ impl ScreenLike for AddContractsScreen {
                         egui::Button::new(RichText::new("Add Contracts").color(Color32::WHITE))
                             .fill(Color32::from_rgb(0, 128, 255))
                             .frame(true)
-                            .rounding(3.0);
+                            .corner_radius(3.0);
                     if ui.add(button).clicked() {
                         action = self.add_contracts_clicked();
                     }

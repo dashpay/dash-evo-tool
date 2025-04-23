@@ -66,13 +66,13 @@ pub fn add_left_panel(
     SidePanel::left("left_panel")
         .default_width(panel_width)
         .frame(
-            Frame::none()
+            Frame::new()
                 .fill(ctx.style().visuals.panel_fill)
                 .inner_margin(Margin {
-                    left: 10.0,
-                    right: 10.0,
-                    top: 10.0,
-                    bottom: 0.0,
+                    left: 10,
+                    right: 10,
+                    top: 10,
+                    bottom: 0,
                 }),
         )
         .show(ctx, |ui| {

@@ -396,7 +396,7 @@ impl IdentitiesScreen {
         let button = egui::Button::new(name)
             .fill(button_color)
             .frame(true)
-            .rounding(3.0)
+            .corner_radius(3.0)
             .min_size(egui::Vec2::new(30.0, 18.0));
 
         if ui.add(button).clicked() {
@@ -415,8 +415,8 @@ impl IdentitiesScreen {
         // Optionally put everything in a framed "card"-like container
         Frame::group(ui.style())
             .fill(ui.visuals().extreme_bg_color) // background color
-            .rounding(5.0) // rounded corners
-            .outer_margin(Margin::same(20.0)) // space around the frame
+            .corner_radius(5.0) // rounded corners
+            .outer_margin(Margin::same(20)) // space around the frame
             .shadow(ui.visuals().window_shadow) // drop shadow
             .show(ui, |ui| {
                 ui.vertical_centered(|ui| {
@@ -498,7 +498,7 @@ impl IdentitiesScreen {
                     1.0,
                     ui.visuals().widgets.inactive.bg_stroke.color,
                 ))
-                .inner_margin(Margin::same(8.0))
+                .inner_margin(Margin::same(8))
                 .show(ui, |ui| {
                     TableBuilder::new(ui)
                         .striped(true)

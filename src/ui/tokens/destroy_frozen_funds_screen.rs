@@ -394,7 +394,7 @@ impl ScreenLike for DestroyFrozenFundsScreen {
                 // Destroy button
                 let button = egui::Button::new(RichText::new("Destroy").color(Color32::WHITE))
                     .fill(Color32::DARK_RED)
-                    .rounding(3.0);
+                    .corner_radius(3.0);
 
                 if ui.add(button).clicked() {
                     self.show_confirmation_popup = true;

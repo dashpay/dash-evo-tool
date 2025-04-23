@@ -99,6 +99,21 @@ impl ContextProvider for Provider {
         }
     }
 
+    fn get_token_configuration(
+        &self,
+        token_id: &dash_sdk::platform::Identifier,
+    ) -> Result<Option<dash_sdk::dpp::data_contract::TokenConfiguration>, ContextProviderError>
+    {
+        let app_ctx_guard = self.app_context.lock().expect("lock poisoned");
+        let app_ctx = app_ctx_guard
+            .as_ref()
+            .ok_or(ContextProviderError::Config("no app context".to_string()))?;
+
+        self.db
+            .get_token_config_for_id(token_id, app_ctx)
+            .map_err(|e| dash_sdk::error::ContextProviderError::Generic(e.to_string()))
+    }
+
     fn get_quorum_public_key(
         &self,
         quorum_type: u32,

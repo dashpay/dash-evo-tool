@@ -18,7 +18,7 @@ use dash_sdk::dashcore_rpc::dashcore::{InstantLock, Transaction};
 use dash_sdk::dashcore_rpc::{Auth, Client};
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::transaction::special_transaction::TransactionPayload::AssetLockPayloadType;
-use dash_sdk::dpp::dashcore::{key, Address, Network, OutPoint, TxOut, Txid};
+use dash_sdk::dpp::dashcore::{Address, Network, OutPoint, TxOut, Txid};
 use dash_sdk::dpp::data_contract::TokenConfiguration;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::state_transition::asset_lock_proof::chain::ChainAssetLockProof;
@@ -631,5 +631,16 @@ impl AppContext {
             .insert_identity_token_balance(token_id, identity_id, balance, self)?;
 
         Ok(())
+    }
+
+    pub fn get_contract_by_token_id(
+        &self,
+        token_id: &Identifier,
+    ) -> Result<Option<QualifiedContract>> {
+        let contract_id = self
+            .db
+            .get_contract_id_by_token_id(token_id, self)?
+            .ok_or(rusqlite::Error::QueryReturnedNoRows)?;
+        self.db.get_contract_by_id(contract_id, self)
     }
 }

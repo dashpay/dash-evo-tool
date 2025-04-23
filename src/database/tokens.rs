@@ -76,7 +76,6 @@ impl Database {
         self.execute(
             "CREATE TABLE IF NOT EXISTS identity_token_balances (
                 token_id BLOB NOT NULL,
-                token_name TEXT NOT NULL,
                 identity_id BLOB NOT NULL,
                 balance INTEGER NOT NULL,
                 network TEXT NOT NULL,
@@ -100,7 +99,6 @@ impl Database {
         let token_id_bytes = token_identifier.to_vec();
         let identity_id_bytes = identity_id.to_vec();
 
-        // `token_name` is only in the INSERT part – not in the UPDATE part
         self.execute(
             "INSERT INTO identity_token_balances
               (token_id, identity_id, balance, network)

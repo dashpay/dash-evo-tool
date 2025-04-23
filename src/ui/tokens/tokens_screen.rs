@@ -1415,21 +1415,21 @@ impl TokensScreen {
                                                         );
                                                     }
 
-                                                // Claim
-                                                if ui.button("Claim").clicked() {
-                                                    action = AppAction::AddScreen(
-                                                        Screen::ClaimTokensScreen(
-                                                            ClaimTokensScreen::new(
-                                                                itb.clone(),
-                                                                &self.app_context,
+                                                    // Claim
+                                                    if ui.button("Claim").clicked() {
+                                                        action = AppAction::AddScreen(
+                                                            Screen::ClaimTokensScreen(
+                                                                ClaimTokensScreen::new(
+                                                                    itb.clone(),
+                                                                    &self.app_context,
+                                                                ),
                                                             ),
-                                                        ),
-                                                    );
-                                                    ui.close_menu();
-                                                }
+                                                        );
+                                                        ui.close_menu();
+                                                    }
 
-                                                // Expandable advanced actions menu
-                                                ui.menu_button("...", |ui| {
+                                                    // Expandable advanced actions menu
+                                                    ui.menu_button("...", |ui| {
                                                         if ui.button("Mint").clicked() {
                                                             action = AppAction::AddScreen(
                                                                 Screen::MintTokensScreen(

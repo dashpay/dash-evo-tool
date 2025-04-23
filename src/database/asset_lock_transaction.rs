@@ -1,3 +1,4 @@
+use crate::context::AppContext;
 use crate::database::Database;
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::{
@@ -127,6 +128,29 @@ impl Database {
                 hex::encode(identity_id)
             );
         }
+
+        Ok(())
+    }
+
+    /// Removes the identity ID and identity_id_potentially_in_creation for all asset lock transactions in Devnet.
+    pub fn remove_all_asset_locks_identity_id_for_devnet(
+        &self,
+        app_context: &AppContext,
+    ) -> rusqlite::Result<()> {
+        if app_context.network != Network::Devnet {
+            return Ok(());
+        }
+        let network = app_context.network_string();
+
+        let conn = self.conn.lock().unwrap();
+
+        conn.execute(
+            "UPDATE asset_lock_transaction
+         SET identity_id = NULL,
+             identity_id_potentially_in_creation = NULL
+         WHERE network = ?",
+            params![network],
+        )?;
 
         Ok(())
     }
@@ -271,5 +295,85 @@ impl Database {
         }
 
         Ok(results)
+    }
+
+    /// Migrates `asset_lock_transaction` so that both `identity_id` columns use
+    /// `ON DELETE SET NULL` instead of `ON DELETE CASCADE`.
+    ///
+    /// Safe to run multiple times: if the table already has the correct FKs it
+    /// exits early.
+    pub fn migrate_asset_lock_fk_to_set_null(&self) -> rusqlite::Result<()> {
+        let mut conn = self.conn.lock().unwrap();
+
+        {
+            // ── 1. Detect whether migration is needed ───────────────────────────────
+            let mut pragma = conn.prepare("PRAGMA foreign_key_list('asset_lock_transaction')")?;
+            let fk_rows = pragma
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(2)?, // table
+                        row.get::<_, String>(6)?, // on_delete action
+                    ))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+
+            // If both identity-related FKs are already SET NULL, nothing to do.
+            let needs_migration = fk_rows
+                .iter()
+                .filter(|(tbl, _)| tbl == "identity")
+                .any(|(_, action)| action.to_uppercase() != "SET NULL");
+
+            if !needs_migration {
+                return Ok(());
+            }
+        }
+
+        // ── 2. Recreate table with correct FK actions inside a transaction ─────
+        conn.execute("PRAGMA foreign_keys = OFF", [])?;
+        let tx = conn.transaction()?;
+
+        tx.execute(
+            "ALTER TABLE asset_lock_transaction RENAME TO asset_lock_transaction_old",
+            [],
+        )?;
+
+        tx.execute(
+            "CREATE TABLE asset_lock_transaction (
+                tx_id BLOB PRIMARY KEY,
+                transaction_data BLOB NOT NULL,
+                amount INTEGER,
+                instant_lock_data BLOB,
+                chain_locked_height INTEGER,
+                identity_id BLOB,
+                identity_id_potentially_in_creation BLOB,
+                wallet BLOB NOT NULL,
+                network TEXT NOT NULL,
+                FOREIGN KEY (identity_id)
+                    REFERENCES identity(id) ON DELETE SET NULL,
+                FOREIGN KEY (identity_id_potentially_in_creation)
+                    REFERENCES identity(id) ON DELETE SET NULL,
+                FOREIGN KEY (wallet)
+                    REFERENCES wallet(seed_hash) ON DELETE CASCADE
+            )",
+            [],
+        )?;
+
+        tx.execute(
+            "INSERT INTO asset_lock_transaction
+              (tx_id, transaction_data, amount, instant_lock_data,
+               chain_locked_height, identity_id, identity_id_potentially_in_creation,
+               wallet, network)
+             SELECT tx_id, transaction_data, amount, instant_lock_data,
+                    chain_locked_height, identity_id,
+                    identity_id_potentially_in_creation, wallet, network
+             FROM asset_lock_transaction_old",
+            [],
+        )?;
+
+        tx.execute("DROP TABLE asset_lock_transaction_old", [])?;
+        tx.commit()?;
+        conn.execute("PRAGMA foreign_keys = ON", [])?;
+
+        Ok(())
     }
 }

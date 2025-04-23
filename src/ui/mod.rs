@@ -14,6 +14,7 @@ use crate::ui::identities::top_up_identity_screen::TopUpIdentityScreen;
 use crate::ui::identities::transfer_screen::TransferScreen;
 use crate::ui::identities::withdraw_screen::WithdrawalScreen;
 use crate::ui::network_chooser_screen::NetworkChooserScreen;
+use crate::ui::tokens::add_token_by_id_screen::AddTokenByIdScreen;
 use crate::ui::tokens::transfer_tokens_screen::TransferTokensScreen;
 use crate::ui::tokens::view_token_claims_screen::ViewTokenClaimsScreen;
 use crate::ui::tools::proof_log_screen::ProofLogScreen;
@@ -25,7 +26,7 @@ use contracts_documents::register_contract_screen::RegisterDataContractScreen;
 use dash_sdk::dpp::identity::Identity;
 use dash_sdk::dpp::prelude::IdentityPublicKey;
 use dpns::dpns_contested_names_screen::DPNSSubscreen;
-use egui::{Context, Widget};
+use egui::Context;
 use identities::add_existing_identity_screen::AddExistingIdentityScreen;
 use identities::add_new_identity_screen::AddNewIdentityScreen;
 use identities::identities_screen::IdentitiesScreen;
@@ -176,6 +177,7 @@ pub enum ScreenType {
     TokenBalances,
     TokenSearch,
     TokenCreator,
+    AddTokenById,
     TransferTokensScreen(IdentityTokenBalance),
     MintTokensScreen(IdentityTokenBalance),
     BurnTokensScreen(IdentityTokenBalance),
@@ -325,6 +327,7 @@ impl ScreenType {
             ScreenType::ViewClaimsScreen(identity_token_balance) => Screen::ViewTokenClaimsScreen(
                 ViewTokenClaimsScreen::new(identity_token_balance.clone(), app_context),
             ),
+            ScreenType::AddTokenById => Screen::AddTokenById(AddTokenByIdScreen::new(app_context)),
         }
     }
 }
@@ -364,6 +367,7 @@ pub enum Screen {
     ResumeTokensScreen(ResumeTokensScreen),
     ClaimTokensScreen(ClaimTokensScreen),
     ViewTokenClaimsScreen(ViewTokenClaimsScreen),
+    AddTokenById(AddTokenByIdScreen),
 }
 
 impl Screen {
@@ -403,6 +407,7 @@ impl Screen {
             Screen::ResumeTokensScreen(screen) => screen.app_context = app_context,
             Screen::ClaimTokensScreen(screen) => screen.app_context = app_context,
             Screen::ViewTokenClaimsScreen(screen) => screen.app_context = app_context,
+            Screen::AddTokenById(screen) => screen.app_context = app_context,
         }
     }
 }
@@ -533,6 +538,7 @@ impl Screen {
             Screen::ViewTokenClaimsScreen(screen) => {
                 ScreenType::ViewClaimsScreen(screen.identity_token_balance.clone())
             }
+            Screen::AddTokenById(_) => ScreenType::AddTokenById,
         }
     }
 }
@@ -574,6 +580,7 @@ impl ScreenLike for Screen {
             Screen::ResumeTokensScreen(screen) => screen.refresh(),
             Screen::ClaimTokensScreen(screen) => screen.refresh(),
             Screen::ViewTokenClaimsScreen(screen) => screen.refresh(),
+            Screen::AddTokenById(screen) => screen.refresh(),
         }
     }
 
@@ -613,6 +620,7 @@ impl ScreenLike for Screen {
             Screen::ResumeTokensScreen(screen) => screen.refresh_on_arrival(),
             Screen::ClaimTokensScreen(screen) => screen.refresh_on_arrival(),
             Screen::ViewTokenClaimsScreen(screen) => screen.refresh_on_arrival(),
+            Screen::AddTokenById(screen) => screen.refresh_on_arrival(),
         }
     }
 
@@ -652,6 +660,7 @@ impl ScreenLike for Screen {
             Screen::ResumeTokensScreen(screen) => screen.ui(ctx),
             Screen::ClaimTokensScreen(screen) => screen.ui(ctx),
             Screen::ViewTokenClaimsScreen(screen) => screen.ui(ctx),
+            Screen::AddTokenById(screen) => screen.ui(ctx),
         }
     }
 
@@ -699,6 +708,7 @@ impl ScreenLike for Screen {
             Screen::ResumeTokensScreen(screen) => screen.display_message(message, message_type),
             Screen::ClaimTokensScreen(screen) => screen.display_message(message, message_type),
             Screen::ViewTokenClaimsScreen(screen) => screen.display_message(message, message_type),
+            Screen::AddTokenById(screen) => screen.display_message(message, message_type),
         }
     }
 
@@ -800,6 +810,9 @@ impl ScreenLike for Screen {
             Screen::ViewTokenClaimsScreen(screen) => {
                 screen.display_task_result(backend_task_success_result.clone())
             }
+            Screen::AddTokenById(screen) => {
+                screen.display_task_result(backend_task_success_result.clone())
+            }
         }
     }
 
@@ -839,6 +852,7 @@ impl ScreenLike for Screen {
             Screen::ResumeTokensScreen(screen) => screen.pop_on_success(),
             Screen::ClaimTokensScreen(screen) => screen.pop_on_success(),
             Screen::ViewTokenClaimsScreen(screen) => screen.pop_on_success(),
+            Screen::AddTokenById(screen) => screen.pop_on_success(),
         }
     }
 }

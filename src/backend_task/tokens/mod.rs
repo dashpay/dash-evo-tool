@@ -1,7 +1,9 @@
 use super::BackendTaskSuccessResult;
+use crate::ui::tokens::tokens_screen::IdentityTokenIdentifier;
 use crate::{app::TaskResult, context::AppContext, model::qualified_identity::QualifiedIdentity};
 use dash_sdk::dpp::balances::credits::TokenAmount;
 use dash_sdk::dpp::data_contract::GroupContractPosition;
+use dash_sdk::platform::Fetch;
 use dash_sdk::{
     dpp::{
         data_contract::{
@@ -79,7 +81,9 @@ pub(crate) enum TokenTask {
         groups: BTreeMap<GroupContractPosition, Group>,
     },
     QueryMyTokenBalances,
+    QueryIdentityTokenBalance(IdentityTokenIdentifier),
     QueryDescriptionsByKeyword(String, Option<Start>),
+    FetchTokenByContractId(Identifier),
     MintTokens {
         sending_identity: QualifiedIdentity,
         data_contract: DataContract,
@@ -400,6 +404,26 @@ impl AppContext {
                 )
                 .await
                 .map_err(|e| format!("Failed to claim tokens: {e}")),
+            TokenTask::QueryIdentityTokenBalance(identity_token_pair) => self
+                .query_token_balance(
+                    sdk,
+                    identity_token_pair.identity_id,
+                    identity_token_pair.token_id,
+                    sender,
+                )
+                .await
+                .map_err(|e| format!("Failed to fetch token balance: {e}")),
+            TokenTask::FetchTokenByContractId(contract_id) => {
+                match DataContract::fetch_by_identifier(sdk, *contract_id).await {
+                    Ok(Some(data_contract)) => {
+                        Ok(BackendTaskSuccessResult::FetchedContract(data_contract))
+                    }
+                    Ok(None) => Ok(BackendTaskSuccessResult::Message(
+                        "Contract not found".to_string(),
+                    )),
+                    Err(e) => Err(format!("Error fetching contracts: {}", e.to_string())),
+                }
+            }
         }
     }
 

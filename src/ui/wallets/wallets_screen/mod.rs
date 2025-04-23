@@ -554,13 +554,20 @@ impl WalletsBalancesScreen {
         }
     }
 
-    fn render_wallet_asset_locks(&mut self, ui: &mut Ui) {
-        if let Some(wallet) = &self.selected_wallet {
-            let wallet = wallet.read().unwrap();
+    fn render_wallet_asset_locks(&mut self, ui: &mut Ui) -> AppAction {
+        let mut app_action = AppAction::None;
+        if let Some(arc_wallet) = &self.selected_wallet {
+            let wallet = arc_wallet.read().unwrap();
 
             if wallet.unused_asset_locks.is_empty() {
                 ui.label("No asset locks available.");
-                return;
+
+                if ui.button("Find asset locks").clicked() {
+                    app_action = AppAction::BackendTask(BackendTask::CoreTask(
+                        CoreTask::RefreshWalletInfo(arc_wallet.clone()),
+                    ))
+                };
+                return app_action;
             }
 
             ui.label("Asset Locks:");
@@ -620,6 +627,7 @@ impl WalletsBalancesScreen {
         } else {
             ui.label("No wallet selected.");
         }
+        app_action
     }
 
     fn render_no_wallets_view(&self, ui: &mut Ui) {
@@ -776,7 +784,7 @@ impl ScreenLike for WalletsBalancesScreen {
 
                 if self.selected_filters.contains("Unused Asset Locks") {
                     // Render the asset locks section
-                    self.render_wallet_asset_locks(ui);
+                    action |= self.render_wallet_asset_locks(ui);
                     ui.add_space(10.0);
                 }
 

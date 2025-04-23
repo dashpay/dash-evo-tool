@@ -26,7 +26,11 @@ impl AppContext {
             .map_err(|e| e.to_string())?;
 
         self.db
-            .delete_all_local_qualified_identities_in_devnet(self)
+            .delete_all_local_tokens_in_devnet(self)
+            .map_err(|e| e.to_string())?;
+
+        self.db
+            .remove_all_asset_locks_identity_id_for_devnet(self)
             .map_err(|e| e.to_string())?;
 
         Ok(BackendTaskSuccessResult::Refresh)

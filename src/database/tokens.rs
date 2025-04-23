@@ -1,9 +1,10 @@
+use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::platform::Identifier;
 use dash_sdk::query_types::IndexMap;
 use rusqlite::params;
 
 use super::Database;
-use crate::ui::tokens::tokens_screen::IdentityTokenIdentifier;
+use crate::ui::tokens::tokens_screen::{IdentityTokenIdentifier, TokenInfo};
 use crate::{context::AppContext, ui::tokens::tokens_screen::IdentityTokenBalance};
 
 impl Database {
@@ -110,6 +111,52 @@ impl Database {
         Ok(())
     }
 
+    /// Retrieves all known tokens as a map from token ID to TokenInfo, ordered by token_alias (name).
+    pub fn get_all_known_tokens(
+        &self,
+        app_context: &AppContext,
+    ) -> rusqlite::Result<IndexMap<Identifier, TokenInfo>> {
+        let network = app_context.network_string();
+        let conn = self.conn.lock().unwrap();
+
+        let mut stmt = conn.prepare(
+            "SELECT id, token_alias, data_contract_id, token_position
+             FROM token
+             WHERE network = ?
+             ORDER BY token_alias ASC",
+        )?;
+
+        let rows = stmt.query_map(params![network], |row| {
+            Ok((
+                Identifier::from_vec(row.get(0)?),
+                row.get::<_, String>(1)?,
+                Identifier::from_vec(row.get(2)?),
+                row.get::<_, u16>(3)?,
+            ))
+        })?;
+
+        let mut result = IndexMap::new();
+
+        for row in rows {
+            let (token_id_res, token_alias, contract_id_res, token_position) = row?;
+            let token_id = token_id_res.expect("Failed to parse token ID");
+            let data_contract_id = contract_id_res.expect("Failed to parse contract ID");
+
+            result.insert(
+                token_id,
+                TokenInfo {
+                    token_id,
+                    token_name: token_alias,
+                    data_contract_id,
+                    token_position,
+                    description: None,
+                },
+            );
+        }
+
+        Ok(result)
+    }
+
     pub fn get_identity_token_balances(
         &self,
         app_context: &AppContext,
@@ -158,7 +205,7 @@ impl Database {
             let data_contract_id = data_contract_id_res.expect("Failed to parse data_contract_id");
 
             let identity_token_balance = IdentityTokenBalance {
-                token_identifier: token_id,
+                token_id,
                 token_name,
                 identity_id,
                 balance,
@@ -282,5 +329,23 @@ impl Database {
         }
 
         Ok(result)
+    }
+
+    /// Deletes all local tokens and related entries (identity_token_balances, token_order) in Devnet.
+    pub fn delete_all_local_tokens_in_devnet(
+        &self,
+        app_context: &AppContext,
+    ) -> rusqlite::Result<()> {
+        if app_context.network != Network::Devnet {
+            return Ok(());
+        }
+        let network = app_context.network_string();
+
+        let conn = self.conn.lock().unwrap();
+
+        // Delete tokens and cascade deletions in related tables due to foreign keys
+        conn.execute("DELETE FROM token WHERE network = ?", params![network])?;
+
+        Ok(())
     }
 }

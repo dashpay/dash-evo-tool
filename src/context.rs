@@ -17,7 +17,7 @@ use dash_sdk::dashcore_rpc::dashcore::{InstantLock, Transaction};
 use dash_sdk::dashcore_rpc::{Auth, Client};
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::transaction::special_transaction::TransactionPayload::AssetLockPayloadType;
-use dash_sdk::dpp::dashcore::{Address, Network, OutPoint, TxOut, Txid};
+use dash_sdk::dpp::dashcore::{key, Address, Network, OutPoint, TxOut, Txid};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::state_transition::asset_lock_proof::chain::ChainAssetLockProof;
 use dash_sdk::dpp::identity::state_transition::asset_lock_proof::InstantAssetLockProof;
@@ -46,6 +46,7 @@ pub struct AppContext {
     pub(crate) dpns_contract: Arc<DataContract>,
     pub(crate) withdraws_contract: Arc<DataContract>,
     pub(crate) token_history_contract: Arc<DataContract>,
+    pub(crate) keyword_search_contract: Arc<DataContract>,
     pub(crate) core_client: RwLock<Client>,
     pub(crate) has_wallet: AtomicBool,
     pub(crate) wallets: RwLock<BTreeMap<WalletSeedHash, Arc<RwLock<Wallet>>>>,
@@ -88,6 +89,10 @@ impl AppContext {
         let token_history_contract =
             load_system_data_contract(SystemDataContract::TokenHistory, PlatformVersion::latest())
                 .expect("expected to get token history contract");
+
+        let keyword_search_contract =
+            load_system_data_contract(SystemDataContract::KeywordSearch, PlatformVersion::latest())
+                .expect("expected to get keyword search contract");
 
         let addr = format!(
             "http://{}:{}",
@@ -135,6 +140,7 @@ impl AppContext {
             dpns_contract: Arc::new(dpns_contract),
             withdraws_contract: Arc::new(withdrawal_contract),
             token_history_contract: Arc::new(token_history_contract),
+            keyword_search_contract: Arc::new(keyword_search_contract),
             core_client: core_client.into(),
             has_wallet: (!wallets.is_empty()).into(),
             wallets: RwLock::new(wallets),
@@ -354,7 +360,7 @@ impl AppContext {
         self.db.get_settings()
     }
 
-    /// Retrieves all contracts from the database plus the DPNS contract from app context.
+    /// Retrieves all contracts from the database plus the system contracts from app context.
     pub fn get_contracts(
         &self,
         limit: Option<u32>,
@@ -366,13 +372,56 @@ impl AppContext {
         // Add the DPNS contract to the list
         let dpns_contract = QualifiedContract {
             contract: Arc::clone(&self.dpns_contract).as_ref().clone(),
-            alias: Some("dpns".to_string()), // You can adjust the alias as needed
+            alias: Some("dpns".to_string()),
         };
 
-        // Insert the DPNS contract at the beginning
+        // Insert the DPNS contract at 0
         contracts.insert(0, dpns_contract);
 
+        // Add the token history contract to the list
+        let token_history_contract = QualifiedContract {
+            contract: Arc::clone(&self.token_history_contract).as_ref().clone(),
+            alias: Some("token_history".to_string()),
+        };
+
+        // Insert the token history contract at 1
+        contracts.insert(1, token_history_contract);
+
+        // Add the withdrawal contract to the list
+        let withdraws_contract = QualifiedContract {
+            contract: Arc::clone(&self.withdraws_contract).as_ref().clone(),
+            alias: Some("withdrawals".to_string()),
+        };
+
+        // Insert the withdrawal contract at 2
+        contracts.insert(2, withdraws_contract);
+
+        // Add the keyword search contract to the list
+        let keyword_search_contract = QualifiedContract {
+            contract: Arc::clone(&self.keyword_search_contract).as_ref().clone(),
+            alias: Some("keyword_search".to_string()),
+        };
+
+        // Insert the keyword search contract at 3
+        contracts.insert(3, keyword_search_contract);
+
         Ok(contracts)
+    }
+
+    pub fn get_contract_by_id(
+        &self,
+        contract_id: &Identifier,
+    ) -> Result<Option<QualifiedContract>> {
+        // Get the contract from the database
+        let contract = self.db.get_contract_by_id(*contract_id, self)?;
+
+        // If the contract is not found in the database, return None
+        if contract.is_none() {
+            return Ok(None);
+        }
+
+        // If the contract is found, return it
+        Ok(Some(contract.unwrap()))
     }
 
     // Remove contract from the database by ID
@@ -540,5 +589,27 @@ impl AppContext {
         identity_id: Identifier,
     ) -> Result<()> {
         self.db.remove_token_balance(&token_id, &identity_id, self)
+    }
+
+    pub fn insert_token(
+        &self,
+        token_id: &Identifier,
+        token_name: &str,
+        contract_id: &Identifier,
+        token_position: u16,
+    ) -> Result<()> {
+        for identity in self.load_local_qualified_identities()? {
+            self.db.insert_identity_token_balance(
+                token_id,
+                token_name,
+                &identity.identity.id(),
+                0,
+                contract_id,
+                token_position,
+                self,
+            )?;
+        }
+
+        Ok(())
     }
 }

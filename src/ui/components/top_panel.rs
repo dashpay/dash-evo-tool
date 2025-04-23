@@ -131,7 +131,7 @@ pub fn add_top_panel(
     let color = match app_context.network {
         Network::Dash => Color32::from_rgb(21, 101, 192), // A blue color for mainnet
         Network::Testnet => Color32::from_rgb(255, 165, 0), // Orange for testnet
-        Network::Devnet => Color32::from_rgb(255, 0, 0),  // Red for devnet
+        Network::Devnet => Color32::DARK_RED,             // Red for devnet
         Network::Regtest => Color32::from_rgb(139, 69, 19), // Brownish for regtest
         _ => Color32::BLACK,
     };

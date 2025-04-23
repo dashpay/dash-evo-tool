@@ -3,16 +3,15 @@ use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+use dash_sdk::dpp::data_contract::associated_token::token_distribution_key::TokenDistributionType;
+use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use eframe::egui::{self, Color32, Context, Ui};
 use egui::RichText;
 
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
-use dash_sdk::dpp::platform_value::string_encoding::Encoding;
-use dash_sdk::platform::{Identifier, IdentityPublicKey};
 
-use super::tokens_screen::IdentityTokenBalance;
 use crate::app::{AppAction, BackendTasksExecutionMode};
 use crate::backend_task::tokens::TokenTask;
 use crate::backend_task::BackendTask;
@@ -26,53 +25,43 @@ use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
 use crate::ui::{MessageType, Screen, ScreenLike};
 
-/// Internal states for the mint process.
+use super::tokens_screen::IdentityTokenBalance;
+
+/// States for the claim flow
 #[derive(PartialEq)]
-pub enum MintTokensStatus {
+pub enum ClaimTokensStatus {
     NotStarted,
-    WaitingForResult(u64), // Use seconds or millis
+    WaitingForResult(u64),
     ErrorMessage(String),
     Complete,
 }
 
-/// A UI Screen for minting tokens from an existing token contract
-pub struct MintTokensScreen {
+pub struct ClaimTokensScreen {
     pub identity: QualifiedIdentity,
     pub identity_token_balance: IdentityTokenBalance,
-    selected_key: Option<IdentityPublicKey>,
-
-    recipient_identity_id: String,
-
-    amount_to_mint: String,
-    status: MintTokensStatus,
+    selected_key: Option<dash_sdk::platform::IdentityPublicKey>,
+    distribution_type: Option<TokenDistributionType>,
+    status: ClaimTokensStatus,
     error_message: Option<String>,
-
-    /// Basic references
     pub app_context: Arc<AppContext>,
-
-    /// Confirmation popup
     show_confirmation_popup: bool,
-
-    // If needed for password-based wallet unlocking:
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     wallet_password: String,
     show_password: bool,
 }
 
-impl MintTokensScreen {
+impl ClaimTokensScreen {
     pub fn new(
         identity_token_balance: IdentityTokenBalance,
         app_context: &Arc<AppContext>,
     ) -> Self {
-        // Find the local qualified identity that corresponds to `identity_token_balance.identity_id`
         let identity = app_context
             .load_local_qualified_identities()
             .unwrap_or_default()
             .into_iter()
             .find(|id| id.identity.id() == identity_token_balance.identity_id)
-            .expect("No local qualified identity found matching the token's identity");
+            .expect("No local qualified identity found for this token’s identity.");
 
-        // Grab a default key if possible
         let identity_clone = identity.identity.clone();
         let possible_key = identity_clone.get_first_public_key_matching(
             Purpose::AUTHENTICATION,
@@ -85,7 +74,6 @@ impl MintTokensScreen {
             false,
         );
 
-        // Attempt to get an unlocked wallet reference
         let mut error_message = None;
         let selected_wallet =
             get_selected_wallet(&identity, None, possible_key.clone(), &mut error_message);
@@ -94,9 +82,8 @@ impl MintTokensScreen {
             identity,
             identity_token_balance,
             selected_key: possible_key.cloned(),
-            recipient_identity_id: "".to_string(),
-            amount_to_mint: "".to_string(),
-            status: MintTokensStatus::NotStarted,
+            distribution_type: None,
+            status: ClaimTokensStatus::NotStarted,
             error_message: None,
             app_context: app_context.clone(),
             show_confirmation_popup: false,
@@ -106,11 +93,10 @@ impl MintTokensScreen {
         }
     }
 
-    /// Renders a ComboBox or similar for selecting an authentication key
     fn render_key_selection(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
             ui.label("Select Key:");
-            egui::ComboBox::from_id_salt("mint_key_selector")
+            egui::ComboBox::from_id_salt("claim_key_selector")
                 .selected_text(match &self.selected_key {
                     Some(key) => format!("Key ID: {}", key.id()),
                     None => "Select a key".to_string(),
@@ -136,90 +122,53 @@ impl MintTokensScreen {
         });
     }
 
-    /// Renders a text input for the user to specify an amount to mint
-    fn render_amount_input(&mut self, ui: &mut Ui) {
+    fn render_token_distribution_type_selector(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
-            ui.label("Amount to Mint:");
-            ui.text_edit_singleline(&mut self.amount_to_mint);
-
-            // Since it's minting, we often don't do "Max."
-            // But you could show a help text or put constraints if needed.
+            ui.label("Select Distribution Type:");
+            egui::ComboBox::from_id_salt("claim_distribution_type_selector")
+                .selected_text(match &self.distribution_type {
+                    Some(TokenDistributionType::Perpetual) => "Perpetual".to_string(),
+                    Some(TokenDistributionType::PreProgrammed) => "PreProgrammed".to_string(),
+                    None => "Select a type".to_string(),
+                })
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(
+                        &mut self.distribution_type,
+                        Some(TokenDistributionType::Perpetual),
+                        "Perpetual",
+                    );
+                    ui.selectable_value(
+                        &mut self.distribution_type,
+                        Some(TokenDistributionType::PreProgrammed),
+                        "PreProgrammed",
+                    );
+                });
         });
     }
 
-    /// Renders an optional text input for the user to specify a "Recipient Identity"
-    fn render_recipient_input(&mut self, ui: &mut Ui) {
-        ui.horizontal(|ui| {
-            ui.label("Recipient (Optional):");
-            ui.text_edit_singleline(&mut self.recipient_identity_id);
-        });
-
-        // If empty, minted tokens go to the 'issuer' identity (self.identity).
-    }
-
-    /// Renders a confirm popup with the final "Are you sure?" step
     fn show_confirmation_popup(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
         let mut is_open = true;
-        egui::Window::new("Confirm Mint")
+        let distribution_type = self
+            .distribution_type
+            .clone()
+            .unwrap_or(TokenDistributionType::Perpetual);
+        egui::Window::new("Confirm Claim")
             .collapsible(false)
             .open(&mut is_open)
             .show(ui.ctx(), |ui| {
-                // Validate user input
-                let amount_ok = self.amount_to_mint.parse::<u64>().ok();
-                if amount_ok.is_none() {
-                    self.error_message = Some("Please enter a valid amount.".into());
-                    self.status = MintTokensStatus::ErrorMessage("Invalid amount".into());
-                    self.show_confirmation_popup = false;
-                    return;
-                }
-
-                let maybe_identifier = if self.recipient_identity_id.trim().is_empty() {
-                    None
-                } else {
-                    // Attempt to parse from base58 or hex
-                    match Identifier::from_string_try_encodings(
-                        &self.recipient_identity_id,
-                        &[Encoding::Base58, Encoding::Hex],
-                    ) {
-                        Ok(id) => Some(id),
-                        Err(_) => {
-                            self.error_message = Some("Invalid recipient identity format.".into());
-                            self.status =
-                                MintTokensStatus::ErrorMessage("Invalid recipient identity".into());
-                            self.show_confirmation_popup = false;
-                            return;
-                        }
-                    }
-                };
-
-                ui.label(format!(
-                    "Are you sure you want to mint {} token(s)?",
-                    self.amount_to_mint
-                ));
-
-                // If user provided a recipient:
-                if let Some(ref recipient_id) = maybe_identifier {
-                    ui.label(format!(
-                        "Recipient: {}",
-                        recipient_id.to_string(Encoding::Base58)
-                    ));
-                } else {
-                    ui.label("No recipient specified; tokens will be minted to default identity.");
-                }
-
+                ui.label("Are you sure you want to claim tokens for this contract?");
                 ui.add_space(10.0);
 
-                // Confirm button
+                // Confirm
                 if ui.button("Confirm").clicked() {
                     self.show_confirmation_popup = false;
                     let now = SystemTime::now()
                         .duration_since(UNIX_EPOCH)
                         .expect("Time went backwards")
                         .as_secs();
-                    self.status = MintTokensStatus::WaitingForResult(now);
+                    self.status = ClaimTokensStatus::WaitingForResult(now);
 
-                    // Grab the data contract for this token from the app context
                     let data_contract = self
                         .app_context
                         .get_contracts(None, None)
@@ -230,16 +179,14 @@ impl MintTokensScreen {
                         .contract
                         .clone();
 
-                    // Dispatch the actual backend mint action
                     action = AppAction::BackendTasks(
                         vec![
-                            BackendTask::TokenTask(TokenTask::MintTokens {
-                                sending_identity: self.identity.clone(),
+                            BackendTask::TokenTask(TokenTask::ClaimTokens {
                                 data_contract,
                                 token_position: self.identity_token_balance.token_position,
-                                signing_key: self.selected_key.clone().expect("Expected a key"),
-                                amount: amount_ok.unwrap(),
-                                recipient_id: maybe_identifier,
+                                actor_identity: self.identity.clone(),
+                                distribution_type: distribution_type,
+                                signing_key: self.selected_key.clone().expect("No key selected"),
                             }),
                             BackendTask::TokenTask(TokenTask::QueryMyTokenBalances),
                         ],
@@ -247,7 +194,6 @@ impl MintTokensScreen {
                     );
                 }
 
-                // Cancel button
                 if ui.button("Cancel").clicked() {
                     self.show_confirmation_popup = false;
                 }
@@ -259,19 +205,17 @@ impl MintTokensScreen {
         action
     }
 
-    /// Renders a simple "Success!" screen after completion
     fn show_success_screen(&self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
         ui.vertical_centered(|ui| {
             ui.add_space(50.0);
 
             ui.heading("🎉");
-            ui.heading("Mint Successful!");
+            ui.heading("Claimed Successfully!");
 
             ui.add_space(20.0);
 
             if ui.button("Back to Tokens").clicked() {
-                // Pop this screen and refresh
                 action = AppAction::PopScreenAndRefresh;
             }
         });
@@ -279,16 +223,16 @@ impl MintTokensScreen {
     }
 }
 
-impl ScreenLike for MintTokensScreen {
+impl ScreenLike for ClaimTokensScreen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
         match message_type {
             MessageType::Success => {
-                if message.contains("Successfully minted tokens") || message == "MintTokens" {
-                    self.status = MintTokensStatus::Complete;
+                if message.contains("Claimed") || message == "ClaimTokens" {
+                    self.status = ClaimTokensStatus::Complete;
                 }
             }
             MessageType::Error => {
-                self.status = MintTokensStatus::ErrorMessage(message.to_string());
+                self.status = ClaimTokensStatus::ErrorMessage(message.to_string());
                 self.error_message = Some(message.to_string());
             }
             MessageType::Info => {
@@ -298,19 +242,17 @@ impl ScreenLike for MintTokensScreen {
     }
 
     fn refresh(&mut self) {
-        // If you need to reload local identity data or re-check keys:
-        if let Ok(all_identities) = self.app_context.load_local_qualified_identities() {
-            if let Some(updated_identity) = all_identities
+        if let Ok(all) = self.app_context.load_local_qualified_identities() {
+            if let Some(updated) = all
                 .into_iter()
                 .find(|id| id.identity.id() == self.identity.identity.id())
             {
-                self.identity = updated_identity;
+                self.identity = updated;
             }
         }
     }
 
     fn ui(&mut self, ctx: &Context) -> AppAction {
-        // Build a top panel
         let mut action = add_top_panel(
             ctx,
             &self.app_context,
@@ -320,19 +262,18 @@ impl ScreenLike for MintTokensScreen {
                     &self.identity_token_balance.token_name,
                     AppAction::PopScreen,
                 ),
-                ("Mint", AppAction::None),
+                ("Claim", AppAction::None),
             ],
             vec![],
         );
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            // If we are in the "Complete" status, just show success screen
-            if self.status == MintTokensStatus::Complete {
+            if self.status == ClaimTokensStatus::Complete {
                 action = self.show_success_screen(ui);
                 return;
             }
 
-            ui.heading("Mint Tokens");
+            ui.heading("Claim Tokens");
             ui.add_space(10.0);
 
             // Check if user has any auth keys
@@ -344,7 +285,7 @@ impl ScreenLike for MintTokensScreen {
 
             if !has_keys {
                 ui.colored_label(
-                    Color32::DARK_RED,
+                    Color32::RED,
                     format!(
                         "No authentication keys found for this {} identity.",
                         self.identity.identity_type,
@@ -352,7 +293,6 @@ impl ScreenLike for MintTokensScreen {
                 );
                 ui.add_space(10.0);
 
-                // Show "Add key" or "Check keys" option
                 let first_key = self.identity.identity.get_first_public_key_matching(
                     Purpose::AUTHENTICATION,
                     HashSet::from([
@@ -383,18 +323,16 @@ impl ScreenLike for MintTokensScreen {
                     )));
                 }
             } else {
-                // Possibly handle locked wallet scenario (similar to TransferTokens)
+                // Possibly handle locked wallet scenario
                 if self.selected_wallet.is_some() {
                     let (needed_unlock, just_unlocked) = self.render_wallet_unlock_if_needed(ui);
 
                     if needed_unlock && !just_unlocked {
-                        // Must unlock before we can proceed
                         return;
                     }
                 }
 
-                // 1) Key selection
-                ui.heading("1. Select the key to sign the Mint transaction");
+                ui.heading("1. Select the key to sign the Claim transition");
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {
                     self.render_key_selection(ui);
@@ -408,59 +346,46 @@ impl ScreenLike for MintTokensScreen {
                         .unwrap_or_else(|| &identity_id_string);
                     ui.label(format!("Identity: {}", identity_display));
                 });
-
-                ui.add_space(10.0);
-                ui.separator();
                 ui.add_space(10.0);
 
-                // 2) Amount to mint
-                ui.heading("2. Amount to mint");
-                ui.add_space(5.0);
-                self.render_amount_input(ui);
-
-                ui.separator();
+                self.render_token_distribution_type_selector(ui);
                 ui.add_space(10.0);
 
-                // 3) (Optional) recipient identity
-                ui.heading("3. (Optional) Recipient identity");
-                ui.add_space(5.0);
-                self.render_recipient_input(ui);
-
-                ui.add_space(10.0);
-                // Mint button
-                let button = egui::Button::new(RichText::new("Mint").color(Color32::WHITE))
-                    .fill(Color32::from_rgb(0, 128, 255))
+                let button = egui::Button::new(RichText::new("Claim").color(Color32::WHITE))
+                    .fill(Color32::from_rgb(0, 128, 0))
                     .rounding(3.0);
 
                 if ui.add(button).clicked() {
-                    self.show_confirmation_popup = true;
+                    if self.distribution_type.is_none() {
+                        self.status = ClaimTokensStatus::ErrorMessage(
+                            "Please select a distribution type.".to_string(),
+                        );
+                        return;
+                    } else {
+                        self.show_confirmation_popup = true;
+                    }
                 }
 
-                // If the user pressed "Mint," show a popup
+                // If user pressed "Claim," show popup
                 if self.show_confirmation_popup {
                     action |= self.show_confirmation_popup(ui);
                 }
 
-                // Show in-progress or error messages
                 ui.add_space(10.0);
                 match &self.status {
-                    MintTokensStatus::NotStarted => {
-                        // no-op
-                    }
-                    MintTokensStatus::WaitingForResult(start_time) => {
+                    ClaimTokensStatus::NotStarted => {}
+                    ClaimTokensStatus::WaitingForResult(start_time) => {
                         let now = SystemTime::now()
                             .duration_since(UNIX_EPOCH)
-                            .expect("Time went backwards")
+                            .unwrap()
                             .as_secs();
                         let elapsed = now - start_time;
-                        ui.label(format!("Minting... elapsed: {} seconds", elapsed));
+                        ui.label(format!("Claiming... elapsed: {}s", elapsed));
                     }
-                    MintTokensStatus::ErrorMessage(msg) => {
-                        ui.colored_label(Color32::DARK_RED, format!("Error: {}", msg));
+                    ClaimTokensStatus::ErrorMessage(msg) => {
+                        ui.colored_label(Color32::RED, format!("Error: {}", msg));
                     }
-                    MintTokensStatus::Complete => {
-                        // handled above
-                    }
+                    ClaimTokensStatus::Complete => {}
                 }
             }
         });
@@ -469,7 +394,7 @@ impl ScreenLike for MintTokensScreen {
     }
 }
 
-impl ScreenWithWalletUnlock for MintTokensScreen {
+impl ScreenWithWalletUnlock for ClaimTokensScreen {
     fn selected_wallet_ref(&self) -> &Option<Arc<RwLock<Wallet>>> {
         &self.selected_wallet
     }

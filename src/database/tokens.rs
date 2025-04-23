@@ -1,13 +1,4 @@
-use dash_sdk::{
-    dpp::{
-        data_contract::{
-            accessors::v1::DataContractV1Getters,
-            associated_token::token_configuration_convention::TokenConfigurationConvention,
-        },
-        platform_value::string_encoding::Encoding,
-    },
-    platform::Identifier,
-};
+use dash_sdk::platform::Identifier;
 use rusqlite::params;
 
 use crate::{context::AppContext, ui::tokens::tokens_screen::IdentityTokenBalance};
@@ -21,12 +12,14 @@ impl Database {
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS identity_token_balances (
                 token_id BLOB NOT NULL,
+                token_name TEXT NOT NULL,
                 identity_id BLOB NOT NULL,
                 balance INTEGER NOT NULL,
                 data_contract_id BLOB NOT NULL,
                 token_position INTEGER NOT NULL,
                 network TEXT NOT NULL,
-                PRIMARY KEY(token_id, identity_id, network)
+                PRIMARY KEY(token_id, identity_id, network),
+                FOREIGN KEY (identity_id) REFERENCES identity(id) ON DELETE CASCADE
              )",
         )?;
         Ok(())
@@ -35,28 +28,39 @@ impl Database {
     pub fn insert_identity_token_balance(
         &self,
         token_identifier: &Identifier,
+        token_name: &str,
         identity_id: &Identifier,
         balance: u64,
         data_contract_id: &Identifier,
         token_position: u16,
         app_context: &AppContext,
     ) -> rusqlite::Result<()> {
+        // make sure the table / PK exists
         self.ensure_identity_token_balances_table_exists()?;
 
+        // prepare values
         let network = app_context.network_string();
-        let token_identifier_vec = token_identifier.to_vec();
-        let identity_id_vec = identity_id.to_vec();
-        let data_contract_id_vec = data_contract_id.to_vec();
+        let token_id_bytes = token_identifier.to_vec();
+        let identity_id_bytes = identity_id.to_vec();
+        let data_contract_bytes = data_contract_id.to_vec();
 
+        // `token_name` is only in the INSERT part – not in the UPDATE part
         self.execute(
-            "INSERT OR REPLACE INTO identity_token_balances
-             (token_id, identity_id, balance, data_contract_id, token_position, network)
-             VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO identity_token_balances
+                  (token_id, token_name, identity_id, balance,
+                   data_contract_id, token_position, network)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            ON CONFLICT(token_id, identity_id, network) DO UPDATE SET
+                  balance          = excluded.balance,
+                  data_contract_id = excluded.data_contract_id,
+                  token_position   = excluded.token_position
+                  -- token_name intentionally left unchanged",
             params![
-                token_identifier_vec,
-                identity_id_vec,
+                token_id_bytes,
+                token_name,
+                identity_id_bytes,
                 balance,
-                data_contract_id_vec,
+                data_contract_bytes,
                 token_position,
                 network
             ],
@@ -84,10 +88,11 @@ impl Database {
             let rows = stmt.query_map(params![network], |row| {
                 Ok((
                     Identifier::from_vec(row.get(0)?),
-                    Identifier::from_vec(row.get(1)?),
-                    row.get(2)?,
-                    Identifier::from_vec(row.get(3)?),
-                    row.get(4)?,
+                    row.get(1)?,
+                    Identifier::from_vec(row.get(2)?),
+                    row.get(3)?,
+                    Identifier::from_vec(row.get(4)?),
+                    row.get(5)?,
                 ))
             })?;
 
@@ -99,40 +104,15 @@ impl Database {
         }; // <- The lock is dropped here because `conn` goes out of scope.
 
         let mut result = Vec::new();
-        for (token_identifier, identity_id, balance, data_contract_id, token_position) in rows_data
+        for (
+            token_identifier,
+            token_name,
+            identity_id,
+            balance,
+            data_contract_id,
+            token_position,
+        ) in rows_data
         {
-            let token_name = match self.get_contract_by_id(
-                data_contract_id
-                    .clone()
-                    .expect("Expected to convert data_contract_id from vec to Identifier"),
-                app_context,
-            ) {
-                Ok(Some(qualified_contract)) => {
-                    let token_configuration = qualified_contract
-                        .contract
-                        .expected_token_configuration(token_position)
-                        .expect("Expected to get token configuration")
-                        .as_cow_v0();
-                    let conventions = match &token_configuration.conventions {
-                        TokenConfigurationConvention::V0(conventions) => conventions,
-                    };
-                    match conventions
-                        .localizations
-                        .get("en")
-                        .map(|l| l.singular_form.clone())
-                    {
-                        Some(token_name) => token_name,
-                        None => token_identifier
-                            .clone()
-                            .expect("Expected to convert token_identifier from vec to Identifier")
-                            .to_string(Encoding::Base58),
-                    }
-                }
-                _ => token_identifier
-                    .clone()
-                    .expect("Expected to convert identity_id from vec to Identifier")
-                    .to_string(Encoding::Base58),
-            };
             let identity_token_balance = IdentityTokenBalance {
                 token_identifier: token_identifier
                     .clone()
@@ -165,6 +145,13 @@ impl Database {
             "DELETE FROM identity_token_balances
              WHERE token_id = ? AND identity_id = ? AND network = ?",
             params![token_identifier_vec, identity_id_vec, network],
+        )?;
+
+        // Also remove from the order table
+        self.execute(
+            "DELETE FROM token_order
+             WHERE token_id = ? AND identity_id = ?",
+            params![token_identifier_vec, identity_id_vec],
         )?;
 
         Ok(())

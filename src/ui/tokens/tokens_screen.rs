@@ -1,7 +1,8 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, RwLock};
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
+use dash_sdk::dpp::balances::credits::TokenAmount;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationV0;
 use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::v0::TokenDistributionRulesV0;
@@ -23,12 +24,14 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::SecurityLevel;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::Start;
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
 use eframe::egui::{self, CentralPanel, Color32, Context, Frame, Margin, Ui};
 use egui::{Align, RichText};
 use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
 use egui_extras::{Column, TableBuilder};
 use crate::app::BackendTasksExecutionMode;
+use crate::backend_task::contract::ContractTask;
 use crate::backend_task::tokens::TokenTask;
 use crate::backend_task::BackendTask;
 
@@ -41,9 +44,9 @@ use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
 use crate::ui::{BackendTaskSuccessResult, MessageType, RootScreenType, Screen, ScreenLike};
-use ordered_float::NotNan;
 
 use super::burn_tokens_screen::BurnTokensScreen;
+use super::claim_tokens_screen::ClaimTokensScreen;
 use super::destroy_frozen_funds_screen::DestroyFrozenFundsScreen;
 use super::freeze_tokens_screen::FreezeTokensScreen;
 use super::mint_tokens_screen::MintTokensScreen;
@@ -51,6 +54,22 @@ use super::pause_tokens_screen::PauseTokensScreen;
 use super::resume_tokens_screen::ResumeTokensScreen;
 use super::transfer_tokens_screen::TransferTokensScreen;
 use super::unfreeze_tokens_screen::UnfreezeTokensScreen;
+
+/// Token info
+#[derive(Clone, Debug, PartialEq)]
+pub struct TokenInfo {
+    pub token_identifier: Identifier,
+    pub token_name: String,
+    pub data_contract_id: Identifier,
+    pub token_position: u16,
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ContractDescriptionInfo {
+    pub data_contract_id: Identifier,
+    pub description: String,
+}
 
 /// A token owned by an identity.
 #[derive(Clone, Debug, PartialEq)]
@@ -89,7 +108,7 @@ pub enum RefreshingStatus {
 
 /// Represents the status of the user’s search
 #[derive(PartialEq, Eq, Clone)]
-pub enum TokenSearchStatus {
+pub enum ContractSearchStatus {
     NotStarted,
     WaitingForResult(u64),
     Complete,
@@ -377,14 +396,14 @@ pub enum PerpetualDistributionIntervalTypeUI {
 #[derive(Debug, Clone, PartialEq)]
 pub enum DistributionFunctionUI {
     FixedAmount,
+    Random,
     StepDecreasingAmount,
-    LinearInteger,
-    LinearFloat,
-    PolynomialInteger,
-    PolynomialFloat,
+    Stepwise,
+    Linear,
+    Polynomial,
     Exponential,
     Logarithmic,
-    Stepwise,
+    InvertedLogarithmic,
 }
 
 /// A lightweight enum for the user’s recipient selection
@@ -397,8 +416,10 @@ pub enum TokenDistributionRecipientUI {
 
 #[derive(Default, Clone)]
 pub struct DistributionEntry {
-    /// The block timestamp or block height when distribution occurs
-    pub timestamp_str: String,
+    /// Time from token contract registration when the distribution should occur
+    pub days: i32,
+    pub hours: i32,
+    pub minutes: i32,
 
     /// The base58 identity to receive distribution
     pub identity_str: String,
@@ -479,7 +500,7 @@ impl GroupConfigUI {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 /// All arguments needed by `build_data_contract_v1_with_one_token`.
 pub struct TokenBuildArgs {
     pub identity_id: Identifier,
@@ -520,14 +541,19 @@ pub struct TokensScreen {
     pending_backend_task: Option<BackendTask>,
     refreshing_status: RefreshingStatus,
 
+    // Contract Search
+    pub selected_contract_id: Option<Identifier>,
+    selected_contract_description: Option<ContractDescriptionInfo>,
+    selected_token_infos: Vec<TokenInfo>,
+    search_results: Arc<Mutex<Vec<ContractDescriptionInfo>>>,
+    contract_search_status: ContractSearchStatus,
+
     // Token Search
     token_search_query: Option<String>,
-    search_results: Arc<Mutex<Vec<IdentityTokenBalance>>>,
-    token_search_status: TokenSearchStatus,
     search_current_page: usize,
     search_has_next_page: bool,
-    next_cursors: Vec<Identifier>,
-    previous_cursors: Vec<Identifier>,
+    next_cursors: Vec<Start>,
+    previous_cursors: Vec<Start>,
 
     // Sorting
     sort_column: SortColumn,
@@ -586,6 +612,7 @@ pub struct TokensScreen {
     pub perpetual_dist_function: DistributionFunctionUI,
     pub perpetual_dist_recipient: TokenDistributionRecipientUI,
     pub perpetual_dist_recipient_identity_input: Option<String>,
+
     // Pre-programmed distribution
     pub enable_pre_programmed_distribution: bool,
     pub pre_programmed_distributions: Vec<DistributionEntry>,
@@ -602,44 +629,74 @@ pub struct TokensScreen {
     // --- FixedAmount ---
     pub fixed_amount_input: String,
 
+    // --- Random ---
+    pub random_min_input: String,
+    pub random_max_input: String,
+
     // --- StepDecreasingAmount ---
     pub step_count_input: String,
-    pub decrease_per_interval_input: String,
-    pub step_dec_amount_input: String,
+    pub decrease_per_interval_numerator_input: String,
+    pub decrease_per_interval_denominator_input: String,
+    pub step_decreasing_start_period_offset_input: String,
+    pub step_decreasing_initial_emission_input: String,
+    pub step_decreasing_min_value_input: String,
+    pub step_decreasing_max_interval_count_input: String,
+    pub step_decreasing_trailing_distribution_interval_amount_input: String,
 
-    // --- LinearInteger ---
+    // --- Stepwise ---
+    pub stepwise_steps: Vec<(String, String)>,
+
+    // --- Linear ---
     pub linear_int_a_input: String,
-    pub linear_int_b_input: String,
+    pub linear_int_d_input: String,
+    pub linear_int_start_step_input: String,
+    pub linear_int_starting_amount_input: String,
+    pub linear_int_min_value_input: String,
+    pub linear_int_max_value_input: String,
 
-    // --- LinearFloat ---
-    pub linear_float_a_input: String,
-    pub linear_float_b_input: String,
-
-    // --- PolynomialInteger ---
+    // --- Polynomial ---
     pub poly_int_a_input: String,
+    pub poly_int_m_input: String,
     pub poly_int_n_input: String,
+    pub poly_int_d_input: String,
+    pub poly_int_s_input: String,
+    pub poly_int_o_input: String,
     pub poly_int_b_input: String,
-
-    // --- PolynomialFloat ---
-    pub poly_float_a_input: String,
-    pub poly_float_n_input: String,
-    pub poly_float_b_input: String,
+    pub poly_int_min_value_input: String,
+    pub poly_int_max_value_input: String,
 
     // --- Exponential ---
     pub exp_a_input: String,
+    pub exp_m_input: String,
+    pub exp_n_input: String,
+    pub exp_d_input: String,
+    pub exp_s_input: String,
+    pub exp_o_input: String,
     pub exp_b_input: String,
-    pub exp_c_input: String,
+    pub exp_min_value_input: String,
+    pub exp_max_value_input: String,
 
     // --- Logarithmic ---
     pub log_a_input: String,
+    pub log_d_input: String,
+    pub log_m_input: String,
+    pub log_n_input: String,
+    pub log_s_input: String,
+    pub log_o_input: String,
     pub log_b_input: String,
-    pub log_c_input: String,
+    pub log_min_value_input: String,
+    pub log_max_value_input: String,
 
-    // --- Stepwise ---
-    // If you want multiple (block, amount) pairs, store them in a Vec.
-    // Each tuple in the Vec can be (String, String) for block + amount
-    // or however you prefer to represent it.
-    pub stepwise_steps: Vec<(String, String)>,
+    // --- Inverted Logarithmic ---
+    pub inv_log_a_input: String,
+    pub inv_log_d_input: String,
+    pub inv_log_m_input: String,
+    pub inv_log_n_input: String,
+    pub inv_log_s_input: String,
+    pub inv_log_o_input: String,
+    pub inv_log_b_input: String,
+    pub inv_log_min_value_input: String,
+    pub inv_log_max_value_input: String,
 }
 
 impl TokensScreen {
@@ -652,9 +709,12 @@ impl TokensScreen {
             app_context: app_context.clone(),
             my_tokens,
             selected_token_id: None,
+            selected_contract_id: None,
+            selected_contract_description: None,
+            selected_token_infos: Vec::new(),
             show_token_info: None,
             token_search_query: None,
-            token_search_status: TokenSearchStatus::NotStarted,
+            contract_search_status: ContractSearchStatus::NotStarted,
             search_current_page: 1,
             search_has_next_page: false,
             next_cursors: vec![],
@@ -727,26 +787,59 @@ impl TokensScreen {
             // Distribution function selection
             perpetual_dist_function: DistributionFunctionUI::FixedAmount,
             fixed_amount_input: String::new(),
+            random_min_input: String::new(),
+            random_max_input: String::new(),
             step_count_input: String::new(),
-            decrease_per_interval_input: String::new(),
-            step_dec_amount_input: String::new(),
-            linear_int_a_input: String::new(),
-            linear_int_b_input: String::new(),
-            linear_float_a_input: String::new(),
-            linear_float_b_input: String::new(),
-            poly_int_a_input: String::new(),
-            poly_int_n_input: String::new(),
-            poly_int_b_input: String::new(),
-            poly_float_a_input: String::new(),
-            poly_float_n_input: String::new(),
-            poly_float_b_input: String::new(),
-            exp_a_input: String::new(),
-            exp_b_input: String::new(),
-            exp_c_input: String::new(),
-            log_a_input: String::new(),
-            log_b_input: String::new(),
-            log_c_input: String::new(),
+            decrease_per_interval_numerator_input: String::new(),
+            decrease_per_interval_denominator_input: String::new(),
+            step_decreasing_start_period_offset_input: String::new(),
+            step_decreasing_initial_emission_input: String::new(),
+            step_decreasing_min_value_input: String::new(),
+            step_decreasing_max_interval_count_input: String::new(),
+            step_decreasing_trailing_distribution_interval_amount_input: String::new(),
             stepwise_steps: Vec::new(),
+            linear_int_a_input: String::new(),
+            linear_int_d_input: String::new(),
+            linear_int_start_step_input: String::new(),
+            linear_int_starting_amount_input: String::new(),
+            linear_int_min_value_input: String::new(),
+            linear_int_max_value_input: String::new(),
+            poly_int_a_input: String::new(),
+            poly_int_m_input: String::new(),
+            poly_int_n_input: String::new(),
+            poly_int_d_input: String::new(),
+            poly_int_s_input: String::new(),
+            poly_int_o_input: String::new(),
+            poly_int_b_input: String::new(),
+            poly_int_min_value_input: String::new(),
+            poly_int_max_value_input: String::new(),
+            exp_a_input: String::new(),
+            exp_m_input: String::new(),
+            exp_n_input: String::new(),
+            exp_d_input: String::new(),
+            exp_s_input: String::new(),
+            exp_o_input: String::new(),
+            exp_b_input: String::new(),
+            exp_min_value_input: String::new(),
+            exp_max_value_input: String::new(),
+            log_a_input: String::new(),
+            log_d_input: String::new(),
+            log_m_input: String::new(),
+            log_n_input: String::new(),
+            log_s_input: String::new(),
+            log_o_input: String::new(),
+            log_b_input: String::new(),
+            log_min_value_input: String::new(),
+            log_max_value_input: String::new(),
+            inv_log_a_input: String::new(),
+            inv_log_d_input: String::new(),
+            inv_log_m_input: String::new(),
+            inv_log_n_input: String::new(),
+            inv_log_s_input: String::new(),
+            inv_log_o_input: String::new(),
+            inv_log_b_input: String::new(),
+            inv_log_min_value_input: String::new(),
+            inv_log_max_value_input: String::new(),
 
             // Similarly for identity recipients, you might store:
             perpetual_dist_recipient: TokenDistributionRecipientUI::ContractOwner,
@@ -1140,6 +1233,19 @@ impl TokensScreen {
                                                     );
                                                 }
 
+                                                // Claim
+                                                if ui.button("Claim").clicked() {
+                                                    action = AppAction::AddScreen(
+                                                        Screen::ClaimTokensScreen(
+                                                            ClaimTokensScreen::new(
+                                                                itb.clone(),
+                                                                &self.app_context,
+                                                            ),
+                                                        ),
+                                                    );
+                                                    ui.close_menu();
+                                                }
+
                                                 // Expandable advanced actions menu
                                                 ui.menu_button("...", |ui| {
                                                     if ui.button("Mint").clicked() {
@@ -1243,108 +1349,146 @@ impl TokensScreen {
         action
     }
 
-    fn render_token_search(&mut self, ui: &mut Ui) -> AppAction {
-        let action = AppAction::None;
+    /// Renders details for the selected_contract_id.
+    fn render_contract_details(&mut self, ui: &mut Ui, contract_id: &Identifier) -> AppAction {
+        let mut action = AppAction::None;
 
-        ui.vertical_centered(|ui| {
-            ui.add_space(10.0);
-            ui.heading("Coming Soon");
+        if let Some(description) = &self.selected_contract_description {
+            ui.heading("Contract Description:");
+            ui.label(description.description.clone());
+        }
+
+        ui.add_space(10.0);
+
+        ui.heading("Tokens:");
+        let token_infos = self
+            .selected_token_infos
+            .iter()
+            .filter(|token| token.data_contract_id == *contract_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        for token in token_infos {
+            if token.data_contract_id == *contract_id {
+                ui.heading(token.token_name.clone());
+                ui.label(format!(
+                    "ID: {}",
+                    token.token_identifier.to_string(Encoding::Base58)
+                ));
+                ui.label(format!(
+                    "Description: {}",
+                    token
+                        .description
+                        .clone()
+                        .unwrap_or("No description".to_string())
+                ));
+            }
+
             ui.add_space(5.0);
 
-            //     ui.add_space(10.0);
-            //     ui.label("Search for tokens by keyword, name, or ID.");
-            //     ui.add_space(5.0);
+            // Add button to add token to my tokens
+            if ui.button("Add to My Tokens").clicked() {
+                // Add token to my tokens
+                action |= self.add_token_to_my_tokens(token.clone());
+            }
 
-            //     ui.horizontal(|ui| {
-            //         ui.label("Search by keyword(s):");
-            //         ui.text_edit_singleline(self.token_search_query.get_or_insert_with(String::new));
-            //         if ui.button("Go").clicked() {
-            //             // 1) Clear old results, set status
-            //             let now = Utc::now().timestamp() as u64;
-            //             self.token_search_status = TokenSearchStatus::WaitingForResult(now);
-            //             {
-            //                 let mut sr = self.search_results.lock().unwrap();
-            //                 sr.clear();
-            //             }
-            //             self.search_current_page = 1;
-            //             self.next_cursors.clear();
-            //             self.previous_cursors.clear();
-            //             self.search_has_next_page = false;
+            ui.add_space(10.0);
+        }
 
-            //             // 2) Dispatch backend request
-            //             let query_string = self
-            //                 .token_search_query
-            //                 .as_ref()
-            //                 .map(|s| s.clone())
-            //                 .unwrap_or_default();
+        action
+    }
 
-            //             // Example: if you want paged results from the start:
-            //             action = AppAction::BackendTask(BackendTask::TokenTask(
-            //                 TokenTask::QueryTokensByKeywordPage(query_string, None),
-            //             ));
-            //         }
-            //     });
+    fn render_keyword_search(&mut self, ui: &mut egui::Ui) -> AppAction {
+        let mut action = AppAction::None;
+
+        // 1) Input & “Go” button
+        ui.heading("Search Tokens by Keyword");
+        ui.add_space(5.0);
+
+        ui.horizontal(|ui| {
+            ui.label("Enter Keyword:");
+            let query_ref = self
+                .token_search_query
+                .get_or_insert_with(|| "".to_string());
+            ui.text_edit_singleline(query_ref);
+
+            if ui.button("Go").clicked() {
+                // Clear old results, set status
+                self.search_results.lock().unwrap().clear();
+                let now = chrono::Utc::now().timestamp() as u64;
+                self.contract_search_status = ContractSearchStatus::WaitingForResult(now);
+                self.search_current_page = 1;
+                self.next_cursors.clear();
+                self.previous_cursors.clear();
+                self.search_has_next_page = false;
+
+                // Dispatch a backend task to do the actual keyword => token retrieval
+                let keyword = query_ref.clone();
+                action = AppAction::BackendTask(BackendTask::TokenTask(
+                    TokenTask::QueryDescriptionsByKeyword(keyword, None),
+                ));
+            }
         });
 
-        // ui.separator();
-        // ui.add_space(10.0);
+        ui.add_space(10.0);
 
-        // // Show results or messages
-        // match self.token_search_status {
-        //     TokenSearchStatus::WaitingForResult(start_time) => {
-        //         let now = Utc::now().timestamp() as u64;
-        //         let elapsed = now - start_time;
-        //         ui.label(format!("Searching... Time so far: {} seconds", elapsed));
-        //         ui.add(egui::widgets::Spinner::default().color(Color32::from_rgb(0, 128, 255)));
-        //     }
-        //     TokenSearchStatus::Complete => {
-        //         // Render the results table
-        //         let tokens = self.search_results.lock().unwrap().clone();
-        //         if tokens.is_empty() {
-        //             ui.label("No tokens match your search.");
-        //         } else {
-        //             // Possibly add a filter input above the table, if you like
-        //             action |= self.render_search_results_table(ui, &tokens);
-        //         }
+        // 2) Display status
+        match &self.contract_search_status {
+            ContractSearchStatus::NotStarted => {
+                ui.label("Enter a keyword above and click Go.");
+            }
+            ContractSearchStatus::WaitingForResult(start_time) => {
+                let now = chrono::Utc::now().timestamp() as u64;
+                let elapsed = now - start_time;
+                ui.horizontal(|ui| {
+                    ui.label(format!("Searching... {} seconds", elapsed));
+                    ui.add(egui::widgets::Spinner::default().color(Color32::from_rgb(0, 128, 255)));
+                });
+            }
+            ContractSearchStatus::Complete => {
+                // Show the results
+                let results = self.search_results.lock().unwrap().clone();
+                if results.is_empty() {
+                    ui.label("No tokens match your keyword.");
+                } else {
+                    action |= self.render_search_results_table(ui, &results);
+                }
 
-        //         // Then pagination controls
-        //         ui.horizontal(|ui| {
-        //             // If not on page 1, we can show a “Prev” button
-        //             if self.search_current_page > 1 {
-        //                 if ui.button("Previous Page").clicked() {
-        //                     action |= self.goto_previous_search_page();
-        //                 }
-        //             }
+                // Pagination controls
+                ui.horizontal(|ui| {
+                    if self.search_current_page > 1 {
+                        if ui.button("Previous").clicked() {
+                            // Go to previous page
+                            action = self.goto_previous_search_page();
+                        }
+                    }
 
-        //             ui.label(format!("Page {}", self.search_current_page));
+                    if !(self.next_cursors.is_empty() && self.previous_cursors.is_empty()) {
+                        ui.label(format!("Page {}", self.search_current_page));
+                    }
 
-        //             // If has_next_page, show “Next Page” button
-        //             if self.search_has_next_page {
-        //                 if ui.button("Next Page").clicked() {
-        //                     action |= self.goto_next_search_page();
-        //                 }
-        //             }
-        //         });
-        //     }
-        //     TokenSearchStatus::ErrorMessage(ref e) => {
-        //         ui.colored_label(Color32::DARK_RED, format!("Error: {}", e));
-        //     }
-        //     TokenSearchStatus::NotStarted => {
-        //         ui.label("Enter keywords above and click Go to search tokens.");
-        //     }
-        // }
+                    if self.search_has_next_page {
+                        if ui.button("Next").clicked() {
+                            // Go to next page
+                            action = self.goto_next_search_page();
+                        }
+                    }
+                });
+            }
+            ContractSearchStatus::ErrorMessage(e) => {
+                ui.colored_label(egui::Color32::RED, format!("Error: {}", e));
+            }
+        }
 
         action
     }
 
     fn render_search_results_table(
         &mut self,
-        ui: &mut Ui,
-        search_results: &[IdentityTokenBalance],
+        ui: &mut egui::Ui,
+        search_results: &[ContractDescriptionInfo],
     ) -> AppAction {
-        let action = AppAction::None;
+        let mut action = AppAction::None;
 
-        // In your DocumentQueryScreen code, you also had a ScrollArea
         egui::ScrollArea::vertical().show(ui, |ui| {
             Frame::group(ui.style())
                 .fill(ui.visuals().panel_fill)
@@ -1358,46 +1502,48 @@ impl TokensScreen {
                         .striped(true)
                         .resizable(true)
                         .cell_layout(egui::Layout::left_to_right(Align::Center))
-                        .column(Column::initial(80.0).resizable(true)) // Token Name
-                        .column(Column::initial(330.0).resizable(true)) // Identity
-                        .column(Column::initial(60.0).resizable(true)) // Balance
+                        .column(Column::initial(60.0).resizable(true)) // Contract ID
+                        .column(Column::initial(200.0).resizable(true)) // Contract Description
                         .column(Column::initial(80.0).resizable(true)) // Action
                         .header(30.0, |mut header| {
                             header.col(|ui| {
-                                if ui.button("Token Name").clicked() {
-                                    self.toggle_sort(SortColumn::TokenName);
-                                }
+                                ui.label("Contract ID");
                             });
                             header.col(|ui| {
-                                if ui.button("Token ID").clicked() {
-                                    self.toggle_sort(SortColumn::TokenID);
-                                }
-                            });
-                            header.col(|ui| {
-                                if ui.button("Balance").clicked() {
-                                    self.toggle_sort(SortColumn::Balance);
-                                }
+                                ui.label("Contract Description");
                             });
                             header.col(|ui| {
                                 ui.label("Action");
                             });
                         })
                         .body(|mut body| {
-                            for token in search_results {
+                            for contract in search_results {
                                 body.row(25.0, |mut row| {
                                     row.col(|ui| {
-                                        ui.label(&token.token_name);
+                                        ui.label(
+                                            contract.data_contract_id.to_string(Encoding::Base58),
+                                        );
                                     });
                                     row.col(|ui| {
-                                        ui.label(token.identity_id.to_string(Encoding::Base58));
+                                        ui.label(contract.description.clone());
                                     });
                                     row.col(|ui| {
-                                        ui.label(token.balance.to_string());
-                                    });
-                                    row.col(|ui| {
-                                        if ui.button("Add").clicked() {
-                                            // Add to my_tokens
-                                            self.add_token_to_my_tokens(token.clone());
+                                        // Example "Add" button
+                                        if ui.button("More Info").clicked() {
+                                            // Show more info about the token
+                                            self.selected_contract_id =
+                                                Some(contract.data_contract_id.clone());
+                                            action =
+                                                AppAction::BackendTask(BackendTask::ContractTask(
+                                                    ContractTask::FetchContractsWithDescriptions(
+                                                        vec![contract.data_contract_id.clone()],
+                                                    ),
+                                                ));
+
+                                            // // Add to MyTokens or do something with it
+                                            // // Note this is implemented but we will add it back later!
+                                            // // We changed to searching contracts instead of tokens for now
+                                            // self.add_token_to_my_tokens(token.clone());
                                         }
                                     });
                                 });
@@ -1443,9 +1589,6 @@ impl TokensScreen {
                     ui.visuals().widgets.inactive.bg_stroke.color,
                 ))
                 .show(ui, |ui| {
-                    // 2) Choose identity & key
-                    //    We'll show a dropdown of local QualifiedIdentities, then a sub-dropdown of keys
-
                     // Identity selection
                     ui.add_space(10.0);
                     let all_identities = match self.app_context.load_local_qualified_identities() {
@@ -1825,28 +1968,28 @@ impl TokensScreen {
                                         );
                                         ui.selectable_value(
                                             &mut self.perpetual_dist_function,
+                                            DistributionFunctionUI::Random,
+                                            "Random",
+                                        );
+                                        ui.selectable_value(
+                                            &mut self.perpetual_dist_function,
                                             DistributionFunctionUI::StepDecreasingAmount,
                                             "StepDecreasing",
                                         );
                                         ui.selectable_value(
                                             &mut self.perpetual_dist_function,
-                                            DistributionFunctionUI::LinearInteger,
-                                            "LinearInteger",
+                                            DistributionFunctionUI::Stepwise,
+                                            "Stepwise",
                                         );
                                         ui.selectable_value(
                                             &mut self.perpetual_dist_function,
-                                            DistributionFunctionUI::LinearFloat,
-                                            "LinearFloat",
+                                            DistributionFunctionUI::Linear,
+                                            "Linear",
                                         );
                                         ui.selectable_value(
                                             &mut self.perpetual_dist_function,
-                                            DistributionFunctionUI::PolynomialInteger,
-                                            "PolynomialInteger",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.perpetual_dist_function,
-                                            DistributionFunctionUI::PolynomialFloat,
-                                            "PolynomialFloat",
+                                            DistributionFunctionUI::Polynomial,
+                                            "Polynomial",
                                         );
                                         ui.selectable_value(
                                             &mut self.perpetual_dist_function,
@@ -1860,8 +2003,8 @@ impl TokensScreen {
                                         );
                                         ui.selectable_value(
                                             &mut self.perpetual_dist_function,
-                                            DistributionFunctionUI::Stepwise,
-                                            "Stepwise",
+                                            DistributionFunctionUI::InvertedLogarithmic,
+                                            "InvertedLogarithmic",
                                         );
                                     });
 
@@ -1871,23 +2014,64 @@ impl TokensScreen {
                                     // Check if the label was clicked
                                     if response.clicked() {
                                         self.show_pop_up_info = Some(r#"
-### FixedAmount
+# FixedAmount
 
-A fixed amount of tokens is emitted for each period.
+Emits a constant (fixed) number of tokens for every period.
 
-- **Formula:** f(x) = n  
-- **Use Case:** Simplicity, stable reward emissions  
-- **Example:** If we emit 5 tokens per block, and 3 blocks have passed, 15 tokens have been released.
+### Formula
+For any period `x`, the emitted tokens are:
+
+`f(x) = n`
+
+### Use Case
+- When a predictable, unchanging reward is desired.
+- Simplicity and stable emissions.
+
+### Example
+- If `n = 5` tokens per block, then after 3 blocks the total emission is 15 tokens.
 
 ---
 
-### StepDecreasingAmount
+# StepDecreasingAmount
 
-The amount of tokens decreases in predefined steps at fixed intervals.
+Emits a random number of tokens within a specified range.
 
-- **Formula:** f(x) = n * (1 - decrease_per_interval)^(x / step_count)  
-- **Use Case:** Mimics Bitcoin/Dash models, encourages early participation  
-- **Example:** Bitcoin halves every 210,000 blocks (~4 years)
+### Description
+- This function selects a **random** token emission amount between `min` and `max`.
+- The value is drawn **uniformly** between the bounds.
+- The randomness uses a Pseudo Random Function (PRF) from x.
+
+### Formula
+For any period `x`, the emitted tokens follow:
+
+`f(x) ∈ [min, max]`
+
+### Parameters
+- `min`: The **minimum** possible number of tokens emitted.
+- `max`: The **maximum** possible number of tokens emitted.
+
+### Use Cases
+- **Stochastic Rewards**: Introduces randomness into rewards to incentivize unpredictability.
+- **Lottery-Based Systems**: Used for randomized emissions, such as block rewards with probabilistic payouts.
+
+### Example
+Suppose a system emits **between 10 and 100 tokens per period**.
+
+`Random { min: 10, max: 100 }`
+
+| Period (x) | Emitted Tokens (Random) |
+|------------|------------------------|
+| 1          | 27                     |
+| 2          | 94                     |
+| 3          | 63                     |
+| 4          | 12                     |
+
+- Each period, the function emits a **random number of tokens** between `min = 10` and `max = 100`.
+- Over time, the **average reward trends toward the midpoint** `(min + max) / 2`.
+
+### Constraints
+- **`min` must be ≤ `max`**, otherwise the function is invalid.
+- If `min == max`, this behaves like a `FixedAmount` function with a constant emission.
 
 ---
 
@@ -1983,100 +2167,49 @@ Emits tokens in fixed amounts for specific intervals.
                                     });
                                 }
 
+                                DistributionFunctionUI::Random => {
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Min Amount (n):");
+                                        ui.text_edit_singleline(&mut self.random_min_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Max Amount (n):");
+                                        ui.text_edit_singleline(&mut self.random_max_input);
+                                    });
+                                }
+
                                 DistributionFunctionUI::StepDecreasingAmount => {
                                     ui.horizontal(|ui| {
                                         ui.label("        - Step Count (u64):");
                                         ui.text_edit_singleline(&mut self.step_count_input);
                                     });
                                     ui.horizontal(|ui| {
-                                        ui.label("        - Decrease per Interval (float):");
-                                        ui.text_edit_singleline(&mut self.decrease_per_interval_input);
+                                        ui.label("        - Decrease per Interval Numerator:");
+                                        ui.text_edit_singleline(&mut self.decrease_per_interval_numerator_input);
                                     });
                                     ui.horizontal(|ui| {
-                                        ui.label("        - Initial Amount (n):");
-                                        ui.text_edit_singleline(&mut self.step_dec_amount_input);
-                                    });
-                                }
-
-                                DistributionFunctionUI::LinearInteger => {
-                                    ui.horizontal(|ui| {
-                                        ui.label("        - Coefficient (a, i64):");
-                                        ui.text_edit_singleline(&mut self.linear_int_a_input);
+                                        ui.label("        - Decrease per Interval Denominator:");
+                                        ui.text_edit_singleline(&mut self.decrease_per_interval_denominator_input);
                                     });
                                     ui.horizontal(|ui| {
-                                        ui.label("        - Initial Value (b, i64):");
-                                        ui.text_edit_singleline(&mut self.linear_int_b_input);
-                                    });
-                                }
-
-                                DistributionFunctionUI::LinearFloat => {
-                                    ui.horizontal(|ui| {
-                                        ui.label("        - Coefficient (a, float):");
-                                        ui.text_edit_singleline(&mut self.linear_float_a_input);
+                                        ui.label("        - Start Period Offset (optional):");
+                                        ui.text_edit_singleline(&mut self.step_decreasing_start_period_offset_input);
                                     });
                                     ui.horizontal(|ui| {
-                                        ui.label("        - Initial Value (b):");
-                                        ui.text_edit_singleline(&mut self.linear_float_b_input);
-                                    });
-                                }
-
-                                DistributionFunctionUI::PolynomialInteger => {
-                                    ui.horizontal(|ui| {
-                                        ui.label("        - Coefficient (a, i64):");
-                                        ui.text_edit_singleline(&mut self.poly_int_a_input);
+                                        ui.label("        - Initial Token Emission (n):");
+                                        ui.text_edit_singleline(&mut self.step_decreasing_initial_emission_input);
                                     });
                                     ui.horizontal(|ui| {
-                                        ui.label("        - Degree (n, i64):");
-                                        ui.text_edit_singleline(&mut self.poly_int_n_input);
+                                        ui.label("        - Minimum Emission Value (optional):");
+                                        ui.text_edit_singleline(&mut self.step_decreasing_min_value_input);
                                     });
                                     ui.horizontal(|ui| {
-                                        ui.label("        - Base Amount (b, i64):");
-                                        ui.text_edit_singleline(&mut self.poly_int_b_input);
-                                    });
-                                }
-
-                                DistributionFunctionUI::PolynomialFloat => {
-                                    ui.horizontal(|ui| {
-                                        ui.label("        - Coefficient (a, float):");
-                                        ui.text_edit_singleline(&mut self.poly_float_a_input);
+                                        ui.label("        - Maximum Interval Count (optional):");
+                                        ui.text_edit_singleline(&mut self.step_decreasing_max_interval_count_input);
                                     });
                                     ui.horizontal(|ui| {
-                                        ui.label("        - Degree (n, float):");
-                                        ui.text_edit_singleline(&mut self.poly_float_n_input);
-                                    });
-                                    ui.horizontal(|ui| {
-                                        ui.label("        - Base Amount (b):");
-                                        ui.text_edit_singleline(&mut self.poly_float_b_input);
-                                    });
-                                }
-
-                                DistributionFunctionUI::Exponential => {
-                                    ui.horizontal(|ui| {
-                                        ui.label("        - Scaling Factor (a, float):");
-                                        ui.text_edit_singleline(&mut self.exp_a_input);
-                                    });
-                                    ui.horizontal(|ui| {
-                                        ui.label("        - Growth/Decay Rate (b, float):");
-                                        ui.text_edit_singleline(&mut self.exp_b_input);
-                                    });
-                                    ui.horizontal(|ui| {
-                                        ui.label("        - Offset (c):");
-                                        ui.text_edit_singleline(&mut self.exp_c_input);
-                                    });
-                                }
-
-                                DistributionFunctionUI::Logarithmic => {
-                                    ui.horizontal(|ui| {
-                                        ui.label("        - Scaling Factor (a, float):");
-                                        ui.text_edit_singleline(&mut self.log_a_input);
-                                    });
-                                    ui.horizontal(|ui| {
-                                        ui.label("        - Log Base (b, float):");
-                                        ui.text_edit_singleline(&mut self.log_b_input);
-                                    });
-                                    ui.horizontal(|ui| {
-                                        ui.label("        - Offset (c):");
-                                        ui.text_edit_singleline(&mut self.log_c_input);
+                                        ui.label("        - Trailing Distribution Interval Amount:");
+                                        ui.text_edit_singleline(&mut self.step_decreasing_trailing_distribution_interval_amount_input);
                                     });
                                 }
 
@@ -2115,6 +2248,189 @@ Emits tokens in fixed amounts for specific intervals.
                                         if ui.button("Add Step").clicked() {
                                             self.stepwise_steps.push(("0".to_owned(), "0".to_owned()));
                                         }
+                                    });
+                                }
+
+                                DistributionFunctionUI::Linear => {
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Slope Numerator (a, i64):");
+                                        ui.text_edit_singleline(&mut self.linear_int_a_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Slope Divisor (d, i64):");
+                                        ui.text_edit_singleline(&mut self.linear_int_d_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Start Step (s, i64):");
+                                        ui.text_edit_singleline(&mut self.linear_int_start_step_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Starting Amount (b, i64):");
+                                        ui.text_edit_singleline(&mut self.linear_int_starting_amount_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Minimum Emission Value (optional):");
+                                        ui.text_edit_singleline(&mut self.linear_int_min_value_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Maximum Emission Value (optional):");
+                                        ui.text_edit_singleline(&mut self.linear_int_max_value_input);
+                                    });
+                                }
+
+                                DistributionFunctionUI::Polynomial => {
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Scaling Factor (a, i64):");
+                                        ui.text_edit_singleline(&mut self.poly_int_a_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Exponent Numerator (m, i64):");
+                                        ui.text_edit_singleline(&mut self.poly_int_m_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Exponent Denominator (n, i64):");
+                                        ui.text_edit_singleline(&mut self.poly_int_n_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Divisor (d, i64):");
+                                        ui.text_edit_singleline(&mut self.poly_int_d_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Start Period Offset (s, i64):");
+                                        ui.text_edit_singleline(&mut self.poly_int_s_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Offset (o, i64):");
+                                        ui.text_edit_singleline(&mut self.poly_int_o_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Initial Token Emission (b, i64):");
+                                        ui.text_edit_singleline(&mut self.poly_int_b_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Minimum Emission Value (optional):");
+                                        ui.text_edit_singleline(&mut self.poly_int_min_value_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Maximum Emission Value (optional):");
+                                        ui.text_edit_singleline(&mut self.poly_int_max_value_input);
+                                    });
+                                }
+
+                                DistributionFunctionUI::Exponential => {
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Scaling Factor (a, i64):");
+                                        ui.text_edit_singleline(&mut self.exp_a_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Exponent Rate (m, i64):");
+                                        ui.text_edit_singleline(&mut self.exp_m_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Exponent Rate (n, i64):");
+                                        ui.text_edit_singleline(&mut self.exp_n_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Divisor (d, i64):");
+                                        ui.text_edit_singleline(&mut self.exp_d_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Start Period Offset (s, i64):");
+                                        ui.text_edit_singleline(&mut self.exp_s_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Offset (o, i64):");
+                                        ui.text_edit_singleline(&mut self.exp_o_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Offset (c, i64):");
+                                        ui.text_edit_singleline(&mut self.exp_b_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Minimum Emission Value (optional):");
+                                        ui.text_edit_singleline(&mut self.exp_min_value_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Maximum Emission Value (optional):");
+                                        ui.text_edit_singleline(&mut self.exp_max_value_input);
+                                    });
+                                }
+
+                                DistributionFunctionUI::Logarithmic => {
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Scaling Factor (a, i64):");
+                                        ui.text_edit_singleline(&mut self.log_a_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Divisor (d, i64):");
+                                        ui.text_edit_singleline(&mut self.log_d_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Exponent Numerator (m, i64):");
+                                        ui.text_edit_singleline(&mut self.log_m_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Exponent Denominator (n, i64):");
+                                        ui.text_edit_singleline(&mut self.log_n_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Start Period Offset (s, i64):");
+                                        ui.text_edit_singleline(&mut self.log_s_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Offset (o, i64):");
+                                        ui.text_edit_singleline(&mut self.log_o_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Initial Token Emission (b, i64):");
+                                        ui.text_edit_singleline(&mut self.log_b_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Minimum Emission Value (optional):");
+                                        ui.text_edit_singleline(&mut self.log_min_value_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Maximum Emission Value (optional):");
+                                        ui.text_edit_singleline(&mut self.log_max_value_input);
+                                    });
+                                }
+
+                                DistributionFunctionUI::InvertedLogarithmic => {
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Scaling Factor (a, i64):");
+                                        ui.text_edit_singleline(&mut self.inv_log_a_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Divisor (d, i64):");
+                                        ui.text_edit_singleline(&mut self.inv_log_d_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Exponent Numerator (m, i64):");
+                                        ui.text_edit_singleline(&mut self.inv_log_m_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Exponent Denominator (n, i64):");
+                                        ui.text_edit_singleline(&mut self.inv_log_n_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Start Period Offset (s, i64):");
+                                        ui.text_edit_singleline(&mut self.inv_log_s_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Offset (o, i64):");
+                                        ui.text_edit_singleline(&mut self.inv_log_o_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Initial Token Emission (b, i64):");
+                                        ui.text_edit_singleline(&mut self.inv_log_b_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Minimum Emission Value (optional):");
+                                        ui.text_edit_singleline(&mut self.inv_log_min_value_input);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Maximum Emission Value (optional):");
+                                        ui.text_edit_singleline(&mut self.inv_log_max_value_input);
                                     });
                                 }
                             }
@@ -2195,8 +2511,24 @@ Emits tokens in fixed amounts for specific intervals.
 
                                 // Render row
                                 ui.horizontal(|ui| {
-                                    ui.label(format!("      Timestamp #{}:", i + 1));
-                                    ui.text_edit_singleline(&mut entry.timestamp_str);
+                                    ui.label(format!("Timestamp #{}:", i + 1));
+
+                                    // Replace text-edit timestamp with days/hours/minutes
+                                    ui.add(
+                                        egui::DragValue::new(&mut entry.days)
+                                            .prefix("Days: ")
+                                            .range(0..=3650),
+                                    );
+                                    ui.add(
+                                        egui::DragValue::new(&mut entry.hours)
+                                            .prefix("Hours: ")
+                                            .range(0..=23),
+                                    );
+                                    ui.add(
+                                        egui::DragValue::new(&mut entry.minutes)
+                                            .prefix("Minutes: ")
+                                            .range(0..=59),
+                                    );
 
                                     ui.label("Identity:");
                                     ui.text_edit_singleline(&mut entry.identity_str);
@@ -2204,6 +2536,7 @@ Emits tokens in fixed amounts for specific intervals.
                                     ui.label("Amount:");
                                     ui.text_edit_singleline(&mut entry.amount_str);
 
+                                    // Remove button
                                     if ui.button("Remove").clicked() {
                                         self.pre_programmed_distributions.remove(i);
                                     } else {
@@ -2220,8 +2553,7 @@ Emits tokens in fixed amounts for specific intervals.
                             ui.horizontal(|ui| {
                                 ui.label("   ");
                                 if ui.button("Add New Distribution Entry").clicked() {
-                                    self.pre_programmed_distributions
-                                        .push(DistributionEntry::default());
+                                    self.pre_programmed_distributions.push(DistributionEntry::default());
                                 }
                             });
 
@@ -2276,7 +2608,7 @@ Emits tokens in fixed amounts for specific intervals.
                         ui.horizontal(|ui| {
                             ui.label("Main Control Group Position:");
                             ui.text_edit_singleline(&mut self.main_control_group_input);
-                        });                        
+                        });
 
                         ui.add_space(2.0);
 
@@ -2432,7 +2764,7 @@ Emits tokens in fixed amounts for specific intervals.
                                             return;
                                         }
                                     };
-                        
+
                                     let data_contract_json = data_contract.to_json(self.app_context.platform_version).expect("Expected to map contract to json");
                                     self.show_json_popup = true;
                                     self.json_popup_text = serde_json::to_string_pretty(&data_contract_json).expect("Expected to serialize json");
@@ -2544,9 +2876,7 @@ Emits tokens in fixed amounts for specific intervals.
                 };
                 ui.label(format!(
                     "Name: {}\nBase Supply: {}\nMax Supply: {}",
-                    self.token_name_input,
-                    self.base_supply_input,
-                    max_supply_display,
+                    self.token_name_input, self.base_supply_input, max_supply_display,
                 ));
 
                 ui.add_space(10.0);
@@ -2568,13 +2898,13 @@ Emits tokens in fixed amounts for specific intervals.
                             }
                         }
                     };
-                
+
                     // Now create your tasks
                     let tasks = vec![
                         BackendTask::TokenTask(TokenTask::RegisterTokenContract {
                             identity: self.selected_identity.clone().unwrap(),
                             signing_key: self.selected_key.clone().unwrap(),
-                
+
                             token_name: args.token_name,
                             should_capitalize: args.should_capitalize,
                             decimals: args.decimals,
@@ -2583,7 +2913,7 @@ Emits tokens in fixed amounts for specific intervals.
                             start_paused: args.start_paused,
                             keeps_history: args.keeps_history,
                             main_control_group: args.main_control_group,
-                
+
                             manual_minting_rules: args.manual_minting_rules,
                             manual_burning_rules: args.manual_burning_rules,
                             freeze_rules: args.freeze_rules,
@@ -2592,14 +2922,18 @@ Emits tokens in fixed amounts for specific intervals.
                             emergency_action_rules: args.emergency_action_rules,
                             max_supply_change_rules: args.max_supply_change_rules,
                             conventions_change_rules: args.conventions_change_rules,
-                            main_control_group_change_authorized: args.main_control_group_change_authorized,
+                            main_control_group_change_authorized: args
+                                .main_control_group_change_authorized,
                             distribution_rules: args.distribution_rules,
                             groups: args.groups,
                         }),
                         BackendTask::TokenTask(TokenTask::QueryMyTokenBalances),
                     ];
-                
+
                     action = AppAction::BackendTasks(tasks, BackendTasksExecutionMode::Sequential);
+                    self.show_token_creator_confirmation_popup = false;
+                    let now = Utc::now().timestamp() as u64;
+                    self.token_creator_status = TokenCreatorStatus::WaitingForResult(now);
                 }
 
                 // Cancel
@@ -2634,7 +2968,9 @@ Emits tokens in fixed amounts for specific intervals.
     /// Returns Err(error_msg) on invalid input.
     pub fn parse_token_build_args(&mut self) -> Result<TokenBuildArgs, String> {
         // 1) We must have a selected identity
-        let identity = self.selected_identity.clone()
+        let identity = self
+            .selected_identity
+            .clone()
             .ok_or_else(|| "Please select an identity".to_string())?;
         let identity_id = identity.identity.id().clone();
 
@@ -2650,8 +2986,11 @@ Emits tokens in fixed amounts for specific intervals.
             None
         } else {
             // If parse fails, error out
-            Some(self.max_supply_input.parse::<u64>()
-                .map_err(|_| "Invalid Max Supply".to_string())?)
+            Some(
+                self.max_supply_input
+                    .parse::<u64>()
+                    .map_err(|_| "Invalid Max Supply".to_string())?,
+            )
         };
 
         let start_paused = self.start_as_paused_input;
@@ -2660,27 +2999,34 @@ Emits tokens in fixed amounts for specific intervals.
         let main_control_group = if self.main_control_group_input.is_empty() {
             None
         } else {
-            Some(self.main_control_group_input.parse::<u16>()
-                .map_err(|_| "Invalid main control group".to_string())?)
+            Some(
+                self.main_control_group_input
+                    .parse::<u16>()
+                    .map_err(|_| "Invalid main control group".to_string())?,
+            )
         };
 
         // 3) Convert your ActionChangeControlUI fields to real rules
         // (or do the manual parse for each if needed)
-        let manual_minting_rules = self.manual_minting_rules
+        let manual_minting_rules = self
+            .manual_minting_rules
             .to_change_control_rules("Manual Mint")?;
-        let manual_burning_rules = self.manual_burning_rules
+        let manual_burning_rules = self
+            .manual_burning_rules
             .to_change_control_rules("Manual Burn")?;
-        let freeze_rules = self.freeze_rules
-            .to_change_control_rules("Freeze")?;
-        let unfreeze_rules = self.unfreeze_rules
-            .to_change_control_rules("Unfreeze")?;
-        let destroy_frozen_funds_rules = self.destroy_frozen_funds_rules
+        let freeze_rules = self.freeze_rules.to_change_control_rules("Freeze")?;
+        let unfreeze_rules = self.unfreeze_rules.to_change_control_rules("Unfreeze")?;
+        let destroy_frozen_funds_rules = self
+            .destroy_frozen_funds_rules
             .to_change_control_rules("Destroy Frozen Funds")?;
-        let emergency_action_rules = self.emergency_action_rules
+        let emergency_action_rules = self
+            .emergency_action_rules
             .to_change_control_rules("Emergency Action")?;
-        let max_supply_change_rules = self.max_supply_change_rules
+        let max_supply_change_rules = self
+            .max_supply_change_rules
             .to_change_control_rules("Max Supply Change")?;
-        let conventions_change_rules = self.conventions_change_rules
+        let conventions_change_rules = self
+            .conventions_change_rules
             .to_change_control_rules("Conventions Change")?;
 
         // The main_control_group_change_authorized is done manually in your code,
@@ -2723,7 +3069,7 @@ Emits tokens in fixed amounts for specific intervals.
 
     /// Example of pulling out the logic to parse main_control_group_change_authorized
     fn parse_main_control_group_change_authorized(
-        &mut self
+        &mut self,
     ) -> Result<AuthorizedActionTakers, String> {
         match &mut self.authorized_main_control_group_change {
             AuthorizedActionTakers::Identity(_) => {
@@ -2758,78 +3104,131 @@ Emits tokens in fixed amounts for specific intervals.
     fn build_distribution_rules(&mut self) -> Result<TokenDistributionRulesV0, String> {
         // 1) Validate distribution input, parse numeric fields, etc.
         let distribution_function = match self.perpetual_dist_function {
-            DistributionFunctionUI::FixedAmount => {
-                DistributionFunction::FixedAmount {
-                    n: self.fixed_amount_input.parse::<u64>().unwrap_or(0),
-                }
+            DistributionFunctionUI::FixedAmount => DistributionFunction::FixedAmount {
+                amount: self.fixed_amount_input.parse::<u64>().unwrap_or(0),
+            },
+            DistributionFunctionUI::Random => DistributionFunction::Random {
+                min: self.random_min_input.parse::<u64>().unwrap_or(0),
+                max: self.random_max_input.parse::<u64>().unwrap_or(0),
             },
             DistributionFunctionUI::StepDecreasingAmount => {
                 DistributionFunction::StepDecreasingAmount {
-                    n: self.step_dec_amount_input.parse::<u64>().unwrap_or(0),
-                    decrease_per_interval: NotNan::new(self.decrease_per_interval_input.parse::<f64>().unwrap_or(0.0)).unwrap(),
-                    step_count: self.step_count_input.parse::<u64>().unwrap_or(0),
-                }
-            },
-            DistributionFunctionUI::LinearInteger => {
-                DistributionFunction::LinearInteger {
-                    a: self.linear_int_a_input.parse::<i64>().unwrap_or(0),
-                    b: self.linear_int_b_input.parse::<i64>().unwrap_or(0),
-                }
-            },
-            DistributionFunctionUI::LinearFloat => {
-                DistributionFunction::LinearFloat {
-                    a: NotNan::new(self.linear_float_a_input.parse::<f64>().unwrap_or(0.0)).unwrap(),
-                    b: self.linear_float_b_input.parse::<i64>().unwrap_or(0),
-                }
-            },
-            DistributionFunctionUI::PolynomialInteger => {
-                DistributionFunction::PolynomialInteger {
-                    a: self.poly_int_a_input.parse::<i64>().unwrap_or(0),
-                    n: self.poly_int_n_input.parse::<i64>().unwrap_or(0),
-                    b: self.poly_int_b_input.parse::<i64>().unwrap_or(0),
-                }
-            },
-            DistributionFunctionUI::PolynomialFloat => {
-                DistributionFunction::PolynomialFloat {
-                    a: NotNan::new(self.poly_float_a_input.parse::<f64>().unwrap_or(0.0)).unwrap(),
-                    n: NotNan::new(self.poly_float_n_input.parse::<f64>().unwrap_or(0.0)).unwrap(),
-                    b: self.poly_float_b_input.parse::<i64>().unwrap_or(0),
-                }
-            },
-            DistributionFunctionUI::Exponential => {
-                DistributionFunction::Exponential {
-                    a: NotNan::new(self.exp_a_input.parse::<f64>().unwrap_or(0.0)).unwrap(),
-                    b: NotNan::new(self.exp_b_input.parse::<f64>().unwrap_or(0.0)).unwrap(),
-                    c: self.exp_c_input.parse::<i64>().unwrap_or(0),
-                }
-            },
-            DistributionFunctionUI::Logarithmic => {
-                DistributionFunction::Logarithmic {
-                    a: NotNan::new(self.log_a_input.parse::<f64>().unwrap_or(0.0)).unwrap(),
-                    b: NotNan::new(self.log_b_input.parse::<f64>().unwrap_or(0.0)).unwrap(),
-                    c: self.log_c_input.parse::<i64>().unwrap_or(0),
-                }
-            },
-            DistributionFunctionUI::Stepwise => {
-                let mut steps = Vec::new();
-                for (block_str, amount_str) in self.stepwise_steps.iter() {
-                    if let Ok(block) = block_str.parse::<u64>() {
-                        if let Ok(amount) = amount_str.parse::<u64>() {
-                            steps.push((block, amount));
-                        } else {
-                            self.token_creator_error_message = Some(
-                                "Invalid amount in stepwise distribution".to_string(),
-                            );
-                            return Err("Invalid amount in stepwise distribution".to_string());
+                    step_count: self.step_count_input.parse::<u32>().unwrap_or(0),
+                    decrease_per_interval_numerator: self
+                        .decrease_per_interval_numerator_input
+                        .parse::<u16>()
+                        .unwrap_or(0),
+                    decrease_per_interval_denominator: self
+                        .decrease_per_interval_denominator_input
+                        .parse::<u16>()
+                        .unwrap_or(0),
+                    start_decreasing_offset: match self
+                        .step_decreasing_start_period_offset_input
+                        .parse::<u64>()
+                    {
+                        Ok(0) => None,
+                        Ok(v) => Some(v),
+                        Err(_) => {
+                            return Err("Invalid start decreasing offset for StepDecreasingAmount distribution. Put 0 for None.".to_string());
                         }
-                    } else {
-                        self.token_creator_error_message = Some(
-                            "Invalid block interval in stepwise distribution".to_string(),
-                        );
-                        return Err("Invalid block interval in stepwise distribution".to_string());
-                    }
+                    },
+                    distribution_start_amount: self
+                        .step_decreasing_initial_emission_input
+                        .parse::<u64>()
+                        .unwrap_or(0),
+                    min_value: match self.step_decreasing_min_value_input.parse::<u64>() {
+                        Ok(0) => None,
+                        Ok(v) => Some(v),
+                        Err(_) => {
+                            return Err(
+                                "Invalid min value for StepDecreasingAmount distribution. Put 0 for None."
+                                    .to_string(),
+                            );
+                        }
+                    },
+                    max_interval_count: match self
+                        .step_decreasing_max_interval_count_input
+                        .parse::<u16>()
+                    {
+                        Ok(0) => None,
+                        Ok(v) => Some(v),
+                        Err(_) => {
+                            return Err(
+                                "Invalid max interval count for StepDecreasingAmount distribution. Put 0 for None."
+                                    .to_string(),
+                            );
+                        }
+                    },
+                    trailing_distribution_interval_amount: self
+                        .step_decreasing_trailing_distribution_interval_amount_input
+                        .parse::<u64>()
+                        .unwrap_or(0),
                 }
+            }
+            DistributionFunctionUI::Stepwise => {
+                let steps: BTreeMap<u64, TokenAmount> = self
+                    .stepwise_steps
+                    .iter()
+                    .map(|(k, v)| (k.parse::<u64>().unwrap_or(0), v.parse::<u64>().unwrap_or(0)))
+                    .collect();
                 DistributionFunction::Stepwise(steps)
+            }
+            DistributionFunctionUI::Linear => DistributionFunction::Linear {
+                a: self.linear_int_a_input.parse::<i64>().unwrap_or(0),
+                d: self.linear_int_d_input.parse::<u64>().unwrap_or(0),
+                start_step: Some(self.linear_int_start_step_input.parse::<u64>().unwrap_or(0)),
+                starting_amount: self
+                    .linear_int_starting_amount_input
+                    .parse::<u64>()
+                    .unwrap_or(0),
+                min_value: Some(self.linear_int_min_value_input.parse::<u64>().unwrap_or(0)),
+                max_value: Some(self.linear_int_max_value_input.parse::<u64>().unwrap_or(0)),
+            },
+            DistributionFunctionUI::Polynomial => DistributionFunction::Polynomial {
+                a: self.poly_int_a_input.parse::<i64>().unwrap_or(0),
+                m: self.poly_int_m_input.parse::<i64>().unwrap_or(0),
+                n: self.poly_int_n_input.parse::<u64>().unwrap_or(0),
+                d: self.poly_int_d_input.parse::<u64>().unwrap_or(0),
+                start_moment: Some(self.poly_int_s_input.parse::<u64>().unwrap_or(0)),
+                o: self.poly_int_o_input.parse::<i64>().unwrap_or(0),
+                b: self.poly_int_b_input.parse::<u64>().unwrap_or(0),
+                min_value: Some(self.poly_int_min_value_input.parse::<u64>().unwrap_or(0)),
+                max_value: Some(self.poly_int_max_value_input.parse::<u64>().unwrap_or(0)),
+            },
+            DistributionFunctionUI::Exponential => DistributionFunction::Exponential {
+                a: self.exp_a_input.parse::<u64>().unwrap_or(0),
+                d: self.exp_d_input.parse::<u64>().unwrap_or(0),
+                m: self.exp_m_input.parse::<i64>().unwrap_or(0),
+                n: self.exp_n_input.parse::<u64>().unwrap_or(0),
+                o: self.exp_o_input.parse::<i64>().unwrap_or(0),
+                start_moment: Some(self.exp_s_input.parse::<u64>().unwrap_or(0)),
+                b: self.exp_b_input.parse::<u64>().unwrap_or(0),
+                min_value: Some(self.exp_min_value_input.parse::<u64>().unwrap_or(0)),
+                max_value: Some(self.exp_max_value_input.parse::<u64>().unwrap_or(0)),
+            },
+            DistributionFunctionUI::Logarithmic => DistributionFunction::Logarithmic {
+                a: self.log_a_input.parse::<i64>().unwrap_or(0),
+                d: self.log_d_input.parse::<u64>().unwrap_or(0),
+                m: self.log_m_input.parse::<u64>().unwrap_or(0),
+                n: self.log_n_input.parse::<u64>().unwrap_or(0),
+                start_moment: Some(self.log_s_input.parse::<u64>().unwrap_or(0)),
+                o: self.log_o_input.parse::<i64>().unwrap_or(0),
+                b: self.log_b_input.parse::<u64>().unwrap_or(0),
+                min_value: Some(self.log_min_value_input.parse::<u64>().unwrap_or(0)),
+                max_value: Some(self.log_max_value_input.parse::<u64>().unwrap_or(0)),
+            },
+            DistributionFunctionUI::InvertedLogarithmic => {
+                DistributionFunction::InvertedLogarithmic {
+                    a: self.inv_log_a_input.parse::<i64>().unwrap_or(0),
+                    d: self.inv_log_d_input.parse::<u64>().unwrap_or(0),
+                    m: self.inv_log_m_input.parse::<u64>().unwrap_or(0),
+                    n: self.inv_log_n_input.parse::<u64>().unwrap_or(0),
+                    start_moment: Some(self.inv_log_s_input.parse::<u64>().unwrap_or(0)),
+                    o: self.inv_log_o_input.parse::<i64>().unwrap_or(0),
+                    b: self.inv_log_b_input.parse::<u64>().unwrap_or(0),
+                    min_value: Some(self.inv_log_min_value_input.parse::<u64>().unwrap_or(0)),
+                    max_value: Some(self.inv_log_max_value_input.parse::<u64>().unwrap_or(0)),
+                }
             }
         };
         let maybe_perpetual_distribution = if self.enable_perpetual_distribution {
@@ -2838,42 +3237,55 @@ Emits tokens in fixed amounts for specific intervals.
                 PerpetualDistributionIntervalTypeUI::BlockBased => {
                     // parse interval, parse emission
                     // parse distribution function
-                    RewardDistributionType::BlockBasedDistribution(
-                        self.perpetual_dist_interval_input.parse::<u64>().unwrap_or(0),
-                        0, // this field should be removed in Platform because the individual functions define it
-                        distribution_function,
-                    )
+                    RewardDistributionType::BlockBasedDistribution {
+                        interval: self
+                            .perpetual_dist_interval_input
+                            .parse::<u64>()
+                            .unwrap_or(0),
+                        function: distribution_function,
+                    }
                 }
                 PerpetualDistributionIntervalTypeUI::EpochBased => {
-                    RewardDistributionType::EpochBasedDistribution(
-                        self.perpetual_dist_interval_input.parse::<u16>().unwrap_or(0),
-                        0, // this field should be removed in Platform because the individual functions define it
-                        distribution_function,
-                    )
+                    RewardDistributionType::EpochBasedDistribution {
+                        interval: self
+                            .perpetual_dist_interval_input
+                            .parse::<u16>()
+                            .unwrap_or(0),
+                        function: distribution_function,
+                    }
                 }
                 PerpetualDistributionIntervalTypeUI::TimeBased => {
-                    RewardDistributionType::TimeBasedDistribution(
-                        self.perpetual_dist_interval_input.parse::<u64>().unwrap_or(0),
-                        0, // this field should be removed in Platform because the individual functions define it
-                        distribution_function,
-                    )
+                    RewardDistributionType::TimeBasedDistribution {
+                        interval: self
+                            .perpetual_dist_interval_input
+                            .parse::<u64>()
+                            .unwrap_or(0),
+                        function: distribution_function,
+                    }
                 }
-                _ => {
-                    RewardDistributionType::BlockBasedDistribution(0, 0, DistributionFunction::FixedAmount { n: 0 })
-                }
+                _ => RewardDistributionType::BlockBasedDistribution {
+                    interval: 0,
+                    function: DistributionFunction::FixedAmount { amount: 0 },
+                },
             };
 
             let recipient = match self.perpetual_dist_recipient {
-                TokenDistributionRecipientUI::ContractOwner => TokenDistributionRecipient::ContractOwner,
+                TokenDistributionRecipientUI::ContractOwner => {
+                    TokenDistributionRecipient::ContractOwner
+                }
                 TokenDistributionRecipientUI::Identity => {
                     if let Some(id) = self.perpetual_dist_recipient_identity_input.as_ref() {
                         let id_res = Identifier::from_string(id, Encoding::Base58);
                         TokenDistributionRecipient::Identity(id_res.unwrap_or_default())
                     } else {
                         self.token_creator_error_message = Some(
-                            "Invalid base58 identifier for perpetual distribution recipient".to_string(),
+                            "Invalid base58 identifier for perpetual distribution recipient"
+                                .to_string(),
                         );
-                        return Err("Invalid base58 identifier for perpetual distribution recipient".to_string());
+                        return Err(
+                            "Invalid base58 identifier for perpetual distribution recipient"
+                                .to_string(),
+                        );
                     }
                 }
                 TokenDistributionRecipientUI::EvonodesByParticipation => {
@@ -2881,10 +3293,12 @@ Emits tokens in fixed amounts for specific intervals.
                 }
             };
 
-            Some(TokenPerpetualDistribution::V0(TokenPerpetualDistributionV0 {
-                distribution_type: dist_type,
-                distribution_recipient: recipient,
-            }))
+            Some(TokenPerpetualDistribution::V0(
+                TokenPerpetualDistributionV0 {
+                    distribution_type: dist_type,
+                    distribution_recipient: recipient,
+                },
+            ))
         } else {
             None
         };
@@ -2892,32 +3306,53 @@ Emits tokens in fixed amounts for specific intervals.
         // 2) Build the distribution rules structure
         let dist_rules_v0 = TokenDistributionRulesV0 {
             perpetual_distribution: maybe_perpetual_distribution,
-            perpetual_distribution_rules: self.perpetual_distribution_rules.to_change_control_rules("Perpetual Distribution").unwrap(),
+            perpetual_distribution_rules: self
+                .perpetual_distribution_rules
+                .to_change_control_rules("Perpetual Distribution")
+                .unwrap(),
             pre_programmed_distribution: if self.enable_pre_programmed_distribution {
-                let distributions: BTreeMap<u64, BTreeMap<Identifier, u64>> = match self.parse_pre_programmed_distributions() {
-                    Ok(distributions) => distributions.into_iter().map(|(k, v)| (k, std::iter::once(v).collect())).collect(),
-                    Err(err) => {
-                        self.token_creator_error_message = Some(err.clone());
-                        return Err(err.to_string());
-                    }
-                };
+                let distributions: BTreeMap<u64, BTreeMap<Identifier, u64>> =
+                    match self.parse_pre_programmed_distributions() {
+                        Ok(distributions) => distributions
+                            .into_iter()
+                            .map(|(k, v)| (k, std::iter::once(v).collect()))
+                            .collect(),
+                        Err(err) => {
+                            self.token_creator_error_message = Some(err.clone());
+                            return Err(err.to_string());
+                        }
+                    };
 
                 Some(TokenPreProgrammedDistribution::V0(
-                    TokenPreProgrammedDistributionV0 {
-                        distributions,
-                    }
+                    TokenPreProgrammedDistributionV0 { distributions },
                 ))
             } else {
                 None
             },
             new_tokens_destination_identity: if self.new_tokens_destination_identity_enabled {
-                Some(Identifier::from_string(&self.new_tokens_destination_identity, Encoding::Base58).unwrap_or_default())
+                Some(
+                    Identifier::from_string(
+                        &self.new_tokens_destination_identity,
+                        Encoding::Base58,
+                    )
+                    .unwrap_or_default(),
+                )
             } else {
                 None
             },
-            new_tokens_destination_identity_rules: self.new_tokens_destination_identity_rules.to_change_control_rules("New Tokens Destination Identity").unwrap(),
+            new_tokens_destination_identity_rules: self
+                .new_tokens_destination_identity_rules
+                .to_change_control_rules("New Tokens Destination Identity")
+                .unwrap(),
             minting_allow_choosing_destination: self.minting_allow_choosing_destination,
-            minting_allow_choosing_destination_rules: self.minting_allow_choosing_destination_rules.to_change_control_rules("Minting Allow Choosing Destination").unwrap(),
+            minting_allow_choosing_destination_rules: self
+                .minting_allow_choosing_destination_rules
+                .to_change_control_rules("Minting Allow Choosing Destination")
+                .unwrap(),
+            change_direct_purchase_pricing_rules: self
+                .minting_allow_choosing_destination_rules // TODO!
+                .to_change_control_rules("Change Direct Purchase Pricing")
+                .unwrap(),
         };
 
         Ok(dist_rules_v0)
@@ -2929,15 +3364,15 @@ Emits tokens in fixed amounts for specific intervals.
         &mut self,
     ) -> Result<BTreeMap<u64, (Identifier, u64)>, String> {
         let mut map = BTreeMap::new();
+
+        let now = Utc::now();
+
         for (i, entry) in self.pre_programmed_distributions.iter().enumerate() {
-            // Parse timestamp
-            let timestamp = entry.timestamp_str.parse::<u64>().map_err(|_| {
-                format!(
-                    "Row {}: invalid timestamp (expected u64). Got '{}'",
-                    i + 1,
-                    entry.timestamp_str
-                )
-            })?;
+            // Convert days/hours/minutes into a timestamp.
+            let offset = Duration::days(entry.days as i64)
+                + Duration::hours(entry.hours as i64)
+                + Duration::minutes(entry.minutes as i64);
+            let timestamp = (now + offset).timestamp_millis() as u64;
 
             // Parse identity
             let id =
@@ -3009,30 +3444,65 @@ Emits tokens in fixed amounts for specific intervals.
         self.main_control_group_change_authorized_identity = None;
         self.main_control_group_change_authorized_group = None;
         self.main_control_group_input = "".to_string();
+        self.groups_ui = vec![];
+
         self.perpetual_dist_function = DistributionFunctionUI::FixedAmount;
         self.perpetual_dist_type = PerpetualDistributionIntervalTypeUI::None;
         self.perpetual_dist_interval_input = "".to_string();
         self.fixed_amount_input = "".to_string();
-        self.step_dec_amount_input = "".to_string();
-        self.decrease_per_interval_input = "".to_string();
+        self.random_min_input = "".to_string();
+        self.random_max_input = "".to_string();
         self.step_count_input = "".to_string();
-        self.linear_int_a_input = "".to_string();
-        self.linear_int_b_input = "".to_string();
-        self.linear_float_a_input = "".to_string();
-        self.linear_float_b_input = "".to_string();
-        self.poly_int_a_input = "".to_string();
-        self.poly_int_n_input = "".to_string();
-        self.poly_int_b_input = "".to_string();
-        self.poly_float_a_input = "".to_string();
-        self.poly_float_n_input = "".to_string();
-        self.poly_float_b_input = "".to_string();
-        self.exp_a_input = "".to_string();
-        self.exp_b_input = "".to_string();
-        self.exp_c_input = "".to_string();
-        self.log_a_input = "".to_string();
-        self.log_b_input = "".to_string();
-        self.log_c_input = "".to_string();
+        self.decrease_per_interval_numerator_input = "".to_string();
+        self.decrease_per_interval_denominator_input = "".to_string();
+        self.step_decreasing_start_period_offset_input = "".to_string();
+        self.step_decreasing_initial_emission_input = "".to_string();
+        self.step_decreasing_min_value_input = "".to_string();
+        self.step_decreasing_max_interval_count_input = "".to_string();
+        self.step_decreasing_trailing_distribution_interval_amount_input = "".to_string();
         self.stepwise_steps = vec![(String::new(), String::new())];
+        self.linear_int_a_input = "".to_string();
+        self.linear_int_d_input = "".to_string();
+        self.linear_int_start_step_input = "".to_string();
+        self.linear_int_starting_amount_input = "".to_string();
+        self.linear_int_min_value_input = "".to_string();
+        self.linear_int_max_value_input = "".to_string();
+        self.poly_int_a_input = "".to_string();
+        self.poly_int_m_input = "".to_string();
+        self.poly_int_n_input = "".to_string();
+        self.poly_int_d_input = "".to_string();
+        self.poly_int_s_input = "".to_string();
+        self.poly_int_o_input = "".to_string();
+        self.poly_int_b_input = "".to_string();
+        self.poly_int_min_value_input = "".to_string();
+        self.poly_int_max_value_input = "".to_string();
+        self.exp_a_input = "".to_string();
+        self.exp_m_input = "".to_string();
+        self.exp_n_input = "".to_string();
+        self.exp_d_input = "".to_string();
+        self.exp_s_input = "".to_string();
+        self.exp_o_input = "".to_string();
+        self.exp_b_input = "".to_string();
+        self.exp_min_value_input = "".to_string();
+        self.exp_max_value_input = "".to_string();
+        self.log_a_input = "".to_string();
+        self.log_d_input = "".to_string();
+        self.log_m_input = "".to_string();
+        self.log_n_input = "".to_string();
+        self.log_s_input = "".to_string();
+        self.log_o_input = "".to_string();
+        self.log_b_input = "".to_string();
+        self.log_min_value_input = "".to_string();
+        self.log_max_value_input = "".to_string();
+        self.inv_log_a_input = "".to_string();
+        self.inv_log_d_input = "".to_string();
+        self.inv_log_m_input = "".to_string();
+        self.inv_log_n_input = "".to_string();
+        self.inv_log_s_input = "".to_string();
+        self.inv_log_o_input = "".to_string();
+        self.inv_log_b_input = "".to_string();
+        self.inv_log_min_value_input = "".to_string();
+        self.inv_log_max_value_input = "".to_string();
         self.perpetual_dist_recipient = TokenDistributionRecipientUI::ContractOwner;
         self.perpetual_dist_recipient_identity_input = None;
         self.enable_perpetual_distribution = false;
@@ -3041,7 +3511,10 @@ Emits tokens in fixed amounts for specific intervals.
         self.pre_programmed_distributions = Vec::new();
         self.new_tokens_destination_identity_enabled = false;
         self.new_tokens_destination_identity_rules = ChangeControlRulesUI::default();
+        self.new_tokens_destination_identity = "".to_string();
+        self.minting_allow_choosing_destination = false;
         self.minting_allow_choosing_destination_rules = ChangeControlRulesUI::default();
+
         self.show_token_creator_confirmation_popup = false;
         self.token_creator_error_message = None;
     }
@@ -3106,17 +3579,50 @@ Emits tokens in fixed amounts for specific intervals.
         app_action
     }
 
-    fn add_token_to_my_tokens(&self, token: IdentityTokenBalance) {
-        let mut my_tokens = self.my_tokens.lock().unwrap();
-        // Prevent duplicates
-        if !my_tokens
-            .iter()
-            .any(|t| t.token_identifier == token.token_identifier)
+    fn add_token_to_my_tokens(&mut self, token_info: TokenInfo) -> AppAction {
+        let mut action = AppAction::None;
+        let mut tokens = Vec::new();
+        for identity in self
+            .app_context
+            .load_local_qualified_identities()
+            .expect("Expected to load identities")
         {
-            my_tokens.push(token);
+            let identity_token_balance = IdentityTokenBalance {
+                token_identifier: token_info.token_identifier,
+                token_name: token_info.token_name.clone(),
+                identity_id: identity.identity.id(),
+                balance: 0,
+                data_contract_id: token_info.data_contract_id,
+                token_position: token_info.token_position,
+            };
+
+            tokens.push(identity_token_balance);
         }
+        let my_tokens_clone = self.my_tokens.lock().unwrap().clone();
+
+        // Prevent duplicates
+        for token in tokens {
+            if !my_tokens_clone.iter().any(|t| {
+                t.token_identifier == token.token_identifier && t.identity_id == token.identity_id
+            }) {
+                let _ = self.app_context.insert_token(
+                    &token.token_identifier,
+                    &token.token_name,
+                    &token.data_contract_id,
+                    token.token_position,
+                );
+                action |=
+                    AppAction::BackendTask(BackendTask::TokenTask(TokenTask::QueryMyTokenBalances));
+                self.display_message("Added token", MessageType::Success);
+            } else {
+                self.display_message("Token already added", MessageType::Error);
+            }
+        }
+
         // Save the new order
         self.save_current_order();
+
+        action
     }
 
     fn goto_next_search_page(&mut self) -> AppAction {
@@ -3124,7 +3630,7 @@ Emits tokens in fixed amounts for specific intervals.
         if let Some(next_cursor) = self.next_cursors.last().cloned() {
             // set status
             let now = Utc::now().timestamp() as u64;
-            self.token_search_status = TokenSearchStatus::WaitingForResult(now);
+            self.contract_search_status = ContractSearchStatus::WaitingForResult(now);
 
             // push the current one onto “previous” so we can go back
             // if the user is on page N, and we have a nextCursor in next_cursors[N - 1] or so
@@ -3140,7 +3646,7 @@ Emits tokens in fixed amounts for specific intervals.
                 .unwrap_or_default();
 
             return AppAction::BackendTask(BackendTask::TokenTask(
-                TokenTask::QueryTokensByKeywordPage(query_string, Some(next_cursor)),
+                TokenTask::QueryDescriptionsByKeyword(query_string, Some(next_cursor)),
             ));
         }
         AppAction::None
@@ -3151,7 +3657,7 @@ Emits tokens in fixed amounts for specific intervals.
             // Move to (page - 1)
             self.search_current_page -= 1;
             let now = Utc::now().timestamp() as u64;
-            self.token_search_status = TokenSearchStatus::WaitingForResult(now);
+            self.contract_search_status = ContractSearchStatus::WaitingForResult(now);
 
             // The “last” previous_cursors item is the new page’s state
             if let Some(prev_cursor) = self.previous_cursors.pop() {
@@ -3163,7 +3669,7 @@ Emits tokens in fixed amounts for specific intervals.
                     .map(|s| s.clone())
                     .unwrap_or_default();
                 return AppAction::BackendTask(BackendTask::TokenTask(
-                    TokenTask::QueryTokensByKeywordPage(query_string, Some(prev_cursor)),
+                    TokenTask::QueryDescriptionsByKeyword(query_string, Some(prev_cursor)),
                 ));
             }
         }
@@ -3338,7 +3844,10 @@ impl ScreenLike for TokensScreen {
             // Handle messages from Token Creator
             if msg.contains("Successfully registered token contract") {
                 self.token_creator_status = TokenCreatorStatus::Complete;
-            } else if msg.contains("Error registering token contract") {
+            } else if msg.contains("Failed to register token contract") {
+                self.token_creator_status = TokenCreatorStatus::ErrorMessage(msg.to_string());
+                self.token_creator_error_message = Some(msg.to_string());
+            } else if msg.contains("Error building contract V1") {
                 self.token_creator_status = TokenCreatorStatus::ErrorMessage(msg.to_string());
                 self.token_creator_error_message = Some(msg.to_string());
             } else {
@@ -3347,39 +3856,53 @@ impl ScreenLike for TokensScreen {
         }
 
         // Handle messages from querying My Token Balances
+        if self.tokens_subscreen == TokensSubscreen::MyTokens {
+            if msg.contains("Successfully fetched token balances")
+                | msg.contains("Failed to fetch token balances")
+            {
+                self.backend_message = Some((msg.to_string(), msg_type, Utc::now()));
+            }
+        }
         if msg.contains("Successfully fetched token balances")
             | msg.contains("Failed to fetch token balances")
         {
-            self.backend_message = Some((msg.to_string(), msg_type, Utc::now()));
             self.refreshing_status = RefreshingStatus::NotRefreshing;
         }
 
         // Handle messages from Token Search
         if msg.contains("Error fetching tokens") {
-            self.token_search_status = TokenSearchStatus::ErrorMessage(msg.to_string());
+            self.contract_search_status = ContractSearchStatus::ErrorMessage(msg.to_string());
+            self.backend_message = Some((msg.to_string(), msg_type, Utc::now()));
+        }
+        if msg.contains("Added token") {
+            self.backend_message = Some((msg.to_string(), msg_type, Utc::now()));
+        }
+        if msg.contains("Token already added") {
             self.backend_message = Some((msg.to_string(), msg_type, Utc::now()));
         }
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         match backend_task_success_result {
-            BackendTaskSuccessResult::TokensByKeyword(tokens) => {
-                // This might be a “full” result (no paging).
-                let mut srch = self.search_results.lock().unwrap();
-                *srch = tokens;
-                self.token_search_status = TokenSearchStatus::Complete;
-            }
-            BackendTaskSuccessResult::TokensByKeywordPage(tokens, next_cursor) => {
-                // Paged result
-                let mut srch = self.search_results.lock().unwrap();
-                *srch = tokens;
+            BackendTaskSuccessResult::DescriptionsByKeyword(descriptions, next_cursor) => {
+                let mut sr = self.search_results.lock().unwrap();
+                *sr = descriptions;
                 self.search_has_next_page = next_cursor.is_some();
-
                 if let Some(cursor) = next_cursor {
-                    // Save it for “next page” retrieval
                     self.next_cursors.push(cursor);
                 }
-                self.token_search_status = TokenSearchStatus::Complete;
+                self.contract_search_status = ContractSearchStatus::Complete;
+                self.refreshing_status = RefreshingStatus::NotRefreshing;
+            }
+            BackendTaskSuccessResult::ContractsWithDescriptions(contracts_with_descriptions) => {
+                let default_info = (None, vec![]);
+                let info = contracts_with_descriptions
+                    .get(&self.selected_contract_id.unwrap())
+                    .unwrap_or(&default_info);
+
+                self.selected_contract_description = info.0.clone();
+                self.selected_token_infos = info.1.clone();
+                self.refreshing_status = RefreshingStatus::NotRefreshing;
             }
             _ => {}
         }
@@ -3424,6 +3947,28 @@ impl ScreenLike for TokensScreen {
                 vec![
                     ("Tokens", AppAction::Custom("Back to tokens".to_string())),
                     (&format!("{token_name}"), AppAction::None),
+                ],
+                right_buttons.clone(),
+            );
+        } else if let Some(contract_id) = self.selected_contract_id {
+            let contract_name = format!(
+                "{}...",
+                contract_id
+                    .to_string(Encoding::Base58)
+                    .chars()
+                    .take(6)
+                    .collect::<String>()
+            );
+
+            action |= add_top_panel(
+                ctx,
+                &self.app_context,
+                vec![
+                    (
+                        "Tokens",
+                        AppAction::Custom("Back to tokens from contract".to_string()),
+                    ),
+                    (&format!("Contract {contract_name}"), AppAction::None),
                 ],
                 right_buttons.clone(),
             );
@@ -3484,7 +4029,12 @@ impl ScreenLike for TokensScreen {
                     }
                 }
                 TokensSubscreen::SearchTokens => {
-                    action |= self.render_token_search(ui);
+                    if self.selected_contract_id.is_some() {
+                        action |=
+                            self.render_contract_details(ui, &self.selected_contract_id.unwrap());
+                    } else {
+                        action |= self.render_keyword_search(ui);
+                    }
                 }
                 TokensSubscreen::TokenCreator => {
                     action |= self.render_token_creator(ui);
@@ -3559,17 +4109,26 @@ impl ScreenLike for TokensScreen {
                 self.refreshing_status =
                     RefreshingStatus::Refreshing(Utc::now().timestamp() as u64);
             }
-            AppAction::BackendTask(BackendTask::TokenTask(TokenTask::QueryTokensByKeyword(_))) => {
-                self.refreshing_status =
-                    RefreshingStatus::Refreshing(Utc::now().timestamp() as u64);
-            }
             AppAction::SetMainScreen(_) => {
                 self.refreshing_status = RefreshingStatus::NotRefreshing;
+
+                // should put these in a fn
                 self.selected_token_id = None;
+                self.selected_contract_id = None;
+                self.token_search_query = None;
+                self.search_current_page = 1;
+                self.search_has_next_page = false;
+                self.search_results = Arc::new(Mutex::new(vec![]));
+                self.selected_contract_id = None;
+                self.selected_contract_description = None;
+
                 self.reset_token_creator();
             }
             AppAction::Custom(ref s) if s == "Back to tokens" => {
                 self.selected_token_id = None;
+            }
+            AppAction::Custom(ref s) if s == "Back to tokens from contract" => {
+                self.selected_contract_id = None;
             }
             _ => {}
         }
@@ -3610,5 +4169,475 @@ impl ScreenWithWalletUnlock for TokensScreen {
 
     fn error_message(&self) -> Option<&String> {
         self.token_creator_error_message.as_ref()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use crate::database::Database;
+    use crate::model::qualified_identity::encrypted_key_storage::KeyStorage;
+
+    use super::*; use dash_sdk::dpp::dashcore::Network;
+    use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::TokenConfigurationConvention;
+    use dash_sdk::dpp::data_contract::associated_token::token_configuration_localization::accessors::v0::TokenConfigurationLocalizationV0Getters;
+    use dash_sdk::dpp::data_contract::associated_token::token_keeps_history_rules::TokenKeepsHistoryRules;
+    use dash_sdk::dpp::data_contract::group::accessors::v0::GroupV0Getters;
+    use dash_sdk::dpp::data_contract::TokenConfiguration;
+    use dash_sdk::dpp::identifier::Identifier;
+    use dash_sdk::platform::{DataContract, Identity};
+
+    impl ChangeControlRulesUI {
+        /// Sets every field to some dummy/test value to ensure coverage in tests.
+        pub fn set_all_fields_for_testing(&mut self) {
+            self.authorized = AuthorizedActionTakers::Identity(Identifier::default());
+            self.authorized_identity =
+                Some("ACMnPwQZcH3RP9atgkmvtmN45QrVcYvh5cmUYARHBTu9".to_owned());
+            self.authorized_group = None;
+
+            self.admin_action_takers = AuthorizedActionTakers::Identity(Identifier::default());
+            self.admin_identity = Some("CCMnPwQZcH3RP9atgkmvtmN45QrVcYvh5cmUYARHBTu9".to_owned());
+            self.admin_group = None;
+
+            self.changing_authorized_action_takers_to_no_one_allowed = true;
+            self.changing_admin_action_takers_to_no_one_allowed = true;
+            self.self_changing_admin_action_takers_allowed = true;
+        }
+    }
+
+    #[test]
+    fn test_token_creator_ui_builds_correct_contract() {
+        let db_file_path = "test_db";
+        let db = Arc::new(Database::new(&db_file_path).unwrap());
+        db.initialize(Path::new(&db_file_path)).unwrap();
+
+        let app_context =
+            AppContext::new(Network::Regtest, db, None).expect("Expected to create AppContext");
+        let mut token_creator_ui = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
+
+        // Identity selection
+        let test_identity_id = Identifier::from_string(
+            "BCMnPwQZcH3RP9atgkmvtmN45QrVcYvh5cmUYARHBTu9",
+            Encoding::Base58,
+        )
+        .unwrap();
+        let mock = Identity::create_basic_identity(test_identity_id, app_context.platform_version)
+            .expect("Expected to create Identity");
+        let mock_identity = QualifiedIdentity {
+            identity: mock,
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: crate::model::qualified_identity::IdentityType::User,
+            alias: None,
+            private_keys: KeyStorage {
+                private_keys: BTreeMap::new(),
+            },
+            dpns_names: vec![],
+            associated_wallets: BTreeMap::new(),
+            wallet_index: None,
+            top_ups: BTreeMap::new(),
+        };
+
+        token_creator_ui.selected_identity = Some(mock_identity);
+
+        // Key selection
+        let mock_key = IdentityPublicKey::random_key(0, None, app_context.platform_version);
+        token_creator_ui.selected_key = Some(mock_key);
+
+        // Basic token info
+        token_creator_ui.token_name_input = "AcmeCoin".to_string();
+        token_creator_ui.base_supply_input = "5000000".to_string();
+        token_creator_ui.max_supply_input = "10000000".to_string();
+        token_creator_ui.decimals_input = "8".to_string();
+        token_creator_ui.start_as_paused_input = true;
+        token_creator_ui.token_keeps_history = true;
+        token_creator_ui.should_capitalize_input = true;
+
+        // Main control group
+        token_creator_ui.main_control_group_input = "2".to_string();
+
+        // Each action's rules
+        token_creator_ui
+            .manual_minting_rules
+            .set_all_fields_for_testing();
+        token_creator_ui
+            .manual_burning_rules
+            .set_all_fields_for_testing();
+        token_creator_ui.freeze_rules.set_all_fields_for_testing();
+        token_creator_ui.unfreeze_rules.set_all_fields_for_testing();
+        token_creator_ui
+            .destroy_frozen_funds_rules
+            .set_all_fields_for_testing();
+        token_creator_ui
+            .emergency_action_rules
+            .set_all_fields_for_testing();
+        token_creator_ui
+            .max_supply_change_rules
+            .set_all_fields_for_testing();
+        token_creator_ui
+            .conventions_change_rules
+            .set_all_fields_for_testing();
+
+        // main_control_group_change_authorized
+        token_creator_ui.authorized_main_control_group_change = AuthorizedActionTakers::Group(99);
+        token_creator_ui.main_control_group_change_authorized_group = Some("99".to_string());
+
+        // -------------------------------------------------
+        // Distribution
+        // -------------------------------------------------
+        // Perpetual distribution
+        token_creator_ui.enable_perpetual_distribution = true;
+        token_creator_ui.perpetual_dist_type = PerpetualDistributionIntervalTypeUI::BlockBased;
+        token_creator_ui.perpetual_dist_interval_input = "42".to_string();
+        token_creator_ui.perpetual_dist_function = DistributionFunctionUI::FixedAmount;
+        token_creator_ui.fixed_amount_input = "12345".to_string();
+        token_creator_ui.perpetual_dist_recipient = TokenDistributionRecipientUI::Identity;
+        token_creator_ui.perpetual_dist_recipient_identity_input =
+            Some("DCMnPwQZcH3RP9atgkmvtmN45QrVcYvh5cmUYARHBTu9".to_string());
+        token_creator_ui
+            .perpetual_distribution_rules
+            .set_all_fields_for_testing();
+
+        // new_tokens_destination_identity
+        token_creator_ui.new_tokens_destination_identity_enabled = true;
+        token_creator_ui.new_tokens_destination_identity =
+            "GCMnPwQZcH3RP9atgkmvtmN45QrVcYvh5cmUYARHBTu9".to_string();
+        token_creator_ui
+            .new_tokens_destination_identity_rules
+            .set_all_fields_for_testing();
+
+        // minting_allow_choosing_destination
+        token_creator_ui.minting_allow_choosing_destination = true;
+        token_creator_ui
+            .minting_allow_choosing_destination_rules
+            .set_all_fields_for_testing();
+
+        // -------------------------------------------------
+        // Groups
+        // -------------------------------------------------
+        // We'll define 2 groups for testing: positions 2 (main) and 7
+        token_creator_ui.groups_ui = vec![
+            GroupConfigUI {
+                group_position_str: "2".to_string(),
+                required_power_str: "2".to_string(),
+                members: vec![
+                    GroupMemberUI {
+                        identity_str: "HCMnPwQZcH3RP9atgkmvtmN45QrVcYvh5cmUYARHBTu9".to_string(),
+                        power_str: "5".to_string(),
+                    },
+                    GroupMemberUI {
+                        identity_str: "JCMnPwQZcH3RP9atgkmvtmN45QrVcYvh5cmUYARHBTu9".to_string(),
+                        power_str: "5".to_string(),
+                    },
+                ],
+            },
+            GroupConfigUI {
+                group_position_str: "7".to_string(),
+                required_power_str: "1".to_string(),
+                members: vec![],
+            },
+        ];
+
+        // -------------------------------------------------
+        // 3) Parse arguments, then build the DataContract
+        // -------------------------------------------------
+        let build_args = token_creator_ui
+            .parse_token_build_args()
+            .expect("parse_token_build_args should succeed");
+        let data_contract = app_context
+            .build_data_contract_v1_with_one_token(
+                build_args.identity_id,
+                build_args.token_name,
+                build_args.should_capitalize,
+                build_args.decimals,
+                build_args.base_supply,
+                build_args.max_supply,
+                build_args.start_paused,
+                build_args.keeps_history,
+                build_args.main_control_group,
+                build_args.manual_minting_rules,
+                build_args.manual_burning_rules,
+                build_args.freeze_rules,
+                build_args.unfreeze_rules,
+                build_args.destroy_frozen_funds_rules,
+                build_args.emergency_action_rules,
+                build_args.max_supply_change_rules,
+                build_args.conventions_change_rules,
+                build_args.main_control_group_change_authorized,
+                build_args.distribution_rules,
+                build_args.groups,
+            )
+            .expect("Contract build failed");
+
+        // -------------------------------------------------
+        // 4) Validate the result
+        // -------------------------------------------------
+        // Unwrap it to the V1
+        let DataContract::V1(contract_v1) = data_contract else {
+            panic!("Expected DataContract::V1");
+        };
+
+        // A) Check the top-level fields
+        assert_eq!(contract_v1.version, 1);
+        assert!(
+            contract_v1.tokens.len() == 1,
+            "We expected exactly one token config"
+        );
+
+        // B) Check the token config
+        let (token_pos, token_config) = contract_v1.tokens.iter().next().unwrap();
+        assert_eq!(*token_pos as u16, 0, "Should be at position 0 by default");
+
+        let TokenConfiguration::V0(token_v0) = token_config;
+        let TokenConfigurationConvention::V0(conv_v0) = &token_v0.conventions;
+
+        assert_eq!(conv_v0.decimals, 8, "Decimals from UI not matched");
+        assert_eq!(
+            conv_v0.localizations["en"].singular_form(),
+            "AcmeCoin",
+            "Token name did not match"
+        );
+        assert_eq!(
+            conv_v0.localizations["en"].plural_form(),
+            "AcmeCoins",
+            "Plural form not automatically set in test"
+        );
+        let keeps_history_rules = &token_v0.keeps_history;
+        let TokenKeepsHistoryRules::V0(keeps_history_v0) = keeps_history_rules;
+        assert_eq!(keeps_history_v0.keeps_transfer_history, true);
+        assert_eq!(keeps_history_v0.keeps_freezing_history, true);
+        assert_eq!(token_v0.base_supply, 5_000_000);
+        assert_eq!(token_v0.max_supply, Some(10_000_000));
+        assert_eq!(token_v0.start_as_paused, true);
+        assert_eq!(
+            token_v0.main_control_group,
+            Some(2),
+            "Parsed main control group mismatch"
+        );
+
+        // C) Check each ChangeControlRules field
+        assert_eq!(
+            *token_v0
+                .manual_minting_rules
+                .authorized_to_make_change_action_takers(),
+            token_creator_ui.manual_minting_rules.authorized
+        );
+        // ... etc.
+
+        // D) Check main_control_group_can_be_modified
+        match token_v0.main_control_group_can_be_modified {
+            AuthorizedActionTakers::Group(group_id) => {
+                assert_eq!(group_id, 99, "Expected group 99 from UI");
+            }
+            _ => panic!("Expected group(99) from the UI but got something else"),
+        }
+
+        // E) Check distribution rules
+        let TokenDistributionRules::V0(dist_rules_v0) = &token_v0.distribution_rules;
+        // -- Perpetual
+        let Some(TokenPerpetualDistribution::V0(perp_v0)) = &dist_rules_v0.perpetual_distribution
+        else {
+            panic!("Expected Some(TokenPerpetualDistribution::V0)");
+        };
+        match &perp_v0.distribution_type {
+            RewardDistributionType::BlockBasedDistribution { interval, function } => {
+                assert_eq!(*interval, 42, "Interval mismatch");
+                match function {
+                    DistributionFunction::FixedAmount { amount } => {
+                        assert_eq!(*amount, 12345, "Fixed amount mismatch");
+                    }
+                    _ => panic!("Expected DistributionFunction::FixedAmount"),
+                }
+            }
+            _ => panic!("Expected a BlockBasedDistribution"),
+        }
+        match &perp_v0.distribution_recipient {
+            TokenDistributionRecipient::Identity(rec_id) => {
+                assert_eq!(
+                    rec_id.to_string(Encoding::Base58),
+                    "DCMnPwQZcH3RP9atgkmvtmN45QrVcYvh5cmUYARHBTu9"
+                );
+            }
+            _ => panic!("Expected distribution recipient Identity(...)"),
+        }
+
+        // -- New tokens destination
+        let Some(new_dest_id) = &dist_rules_v0.new_tokens_destination_identity else {
+            panic!("Expected new_tokens_destination_identity to be Some(...)");
+        };
+        assert_eq!(
+            new_dest_id.to_string(Encoding::Base58),
+            "GCMnPwQZcH3RP9atgkmvtmN45QrVcYvh5cmUYARHBTu9"
+        );
+        assert_eq!(dist_rules_v0.minting_allow_choosing_destination, true);
+
+        // F) Check the Groups
+        //    (Positions 2 and 7, from above)
+        assert_eq!(contract_v1.groups.len(), 2, "We added two groups in the UI");
+        let group2 = contract_v1.groups.get(&2).expect("Expected group pos=2");
+        assert_eq!(
+            group2.required_power(),
+            2,
+            "Group #2 required_power mismatch"
+        );
+        let members = &group2.members();
+        assert_eq!(members.len(), 2);
+
+        let group7 = contract_v1.groups.get(&7).expect("Expected group pos=7");
+        assert_eq!(group7.required_power(), 1);
+        assert_eq!(group7.members().len(), 0);
+    }
+
+    #[test]
+    fn test_distribution_function_random() {
+        let db_file_path = "test_db";
+        let db = Arc::new(Database::new(&db_file_path).unwrap());
+        db.initialize(Path::new(&db_file_path)).unwrap();
+
+        let app_context =
+            AppContext::new(Network::Regtest, db, None).expect("Expected to create AppContext");
+        let mut token_creator_ui = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
+
+        // Identity selection
+        let test_identity_id = Identifier::from_string(
+            "BCMnPwQZcH3RP9atgkmvtmN45QrVcYvh5cmUYARHBTu9",
+            Encoding::Base58,
+        )
+        .unwrap();
+        let mock = Identity::create_basic_identity(test_identity_id, app_context.platform_version)
+            .expect("Expected to create Identity");
+        let mock_identity = QualifiedIdentity {
+            identity: mock,
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: crate::model::qualified_identity::IdentityType::User,
+            alias: None,
+            private_keys: KeyStorage {
+                private_keys: BTreeMap::new(),
+            },
+            dpns_names: vec![],
+            associated_wallets: BTreeMap::new(),
+            wallet_index: None,
+            top_ups: BTreeMap::new(),
+        };
+
+        token_creator_ui.selected_identity = Some(mock_identity);
+
+        // Key selection
+        let mock_key = IdentityPublicKey::random_key(0, None, app_context.platform_version);
+        token_creator_ui.selected_key = Some(mock_key);
+
+        token_creator_ui.token_name_input = "TestToken".to_owned();
+
+        // Enable perpetual distribution, select Random
+        token_creator_ui.enable_perpetual_distribution = true;
+        token_creator_ui.perpetual_dist_type = PerpetualDistributionIntervalTypeUI::TimeBased;
+        token_creator_ui.perpetual_dist_interval_input = "60000".to_string();
+        token_creator_ui.perpetual_dist_function = DistributionFunctionUI::Random;
+        token_creator_ui.random_min_input = "100".to_string();
+        token_creator_ui.random_max_input = "200".to_string();
+
+        // Parse + build
+        let build_args = token_creator_ui
+            .parse_token_build_args()
+            .expect("Should parse");
+        let data_contract = app_context
+            .build_data_contract_v1_with_one_token(
+                build_args.identity_id,
+                build_args.token_name,
+                build_args.should_capitalize,
+                build_args.decimals,
+                build_args.base_supply,
+                build_args.max_supply,
+                build_args.start_paused,
+                build_args.keeps_history,
+                build_args.main_control_group,
+                build_args.manual_minting_rules,
+                build_args.manual_burning_rules,
+                build_args.freeze_rules,
+                build_args.unfreeze_rules,
+                build_args.destroy_frozen_funds_rules,
+                build_args.emergency_action_rules,
+                build_args.max_supply_change_rules,
+                build_args.conventions_change_rules,
+                build_args.main_control_group_change_authorized,
+                build_args.distribution_rules,
+                build_args.groups,
+            )
+            .expect("Should build successfully");
+        let contract_v1 = data_contract.as_v1().expect("Expected DataContract::V1");
+
+        let TokenConfiguration::V0(ref token_v0) = contract_v1.tokens[&(0u16.into())];
+        let TokenDistributionRules::V0(dist_rules_v0) = &token_v0.distribution_rules;
+        let Some(TokenPerpetualDistribution::V0(perp_v0)) = &dist_rules_v0.perpetual_distribution
+        else {
+            panic!("Expected a perpetual distribution");
+        };
+
+        match &perp_v0.distribution_type {
+            RewardDistributionType::TimeBasedDistribution { interval, function } => {
+                assert_eq!(*interval, 60000, "Expected 60s (in ms)");
+                match function {
+                    DistributionFunction::Random { min, max } => {
+                        assert_eq!(*min, 100);
+                        assert_eq!(*max, 200);
+                    }
+                    _ => panic!("Expected DistributionFunction::Random"),
+                }
+            }
+            _ => panic!("Expected TimeBasedDistribution"),
+        }
+    }
+
+    #[test]
+    fn test_parse_token_build_args_fails_with_empty_token_name() {
+        let db_file_path = "test_db";
+        let db = Arc::new(Database::new(&db_file_path).unwrap());
+        db.initialize(Path::new(&db_file_path)).unwrap();
+
+        let app_context =
+            AppContext::new(Network::Regtest, db, None).expect("Expected to create AppContext");
+        let mut token_creator_ui = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
+
+        // Identity selection
+        let test_identity_id = Identifier::from_string(
+            "BCMnPwQZcH3RP9atgkmvtmN45QrVcYvh5cmUYARHBTu9",
+            Encoding::Base58,
+        )
+        .unwrap();
+        let mock = Identity::create_basic_identity(test_identity_id, app_context.platform_version)
+            .expect("Expected to create Identity");
+        let mock_identity = QualifiedIdentity {
+            identity: mock,
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: crate::model::qualified_identity::IdentityType::User,
+            alias: None,
+            private_keys: KeyStorage {
+                private_keys: BTreeMap::new(),
+            },
+            dpns_names: vec![],
+            associated_wallets: BTreeMap::new(),
+            wallet_index: None,
+            top_ups: BTreeMap::new(),
+        };
+
+        token_creator_ui.selected_identity = Some(mock_identity);
+
+        // Key selection
+        let mock_key = IdentityPublicKey::random_key(0, None, app_context.platform_version);
+        token_creator_ui.selected_key = Some(mock_key);
+
+        // Intentionally leave token_name_input empty
+        token_creator_ui.token_name_input = "".to_owned();
+
+        let err = token_creator_ui
+            .parse_token_build_args()
+            .expect_err("Should fail if token name is empty");
+        assert_eq!(err, "Please enter a token name");
     }
 }

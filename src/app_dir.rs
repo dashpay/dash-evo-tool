@@ -1,7 +1,7 @@
+use dash_sdk::dpp::dashcore::Network;
 use directories::{ProjectDirs, UserDirs};
 use std::fs;
 use std::path::PathBuf;
-use dash_sdk::dpp::dashcore::Network;
 
 const QUALIFIER: &str = ""; // Typically empty on macOS and Linux
 const ORGANIZATION: &str = "";
@@ -43,7 +43,10 @@ pub fn core_user_data_dir_path() -> Result<PathBuf, std::io::Error> {
     }
 }
 
-pub fn core_cookie_path(network: Network, devnet_name: &Option<String>) -> Result<PathBuf, std::io::Error> {
+pub fn core_cookie_path(
+    network: Network,
+    devnet_name: &Option<String>,
+) -> Result<PathBuf, std::io::Error> {
     core_user_data_dir_path().map(|path| {
         let network_dir = match network {
             Network::Dash => "",

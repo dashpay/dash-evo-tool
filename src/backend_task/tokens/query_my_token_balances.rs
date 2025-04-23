@@ -3,10 +3,11 @@
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::context::AppContext;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::tokens::identity_token_balances::{
     IdentityTokenBalances, IdentityTokenBalancesQuery,
 };
-use dash_sdk::platform::FetchMany;
+use dash_sdk::platform::{FetchMany, Identifier};
 use dash_sdk::{dpp::balances::credits::TokenAmount, Sdk};
 use tokio::sync::mpsc;
 
@@ -20,6 +21,12 @@ impl AppContext {
         let identities = self
             .load_local_qualified_identities()
             .map_err(|e| format!("Failed to load identities: {e}"))?;
+
+        if identities.is_empty() {
+            return Ok(BackendTaskSuccessResult::Message(
+                "No identities found".to_string(),
+            ));
+        }
 
         for identity in identities {
             let identity_id = identity.identity.id();
@@ -37,10 +44,14 @@ impl AppContext {
                 })
                 .collect::<Vec<_>>();
 
-            let token_ids = token_infos
+            let token_ids: Vec<Identifier> = token_infos
                 .iter()
                 .map(|(token_id, _, _)| token_id.clone())
                 .collect();
+
+            if token_ids.is_empty() {
+                continue;
+            }
 
             let query = IdentityTokenBalancesQuery {
                 identity_id,
@@ -66,6 +77,7 @@ impl AppContext {
                             .expect("Expected to find associated contract and position");
                         if let Err(e) = self.db.insert_identity_token_balance(
                             token_id,
+                            &token_id.to_string(Encoding::Base58),
                             &identity_id,
                             balance,
                             &associated_contract_and_position.1,
@@ -73,18 +85,18 @@ impl AppContext {
                             self,
                         ) {
                             return Err(format!(
-                                "Failed to insert token balance into local database: {:?}",
-                                e
+                                "Failed to insert token balance into local database: {}",
+                                e.to_string()
                             ));
                         };
                         sender
                             .send(TaskResult::Refresh)
                             .await
-                            .map_err(|e| format!("Failed to send refresh message after successful Platform query and local database insert: {:?}", e))?;
+                            .map_err(|e| format!("Failed to send refresh message after successful Platform query and local database insert: {}", e.to_string()))?;
                     }
                 }
                 Err(e) => {
-                    return Err(format!("Failed to query token balances: {:?}", e));
+                    return Err(format!("Failed to query token balances: {}", e.to_string()));
                 }
             }
         }

@@ -5,10 +5,13 @@ use dash_sdk::{
         data_contract::{
             associated_token::{
                 token_configuration::v0::TokenConfigurationV0,
-                token_configuration_convention::{
-                    v0::TokenConfigurationLocalizationsV0, TokenConfigurationConvention,
+                token_configuration_convention::TokenConfigurationConvention,
+                token_configuration_localization::{
+                    v0::TokenConfigurationLocalizationV0, TokenConfigurationLocalization,
                 },
+                token_distribution_key::TokenDistributionType,
                 token_distribution_rules::TokenDistributionRules,
+                token_keeps_history_rules::{v0::TokenKeepsHistoryRulesV0, TokenKeepsHistoryRules},
             },
             change_control_rules::{
                 authorized_action_takers::AuthorizedActionTakers, ChangeControlRules,
@@ -21,13 +24,17 @@ use dash_sdk::{
         identity::accessors::IdentityGettersV0,
         ProtocolError,
     },
-    platform::{DataContract, Identifier, IdentityPublicKey},
+    platform::{
+        proto::get_documents_request::get_documents_request_v0::Start, DataContract, Identifier,
+        IdentityPublicKey,
+    },
     Sdk,
 };
 use std::{collections::BTreeMap, sync::Arc};
 use tokio::sync::mpsc;
 
 mod burn_tokens;
+mod claim_tokens;
 mod destroy_frozen_funds;
 mod freeze_tokens;
 mod mint_tokens;
@@ -69,8 +76,7 @@ pub(crate) enum TokenTask {
         groups: BTreeMap<u16, Group>,
     },
     QueryMyTokenBalances,
-    QueryTokensByKeyword(String),
-    QueryTokensByKeywordPage(String, Option<Identifier>),
+    QueryDescriptionsByKeyword(String, Option<Start>),
     MintTokens {
         sending_identity: QualifiedIdentity,
         data_contract: DataContract,
@@ -125,6 +131,13 @@ pub(crate) enum TokenTask {
         actor_identity: QualifiedIdentity,
         data_contract: DataContract,
         token_position: u16,
+        signing_key: IdentityPublicKey,
+    },
+    ClaimTokens {
+        data_contract: DataContract,
+        token_position: u16,
+        actor_identity: QualifiedIdentity,
+        distribution_type: TokenDistributionType,
         signing_key: IdentityPublicKey,
     },
 }
@@ -185,7 +198,6 @@ impl AppContext {
                     )
                     .map_err(|e| format!("Error building contract V1: {e}"))?;
 
-                // 2) Call your existing function that registers the contract
                 self.register_data_contract(
                     data_contract,
                     token_name.clone(),
@@ -205,13 +217,6 @@ impl AppContext {
                 .query_my_token_balances(sdk, sender)
                 .await
                 .map_err(|e| format!("Failed to fetch token balances: {e}")),
-            TokenTask::QueryTokensByKeyword(_query) => {
-                // Placeholder
-                Ok(BackendTaskSuccessResult::Message("QueryTokens".to_string()))
-
-                // Actually do this
-                // self.query_tokens(query, sdk, sender).await
-            }
             TokenTask::MintTokens {
                 sending_identity,
                 data_contract,
@@ -232,15 +237,10 @@ impl AppContext {
                 )
                 .await
                 .map_err(|e| format!("Failed to mint tokens: {e}")),
-            TokenTask::QueryTokensByKeywordPage(_query, _cursor) => {
-                // Placeholder
-                Ok(BackendTaskSuccessResult::Message(
-                    "QueryTokensByKeywordPage".to_string(),
-                ))
-
-                // Actually do this
-                // self.query_tokens_page(query, cursor, sdk, sender).await
-            }
+            TokenTask::QueryDescriptionsByKeyword(keyword, cursor) => self
+                .query_descriptions_by_keyword(&keyword, cursor, sdk)
+                .await
+                .map_err(|e| format!("Failed to query tokens by keyword: {e}")),
             TokenTask::TransferTokens {
                 sending_identity,
                 recipient_id,
@@ -365,6 +365,23 @@ impl AppContext {
                 )
                 .await
                 .map_err(|e| format!("Failed to resume tokens: {e}")),
+            TokenTask::ClaimTokens {
+                data_contract,
+                token_position,
+                actor_identity,
+                distribution_type,
+                signing_key,
+            } => self
+                .claim_tokens(
+                    data_contract,
+                    *token_position,
+                    actor_identity,
+                    *distribution_type,
+                    signing_key.clone(),
+                    sdk,
+                )
+                .await
+                .map_err(|e| format!("Failed to claim tokens: {e}")),
         }
     }
 
@@ -403,29 +420,47 @@ impl AppContext {
             version: 1,
             owner_id,
             document_types: BTreeMap::new(),
-            metadata: None,
             config: DataContractConfig::default_for_version(self.platform_version)?,
             schema_defs: None,
-            groups: BTreeMap::new(),
+            groups,
             tokens: BTreeMap::new(),
+            keywords: Vec::new(),
+            created_at: None,
+            updated_at: None,
+            created_at_block_height: None,
+            updated_at_block_height: None,
+            created_at_epoch: None,
+            updated_at_epoch: None,
+            description: None,
         };
 
         // 2) Build a single TokenConfiguration in V0 format
         let mut token_config_v0 = TokenConfigurationV0::default_most_restrictive();
+
         let TokenConfigurationConvention::V0(ref mut conv_v0) = token_config_v0.conventions;
         conv_v0.decimals = decimals as u16;
         conv_v0.localizations.insert(
             "en".to_string(),
-            TokenConfigurationLocalizationsV0 {
+            TokenConfigurationLocalization::V0(TokenConfigurationLocalizationV0 {
                 should_capitalize,
                 singular_form: token_name.to_string(),
                 plural_form: format!("{}s", token_name),
-            },
+            }),
         );
+
+        let keeps_history_rules = TokenKeepsHistoryRules::V0(TokenKeepsHistoryRulesV0 {
+            keeps_transfer_history: keeps_history,
+            keeps_minting_history: keeps_history,
+            keeps_burning_history: keeps_history,
+            keeps_freezing_history: keeps_history,
+            keeps_direct_pricing_history: keeps_history,
+            keeps_direct_purchase_history: keeps_history,
+        });
+
         token_config_v0.base_supply = base_supply;
         token_config_v0.max_supply = max_supply;
         token_config_v0.start_as_paused = start_as_paused;
-        token_config_v0.keeps_history = keeps_history;
+        token_config_v0.keeps_history = keeps_history_rules;
         token_config_v0.main_control_group = main_control_group;
         token_config_v0.manual_minting_rules = manual_minting_rules;
         token_config_v0.manual_burning_rules = manual_burning_rules;
@@ -438,15 +473,12 @@ impl AppContext {
         token_config_v0.main_control_group_can_be_modified = main_control_group_change_authorized;
         token_config_v0.distribution_rules = distribution_rules;
 
-        // Wrap in the enum
         let token_config = TokenConfiguration::V0(token_config_v0);
 
         // 7) Insert this token config at position 0
         contract_v1
             .tokens
             .insert(TokenContractPosition::from(0u16), token_config);
-
-        contract_v1.groups = groups;
 
         // 8) Wrap the whole struct in DataContract::V1
         Ok(DataContract::V1(contract_v1))

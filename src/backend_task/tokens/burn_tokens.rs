@@ -34,7 +34,7 @@ impl AppContext {
         let state_transition = builder
             .sign(sdk, &signing_key, owner_identity, self.platform_version)
             .await
-            .map_err(|e| format!("Error signing Burn Tokens transition: {:?}", e))?;
+            .map_err(|e| format!("Error signing Burn Tokens transition: {}", e.to_string()))?;
 
         // Broadcast and wait
         let _proof_result = state_transition

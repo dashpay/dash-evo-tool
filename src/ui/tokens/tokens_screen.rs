@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex, RwLock};
 
 use chrono::{DateTime, Duration, Utc};
@@ -516,7 +516,7 @@ pub struct DistributionEntry {
     pub amount_str: String,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum TokenNameLanguage {
     English,
     Mandarin,
@@ -909,7 +909,7 @@ impl TokensScreen {
             show_token_creator_confirmation_popup: false,
             token_creator_status: TokenCreatorStatus::NotStarted,
             token_creator_error_message: None,
-            token_names_input: vec![],
+            token_names_input: vec![(String::new(), TokenNameLanguage::English)],
             contract_keywords_input: String::new(),
             token_description_input: String::new(),
             should_capitalize_input: false,
@@ -1984,10 +1984,11 @@ impl TokensScreen {
                         .spacing([16.0, 8.0]) // Horizontal, vertical spacing
                         .show(ui, |ui| {
                             // Row 1: Token Name
+                            let mut token_to_remove: Option<u8> = None;
                             for i in 0..self.token_names_input.len() {
                                 ui.label("Token Name (singular):");
                                 ui.text_edit_singleline(&mut self.token_names_input[i].0);
-                                egui::ComboBox::from_id_salt("token_name_language_selector")
+                                egui::ComboBox::from_id_salt(format!("token_name_language_selector_{}", i))
                                     .selected_text(format!(
                                         "{}",
                                         self.token_names_input[i].1.to_string()
@@ -2094,7 +2095,20 @@ impl TokensScreen {
                                             "Tamil",
                                         );
                                     });
+                                ui.horizontal(|ui| {
+                                    if ui.button("+").clicked() {
+                                        // Add a new token name input
+                                        self.token_names_input.push((String::new(), TokenNameLanguage::English));
+                                    }
+                                    if ui.button("-").clicked() {
+                                        token_to_remove = Some(i.try_into().expect("Failed to convert index"));
+                                    }
+                                });
                                 ui.end_row();
+                            }
+
+                            if let Some(token) = token_to_remove {
+                                self.token_names_input.remove(token.into());
                             }
 
                             // Row 2: Base Supply
@@ -3339,6 +3353,17 @@ Emits tokens in fixed amounts for specific intervals.
         if self.token_names_input.is_empty() {
             return Err("Please enter a token name".to_string());
         }
+        // If any name languages are duplicated, return an error
+        let mut seen_languages = HashSet::new();
+        for name_with_language in self.token_names_input.iter() {
+            if seen_languages.contains(&name_with_language.1) {
+                return Err(format!(
+                    "Duplicate token name language: {:?}",
+                    name_with_language.1
+                ));
+            }
+            seen_languages.insert(name_with_language.1);
+        }
         let mut token_names: Vec<(String, String)> = Vec::new();
         for name_with_language in self.token_names_input.iter() {
             let language = match name_with_language.1 {
@@ -3368,11 +3393,14 @@ Emits tokens in fixed amounts for specific intervals.
         }
 
         // Remove whitespace and parse the comma separated string into a vec
-        let contract_keywords = self
-            .contract_keywords_input
-            .split(',')
-            .map(|s| s.trim().to_string())
-            .collect::<Vec<String>>();
+        let contract_keywords = if self.contract_keywords_input.trim().is_empty() {
+            Vec::new()
+        } else {
+            self.contract_keywords_input
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .collect::<Vec<String>>()
+        };
         let token_description = if self.token_description_input.len() > 0 {
             Some(self.token_description_input.clone())
         } else {
@@ -3838,7 +3866,7 @@ Emits tokens in fixed amounts for specific intervals.
         self.selected_identity = None;
         self.selected_key = None;
         self.token_creator_status = TokenCreatorStatus::NotStarted;
-        self.token_names_input = vec![];
+        self.token_names_input = vec![(String::new(), TokenNameLanguage::English)];
         self.contract_keywords_input = "".to_string();
         self.token_description_input = "".to_string();
         self.decimals_input = "8".to_string();

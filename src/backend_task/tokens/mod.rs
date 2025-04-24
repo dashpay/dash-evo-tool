@@ -57,6 +57,7 @@ pub(crate) enum TokenTask {
         signing_key: IdentityPublicKey,
         token_name: String,
         contract_keywords: Vec<String>,
+        token_description: Option<String>,
         should_capitalize: bool,
         decimals: u16,
         base_supply: TokenAmount,
@@ -167,6 +168,7 @@ impl AppContext {
                 signing_key,
                 token_name,
                 contract_keywords,
+                token_description,
                 should_capitalize,
                 decimals,
                 base_supply,
@@ -191,6 +193,7 @@ impl AppContext {
                         identity.identity.id().clone(),
                         token_name.clone(),
                         contract_keywords.to_vec(),
+                        token_description.clone(),
                         *should_capitalize,
                         *decimals,
                         *base_supply,
@@ -441,6 +444,7 @@ impl AppContext {
         owner_id: Identifier,
         token_name: String,
         contract_keywords: Vec<String>,
+        token_description: Option<String>,
         should_capitalize: bool,
         decimals: u16,
         base_supply: u64,
@@ -518,6 +522,7 @@ impl AppContext {
         token_config_v0.conventions_change_rules = conventions_change_rules;
         token_config_v0.main_control_group_can_be_modified = main_control_group_change_authorized;
         token_config_v0.distribution_rules = distribution_rules;
+        token_config_v0.description = token_description;
 
         let token_config = TokenConfiguration::V0(token_config_v0);
 

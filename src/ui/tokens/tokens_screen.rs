@@ -595,6 +595,7 @@ pub struct TokenBuildArgs {
 
     pub token_name: String,
     pub contract_keywords: Vec<String>,
+    pub token_description: Option<String>,
     pub should_capitalize: bool,
     pub decimals: u16,
     pub base_supply: u64,
@@ -668,6 +669,7 @@ pub struct TokensScreen {
     show_password: bool,
     token_name_input: String,
     contract_keywords_input: String,
+    token_description_input: String,
     should_capitalize_input: bool,
     decimals_input: String,
     base_supply_input: String,
@@ -879,6 +881,7 @@ impl TokensScreen {
             token_creator_error_message: None,
             token_name_input: String::new(),
             contract_keywords_input: String::new(),
+            token_description_input: String::new(),
             should_capitalize_input: false,
             decimals_input: 8.to_string(),
             base_supply_input: TokenConfigurationV0::default_most_restrictive()
@@ -1961,13 +1964,18 @@ impl TokensScreen {
                             ui.end_row();
 
                             // Row 3: Max Supply
-                            ui.label("Max Supply (optional):");
+                            ui.label("Max Supply:");
                             ui.text_edit_singleline(&mut self.max_supply_input);
                             ui.end_row();
 
                             // Row 4: Contract Keywords
-                            ui.label("Contract Keywords (optional, comma separated):");
+                            ui.label("Contract Keywords (comma separated):");
                             ui.text_edit_singleline(&mut self.contract_keywords_input);
+                            ui.end_row();
+
+                            // Row 5: Token Description
+                            ui.label("Token Description (max 100 chars):");
+                            ui.text_edit_multiline(&mut self.token_description_input);
                             ui.end_row();
                         });
 
@@ -2096,8 +2104,6 @@ impl TokensScreen {
                             "Enable Perpetual Distribution",
                         ).clicked() {
                             self.perpetual_dist_type = PerpetualDistributionIntervalTypeUI::BlockBased;
-                            self.enable_pre_programmed_distribution = false;
-                            self.pre_programmed_distributions = Vec::new();
                         };
                         if self.enable_perpetual_distribution {
                             ui.add_space(5.0);
@@ -2708,17 +2714,10 @@ Emits tokens in fixed amounts for specific intervals.
                         ui.separator();
 
                         // PRE-PROGRAMMED DISTRIBUTION
-                        if ui
-                            .checkbox(
-                                &mut self.enable_pre_programmed_distribution,
-                                "Enable Pre-Programmed Distribution",
-                            )
-                            .clicked()
-                        {
-                            // If user turns this on, you could clear the other distribution type
-                            self.enable_perpetual_distribution = false;
-                            self.perpetual_dist_type = PerpetualDistributionIntervalTypeUI::None;
-                        };
+                        ui.checkbox(
+                            &mut self.enable_pre_programmed_distribution,
+                            "Enable Pre-Programmed Distribution",
+                        );
 
                         if self.enable_pre_programmed_distribution {
                             ui.add_space(2.0);
@@ -2959,6 +2958,7 @@ Emits tokens in fixed amounts for specific intervals.
                                         args.identity_id,
                                         args.token_name,
                                         args.contract_keywords,
+                                        args.token_description,
                                         args.should_capitalize,
                                         args.decimals,
                                         args.base_supply,
@@ -3127,6 +3127,7 @@ Emits tokens in fixed amounts for specific intervals.
 
                             token_name: args.token_name,
                             contract_keywords: args.contract_keywords,
+                            token_description: args.token_description,
                             should_capitalize: args.should_capitalize,
                             decimals: args.decimals,
                             base_supply: args.base_supply,
@@ -3207,6 +3208,11 @@ Emits tokens in fixed amounts for specific intervals.
             .split(',')
             .map(|s| s.trim().to_string())
             .collect::<Vec<String>>();
+        let token_description = if self.token_description_input.len() > 0 {
+            Some(self.token_description_input.clone())
+        } else {
+            None
+        };
         let decimals = self.decimals_input.parse::<u16>().unwrap_or(8);
         let base_supply = self.base_supply_input.parse::<u64>().unwrap_or(1000000);
         let max_supply = if self.max_supply_input.is_empty() {
@@ -3272,6 +3278,7 @@ Emits tokens in fixed amounts for specific intervals.
             identity_id,
             token_name,
             contract_keywords,
+            token_description,
             should_capitalize: self.should_capitalize_input,
             decimals,
             base_supply,
@@ -3668,6 +3675,7 @@ Emits tokens in fixed amounts for specific intervals.
         self.token_creator_status = TokenCreatorStatus::NotStarted;
         self.token_name_input = "".to_string();
         self.contract_keywords_input = "".to_string();
+        self.token_description_input = "".to_string();
         self.decimals_input = "8".to_string();
         self.base_supply_input = "100000".to_string();
         self.max_supply_input = "".to_string();
@@ -4616,6 +4624,7 @@ mod tests {
                 build_args.identity_id,
                 build_args.token_name,
                 build_args.contract_keywords,
+                build_args.token_description,
                 build_args.should_capitalize,
                 build_args.decimals,
                 build_args.base_supply,
@@ -4815,6 +4824,7 @@ mod tests {
                 build_args.identity_id,
                 build_args.token_name,
                 build_args.contract_keywords,
+                build_args.token_description,
                 build_args.should_capitalize,
                 build_args.decimals,
                 build_args.base_supply,

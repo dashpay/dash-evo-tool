@@ -1795,16 +1795,16 @@ impl TokensScreen {
 
         // Allocate space for refreshing indicator
         let refreshing_height = 33.0;
-        let mut max_scroll_height = if let RefreshingStatus::Refreshing(_) = self.refreshing_status
-        {
-            ui.available_height() - refreshing_height
-        } else {
-            ui.available_height()
-        };
+        let mut max_scroll_height =
+            if let TokenCreatorStatus::WaitingForResult(_) = self.token_creator_status {
+                ui.available_height() - refreshing_height
+            } else {
+                ui.available_height()
+            };
 
         // Allocate space for backend message
         let backend_message_height = 40.0;
-        if let Some((_, _, _)) = self.backend_message.clone() {
+        if let Some(_) = self.token_creator_error_message.clone() {
             max_scroll_height -= backend_message_height;
         }
 

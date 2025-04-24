@@ -516,6 +516,36 @@ pub struct DistributionEntry {
     pub amount_str: String,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum TokenNameLanguage {
+    English,
+    Mandarin,
+    Hindi,
+    Russian,
+    Spanish,
+    Arabic,
+    Bengali,
+    Portuguese,
+    Japanese,
+    Punjabi,
+    German,
+    Javanese,
+    Wu,
+    Malay,
+    Telugu,
+    Vietnamese,
+    Korean,
+    French,
+    Marathi,
+    Tamil,
+}
+
+impl std::fmt::Display for TokenNameLanguage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
 #[derive(Default, Clone)]
 pub struct GroupMemberUI {
     /// The base58 identity for this member
@@ -593,7 +623,7 @@ impl GroupConfigUI {
 pub struct TokenBuildArgs {
     pub identity_id: Identifier,
 
-    pub token_name: String,
+    pub token_names: Vec<(String, String)>,
     pub contract_keywords: Vec<String>,
     pub token_description: Option<String>,
     pub should_capitalize: bool,
@@ -667,7 +697,7 @@ pub struct TokensScreen {
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     wallet_password: String,
     show_password: bool,
-    token_name_input: String,
+    token_names_input: Vec<(String, TokenNameLanguage)>,
     contract_keywords_input: String,
     token_description_input: String,
     should_capitalize_input: bool,
@@ -879,7 +909,7 @@ impl TokensScreen {
             show_token_creator_confirmation_popup: false,
             token_creator_status: TokenCreatorStatus::NotStarted,
             token_creator_error_message: None,
-            token_name_input: String::new(),
+            token_names_input: vec![],
             contract_keywords_input: String::new(),
             token_description_input: String::new(),
             should_capitalize_input: false,
@@ -1954,9 +1984,118 @@ impl TokensScreen {
                         .spacing([16.0, 8.0]) // Horizontal, vertical spacing
                         .show(ui, |ui| {
                             // Row 1: Token Name
-                            ui.label("Token Name (singular):");
-                            ui.text_edit_singleline(&mut self.token_name_input);
-                            ui.end_row();
+                            for i in 0..self.token_names_input.len() {
+                                ui.label("Token Name (singular):");
+                                ui.text_edit_singleline(&mut self.token_names_input[i].0);
+                                egui::ComboBox::from_id_salt("token_name_language_selector")
+                                    .selected_text(format!(
+                                        "{}",
+                                        self.token_names_input[i].1.to_string()
+                                    ))
+                                    .show_ui(ui, |ui| {
+                                        ui.selectable_value(
+                                            &mut self.token_names_input[i].1,
+                                            TokenNameLanguage::English,
+                                            "English",
+                                        );
+                                        ui.selectable_value(
+                                            &mut self.token_names_input[i].1,
+                                            TokenNameLanguage::Mandarin,
+                                            "Mandarin",
+                                        );
+                                        ui.selectable_value(
+                                            &mut self.token_names_input[i].1,
+                                            TokenNameLanguage::Hindi,
+                                            "Hindi",
+                                        );
+                                        ui.selectable_value(
+                                            &mut self.token_names_input[i].1,
+                                            TokenNameLanguage::Russian,
+                                            "Russian",
+                                        );
+                                        ui.selectable_value(
+                                            &mut self.token_names_input[i].1,
+                                            TokenNameLanguage::Spanish,
+                                            "Spanish",
+                                        );
+                                        ui.selectable_value(
+                                            &mut self.token_names_input[i].1,
+                                            TokenNameLanguage::Arabic,
+                                            "Arabic",
+                                        );
+                                        ui.selectable_value(
+                                            &mut self.token_names_input[i].1,
+                                            TokenNameLanguage::Bengali,
+                                            "Bengali",
+                                        );
+                                        ui.selectable_value(
+                                            &mut self.token_names_input[i].1,
+                                            TokenNameLanguage::Portuguese,
+                                            "Portuguese",
+                                        );
+                                        ui.selectable_value(
+                                            &mut self.token_names_input[i].1,
+                                            TokenNameLanguage::Japanese,
+                                            "Japanese",
+                                        );
+                                        ui.selectable_value(
+                                            &mut self.token_names_input[i].1,
+                                            TokenNameLanguage::Punjabi,
+                                            "Punjabi",
+                                        );
+                                        ui.selectable_value(
+                                            &mut self.token_names_input[i].1,
+                                            TokenNameLanguage::German,
+                                            "German",
+                                        );
+                                        ui.selectable_value(
+                                            &mut self.token_names_input[i].1,
+                                            TokenNameLanguage::Javanese,
+                                            "Javanese",
+                                        );
+                                        ui.selectable_value(
+                                            &mut self.token_names_input[i].1,
+                                            TokenNameLanguage::Wu,
+                                            "Wu (Shanghainese)",
+                                        );
+                                        ui.selectable_value(
+                                            &mut self.token_names_input[i].1,
+                                            TokenNameLanguage::Malay,
+                                            "Malay",
+                                        );
+                                        ui.selectable_value(
+                                            &mut self.token_names_input[i].1,
+                                            TokenNameLanguage::Telugu,
+                                            "Telugu",
+                                        );
+                                        ui.selectable_value(
+                                            &mut self.token_names_input[i].1,
+                                            TokenNameLanguage::Vietnamese,
+                                            "Vietnamese",
+                                        );
+                                        ui.selectable_value(
+                                            &mut self.token_names_input[i].1,
+                                            TokenNameLanguage::Korean,
+                                            "Korean",
+                                        );
+                                        ui.selectable_value(
+                                            &mut self.token_names_input[i].1,
+                                            TokenNameLanguage::French,
+                                            "French",
+                                        );
+                                        ui.selectable_value(
+                                            &mut self.token_names_input[i].1,
+                                            TokenNameLanguage::Marathi,
+                                            "Marathi",
+                                        );
+                                        ui.selectable_value(
+                                            &mut self.token_names_input[i].1,
+                                            TokenNameLanguage::Tamil,
+                                            "Tamil",
+                                        );
+                                    });
+                                ui.end_row();
+                            }
 
                             // Row 2: Base Supply
                             ui.label("Base Supply:");
@@ -2956,7 +3095,7 @@ Emits tokens in fixed amounts for specific intervals.
                                     self.cached_build_args = Some(args.clone());
                                     let data_contract = match self.app_context.build_data_contract_v1_with_one_token(
                                         args.identity_id,
-                                        args.token_name,
+                                        args.token_names,
                                         args.contract_keywords,
                                         args.token_description,
                                         args.should_capitalize,
@@ -3096,7 +3235,7 @@ Emits tokens in fixed amounts for specific intervals.
                 };
                 ui.label(format!(
                     "Name: {}\nBase Supply: {}\nMax Supply: {}",
-                    self.token_name_input, self.base_supply_input, max_supply_display,
+                    self.token_names_input[0].0, self.base_supply_input, max_supply_display,
                 ));
 
                 ui.add_space(10.0);
@@ -3125,7 +3264,7 @@ Emits tokens in fixed amounts for specific intervals.
                             identity: self.selected_identity.clone().unwrap(),
                             signing_key: self.selected_key.clone().unwrap(),
 
-                            token_name: args.token_name,
+                            token_names: args.token_names,
                             contract_keywords: args.contract_keywords,
                             token_description: args.token_description,
                             should_capitalize: args.should_capitalize,
@@ -3197,10 +3336,36 @@ Emits tokens in fixed amounts for specific intervals.
         let identity_id = identity.identity.id().clone();
 
         // 2) Basic fields
-        if self.token_name_input.is_empty() {
+        if self.token_names_input.is_empty() {
             return Err("Please enter a token name".to_string());
         }
-        let token_name = self.token_name_input.clone();
+        let mut token_names: Vec<(String, String)> = Vec::new();
+        for name_with_language in self.token_names_input.iter() {
+            let language = match name_with_language.1 {
+                TokenNameLanguage::English => "en".to_string(),
+                TokenNameLanguage::Mandarin => "zh".to_string(),
+                TokenNameLanguage::Hindi => "hi".to_string(),
+                TokenNameLanguage::Russian => "ru".to_string(),
+                TokenNameLanguage::Spanish => "es".to_string(),
+                TokenNameLanguage::Arabic => "ar".to_string(),
+                TokenNameLanguage::Bengali => "bn".to_string(),
+                TokenNameLanguage::Portuguese => "pt".to_string(),
+                TokenNameLanguage::Japanese => "ja".to_string(),
+                TokenNameLanguage::Punjabi => "pa".to_string(),
+                TokenNameLanguage::German => "de".to_string(),
+                TokenNameLanguage::Javanese => "jv".to_string(),
+                TokenNameLanguage::Wu => "wuu".to_string(),
+                TokenNameLanguage::Malay => "ms".to_string(),
+                TokenNameLanguage::Telugu => "te".to_string(),
+                TokenNameLanguage::Vietnamese => "vi".to_string(),
+                TokenNameLanguage::Korean => "ko".to_string(),
+                TokenNameLanguage::French => "fr".to_string(),
+                TokenNameLanguage::Marathi => "mr".to_string(),
+                TokenNameLanguage::Tamil => "ta".to_string(),
+            };
+
+            token_names.push((name_with_language.0.clone(), language));
+        }
 
         // Remove whitespace and parse the comma separated string into a vec
         let contract_keywords = self
@@ -3276,7 +3441,7 @@ Emits tokens in fixed amounts for specific intervals.
         // 6) Put it all in a struct
         Ok(TokenBuildArgs {
             identity_id,
-            token_name,
+            token_names,
             contract_keywords,
             token_description,
             should_capitalize: self.should_capitalize_input,
@@ -3673,7 +3838,7 @@ Emits tokens in fixed amounts for specific intervals.
         self.selected_identity = None;
         self.selected_key = None;
         self.token_creator_status = TokenCreatorStatus::NotStarted;
-        self.token_name_input = "".to_string();
+        self.token_names_input = vec![];
         self.contract_keywords_input = "".to_string();
         self.token_description_input = "".to_string();
         self.decimals_input = "8".to_string();
@@ -4520,7 +4685,8 @@ mod tests {
         token_creator_ui.selected_key = Some(mock_key);
 
         // Basic token info
-        token_creator_ui.token_name_input = "AcmeCoin".to_string();
+        token_creator_ui.token_names_input =
+            vec![("AcmeCoin".to_string(), TokenNameLanguage::English)];
         token_creator_ui.base_supply_input = "5000000".to_string();
         token_creator_ui.max_supply_input = "10000000".to_string();
         token_creator_ui.decimals_input = "8".to_string();
@@ -4622,7 +4788,7 @@ mod tests {
         let data_contract = app_context
             .build_data_contract_v1_with_one_token(
                 build_args.identity_id,
-                build_args.token_name,
+                build_args.token_names,
                 build_args.contract_keywords,
                 build_args.token_description,
                 build_args.should_capitalize,
@@ -4805,7 +4971,8 @@ mod tests {
         let mock_key = IdentityPublicKey::random_key(0, None, app_context.platform_version);
         token_creator_ui.selected_key = Some(mock_key);
 
-        token_creator_ui.token_name_input = "TestToken".to_owned();
+        token_creator_ui.token_names_input =
+            vec![("TestToken".to_owned(), TokenNameLanguage::English)];
 
         // Enable perpetual distribution, select Random
         token_creator_ui.enable_perpetual_distribution = true;
@@ -4822,7 +4989,7 @@ mod tests {
         let data_contract = app_context
             .build_data_contract_v1_with_one_token(
                 build_args.identity_id,
-                build_args.token_name,
+                build_args.token_names,
                 build_args.contract_keywords,
                 build_args.token_description,
                 build_args.should_capitalize,
@@ -4910,7 +5077,7 @@ mod tests {
         token_creator_ui.selected_key = Some(mock_key);
 
         // Intentionally leave token_name_input empty
-        token_creator_ui.token_name_input = "".to_owned();
+        token_creator_ui.token_names_input = vec![];
 
         let err = token_creator_ui
             .parse_token_build_args()

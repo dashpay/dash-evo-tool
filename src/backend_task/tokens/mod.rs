@@ -55,8 +55,9 @@ pub(crate) enum TokenTask {
     RegisterTokenContract {
         identity: QualifiedIdentity,
         signing_key: IdentityPublicKey,
-        token_name: String,
+        token_names: Vec<(String, String)>,
         contract_keywords: Vec<String>,
+        token_description: Option<String>,
         should_capitalize: bool,
         decimals: u16,
         base_supply: TokenAmount,
@@ -165,8 +166,9 @@ impl AppContext {
             TokenTask::RegisterTokenContract {
                 identity,
                 signing_key,
-                token_name,
+                token_names,
                 contract_keywords,
+                token_description,
                 should_capitalize,
                 decimals,
                 base_supply,
@@ -189,8 +191,9 @@ impl AppContext {
                 let data_contract = self
                     .build_data_contract_v1_with_one_token(
                         identity.identity.id().clone(),
-                        token_name.clone(),
+                        token_names.clone(),
                         contract_keywords.to_vec(),
+                        token_description.clone(),
                         *should_capitalize,
                         *decimals,
                         *base_supply,
@@ -214,7 +217,7 @@ impl AppContext {
 
                 self.register_data_contract(
                     data_contract,
-                    token_name.clone(),
+                    token_names[0].0.clone(),
                     identity.clone(),
                     signing_key.clone(),
                     sdk,
@@ -439,8 +442,9 @@ impl AppContext {
     pub fn build_data_contract_v1_with_one_token(
         &self,
         owner_id: Identifier,
-        token_name: String,
+        token_names: Vec<(String, String)>,
         contract_keywords: Vec<String>,
+        token_description: Option<String>,
         should_capitalize: bool,
         decimals: u16,
         base_supply: u64,
@@ -485,14 +489,16 @@ impl AppContext {
 
         let TokenConfigurationConvention::V0(ref mut conv_v0) = token_config_v0.conventions;
         conv_v0.decimals = decimals as u16;
-        conv_v0.localizations.insert(
-            "en".to_string(),
-            TokenConfigurationLocalization::V0(TokenConfigurationLocalizationV0 {
-                should_capitalize,
-                singular_form: token_name.to_string(),
-                plural_form: format!("{}s", token_name),
-            }),
-        );
+        for (token_name, language) in token_names {
+            conv_v0.localizations.insert(
+                language,
+                TokenConfigurationLocalization::V0(TokenConfigurationLocalizationV0 {
+                    should_capitalize,
+                    singular_form: token_name.to_string(),
+                    plural_form: format!("{}s", token_name),
+                }),
+            );
+        }
 
         let keeps_history_rules = TokenKeepsHistoryRules::V0(TokenKeepsHistoryRulesV0 {
             keeps_transfer_history: keeps_history,
@@ -518,6 +524,7 @@ impl AppContext {
         token_config_v0.conventions_change_rules = conventions_change_rules;
         token_config_v0.main_control_group_can_be_modified = main_control_group_change_authorized;
         token_config_v0.distribution_rules = distribution_rules;
+        token_config_v0.description = token_description;
 
         let token_config = TokenConfiguration::V0(token_config_v0);
 

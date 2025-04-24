@@ -4,13 +4,15 @@ use crate::model::qualified_identity::IdentityType;
 use crate::ui::tokens::tokens_screen::IdentityTokenIdentifier;
 use crate::{backend_task::BackendTaskSuccessResult, context::AppContext};
 use dash_sdk::{platform::Identifier, Sdk};
+use dash_sdk::dpp::block::epoch::EpochIndex;
 use dash_sdk::dpp::block::extended_epoch_info::ExtendedEpochInfo;
 use dash_sdk::dpp::block::extended_epoch_info::v0::ExtendedEpochInfoV0Getters;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::accessors::v0::TokenDistributionRulesV0Getters;
+use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::distribution_function::reward_ratio::RewardRatio;
 use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::distribution_recipient::TokenDistributionRecipient;
-use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::methods::v0::TokenPerpetualDistributionV0Accessors;
+use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::methods::v0::{TokenPerpetualDistributionV0Accessors, TokenPerpetualDistributionV0Methods};
 use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::reward_distribution_moment::RewardDistributionMoment;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::platform::Fetch;
@@ -70,7 +72,7 @@ impl AppContext {
             }
         }
 
-        let function = perpetual_distribution.distribution_type();
+        let reward_distribution_type = perpetual_distribution.distribution_type();
 
         let query = TokenLastClaimQuery {
             identity_id,
@@ -84,57 +86,68 @@ impl AppContext {
                 format!("Failed to fetch token non claimed perpetual distribution rewards: {e}")
             })?;
 
+        let contract_creation_moment = perpetual_distribution
+            .distribution_type()
+            .contract_creation_moment(&data_contract.contract)
+            .ok_or("Contract does not have a start moment".to_string())?;
+
+        let contract_creation_cycle_start = contract_creation_moment
+            .cycle_start(perpetual_distribution.distribution_type().interval())
+            .map_err(|e| format!("Failed to calculate estimated rewards: {e}"))?;
+
+        let start_from_moment_for_distribution =
+            last_claim.unwrap_or(contract_creation_cycle_start);
+
         // Calculate how much the user has to claim based on the last time they claimed and the distribution function
         // Get the current moment (block, time, or epoch)
         let current_epoch_with_metadata = ExtendedEpochInfo::fetch_current_with_metadata(sdk)
             .await
             .map_err(|e| format!("Failed to fetch current epoch: {e}"))?;
-        let current_moment = match function.interval() {
-            RewardDistributionMoment::BlockBasedMoment(_) => current_epoch_with_metadata.1.height,
-            RewardDistributionMoment::TimeBasedMoment(_) => current_epoch_with_metadata.1.time_ms,
-            RewardDistributionMoment::EpochBasedMoment(_) => {
-                current_epoch_with_metadata.0.index().into()
-            }
+
+        let block_info = dash_sdk::dpp::block::block_info::BlockInfo {
+            time_ms: current_epoch_with_metadata.1.time_ms,
+            height: current_epoch_with_metadata.1.height,
+            core_height: current_epoch_with_metadata.1.core_chain_locked_height, // This will not matter
+            epoch: current_epoch_with_metadata
+                .0
+                .index()
+                .try_into()
+                .expect("we should never get back an epoch so far in the future"),
         };
 
-        // Calculate how much the user has to claim based on the last time they claimed, the current time, and the distribution function
-        match last_claim {
-            Some(last_claim) => {
-                let amount_to_claim = function
-                    .function()
-                    .evaluate(last_claim.into(), current_moment)
-                    .map_err(|e| format!("Failed to evaluate distribution function: {e}"))?;
+        let current_cycle_moment = perpetual_distribution.current_interval(&block_info);
 
-                Ok(
-                    BackendTaskSuccessResult::TokenEstimatedNonClaimedPerpetualDistributionAmount(
-                        IdentityTokenIdentifier {
-                            identity_id,
-                            token_id,
-                        },
-                        amount_to_claim,
-                    ),
-                )
-            }
+        // We need to get the max cycles allowed
+        let max_cycles = self
+            .platform_version
+            .system_limits
+            .max_token_redemption_cycles;
+        let max_cycle_moment = perpetual_distribution
+            .distribution_type()
+            .max_cycle_moment(
+                start_from_moment_for_distribution,
+                current_cycle_moment,
+                max_cycles,
+            )
+            .map_err(|e| format!("Failed to calculate estimated rewards: {e}"))?;
 
-            None => {
-                let contract_creation_moment = function
-                    .contract_creation_moment(&data_contract.contract)
-                    .ok_or("Contract creation moment not found")?;
-                let amount_to_claim = function
-                    .function()
-                    .evaluate(contract_creation_moment.into(), current_moment)
-                    .map_err(|e| format!("Failed to evaluate distribution function: {e}"))?;
+        let amount_to_claim = reward_distribution_type
+            .rewards_in_interval::<fn(EpochIndex) -> Option<RewardRatio>>(
+                contract_creation_cycle_start,
+                start_from_moment_for_distribution,
+                max_cycle_moment,
+                None,
+            )
+            .map_err(|e| format!("Failed to calculate estimated rewards: {e}"))?;
 
-                Ok(
-                    BackendTaskSuccessResult::TokenEstimatedNonClaimedPerpetualDistributionAmount(
-                        IdentityTokenIdentifier {
-                            identity_id,
-                            token_id,
-                        },
-                        amount_to_claim,
-                    ),
-                )
-            }
-        }
+        Ok(
+            BackendTaskSuccessResult::TokenEstimatedNonClaimedPerpetualDistributionAmount(
+                IdentityTokenIdentifier {
+                    identity_id,
+                    token_id,
+                },
+                amount_to_claim,
+            ),
+        )
     }
 }

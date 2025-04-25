@@ -1422,9 +1422,18 @@ impl TokensScreen {
                                         row.col(|ui| {
                                             if let Some(known_rewards) = itb.balance.as_ref().map(|itb| itb.estimated_unclaimed_rewards) {
                                                 if let Some(known_rewards) = known_rewards {
-                                                    ui.label(known_rewards.to_string());
+                                                    ui.horizontal(|ui| {
+                                                        ui.label(known_rewards.to_string());
+                                                        if ui.button("Estimate").clicked() {
+                                                            action = AppAction::BackendTask(BackendTask::TokenTask(TokenTask::EstimatePerpetualTokenRewards {
+                                                                identity_id: itb.identity_id,
+                                                                token_id: itb.token_id,
+                                                            }));
+                                                            self.refreshing_status = RefreshingStatus::Refreshing(Utc::now().timestamp() as u64);
+                                                        }    
+                                                    });
                                                 } else {
-                                                    if ui.button("Estimate Unclaimed Rewards").clicked() {
+                                                    if ui.button("Estimate").clicked() {
                                                         action = AppAction::BackendTask(BackendTask::TokenTask(TokenTask::EstimatePerpetualTokenRewards {
                                                             identity_id: itb.identity_id,
                                                             token_id: itb.token_id,
@@ -4368,6 +4377,7 @@ impl ScreenLike for TokensScreen {
                 identity_token_id,
                 amount,
             ) => {
+                self.refreshing_status = RefreshingStatus::NotRefreshing;
                 if let Some(itb) = self.my_tokens.get_mut(&identity_token_id) {
                     itb.estimated_unclaimed_rewards = Some(amount)
                 }

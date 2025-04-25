@@ -1422,13 +1422,23 @@ impl TokensScreen {
                                         row.col(|ui| {
                                             if let Some(known_rewards) = itb.balance.as_ref().map(|itb| itb.estimated_unclaimed_rewards) {
                                                 if let Some(known_rewards) = known_rewards {
-                                                    ui.label(known_rewards.to_string());
+                                                    ui.horizontal(|ui| {
+                                                        ui.label(known_rewards.to_string());
+                                                        if ui.button("Estimate").clicked() {
+                                                            action = AppAction::BackendTask(BackendTask::TokenTask(TokenTask::EstimatePerpetualTokenRewards {
+                                                                identity_id: itb.identity_id,
+                                                                token_id: itb.token_id,
+                                                            }));
+                                                            self.refreshing_status = RefreshingStatus::Refreshing(Utc::now().timestamp() as u64);
+                                                        }    
+                                                    });
                                                 } else {
-                                                    if ui.button("Estimate Unclaimed Rewards").clicked() {
+                                                    if ui.button("Estimate").clicked() {
                                                         action = AppAction::BackendTask(BackendTask::TokenTask(TokenTask::EstimatePerpetualTokenRewards {
                                                             identity_id: itb.identity_id,
                                                             token_id: itb.token_id,
-                                                        }))
+                                                        }));
+                                                        self.refreshing_status = RefreshingStatus::Refreshing(Utc::now().timestamp() as u64);
                                                     }
                                                 }
                                             }
@@ -4260,6 +4270,7 @@ impl ScreenLike for TokensScreen {
             .db
             .get_all_known_tokens(&self.app_context)
             .unwrap_or_default();
+
         self.identities = self
             .app_context
             .load_local_qualified_identities()
@@ -4267,6 +4278,7 @@ impl ScreenLike for TokensScreen {
             .into_iter()
             .map(|qi| (qi.identity.id(), qi))
             .collect();
+
         match self.app_context.db.load_token_order() {
             Ok(saved_ids) => {
                 self.reorder_vec_to(saved_ids);
@@ -4301,45 +4313,41 @@ impl ScreenLike for TokensScreen {
     }
 
     fn display_message(&mut self, msg: &str, msg_type: MessageType) {
-        if self.tokens_subscreen == TokensSubscreen::TokenCreator {
-            // Handle messages from Token Creator
-            if msg.contains("Successfully registered token contract") {
-                self.token_creator_status = TokenCreatorStatus::Complete;
-            } else if msg.contains("Failed to register token contract") {
-                self.token_creator_status = TokenCreatorStatus::ErrorMessage(msg.to_string());
-                self.token_creator_error_message = Some(msg.to_string());
-            } else if msg.contains("Error building contract V1") {
-                self.token_creator_status = TokenCreatorStatus::ErrorMessage(msg.to_string());
-                self.token_creator_error_message = Some(msg.to_string());
-            } else {
-                return;
+        match self.tokens_subscreen {
+            TokensSubscreen::TokenCreator => {
+                if msg.contains("Successfully registered token contract") {
+                    self.token_creator_status = TokenCreatorStatus::Complete;
+                } else if msg.contains("Failed to register token contract")
+                    | msg.contains("Error building contract V1")
+                {
+                    self.token_creator_status = TokenCreatorStatus::ErrorMessage(msg.to_string());
+                    self.token_creator_error_message = Some(msg.to_string());
+                } else {
+                    return;
+                }
             }
-        }
-
-        // Handle messages from querying My Token Balances
-        if self.tokens_subscreen == TokensSubscreen::MyTokens {
-            if msg.contains("Successfully fetched token balances")
-                | msg.contains("Failed to fetch token balances")
-            {
-                self.backend_message = Some((msg.to_string(), msg_type, Utc::now()));
+            TokensSubscreen::MyTokens => {
+                if msg.contains("Successfully fetched token balances")
+                    | msg.contains("Failed to fetch token balances")
+                    | msg.contains("Failed to get estimated rewards")
+                {
+                    self.backend_message = Some((msg.to_string(), msg_type, Utc::now()));
+                    self.refreshing_status = RefreshingStatus::NotRefreshing;
+                } else {
+                    return;
+                }
             }
-        }
-        if msg.contains("Successfully fetched token balances")
-            | msg.contains("Failed to fetch token balances")
-        {
-            self.refreshing_status = RefreshingStatus::NotRefreshing;
-        }
-
-        // Handle messages from Token Search
-        if msg.contains("Error fetching tokens") {
-            self.contract_search_status = ContractSearchStatus::ErrorMessage(msg.to_string());
-            self.backend_message = Some((msg.to_string(), msg_type, Utc::now()));
-        }
-        if msg.contains("Added token") {
-            self.backend_message = Some((msg.to_string(), msg_type, Utc::now()));
-        }
-        if msg.contains("Token already added") {
-            self.backend_message = Some((msg.to_string(), msg_type, Utc::now()));
+            TokensSubscreen::SearchTokens => {
+                if msg.contains("Error fetching tokens") {
+                    self.contract_search_status =
+                        ContractSearchStatus::ErrorMessage(msg.to_string());
+                    self.backend_message = Some((msg.to_string(), msg_type, Utc::now()));
+                } else if msg.contains("Added token") | msg.contains("Token already added") {
+                    self.backend_message = Some((msg.to_string(), msg_type, Utc::now()));
+                } else {
+                    return;
+                }
+            }
         }
     }
 
@@ -4369,6 +4377,7 @@ impl ScreenLike for TokensScreen {
                 identity_token_id,
                 amount,
             ) => {
+                self.refreshing_status = RefreshingStatus::NotRefreshing;
                 if let Some(itb) = self.my_tokens.get_mut(&identity_token_id) {
                     itb.estimated_unclaimed_rewards = Some(amount)
                 }
@@ -4396,7 +4405,7 @@ impl ScreenLike for TokensScreen {
                     )),
                 ),
             ],
-            TokensSubscreen::SearchTokens => vec![("Refresh", DesiredAppAction::Refresh)],
+            TokensSubscreen::SearchTokens => vec![],
             TokensSubscreen::TokenCreator => vec![],
         };
 

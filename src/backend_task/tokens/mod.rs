@@ -15,7 +15,7 @@ use dash_sdk::{
                 },
                 token_distribution_key::TokenDistributionType,
                 token_distribution_rules::TokenDistributionRules,
-                token_keeps_history_rules::{v0::TokenKeepsHistoryRulesV0, TokenKeepsHistoryRules},
+                token_keeps_history_rules::TokenKeepsHistoryRules,
             },
             change_control_rules::{
                 authorized_action_takers::AuthorizedActionTakers, ChangeControlRules,
@@ -63,7 +63,7 @@ pub(crate) enum TokenTask {
         base_supply: TokenAmount,
         max_supply: Option<TokenAmount>,
         start_paused: bool,
-        keeps_history: bool,
+        keeps_history: TokenKeepsHistoryRules,
         main_control_group: Option<GroupContractPosition>,
 
         // Manual Mint
@@ -450,7 +450,7 @@ impl AppContext {
         base_supply: u64,
         max_supply: Option<u64>,
         start_as_paused: bool,
-        keeps_history: bool,
+        keeps_history: TokenKeepsHistoryRules,
         main_control_group: Option<u16>,
         manual_minting_rules: ChangeControlRules,
         manual_burning_rules: ChangeControlRules,
@@ -488,7 +488,7 @@ impl AppContext {
         let mut token_config_v0 = TokenConfigurationV0::default_most_restrictive();
 
         let TokenConfigurationConvention::V0(ref mut conv_v0) = token_config_v0.conventions;
-        conv_v0.decimals = decimals as u16;
+        conv_v0.decimals = decimals;
         for (token_name, language) in token_names {
             conv_v0.localizations.insert(
                 language,
@@ -500,19 +500,10 @@ impl AppContext {
             );
         }
 
-        let keeps_history_rules = TokenKeepsHistoryRules::V0(TokenKeepsHistoryRulesV0 {
-            keeps_transfer_history: keeps_history,
-            keeps_minting_history: keeps_history,
-            keeps_burning_history: keeps_history,
-            keeps_freezing_history: keeps_history,
-            keeps_direct_pricing_history: keeps_history,
-            keeps_direct_purchase_history: keeps_history,
-        });
-
         token_config_v0.base_supply = base_supply;
         token_config_v0.max_supply = max_supply;
         token_config_v0.start_as_paused = start_as_paused;
-        token_config_v0.keeps_history = keeps_history_rules;
+        token_config_v0.keeps_history = keeps_history;
         token_config_v0.main_control_group = main_control_group;
         token_config_v0.manual_minting_rules = manual_minting_rules;
         token_config_v0.manual_burning_rules = manual_burning_rules;

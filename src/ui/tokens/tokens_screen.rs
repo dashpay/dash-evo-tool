@@ -5,7 +5,8 @@ use chrono::{DateTime, Duration, Utc};
 use dash_sdk::dpp::balances::credits::TokenAmount;
 use dash_sdk::dpp::dashcore::Network::Devnet;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
-use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationV0;
+use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::{TokenConfigurationPreset, TokenConfigurationPresetFeatures, TokenConfigurationV0};
+use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationPresetFeatures::{MostRestrictive, WithAllAdvancedActions, WithExtremeActions, WithMintingAndBurningActions, WithOnlyEmergencyAction};
 use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::v0::TokenDistributionRulesV0;
 use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::TokenDistributionRules;
 use dash_sdk::dpp::data_contract::associated_token::token_keeps_history_rules::accessors::v0::{TokenKeepsHistoryRulesV0Getters, TokenKeepsHistoryRulesV0Setters};
@@ -24,6 +25,7 @@ use dash_sdk::dpp::data_contract::change_control_rules::ChangeControlRules;
 use dash_sdk::dpp::data_contract::conversion::json::DataContractJsonConversionMethodsV0;
 use dash_sdk::dpp::data_contract::group::v0::GroupV0;
 use dash_sdk::dpp::data_contract::group::{Group, GroupMemberPower, GroupRequiredPower};
+use dash_sdk::dpp::data_contract::TokenConfiguration;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::SecurityLevel;
@@ -262,22 +264,28 @@ enum SortOrder {
 
 #[derive(Clone, PartialEq, Eq, Default)]
 pub struct ChangeControlRulesUI {
-    pub authorized: AuthorizedActionTakers,
+    pub rules: ChangeControlRulesV0,
     pub authorized_identity: Option<String>,
     pub authorized_group: Option<String>,
-
-    pub admin_action_takers: AuthorizedActionTakers,
     pub admin_identity: Option<String>,
     pub admin_group: Option<String>,
+}
 
-    pub changing_authorized_action_takers_to_no_one_allowed: bool,
-    pub changing_admin_action_takers_to_no_one_allowed: bool,
-    pub self_changing_admin_action_takers_allowed: bool,
+impl From<ChangeControlRulesV0> for ChangeControlRulesUI {
+    fn from(rules: ChangeControlRulesV0) -> Self {
+        ChangeControlRulesUI {
+            rules,
+            authorized_identity: None,
+            authorized_group: None,
+            admin_identity: None,
+            admin_group: None,
+        }
+    }
 }
 
 impl ChangeControlRulesUI {
     /// Renders the UI for a single action’s configuration (mint, burn, freeze, etc.)
-    pub fn render_control_change_rules_ui(&mut self, ui: &mut egui::Ui, action_name: &str) {
+    pub fn render_control_change_rules_ui(&mut self, ui: &mut Ui, action_name: &str) {
         ui.collapsing(action_name, |ui| {
             ui.add_space(3.0);
 
@@ -289,37 +297,37 @@ impl ChangeControlRulesUI {
                     ui.horizontal(|ui| {
                         ui.label("Authorized to perform action:");
                         egui::ComboBox::from_id_salt(format!("Authorized {}", action_name))
-                            .selected_text(self.authorized.to_string())
+                            .selected_text(self.rules.authorized_to_make_change.to_string())
                             .show_ui(ui, |ui| {
                                 ui.selectable_value(
-                                    &mut self.authorized,
+                                    &mut self.rules.authorized_to_make_change,
                                     AuthorizedActionTakers::NoOne,
                                     "No One",
                                 );
                                 ui.selectable_value(
-                                    &mut self.authorized,
+                                    &mut self.rules.authorized_to_make_change,
                                     AuthorizedActionTakers::ContractOwner,
                                     "Contract Owner",
                                 );
                                 ui.selectable_value(
-                                    &mut self.authorized,
+                                    &mut self.rules.authorized_to_make_change,
                                     AuthorizedActionTakers::Identity(Identifier::default()),
                                     "Identity",
                                 );
                                 ui.selectable_value(
-                                    &mut self.authorized,
+                                    &mut self.rules.authorized_to_make_change,
                                     AuthorizedActionTakers::MainGroup,
                                     "Main Group",
                                 );
                                 ui.selectable_value(
-                                    &mut self.authorized,
+                                    &mut self.rules.authorized_to_make_change,
                                     AuthorizedActionTakers::Group(0),
                                     "Group",
                                 );
                             });
 
                         // If user selected Identity or Group, show text edit
-                        match &mut self.authorized {
+                        match &mut self.rules.authorized_to_make_change {
                             AuthorizedActionTakers::Identity(_) => {
                                 self.authorized_identity.get_or_insert_with(String::new);
                                 if let Some(ref mut id) = self.authorized_identity {
@@ -346,36 +354,36 @@ impl ChangeControlRulesUI {
                     ui.horizontal(|ui| {
                         ui.label("Authorized to change rules:");
                         egui::ComboBox::from_id_salt(format!("Admin {}", action_name))
-                            .selected_text(self.admin_action_takers.to_string())
+                            .selected_text(self.rules.admin_action_takers.to_string())
                             .show_ui(ui, |ui| {
                                 ui.selectable_value(
-                                    &mut self.admin_action_takers,
+                                    &mut self.rules.admin_action_takers,
                                     AuthorizedActionTakers::NoOne,
                                     "No One",
                                 );
                                 ui.selectable_value(
-                                    &mut self.admin_action_takers,
+                                    &mut self.rules.admin_action_takers,
                                     AuthorizedActionTakers::ContractOwner,
                                     "Contract Owner",
                                 );
                                 ui.selectable_value(
-                                    &mut self.admin_action_takers,
+                                    &mut self.rules.admin_action_takers,
                                     AuthorizedActionTakers::Identity(Identifier::default()),
                                     "Identity",
                                 );
                                 ui.selectable_value(
-                                    &mut self.admin_action_takers,
+                                    &mut self.rules.admin_action_takers,
                                     AuthorizedActionTakers::MainGroup,
                                     "Main Group",
                                 );
                                 ui.selectable_value(
-                                    &mut self.admin_action_takers,
+                                    &mut self.rules.admin_action_takers,
                                     AuthorizedActionTakers::Group(0),
                                     "Group",
                                 );
                             });
 
-                        match &mut self.admin_action_takers {
+                        match &mut self.rules.admin_action_takers {
                             AuthorizedActionTakers::Identity(_) => {
                                 self.admin_identity.get_or_insert_with(String::new);
                                 if let Some(ref mut id) = self.admin_identity {
@@ -400,19 +408,21 @@ impl ChangeControlRulesUI {
 
                     // Booleans
                     ui.checkbox(
-                        &mut self.changing_authorized_action_takers_to_no_one_allowed,
+                        &mut self
+                            .rules
+                            .changing_authorized_action_takers_to_no_one_allowed,
                         "Changing authorized action takers to no one allowed",
                     );
                     ui.end_row();
 
                     ui.checkbox(
-                        &mut self.changing_admin_action_takers_to_no_one_allowed,
+                        &mut self.rules.changing_admin_action_takers_to_no_one_allowed,
                         "Changing admin action takers to no one allowed",
                     );
                     ui.end_row();
 
                     ui.checkbox(
-                        &mut self.self_changing_admin_action_takers_allowed,
+                        &mut self.rules.self_changing_admin_action_takers_allowed,
                         "Self-changing admin action takers allowed",
                     );
                     ui.end_row();
@@ -422,12 +432,12 @@ impl ChangeControlRulesUI {
         });
     }
 
-    pub fn to_change_control_rules(
+    pub fn extract_change_control_rules(
         &mut self,
         action_name: &str,
     ) -> Result<ChangeControlRules, String> {
-        // 1) Update self.authorized if it’s Identity or Group
-        match self.authorized {
+        // 1) Update self.rules.authorized_to_make_change if it’s Identity or Group
+        match self.rules.authorized_to_make_change {
             AuthorizedActionTakers::Identity(_) => {
                 if let Some(ref id_str) = self.authorized_identity {
                     let parsed =
@@ -437,7 +447,7 @@ impl ChangeControlRulesUI {
                                 action_name
                             )
                         })?;
-                    self.authorized = AuthorizedActionTakers::Identity(parsed);
+                    self.rules.authorized_to_make_change = AuthorizedActionTakers::Identity(parsed);
                 }
             }
             AuthorizedActionTakers::Group(_) => {
@@ -448,14 +458,14 @@ impl ChangeControlRulesUI {
                             action_name
                         )
                     })?;
-                    self.authorized = AuthorizedActionTakers::Group(parsed);
+                    self.rules.authorized_to_make_change = AuthorizedActionTakers::Group(parsed);
                 }
             }
             _ => {}
         }
 
-        // 2) Update self.admin_action_takers if it’s Identity or Group
-        match self.admin_action_takers {
+        // 2) Update self.rules.admin_action_takersif it’s Identity or Group
+        match self.rules.admin_action_takers {
             AuthorizedActionTakers::Identity(_) => {
                 if let Some(ref id_str) = self.admin_identity {
                     let parsed =
@@ -465,7 +475,7 @@ impl ChangeControlRulesUI {
                                 action_name
                             )
                         })?;
-                    self.admin_action_takers = AuthorizedActionTakers::Identity(parsed);
+                    self.rules.admin_action_takers = AuthorizedActionTakers::Identity(parsed);
                 }
             }
             AuthorizedActionTakers::Group(_) => {
@@ -476,23 +486,14 @@ impl ChangeControlRulesUI {
                             action_name
                         )
                     })?;
-                    self.admin_action_takers = AuthorizedActionTakers::Group(parsed);
+                    self.rules.admin_action_takers = AuthorizedActionTakers::Group(parsed);
                 }
             }
             _ => {}
         }
 
         // 3) Construct the ChangeControlRules
-        let rules = ChangeControlRules::V0(ChangeControlRulesV0 {
-            authorized_to_make_change: self.authorized.clone(),
-            admin_action_takers: self.admin_action_takers.clone(),
-            changing_authorized_action_takers_to_no_one_allowed: self
-                .changing_authorized_action_takers_to_no_one_allowed,
-            changing_admin_action_takers_to_no_one_allowed: self
-                .changing_admin_action_takers_to_no_one_allowed,
-            self_changing_admin_action_takers_allowed: self
-                .self_changing_admin_action_takers_allowed,
-        });
+        let rules = ChangeControlRules::V0(self.rules.clone());
 
         Ok(rules)
     }
@@ -562,25 +563,23 @@ pub struct DistributionEntry {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum TokenNameLanguage {
     English,
-    Mandarin,
-    Hindi,
-    Russian,
+    French,
     Spanish,
-    Arabic,
-    Bengali,
     Portuguese,
-    Japanese,
-    Punjabi,
     German,
-    Javanese,
-    Wu,
-    Malay,
-    Telugu,
+    Polish,
+    Russian,
+    Mandarin,
+    Japanese,
     Vietnamese,
     Korean,
-    French,
-    Marathi,
-    Tamil,
+    Javanese,
+    Malay,
+    Telugu,
+    Arabic,
+    Bengali,
+    Punjabi,
+    Hindi,
 }
 
 impl std::fmt::Display for TokenNameLanguage {
@@ -734,6 +733,7 @@ pub struct TokensScreen {
     // ====================================
     //           Token Creator
     // ====================================
+    selected_token_preset: Option<TokenConfigurationPresetFeatures>,
     show_pop_up_info: Option<String>,
     selected_identity: Option<QualifiedIdentity>,
     selected_key: Option<IdentityPublicKey>,
@@ -944,6 +944,7 @@ impl TokensScreen {
             token_to_remove: None,
 
             // Token Creator
+            selected_token_preset: None,
             show_pop_up_info: None,
             selected_identity: None,
             selected_key: None,
@@ -1083,6 +1084,33 @@ impl TokensScreen {
         }
 
         screen
+    }
+
+    pub fn change_to_preset(&mut self, preset: TokenConfigurationPreset) {
+        let basic_rules = preset.default_basic_change_control_rules_v0();
+        let advanced_rules = preset.default_advanced_change_control_rules_v0();
+        let emergency_rules = preset.default_emergency_action_change_control_rules_v0();
+
+        self.manual_minting_rules = basic_rules.clone().into();
+        self.manual_burning_rules = basic_rules.clone().into();
+        self.freeze_rules = advanced_rules.clone().into();
+        self.unfreeze_rules = advanced_rules.clone().into();
+        self.destroy_frozen_funds_rules = advanced_rules.clone().into();
+        self.emergency_action_rules = emergency_rules.clone().into();
+        self.max_supply_change_rules = advanced_rules.clone().into();
+        self.conventions_change_rules = basic_rules.clone().into();
+        self.perpetual_distribution_rules = advanced_rules.clone().into();
+        self.new_tokens_destination_identity_rules = basic_rules.clone().into();
+        self.minting_allow_choosing_destination_rules = basic_rules.clone().into();
+        self.authorized_main_control_group_change =
+            preset.default_main_control_group_can_be_modified();
+
+        // Reset optional identity/group inputs related to control group modification
+        self.main_control_group_change_authorized_identity = None;
+        self.main_control_group_change_authorized_group = None;
+
+        // Set `selected_token_preset` so UI shows current preset (Optional)
+        self.selected_token_preset = Some(preset.features);
     }
 
     // ─────────────────────────────────────────────────────────────────
@@ -1683,7 +1711,7 @@ impl TokensScreen {
         action
     }
 
-    fn render_keyword_search(&mut self, ui: &mut egui::Ui) -> AppAction {
+    fn render_keyword_search(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
 
         // 1) Input & “Go” button
@@ -1700,7 +1728,7 @@ impl TokensScreen {
             if ui.button("Go").clicked() {
                 // Clear old results, set status
                 self.search_results.lock().unwrap().clear();
-                let now = chrono::Utc::now().timestamp() as u64;
+                let now = Utc::now().timestamp() as u64;
                 self.contract_search_status = ContractSearchStatus::WaitingForResult(now);
                 self.search_current_page = 1;
                 self.next_cursors.clear();
@@ -1723,7 +1751,7 @@ impl TokensScreen {
                 ui.label("Enter a keyword above and click Go.");
             }
             ContractSearchStatus::WaitingForResult(start_time) => {
-                let now = chrono::Utc::now().timestamp() as u64;
+                let now = Utc::now().timestamp() as u64;
                 let elapsed = now - start_time;
                 ui.horizontal(|ui| {
                     ui.label(format!("Searching... {} seconds", elapsed));
@@ -1761,7 +1789,7 @@ impl TokensScreen {
                 });
             }
             ContractSearchStatus::ErrorMessage(e) => {
-                ui.colored_label(egui::Color32::RED, format!("Error: {}", e));
+                ui.colored_label(Color32::RED, format!("Error: {}", e));
             }
         }
 
@@ -1770,7 +1798,7 @@ impl TokensScreen {
 
     fn render_search_results_table(
         &mut self,
-        ui: &mut egui::Ui,
+        ui: &mut Ui,
         search_results: &[ContractDescriptionInfo],
     ) -> AppAction {
         let mut action = AppAction::None;
@@ -1827,7 +1855,7 @@ impl TokensScreen {
                                                 ));
 
                                             // // Add to MyTokens or do something with it
-                                            // // Note this is implemented but we will add it back later!
+                                            // // Note this is implemented, but we will add it back later!
                                             // // We changed to searching contracts instead of tokens for now
                                             // self.add_token_to_my_tokens(token.clone());
                                         }
@@ -1950,7 +1978,7 @@ impl TokensScreen {
         }
     }
 
-    pub fn render_token_creator(&mut self, context: &Context, ui: &mut egui::Ui) -> AppAction {
+    pub fn render_token_creator(&mut self, context: &Context, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
 
         // 1) If we've successfully completed contract creation, show a success UI
@@ -1989,7 +2017,7 @@ impl TokensScreen {
                     let all_identities = match self.app_context.load_local_qualified_identities() {
                         Ok(ids) => ids,
                         Err(_) => {
-                            ui.colored_label(egui::Color32::RED, "Error loading identities from local DB");
+                            ui.colored_label(Color32::RED, "Error loading identities from local DB");
                             return;
                         }
                     };
@@ -2160,106 +2188,25 @@ impl TokensScreen {
                                         self.token_names_input[i].1.to_string()
                                     ))
                                     .show_ui(ui, |ui| {
-                                        ui.selectable_value(
-                                            &mut self.token_names_input[i].1,
-                                            TokenNameLanguage::English,
-                                            "English",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.token_names_input[i].1,
-                                            TokenNameLanguage::Mandarin,
-                                            "Mandarin",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.token_names_input[i].1,
-                                            TokenNameLanguage::Hindi,
-                                            "Hindi",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.token_names_input[i].1,
-                                            TokenNameLanguage::Russian,
-                                            "Russian",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.token_names_input[i].1,
-                                            TokenNameLanguage::Spanish,
-                                            "Spanish",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.token_names_input[i].1,
-                                            TokenNameLanguage::Arabic,
-                                            "Arabic",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.token_names_input[i].1,
-                                            TokenNameLanguage::Bengali,
-                                            "Bengali",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.token_names_input[i].1,
-                                            TokenNameLanguage::Portuguese,
-                                            "Portuguese",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.token_names_input[i].1,
-                                            TokenNameLanguage::Japanese,
-                                            "Japanese",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.token_names_input[i].1,
-                                            TokenNameLanguage::Punjabi,
-                                            "Punjabi",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.token_names_input[i].1,
-                                            TokenNameLanguage::German,
-                                            "German",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.token_names_input[i].1,
-                                            TokenNameLanguage::Javanese,
-                                            "Javanese",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.token_names_input[i].1,
-                                            TokenNameLanguage::Wu,
-                                            "Wu (Shanghainese)",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.token_names_input[i].1,
-                                            TokenNameLanguage::Malay,
-                                            "Malay",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.token_names_input[i].1,
-                                            TokenNameLanguage::Telugu,
-                                            "Telugu",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.token_names_input[i].1,
-                                            TokenNameLanguage::Vietnamese,
-                                            "Vietnamese",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.token_names_input[i].1,
-                                            TokenNameLanguage::Korean,
-                                            "Korean",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.token_names_input[i].1,
-                                            TokenNameLanguage::French,
-                                            "French",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.token_names_input[i].1,
-                                            TokenNameLanguage::Marathi,
-                                            "Marathi",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.token_names_input[i].1,
-                                            TokenNameLanguage::Tamil,
-                                            "Tamil",
-                                        );
+
+                                        ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::English, "English");
+                                        ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::French, "French");
+                                        ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::Spanish, "Spanish");
+                                        ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::Portuguese, "Portuguese");
+                                        ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::German, "German");
+                                        ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::Polish, "Polish");
+                                        ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::Russian, "Russian");
+                                        ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::Mandarin, "Mandarin");
+                                        ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::Japanese, "Japanese");
+                                        ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::Vietnamese, "Vietnamese");
+                                        ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::Korean, "Korean");
+                                        ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::Javanese, "Javanese");
+                                        ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::Malay, "Malay");
+                                        ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::Telugu, "Telugu");
+                                        ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::Arabic, "Arabic");
+                                        ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::Bengali, "Bengali");
+                                        ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::Punjabi, "Punjabi");
+                                        ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::Hindi, "Hindi");
                                     });
                                 ui.horizontal(|ui| {
                                     if ui.button("+").clicked() {
@@ -2376,6 +2323,60 @@ impl TokensScreen {
                     ui.add_space(5.0);
 
                     ui.collapsing("Action Rules", |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label("Preset:");
+
+                            egui::ComboBox::from_id_salt("preset_selector")
+                                .selected_text(
+                                    self.selected_token_preset
+                                        .map(|p|                                         match p {
+                                MostRestrictive => "Most Restrictive",
+                                WithOnlyEmergencyAction => "Only Emergency Action",
+                                WithMintingAndBurningActions => "Minting And Burning",
+                                WithAllAdvancedActions => "Advanced Actions",
+                                WithExtremeActions => "All Allowed",
+                            })
+                                        .unwrap_or("Custom"),
+                                )
+                                .show_ui(ui, |ui| {
+                                    use TokenConfigurationPresetFeatures::*;
+
+                                    // First, the "Custom" option
+                                    ui.selectable_value(
+                                        &mut self.selected_token_preset,
+                                        None,
+                                        "Custom",
+                                    );
+
+                                    for variant in [
+                                        MostRestrictive,
+                                        WithOnlyEmergencyAction,
+                                        WithMintingAndBurningActions,
+                                        WithAllAdvancedActions,
+                                        WithExtremeActions,
+                                    ] {
+                                        let text = match variant {
+                                            MostRestrictive => "Most Restrictive",
+                                            WithOnlyEmergencyAction => "Only Emergency Action",
+                                            WithMintingAndBurningActions => "Minting And Burning",
+                                            WithAllAdvancedActions => "Advanced Actions",
+                                            WithExtremeActions => "All Allowed",
+                                        };
+                                        if ui.selectable_value(
+                                            &mut self.selected_token_preset,
+                                            Some(variant),
+                                            text,
+                                        ).clicked() {
+                                            let preset = TokenConfigurationPreset {
+                                                features: variant,
+                                                action_taker: AuthorizedActionTakers::ContractOwner, // Or from a field the user selects
+                                            };
+                                            self.change_to_preset(preset);
+                                        }
+                                    }
+                                });
+                        });
+
                         ui.add_space(3.0);
 
                         self.manual_minting_rules.render_control_change_rules_ui(ui, "Manual Mint");
@@ -2571,7 +2572,7 @@ impl TokensScreen {
                                         );
                                     });
 
-                                    let info_icon = egui::Label::new("ℹ").sense(egui::Sense::click());
+                                    let info_icon = Label::new("ℹ").sense(Sense::click());
                                     let response = ui.add(info_icon).on_hover_text("Info about distribution types");
 
                                     // Check if the label was clicked
@@ -3365,7 +3366,7 @@ Emits tokens in fixed amounts for specific intervals.
 
         // 8) If we are waiting, show spinner / time elapsed
         if let TokenCreatorStatus::WaitingForResult(start_time) = self.token_creator_status {
-            let now = chrono::Utc::now().timestamp() as u64;
+            let now = Utc::now().timestamp() as u64;
             let elapsed = now - start_time;
             ui.add_space(10.0);
             ui.horizontal(|ui| {
@@ -3380,7 +3381,7 @@ Emits tokens in fixed amounts for specific intervals.
         // Show an error if we have one
         if let Some(err_msg) = &self.token_creator_error_message {
             ui.add_space(10.0);
-            ui.colored_label(egui::Color32::RED, format!("{err_msg}"));
+            ui.colored_label(Color32::RED, format!("{err_msg}"));
             ui.add_space(10.0);
         }
 
@@ -3388,7 +3389,7 @@ Emits tokens in fixed amounts for specific intervals.
     }
 
     /// Renders a popup window displaying the data contract JSON.
-    pub fn render_data_contract_json_popup(&mut self, ui: &mut egui::Ui) {
+    pub fn render_data_contract_json_popup(&mut self, ui: &mut Ui) {
         if self.show_json_popup {
             let mut is_open = true;
             egui::Window::new("Data Contract JSON")
@@ -3434,7 +3435,7 @@ Emits tokens in fixed amounts for specific intervals.
     }
 
     /// Shows a popup "Are you sure?" for creating the token contract
-    fn render_token_creator_confirmation_popup(&mut self, ui: &mut egui::Ui) -> AppAction {
+    fn render_token_creator_confirmation_popup(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
         let mut is_open = true;
 
@@ -3530,7 +3531,7 @@ Emits tokens in fixed amounts for specific intervals.
 
     /// Once the contract creation is done (status=Complete),
     /// render a simple "Success" screen
-    fn render_token_creator_success_screen(&mut self, ui: &mut egui::Ui) {
+    fn render_token_creator_success_screen(&mut self, ui: &mut Ui) {
         ui.vertical_centered(|ui| {
             ui.add_space(50.0);
             ui.heading("Token Contract Created Successfully! 🎉");
@@ -3582,14 +3583,12 @@ Emits tokens in fixed amounts for specific intervals.
                 TokenNameLanguage::Punjabi => "pa".to_string(),
                 TokenNameLanguage::German => "de".to_string(),
                 TokenNameLanguage::Javanese => "jv".to_string(),
-                TokenNameLanguage::Wu => "wuu".to_string(),
                 TokenNameLanguage::Malay => "ms".to_string(),
                 TokenNameLanguage::Telugu => "te".to_string(),
                 TokenNameLanguage::Vietnamese => "vi".to_string(),
                 TokenNameLanguage::Korean => "ko".to_string(),
                 TokenNameLanguage::French => "fr".to_string(),
-                TokenNameLanguage::Marathi => "mr".to_string(),
-                TokenNameLanguage::Tamil => "ta".to_string(),
+                TokenNameLanguage::Polish => "pl".to_string(),
             };
 
             token_names.push((name_with_language.0.clone(), language));
@@ -3639,24 +3638,26 @@ Emits tokens in fixed amounts for specific intervals.
         // (or do the manual parse for each if needed)
         let manual_minting_rules = self
             .manual_minting_rules
-            .to_change_control_rules("Manual Mint")?;
+            .extract_change_control_rules("Manual Mint")?;
         let manual_burning_rules = self
             .manual_burning_rules
-            .to_change_control_rules("Manual Burn")?;
-        let freeze_rules = self.freeze_rules.to_change_control_rules("Freeze")?;
-        let unfreeze_rules = self.unfreeze_rules.to_change_control_rules("Unfreeze")?;
+            .extract_change_control_rules("Manual Burn")?;
+        let freeze_rules = self.freeze_rules.extract_change_control_rules("Freeze")?;
+        let unfreeze_rules = self
+            .unfreeze_rules
+            .extract_change_control_rules("Unfreeze")?;
         let destroy_frozen_funds_rules = self
             .destroy_frozen_funds_rules
-            .to_change_control_rules("Destroy Frozen Funds")?;
+            .extract_change_control_rules("Destroy Frozen Funds")?;
         let emergency_action_rules = self
             .emergency_action_rules
-            .to_change_control_rules("Emergency Action")?;
+            .extract_change_control_rules("Emergency Action")?;
         let max_supply_change_rules = self
             .max_supply_change_rules
-            .to_change_control_rules("Max Supply Change")?;
+            .extract_change_control_rules("Max Supply Change")?;
         let conventions_change_rules = self
             .conventions_change_rules
-            .to_change_control_rules("Conventions Change")?;
+            .extract_change_control_rules("Conventions Change")?;
 
         // The main_control_group_change_authorized is done manually in your code,
         // parse identity or group if needed. Reuse your existing logic:
@@ -3952,8 +3953,7 @@ Emits tokens in fixed amounts for specific intervals.
             perpetual_distribution: maybe_perpetual_distribution,
             perpetual_distribution_rules: self
                 .perpetual_distribution_rules
-                .to_change_control_rules("Perpetual Distribution")
-                .unwrap(),
+                .extract_change_control_rules("Perpetual Distribution")?,
             pre_programmed_distribution: if self.enable_pre_programmed_distribution {
                 let distributions: BTreeMap<u64, BTreeMap<Identifier, u64>> =
                     match self.parse_pre_programmed_distributions() {
@@ -3986,17 +3986,14 @@ Emits tokens in fixed amounts for specific intervals.
             },
             new_tokens_destination_identity_rules: self
                 .new_tokens_destination_identity_rules
-                .to_change_control_rules("New Tokens Destination Identity")
-                .unwrap(),
+                .extract_change_control_rules("New Tokens Destination Identity")?,
             minting_allow_choosing_destination: self.minting_allow_choosing_destination,
             minting_allow_choosing_destination_rules: self
                 .minting_allow_choosing_destination_rules
-                .to_change_control_rules("Minting Allow Choosing Destination")
-                .unwrap(),
+                .extract_change_control_rules("Minting Allow Choosing Destination")?,
             change_direct_purchase_pricing_rules: self
                 .minting_allow_choosing_destination_rules // TODO!
-                .to_change_control_rules("Change Direct Purchase Pricing")
-                .unwrap(),
+                .extract_change_control_rules("Change Direct Purchase Pricing")?,
         };
 
         Ok(dist_rules_v0)
@@ -4174,7 +4171,7 @@ Emits tokens in fixed amounts for specific intervals.
             match self.tokens_subscreen {
                 TokensSubscreen::MyTokens => {
                     ui.label(
-                        egui::RichText::new("No tracked tokens.")
+                        RichText::new("No tracked tokens.")
                             .heading()
                             .strong()
                             .color(Color32::GRAY),
@@ -4182,7 +4179,7 @@ Emits tokens in fixed amounts for specific intervals.
                 }
                 TokensSubscreen::SearchTokens => {
                     ui.label(
-                        egui::RichText::new("No matching tokens found.")
+                        RichText::new("No matching tokens found.")
                             .heading()
                             .strong()
                             .color(Color32::GRAY),
@@ -4190,7 +4187,7 @@ Emits tokens in fixed amounts for specific intervals.
                 }
                 TokensSubscreen::TokenCreator => {
                     ui.label(
-                        egui::RichText::new("Cannot render token creator for some reason")
+                        RichText::new("Cannot render token creator for some reason")
                             .heading()
                             .strong()
                             .color(Color32::GRAY),
@@ -4325,7 +4322,7 @@ Emits tokens in fixed amounts for specific intervals.
         AppAction::None
     }
 
-    fn show_remove_identity_token_balance_popup(&mut self, ui: &mut egui::Ui) {
+    fn show_remove_identity_token_balance_popup(&mut self, ui: &mut Ui) {
         // If no token is set, nothing to confirm
         let token_to_remove = match &self.identity_token_balance_to_remove {
             Some(token) => token.clone(),
@@ -4381,7 +4378,7 @@ Emits tokens in fixed amounts for specific intervals.
         }
     }
 
-    fn show_remove_token_popup(&mut self, ui: &mut egui::Ui) {
+    fn show_remove_token_popup(&mut self, ui: &mut Ui) {
         // If no token is set, nothing to confirm
         let token_to_remove = match &self.token_to_remove {
             Some(token) => token.clone(),
@@ -4861,18 +4858,21 @@ mod tests {
     impl ChangeControlRulesUI {
         /// Sets every field to some dummy/test value to ensure coverage in tests.
         pub fn set_all_fields_for_testing(&mut self) {
-            self.authorized = AuthorizedActionTakers::Identity(Identifier::default());
+            self.rules.authorized_to_make_change =
+                AuthorizedActionTakers::Identity(Identifier::default());
             self.authorized_identity =
                 Some("ACMnPwQZcH3RP9atgkmvtmN45QrVcYvh5cmUYARHBTu9".to_owned());
             self.authorized_group = None;
 
-            self.admin_action_takers = AuthorizedActionTakers::Identity(Identifier::default());
+            self.rules.admin_action_takers =
+                AuthorizedActionTakers::Identity(Identifier::default());
             self.admin_identity = Some("CCMnPwQZcH3RP9atgkmvtmN45QrVcYvh5cmUYARHBTu9".to_owned());
             self.admin_group = None;
 
-            self.changing_authorized_action_takers_to_no_one_allowed = true;
-            self.changing_admin_action_takers_to_no_one_allowed = true;
-            self.self_changing_admin_action_takers_allowed = true;
+            self.rules
+                .changing_authorized_action_takers_to_no_one_allowed = true;
+            self.rules.changing_admin_action_takers_to_no_one_allowed = true;
+            self.rules.self_changing_admin_action_takers_allowed = true;
         }
     }
 
@@ -5055,8 +5055,9 @@ mod tests {
 
         // A) Check the top-level fields
         assert_eq!(contract_v1.version, 1);
-        assert!(
-            contract_v1.tokens.len() == 1,
+        assert_eq!(
+            contract_v1.tokens.len(),
+            1,
             "We expected exactly one token config"
         );
 
@@ -5096,7 +5097,10 @@ mod tests {
             *token_v0
                 .manual_minting_rules
                 .authorized_to_make_change_action_takers(),
-            token_creator_ui.manual_minting_rules.authorized
+            token_creator_ui
+                .manual_minting_rules
+                .rules
+                .authorized_to_make_change
         );
         // ... etc.
 

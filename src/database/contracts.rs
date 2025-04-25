@@ -2,6 +2,7 @@ use crate::context::AppContext;
 use crate::database::Database;
 use crate::model::qualified_contract::QualifiedContract;
 use bincode::config;
+use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
@@ -250,6 +251,21 @@ impl Database {
          WHERE contract_id = ? AND network = ?",
             params![contract_id, network],
         )?;
+
+        Ok(())
+    }
+
+    /// Deletes all local tokens and related entries (identity_token_balances, token_order) in Devnet.
+    pub fn remove_all_contracts_in_devnet(&self, app_context: &AppContext) -> rusqlite::Result<()> {
+        if app_context.network != Network::Devnet {
+            return Ok(());
+        }
+        let network = app_context.network_string();
+
+        let conn = self.conn.lock().unwrap();
+
+        // Delete tokens and cascade deletions in related tables due to foreign keys
+        conn.execute("DELETE FROM contract WHERE network = ?", params![network])?;
 
         Ok(())
     }

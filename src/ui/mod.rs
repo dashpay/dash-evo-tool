@@ -187,7 +187,7 @@ pub enum ScreenType {
     PauseTokensScreen(IdentityTokenBalance),
     ResumeTokensScreen(IdentityTokenBalance),
     ClaimTokensScreen(IdentityTokenBalance),
-    ViewClaimsScreen(IdentityTokenBalance),
+    ViewTokenClaimsScreen(IdentityTokenBalance),
 }
 
 impl ScreenType {
@@ -324,9 +324,12 @@ impl ScreenType {
             ScreenType::ClaimTokensScreen(identity_token_balance) => Screen::ClaimTokensScreen(
                 ClaimTokensScreen::new(identity_token_balance.clone(), app_context),
             ),
-            ScreenType::ViewClaimsScreen(identity_token_balance) => Screen::ViewTokenClaimsScreen(
-                ViewTokenClaimsScreen::new(identity_token_balance.clone(), app_context),
-            ),
+            ScreenType::ViewTokenClaimsScreen(identity_token_balance) => {
+                Screen::ViewTokenClaimsScreen(ViewTokenClaimsScreen::new(
+                    identity_token_balance.clone(),
+                    app_context,
+                ))
+            }
             ScreenType::AddTokenById => Screen::AddTokenById(AddTokenByIdScreen::new(app_context)),
         }
     }
@@ -536,7 +539,7 @@ impl Screen {
                 ScreenType::ClaimTokensScreen(screen.identity_token_balance.clone())
             }
             Screen::ViewTokenClaimsScreen(screen) => {
-                ScreenType::ViewClaimsScreen(screen.identity_token_balance.clone())
+                ScreenType::ViewTokenClaimsScreen(screen.identity_token_balance.clone())
             }
             Screen::AddTokenById(_) => ScreenType::AddTokenById,
         }

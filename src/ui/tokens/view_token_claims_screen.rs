@@ -1,30 +1,31 @@
 use crate::app::{AppAction, DesiredAppAction};
 use crate::backend_task::document::DocumentTask;
-use crate::backend_task::BackendTask;
+use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
-use crate::model::qualified_contract::QualifiedContract;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::{MessageType, ScreenLike};
-use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
-use dash_sdk::dpp::data_contract::associated_token::token_distribution_key::TokenDistributionType;
-use dash_sdk::dpp::data_contract::TokenConfiguration;
-use dash_sdk::platform::DocumentQuery;
+use chrono::{DateTime, Utc};
+use dash_sdk::dpp::document::DocumentV0Getters;
+use dash_sdk::dpp::platform_value::Value;
+use dash_sdk::platform::{Document, DocumentQuery};
+use egui::Color32;
 use egui::Context;
 use std::sync::Arc;
 
 use super::tokens_screen::IdentityTokenBalance;
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum FetchStatus {
+    NotFetching,
+    Fetching(DateTime<Utc>),
+}
+
 pub struct ViewTokenClaimsScreen {
     pub identity_token_balance: IdentityTokenBalance,
     pub new_claims_query: DocumentQuery,
-    token_contract: Option<QualifiedContract>,
-    token_configuration: Option<TokenConfiguration>,
-    distribution_type: Option<TokenDistributionType>,
-    error_message: Option<String>,
+    message: Option<(String, MessageType, DateTime<Utc>)>,
+    fetch_status: FetchStatus,
     pub app_context: Arc<AppContext>,
-    show_confirmation_popup: bool,
-    wallet_password: String,
-    show_password: bool,
 }
 
 impl ViewTokenClaimsScreen {
@@ -32,60 +33,83 @@ impl ViewTokenClaimsScreen {
         identity_token_balance: IdentityTokenBalance,
         app_context: &Arc<AppContext>,
     ) -> Self {
-        let token_contract = app_context
-            .db
-            .get_contract_by_id(identity_token_balance.data_contract_id, app_context)
-            .ok()
-            .flatten();
-
-        let token_configuration = token_contract
-            .as_ref()
-            .map(|contract| {
-                contract
-                    .contract
-                    .expected_token_configuration(identity_token_balance.token_position)
-                    .ok()
-            })
-            .flatten()
-            .cloned();
-
         Self {
             identity_token_balance,
             new_claims_query: DocumentQuery {
                 data_contract: app_context.token_history_contract.clone(),
-                document_type_name: "claims".to_string(),
+                document_type_name: "claim".to_string(),
                 where_clauses: vec![],
                 order_by_clauses: vec![],
                 limit: 0,
                 start: None,
             },
-            token_contract,
-            token_configuration,
-            distribution_type: None,
-            error_message: None,
+            message: None,
+            fetch_status: FetchStatus::NotFetching,
             app_context: app_context.clone(),
-            show_confirmation_popup: false,
-            wallet_password: String::new(),
-            show_password: false,
         }
     }
 }
 
 impl ScreenLike for ViewTokenClaimsScreen {
-    fn display_message(&mut self, _message: &str, message_type: MessageType) {
+    fn display_message(&mut self, message: &str, message_type: MessageType) {
         match message_type {
-            MessageType::Success => {}
-            MessageType::Error => {}
+            MessageType::Success => {
+                self.message = Some((message.to_string(), MessageType::Success, Utc::now()));
+            }
+            MessageType::Error => {
+                self.message = Some((message.to_string(), MessageType::Error, Utc::now()));
+                if message.contains("Error fetching documents") {
+                    self.fetch_status = FetchStatus::NotFetching;
+                }
+            }
             MessageType::Info => {
-                // no-op
+                self.message = Some((message.to_string(), MessageType::Info, Utc::now()));
             }
         }
     }
 
-    fn refresh(&mut self) {}
+    fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
+        match backend_task_success_result {
+            BackendTaskSuccessResult::Documents(documents) => {
+                self.fetch_status = FetchStatus::NotFetching;
+                if !documents.is_empty() {
+                    let claims: Vec<Document> =
+                        documents.into_iter().filter_map(|(_, doc)| doc).collect();
+                    let documents_string = claims
+                        .iter()
+                        .map(|doc| {
+                            let amount_string = doc
+                                .get("amount")
+                                .unwrap_or(&Value::Text("None".to_string()))
+                                .to_string();
+                            let timestamp_string = doc.created_at().unwrap_or_default().to_string();
+                            let block_height_string = doc
+                                .created_at_block_height()
+                                .unwrap_or_default()
+                                .to_string();
+                            let note_string = doc
+                                .get("note")
+                                .unwrap_or(&Value::Text("None".to_string()))
+                                .to_string();
+
+                            format!(
+                                "Claim: Amount: {}, Timestamp: {}, Block Height: {}, Note: {}",
+                                amount_string, timestamp_string, block_height_string, note_string
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    self.display_message(&documents_string, MessageType::Info);
+                } else {
+                    self.display_message("No claims found", MessageType::Info);
+                }
+            }
+            _ => {}
+        }
+    }
 
     fn ui(&mut self, ctx: &Context) -> AppAction {
-        let action = add_top_panel(
+        let mut action = add_top_panel(
             ctx,
             &self.app_context,
             vec![
@@ -107,6 +131,39 @@ impl ScreenLike for ViewTokenClaimsScreen {
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("View Token Claims");
             ui.add_space(10.0);
+
+            if ui.button("Fetch Claims").clicked() {
+                action |= AppAction::BackendTask(BackendTask::DocumentTask(
+                    DocumentTask::FetchDocuments(self.new_claims_query.clone()),
+                ));
+                self.fetch_status = FetchStatus::Fetching(Utc::now())
+            }
+
+            if let Some((msg, msg_type, _)) = &self.message {
+                ui.add_space(10.0);
+                match msg_type {
+                    MessageType::Success => {
+                        ui.colored_label(Color32::DARK_GREEN, msg);
+                    }
+                    MessageType::Error => {
+                        ui.colored_label(Color32::DARK_RED, msg);
+                    }
+                    MessageType::Info => {
+                        ui.label(msg);
+                    }
+                };
+            }
+
+            if self.fetch_status != FetchStatus::NotFetching {
+                ui.add_space(10.0);
+                match &self.fetch_status {
+                    FetchStatus::Fetching(start_time) => {
+                        let elapsed = Utc::now().signed_duration_since(*start_time);
+                        ui.label(format!("Fetching... ({} seconds)", elapsed.num_seconds()));
+                    }
+                    _ => {}
+                }
+            }
         });
 
         action

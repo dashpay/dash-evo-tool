@@ -62,6 +62,7 @@ use super::pause_tokens_screen::PauseTokensScreen;
 use super::resume_tokens_screen::ResumeTokensScreen;
 use super::transfer_tokens_screen::TransferTokensScreen;
 use super::unfreeze_tokens_screen::UnfreezeTokensScreen;
+use super::view_token_claims_screen::ViewTokenClaimsScreen;
 
 const EXP_FORMULA_PNG: &[u8] = include_bytes!("../../../assets/exp_function.png");
 const INV_LOG_FORMULA_PNG: &[u8] = include_bytes!("../../../assets/inv_log_function.png");
@@ -1600,8 +1601,8 @@ impl TokensScreen {
                                                         }
                                                         if ui.button("View Claims").clicked() {
                                                             action = AppAction::AddScreen(
-                                                                Screen::ResumeTokensScreen(
-                                                                    ResumeTokensScreen::new(
+                                                                Screen::ViewTokenClaimsScreen(
+                                                                    ViewTokenClaimsScreen::new(
                                                                         itb.clone(),
                                                                         &self.app_context,
                                                                     ),
@@ -4589,7 +4590,7 @@ impl ScreenLike for TokensScreen {
         let right_buttons = match self.tokens_subscreen {
             TokensSubscreen::MyTokens => vec![
                 (
-                    "Add",
+                    "Add Token",
                     DesiredAppAction::AddScreenType(ScreenType::AddTokenById),
                 ),
                 (

@@ -481,7 +481,7 @@ impl AppContext {
             updated_at_block_height: None,
             created_at_epoch: None,
             updated_at_epoch: None,
-            description: None,
+            description: token_description.clone(),
         };
 
         // 2) Build a single TokenConfiguration in V0 format

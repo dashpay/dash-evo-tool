@@ -8,6 +8,9 @@ use dash_sdk::dpp::data_contract::associated_token::token_configuration::accesso
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationV0;
 use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::v0::TokenDistributionRulesV0;
 use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::TokenDistributionRules;
+use dash_sdk::dpp::data_contract::associated_token::token_keeps_history_rules::accessors::v0::{TokenKeepsHistoryRulesV0Getters, TokenKeepsHistoryRulesV0Setters};
+use dash_sdk::dpp::data_contract::associated_token::token_keeps_history_rules::TokenKeepsHistoryRules;
+use dash_sdk::dpp::data_contract::associated_token::token_keeps_history_rules::v0::TokenKeepsHistoryRulesV0;
 use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::distribution_function::DistributionFunction;
 use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::distribution_recipient::TokenDistributionRecipient;
 use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::reward_distribution_type::RewardDistributionType;
@@ -29,7 +32,7 @@ use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
 use dash_sdk::query_types::IndexMap;
 use eframe::egui::{self, CentralPanel, Color32, Context, Frame, Margin, Ui};
-use egui::{Align, ColorImage, RichText, TextureHandle};
+use egui::{Align, Checkbox, ColorImage, Label, Response, RichText, Sense, TextureHandle};
 use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
 use egui_extras::{Column, TableBuilder};
 use image::ImageReader;
@@ -94,6 +97,45 @@ pub struct TokenInfo {
 pub struct ContractDescriptionInfo {
     pub data_contract_id: Identifier,
     pub description: String,
+}
+
+/* helper: flip all flags on/off */
+trait SetAll {
+    fn set_all(&mut self, value: bool);
+}
+impl SetAll for TokenKeepsHistoryRulesV0 {
+    fn set_all(&mut self, value: bool) {
+        self.set_keeps_transfer_history(value);
+        self.set_keeps_freezing_history(value);
+        self.set_keeps_minting_history(value);
+        self.set_keeps_burning_history(value);
+        self.set_keeps_direct_pricing_history(value);
+        self.set_keeps_direct_purchase_history(value);
+    }
+}
+
+/* helper: tiny checkbox with no extra spacing */
+fn sub_checkbox(ui: &mut Ui, flag: &mut bool, label: &str) {
+    ui.horizontal(|ui| {
+        ui.checkbox(flag, label);
+    });
+}
+
+/// helper: draw a tri-state parent checkbox backed by `Option<bool>`
+fn tri_state(ui: &mut Ui, state: &mut Option<bool>, label: &str) -> Response {
+    // temporary bool just for the click interaction
+    let mut tmp = state.unwrap_or(false);
+
+    let resp = ui.add(Checkbox::new(&mut tmp, label).indeterminate(state.is_none()));
+
+    if resp.clicked() {
+        *state = match *state {
+            Some(false) => Some(true),
+            Some(true) => Some(false),
+            None => Some(true),
+        };
+    }
+    resp
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
@@ -631,7 +673,7 @@ pub struct TokenBuildArgs {
     pub base_supply: u64,
     pub max_supply: Option<u64>,
     pub start_paused: bool,
-    pub keeps_history: bool,
+    pub keeps_history: TokenKeepsHistoryRules,
     pub main_control_group: Option<u16>,
 
     pub manual_minting_rules: ChangeControlRules,
@@ -709,7 +751,8 @@ pub struct TokensScreen {
     show_token_creator_confirmation_popup: bool,
     token_creator_status: TokenCreatorStatus,
     token_creator_error_message: Option<String>,
-    token_keeps_history: bool,
+    show_advanced_keeps_history: bool,
+    token_advanced_keeps_history: TokenKeepsHistoryRulesV0,
     groups_ui: Vec<GroupConfigUI>,
     cached_build_args: Option<TokenBuildArgs>,
     show_json_popup: bool,
@@ -919,7 +962,10 @@ impl TokensScreen {
                 .to_string(),
             max_supply_input: String::new(),
             start_as_paused_input: false,
-            token_keeps_history: false,
+            show_advanced_keeps_history: false,
+            token_advanced_keeps_history: TokenKeepsHistoryRulesV0::default_for_keeping_all_history(
+                true,
+            ),
             main_control_group_input: String::new(),
             groups_ui: Vec::new(),
             cached_build_args: None,
@@ -1430,7 +1476,7 @@ impl TokensScreen {
                                                                 token_id: itb.token_id,
                                                             }));
                                                             self.refreshing_status = RefreshingStatus::Refreshing(Utc::now().timestamp() as u64);
-                                                        }    
+                                                        }
                                                     });
                                                 } else {
                                                     if ui.button("Estimate").clicked() {
@@ -1792,6 +1838,115 @@ impl TokensScreen {
         });
 
         action
+    }
+
+    fn history_row(&mut self, ui: &mut Ui) {
+        // --- 1.  pull or create the rules object --------------------------------
+        let rules = self.token_advanced_keeps_history;
+
+        let TokenKeepsHistoryRulesV0 {
+            keeps_transfer_history,
+            keeps_freezing_history,
+            keeps_minting_history,
+            keeps_burning_history,
+            keeps_direct_pricing_history,
+            keeps_direct_purchase_history,
+        } = rules;
+
+        let flags = [
+            keeps_transfer_history,
+            keeps_freezing_history,
+            keeps_minting_history,
+            keeps_burning_history,
+            keeps_direct_pricing_history,
+            keeps_direct_purchase_history,
+        ];
+
+        let all_on = flags.iter().all(|b| *b);
+        let none_on = flags.iter().all(|b| !*b);
+
+        // --- 2.  parent tri-state checkbox --------------------------------------
+        let mut parent_state: Option<bool> = if all_on {
+            Some(true)
+        } else if none_on {
+            Some(false)
+        } else {
+            None // ⇒ indeterminate
+        };
+
+        //--------------------------------------------------------------
+        // 2. parent tri-state + “Advanced” button in **one** cell
+        //--------------------------------------------------------------
+        ui.horizontal(|ui| {
+            // tri-state checkbox
+            let response = tri_state(ui, &mut parent_state, "Keep history");
+
+            // propagate changes from parent to all children
+            if response.clicked() {
+                if let Some(val) = parent_state {
+                    self.token_advanced_keeps_history.keeps_transfer_history = val;
+                    self.token_advanced_keeps_history.keeps_freezing_history = val;
+                    self.token_advanced_keeps_history.keeps_minting_history = val;
+                    self.token_advanced_keeps_history.keeps_burning_history = val;
+                    self.token_advanced_keeps_history
+                        .keeps_direct_pricing_history = val;
+                    self.token_advanced_keeps_history
+                        .keeps_direct_purchase_history = val;
+                }
+            }
+
+            ui.add_space(8.0);
+            let arrow = if self.show_advanced_keeps_history {
+                "[-]"
+            } else {
+                "[+]"
+            };
+            if ui
+                .small_button(format!("Advanced {arrow}"))
+                .on_hover_text("Configure individual history ledgers")
+                .clicked()
+            {
+                self.show_advanced_keeps_history = !self.show_advanced_keeps_history;
+            }
+        });
+
+        // --- 4.  indented sub-checkboxes when advanced is open ------------------
+        if self.show_advanced_keeps_history {
+            sub_checkbox(
+                ui,
+                &mut self.token_advanced_keeps_history.keeps_transfer_history,
+                "Record transfers",
+            );
+            sub_checkbox(
+                ui,
+                &mut self.token_advanced_keeps_history.keeps_freezing_history,
+                "Record freezes / unfreezes",
+            );
+            sub_checkbox(
+                ui,
+                &mut self.token_advanced_keeps_history.keeps_minting_history,
+                "Record mints",
+            );
+            sub_checkbox(
+                ui,
+                &mut self.token_advanced_keeps_history.keeps_burning_history,
+                "Record burns",
+            );
+            sub_checkbox(
+                ui,
+                &mut self
+                    .token_advanced_keeps_history
+                    .keeps_direct_pricing_history,
+                "Record direct-pricing changes",
+            );
+            sub_checkbox(
+                ui,
+                &mut self
+                    .token_advanced_keeps_history
+                    .keeps_direct_purchase_history,
+                "Record direct purchases",
+            );
+        }
     }
 
     pub fn render_token_creator(&mut self, context: &Context, ui: &mut egui::Ui) -> AppAction {
@@ -2157,24 +2312,61 @@ impl TokensScreen {
                             .show(ui, |ui| {
 
                                 // Start as paused
-                                ui.checkbox(&mut self.start_as_paused_input, "Start as paused");
+                                ui.horizontal(|ui| {
+                                    ui.checkbox(&mut self.start_as_paused_input, "Start as paused");
+
+                                    // Information icon with tooltip
+                                    if ui
+                                        .add(Label::new(RichText::new("ℹ").monospace()).sense(Sense::hover()))
+                                        .on_hover_text(
+                                            "When enabled, the token will be created in a paused state, meaning transfers will be \
+             disabled by default. All other token features—such as distributions and manual minting—\
+             remain fully functional. To allow transfers in the future, the token must be unpaused \
+             via an emergency action. It is strongly recommended to enable emergency actions if this \
+             option is selected, unless the intention is to permanently disable transfers.",
+                                        )
+                                        .hovered()
+                                    {
+                                        // Optional: visual feedback or styling if hovered
+                                    }
+                                });
                                 ui.end_row();
 
-                                // 1) Keep history?
-                                ui.checkbox(&mut self.token_keeps_history, "Keep history");
+                                self.history_row(ui);
                                 ui.end_row();
 
                                 // Name should be capitalized
-                                ui.checkbox(
-                                    &mut self.should_capitalize_input,
-                                    "Name should be capitalized",
-                                );
+                                ui.horizontal(|ui| {
+                                    ui.checkbox(&mut self.should_capitalize_input, "Name should be capitalized");
+
+                                    // Information icon with tooltip
+                                    if ui
+                                        .add(Label::new(RichText::new("ℹ").monospace()).sense(Sense::hover()))
+                                        .on_hover_text(
+                                            "This is used only as helper information to client applications that will use \
+                                            token. This informs them on whether to capitalize the token name or not by default.",
+                                        )
+                                        .hovered()
+                                    {
+                                    }
+                                });
                                 ui.end_row();
 
                                 // Decimals
                                 ui.horizontal(|ui| {
                                     ui.label("Decimals:");
                                     ui.text_edit_singleline(&mut self.decimals_input);
+                                    if ui
+                                        .add(Label::new(RichText::new("ℹ").monospace()).sense(Sense::hover()))
+                                        .on_hover_text(
+                                            "The decimal places of the token, for example Dash and Bitcoin use 8. \
+                                            The minimum indivisible amount is a Duff or a Satoshi respectively. \
+                                            If you put a value greater than 0 this means that it is indicated that the \
+                                            consensus is that 10^(number entered) is what represents 1 full unit of the token.",
+                                        )
+                                        .hovered()
+                                    {
+                                    }
                                 });
                                 ui.end_row();
                             });
@@ -3430,7 +3622,7 @@ Emits tokens in fixed amounts for specific intervals.
         };
 
         let start_paused = self.start_as_paused_input;
-        let keeps_history = self.token_keeps_history;
+        let keeps_history = self.token_advanced_keeps_history.into();
 
         let main_control_group = if self.main_control_group_input.is_empty() {
             None
@@ -3884,7 +4076,9 @@ Emits tokens in fixed amounts for specific intervals.
         self.max_supply_input = "".to_string();
         self.start_as_paused_input = false;
         self.should_capitalize_input = false;
-        self.token_keeps_history = false;
+        self.token_advanced_keeps_history =
+            TokenKeepsHistoryRulesV0::default_for_keeping_all_history(true);
+        self.show_advanced_keeps_history = false;
         self.manual_minting_rules = ChangeControlRulesUI::default();
         self.manual_burning_rules = ChangeControlRulesUI::default();
         self.freeze_rules = ChangeControlRulesUI::default();
@@ -4728,7 +4922,8 @@ mod tests {
         token_creator_ui.max_supply_input = "10000000".to_string();
         token_creator_ui.decimals_input = "8".to_string();
         token_creator_ui.start_as_paused_input = true;
-        token_creator_ui.token_keeps_history = true;
+        token_creator_ui.token_advanced_keeps_history =
+            TokenKeepsHistoryRulesV0::default_for_keeping_all_history(true);
         token_creator_ui.should_capitalize_input = true;
 
         // Main control group

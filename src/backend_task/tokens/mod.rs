@@ -409,7 +409,7 @@ impl AppContext {
                     sdk,
                 )
                 .await
-                .map_err(|e| format!("Failed to claim tokens: {e}")),
+                .map_err(|e| format!("Failed to get estimated rewards: {e}")),
             TokenTask::QueryIdentityTokenBalance(identity_token_pair) => self
                 .query_token_balance(
                     sdk,

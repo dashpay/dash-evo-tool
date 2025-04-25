@@ -34,27 +34,30 @@ impl AppContext {
         let token_config = self
             .db
             .get_token_config_for_id(&token_id, self)
-            .map_err(|e| format!("Failed to get token config: {e}"))?
-            .ok_or("Token config not found")?;
+            .map_err(|e| format!("Failed to get token config from local database: {e}"))?
+            .ok_or("Corrupted DET state: Token config not found in database")?;
         let perpetual_distribution = token_config
             .distribution_rules()
             .perpetual_distribution()
-            .ok_or("Perpetual distribution function not found")?;
+            .ok_or("Token doesn't have perpetual distribution")?;
         let data_contract = self
             .get_contract_by_token_id(&token_id)
-            .map_err(|e| format!("Failed to get data contract: {e}"))?
-            .ok_or("Data contract not found")?;
+            .map_err(|e| format!("Failed to get data contract from local database: {e}"))?
+            .ok_or("Corrupted DET state: Data contract not found in database")?;
 
         let recipient = perpetual_distribution.distribution_recipient();
         match recipient {
             TokenDistributionRecipient::ContractOwner => {
                 if data_contract.contract.owner_id() != identity_id {
-                    return Err("Identity is not the contract owner".to_string());
+                    return Err("This token's distribution recipient is the contract owner, and this identity is not the contract owner".to_string());
                 }
             }
             TokenDistributionRecipient::Identity(identifier) => {
                 if identifier != identity_id {
-                    return Err("Identity is not the recipient".to_string());
+                    return Err(
+                        "This identity is not a valid distribution recipient for this token"
+                            .to_string(),
+                    );
                 }
             }
             TokenDistributionRecipient::EvonodesByParticipation => {
@@ -65,9 +68,9 @@ impl AppContext {
                 let qi = qualified_identities
                     .iter()
                     .find(|identity| identity.identity.id() == identity_id)
-                    .ok_or("Identity not found")?;
+                    .ok_or("Identity not found in local database")?;
                 if qi.identity_type != IdentityType::Evonode {
-                    return Err("Identity is not an evonode".to_string());
+                    return Err("This token's distribution recipient is EvonodesByParticipation, and this identity is not an evonode".to_string());
                 }
             }
         }
@@ -83,13 +86,13 @@ impl AppContext {
         let last_claim = RewardDistributionMoment::fetch(sdk, query)
             .await
             .map_err(|e| {
-                format!("Failed to fetch token non claimed perpetual distribution rewards: {e}")
+                format!("Failed to fetch token non claimed perpetual distribution rewards from Platform: {e}")
             })?;
 
         let contract_creation_moment = perpetual_distribution
             .distribution_type()
             .contract_creation_moment(&data_contract.contract)
-            .ok_or("Contract does not have a start moment".to_string())?;
+            .ok_or("Calculation error: Contract does not have a start moment".to_string())?;
 
         let contract_creation_cycle_start = contract_creation_moment
             .cycle_start(perpetual_distribution.distribution_type().interval())
@@ -102,7 +105,11 @@ impl AppContext {
         // Get the current moment (block, time, or epoch)
         let current_epoch_with_metadata = ExtendedEpochInfo::fetch_current_with_metadata(sdk)
             .await
-            .map_err(|e| format!("Failed to fetch current epoch: {e}"))?;
+            .map_err(|e| {
+                format!(
+                    "Failed to fetch current epoch from Platform, required for calculation: {e}"
+                )
+            })?;
 
         let block_info = dash_sdk::dpp::block::block_info::BlockInfo {
             time_ms: current_epoch_with_metadata.1.time_ms,

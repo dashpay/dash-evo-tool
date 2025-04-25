@@ -33,6 +33,10 @@ impl AppContext {
             .remove_all_asset_locks_identity_id_for_devnet(self)
             .map_err(|e| e.to_string())?;
 
+        self.db
+            .remove_all_contracts_in_devnet(self)
+            .map_err(|e| e.to_string())?;
+
         Ok(BackendTaskSuccessResult::Refresh)
     }
 }

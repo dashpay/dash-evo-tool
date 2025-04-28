@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use chrono::{DateTime, Duration, Utc};
 use dash_sdk::dpp::balances::credits::TokenAmount;
 use dash_sdk::dpp::dashcore::Network::Devnet;
+use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::{TokenConfigurationPreset, TokenConfigurationPresetFeatures, TokenConfigurationV0};
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationPresetFeatures::{MostRestrictive, WithAllAdvancedActions, WithExtremeActions, WithMintingAndBurningActions, WithOnlyEmergencyAction};
@@ -45,6 +46,7 @@ use crate::backend_task::BackendTask;
 
 use crate::app::{AppAction, DesiredAppAction};
 use crate::context::AppContext;
+use crate::model::qualified_contract::QualifiedContract;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::ui::components::left_panel::add_left_panel;
@@ -1537,10 +1539,34 @@ impl TokensScreen {
 
                                                     // Claim
                                                     if ui.button("Claim").clicked() {
+                                                        let token_contract = match self.app_context
+                                                            .db
+                                                            .get_contract_by_id(itb.data_contract_id, &self.app_context)
+                                                            .ok()
+                                                            .flatten().ok_or("Expected token contract") {
+                                                            Ok(contract) => contract,
+                                                            Err(e) => {
+                                                                self.set_error_message(Some(e.to_string()));
+                                                                return;
+                                                            }
+                                                        };
+
+                                                        let token_configuration = match token_contract
+                                                            .contract
+                                                            .expected_token_configuration(itb.token_position)
+                                                            .map_err(|_err| "Expected to get token configuration") {
+                                                            Ok(token_configuration) => token_configuration.clone(),
+                                                            Err(e) => {
+                                                                self.set_error_message(Some(e.to_string()));
+                                                                return;
+                                                            }
+                                                        };
                                                         action = AppAction::AddScreen(
                                                             Screen::ClaimTokensScreen(
                                                                 ClaimTokensScreen::new(
                                                                     itb.clone(),
+                                                                    token_contract,
+                                                                    token_configuration,
                                                                     &self.app_context,
                                                                 ),
                                                             ),

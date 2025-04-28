@@ -44,8 +44,8 @@ pub struct ClaimTokensScreen {
     pub identity: QualifiedIdentity,
     pub identity_token_balance: IdentityTokenBalance,
     selected_key: Option<dash_sdk::platform::IdentityPublicKey>,
-    token_contract: Option<QualifiedContract>,
-    token_configuration: Option<TokenConfiguration>,
+    token_contract: QualifiedContract,
+    token_configuration: TokenConfiguration,
     distribution_type: Option<TokenDistributionType>,
     status: ClaimTokensStatus,
     error_message: Option<String>,
@@ -59,6 +59,8 @@ pub struct ClaimTokensScreen {
 impl ClaimTokensScreen {
     pub fn new(
         identity_token_balance: IdentityTokenBalance,
+        token_contract: QualifiedContract,
+        token_configuration: TokenConfiguration,
         app_context: &Arc<AppContext>,
     ) -> Self {
         let identity = app_context
@@ -84,22 +86,21 @@ impl ClaimTokensScreen {
         let selected_wallet =
             get_selected_wallet(&identity, None, possible_key.clone(), &mut error_message);
 
-        let token_contract = app_context
-            .db
-            .get_contract_by_id(identity_token_balance.data_contract_id, app_context)
-            .ok()
-            .flatten();
-
-        let token_configuration = token_contract
-            .as_ref()
-            .map(|contract| {
-                contract
-                    .contract
-                    .expected_token_configuration(identity_token_balance.token_position)
-                    .ok()
-            })
-            .flatten()
-            .cloned();
+        let distribution_type = match (
+            token_configuration
+                .distribution_rules()
+                .perpetual_distribution()
+                .is_some(),
+            token_configuration
+                .distribution_rules()
+                .pre_programmed_distribution()
+                .is_some(),
+        ) {
+            (true, true) => None,
+            (true, false) => Some(TokenDistributionType::Perpetual),
+            (false, true) => Some(TokenDistributionType::PreProgrammed),
+            (false, false) => None,
+        };
 
         Self {
             identity,
@@ -107,7 +108,7 @@ impl ClaimTokensScreen {
             selected_key: possible_key.cloned(),
             token_contract,
             token_configuration,
-            distribution_type: None,
+            distribution_type,
             status: ClaimTokensStatus::NotStarted,
             error_message: None,
             app_context: app_context.clone(),
@@ -154,40 +155,26 @@ impl ClaimTokensScreen {
     }
 
     fn render_token_distribution_type_selector(&mut self, ui: &mut Ui) {
-        let show_perpetual = self
+        let show_perpetual = if let Some(perpetual_distribution) = self
             .token_configuration
-            .as_ref()
-            .map(|t| {
-                if let Some(perpetual_distribution) =
-                    t.distribution_rules().perpetual_distribution()
-                {
-                    match perpetual_distribution.distribution_recipient() {
-                        TokenDistributionRecipient::ContractOwner => {
-                            if let Some(contract) = &self.token_contract {
-                                contract.contract.owner_id() == self.identity.identity.id()
-                            } else {
-                                true
-                            }
-                        }
-                        TokenDistributionRecipient::Identity(id) => {
-                            self.identity.identity.id() == id
-                        }
-                        TokenDistributionRecipient::EvonodesByParticipation => true,
-                    }
-                } else {
-                    false
+            .distribution_rules()
+            .perpetual_distribution()
+        {
+            match perpetual_distribution.distribution_recipient() {
+                TokenDistributionRecipient::ContractOwner => {
+                    self.token_contract.contract.owner_id() == self.identity.identity.id()
                 }
-            })
-            .unwrap_or(true);
+                TokenDistributionRecipient::Identity(id) => self.identity.identity.id() == id,
+                TokenDistributionRecipient::EvonodesByParticipation => true,
+            }
+        } else {
+            false
+        };
         let show_pre_programmed = self
             .token_configuration
-            .as_ref()
-            .map(|t| {
-                t.distribution_rules()
-                    .pre_programmed_distribution()
-                    .is_some()
-            })
-            .unwrap_or(true);
+            .distribution_rules()
+            .pre_programmed_distribution()
+            .is_some();
         ui.horizontal(|ui| {
             ui.label("Select Distribution Type:");
             egui::ComboBox::from_id_salt("claim_distribution_type_selector")
@@ -241,20 +228,10 @@ impl ClaimTokensScreen {
                         .as_secs();
                     self.status = ClaimTokensStatus::WaitingForResult(now);
 
-                    let data_contract = self
-                        .app_context
-                        .get_contracts(None, None)
-                        .expect("Contracts not loaded")
-                        .iter()
-                        .find(|c| c.contract.id() == self.identity_token_balance.data_contract_id)
-                        .expect("Data contract not found")
-                        .contract
-                        .clone();
-
                     action = AppAction::BackendTasks(
                         vec![
                             BackendTask::TokenTask(TokenTask::ClaimTokens {
-                                data_contract,
+                                data_contract: self.token_contract.contract.clone(),
                                 token_position: self.identity_token_balance.token_position,
                                 actor_identity: self.identity.clone(),
                                 distribution_type,

@@ -366,6 +366,7 @@ impl Database {
         self.initialize_token_table()?;
         self.initialize_identity_order_table()?;
         self.initialize_token_order_table()?;
+        self.initialize_identity_token_balances_table()?;
 
         Ok(())
     }

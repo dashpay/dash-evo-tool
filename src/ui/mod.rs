@@ -17,12 +17,14 @@ use crate::ui::network_chooser_screen::NetworkChooserScreen;
 use crate::ui::tokens::add_token_by_id_screen::AddTokenByIdScreen;
 use crate::ui::tokens::transfer_tokens_screen::TransferTokensScreen;
 use crate::ui::tokens::view_token_claims_screen::ViewTokenClaimsScreen;
+use crate::ui::tools::document_visualizer_screen::DocumentVisualizerScreen;
 use crate::ui::tools::proof_log_screen::ProofLogScreen;
 use crate::ui::tools::proof_visualizer_screen::ProofVisualizerScreen;
 use crate::ui::wallets::import_wallet_screen::ImportWalletScreen;
 use crate::ui::wallets::wallets_screen::WalletsBalancesScreen;
 use contracts_documents::add_contracts_screen::AddContractsScreen;
 use contracts_documents::register_contract_screen::RegisterDataContractScreen;
+use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
 use dash_sdk::dpp::identity::Identity;
 use dash_sdk::dpp::prelude::IdentityPublicKey;
 use dpns::dpns_contested_names_screen::DPNSSubscreen;
@@ -66,6 +68,7 @@ pub enum RootScreenType {
     RootScreenWalletsBalances,
     RootScreenToolsProofLogScreen,
     RootScreenToolsTransitionVisualizerScreen,
+    RootScreenToolsDocumentVisualizerScreen,
     RootScreenNetworkChooser,
     RootScreenToolsProofVisualizerScreen,
     RootScreenMyTokenBalances,
@@ -92,6 +95,7 @@ impl RootScreenType {
             RootScreenType::RootScreenMyTokenBalances => 12,
             RootScreenType::RootScreenTokenSearch => 13,
             RootScreenType::RootScreenTokenCreator => 14,
+            RootScreenType::RootScreenToolsDocumentVisualizerScreen => 15,
         }
     }
 
@@ -113,6 +117,7 @@ impl RootScreenType {
             12 => Some(RootScreenType::RootScreenMyTokenBalances),
             13 => Some(RootScreenType::RootScreenTokenSearch),
             14 => Some(RootScreenType::RootScreenTokenCreator),
+            15 => Some(RootScreenType::RootScreenToolsDocumentVisualizerScreen),
             _ => None,
         }
     }
@@ -137,6 +142,9 @@ impl From<RootScreenType> for ScreenType {
             RootScreenType::RootScreenMyTokenBalances => ScreenType::TokenBalances,
             RootScreenType::RootScreenTokenSearch => ScreenType::TokenSearch,
             RootScreenType::RootScreenTokenCreator => ScreenType::TokenCreator,
+            RootScreenType::RootScreenToolsDocumentVisualizerScreen => {
+                ScreenType::DocumentsVisualizer
+            }
         }
     }
 }
@@ -188,6 +196,7 @@ pub enum ScreenType {
     ResumeTokensScreen(IdentityTokenBalance),
     ClaimTokensScreen(IdentityTokenBalance),
     ViewTokenClaimsScreen(IdentityTokenBalance),
+    DocumentsVisualizer,
 }
 
 impl ScreenType {
@@ -321,9 +330,9 @@ impl ScreenType {
                     app_context,
                 ))
             }
-            ScreenType::ClaimTokensScreen(identity_token_balance) => Screen::ClaimTokensScreen(
-                ClaimTokensScreen::new(identity_token_balance.clone(), app_context),
-            ),
+            ScreenType::ClaimTokensScreen(_) => {
+                unreachable!();
+            }
             ScreenType::ViewTokenClaimsScreen(identity_token_balance) => {
                 Screen::ViewTokenClaimsScreen(ViewTokenClaimsScreen::new(
                     identity_token_balance.clone(),
@@ -331,6 +340,9 @@ impl ScreenType {
                 ))
             }
             ScreenType::AddTokenById => Screen::AddTokenById(AddTokenByIdScreen::new(app_context)),
+            ScreenType::DocumentsVisualizer => {
+                Screen::DocumentVisualizerScreen(DocumentVisualizerScreen::new(app_context))
+            }
         }
     }
 }
@@ -353,6 +365,7 @@ pub enum Screen {
     AddKeyScreen(AddKeyScreen),
     ProofLogScreen(ProofLogScreen),
     TransitionVisualizerScreen(TransitionVisualizerScreen),
+    DocumentVisualizerScreen(DocumentVisualizerScreen),
     NetworkChooserScreen(NetworkChooserScreen),
     WalletsBalancesScreen(WalletsBalancesScreen),
     AddContractsScreen(AddContractsScreen),
@@ -397,6 +410,7 @@ impl Screen {
             Screen::ProofLogScreen(screen) => screen.app_context = app_context,
             Screen::AddContractsScreen(screen) => screen.app_context = app_context,
             Screen::ProofVisualizerScreen(screen) => screen.app_context = app_context,
+            Screen::DocumentVisualizerScreen(screen) => screen.app_context = app_context,
 
             // Token Screens
             Screen::TokensScreen(screen) => screen.app_context = app_context,
@@ -496,6 +510,7 @@ impl Screen {
             Screen::ProofLogScreen(_) => ScreenType::ProofLog,
             Screen::AddContractsScreen(_) => ScreenType::AddContracts,
             Screen::ProofVisualizerScreen(_) => ScreenType::ProofVisualizer,
+            Screen::DocumentVisualizerScreen(_) => ScreenType::DocumentsVisualizer,
 
             // Token Screens
             Screen::TokensScreen(TokensScreen {
@@ -570,6 +585,7 @@ impl ScreenLike for Screen {
             Screen::ProofLogScreen(screen) => screen.refresh(),
             Screen::AddContractsScreen(screen) => screen.refresh(),
             Screen::ProofVisualizerScreen(screen) => screen.refresh(),
+            Screen::DocumentVisualizerScreen(screen) => screen.refresh(),
 
             // Token Screens
             Screen::TokensScreen(screen) => screen.refresh(),
@@ -610,6 +626,7 @@ impl ScreenLike for Screen {
             Screen::ProofLogScreen(screen) => screen.refresh_on_arrival(),
             Screen::AddContractsScreen(screen) => screen.refresh_on_arrival(),
             Screen::ProofVisualizerScreen(screen) => screen.refresh_on_arrival(),
+            Screen::DocumentVisualizerScreen(screen) => screen.refresh_on_arrival(),
 
             // Token Screens
             Screen::TokensScreen(screen) => screen.refresh_on_arrival(),
@@ -650,6 +667,7 @@ impl ScreenLike for Screen {
             Screen::ProofLogScreen(screen) => screen.ui(ctx),
             Screen::AddContractsScreen(screen) => screen.ui(ctx),
             Screen::ProofVisualizerScreen(screen) => screen.ui(ctx),
+            Screen::DocumentVisualizerScreen(screen) => screen.ui(ctx),
 
             // Token Screens
             Screen::TokensScreen(screen) => screen.ui(ctx),
@@ -696,6 +714,9 @@ impl ScreenLike for Screen {
             Screen::ProofLogScreen(screen) => screen.display_message(message, message_type),
             Screen::AddContractsScreen(screen) => screen.display_message(message, message_type),
             Screen::ProofVisualizerScreen(screen) => screen.display_message(message, message_type),
+            Screen::DocumentVisualizerScreen(screen) => {
+                screen.display_message(message, message_type)
+            }
 
             // Token Screens
             Screen::TokensScreen(screen) => screen.display_message(message, message_type),
@@ -718,55 +739,52 @@ impl ScreenLike for Screen {
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         match self {
             Screen::IdentitiesScreen(screen) => {
-                screen.display_task_result(backend_task_success_result.clone())
+                screen.display_task_result(backend_task_success_result)
             }
-            Screen::DPNSScreen(screen) => {
-                screen.display_task_result(backend_task_success_result.clone())
-            }
+            Screen::DPNSScreen(screen) => screen.display_task_result(backend_task_success_result),
             Screen::DocumentQueryScreen(screen) => {
-                screen.display_task_result(backend_task_success_result.clone())
+                screen.display_task_result(backend_task_success_result)
             }
             Screen::AddNewWalletScreen(screen) => {
-                screen.display_task_result(backend_task_success_result.clone())
+                screen.display_task_result(backend_task_success_result)
             }
             Screen::ImportWalletScreen(screen) => {
-                screen.display_task_result(backend_task_success_result.clone())
+                screen.display_task_result(backend_task_success_result)
             }
             Screen::AddNewIdentityScreen(screen) => {
-                screen.display_task_result(backend_task_success_result.clone())
+                screen.display_task_result(backend_task_success_result)
             }
             Screen::TopUpIdentityScreen(screen) => {
-                screen.display_task_result(backend_task_success_result.clone())
+                screen.display_task_result(backend_task_success_result)
             }
             Screen::AddExistingIdentityScreen(screen) => {
-                screen.display_task_result(backend_task_success_result.clone())
+                screen.display_task_result(backend_task_success_result)
             }
             Screen::KeyInfoScreen(screen) => {
-                screen.display_task_result(backend_task_success_result.clone())
+                screen.display_task_result(backend_task_success_result)
             }
-            Screen::KeysScreen(screen) => {
-                screen.display_task_result(backend_task_success_result.clone())
-            }
+            Screen::KeysScreen(screen) => screen.display_task_result(backend_task_success_result),
             Screen::RegisterDpnsNameScreen(screen) => {
-                screen.display_task_result(backend_task_success_result.clone())
+                screen.display_task_result(backend_task_success_result)
             }
             Screen::RegisterDataContractScreen(screen) => {
-                screen.display_task_result(backend_task_success_result.clone())
+                screen.display_task_result(backend_task_success_result)
             }
             Screen::WithdrawalScreen(screen) => {
-                screen.display_task_result(backend_task_success_result.clone())
+                screen.display_task_result(backend_task_success_result)
             }
             Screen::TransferScreen(screen) => {
-                screen.display_task_result(backend_task_success_result.clone())
+                screen.display_task_result(backend_task_success_result)
             }
-            Screen::AddKeyScreen(screen) => {
-                screen.display_task_result(backend_task_success_result.clone())
-            }
+            Screen::AddKeyScreen(screen) => screen.display_task_result(backend_task_success_result),
             Screen::TransitionVisualizerScreen(screen) => {
-                screen.display_task_result(backend_task_success_result.clone())
+                screen.display_task_result(backend_task_success_result)
+            }
+            Screen::DocumentVisualizerScreen(screen) => {
+                screen.display_task_result(backend_task_success_result)
             }
             Screen::NetworkChooserScreen(screen) => {
-                screen.display_task_result(backend_task_success_result.clone())
+                screen.display_task_result(backend_task_success_result)
             }
             Screen::WalletsBalancesScreen(screen) => {
                 screen.display_task_result(backend_task_success_result)
@@ -784,38 +802,36 @@ impl ScreenLike for Screen {
             // Token Screens
             Screen::TokensScreen(screen) => screen.display_task_result(backend_task_success_result),
             Screen::TransferTokensScreen(screen) => {
-                screen.display_task_result(backend_task_success_result.clone())
+                screen.display_task_result(backend_task_success_result)
             }
             Screen::MintTokensScreen(screen) => {
-                screen.display_task_result(backend_task_success_result.clone())
+                screen.display_task_result(backend_task_success_result)
             }
             Screen::BurnTokensScreen(screen) => {
-                screen.display_task_result(backend_task_success_result.clone())
+                screen.display_task_result(backend_task_success_result)
             }
             Screen::DestroyFrozenFundsScreen(screen) => {
-                screen.display_task_result(backend_task_success_result.clone())
+                screen.display_task_result(backend_task_success_result)
             }
             Screen::FreezeTokensScreen(screen) => {
-                screen.display_task_result(backend_task_success_result.clone())
+                screen.display_task_result(backend_task_success_result)
             }
             Screen::UnfreezeTokensScreen(screen) => {
-                screen.display_task_result(backend_task_success_result.clone())
+                screen.display_task_result(backend_task_success_result)
             }
             Screen::PauseTokensScreen(screen) => {
-                screen.display_task_result(backend_task_success_result.clone())
+                screen.display_task_result(backend_task_success_result)
             }
             Screen::ResumeTokensScreen(screen) => {
-                screen.display_task_result(backend_task_success_result.clone())
+                screen.display_task_result(backend_task_success_result)
             }
             Screen::ClaimTokensScreen(screen) => {
-                screen.display_task_result(backend_task_success_result.clone())
+                screen.display_task_result(backend_task_success_result)
             }
             Screen::ViewTokenClaimsScreen(screen) => {
-                screen.display_task_result(backend_task_success_result.clone())
+                screen.display_task_result(backend_task_success_result)
             }
-            Screen::AddTokenById(screen) => {
-                screen.display_task_result(backend_task_success_result.clone())
-            }
+            Screen::AddTokenById(screen) => screen.display_task_result(backend_task_success_result),
         }
     }
 
@@ -842,6 +858,7 @@ impl ScreenLike for Screen {
             Screen::ProofLogScreen(screen) => screen.pop_on_success(),
             Screen::AddContractsScreen(screen) => screen.pop_on_success(),
             Screen::ProofVisualizerScreen(screen) => screen.pop_on_success(),
+            Screen::DocumentVisualizerScreen(screen) => screen.pop_on_success(),
 
             // Token Screens
             Screen::TokensScreen(screen) => screen.pop_on_success(),

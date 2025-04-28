@@ -16,6 +16,7 @@ use crate::ui::dpns::dpns_contested_names_screen::{
 use crate::ui::identities::identities_screen::IdentitiesScreen;
 use crate::ui::network_chooser_screen::NetworkChooserScreen;
 use crate::ui::tokens::tokens_screen::{TokensScreen, TokensSubscreen};
+use crate::ui::tools::document_visualizer_screen::DocumentVisualizerScreen;
 use crate::ui::tools::proof_log_screen::ProofLogScreen;
 use crate::ui::tools::proof_visualizer_screen::ProofVisualizerScreen;
 use crate::ui::tools::transition_visualizer_screen::TransitionVisualizerScreen;
@@ -175,6 +176,7 @@ impl AppState {
         let mut transition_visualizer_screen =
             TransitionVisualizerScreen::new(&mainnet_app_context);
         let mut proof_visualizer_screen = ProofVisualizerScreen::new(&mainnet_app_context);
+        let mut document_visualizer_screen = DocumentVisualizerScreen::new(&mainnet_app_context);
         let mut proof_log_screen = ProofLogScreen::new(&mainnet_app_context);
         let mut document_query_screen = DocumentQueryScreen::new(&mainnet_app_context);
         let mut tokens_balances_screen =
@@ -228,6 +230,7 @@ impl AppState {
                     DPNSScreen::new(&testnet_app_context, DPNSSubscreen::ScheduledVotes);
                 transition_visualizer_screen = TransitionVisualizerScreen::new(testnet_app_context);
                 proof_visualizer_screen = ProofVisualizerScreen::new(testnet_app_context);
+                document_visualizer_screen = DocumentVisualizerScreen::new(&testnet_app_context);
                 document_query_screen = DocumentQueryScreen::new(testnet_app_context);
                 wallets_balances_screen = WalletsBalancesScreen::new(testnet_app_context);
                 proof_log_screen = ProofLogScreen::new(testnet_app_context);
@@ -250,6 +253,7 @@ impl AppState {
                     DPNSScreen::new(&devnet_app_context, DPNSSubscreen::ScheduledVotes);
                 transition_visualizer_screen = TransitionVisualizerScreen::new(devnet_app_context);
                 proof_visualizer_screen = ProofVisualizerScreen::new(devnet_app_context);
+                document_visualizer_screen = DocumentVisualizerScreen::new(&devnet_app_context);
                 document_query_screen = DocumentQueryScreen::new(devnet_app_context);
                 wallets_balances_screen = WalletsBalancesScreen::new(devnet_app_context);
                 proof_log_screen = ProofLogScreen::new(devnet_app_context);
@@ -272,6 +276,7 @@ impl AppState {
                     DPNSScreen::new(&local_app_context, DPNSSubscreen::ScheduledVotes);
                 transition_visualizer_screen = TransitionVisualizerScreen::new(local_app_context);
                 proof_visualizer_screen = ProofVisualizerScreen::new(local_app_context);
+                document_visualizer_screen = DocumentVisualizerScreen::new(&local_app_context);
                 document_query_screen = DocumentQueryScreen::new(local_app_context);
                 wallets_balances_screen = WalletsBalancesScreen::new(local_app_context);
                 proof_log_screen = ProofLogScreen::new(local_app_context);
@@ -370,6 +375,10 @@ impl AppState {
                 (
                     RootScreenType::RootScreenToolsProofVisualizerScreen,
                     Screen::ProofVisualizerScreen(proof_visualizer_screen),
+                ),
+                (
+                    RootScreenType::RootScreenToolsDocumentVisualizerScreen,
+                    Screen::DocumentVisualizerScreen(document_visualizer_screen),
                 ),
                 (
                     RootScreenType::RootScreenToolsProofLogScreen,

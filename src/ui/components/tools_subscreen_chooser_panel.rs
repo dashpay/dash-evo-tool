@@ -7,6 +7,7 @@ use egui::{Color32, Context, Frame, Margin, RichText, SidePanel};
 pub enum ToolsSubscreen {
     ProofLog,
     TransactionViewer,
+    DocumentViewer,
     ProofViewer,
 }
 
@@ -16,6 +17,7 @@ impl ToolsSubscreen {
             Self::ProofLog => "Proof logs",
             Self::TransactionViewer => "Transaction deserializer",
             Self::ProofViewer => "Proof deserializer",
+            Self::DocumentViewer => "Document deserializer",
         }
     }
 }
@@ -27,6 +29,7 @@ pub fn add_tools_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext
         ToolsSubscreen::ProofLog,
         ToolsSubscreen::ProofViewer,
         ToolsSubscreen::TransactionViewer,
+        ToolsSubscreen::DocumentViewer,
     ];
 
     let active_screen = match app_context.get_settings() {
@@ -36,6 +39,9 @@ pub fn add_tools_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext
                 ToolsSubscreen::TransactionViewer
             }
             ui::RootScreenType::RootScreenToolsProofVisualizerScreen => ToolsSubscreen::ProofViewer,
+            ui::RootScreenType::RootScreenToolsDocumentVisualizerScreen => {
+                ToolsSubscreen::DocumentViewer
+            }
             _ => ToolsSubscreen::ProofLog,
         },
         _ => ToolsSubscreen::ProofLog, // Fallback to Active screen if settings unavailable
@@ -82,6 +88,11 @@ pub fn add_tools_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext
                             ToolsSubscreen::ProofViewer => {
                                 action = AppAction::SetMainScreen(
                                     RootScreenType::RootScreenToolsProofVisualizerScreen,
+                                )
+                            }
+                            ToolsSubscreen::DocumentViewer => {
+                                action = AppAction::SetMainScreen(
+                                    RootScreenType::RootScreenToolsDocumentVisualizerScreen,
                                 )
                             }
                         }

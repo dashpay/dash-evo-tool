@@ -560,26 +560,60 @@ pub struct DistributionEntry {
     pub amount_str: String,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TokenNameLanguage {
-    English,
-    French,
-    Spanish,
-    Portuguese,
-    German,
-    Polish,
-    Russian,
-    Mandarin,
-    Japanese,
-    Vietnamese,
-    Korean,
-    Javanese,
-    Malay,
-    Telugu,
     Arabic,
     Bengali,
-    Punjabi,
+    Burmese,
+    Chinese,
+    Czech,
+    Dutch,
+    English,
+    Farsi,
+    Filipino,
+    French,
+    German,
+    Greek,
+    Gujarati,
+    Hausa,
+    Hebrew,
     Hindi,
+    Hungarian,
+    Igbo,
+    Indonesian,
+    Italian,
+    Japanese,
+    Javanese,
+    Kannada,
+    Khmer,
+    Korean,
+    Malay,
+    Malayalam,
+    Mandarin,
+    Marathi,
+    Nepali,
+    Oriya,
+    Pashto,
+    Polish,
+    Portuguese,
+    Punjabi,
+    Romanian,
+    Russian,
+    Serbian,
+    Sindhi,
+    Sinhala,
+    Somali,
+    Spanish,
+    Swahili,
+    Swedish,
+    Tamil,
+    Telugu,
+    Thai,
+    Turkish,
+    Ukrainian,
+    Urdu,
+    Vietnamese,
+    Yoruba,
 }
 
 impl std::fmt::Display for TokenNameLanguage {
@@ -2208,25 +2242,58 @@ impl TokensScreen {
                                         self.token_names_input[i].1.to_string()
                                     ))
                                     .show_ui(ui, |ui| {
-
-                                        ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::English, "English");
-                                        ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::French, "French");
-                                        ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::Spanish, "Spanish");
-                                        ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::Portuguese, "Portuguese");
-                                        ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::German, "German");
-                                        ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::Polish, "Polish");
-                                        ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::Russian, "Russian");
-                                        ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::Mandarin, "Mandarin");
-                                        ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::Japanese, "Japanese");
-                                        ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::Vietnamese, "Vietnamese");
-                                        ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::Korean, "Korean");
-                                        ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::Javanese, "Javanese");
-                                        ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::Malay, "Malay");
-                                        ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::Telugu, "Telugu");
                                         ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::Arabic, "Arabic");
                                         ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::Bengali, "Bengali");
-                                        ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::Punjabi, "Punjabi");
+                                        ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::Burmese, "Burmese");
+                                        ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::Chinese, "Chinese");
+                                        ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::Czech, "Czech");
+                                        ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::Dutch, "Dutch");
+                                        ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::English, "English");
+                                        ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::Farsi, "Farsi (Persian)");
+                                        ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::Filipino, "Filipino (Tagalog)");
+                                        ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::French, "French");
+                                        ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::German, "German");
+                                        ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::Greek, "Greek");
+                                        ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::Gujarati, "Gujarati");
+                                        ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::Hausa, "Hausa");
+                                        ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::Hebrew, "Hebrew");
                                         ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::Hindi, "Hindi");
+                                        ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::Hungarian, "Hungarian");
+                                        ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::Igbo, "Igbo");
+                                        ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::Indonesian, "Indonesian");
+                                        ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::Italian, "Italian");
+                                        ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::Japanese, "Japanese");
+                                        ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::Javanese, "Javanese");
+                                        ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::Kannada, "Kannada");
+                                        ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::Khmer, "Khmer");
+                                        ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::Korean, "Korean");
+                                        ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::Malay, "Malay");
+                                        ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::Malayalam, "Malayalam");
+                                        ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::Mandarin, "Mandarin Chinese");
+                                        ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::Marathi, "Marathi");
+                                        ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::Nepali, "Nepali");
+                                        ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::Oriya, "Oriya");
+                                        ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::Pashto, "Pashto");
+                                        ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::Polish, "Polish");
+                                        ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::Portuguese, "Portuguese");
+                                        ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::Punjabi, "Punjabi");
+                                        ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::Romanian, "Romanian");
+                                        ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::Russian, "Russian");
+                                        ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::Serbian, "Serbian");
+                                        ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::Sindhi, "Sindhi");
+                                        ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::Sinhala, "Sinhala");
+                                        ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::Somali, "Somali");
+                                        ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::Spanish, "Spanish");
+                                        ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::Swahili, "Swahili");
+                                        ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::Swedish, "Swedish");
+                                        ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::Tamil, "Tamil");
+                                        ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::Telugu, "Telugu");
+                                        ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::Thai, "Thai");
+                                        ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::Turkish, "Turkish");
+                                        ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::Ukrainian, "Ukrainian");
+                                        ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::Urdu, "Urdu");
+                                        ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::Vietnamese, "Vietnamese");
+                                        ui.selectable_value(&mut self.token_names_input[i].1, TokenNameLanguage::Yoruba, "Yoruba");
                                     });
                                 ui.horizontal(|ui| {
                                     if ui.button("+").clicked() {
@@ -3591,27 +3658,61 @@ Emits tokens in fixed amounts for specific intervals.
         let mut token_names: Vec<(String, String)> = Vec::new();
         for name_with_language in self.token_names_input.iter() {
             let language = match name_with_language.1 {
-                TokenNameLanguage::English => "en".to_string(),
-                TokenNameLanguage::Mandarin => "zh".to_string(),
-                TokenNameLanguage::Hindi => "hi".to_string(),
-                TokenNameLanguage::Russian => "ru".to_string(),
-                TokenNameLanguage::Spanish => "es".to_string(),
-                TokenNameLanguage::Arabic => "ar".to_string(),
-                TokenNameLanguage::Bengali => "bn".to_string(),
-                TokenNameLanguage::Portuguese => "pt".to_string(),
-                TokenNameLanguage::Japanese => "ja".to_string(),
-                TokenNameLanguage::Punjabi => "pa".to_string(),
-                TokenNameLanguage::German => "de".to_string(),
-                TokenNameLanguage::Javanese => "jv".to_string(),
-                TokenNameLanguage::Malay => "ms".to_string(),
-                TokenNameLanguage::Telugu => "te".to_string(),
-                TokenNameLanguage::Vietnamese => "vi".to_string(),
-                TokenNameLanguage::Korean => "ko".to_string(),
-                TokenNameLanguage::French => "fr".to_string(),
-                TokenNameLanguage::Polish => "pl".to_string(),
+                TokenNameLanguage::Arabic => "ar",
+                TokenNameLanguage::Bengali => "bn",
+                TokenNameLanguage::Burmese => "my",
+                TokenNameLanguage::Chinese => "zh",
+                TokenNameLanguage::Czech => "cs",
+                TokenNameLanguage::Dutch => "nl",
+                TokenNameLanguage::English => "en",
+                TokenNameLanguage::Farsi => "fa",
+                TokenNameLanguage::Filipino => "fil",
+                TokenNameLanguage::French => "fr",
+                TokenNameLanguage::German => "de",
+                TokenNameLanguage::Greek => "el",
+                TokenNameLanguage::Gujarati => "gu",
+                TokenNameLanguage::Hausa => "ha",
+                TokenNameLanguage::Hebrew => "he",
+                TokenNameLanguage::Hindi => "hi",
+                TokenNameLanguage::Hungarian => "hu",
+                TokenNameLanguage::Igbo => "ig",
+                TokenNameLanguage::Indonesian => "id",
+                TokenNameLanguage::Italian => "it",
+                TokenNameLanguage::Japanese => "ja",
+                TokenNameLanguage::Javanese => "jv",
+                TokenNameLanguage::Kannada => "kn",
+                TokenNameLanguage::Khmer => "km",
+                TokenNameLanguage::Korean => "ko",
+                TokenNameLanguage::Malay => "ms",
+                TokenNameLanguage::Malayalam => "ml",
+                TokenNameLanguage::Mandarin => "zh", // synonym for Chinese
+                TokenNameLanguage::Marathi => "mr",
+                TokenNameLanguage::Nepali => "ne",
+                TokenNameLanguage::Oriya => "or",
+                TokenNameLanguage::Pashto => "ps",
+                TokenNameLanguage::Polish => "pl",
+                TokenNameLanguage::Portuguese => "pt",
+                TokenNameLanguage::Punjabi => "pa",
+                TokenNameLanguage::Romanian => "ro",
+                TokenNameLanguage::Russian => "ru",
+                TokenNameLanguage::Serbian => "sr",
+                TokenNameLanguage::Sindhi => "sd",
+                TokenNameLanguage::Sinhala => "si",
+                TokenNameLanguage::Somali => "so",
+                TokenNameLanguage::Spanish => "es",
+                TokenNameLanguage::Swahili => "sw",
+                TokenNameLanguage::Swedish => "sv",
+                TokenNameLanguage::Tamil => "ta",
+                TokenNameLanguage::Telugu => "te",
+                TokenNameLanguage::Thai => "th",
+                TokenNameLanguage::Turkish => "tr",
+                TokenNameLanguage::Ukrainian => "uk",
+                TokenNameLanguage::Urdu => "ur",
+                TokenNameLanguage::Vietnamese => "vi",
+                TokenNameLanguage::Yoruba => "yo",
             };
 
-            token_names.push((name_with_language.0.clone(), language));
+            token_names.push((name_with_language.0.clone(), language.to_owned()));
         }
 
         // Remove whitespace and parse the comma separated string into a vec

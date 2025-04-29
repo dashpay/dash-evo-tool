@@ -1,11 +1,9 @@
-//! ui/document_creator_screen.rs
 use crate::app::AppAction;
 use crate::backend_task::{document::DocumentTask, BackendTask};
 use crate::context::AppContext;
 use crate::model::wallet::Wallet;
 use crate::model::{qualified_contract::QualifiedContract, qualified_identity::QualifiedIdentity};
 use crate::ui::components::left_panel::add_left_panel;
-use crate::ui::components::tools_subscreen_chooser_panel::add_tools_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
 use crate::ui::identities::get_selected_wallet;
@@ -129,195 +127,178 @@ impl CreateDocumentScreen {
      *   identity + key selector (shorter than original version)  *
      * ---------------------------------------------------------- */
     fn ui_identity_picker(&mut self, ui: &mut Ui) {
-        ui.heading("1. Select Identity");
-        ui.add_space(4.0);
-
-        egui::ComboBox::from_id_salt("identity_combo")
-            .selected_text(
-                self.selected_qid
-                    .as_ref()
-                    .map(|q| {
-                        q.alias
-                            .as_ref()
-                            .unwrap_or(&q.identity.id().to_string(Encoding::Base58))
-                            .clone()
-                    })
-                    .unwrap_or_else(|| "Choose identity…".into()),
-            )
-            .show_ui(ui, |cb| {
-                for (qi, _keys) in &self.qualified_identities {
-                    let label = qi
-                        .alias
-                        .as_ref()
-                        .unwrap_or(&qi.identity.id().to_string(Encoding::Base58))
-                        .clone();
-                    if cb
-                        .selectable_label(self.selected_qid.as_ref() == Some(qi), label)
-                        .clicked()
-                    {
-                        self.selected_qid = Some(qi.clone());
-                        self.selected_key = None; // force key re-select
-                        self.selected_wallet = get_selected_wallet(
-                            qi,
-                            Some(&self.app_context),
-                            None,
-                            &mut self.error_message,
-                        );
-                    }
-                }
-            });
-
-        if let Some(qi) = &self.selected_qid {
-            ui.horizontal(|ui| {
-                ui.label("Key:");
-                egui::ComboBox::from_id_salt("key_combo")
+        egui::Grid::new("identity_key_grid")
+            .num_columns(2)
+            .spacing([10.0, 5.0])
+            .striped(false)
+            .show(ui, |ui| {
+                ui.label("Identity:");
+                egui::ComboBox::from_id_salt("identity_combo")
                     .selected_text(
-                        self.selected_key
+                        self.selected_qid
                             .as_ref()
-                            .map(|k| format!("Key {} (SL {:?})", k.id(), k.security_level()))
-                            .unwrap_or_else(|| "Choose key…".into()),
+                            .map(|q| {
+                                q.alias
+                                    .as_ref()
+                                    .unwrap_or(&q.identity.id().to_string(Encoding::Base58))
+                                    .clone()
+                            })
+                            .unwrap_or_else(|| "Choose identity…".into()),
                     )
                     .show_ui(ui, |cb| {
-                        for (qi_ref, keys) in &self.qualified_identities {
-                            if qi_ref != qi {
-                                continue;
-                            }
-                            for k in keys {
-                                if cb
-                                    .selectable_label(
-                                        self.selected_key.as_ref() == Some(k),
-                                        format!("Key {}", k.id()),
-                                    )
-                                    .clicked()
-                                {
-                                    self.selected_key = Some(k.clone());
-                                    self.selected_wallet = get_selected_wallet(
-                                        qi,
-                                        Some(&self.app_context),
-                                        Some(k),
-                                        &mut self.error_message,
-                                    );
-                                }
+                        for (qi, _keys) in &self.qualified_identities {
+                            let label = qi
+                                .alias
+                                .as_ref()
+                                .unwrap_or(&qi.identity.id().to_string(Encoding::Base58))
+                                .clone();
+                            if cb
+                                .selectable_label(self.selected_qid.as_ref() == Some(qi), label)
+                                .clicked()
+                            {
+                                self.selected_qid = Some(qi.clone());
+                                self.selected_key = None; // force key re-select
+                                self.selected_wallet = get_selected_wallet(
+                                    qi,
+                                    Some(&self.app_context),
+                                    None,
+                                    &mut self.error_message,
+                                );
                             }
                         }
                     });
+                ui.end_row();
+
+                if let Some(qi) = &self.selected_qid {
+                    ui.label("Key:");
+                    egui::ComboBox::from_id_salt("key_combo")
+                        .selected_text(
+                            self.selected_key
+                                .as_ref()
+                                .map(|k| format!("Key {} (SL {:?})", k.id(), k.security_level()))
+                                .unwrap_or_else(|| "Choose key…".into()),
+                        )
+                        .show_ui(ui, |cb| {
+                            for (qi_ref, _keys) in &self.qualified_identities {
+                                if qi_ref != qi {
+                                    continue;
+                                }
+                                for k in qi_ref.available_authentication_keys() {
+                                    if cb
+                                        .selectable_label(
+                                            self.selected_key.as_ref()
+                                                == Some(&k.identity_public_key),
+                                            format!("Key {}", k.identity_public_key.id()),
+                                        )
+                                        .clicked()
+                                    {
+                                        self.selected_key = Some(k.identity_public_key.clone());
+                                        self.selected_wallet = get_selected_wallet(
+                                            qi,
+                                            Some(&self.app_context),
+                                            Some(&k.identity_public_key),
+                                            &mut self.error_message,
+                                        );
+                                    }
+                                }
+                            }
+                        });
+                    ui.end_row();
+                }
             });
-        }
     }
+
     /* ---------------------------------------------------------- *
      *                dynamic property editors                    *
      * ---------------------------------------------------------- */
     fn ui_field_inputs(&mut self, ui: &mut Ui) {
         if let Some(doc_type) = &self.selected_doc_type {
-            ui.heading("3. Fill Document Fields");
-            ui.add_space(4.0);
+            egui::Grid::new("property_input_grid")
+                .num_columns(2)
+                .spacing([10.0, 5.0])
+                .striped(false)
+                .show(ui, |ui| {
+                    for (prop_name, schema) in doc_type.properties() {
+                        // 1 get or create backing string
+                        let val = self.field_inputs.entry(prop_name.clone()).or_default();
 
-            for (prop_name, schema) in doc_type.properties() {
-                // 1 get or create backing string
-                let val = self.field_inputs.entry(prop_name.clone()).or_default();
+                        // 2 one horizontal line per property
+                        // star for required fields
+                        let label = if schema.required {
+                            format!("{} *:", prop_name)
+                        } else {
+                            format!("{prop_name}:")
+                        };
+                        ui.label(label);
 
-                // 2 one horizontal line per property
-                ui.horizontal(|ui| {
-                    // star for required fields
-                    let label = if schema.required {
-                        format!("{} *:", prop_name)
-                    } else {
-                        format!("{prop_name}:")
-                    };
-                    ui.label(label);
+                        match &schema.property_type {
+                            /* ---------- integers (all sizes) ---------- */
+                            DocumentPropertyType::U128
+                            | DocumentPropertyType::I128
+                            | DocumentPropertyType::U64
+                            | DocumentPropertyType::I64
+                            | DocumentPropertyType::U32
+                            | DocumentPropertyType::I32
+                            | DocumentPropertyType::U16
+                            | DocumentPropertyType::I16
+                            | DocumentPropertyType::U8
+                            | DocumentPropertyType::I8 => {
+                                ui.add(TextEdit::singleline(val).hint_text("integer"));
+                            }
 
-                    match &schema.property_type {
-                        /* ---------- integers (all sizes) ---------- */
-                        DocumentPropertyType::U128
-                        | DocumentPropertyType::I128
-                        | DocumentPropertyType::U64
-                        | DocumentPropertyType::I64
-                        | DocumentPropertyType::U32
-                        | DocumentPropertyType::I32
-                        | DocumentPropertyType::U16
-                        | DocumentPropertyType::I16
-                        | DocumentPropertyType::U8
-                        | DocumentPropertyType::I8 => {
-                            ui.add(
-                                TextEdit::singleline(val)
-                                    .hint_text("integer")
-                                    .desired_width(140.0),
-                            );
-                        }
+                            /* ---------- floats ---------- */
+                            DocumentPropertyType::F64 => {
+                                ui.add(TextEdit::singleline(val).hint_text("floating-point"));
+                            }
 
-                        /* ---------- floats ---------- */
-                        DocumentPropertyType::F64 => {
-                            ui.add(
-                                TextEdit::singleline(val)
-                                    .hint_text("floating-point")
-                                    .desired_width(140.0),
-                            );
-                        }
+                            /* ---------- string ---------- */
+                            DocumentPropertyType::String(size) => {
+                                ui.add({
+                                    let text_edit = TextEdit::singleline(val);
+                                    if let Some(max_length) = size.max_length {
+                                        text_edit.hint_text(format!("max {}", max_length).as_str())
+                                    } else {
+                                        text_edit
+                                    }
+                                });
+                            }
 
-                        /* ---------- string ---------- */
-                        DocumentPropertyType::String(size) => {
-                            ui.add({
-                                let text_edit = TextEdit::singleline(val).desired_width(220.0);
-                                if let Some(max_length) = size.max_length {
-                                    text_edit.hint_text(format!("max {}", max_length).as_str())
-                                } else {
-                                    text_edit
+                            /* ---------- byte array ---------- */
+                            DocumentPropertyType::ByteArray(_size) => {
+                                ui.add(TextEdit::singleline(val).hint_text("hex or base64"));
+                            }
+
+                            /* ---------- identifier ---------- */
+                            DocumentPropertyType::Identifier => {
+                                ui.add(TextEdit::singleline(val).hint_text("base58 identifier"));
+                            }
+
+                            /* ---------- boolean ---------- */
+                            DocumentPropertyType::Boolean => {
+                                let mut checked = matches!(
+                                    val.to_ascii_lowercase().as_str(),
+                                    "true" | "1" | "yes" | "on"
+                                );
+                                if ui.checkbox(&mut checked, "").changed() {
+                                    *val = checked.to_string();
                                 }
-                            });
-                        }
+                            }
 
-                        /* ---------- byte array ---------- */
-                        DocumentPropertyType::ByteArray(_size) => {
-                            ui.add(
-                                TextEdit::singleline(val)
-                                    .hint_text("hex or base64")
-                                    .desired_width(260.0),
-                            );
-                        }
+                            /* ---------- date (unix-ms) ---------- */
+                            DocumentPropertyType::Date => {
+                                ui.add(TextEdit::singleline(val).hint_text("unix-ms"));
+                            }
 
-                        /* ---------- identifier ---------- */
-                        DocumentPropertyType::Identifier => {
-                            ui.add(
-                                TextEdit::singleline(val)
-                                    .hint_text("base58 identifier")
-                                    .desired_width(260.0),
-                            );
-                        }
-
-                        /* ---------- boolean ---------- */
-                        DocumentPropertyType::Boolean => {
-                            let mut checked = matches!(
-                                val.to_ascii_lowercase().as_str(),
-                                "true" | "1" | "yes" | "on"
-                            );
-                            if ui.checkbox(&mut checked, "").changed() {
-                                *val = checked.to_string();
+                            /* ---------- JSON objects / arrays ---------- */
+                            DocumentPropertyType::Object(_)
+                            | DocumentPropertyType::Array(_)
+                            | DocumentPropertyType::VariableTypeArray(_) => {
+                                ui.add(TextEdit::multiline(val).hint_text("JSON value"));
                             }
                         }
-
-                        /* ---------- date (unix-ms) ---------- */
-                        DocumentPropertyType::Date => {
-                            ui.add(
-                                TextEdit::singleline(val)
-                                    .hint_text("unix-ms")
-                                    .desired_width(160.0),
-                            );
-                        }
-
-                        /* ---------- JSON objects / arrays ---------- */
-                        DocumentPropertyType::Object(_)
-                        | DocumentPropertyType::Array(_)
-                        | DocumentPropertyType::VariableTypeArray(_) => {
-                            ui.add(
-                                TextEdit::multiline(val)
-                                    .hint_text("JSON value")
-                                    .desired_rows(2)
-                                    .desired_width(ui.available_width() * 0.6),
-                            );
-                        }
+                        ui.end_row();
                     }
                 });
-            }
         }
     }
 
@@ -503,6 +484,30 @@ impl CreateDocumentScreen {
 
         Ok((raw_doc.into(), entropy))
     }
+
+    fn show_success_screen(&mut self, ui: &mut Ui) -> AppAction {
+        let mut action = AppAction::None;
+
+        ui.vertical_centered(|ui| {
+            ui.add_space(50.0);
+
+            ui.heading("🎉");
+            ui.heading("Successfully broadcasted document");
+            ui.add_space(20.0);
+
+            let button =
+                egui::Button::new(RichText::new("Back to Contracts").color(Color32::WHITE))
+                    .fill(Color32::from_rgb(0, 128, 255))
+                    .frame(true)
+                    .corner_radius(3.0);
+            if ui.add(button).clicked() {
+                // Return to previous screen
+                action = AppAction::PopScreenAndRefresh;
+            }
+        });
+
+        action
+    }
 }
 
 /* ---------------------------------------------------------------- *\
@@ -525,59 +530,55 @@ impl ScreenLike for CreateDocumentScreen {
         let mut action = add_top_panel(
             ctx,
             &self.app_context,
-            vec![("Docs", AppAction::None)],
+            vec![
+                ("Contracts", AppAction::GoToMainScreen),
+                ("Docs", AppAction::None),
+            ],
             vec![],
         );
         action |= add_left_panel(
             ctx,
             &self.app_context,
-            crate::ui::RootScreenType::RootScreenToolsTransitionVisualizerScreen,
-        );
-        action |= add_tools_subscreen_chooser_panel(ctx, self.app_context.as_ref());
-
-        /* floating contract/doc-type chooser */
-        action |= add_simple_contract_doc_type_chooser(
-            ctx,
-            &mut self.contract_search,
-            &self.app_context,
-            &mut self.selected_contract,
-            &mut self.selected_doc_type,
+            crate::ui::RootScreenType::RootScreenDocumentQuery,
         );
 
         /* central panel logic */
         egui::CentralPanel::default().show(ctx, |ui| {
-            /* 1 ───────── Contract selected? ───────────────────── */
-            let Some(contract) = &self.selected_contract else {
-                ui.heading("Select a data contract on the left to begin.");
-                return;
-            };
-            ui.label(format!(
-                "Contract: {}",
-                contract
-                    .alias
-                    .as_ref()
-                    .unwrap_or(&contract.contract.id().to_string(Encoding::Base58))
-            ));
-
-            /* 2 ───────── Doc-type selected? ──────────────────── */
-            let Some(doc_type) = self.selected_doc_type.clone() else {
-                ui.add_space(6.0);
-                ui.label("Now pick a document-type.");
-                return;
-            };
-            ui.label(format!("Doc-type: {}", doc_type.name()));
+            ui.heading("1. Select a contract and document type:");
             ui.add_space(10.0);
 
-            /* 3 ───────── Identity & key ─────────────────────── */
-            self.ui_identity_picker(ui);
+            /* floating contract/doc-type chooser */
+            add_simple_contract_doc_type_chooser(
+                ui,
+                &mut self.contract_search,
+                &self.app_context,
+                &mut self.selected_contract,
+                &mut self.selected_doc_type,
+            );
+            ui.add_space(10.0);
 
-            if self.selected_qid.is_none() || self.selected_key.is_none() {
-                ui.add_space(6.0);
-                ui.label("Choose an identity and key to sign with.");
+            if self.selected_doc_type.is_none() {
                 return;
             }
 
-            /* 4 ───────── Wallet unlock (if any) ─────────────── */
+            ui.separator();
+            ui.add_space(10.0);
+
+            /* ───────── Identity & key ─────────────────────── */
+            ui.heading("2. Select an identity and key:");
+            ui.add_space(10.0);
+
+            self.ui_identity_picker(ui);
+            ui.add_space(10.0);
+
+            if self.selected_qid.is_none() || self.selected_key.is_none() {
+                return;
+            }
+
+            ui.separator();
+            ui.add_space(10.0);
+
+            /* ───────── Wallet unlock (if any) ─────────────── */
             if let Some(_) = &self.selected_wallet {
                 let (need, unlocked) = self.render_wallet_unlock_if_needed(ui);
                 if need && !unlocked {
@@ -585,56 +586,73 @@ impl ScreenLike for CreateDocumentScreen {
                 }
             }
 
-            /* 5 ───────── Field inputs ───────────────────────── */
-            self.ui_field_inputs(ui);
+            /* ───────── Field inputs ───────────────────────── */
+            ui.heading("3. Fill out the document type fields:");
+            ui.add_space(10.0);
 
-            /* 6 ───────── Broadcast button & status ─────────── */
-            ui.add_space(12.0);
-            let button = ui
-                .add_enabled(
-                    !matches!(self.broadcast_status, BroadcastStatus::Broadcasting(_)),
-                    egui::Button::new(
-                        RichText::new("Broadcast document")
-                            .color(Color32::WHITE)
-                            .background_color(Color32::from_rgb(0, 128, 255)),
-                    ),
-                )
-                .on_hover_text("Send to platform");
+            // Allocate space for error message
+            let error_message_height = 40.0;
+            let max_scroll_height = if self.error_message.is_some() {
+                ui.available_height() - error_message_height
+            } else {
+                ui.available_height()
+            };
 
-            if button.clicked() {
-                match self.try_build_document() {
-                    Ok((doc, entropy)) => {
-                        self.broadcast_status = BroadcastStatus::Broadcasting(
-                            SystemTime::now()
-                                .duration_since(UNIX_EPOCH)
-                                .unwrap()
-                                .as_secs(),
-                        );
-                        action |= AppAction::BackendTask(BackendTask::DocumentTask(
-                            DocumentTask::BroadcastDocument(
-                                doc,
-                                entropy,
-                                doc_type,
-                                self.selected_qid
-                                    .as_ref()
-                                    .expect("Selected QID not set")
-                                    .clone(),
-                                self.selected_key
-                                    .as_ref()
-                                    .expect("Selected Key not set")
-                                    .clone(),
-                            ),
-                        ));
+            // A simple table with columns: [Token Name | Token ID | Total Balance]
+            egui::ScrollArea::vertical()
+                .max_height(max_scroll_height)
+                .show(ui, |ui| {
+                    self.ui_field_inputs(ui);
+                    ui.add_space(10.0);
+
+                    /* ───────── Broadcast button & status ─────────── */
+                    ui.add_space(12.0);
+                    let button = egui::Button::new(
+                        RichText::new("Broadcast document").color(Color32::WHITE),
+                    )
+                    .fill(Color32::from_rgb(0, 128, 255))
+                    .frame(true)
+                    .corner_radius(3.0)
+                    .min_size(egui::vec2(100.0, 30.0));
+
+                    if ui.add(button).clicked() {
+                        match self.try_build_document() {
+                            Ok((doc, entropy)) => {
+                                self.broadcast_status = BroadcastStatus::Broadcasting(
+                                    SystemTime::now()
+                                        .duration_since(UNIX_EPOCH)
+                                        .unwrap()
+                                        .as_secs(),
+                                );
+                                action |= AppAction::BackendTask(BackendTask::DocumentTask(
+                                    DocumentTask::BroadcastDocument(
+                                        doc,
+                                        entropy,
+                                        self.selected_doc_type
+                                            .as_ref()
+                                            .expect("Selected Doc Type not set")
+                                            .clone(),
+                                        self.selected_qid
+                                            .as_ref()
+                                            .expect("Selected QID not set")
+                                            .clone(),
+                                        self.selected_key
+                                            .as_ref()
+                                            .expect("Selected Key not set")
+                                            .clone(),
+                                    ),
+                                ));
+                            }
+                            Err(e) => self.broadcast_status = BroadcastStatus::MissingField(e),
+                        }
                     }
-                    Err(e) => self.broadcast_status = BroadcastStatus::MissingField(e),
-                }
-            }
+                });
 
             /* status read-out */
             match &self.broadcast_status {
                 BroadcastStatus::Idle => {}
                 BroadcastStatus::MissingField(e) | BroadcastStatus::Error(e) => {
-                    ui.colored_label(Color32::RED, e);
+                    ui.colored_label(Color32::DARK_RED, e);
                 }
                 BroadcastStatus::Broadcasting(start) => {
                     let secs = SystemTime::now()
@@ -645,10 +663,10 @@ impl ScreenLike for CreateDocumentScreen {
                     ui.label(format!("Broadcasting… {secs}s"));
                 }
                 BroadcastStatus::Complete => {
-                    ui.colored_label(Color32::GREEN, "Document broadcasted!");
+                    self.show_success_screen(ui);
                 }
                 BroadcastStatus::BuildingError(e) => {
-                    ui.colored_label(Color32::RED, e);
+                    ui.colored_label(Color32::DARK_RED, e);
                 }
             }
         });

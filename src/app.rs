@@ -113,6 +113,7 @@ pub enum AppAction {
     SwitchNetwork(Network),
     SetMainScreen(RootScreenType),
     SetMainScreenThenPopScreen(RootScreenType),
+    SetMainScreenThenGoToMainScreen(RootScreenType),
     AddScreen(Screen),
     PopThenAddScreenToMainScreen(RootScreenType, Screen),
     BackendTask(BackendTask),
@@ -745,6 +746,14 @@ impl App for AppState {
                 self.current_app_context()
                     .update_settings(root_screen_type)
                     .ok();
+            }
+            AppAction::SetMainScreenThenGoToMainScreen(root_screen_type) => {
+                self.selected_main_screen = root_screen_type;
+                self.active_root_screen_mut().refresh_on_arrival();
+                self.current_app_context()
+                    .update_settings(root_screen_type)
+                    .ok();
+                self.screen_stack = vec![];
             }
             AppAction::SetMainScreenThenPopScreen(root_screen_type) => {
                 self.selected_main_screen = root_screen_type;

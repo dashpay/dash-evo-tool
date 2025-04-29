@@ -7,7 +7,7 @@ use crate::model::qualified_contract::QualifiedContract;
 use crate::ui::components::contract_chooser_panel::add_contract_chooser_panel;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::{BackendTaskSuccessResult, MessageType, RootScreenType, Screen, ScreenLike, ScreenType};
+use crate::ui::{BackendTaskSuccessResult, MessageType, RootScreenType, ScreenLike, ScreenType};
 use crate::utils::parsers::{DocumentQueryTextInputParser, TextInputParser};
 use chrono::{DateTime, Utc};
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
@@ -20,7 +20,6 @@ use egui::{Color32, Context, Frame, Margin, ScrollArea, Ui};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use crate::ui::contracts_documents::create_document_screen::CreateDocumentScreen;
 
 /// A list of Dash-specific fields that do not appear in the
 /// normal document_type properties.
@@ -173,19 +172,11 @@ impl DocumentQueryScreen {
 
             ui.add(egui::TextEdit::singleline(&mut self.document_query).desired_width(text_width));
 
-            let button_fetch = egui::Button::new(
-                egui::RichText::new("Fetch Documents").color(Color32::WHITE),
-            )
-            .fill(Color32::from_rgb(0, 128, 255))
-            .frame(true)
-            .corner_radius(3.0);
-
-            let button_add = egui::Button::new(
-                egui::RichText::new("Add Document").color(Color32::WHITE),
-            )
-                .fill(Color32::from_rgb(0, 128, 255))
-                .frame(true)
-                .corner_radius(3.0);
+            let button_fetch =
+                egui::Button::new(egui::RichText::new("Fetch Documents").color(Color32::WHITE))
+                    .fill(Color32::from_rgb(0, 128, 255))
+                    .frame(true)
+                    .corner_radius(3.0);
 
             if ui.add(button_fetch).clicked() {
                 self.selected_document_type = self.pending_document_type.clone();
@@ -220,9 +211,6 @@ impl DocumentQueryScreen {
                         ));
                     }
                 }
-            }
-            if ui.add(button_add).clicked() {
-                action = AppAction::AddScreen(Screen::CreateDocumentScreen(CreateDocumentScreen::new(&self.app_context)));
             }
         });
 
@@ -559,11 +547,19 @@ impl ScreenLike for DocumentQueryScreen {
             "Register Contract",
             DesiredAppAction::AddScreenType(ScreenType::RegisterContract),
         );
+        let add_document_button = (
+            "Add Document",
+            DesiredAppAction::AddScreenType(ScreenType::CreateDocument),
+        );
         let mut action = add_top_panel(
             ctx,
             &self.app_context,
             vec![("Contracts", AppAction::None)],
-            vec![load_contract_button, register_contract_button],
+            vec![
+                load_contract_button,
+                register_contract_button,
+                add_document_button,
+            ],
         );
 
         action |= add_left_panel(

@@ -47,22 +47,15 @@ pub struct DocumentVisualizerScreen {
 /// * No collapsible tree.
 /// * Optional search box on top.
 /// * Emits `ContractTask::RemoveContract` via a small “🗑” button next to the contract picker.
-#[allow(clippy::too_many_arguments)]
 pub fn add_simple_contract_doc_type_chooser(
-    ctx: &Context,
+    ui: &mut egui::Ui,
     search_term: &mut String,
-
     app_context: &Arc<AppContext>,
-
     selected_contract: &mut Option<QualifiedContract>,
     selected_doc_type: &mut Option<DocumentType>,
-) -> AppAction {
-    let action = AppAction::None;
-
-    /* ----------------------- 1.  Load + filter contracts ---------------------- */
+) {
     let contracts = app_context.get_contracts(None, None).unwrap_or_default();
 
-    // filter by alias or id
     let filtered: Vec<_> = contracts
         .iter()
         .filter(|qc| {
@@ -75,20 +68,16 @@ pub fn add_simple_contract_doc_type_chooser(
         .cloned()
         .collect();
 
-    /* ----------------------- 2.  Paint UI  ----------------------------------- */
-    egui::Window::new("Document Source")
-        .default_pos([10.0, 90.0])
-        .resizable(true)
-        .show(ctx, |ui| {
-            // search bar
-            ui.horizontal(|ui| {
-                ui.label("Search:");
-                ui.text_edit_singleline(search_term);
-            });
+    egui::Grid::new("contract_doc_type_grid")
+        .num_columns(2)
+        .spacing([10.0, 5.0])
+        .striped(false)
+        .show(ui, |ui| {
+            ui.label("Filter contracts:");
+            ui.text_edit_singleline(search_term);
+            ui.end_row();
 
-            ui.add_space(6.0);
-
-            // --- contract picker ------------------------------------------------
+            ui.label("Contract:");
             egui::ComboBox::from_id_salt("contract_combo")
                 .width(220.0)
                 .selected_text(match selected_contract {
@@ -109,24 +98,20 @@ pub fn add_simple_contract_doc_type_chooser(
                             .clicked()
                         {
                             *selected_contract = Some(qc.clone());
-
-                            // default doc-type: first one
-                            let doc_type = qc.contract.document_types().values().next().cloned();
-                            *selected_doc_type = doc_type;
                         }
                     }
                 });
 
-            ui.add_space(8.0);
+            ui.end_row();
 
-            // --- document-type picker -----------------------------------------
+            ui.label("Doc Type:");
             egui::ComboBox::from_id_salt("doctype_combo")
                 .width(220.0)
                 .selected_text(
                     selected_doc_type
                         .as_ref()
                         .map(|d| d.name().to_owned())
-                        .unwrap_or_else(|| "Select Doc-Type…".into()),
+                        .unwrap_or_else(|| "Select Doc Type…".into()),
                 )
                 .show_ui(ui, |dui| {
                     if let Some(qc) = selected_contract {
@@ -149,9 +134,8 @@ pub fn add_simple_contract_doc_type_chooser(
                         dui.label("Pick a contract first");
                     }
                 });
+            ui.end_row();
         });
-
-    action
 }
 
 impl DocumentVisualizerScreen {
@@ -175,7 +159,7 @@ impl DocumentVisualizerScreen {
 
     fn parse_input(&mut self) {
         // need selections first
-        let (contract, doc_type) = match (&self.selected_contract, &self.selected_document_type) {
+        let (_contract, doc_type) = match (&self.selected_contract, &self.selected_document_type) {
             (Some(c), Some(d)) => (&c.contract, d),
             _ => {
                 self.parsed_json = None;
@@ -272,17 +256,19 @@ impl crate::ui::ScreenLike for DocumentVisualizerScreen {
         );
         action |= add_tools_subscreen_chooser_panel(ctx, self.app_context.as_ref());
 
-        /* ---------- simple dual-combo chooser ---------- */
-        action |= add_simple_contract_doc_type_chooser(
-            ctx,
-            &mut self.contract_search_term,
-            &self.app_context,
-            &mut self.selected_contract,
-            &mut self.selected_document_type,
-        );
-
         /* ---------- central panel ---------- */
         egui::CentralPanel::default().show(ctx, |ui| {
+            /* ---------- simple dual-combo chooser ---------- */
+            add_simple_contract_doc_type_chooser(
+                ui,
+                &mut self.contract_search_term,
+                &self.app_context,
+                &mut self.selected_contract,
+                &mut self.selected_document_type,
+            );
+
+            ui.add_space(10.0);
+
             self.show_input(ui);
             self.show_output(ui);
         });

@@ -885,10 +885,6 @@ impl TokensScreen {
 
         let my_tokens = app_context.identity_token_balances().unwrap_or_default();
 
-        if app_context.network == Devnet {
-            println!("my tokens {}", my_tokens.len());
-        }
-
         let mut function_images = BTreeMap::new();
 
         function_images.insert(

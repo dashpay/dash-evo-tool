@@ -1,3 +1,5 @@
+use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -314,6 +316,16 @@ impl ScreenLike for ClaimTokensScreen {
             ],
             vec![],
         );
+
+        // Left panel
+        action |= add_left_panel(
+            ctx,
+            &self.app_context,
+            crate::ui::RootScreenType::RootScreenMyTokenBalances,
+        );
+
+        // Subscreen chooser
+        action |= add_tokens_subscreen_chooser_panel(ctx, &self.app_context);
 
         egui::CentralPanel::default().show(ctx, |ui| {
             if self.status == ClaimTokensStatus::Complete {

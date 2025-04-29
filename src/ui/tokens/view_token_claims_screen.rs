@@ -2,14 +2,17 @@ use crate::app::{AppAction, DesiredAppAction};
 use crate::backend_task::document::DocumentTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
+use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::{MessageType, ScreenLike};
 use chrono::{DateTime, Utc};
 use dash_sdk::dpp::document::DocumentV0Getters;
 use dash_sdk::dpp::platform_value::Value;
+use dash_sdk::drive::query::{WhereClause, WhereOperator};
 use dash_sdk::platform::{Document, DocumentQuery};
-use egui::Color32;
 use egui::Context;
+use egui::{Color32, RichText};
 use std::sync::Arc;
 
 use super::tokens_screen::IdentityTokenBalance;
@@ -26,6 +29,7 @@ pub struct ViewTokenClaimsScreen {
     message: Option<(String, MessageType, DateTime<Utc>)>,
     fetch_status: FetchStatus,
     pub app_context: Arc<AppContext>,
+    claims: Vec<Document>,
 }
 
 impl ViewTokenClaimsScreen {
@@ -34,11 +38,22 @@ impl ViewTokenClaimsScreen {
         app_context: &Arc<AppContext>,
     ) -> Self {
         Self {
-            identity_token_balance,
+            identity_token_balance: identity_token_balance.clone(),
             new_claims_query: DocumentQuery {
                 data_contract: app_context.token_history_contract.clone(),
                 document_type_name: "claim".to_string(),
-                where_clauses: vec![],
+                where_clauses: vec![
+                    WhereClause {
+                        field: "tokenId".to_string(),
+                        operator: WhereOperator::Equal,
+                        value: Value::Identifier(identity_token_balance.token_id.into()),
+                    },
+                    WhereClause {
+                        field: "recipientId".to_string(),
+                        operator: WhereOperator::Equal,
+                        value: Value::Identifier(identity_token_balance.identity_id.into()),
+                    },
+                ],
                 order_by_clauses: vec![],
                 limit: 0,
                 start: None,
@@ -46,6 +61,7 @@ impl ViewTokenClaimsScreen {
             message: None,
             fetch_status: FetchStatus::NotFetching,
             app_context: app_context.clone(),
+            claims: vec![],
         }
     }
 }
@@ -72,35 +88,9 @@ impl ScreenLike for ViewTokenClaimsScreen {
         match backend_task_success_result {
             BackendTaskSuccessResult::Documents(documents) => {
                 self.fetch_status = FetchStatus::NotFetching;
-                if !documents.is_empty() {
-                    let claims: Vec<Document> =
-                        documents.into_iter().filter_map(|(_, doc)| doc).collect();
-                    let documents_string = claims
-                        .iter()
-                        .map(|doc| {
-                            let amount_string = doc
-                                .get("amount")
-                                .unwrap_or(&Value::Text("None".to_string()))
-                                .to_string();
-                            let timestamp_string = doc.created_at().unwrap_or_default().to_string();
-                            let block_height_string = doc
-                                .created_at_block_height()
-                                .unwrap_or_default()
-                                .to_string();
-                            let note_string = doc
-                                .get("note")
-                                .unwrap_or(&Value::Text("None".to_string()))
-                                .to_string();
+                self.claims = documents.into_iter().filter_map(|(_, doc)| doc).collect();
 
-                            format!(
-                                "Claim: Amount: {}, Timestamp: {}, Block Height: {}, Note: {}",
-                                amount_string, timestamp_string, block_height_string, note_string
-                            )
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n");
-                    self.display_message(&documents_string, MessageType::Info);
-                } else {
+                if self.claims.is_empty() {
                     self.display_message("No claims found", MessageType::Info);
                 }
             }
@@ -109,6 +99,7 @@ impl ScreenLike for ViewTokenClaimsScreen {
     }
 
     fn ui(&mut self, ctx: &Context) -> AppAction {
+        // Top panel
         let mut action = add_top_panel(
             ctx,
             &self.app_context,
@@ -128,11 +119,28 @@ impl ScreenLike for ViewTokenClaimsScreen {
             )],
         );
 
+        // Left panel
+        action |= add_left_panel(
+            ctx,
+            &self.app_context,
+            crate::ui::RootScreenType::RootScreenMyTokenBalances,
+        );
+
+        // Subscreen chooser
+        action |= add_tokens_subscreen_chooser_panel(ctx, &self.app_context);
+
+        // Central panel
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("View Token Claims");
             ui.add_space(10.0);
 
-            if ui.button("Fetch Claims").clicked() {
+            let fetch_button =
+                egui::Button::new(RichText::new("Fetch claims").color(Color32::WHITE))
+                    .fill(Color32::from_rgb(0, 128, 255))
+                    .frame(true)
+                    .corner_radius(3.0);
+
+            if ui.add(fetch_button).clicked() {
                 action |= AppAction::BackendTask(BackendTask::DocumentTask(
                     DocumentTask::FetchDocuments(self.new_claims_query.clone()),
                 ));
@@ -163,6 +171,70 @@ impl ScreenLike for ViewTokenClaimsScreen {
                     }
                     _ => {}
                 }
+            }
+
+            ui.add_space(10.0);
+
+            if !self.claims.is_empty() {
+                egui::ScrollArea::both()
+                    .auto_shrink([false; 2])
+                    .show(ui, |ui| {
+                        egui::Grid::new("claims_table")
+                            .striped(true)
+                            .spacing([20.0, 8.0])
+                            .show(ui, |ui| {
+                                // Header
+                                ui.label("Amount");
+                                ui.label("Timestamp");
+                                ui.label("Block Height");
+                                ui.label("Note");
+                                ui.end_row();
+
+                                for claim in &self.claims {
+                                    // Amount
+                                    let amount = match claim.get("amount") {
+                                        Some(Value::U64(amount)) => format!("{}", amount),
+                                        Some(Value::I64(amount)) => format!("{}", amount),
+                                        Some(Value::Text(s)) => s.clone(),
+                                        Some(other) => other.to_string(),
+                                        None => "None".to_string(),
+                                    };
+
+                                    // Timestamp
+                                    let timestamp = match claim.created_at() {
+                                        Some(ts) => {
+                                            let dt = chrono::NaiveDateTime::from_timestamp_millis(
+                                                ts as i64,
+                                            )
+                                            .unwrap_or_else(|| {
+                                                chrono::NaiveDateTime::from_timestamp(0, 0)
+                                            });
+                                            dt.format("%Y-%m-%d %H:%M:%S").to_string()
+                                        }
+                                        None => "Unknown".to_string(),
+                                    };
+
+                                    // Block Height
+                                    let block_height = claim
+                                        .created_at_block_height()
+                                        .map(|h| h.to_string())
+                                        .unwrap_or_else(|| "Unknown".to_string());
+
+                                    // Note
+                                    let note = match claim.get("note") {
+                                        Some(Value::Text(note)) => note.clone(),
+                                        Some(other) => other.to_string(),
+                                        None => "".to_string(),
+                                    };
+
+                                    ui.label(amount);
+                                    ui.label(timestamp);
+                                    ui.label(block_height);
+                                    ui.label(note);
+                                    ui.end_row();
+                                }
+                            });
+                    });
             }
         });
 

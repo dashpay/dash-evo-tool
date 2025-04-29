@@ -7,6 +7,8 @@ use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use eframe::egui::{self, Color32, Context, Ui};
 use egui::RichText;
 
+use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
@@ -279,6 +281,16 @@ impl ScreenLike for BurnTokensScreen {
             ],
             vec![],
         );
+
+        // Left panel
+        action |= add_left_panel(
+            ctx,
+            &self.app_context,
+            crate::ui::RootScreenType::RootScreenMyTokenBalances,
+        );
+
+        // Subscreen chooser
+        action |= add_tokens_subscreen_chooser_panel(ctx, &self.app_context);
 
         egui::CentralPanel::default().show(ctx, |ui| {
             // If we are in the "Complete" status, just show success screen

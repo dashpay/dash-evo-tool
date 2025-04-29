@@ -172,13 +172,13 @@ impl DocumentQueryScreen {
 
             ui.add(egui::TextEdit::singleline(&mut self.document_query).desired_width(text_width));
 
-            let button = egui::Button::new(
-                egui::RichText::new("Fetch Documents").color(egui::Color32::WHITE),
-            )
-            .fill(egui::Color32::from_rgb(0, 128, 255))
-            .frame(true)
-            .corner_radius(3.0);
-            if ui.add(button).clicked() {
+            let button_fetch =
+                egui::Button::new(egui::RichText::new("Fetch Documents").color(Color32::WHITE))
+                    .fill(Color32::from_rgb(0, 128, 255))
+                    .frame(true)
+                    .corner_radius(3.0);
+
+            if ui.add(button_fetch).clicked() {
                 self.selected_document_type = self.pending_document_type.clone();
                 self.document_fields_selection = self.pending_fields_selection.clone();
 
@@ -547,11 +547,19 @@ impl ScreenLike for DocumentQueryScreen {
             "Register Contract",
             DesiredAppAction::AddScreenType(ScreenType::RegisterContract),
         );
+        let add_document_button = (
+            "Add Document",
+            DesiredAppAction::AddScreenType(ScreenType::CreateDocument),
+        );
         let mut action = add_top_panel(
             ctx,
             &self.app_context,
             vec![("Contracts", AppAction::None)],
-            vec![load_contract_button, register_contract_button],
+            vec![
+                load_contract_button,
+                register_contract_button,
+                add_document_button,
+            ],
         );
 
         action |= add_left_panel(

@@ -10,7 +10,7 @@ use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::{To
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationPresetFeatures::{MostRestrictive, WithAllAdvancedActions, WithExtremeActions, WithMintingAndBurningActions, WithOnlyEmergencyAction};
 use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::v0::TokenDistributionRulesV0;
 use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::TokenDistributionRules;
-use dash_sdk::dpp::data_contract::associated_token::token_keeps_history_rules::accessors::v0::{TokenKeepsHistoryRulesV0Getters, TokenKeepsHistoryRulesV0Setters};
+use dash_sdk::dpp::data_contract::associated_token::token_keeps_history_rules::accessors::v0::TokenKeepsHistoryRulesV0Setters;
 use dash_sdk::dpp::data_contract::associated_token::token_keeps_history_rules::TokenKeepsHistoryRules;
 use dash_sdk::dpp::data_contract::associated_token::token_keeps_history_rules::v0::TokenKeepsHistoryRulesV0;
 use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::distribution_function::DistributionFunction;
@@ -26,7 +26,6 @@ use dash_sdk::dpp::data_contract::change_control_rules::ChangeControlRules;
 use dash_sdk::dpp::data_contract::conversion::json::DataContractJsonConversionMethodsV0;
 use dash_sdk::dpp::data_contract::group::v0::GroupV0;
 use dash_sdk::dpp::data_contract::group::{Group, GroupMemberPower, GroupRequiredPower};
-use dash_sdk::dpp::data_contract::TokenConfiguration;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::SecurityLevel;
@@ -46,7 +45,6 @@ use crate::backend_task::BackendTask;
 
 use crate::app::{AppAction, DesiredAppAction};
 use crate::context::AppContext;
-use crate::model::qualified_contract::QualifiedContract;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::ui::components::left_panel::add_left_panel;
@@ -886,10 +884,6 @@ impl TokensScreen {
             .unwrap_or_default();
 
         let my_tokens = app_context.identity_token_balances().unwrap_or_default();
-
-        if app_context.network == Devnet {
-            println!("my tokens {}", my_tokens.len());
-        }
 
         let mut function_images = BTreeMap::new();
 

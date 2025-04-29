@@ -93,7 +93,7 @@ pub fn add_left_panel(
                             .tint(button_color);
 
                         if ui.add(button).clicked() {
-                            action = AppAction::SetMainScreen(*screen_type);
+                            action = AppAction::SetMainScreenThenGoToMainScreen(*screen_type);
                         }
                     } else {
                         // Fallback to a simple text button if texture loading fails

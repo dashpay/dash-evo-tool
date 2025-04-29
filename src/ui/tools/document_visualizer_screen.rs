@@ -57,7 +57,7 @@ pub fn add_simple_contract_doc_type_chooser(
     selected_contract: &mut Option<QualifiedContract>,
     selected_doc_type: &mut Option<DocumentType>,
 ) -> AppAction {
-    let mut action = AppAction::None;
+    let action = AppAction::None;
 
     /* ----------------------- 1.  Load + filter contracts ---------------------- */
     let contracts = app_context.get_contracts(None, None).unwrap_or_default();
@@ -130,7 +130,7 @@ pub fn add_simple_contract_doc_type_chooser(
                 )
                 .show_ui(ui, |dui| {
                     if let Some(qc) = selected_contract {
-                        for (name, dt) in qc.contract.document_types() {
+                        for (name, _dt) in qc.contract.document_types() {
                             if dui
                                 .selectable_label(
                                     selected_doc_type

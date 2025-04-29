@@ -5,6 +5,7 @@ use crate::model::qualified_identity::encrypted_key_storage::{
     PrivateKeyData, WalletDerivationPath,
 };
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::ui::contracts_documents::create_document_screen::CreateDocumentScreen;
 use crate::ui::contracts_documents::document_query_screen::DocumentQueryScreen;
 use crate::ui::dpns::dpns_contested_names_screen::DPNSScreen;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
@@ -24,7 +25,6 @@ use crate::ui::wallets::import_wallet_screen::ImportWalletScreen;
 use crate::ui::wallets::wallets_screen::WalletsBalancesScreen;
 use contracts_documents::add_contracts_screen::AddContractsScreen;
 use contracts_documents::register_contract_screen::RegisterDataContractScreen;
-use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
 use dash_sdk::dpp::identity::Identity;
 use dash_sdk::dpp::prelude::IdentityPublicKey;
 use dpns::dpns_contested_names_screen::DPNSSubscreen;
@@ -197,6 +197,7 @@ pub enum ScreenType {
     ClaimTokensScreen(IdentityTokenBalance),
     ViewTokenClaimsScreen(IdentityTokenBalance),
     DocumentsVisualizer,
+    CreateDocument,
 }
 
 impl ScreenType {
@@ -343,6 +344,9 @@ impl ScreenType {
             ScreenType::DocumentsVisualizer => {
                 Screen::DocumentVisualizerScreen(DocumentVisualizerScreen::new(app_context))
             }
+            ScreenType::CreateDocument => {
+                Screen::CreateDocumentScreen(CreateDocumentScreen::new(app_context))
+            }
         }
     }
 }
@@ -359,6 +363,7 @@ pub enum Screen {
     KeysScreen(KeysScreen),
     RegisterDpnsNameScreen(RegisterDpnsNameScreen),
     RegisterDataContractScreen(RegisterDataContractScreen),
+    CreateDocumentScreen(CreateDocumentScreen),
     WithdrawalScreen(WithdrawalScreen),
     TopUpIdentityScreen(TopUpIdentityScreen),
     TransferScreen(TransferScreen),
@@ -402,6 +407,7 @@ impl Screen {
             Screen::AddNewIdentityScreen(screen) => screen.app_context = app_context,
             Screen::RegisterDpnsNameScreen(screen) => screen.app_context = app_context,
             Screen::RegisterDataContractScreen(screen) => screen.app_context = app_context,
+            Screen::CreateDocumentScreen(screen) => screen.app_context = app_context,
             Screen::AddNewWalletScreen(screen) => screen.app_context = app_context,
             Screen::TransferScreen(screen) => screen.app_context = app_context,
             Screen::TopUpIdentityScreen(screen) => screen.app_context = app_context,
@@ -504,6 +510,7 @@ impl Screen {
             }
             Screen::RegisterDpnsNameScreen(_) => ScreenType::RegisterDpnsName,
             Screen::RegisterDataContractScreen(_) => ScreenType::RegisterContract,
+            Screen::CreateDocumentScreen(_) => ScreenType::CreateDocument,
             Screen::AddNewWalletScreen(_) => ScreenType::AddNewWallet,
             Screen::WalletsBalancesScreen(_) => ScreenType::WalletsBalances,
             Screen::ImportWalletScreen(_) => ScreenType::ImportWallet,
@@ -576,6 +583,7 @@ impl ScreenLike for Screen {
             Screen::KeysScreen(screen) => screen.refresh(),
             Screen::RegisterDpnsNameScreen(screen) => screen.refresh(),
             Screen::RegisterDataContractScreen(screen) => screen.refresh(),
+            Screen::CreateDocumentScreen(screen) => screen.refresh(),
             Screen::WithdrawalScreen(screen) => screen.refresh(),
             Screen::TransferScreen(screen) => screen.refresh(),
             Screen::AddKeyScreen(screen) => screen.refresh(),
@@ -617,6 +625,7 @@ impl ScreenLike for Screen {
             Screen::KeysScreen(screen) => screen.refresh_on_arrival(),
             Screen::RegisterDpnsNameScreen(screen) => screen.refresh_on_arrival(),
             Screen::RegisterDataContractScreen(screen) => screen.refresh_on_arrival(),
+            Screen::CreateDocumentScreen(screen) => screen.refresh_on_arrival(),
             Screen::WithdrawalScreen(screen) => screen.refresh_on_arrival(),
             Screen::TransferScreen(screen) => screen.refresh_on_arrival(),
             Screen::AddKeyScreen(screen) => screen.refresh_on_arrival(),
@@ -658,6 +667,7 @@ impl ScreenLike for Screen {
             Screen::KeysScreen(screen) => screen.ui(ctx),
             Screen::RegisterDpnsNameScreen(screen) => screen.ui(ctx),
             Screen::RegisterDataContractScreen(screen) => screen.ui(ctx),
+            Screen::CreateDocumentScreen(screen) => screen.ui(ctx),
             Screen::WithdrawalScreen(screen) => screen.ui(ctx),
             Screen::TransferScreen(screen) => screen.ui(ctx),
             Screen::AddKeyScreen(screen) => screen.ui(ctx),
@@ -703,6 +713,7 @@ impl ScreenLike for Screen {
             Screen::RegisterDataContractScreen(screen) => {
                 screen.display_message(message, message_type)
             }
+            Screen::CreateDocumentScreen(screen) => screen.display_message(message, message_type),
             Screen::WithdrawalScreen(screen) => screen.display_message(message, message_type),
             Screen::TransferScreen(screen) => screen.display_message(message, message_type),
             Screen::AddKeyScreen(screen) => screen.display_message(message, message_type),
@@ -768,6 +779,9 @@ impl ScreenLike for Screen {
                 screen.display_task_result(backend_task_success_result)
             }
             Screen::RegisterDataContractScreen(screen) => {
+                screen.display_task_result(backend_task_success_result)
+            }
+            Screen::CreateDocumentScreen(screen) => {
                 screen.display_task_result(backend_task_success_result)
             }
             Screen::WithdrawalScreen(screen) => {
@@ -849,6 +863,7 @@ impl ScreenLike for Screen {
             Screen::KeysScreen(screen) => screen.pop_on_success(),
             Screen::RegisterDpnsNameScreen(screen) => screen.pop_on_success(),
             Screen::RegisterDataContractScreen(screen) => screen.pop_on_success(),
+            Screen::CreateDocumentScreen(screen) => screen.pop_on_success(),
             Screen::WithdrawalScreen(screen) => screen.pop_on_success(),
             Screen::TransferScreen(screen) => screen.pop_on_success(),
             Screen::AddKeyScreen(screen) => screen.pop_on_success(),

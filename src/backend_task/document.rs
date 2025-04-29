@@ -1,12 +1,22 @@
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::context::AppContext;
+use crate::model::qualified_identity::QualifiedIdentity;
+use dash_sdk::dpp::data_contract::document_type::DocumentType;
 use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::Start;
-use dash_sdk::platform::{Document, DocumentQuery, FetchMany, Identifier};
+use dash_sdk::platform::transition::put_document::PutDocument;
+use dash_sdk::platform::{Document, DocumentQuery, FetchMany, Identifier, IdentityPublicKey};
 use dash_sdk::query_types::IndexMap;
 use dash_sdk::Sdk;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum DocumentTask {
+    BroadcastDocument(
+        Document,
+        [u8; 32],
+        DocumentType,
+        QualifiedIdentity,
+        IdentityPublicKey,
+    ),
     FetchDocuments(DocumentQuery),
     FetchDocumentsPage(DocumentQuery),
 }
@@ -61,6 +71,24 @@ impl AppContext {
                     next_cursor,
                 ))
             }
+            DocumentTask::BroadcastDocument(
+                document,
+                entropy, // you usually don’t need it here
+                doc_type,
+                qualified_identity,
+                identity_key,
+            ) => document
+                .put_to_platform_and_wait_for_response(
+                    sdk,
+                    doc_type,
+                    entropy,
+                    identity_key,
+                    &qualified_identity,
+                    None,
+                )
+                .await
+                .map(BackendTaskSuccessResult::Document)
+                .map_err(|e| format!("Error fetching documents: {}", e.to_string())),
         }
     }
 }

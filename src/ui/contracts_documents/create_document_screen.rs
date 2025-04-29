@@ -164,6 +164,9 @@ impl CreateDocumentScreen {
                                     None,
                                     &mut self.error_message,
                                 );
+                                if let Some(default_public_key) = qi.available_authentication_keys_with_high_security_level().first() {
+                                    self.selected_key = Some(default_public_key.identity_public_key.clone());
+                                }
                             }
                         }
                     });
@@ -175,7 +178,7 @@ impl CreateDocumentScreen {
                         .selected_text(
                             self.selected_key
                                 .as_ref()
-                                .map(|k| format!("Key {} (SL {:?})", k.id(), k.security_level()))
+                                .map(|k| format!("Key {} Security {}", k.id(), k.security_level()))
                                 .unwrap_or_else(|| "Choose key…".into()),
                         )
                         .show_ui(ui, |cb| {
@@ -183,12 +186,12 @@ impl CreateDocumentScreen {
                                 if qi_ref != qi {
                                     continue;
                                 }
-                                for k in qi_ref.available_authentication_keys() {
+                                for k in qi_ref.available_authentication_keys_non_master() {
                                     if cb
                                         .selectable_label(
                                             self.selected_key.as_ref()
                                                 == Some(&k.identity_public_key),
-                                            format!("Key {}", k.identity_public_key.id()),
+                                            format!("Key {} Security {}", k.identity_public_key.id(), k.identity_public_key.security_level().to_string()),
                                         )
                                         .clicked()
                                     {

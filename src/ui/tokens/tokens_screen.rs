@@ -4461,8 +4461,8 @@ Emits tokens in fixed amounts for specific intervals.
 
         // If user closes the popup window (the [x] button), also reset state
         if !is_open {
-            self.confirm_remove_identity_token_balance_popup = false;
-            self.identity_token_balance_to_remove = None;
+            self.confirm_remove_token_popup = false;
+            self.token_to_remove = None;
         }
     }
 }

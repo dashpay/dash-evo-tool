@@ -271,7 +271,7 @@ impl ScreenLike for FreezeTokensScreen {
             vec![
                 ("Tokens", AppAction::GoToMainScreen),
                 (
-                    &self.identity_token_balance.token_name,
+                    &self.identity_token_balance.token_alias,
                     AppAction::PopScreen,
                 ),
                 ("Freeze", AppAction::None),

@@ -8,6 +8,7 @@ use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::{TokenConfigurationPreset, TokenConfigurationPresetFeatures, TokenConfigurationV0};
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationPresetFeatures::{MostRestrictive, WithAllAdvancedActions, WithExtremeActions, WithMintingAndBurningActions, WithOnlyEmergencyAction};
+use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::TokenConfigurationConvention;
 use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::v0::TokenDistributionRulesV0;
 use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::TokenDistributionRules;
 use dash_sdk::dpp::data_contract::associated_token::token_keeps_history_rules::accessors::v0::TokenKeepsHistoryRulesV0Setters;
@@ -26,6 +27,7 @@ use dash_sdk::dpp::data_contract::change_control_rules::ChangeControlRules;
 use dash_sdk::dpp::data_contract::conversion::json::DataContractJsonConversionMethodsV0;
 use dash_sdk::dpp::data_contract::group::v0::GroupV0;
 use dash_sdk::dpp::data_contract::group::{Group, GroupMemberPower, GroupRequiredPower};
+use dash_sdk::dpp::data_contract::TokenConfiguration;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::SecurityLevel;
@@ -93,6 +95,7 @@ pub struct TokenInfo {
     pub token_name: String,
     pub data_contract_id: Identifier,
     pub token_position: u16,
+    pub token_configuration: TokenConfiguration,
     pub description: Option<String>,
 }
 
@@ -191,7 +194,8 @@ pub struct IdentityTokenMaybeBalance {
 #[derive(Clone, Debug, PartialEq)]
 pub struct IdentityTokenBalance {
     pub token_id: Identifier,
-    pub token_name: String,
+    pub token_alias: String,
+    pub token_config: TokenConfiguration,
     pub identity_id: Identifier,
     pub balance: TokenAmount,
     pub estimated_unclaimed_rewards: Option<TokenAmount>,
@@ -285,7 +289,7 @@ impl From<ChangeControlRulesV0> for ChangeControlRulesUI {
 
 impl ChangeControlRulesUI {
     /// Renders the UI for a single action’s configuration (mint, burn, freeze, etc.)
-    pub fn render_control_change_rules_ui(&mut self, ui: &mut Ui, action_name: &str) {
+    pub fn render_control_change_rules_ui(&mut self, ui: &mut Ui, action_name: &str, special_case_option: Option<&mut bool>) {
         ui.collapsing(action_name, |ui| {
             ui.add_space(3.0);
 
@@ -297,7 +301,19 @@ impl ChangeControlRulesUI {
                     ui.horizontal(|ui| {
                         ui.label("Authorized to perform action:");
                         egui::ComboBox::from_id_salt(format!("Authorized {}", action_name))
-                            .selected_text(self.rules.authorized_to_make_change.to_string())
+                            .selected_text(match self.rules.authorized_to_make_change {
+                                AuthorizedActionTakers::NoOne => "No One".to_string(),
+                                AuthorizedActionTakers::ContractOwner => "Contract Owner".to_string(),
+                                AuthorizedActionTakers::Identity(id) => {
+                                    if id == Identifier::default() {
+                                        "Identity".to_string()
+                                    } else {
+                                        format!("Identity({})", id)
+                                    }
+                                },
+                                AuthorizedActionTakers::MainGroup => "Main Group".to_string(),
+                                AuthorizedActionTakers::Group(position) => format!("Group {}", position),
+                            })
                             .show_ui(ui, |ui| {
                                 ui.selectable_value(
                                     &mut self.rules.authorized_to_make_change,
@@ -330,10 +346,25 @@ impl ChangeControlRulesUI {
                         match &mut self.rules.authorized_to_make_change {
                             AuthorizedActionTakers::Identity(_) => {
                                 self.authorized_identity.get_or_insert_with(String::new);
-                                if let Some(ref mut id) = self.authorized_identity {
-                                    ui.add(
-                                        egui::TextEdit::singleline(id).hint_text("Enter base58 id"),
-                                    );
+                                if let Some(ref mut id_str) = self.authorized_identity {
+                                    ui.horizontal(|ui| {
+                                        ui.add_sized(
+                                            [300.0, 22.0],
+                                            egui::TextEdit::singleline(id_str).hint_text("Enter base58 id"),
+                                        );
+
+                                        if !id_str.is_empty() {
+                                            let is_valid = Identifier::from_string(id_str.as_str(), Encoding::Base58).is_ok();
+
+                                            let (symbol, color) = if is_valid {
+                                                ("✔", Color32::GREEN)
+                                            } else {
+                                                ("×", Color32::RED)
+                                            };
+
+                                            ui.label(RichText::new(symbol).color(color).strong());
+                                        }
+                                    });
                                 }
                             }
                             AuthorizedActionTakers::Group(_) => {
@@ -354,7 +385,19 @@ impl ChangeControlRulesUI {
                     ui.horizontal(|ui| {
                         ui.label("Authorized to change rules:");
                         egui::ComboBox::from_id_salt(format!("Admin {}", action_name))
-                            .selected_text(self.rules.admin_action_takers.to_string())
+                            .selected_text(match self.rules.admin_action_takers {
+                                AuthorizedActionTakers::NoOne => "No One".to_string(),
+                                AuthorizedActionTakers::ContractOwner => "Contract Owner".to_string(),
+                                AuthorizedActionTakers::Identity(id) => {
+                                    if id == Identifier::default() {
+                                        "Identity".to_string()
+                                    } else {
+                                        format!("Identity({})", id)
+                                    }
+                                },
+                                AuthorizedActionTakers::MainGroup => "Main Group".to_string(),
+                                AuthorizedActionTakers::Group(position) => format!("Group {}", position),
+                            })
                             .show_ui(ui, |ui| {
                                 ui.selectable_value(
                                     &mut self.rules.admin_action_takers,
@@ -386,10 +429,25 @@ impl ChangeControlRulesUI {
                         match &mut self.rules.admin_action_takers {
                             AuthorizedActionTakers::Identity(_) => {
                                 self.admin_identity.get_or_insert_with(String::new);
-                                if let Some(ref mut id) = self.admin_identity {
-                                    ui.add(
-                                        egui::TextEdit::singleline(id).hint_text("Enter base58 id"),
-                                    );
+                                if let Some(ref mut id_str) = self.admin_identity {
+                                    ui.horizontal(|ui| {
+                                        ui.add_sized(
+                                            [300.0, 22.0],
+                                            egui::TextEdit::singleline(id_str).hint_text("Enter base58 id"),
+                                        );
+
+                                        if !id_str.is_empty() {
+                                            let is_valid = Identifier::from_string(id_str.as_str(), Encoding::Base58).is_ok();
+
+                                            let (symbol, color) = if is_valid {
+                                                ("✔", Color32::GREEN)
+                                            } else {
+                                                ("×", Color32::RED)
+                                            };
+
+                                            ui.label(RichText::new(symbol).color(color).strong());
+                                        }
+                                    });
                                 }
                             }
                             AuthorizedActionTakers::Group(_) => {
@@ -426,6 +484,27 @@ impl ChangeControlRulesUI {
                         "Self-changing admin action takers allowed",
                     );
                     ui.end_row();
+
+                    if let Some(special_case_option) = special_case_option {
+                        if action_name == "Freeze" {
+                            if self.rules.authorized_to_make_change != AuthorizedActionTakers::NoOne {
+                                ui.horizontal(|ui| {
+                                    ui.checkbox(
+                                        special_case_option,
+                                        "Allow transfers to frozen identities",
+                                    );
+                                    ui.add_space(4.0);
+                                    ui.label(
+                                        RichText::new("ℹ")
+                                            .monospace()
+                                            .color(Color32::LIGHT_BLUE),
+                                    )
+                                        .on_hover_text("Enabling this setting allows transfers to frozen identities, reducing gas usage by approximately 20% per transfer. Disable this if you want to make sure frozen identities can not receive transfers.");
+                                });
+                                ui.end_row();
+                            }
+                        }
+                    }
                 });
 
             ui.add_space(3.0);
@@ -464,7 +543,7 @@ impl ChangeControlRulesUI {
             _ => {}
         }
 
-        // 2) Update self.rules.admin_action_takersif it’s Identity or Group
+        // 2) Update self.rules.admin_action_takers if it’s Identity or Group
         match self.rules.admin_action_takers {
             AuthorizedActionTakers::Identity(_) => {
                 if let Some(ref id_str) = self.admin_identity {
@@ -673,6 +752,7 @@ pub struct TokenBuildArgs {
     pub base_supply: u64,
     pub max_supply: Option<u64>,
     pub start_paused: bool,
+    pub allow_transfers_to_frozen_identities: bool,
     pub keeps_history: TokenKeepsHistoryRules,
     pub main_control_group: Option<u16>,
 
@@ -758,6 +838,7 @@ pub struct TokensScreen {
     cached_build_args: Option<TokenBuildArgs>,
     show_json_popup: bool,
     json_popup_text: String,
+    allow_transfers_to_frozen_identities: bool,
 
     // Action Rules
     manual_minting_rules: ChangeControlRulesUI,
@@ -971,6 +1052,7 @@ impl TokensScreen {
             json_popup_text: String::new(),
 
             // Action rules
+            allow_transfers_to_frozen_identities: true,
             manual_minting_rules: ChangeControlRulesUI::default(),
             manual_burning_rules: ChangeControlRulesUI::default(),
             freeze_rules: ChangeControlRulesUI::default(),
@@ -1174,7 +1256,7 @@ impl TokensScreen {
                         .unwrap_or("".to_string());
                     alias_a.cmp(&alias_b)
                 }
-                SortColumn::TokenName => a.token_name.cmp(&b.token_name),
+                SortColumn::TokenName => a.token_alias.cmp(&b.token_alias),
                 SortColumn::TokenID => a.token_id.cmp(&b.token_id),
             };
             match self.sort_order {
@@ -1225,7 +1307,7 @@ impl TokensScreen {
         for tb in tokens.values() {
             let entry = map.entry(tb.token_id.clone()).or_insert_with(|| {
                 // Store (token_name, running_total_balance)
-                (tb.token_name.clone(), 0u64)
+                (tb.token_alias.clone(), 0u64)
             });
             entry.1 += tb.balance;
         }
@@ -1722,7 +1804,7 @@ impl TokensScreen {
             // Add button to add token to my tokens
             if ui.button("Add to My Tokens").clicked() {
                 // Add token to my tokens
-                action |= self.add_token_to_my_tokens(token.clone());
+                action |= self.add_token_to_tracked_tokens(token.clone());
             }
 
             ui.add_space(10.0);
@@ -2399,14 +2481,14 @@ impl TokensScreen {
 
                         ui.add_space(3.0);
 
-                        self.manual_minting_rules.render_control_change_rules_ui(ui, "Manual Mint");
-                        self.manual_burning_rules.render_control_change_rules_ui(ui, "Manual Burn");
-                        self.freeze_rules.render_control_change_rules_ui(ui, "Freeze");
-                        self.unfreeze_rules.render_control_change_rules_ui(ui, "Unfreeze");
-                        self.destroy_frozen_funds_rules.render_control_change_rules_ui(ui, "Destroy Frozen Funds");
-                        self.emergency_action_rules.render_control_change_rules_ui(ui, "Emergency Action");
-                        self.max_supply_change_rules.render_control_change_rules_ui(ui, "Max Supply Change");
-                        self.conventions_change_rules.render_control_change_rules_ui(ui, "Conventions Change");
+                        self.manual_minting_rules.render_control_change_rules_ui(ui, "Manual Mint", None);
+                        self.manual_burning_rules.render_control_change_rules_ui(ui, "Manual Burn", None);
+                        self.freeze_rules.render_control_change_rules_ui(ui, "Freeze", Some(&mut self.allow_transfers_to_frozen_identities));
+                        self.unfreeze_rules.render_control_change_rules_ui(ui, "Unfreeze", None);
+                        self.destroy_frozen_funds_rules.render_control_change_rules_ui(ui, "Destroy Frozen Funds", None);
+                        self.emergency_action_rules.render_control_change_rules_ui(ui, "Emergency Action", None);
+                        self.max_supply_change_rules.render_control_change_rules_ui(ui, "Max Supply Change", None);
+                        self.conventions_change_rules.render_control_change_rules_ui(ui, "Conventions Change", None);
 
                         // Main control group change is slightly different so do this one manually.
                         ui.collapsing("Main Control Group Change", |ui| {
@@ -3080,7 +3162,7 @@ Emits tokens in fixed amounts for specific intervals.
 
                             ui.horizontal(|ui| {
                                 ui.label(" ");
-                                self.perpetual_distribution_rules.render_control_change_rules_ui(ui, "Perpetual Distribution Rules");
+                                self.perpetual_distribution_rules.render_control_change_rules_ui(ui, "Perpetual Distribution Rules", None);
                             });
 
                             ui.add_space(5.0);
@@ -3173,7 +3255,7 @@ Emits tokens in fixed amounts for specific intervals.
 
                             ui.horizontal(|ui| {
                                 ui.label("   ");
-                                self.new_tokens_destination_identity_rules.render_control_change_rules_ui(ui, "New Tokens Destination Identity Rules");
+                                self.new_tokens_destination_identity_rules.render_control_change_rules_ui(ui, "New Tokens Destination Identity Rules", None);
                             });
                         }
 
@@ -3187,7 +3269,7 @@ Emits tokens in fixed amounts for specific intervals.
                         if self.minting_allow_choosing_destination {
                             ui.horizontal(|ui| {
                                 ui.label("   ");
-                                self.minting_allow_choosing_destination_rules.render_control_change_rules_ui(ui, "Minting Allow Choosing Destination Rules");
+                                self.minting_allow_choosing_destination_rules.render_control_change_rules_ui(ui, "Minting Allow Choosing Destination Rules", None);
                             });
                         }
                     });
@@ -3341,6 +3423,7 @@ Emits tokens in fixed amounts for specific intervals.
                                         args.base_supply,
                                         args.max_supply,
                                         args.start_paused,
+                                        args.allow_transfers_to_frozen_identities,
                                         args.keeps_history,
                                         args.main_control_group,
                                         args.manual_minting_rules,
@@ -3510,6 +3593,7 @@ Emits tokens in fixed amounts for specific intervals.
                             base_supply: args.base_supply,
                             max_supply: args.max_supply,
                             start_paused: args.start_paused,
+                            allow_transfers_to_frozen_identities: args.allow_transfers_to_frozen_identities,
                             keeps_history: args.keeps_history,
                             main_control_group: args.main_control_group,
 
@@ -3642,6 +3726,7 @@ Emits tokens in fixed amounts for specific intervals.
         };
 
         let start_paused = self.start_as_paused_input;
+        let allow_transfers_to_frozen_identities = self.allow_transfers_to_frozen_identities;
         let keeps_history = self.token_advanced_keeps_history.into();
 
         let main_control_group = if self.main_control_group_input.is_empty() {
@@ -3701,6 +3786,7 @@ Emits tokens in fixed amounts for specific intervals.
             base_supply,
             max_supply,
             start_paused,
+            allow_transfers_to_frozen_identities,
             keeps_history,
             main_control_group,
 
@@ -4244,51 +4330,12 @@ Emits tokens in fixed amounts for specific intervals.
         app_action
     }
 
-    fn add_token_to_my_tokens(&mut self, token_info: TokenInfo) -> AppAction {
-        let mut action = AppAction::None;
-        let mut tokens = Vec::new();
-        for identity in self
-            .app_context
-            .load_local_qualified_identities()
-            .expect("Expected to load identities")
-        {
-            let identity_token_balance = IdentityTokenBalance {
-                token_id: token_info.token_id,
-                token_name: token_info.token_name.clone(),
-                identity_id: identity.identity.id(),
-                balance: 0,
-                estimated_unclaimed_rewards: None,
-                data_contract_id: token_info.data_contract_id,
-                token_position: token_info.token_position,
-            };
+    fn add_token_to_tracked_tokens(&mut self, token_info: TokenInfo) -> AppAction {
+        self.all_known_tokens.insert(token_info.token_id, token_info.clone());
 
-            tokens.push(identity_token_balance);
-        }
-        let my_tokens_clone = self.my_tokens.clone();
+        self.display_message("Added token", MessageType::Success);
 
-        // Prevent duplicates
-        for itb in tokens {
-            if !my_tokens_clone
-                .values()
-                .any(|t| t.token_id == itb.token_id && t.identity_id == itb.identity_id)
-            {
-                let _ = self.app_context.insert_token_identity_balance(
-                    &itb.token_id,
-                    &itb.identity_id,
-                    0,
-                );
-                action |=
-                    AppAction::BackendTask(BackendTask::TokenTask(TokenTask::QueryMyTokenBalances));
-                self.display_message("Added token", MessageType::Success);
-            } else {
-                self.display_message("Token already added", MessageType::Error);
-            }
-        }
-
-        // Save the new order
-        self.save_current_order();
-
-        action
+        AppAction::BackendTask(BackendTask::TokenTask(TokenTask::SaveTokenLocally(token_info)))
     }
 
     fn goto_next_search_page(&mut self) -> AppAction {
@@ -4360,7 +4407,7 @@ Emits tokens in fixed amounts for specific intervals.
             .show(ui.ctx(), |ui| {
                 ui.label(format!(
                     "Are you sure you want to stop tracking the token \"{}\" for identity \"{}\"?",
-                    token_to_remove.token_name,
+                    token_to_remove.token_alias,
                     token_to_remove.identity_id.to_string(Encoding::Base58)
                 ));
 
@@ -4422,7 +4469,7 @@ Emits tokens in fixed amounts for specific intervals.
             .open(&mut is_open)
             .show(ui.ctx(), |ui| {
                 ui.label(format!(
-                    "Are you sure you want to stop tracking the token \"{}\"? You can re-add it later. Your actual token balance will not change with this action",
+                    "Are you sure you want to stop tracking the token \"{}\"? You can re-add it later. Your actual token balance will not change with this action.",
                     token_name,
                 ));
 
@@ -4433,9 +4480,9 @@ Emits tokens in fixed amounts for specific intervals.
                         .load_local_qualified_identities()
                         .expect("Expected to load local qualified identities")
                     {
-                        if let Err(e) = self.app_context.remove_token_balance(
-                            token_to_remove.clone(),
-                            identity.identity.id().clone(),
+                        if let Err(e) = self.app_context.db.remove_token(
+                            &token_to_remove,
+                            &self.app_context,
                         ) {
                             self.backend_message = Some((
                                 format!("Error removing token balance: {}", e),
@@ -5049,6 +5096,7 @@ mod tests {
                 build_args.base_supply,
                 build_args.max_supply,
                 build_args.start_paused,
+                build_args.allow_transfers_to_frozen_identities,
                 build_args.keeps_history,
                 build_args.main_control_group,
                 build_args.manual_minting_rules,
@@ -5254,6 +5302,7 @@ mod tests {
                 build_args.base_supply,
                 build_args.max_supply,
                 build_args.start_paused,
+                build_args.allow_transfers_to_frozen_identities,
                 build_args.keeps_history,
                 build_args.main_control_group,
                 build_args.manual_minting_rules,

@@ -92,12 +92,11 @@ impl AppContext {
 
                                 let mut token_infos = vec![];
                                 for token in contract.tokens() {
+                                    let token_configuration = contract
+                                        .expected_token_configuration(*token.0)
+                                        .expect("Expected to get token configuration");
                                     let token_name = {
-                                        let token_configuration = contract
-                                            .expected_token_configuration(*token.0)
-                                            .expect("Expected to get token configuration")
-                                            .as_cow_v0();
-                                        let conventions = match &token_configuration.conventions {
+                                        let conventions = match &token_configuration.conventions() {
                                             TokenConfigurationConvention::V0(conventions) => {
                                                 conventions
                                             }
@@ -112,6 +111,7 @@ impl AppContext {
                                         token_name,
                                         data_contract_id: contract.id(),
                                         token_position: *token.0,
+                                        token_configuration: token_configuration.clone(),
                                         description: token.1.description().clone(),
                                     };
 

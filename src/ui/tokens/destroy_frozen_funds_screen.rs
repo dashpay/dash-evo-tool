@@ -293,7 +293,7 @@ impl ScreenLike for DestroyFrozenFundsScreen {
             vec![
                 ("Tokens", AppAction::GoToMainScreen),
                 (
-                    &self.identity_token_balance.token_name,
+                    &self.identity_token_balance.token_alias,
                     AppAction::PopScreen,
                 ),
                 ("Destroy", AppAction::None),

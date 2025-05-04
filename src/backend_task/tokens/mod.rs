@@ -1,5 +1,5 @@
 use super::BackendTaskSuccessResult;
-use crate::ui::tokens::tokens_screen::IdentityTokenIdentifier;
+use crate::ui::tokens::tokens_screen::{IdentityTokenIdentifier, TokenInfo};
 use crate::{app::TaskResult, context::AppContext, model::qualified_identity::QualifiedIdentity};
 use dash_sdk::dpp::balances::credits::TokenAmount;
 use dash_sdk::dpp::data_contract::GroupContractPosition;
@@ -63,6 +63,7 @@ pub(crate) enum TokenTask {
         base_supply: TokenAmount,
         max_supply: Option<TokenAmount>,
         start_paused: bool,
+        allow_transfers_to_frozen_identities: bool,
         keeps_history: TokenKeepsHistoryRules,
         main_control_group: Option<GroupContractPosition>,
 
@@ -86,6 +87,7 @@ pub(crate) enum TokenTask {
     QueryIdentityTokenBalance(IdentityTokenIdentifier),
     QueryDescriptionsByKeyword(String, Option<Start>),
     FetchTokenByContractId(Identifier),
+    SaveTokenLocally(TokenInfo),
     MintTokens {
         sending_identity: QualifiedIdentity,
         data_contract: DataContract,
@@ -174,6 +176,7 @@ impl AppContext {
                 base_supply,
                 max_supply,
                 start_paused,
+                allow_transfers_to_frozen_identities,
                 keeps_history,
                 main_control_group,
                 manual_minting_rules,
@@ -199,6 +202,7 @@ impl AppContext {
                         *base_supply,
                         *max_supply,
                         *start_paused,
+                        *allow_transfers_to_frozen_identities,
                         *keeps_history,
                         *main_control_group,
                         manual_minting_rules.clone(),
@@ -430,6 +434,21 @@ impl AppContext {
                     Err(e) => Err(format!("Error fetching contracts: {}", e.to_string())),
                 }
             }
+            TokenTask::SaveTokenLocally(token_info) => {
+                let token_config_bytes = bincode::encode_to_vec(&token_info.token_configuration, bincode::config::standard())
+                    .map_err(|e| format!("error encoding token configuration: {}", e))?;
+
+                self.db.insert_token(
+                    &token_info.token_id,
+                    &token_info.token_name,
+                    &token_config_bytes,
+                    &token_info.data_contract_id,
+                    token_info.token_position,
+                    &self,
+                ).map_err(|e| format!("error saving token: {}", e))?;
+
+                Ok(BackendTaskSuccessResult::Message("Saved token to db".to_string()))
+            }
         }
     }
 
@@ -450,6 +469,7 @@ impl AppContext {
         base_supply: u64,
         max_supply: Option<u64>,
         start_as_paused: bool,
+        allow_transfer_to_frozen_balance: bool,
         keeps_history: TokenKeepsHistoryRules,
         main_control_group: Option<u16>,
         manual_minting_rules: ChangeControlRules,
@@ -503,6 +523,7 @@ impl AppContext {
         token_config_v0.base_supply = base_supply;
         token_config_v0.max_supply = max_supply;
         token_config_v0.start_as_paused = start_as_paused;
+        token_config_v0.allow_transfer_to_frozen_balance = allow_transfer_to_frozen_balance;
         token_config_v0.keeps_history = keeps_history;
         token_config_v0.main_control_group = main_control_group;
         token_config_v0.manual_minting_rules = manual_minting_rules;

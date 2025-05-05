@@ -19,15 +19,20 @@ impl AppContext {
         actor_identity: &QualifiedIdentity,
         distribution_type: TokenDistributionType,
         signing_key: IdentityPublicKey,
+        public_note: Option<String>,
         sdk: &Sdk,
     ) -> Result<BackendTaskSuccessResult, String> {
         // Build
-        let builder = TokenClaimTransitionBuilder::new(
+        let mut builder = TokenClaimTransitionBuilder::new(
             data_contract,
             token_position,
             actor_identity.identity.id(),
             distribution_type,
         );
+
+        if let Some(note) = public_note {
+            builder = builder.with_public_note(note);
+        }
 
         // Sign
         let state_transition = builder

@@ -42,6 +42,7 @@ pub struct MintTokensScreen {
     pub identity: QualifiedIdentity,
     pub identity_token_balance: IdentityTokenBalance,
     selected_key: Option<IdentityPublicKey>,
+    public_note: Option<String>,
 
     recipient_identity_id: String,
 
@@ -96,6 +97,7 @@ impl MintTokensScreen {
             identity,
             identity_token_balance,
             selected_key: possible_key.cloned(),
+            public_note: None,
             recipient_identity_id: "".to_string(),
             amount_to_mint: "".to_string(),
             status: MintTokensStatus::NotStarted,
@@ -240,6 +242,7 @@ impl MintTokensScreen {
                                 data_contract,
                                 token_position: self.identity_token_balance.token_position,
                                 signing_key: self.selected_key.clone().expect("Expected a key"),
+                                public_note: self.public_note.clone(),
                                 amount: amount_ok.unwrap(),
                                 recipient_id: maybe_identifier,
                             }),
@@ -437,8 +440,19 @@ impl ScreenLike for MintTokensScreen {
                 ui.heading("3. (Optional) Recipient identity");
                 ui.add_space(5.0);
                 self.render_recipient_input(ui);
-
                 ui.add_space(10.0);
+
+                // Render text input for the public note
+                ui.horizontal(|ui| {
+                    ui.label("Public note (optional):");
+                    ui.add_space(10.0);
+                    let mut txt = self.public_note.clone().unwrap_or_default();
+                    if ui.text_edit_singleline(&mut txt).changed() {
+                        self.public_note = Some(txt);
+                    }
+                });
+                ui.add_space(10.0);
+
                 // Mint button
                 let button = egui::Button::new(RichText::new("Mint").color(Color32::WHITE))
                     .fill(Color32::from_rgb(0, 128, 255))

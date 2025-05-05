@@ -93,6 +93,7 @@ pub(crate) enum TokenTask {
         data_contract: DataContract,
         token_position: TokenContractPosition,
         signing_key: IdentityPublicKey,
+        public_note: Option<String>,
         amount: TokenAmount,
         recipient_id: Option<Identifier>,
     },
@@ -103,12 +104,14 @@ pub(crate) enum TokenTask {
         data_contract: DataContract,
         token_position: TokenContractPosition,
         signing_key: IdentityPublicKey,
+        public_note: Option<String>,
     },
     BurnTokens {
         owner_identity: QualifiedIdentity,
         data_contract: DataContract,
         token_position: TokenContractPosition,
         signing_key: IdentityPublicKey,
+        public_note: Option<String>,
         amount: TokenAmount,
     },
     DestroyFrozenFunds {
@@ -116,6 +119,7 @@ pub(crate) enum TokenTask {
         data_contract: DataContract,
         token_position: TokenContractPosition,
         signing_key: IdentityPublicKey,
+        public_note: Option<String>,
         frozen_identity: Identifier,
     },
     FreezeTokens {
@@ -123,6 +127,7 @@ pub(crate) enum TokenTask {
         data_contract: DataContract,
         token_position: TokenContractPosition,
         signing_key: IdentityPublicKey,
+        public_note: Option<String>,
         freeze_identity: Identifier,
     },
     UnfreezeTokens {
@@ -130,6 +135,7 @@ pub(crate) enum TokenTask {
         data_contract: DataContract,
         token_position: TokenContractPosition,
         signing_key: IdentityPublicKey,
+        public_note: Option<String>,
         unfreeze_identity: Identifier,
     },
     PauseTokens {
@@ -137,12 +143,14 @@ pub(crate) enum TokenTask {
         data_contract: DataContract,
         token_position: TokenContractPosition,
         signing_key: IdentityPublicKey,
+        public_note: Option<String>,
     },
     ResumeTokens {
         actor_identity: QualifiedIdentity,
         data_contract: DataContract,
         token_position: TokenContractPosition,
         signing_key: IdentityPublicKey,
+        public_note: Option<String>,
     },
     ClaimTokens {
         data_contract: DataContract,
@@ -150,6 +158,7 @@ pub(crate) enum TokenTask {
         actor_identity: QualifiedIdentity,
         distribution_type: TokenDistributionType,
         signing_key: IdentityPublicKey,
+        public_note: Option<String>,
     },
     EstimatePerpetualTokenRewards {
         identity_id: Identifier,
@@ -243,6 +252,7 @@ impl AppContext {
                 data_contract,
                 token_position,
                 signing_key,
+                public_note,
                 amount,
                 recipient_id,
             } => self
@@ -251,6 +261,7 @@ impl AppContext {
                     data_contract,
                     *token_position,
                     signing_key.clone(),
+                    public_note.clone(),
                     *amount,
                     recipient_id.clone(),
                     sdk,
@@ -269,6 +280,7 @@ impl AppContext {
                 data_contract,
                 token_position,
                 signing_key,
+                public_note,
             } => self
                 .transfer_tokens(
                     &sending_identity,
@@ -277,6 +289,7 @@ impl AppContext {
                     data_contract,
                     *token_position,
                     signing_key.clone(),
+                    public_note.clone(),
                     sdk,
                     sender,
                 )
@@ -287,6 +300,7 @@ impl AppContext {
                 data_contract,
                 token_position,
                 signing_key,
+                public_note,
                 amount,
             } => self
                 .burn_tokens(
@@ -294,6 +308,7 @@ impl AppContext {
                     data_contract,
                     *token_position,
                     signing_key.clone(),
+                    public_note.clone(),
                     *amount,
                     sdk,
                     sender,
@@ -305,6 +320,7 @@ impl AppContext {
                 data_contract,
                 token_position,
                 signing_key,
+                public_note,
                 frozen_identity,
             } => self
                 .destroy_frozen_funds(
@@ -312,6 +328,7 @@ impl AppContext {
                     data_contract,
                     *token_position,
                     signing_key.clone(),
+                    public_note.clone(),
                     frozen_identity.clone(),
                     sdk,
                     sender,
@@ -323,6 +340,7 @@ impl AppContext {
                 data_contract,
                 token_position,
                 signing_key,
+                public_note,
                 freeze_identity,
             } => self
                 .freeze_tokens(
@@ -330,6 +348,7 @@ impl AppContext {
                     data_contract,
                     *token_position,
                     signing_key.clone(),
+                    public_note.clone(),
                     freeze_identity.clone(),
                     sdk,
                     sender,
@@ -341,6 +360,7 @@ impl AppContext {
                 data_contract,
                 token_position,
                 signing_key,
+                public_note,
                 unfreeze_identity,
             } => self
                 .unfreeze_tokens(
@@ -348,6 +368,7 @@ impl AppContext {
                     data_contract,
                     *token_position,
                     signing_key.clone(),
+                    public_note.clone(),
                     unfreeze_identity.clone(),
                     sdk,
                     sender,
@@ -359,12 +380,14 @@ impl AppContext {
                 data_contract,
                 token_position,
                 signing_key,
+                public_note,
             } => self
                 .pause_tokens(
                     actor_identity,
                     data_contract,
                     *token_position,
                     signing_key.clone(),
+                    public_note.clone(),
                     sdk,
                     sender,
                 )
@@ -375,12 +398,14 @@ impl AppContext {
                 data_contract,
                 token_position,
                 signing_key,
+                public_note,
             } => self
                 .resume_tokens(
                     actor_identity,
                     data_contract,
                     *token_position,
                     signing_key.clone(),
+                    public_note.clone(),
                     sdk,
                     sender,
                 )
@@ -392,6 +417,7 @@ impl AppContext {
                 actor_identity,
                 distribution_type,
                 signing_key,
+                public_note,
             } => self
                 .claim_tokens(
                     data_contract,
@@ -399,6 +425,7 @@ impl AppContext {
                     actor_identity,
                     *distribution_type,
                     signing_key.clone(),
+                    public_note.clone(),
                     sdk,
                 )
                 .await

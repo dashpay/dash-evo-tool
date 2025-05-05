@@ -42,6 +42,7 @@ pub struct PauseTokensScreen {
     pub identity: QualifiedIdentity,
     pub identity_token_balance: IdentityTokenBalance,
     selected_key: Option<dash_sdk::platform::IdentityPublicKey>,
+    pub public_note: Option<String>,
 
     status: PauseTokensStatus,
     error_message: Option<String>,
@@ -93,6 +94,7 @@ impl PauseTokensScreen {
             identity,
             identity_token_balance,
             selected_key: possible_key.cloned(),
+            public_note: None,
             status: PauseTokensStatus::NotStarted,
             error_message: None,
             app_context: app_context.clone(),
@@ -167,6 +169,7 @@ impl PauseTokensScreen {
                             data_contract,
                             token_position: self.identity_token_balance.token_position,
                             signing_key: self.selected_key.clone().expect("No key selected"),
+                            public_note: self.public_note.clone(),
                         }));
                 }
 
@@ -332,7 +335,17 @@ impl ScreenLike for PauseTokensScreen {
                         .unwrap_or_else(|| &identity_id_string);
                     ui.label(format!("Identity: {}", identity_display));
                 });
+                ui.add_space(10.0);
 
+                // Render text input for the public note
+                ui.horizontal(|ui| {
+                    ui.label("Public note (optional):");
+                    ui.add_space(10.0);
+                    let mut txt = self.public_note.clone().unwrap_or_default();
+                    if ui.text_edit_singleline(&mut txt).changed() {
+                        self.public_note = Some(txt);
+                    }
+                });
                 ui.add_space(10.0);
 
                 let button = egui::Button::new(RichText::new("Pause").color(Color32::WHITE))

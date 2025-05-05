@@ -45,6 +45,7 @@ pub struct ClaimTokensScreen {
     pub identity: QualifiedIdentity,
     pub identity_token_balance: IdentityTokenBalance,
     selected_key: Option<dash_sdk::platform::IdentityPublicKey>,
+    pub public_note: Option<String>,
     token_contract: QualifiedContract,
     token_configuration: TokenConfiguration,
     distribution_type: Option<TokenDistributionType>,
@@ -107,6 +108,7 @@ impl ClaimTokensScreen {
             identity,
             identity_token_balance,
             selected_key: possible_key.cloned(),
+            public_note: None,
             token_contract,
             token_configuration,
             distribution_type,
@@ -237,6 +239,7 @@ impl ClaimTokensScreen {
                                 actor_identity: self.identity.clone(),
                                 distribution_type,
                                 signing_key: self.selected_key.clone().expect("No key selected"),
+                                public_note: self.public_note.clone(),
                             }),
                             BackendTask::TokenTask(TokenTask::QueryMyTokenBalances),
                         ],
@@ -409,6 +412,17 @@ impl ScreenLike for ClaimTokensScreen {
                 ui.add_space(10.0);
 
                 self.render_token_distribution_type_selector(ui);
+                ui.add_space(10.0);
+
+                // Render text input for the public note
+                ui.horizontal(|ui| {
+                    ui.label("Public note (optional):");
+                    ui.add_space(10.0);
+                    let mut txt = self.public_note.clone().unwrap_or_default();
+                    if ui.text_edit_singleline(&mut txt).changed() {
+                        self.public_note = Some(txt);
+                    }
+                });
                 ui.add_space(10.0);
 
                 let button = egui::Button::new(RichText::new("Claim").color(Color32::WHITE))

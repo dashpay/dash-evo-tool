@@ -21,16 +21,21 @@ impl AppContext {
         data_contract: &DataContract,
         token_position: u16,
         signing_key: IdentityPublicKey,
+        public_note: Option<String>,
         sdk: &Sdk,
         _sender: mpsc::Sender<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, String> {
-        let builder = TokenTransferTransitionBuilder::new(
+        let mut builder = TokenTransferTransitionBuilder::new(
             data_contract,
             token_position,
             sending_identity.identity.id(),
             recipient_id,
             amount,
         );
+
+        if let Some(note) = public_note {
+            builder = builder.with_public_note(note);
+        }
 
         let state_transition = builder
             .sign(sdk, &signing_key, sending_identity, self.platform_version)

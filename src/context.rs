@@ -445,6 +445,14 @@ impl AppContext {
         self.db.remove_contract(contract_id.as_bytes(), &self)
     }
 
+    pub fn replace_contract(
+        &self,
+        contract_id: Identifier,
+        new_contract: &DataContract,
+    ) -> Result<()> {
+        self.db.replace_contract(contract_id, new_contract, self)
+    }
+
     pub(crate) fn received_transaction_finality(
         &self,
         tx: &Transaction,

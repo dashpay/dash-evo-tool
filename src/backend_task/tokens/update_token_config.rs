@@ -1,6 +1,6 @@
 use dash_sdk::dpp::state_transition::proof_result::StateTransitionProofResult;
 use dash_sdk::platform::transition::broadcast::BroadcastStateTransition;
-use dash_sdk::platform::IdentityPublicKey;
+use dash_sdk::platform::{DataContract, Fetch, IdentityPublicKey};
 use dash_sdk::{
     dpp::data_contract::associated_token::token_configuration_item::TokenConfigurationChangeItem,
     platform::transition::fungible_tokens::config_update::TokenConfigUpdateTransitionBuilder, Sdk,
@@ -22,7 +22,7 @@ impl AppContext {
         sdk: &Sdk,
         sender: mpsc::Sender<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, String> {
-        let data_contract = &self
+        let existing_data_contract = &self
             .get_contract_by_id(&identity_token_balance.data_contract_id)
             .map_err(|e| {
                 format!(
@@ -55,7 +55,7 @@ impl AppContext {
 
         for change_item in change_items.iter() {
             let mut builder = TokenConfigUpdateTransitionBuilder::new(
-                data_contract,
+                existing_data_contract,
                 identity_token_balance.token_position,
                 identity_token_balance.identity_id,
                 change_item.clone(),
@@ -87,6 +87,20 @@ impl AppContext {
                 )))
                 .await;
         }
+
+        // Now update the data contract in the local database
+        let data_contract = DataContract::fetch(sdk, identity_token_balance.data_contract_id)
+            .await
+            .map_err(|e| format!("Error fetching contract from platform: {}", e.to_string()))?
+            .ok_or_else(|| {
+                format!(
+                    "Contract with ID {} not found on platform",
+                    identity_token_balance.data_contract_id
+                )
+            })?;
+
+        self.replace_contract(identity_token_balance.data_contract_id, &data_contract)
+            .map_err(|e| format!("Error replacing contract in local database: {}", e))?;
 
         Ok(BackendTaskSuccessResult::Message(
             "Successfully updated all token config items".to_string(),

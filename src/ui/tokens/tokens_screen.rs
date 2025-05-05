@@ -3,7 +3,6 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use chrono::{DateTime, Duration, Utc};
 use dash_sdk::dpp::balances::credits::TokenAmount;
-use dash_sdk::dpp::dashcore::Network::Devnet;
 use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::{TokenConfigurationPreset, TokenConfigurationPresetFeatures, TokenConfigurationV0};
@@ -289,7 +288,12 @@ impl From<ChangeControlRulesV0> for ChangeControlRulesUI {
 
 impl ChangeControlRulesUI {
     /// Renders the UI for a single action’s configuration (mint, burn, freeze, etc.)
-    pub fn render_control_change_rules_ui(&mut self, ui: &mut Ui, action_name: &str, special_case_option: Option<&mut bool>) {
+    pub fn render_control_change_rules_ui(
+        &mut self,
+        ui: &mut Ui,
+        action_name: &str,
+        special_case_option: Option<&mut bool>,
+    ) {
         ui.collapsing(action_name, |ui| {
             ui.add_space(3.0);
 
@@ -503,6 +507,288 @@ impl ChangeControlRulesUI {
                                 });
                                 ui.end_row();
                             }
+                        }
+                    }
+                });
+
+            ui.add_space(3.0);
+        });
+    }
+
+    pub fn render_mint_control_change_rules_ui(
+        &mut self,
+        ui: &mut Ui,
+        new_tokens_destination_identity_should_default_to_contract_owner: &mut bool,
+        new_tokens_destination_identity_enabled: &mut bool,
+        minting_allow_choosing_destination: &mut bool,
+        new_tokens_destination_identity_rules: &mut ChangeControlRulesUI,
+        new_tokens_destination_identity: &mut String,
+        minting_allow_choosing_destination_rules: &mut ChangeControlRulesUI,
+    ) {
+        ui.collapsing("Manual Mint", |ui| {
+            ui.add_space(3.0);
+
+            egui::Grid::new("basic_token_info_grid")
+                .num_columns(2)
+                .spacing([16.0, 8.0]) // Horizontal, vertical spacing
+                .show(ui, |ui| {
+                    // Authorized action takers
+                    ui.horizontal(|ui| {
+                        ui.label("Authorized to perform action:");
+                        egui::ComboBox::from_id_salt("Authorized Manual Mint")
+                            .selected_text(match self.rules.authorized_to_make_change {
+                                AuthorizedActionTakers::NoOne => "No One".to_string(),
+                                AuthorizedActionTakers::ContractOwner => "Contract Owner".to_string(),
+                                AuthorizedActionTakers::Identity(id) => {
+                                    if id == Identifier::default() {
+                                        "Identity".to_string()
+                                    } else {
+                                        format!("Identity({})", id)
+                                    }
+                                },
+                                AuthorizedActionTakers::MainGroup => "Main Group".to_string(),
+                                AuthorizedActionTakers::Group(position) => format!("Group {}", position),
+                            })
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(
+                                    &mut self.rules.authorized_to_make_change,
+                                    AuthorizedActionTakers::NoOne,
+                                    "No One",
+                                );
+                                ui.selectable_value(
+                                    &mut self.rules.authorized_to_make_change,
+                                    AuthorizedActionTakers::ContractOwner,
+                                    "Contract Owner",
+                                );
+                                ui.selectable_value(
+                                    &mut self.rules.authorized_to_make_change,
+                                    AuthorizedActionTakers::Identity(Identifier::default()),
+                                    "Identity",
+                                );
+                                ui.selectable_value(
+                                    &mut self.rules.authorized_to_make_change,
+                                    AuthorizedActionTakers::MainGroup,
+                                    "Main Group",
+                                );
+                                ui.selectable_value(
+                                    &mut self.rules.authorized_to_make_change,
+                                    AuthorizedActionTakers::Group(0),
+                                    "Group",
+                                );
+                            });
+
+                        // If user selected Identity or Group, show text edit
+                        match &mut self.rules.authorized_to_make_change {
+                            AuthorizedActionTakers::Identity(_) => {
+                                self.authorized_identity.get_or_insert_with(String::new);
+                                if let Some(ref mut id_str) = self.authorized_identity {
+                                    ui.horizontal(|ui| {
+                                        ui.add_sized(
+                                            [300.0, 22.0],
+                                            egui::TextEdit::singleline(id_str).hint_text("Enter base58 id"),
+                                        );
+
+                                        if !id_str.is_empty() {
+                                            let is_valid = Identifier::from_string(id_str.as_str(), Encoding::Base58).is_ok();
+
+                                            let (symbol, color) = if is_valid {
+                                                ("✔", Color32::GREEN)
+                                            } else {
+                                                ("×", Color32::RED)
+                                            };
+
+                                            ui.label(RichText::new(symbol).color(color).strong());
+                                        }
+                                    });
+                                }
+                            }
+                            AuthorizedActionTakers::Group(_) => {
+                                self.authorized_group.get_or_insert_with(|| "0".to_owned());
+                                if let Some(ref mut group_str) = self.authorized_group {
+                                    ui.add(
+                                        egui::TextEdit::singleline(group_str)
+                                            .hint_text("Group contract position"),
+                                    );
+                                }
+                            }
+                            _ => {}
+                        }
+                    });
+                    ui.end_row();
+
+                    // Admin action takers
+                    ui.horizontal(|ui| {
+                        ui.label("Authorized to change rules:");
+                        egui::ComboBox::from_id_salt("Admin Manual Mint")
+                            .selected_text(match self.rules.admin_action_takers {
+                                AuthorizedActionTakers::NoOne => "No One".to_string(),
+                                AuthorizedActionTakers::ContractOwner => "Contract Owner".to_string(),
+                                AuthorizedActionTakers::Identity(id) => {
+                                    if id == Identifier::default() {
+                                        "Identity".to_string()
+                                    } else {
+                                        format!("Identity({})", id)
+                                    }
+                                },
+                                AuthorizedActionTakers::MainGroup => "Main Group".to_string(),
+                                AuthorizedActionTakers::Group(position) => format!("Group {}", position),
+                            })
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(
+                                    &mut self.rules.admin_action_takers,
+                                    AuthorizedActionTakers::NoOne,
+                                    "No One",
+                                );
+                                ui.selectable_value(
+                                    &mut self.rules.admin_action_takers,
+                                    AuthorizedActionTakers::ContractOwner,
+                                    "Contract Owner",
+                                );
+                                ui.selectable_value(
+                                    &mut self.rules.admin_action_takers,
+                                    AuthorizedActionTakers::Identity(Identifier::default()),
+                                    "Identity",
+                                );
+                                ui.selectable_value(
+                                    &mut self.rules.admin_action_takers,
+                                    AuthorizedActionTakers::MainGroup,
+                                    "Main Group",
+                                );
+                                ui.selectable_value(
+                                    &mut self.rules.admin_action_takers,
+                                    AuthorizedActionTakers::Group(0),
+                                    "Group",
+                                );
+                            });
+
+                        match &mut self.rules.admin_action_takers {
+                            AuthorizedActionTakers::Identity(_) => {
+                                self.admin_identity.get_or_insert_with(String::new);
+                                if let Some(ref mut id_str) = self.admin_identity {
+                                    ui.horizontal(|ui| {
+                                        ui.add_sized(
+                                            [300.0, 22.0],
+                                            egui::TextEdit::singleline(id_str).hint_text("Enter base58 id"),
+                                        );
+
+                                        if !id_str.is_empty() {
+                                            let is_valid = Identifier::from_string(id_str.as_str(), Encoding::Base58).is_ok();
+
+                                            let (symbol, color) = if is_valid {
+                                                ("✔", Color32::GREEN)
+                                            } else {
+                                                ("×", Color32::RED)
+                                            };
+
+                                            ui.label(RichText::new(symbol).color(color).strong());
+                                        }
+                                    });
+                                }
+                            }
+                            AuthorizedActionTakers::Group(_) => {
+                                self.admin_group.get_or_insert_with(|| "0".to_owned());
+                                if let Some(ref mut group_str) = self.admin_group {
+                                    ui.add(
+                                        egui::TextEdit::singleline(group_str)
+                                            .hint_text("Group contract position"),
+                                    );
+                                }
+                            }
+                            _ => {}
+                        }
+                    });
+                    ui.end_row();
+
+                    // Booleans
+                    ui.checkbox(
+                        &mut self
+                            .rules
+                            .changing_authorized_action_takers_to_no_one_allowed,
+                        "Changing authorized action takers to no one allowed",
+                    );
+                    ui.end_row();
+
+                    ui.checkbox(
+                        &mut self.rules.changing_admin_action_takers_to_no_one_allowed,
+                        "Changing admin action takers to no one allowed",
+                    );
+                    ui.end_row();
+
+                    ui.checkbox(
+                        &mut self.rules.self_changing_admin_action_takers_allowed,
+                        "Self-changing admin action takers allowed",
+                    );
+                    ui.end_row();
+
+                    if self.rules.authorized_to_make_change != AuthorizedActionTakers::NoOne {
+
+                        let mut default_to_owner_clicked = false;
+                        let mut default_to_identity_clicked = false;
+
+                        if ui
+                            .checkbox(
+                                new_tokens_destination_identity_should_default_to_contract_owner,
+                                "Newly minted tokens should default to going to contract owner",
+                            )
+                            .clicked()
+                        {
+                            default_to_owner_clicked = true;
+                        }
+
+                        if ui
+                            .checkbox(
+                                new_tokens_destination_identity_enabled,
+                                "Use a default identity to receive newly minted tokens",
+                            )
+                            .clicked()
+                        {
+                            default_to_identity_clicked = true;
+                        }
+
+                        // Apply exclusivity
+                        if default_to_owner_clicked {
+                            *new_tokens_destination_identity_enabled = false;
+                        }
+
+                        if default_to_identity_clicked {
+                            *new_tokens_destination_identity_should_default_to_contract_owner = false;
+                        }
+
+                        if *new_tokens_destination_identity_enabled {
+                            ui.end_row();
+
+                            ui.label("Default Destination Identity (Base58):");
+                            ui.text_edit_singleline(new_tokens_destination_identity);
+                            ui.end_row();
+
+                            new_tokens_destination_identity_rules.render_control_change_rules_ui(ui, "New Tokens Destination Identity Rules", None);
+                        }
+
+                        ui.end_row();
+
+                        // MINTING ALLOW CHOOSING DESTINATION
+                        ui.checkbox(
+                            minting_allow_choosing_destination,
+                            "Allow user to pick a destination identity on each mint",
+                        );
+
+
+                        if *minting_allow_choosing_destination {
+                            ui.end_row();
+                            minting_allow_choosing_destination_rules.render_control_change_rules_ui(ui, "Minting Allow Choosing Destination Rules", None);
+                        }
+                        ui.end_row();
+
+                        // Destination Identity Mode Enforcement
+                        let none_selected = !*new_tokens_destination_identity_enabled
+                            && !*new_tokens_destination_identity_should_default_to_contract_owner
+                            && !*minting_allow_choosing_destination;
+
+                        if none_selected {
+                            ui.colored_label(
+                                Color32::RED,
+                                "At least one minting destination mode must be enabled (default to contract owner, default to identity, or picked on each mint).",
+                            );
                         }
                     }
                 });
@@ -867,8 +1153,9 @@ pub struct TokensScreen {
     pub pre_programmed_distributions: Vec<DistributionEntry>,
 
     // New Tokens Destination Identity
-    pub new_tokens_destination_identity_enabled: bool,
-    pub new_tokens_destination_identity: String,
+    pub new_tokens_destination_identity_should_default_to_contract_owner: bool,
+    pub new_tokens_destination_other_identity_enabled: bool,
+    pub new_tokens_destination_other_identity: String,
     pub new_tokens_destination_identity_rules: ChangeControlRulesUI,
 
     // Minting Allow Choosing Destination
@@ -1145,8 +1432,9 @@ impl TokensScreen {
             pre_programmed_distributions: Vec::new(),
 
             // new_tokens_destination_identity
-            new_tokens_destination_identity_enabled: false,
-            new_tokens_destination_identity: String::new(),
+            new_tokens_destination_identity_should_default_to_contract_owner: true,
+            new_tokens_destination_other_identity_enabled: false,
+            new_tokens_destination_other_identity: String::new(),
             new_tokens_destination_identity_rules: ChangeControlRulesUI::default(),
 
             // minting_allow_choosing_destination
@@ -2481,7 +2769,7 @@ impl TokensScreen {
 
                         ui.add_space(3.0);
 
-                        self.manual_minting_rules.render_control_change_rules_ui(ui, "Manual Mint", None);
+                        self.manual_minting_rules.render_mint_control_change_rules_ui(ui, &mut self.new_tokens_destination_identity_should_default_to_contract_owner, &mut self.new_tokens_destination_other_identity_enabled, &mut self.minting_allow_choosing_destination, &mut self.new_tokens_destination_identity_rules, &mut self.new_tokens_destination_other_identity, &mut self.minting_allow_choosing_destination_rules);
                         self.manual_burning_rules.render_control_change_rules_ui(ui, "Manual Burn", None);
                         self.freeze_rules.render_control_change_rules_ui(ui, "Freeze", Some(&mut self.allow_transfers_to_frozen_identities));
                         self.unfreeze_rules.render_control_change_rules_ui(ui, "Unfreeze", None);
@@ -3236,42 +3524,6 @@ Emits tokens in fixed amounts for specific intervals.
 
                             ui.add_space(2.0);
                         }
-
-                        ui.separator();
-
-                        // NEW TOKENS DESTINATION IDENTITY
-                        ui.checkbox(
-                            &mut self.new_tokens_destination_identity_enabled,
-                            "Use a default identity to receive newly minted tokens",
-                        );
-                        if self.new_tokens_destination_identity_enabled {
-                            ui.add_space(2.0);
-
-                            // Show text field for ID
-                            ui.horizontal(|ui| {
-                                ui.label("       Default Destination Identity (Base58):");
-                                ui.text_edit_singleline(&mut self.new_tokens_destination_identity);
-                            });
-
-                            ui.horizontal(|ui| {
-                                ui.label("   ");
-                                self.new_tokens_destination_identity_rules.render_control_change_rules_ui(ui, "New Tokens Destination Identity Rules", None);
-                            });
-                        }
-
-                        ui.separator();
-
-                        // MINTING ALLOW CHOOSING DESTINATION
-                        ui.checkbox(
-                            &mut self.minting_allow_choosing_destination,
-                            "Allow user to pick a destination identity on each mint",
-                        );
-                        if self.minting_allow_choosing_destination {
-                            ui.horizontal(|ui| {
-                                ui.label("   ");
-                                self.minting_allow_choosing_destination_rules.render_control_change_rules_ui(ui, "Minting Allow Choosing Destination Rules", None);
-                            });
-                        }
                     });
 
                     ui.add_space(5.0);
@@ -3593,7 +3845,8 @@ Emits tokens in fixed amounts for specific intervals.
                             base_supply: args.base_supply,
                             max_supply: args.max_supply,
                             start_paused: args.start_paused,
-                            allow_transfers_to_frozen_identities: args.allow_transfers_to_frozen_identities,
+                            allow_transfers_to_frozen_identities: args
+                                .allow_transfers_to_frozen_identities,
                             keeps_history: args.keeps_history,
                             main_control_group: args.main_control_group,
 
@@ -4079,13 +4332,23 @@ Emits tokens in fixed amounts for specific intervals.
             } else {
                 None
             },
-            new_tokens_destination_identity: if self.new_tokens_destination_identity_enabled {
+            new_tokens_destination_identity: if self
+                .new_tokens_destination_identity_should_default_to_contract_owner
+            {
+                Some(
+                    self.selected_identity
+                        .as_ref()
+                        .ok_or("No selected identity".to_string())?
+                        .identity
+                        .id(),
+                )
+            } else if self.new_tokens_destination_other_identity_enabled {
                 Some(
                     Identifier::from_string(
-                        &self.new_tokens_destination_identity,
+                        &self.new_tokens_destination_other_identity,
                         Encoding::Base58,
                     )
-                    .unwrap_or_default(),
+                    .map_err(|e| e.to_string())?,
                 )
             } else {
                 None
@@ -4260,9 +4523,9 @@ Emits tokens in fixed amounts for specific intervals.
         self.perpetual_distribution_rules = ChangeControlRulesUI::default();
         self.enable_pre_programmed_distribution = false;
         self.pre_programmed_distributions = Vec::new();
-        self.new_tokens_destination_identity_enabled = false;
+        self.new_tokens_destination_other_identity_enabled = false;
         self.new_tokens_destination_identity_rules = ChangeControlRulesUI::default();
-        self.new_tokens_destination_identity = "".to_string();
+        self.new_tokens_destination_other_identity = "".to_string();
         self.minting_allow_choosing_destination = false;
         self.minting_allow_choosing_destination_rules = ChangeControlRulesUI::default();
 
@@ -4331,11 +4594,14 @@ Emits tokens in fixed amounts for specific intervals.
     }
 
     fn add_token_to_tracked_tokens(&mut self, token_info: TokenInfo) -> AppAction {
-        self.all_known_tokens.insert(token_info.token_id, token_info.clone());
+        self.all_known_tokens
+            .insert(token_info.token_id, token_info.clone());
 
         self.display_message("Added token", MessageType::Success);
 
-        AppAction::BackendTask(BackendTask::TokenTask(TokenTask::SaveTokenLocally(token_info)))
+        AppAction::BackendTask(BackendTask::TokenTask(TokenTask::SaveTokenLocally(
+            token_info,
+        )))
     }
 
     fn goto_next_search_page(&mut self) -> AppAction {
@@ -4475,27 +4741,21 @@ Emits tokens in fixed amounts for specific intervals.
 
                 // Confirm button
                 if ui.button("Confirm").clicked() {
-                    for identity in self
-                        .app_context
-                        .load_local_qualified_identities()
-                        .expect("Expected to load local qualified identities")
-                    {
-                        if let Err(e) = self.app_context.db.remove_token(
-                            &token_to_remove,
-                            &self.app_context,
-                        ) {
-                            self.backend_message = Some((
-                                format!("Error removing token balance: {}", e),
-                                MessageType::Error,
-                                Utc::now(),
-                            ));
-                            self.confirm_remove_token_popup = false;
-                            self.token_to_remove = None;
-                        } else {
-                            self.confirm_remove_token_popup = false;
-                            self.token_to_remove = None;
-                            self.refresh();
-                        }
+                    if let Err(e) = self.app_context.db.remove_token(
+                        &token_to_remove,
+                        &self.app_context,
+                    ) {
+                        self.backend_message = Some((
+                            format!("Error removing token balance: {}", e),
+                            MessageType::Error,
+                            Utc::now(),
+                        ));
+                        self.confirm_remove_token_popup = false;
+                        self.token_to_remove = None;
+                    } else {
+                        self.confirm_remove_token_popup = false;
+                        self.token_to_remove = None;
+                        self.refresh();
                     }
                 }
 
@@ -5040,8 +5300,8 @@ mod tests {
             .set_all_fields_for_testing();
 
         // new_tokens_destination_identity
-        token_creator_ui.new_tokens_destination_identity_enabled = true;
-        token_creator_ui.new_tokens_destination_identity =
+        token_creator_ui.new_tokens_destination_other_identity_enabled = true;
+        token_creator_ui.new_tokens_destination_other_identity =
             "GCMnPwQZcH3RP9atgkmvtmN45QrVcYvh5cmUYARHBTu9".to_string();
         token_creator_ui
             .new_tokens_destination_identity_rules

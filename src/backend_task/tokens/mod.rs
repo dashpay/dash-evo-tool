@@ -435,19 +435,26 @@ impl AppContext {
                 }
             }
             TokenTask::SaveTokenLocally(token_info) => {
-                let token_config_bytes = bincode::encode_to_vec(&token_info.token_configuration, bincode::config::standard())
-                    .map_err(|e| format!("error encoding token configuration: {}", e))?;
+                let token_config_bytes = bincode::encode_to_vec(
+                    &token_info.token_configuration,
+                    bincode::config::standard(),
+                )
+                .map_err(|e| format!("error encoding token configuration: {}", e))?;
 
-                self.db.insert_token(
-                    &token_info.token_id,
-                    &token_info.token_name,
-                    &token_config_bytes,
-                    &token_info.data_contract_id,
-                    token_info.token_position,
-                    &self,
-                ).map_err(|e| format!("error saving token: {}", e))?;
+                self.db
+                    .insert_token(
+                        &token_info.token_id,
+                        &token_info.token_name,
+                        &token_config_bytes,
+                        &token_info.data_contract_id,
+                        token_info.token_position,
+                        &self,
+                    )
+                    .map_err(|e| format!("error saving token: {}", e))?;
 
-                Ok(BackendTaskSuccessResult::Message("Saved token to db".to_string()))
+                Ok(BackendTaskSuccessResult::Message(
+                    "Saved token to db".to_string(),
+                ))
             }
         }
     }

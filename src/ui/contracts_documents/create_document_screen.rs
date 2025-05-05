@@ -558,10 +558,7 @@ impl ScreenLike for CreateDocumentScreen {
             BackendTaskSuccessResult::Document(doc) => {
                 self.broadcast_status = BroadcastStatus::Complete;
                 self.display_message(
-                    &format!(
-                        "Document broadcasted successfully.\n\nID: {}",
-                        doc.id()
-                    ),
+                    &format!("Document broadcasted successfully.\n\nID: {}", doc.id()),
                     MessageType::Success,
                 );
             }

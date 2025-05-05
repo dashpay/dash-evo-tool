@@ -7,9 +7,11 @@ use crate::model::wallet::Wallet;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
 use crate::ui::{MessageType, Screen, ScreenLike};
+use dash_sdk::dpp::balances::credits::TokenAmount;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
@@ -22,8 +24,6 @@ use egui::{Color32, RichText};
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
-use dash_sdk::dpp::balances::credits::TokenAmount;
-use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
 
 use crate::ui::identities::get_selected_wallet;
 
@@ -67,7 +67,10 @@ impl TransferTokensScreen {
             .iter()
             .filter(|id| id.identity.id() != identity_token_balance.identity_id)
             .map(|id| {
-                let alias = id.alias.clone().unwrap_or_else(|| id.identity.id().to_string(Encoding::Base58));
+                let alias = id
+                    .alias
+                    .clone()
+                    .unwrap_or_else(|| id.identity.id().to_string(Encoding::Base58));
                 (alias, id.identity.id())
             })
             .collect();
@@ -95,12 +98,12 @@ impl TransferTokensScreen {
         let selected_wallet =
             get_selected_wallet(&identity, None, selected_key, &mut error_message);
 
-        let (selected_friend_index, receiver_identity_id) = if let Some((_first,identifier)) = friend_identities.first() {
-            (Some(0), identifier.to_string(Encoding::Base58))
-        } else {
-            (None,  String::new())
-
-        };
+        let (selected_friend_index, receiver_identity_id) =
+            if let Some((_first, identifier)) = friend_identities.first() {
+                (Some(0), identifier.to_string(Encoding::Base58))
+            } else {
+                (None, String::new())
+            };
         Self {
             identity,
             identity_token_balance,
@@ -169,18 +172,19 @@ impl TransferTokensScreen {
         ui.horizontal(|ui| {
             // Dropdown
             egui::ComboBox::from_id_salt("friend_selector")
-                .selected_text(self.selected_friend_index
-                    .and_then(|i| self.friend_identities.get(i).map(|(name, _)| name.clone()))
-                    .unwrap_or_else(|| "Other".to_string()))
+                .selected_text(
+                    self.selected_friend_index
+                        .and_then(|i| self.friend_identities.get(i).map(|(name, _)| name.clone()))
+                        .unwrap_or_else(|| "Other".to_string()),
+                )
                 .show_ui(ui, |ui| {
                     for (i, (alias, _)) in self.friend_identities.iter().enumerate() {
                         if ui
                             .selectable_value(&mut self.selected_friend_index, Some(i), alias)
                             .clicked()
                         {
-                            self.receiver_identity_id = self.friend_identities[i]
-                                .1
-                                .to_string(Encoding::Base58);
+                            self.receiver_identity_id =
+                                self.friend_identities[i].1.to_string(Encoding::Base58);
                         }
                     }
 
@@ -378,7 +382,10 @@ impl ScreenLike for TransferTokensScreen {
                 return;
             }
 
-            ui.heading(format!("Transfer {}", self.identity_token_balance.token_alias));
+            ui.heading(format!(
+                "Transfer {}",
+                self.identity_token_balance.token_alias
+            ));
             ui.add_space(10.0);
 
             let has_keys = if self.app_context.developer_mode {
@@ -481,12 +488,12 @@ impl ScreenLike for TransferTokensScreen {
                     .corner_radius(3.0);
                 if ui.add(button).clicked() {
                     if let Err(e) = self.amount.parse::<TokenAmount>() {
-                        self.transfer_tokens_status = TransferTokensStatus::ErrorMessage(
-                            format!("The value entered is not valid: {}", e)
-                        );
+                        self.transfer_tokens_status = TransferTokensStatus::ErrorMessage(format!(
+                            "The value entered is not valid: {}",
+                            e
+                        ));
                     } else {
                         self.confirmation_popup = true;
-
                     }
                 }
 
@@ -566,14 +573,12 @@ impl ScreenWithWalletUnlock for TransferTokensScreen {
 
     fn set_error_message(&mut self, error_message: Option<String>) {
         if let Some(error_message) = error_message {
-            self.transfer_tokens_status = TransferTokensStatus::ErrorMessage(
-                error_message
-            );
+            self.transfer_tokens_status = TransferTokensStatus::ErrorMessage(error_message);
         }
     }
 
     fn error_message(&self) -> Option<&String> {
-        if let TransferTokensStatus::ErrorMessage(error_message) =  &self.transfer_tokens_status  {
+        if let TransferTokensStatus::ErrorMessage(error_message) = &self.transfer_tokens_status {
             Some(error_message)
         } else {
             None

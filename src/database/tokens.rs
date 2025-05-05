@@ -181,7 +181,7 @@ impl Database {
         app_context: &AppContext,
     ) -> rusqlite::Result<IndexMap<Identifier, TokenInfo>> {
         let network = app_context.network_string();
-        let conn    = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap();
 
         // -- 1.  query id / alias / config / contract / position ────────────────
         let mut stmt = conn.prepare(
@@ -197,17 +197,15 @@ impl Database {
 
         // -- 2.  map each row, decoding `token_config` with bincode -─────────────
         let rows = stmt.query_map(params![network], |row| {
-            let bytes: Vec<u8> = row.get(2)?;                          // token_config blob
-            let cfg    = bincode::decode_from_slice::<TokenConfiguration, _>(
-                &bytes,
-                standard())
+            let bytes: Vec<u8> = row.get(2)?; // token_config blob
+            let cfg = bincode::decode_from_slice::<TokenConfiguration, _>(&bytes, standard())
                 .map(|(c, _)| c)
                 .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
 
             Ok((
                 Identifier::from_vec(row.get(0)?),
                 row.get::<_, String>(1)?,
-                cfg,                                                   // decoded config
+                cfg, // decoded config
                 Identifier::from_vec(row.get(3)?),
                 row.get::<_, u16>(4)?,
             ))
@@ -219,7 +217,7 @@ impl Database {
         for row in rows {
             let (token_id_res, token_alias, token_cfg, contract_id_res, pos) = row?;
 
-            let token_id        = token_id_res.expect("Failed to parse token ID");
+            let token_id = token_id_res.expect("Failed to parse token ID");
             let data_contract_id = contract_id_res.expect("Failed to parse contract ID");
 
             result.insert(
@@ -253,12 +251,11 @@ impl Database {
              WHERE b.network = ?",
             )?;
 
-
-
             let rows = stmt.query_map(params![network], |row| {
                 let config = standard();
-                let bytes : Vec<u8> = row.get(2)?;
-                let token_config : Result<(TokenConfiguration, _), _> = bincode::decode_from_slice(&bytes, config);
+                let bytes: Vec<u8> = row.get(2)?;
+                let token_config: Result<(TokenConfiguration, _), _> =
+                    bincode::decode_from_slice(&bytes, config);
                 Ok((
                     Identifier::from_vec(row.get(0)?),
                     row.get(1)?,

@@ -268,6 +268,22 @@ impl AppContext {
         self.db.get_local_qualified_identities(self, &wallets)
     }
 
+    pub fn get_identity_by_id(
+        &self,
+        identity_id: &Identifier,
+    ) -> Result<Option<QualifiedIdentity>> {
+        // Get the identity from the database
+        let identity = self.db.get_identity_by_id(identity_id, self)?;
+
+        // If the identity is not found in the database, return None
+        if identity.is_none() {
+            return Ok(None);
+        }
+
+        // If the identity is found, return it
+        Ok(Some(identity.unwrap()))
+    }
+
     /// Fetches all voting identities from the database
     pub fn load_local_voting_identities(&self) -> Result<Vec<QualifiedIdentity>> {
         self.db.get_local_voting_identities(self)

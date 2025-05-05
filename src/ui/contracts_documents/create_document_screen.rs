@@ -128,7 +128,7 @@ impl CreateDocumentScreen {
     /* ---------------------------------------------------------- *
      *   identity + key selector (shorter than original version)  *
      * ---------------------------------------------------------- */
-    fn ui_identity_picker(&mut self, ui: &mut Ui) {
+    pub fn ui_identity_picker(&mut self, ui: &mut Ui) {
         egui::Grid::new("identity_key_grid")
             .num_columns(2)
             .spacing([10.0, 5.0])

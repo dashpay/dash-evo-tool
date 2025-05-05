@@ -1,7 +1,8 @@
 use super::BackendTaskSuccessResult;
-use crate::ui::tokens::tokens_screen::{IdentityTokenIdentifier, TokenInfo};
+use crate::ui::tokens::tokens_screen::{IdentityTokenBalance, IdentityTokenIdentifier, TokenInfo};
 use crate::{app::TaskResult, context::AppContext, model::qualified_identity::QualifiedIdentity};
 use dash_sdk::dpp::balances::credits::TokenAmount;
+use dash_sdk::dpp::data_contract::associated_token::token_configuration_item::TokenConfigurationChangeItem;
 use dash_sdk::dpp::data_contract::GroupContractPosition;
 use dash_sdk::platform::Fetch;
 use dash_sdk::{
@@ -49,6 +50,7 @@ mod query_tokens;
 mod resume_tokens;
 mod transfer_tokens;
 mod unfreeze_tokens;
+mod update_token_config;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum TokenTask {
@@ -154,6 +156,12 @@ pub(crate) enum TokenTask {
     EstimatePerpetualTokenRewards {
         identity_id: Identifier,
         token_id: Identifier,
+    },
+    UpdateTokenConfig {
+        identity_token_balance: IdentityTokenBalance,
+        change_items: Vec<TokenConfigurationChangeItem>,
+        signing_key: IdentityPublicKey,
+        public_note: Option<String>,
     },
 }
 
@@ -456,6 +464,22 @@ impl AppContext {
                     "Saved token to db".to_string(),
                 ))
             }
+            TokenTask::UpdateTokenConfig {
+                identity_token_balance,
+                change_items,
+                signing_key,
+                public_note,
+            } => self
+                .update_token_config(
+                    identity_token_balance.clone(),
+                    change_items.clone(),
+                    signing_key,
+                    public_note.clone(),
+                    sdk,
+                    sender,
+                )
+                .await
+                .map_err(|e| format!("Failed to update token config: {e}")),
         }
     }
 

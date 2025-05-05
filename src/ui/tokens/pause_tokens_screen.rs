@@ -235,7 +235,7 @@ impl ScreenLike for PauseTokensScreen {
             vec![
                 ("Tokens", AppAction::GoToMainScreen),
                 (
-                    &self.identity_token_balance.token_name,
+                    &self.identity_token_balance.token_alias,
                     AppAction::PopScreen,
                 ),
                 ("Pause", AppAction::None),

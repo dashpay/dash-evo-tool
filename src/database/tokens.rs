@@ -1,5 +1,6 @@
-use bincode::{self, config::standard};
+use bincode::{self, config, config::standard};
 use dash_sdk::dpp::dashcore::Network;
+use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::TokenConfigurationConvention;
 use dash_sdk::dpp::data_contract::TokenConfiguration;
 use dash_sdk::platform::Identifier;
 use dash_sdk::query_types::IndexMap;
@@ -172,8 +173,9 @@ impl Database {
 
         Ok(())
     }
-
-    /// Retrieves all known tokens as a map from token ID to TokenInfo, ordered by token_alias (name).
+    /// Retrieves all known tokens as a map from token ID to `TokenInfo`.
+    ///
+    /// Now also fetches and decodes the **`token_config`** blob.
     pub fn get_all_known_tokens(
         &self,
         app_context: &AppContext,
@@ -181,26 +183,40 @@ impl Database {
         let network = app_context.network_string();
         let conn = self.conn.lock().unwrap();
 
+        // -- 1.  query id / alias / config / contract / position ────────────────
         let mut stmt = conn.prepare(
-            "SELECT id, token_alias, data_contract_id, token_position
-             FROM token
-             WHERE network = ?
-             ORDER BY token_alias ASC",
+            "SELECT id,
+                token_alias,
+                token_config,
+                data_contract_id,
+                token_position
+         FROM   token
+         WHERE  network = ?
+         ORDER  BY token_alias ASC",
         )?;
 
+        // -- 2.  map each row, decoding `token_config` with bincode -─────────────
         let rows = stmt.query_map(params![network], |row| {
+            let bytes: Vec<u8> = row.get(2)?; // token_config blob
+            let cfg = bincode::decode_from_slice::<TokenConfiguration, _>(&bytes, standard())
+                .map(|(c, _)| c)
+                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+
             Ok((
                 Identifier::from_vec(row.get(0)?),
                 row.get::<_, String>(1)?,
-                Identifier::from_vec(row.get(2)?),
-                row.get::<_, u16>(3)?,
+                cfg, // decoded config
+                Identifier::from_vec(row.get(3)?),
+                row.get::<_, u16>(4)?,
             ))
         })?;
 
+        // -- 3.  build the IndexMap result ───────────────────────────────────────
         let mut result = IndexMap::new();
 
         for row in rows {
-            let (token_id_res, token_alias, contract_id_res, token_position) = row?;
+            let (token_id_res, token_alias, token_cfg, contract_id_res, pos) = row?;
+
             let token_id = token_id_res.expect("Failed to parse token ID");
             let data_contract_id = contract_id_res.expect("Failed to parse contract ID");
 
@@ -210,7 +226,8 @@ impl Database {
                     token_id,
                     token_name: token_alias,
                     data_contract_id,
-                    token_position,
+                    token_position: pos,
+                    token_configuration: token_cfg,
                     description: None,
                 },
             );
@@ -228,20 +245,25 @@ impl Database {
         let rows_data = {
             let conn = self.conn.lock().unwrap();
             let mut stmt = conn.prepare(
-                "SELECT b.token_id, t.token_alias, b.identity_id, b.balance, t.data_contract_id, t.token_position
+                "SELECT b.token_id, t.token_alias, t.token_config, b.identity_id, b.balance, t.data_contract_id, t.token_position
              FROM identity_token_balances AS b
              JOIN token AS t ON b.token_id = t.id
              WHERE b.network = ?",
             )?;
 
             let rows = stmt.query_map(params![network], |row| {
+                let config = standard();
+                let bytes: Vec<u8> = row.get(2)?;
+                let token_config: Result<(TokenConfiguration, _), _> =
+                    bincode::decode_from_slice(&bytes, config);
                 Ok((
                     Identifier::from_vec(row.get(0)?),
                     row.get(1)?,
-                    Identifier::from_vec(row.get(2)?),
-                    row.get(3)?,
-                    Identifier::from_vec(row.get(4)?),
-                    row.get(5)?,
+                    token_config,
+                    Identifier::from_vec(row.get(3)?),
+                    row.get(4)?,
+                    Identifier::from_vec(row.get(5)?),
+                    row.get(6)?,
                 ))
             })?;
 
@@ -256,6 +278,7 @@ impl Database {
         for (
             token_id_res,
             token_name,
+            token_config,
             identity_id_res,
             balance,
             data_contract_id_res,
@@ -263,12 +286,14 @@ impl Database {
         ) in rows_data
         {
             let token_id = token_id_res.expect("Failed to parse token_identifier");
+            let token_config = token_config.expect("Missing token_config").0;
             let identity_id = identity_id_res.expect("Failed to parse identity_id");
             let data_contract_id = data_contract_id_res.expect("Failed to parse data_contract_id");
 
             let identity_token_balance = IdentityTokenBalance {
                 token_id,
-                token_name,
+                token_alias: token_name,
+                token_config,
                 identity_id,
                 balance,
                 estimated_unclaimed_rewards: None,
@@ -286,6 +311,25 @@ impl Database {
         }
 
         Ok(result)
+    }
+
+    /// Removes a token and all associated entries (balances, order) by `token_id`.
+    ///
+    /// This will cascade delete from `identity_token_balances` and `token_order` due to foreign key constraints.
+    pub fn remove_token(
+        &self,
+        token_id: &Identifier,
+        app_context: &AppContext,
+    ) -> rusqlite::Result<()> {
+        let network = app_context.network_string();
+        let token_id_bytes = token_id.to_vec();
+
+        self.execute(
+            "DELETE FROM token WHERE id = ? AND network = ?",
+            params![token_id_bytes, network],
+        )?;
+
+        Ok(())
     }
 
     pub fn remove_token_balance(

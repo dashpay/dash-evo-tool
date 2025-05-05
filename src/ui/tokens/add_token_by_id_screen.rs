@@ -185,6 +185,7 @@ impl ScreenLike for AddTokenByIdScreen {
                         token_name,
                         data_contract_id: contract.id(),
                         token_position: *pos as u16,
+                        token_configuration: cfg.clone(),
                         description: cfg.description().clone(),
                     }
                 })

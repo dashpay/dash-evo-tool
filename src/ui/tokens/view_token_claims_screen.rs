@@ -106,7 +106,7 @@ impl ScreenLike for ViewTokenClaimsScreen {
             vec![
                 ("Tokens", AppAction::GoToMainScreen),
                 (
-                    &self.identity_token_balance.token_name,
+                    &self.identity_token_balance.token_alias,
                     AppAction::PopScreen,
                 ),
                 ("View Claims", AppAction::None),

@@ -335,7 +335,17 @@ impl ScreenLike for PauseTokensScreen {
                         .unwrap_or_else(|| &identity_id_string);
                     ui.label(format!("Identity: {}", identity_display));
                 });
+                ui.add_space(10.0);
 
+                // Render text input for the public note
+                ui.horizontal(|ui| {
+                    ui.label("Public note (optional):");
+                    ui.add_space(10.0);
+                    let mut txt = self.public_note.clone().unwrap_or_default();
+                    if ui.text_edit_singleline(&mut txt).changed() {
+                        self.public_note = Some(txt);
+                    }
+                });
                 ui.add_space(10.0);
                 ui.separator();
                 ui.add_space(10.0);

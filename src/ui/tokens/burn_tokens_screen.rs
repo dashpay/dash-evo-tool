@@ -45,6 +45,7 @@ pub struct BurnTokensScreen {
 
     // The user chooses how many tokens to burn
     amount_to_burn: String,
+    public_note: Option<String>,
 
     status: BurnTokensStatus,
     error_message: Option<String>,
@@ -97,6 +98,7 @@ impl BurnTokensScreen {
             identity_token_balance,
             selected_key: possible_key.cloned(),
             amount_to_burn: String::new(),
+            public_note: None,
             status: BurnTokensStatus::NotStarted,
             error_message: None,
             app_context: app_context.clone(),
@@ -197,6 +199,7 @@ impl BurnTokensScreen {
                                 data_contract,
                                 token_position: self.identity_token_balance.token_position,
                                 signing_key: self.selected_key.clone().expect("Expected a key"),
+                                public_note: self.public_note.clone(),
                                 amount: amount_ok.unwrap(),
                             }),
                             BackendTask::TokenTask(TokenTask::QueryMyTokenBalances),
@@ -385,6 +388,17 @@ impl ScreenLike for BurnTokensScreen {
                 ui.add_space(5.0);
                 self.render_amount_input(ui);
 
+                ui.add_space(10.0);
+
+                // Render text input for the public note
+                ui.horizontal(|ui| {
+                    ui.label("Public note (optional):");
+                    ui.add_space(10.0);
+                    let mut txt = self.public_note.clone().unwrap_or_default();
+                    if ui.text_edit_singleline(&mut txt).changed() {
+                        self.public_note = Some(txt);
+                    }
+                });
                 ui.add_space(10.0);
 
                 // Burn button

@@ -27,7 +27,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::ui::identities::get_selected_wallet;
 
-use super::tokens_screen::{IdentityTokenBalance, TokenInfo};
+use super::tokens_screen::IdentityTokenBalance;
 
 #[derive(PartialEq)]
 pub enum TransferTokensStatus {
@@ -43,6 +43,7 @@ pub struct TransferTokensScreen {
     friend_identities: Vec<(String, Identifier)>,
     selected_friend_index: Option<usize>,
     selected_key: Option<IdentityPublicKey>,
+    pub public_note: Option<String>,
     receiver_identity_id: String,
     amount: String,
     transfer_tokens_status: TransferTokensStatus,
@@ -110,6 +111,7 @@ impl TransferTokensScreen {
             friend_identities,
             selected_friend_index,
             selected_key: selected_key.cloned(),
+            public_note: None,
             receiver_identity_id,
             amount: String::new(),
             transfer_tokens_status: TransferTokensStatus::NotStarted,
@@ -272,6 +274,7 @@ impl TransferTokensScreen {
                                 data_contract,
                                 token_position: self.identity_token_balance.token_position,
                                 signing_key: self.selected_key.clone().expect("Expected a key"),
+                                public_note: self.public_note.clone(),
                             }),
                             BackendTask::TokenTask(TokenTask::QueryMyTokenBalances),
                         ],
@@ -476,6 +479,17 @@ impl ScreenLike for TransferTokensScreen {
                 ui.add_space(5.0);
                 self.render_to_identity_input(ui);
 
+                ui.add_space(10.0);
+
+                // Render text input for the public note
+                ui.horizontal(|ui| {
+                    ui.label("Public note (optional):");
+                    ui.add_space(10.0);
+                    let mut txt = self.public_note.clone().unwrap_or_default();
+                    if ui.text_edit_singleline(&mut txt).changed() {
+                        self.public_note = Some(txt);
+                    }
+                });
                 ui.add_space(10.0);
 
                 // Transfer button

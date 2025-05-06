@@ -18,18 +18,21 @@ impl AppContext {
         data_contract: &DataContract,
         token_position: u16,
         signing_key: IdentityPublicKey,
+        public_note: Option<String>,
         frozen_identity: Identifier,
         sdk: &Sdk,
         _sender: mpsc::Sender<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, String> {
-        let builder = TokenDestroyFrozenFundsTransitionBuilder::new(
+        let mut builder = TokenDestroyFrozenFundsTransitionBuilder::new(
             data_contract,
             token_position,
             actor_identity.identity.id(),
             frozen_identity,
         );
 
-        // Optionally chain with_public_note(...), with_settings(...), etc.
+        if let Some(note) = public_note {
+            builder = builder.with_public_note(note);
+        }
 
         let state_transition = builder
             .sign(sdk, &signing_key, actor_identity, self.platform_version)

@@ -382,14 +382,25 @@ impl ScreenLike for FreezeTokensScreen {
                 ui.heading("2. Enter the identity ID to freeze");
                 ui.add_space(5.0);
                 self.render_freeze_identity_input(ui);
+
+                ui.add_space(10.0);
+                ui.separator();
                 ui.add_space(10.0);
 
                 // Render text input for the public note
+                ui.heading("3. Public note (optional)");
+                ui.add_space(5.0);
                 ui.horizontal(|ui| {
                     ui.label("Public note (optional):");
                     ui.add_space(10.0);
                     let mut txt = self.public_note.clone().unwrap_or_default();
-                    if ui.text_edit_singleline(&mut txt).changed() {
+                    if ui
+                        .text_edit_singleline(&mut txt)
+                        .on_hover_text(
+                            "A note about the transaction that can be seen by the public.",
+                        )
+                        .changed()
+                    {
                         self.public_note = Some(txt);
                     }
                 });

@@ -41,6 +41,7 @@ pub struct ResumeTokensScreen {
     pub identity: QualifiedIdentity,
     pub identity_token_balance: IdentityTokenBalance,
     selected_key: Option<dash_sdk::platform::IdentityPublicKey>,
+    public_note: Option<String>,
 
     status: ResumeTokensStatus,
     error_message: Option<String>,
@@ -89,6 +90,7 @@ impl ResumeTokensScreen {
             identity,
             identity_token_balance,
             selected_key: possible_key.cloned(),
+            public_note: None,
             status: ResumeTokensStatus::NotStarted,
             error_message: None,
             app_context: app_context.clone(),
@@ -163,6 +165,7 @@ impl ResumeTokensScreen {
                             data_contract,
                             token_position: self.identity_token_balance.token_position,
                             signing_key: self.selected_key.clone().expect("No key selected"),
+                            public_note: self.public_note.clone(),
                         }));
                 }
 
@@ -328,7 +331,38 @@ impl ScreenLike for ResumeTokensScreen {
                         .unwrap_or_else(|| &identity_id_string);
                     ui.label(format!("Identity: {}", identity_display));
                 });
+                ui.add_space(10.0);
 
+                // Render text input for the public note
+                ui.horizontal(|ui| {
+                    ui.label("Public note (optional):");
+                    ui.add_space(10.0);
+                    let mut txt = self.public_note.clone().unwrap_or_default();
+                    if ui.text_edit_singleline(&mut txt).changed() {
+                        self.public_note = Some(txt);
+                    }
+                });
+                ui.add_space(10.0);
+                ui.separator();
+                ui.add_space(10.0);
+
+                // Render text input for the public note
+                ui.heading("2. Public note (optional)");
+                ui.add_space(5.0);
+                ui.horizontal(|ui| {
+                    ui.label("Public note (optional):");
+                    ui.add_space(10.0);
+                    let mut txt = self.public_note.clone().unwrap_or_default();
+                    if ui
+                        .text_edit_singleline(&mut txt)
+                        .on_hover_text(
+                            "A note about the transaction that can be seen by the public.",
+                        )
+                        .changed()
+                    {
+                        self.public_note = Some(txt);
+                    }
+                });
                 ui.add_space(10.0);
 
                 let button = egui::Button::new(RichText::new("Resume").color(Color32::WHITE))

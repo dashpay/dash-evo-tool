@@ -49,6 +49,9 @@ pub struct DestroyFrozenFundsScreen {
     /// The key used to sign the operation
     selected_key: Option<IdentityPublicKey>,
 
+    /// Optional public note
+    pub public_note: Option<String>,
+
     /// The user must specify the identity ID whose frozen funds are to be destroyed
     /// Typically some Identity that has been frozen by the system or a group
     frozen_identity_id: String,
@@ -103,6 +106,7 @@ impl DestroyFrozenFundsScreen {
             identity,
             identity_token_balance,
             selected_key: possible_key.cloned(),
+            public_note: None,
             frozen_identity_id: String::new(),
             status: DestroyFrozenFundsStatus::NotStarted,
             error_message: None,
@@ -213,6 +217,7 @@ impl DestroyFrozenFundsScreen {
                                 data_contract,
                                 token_position: self.identity_token_balance.token_position,
                                 signing_key: self.selected_key.clone().expect("Expected a key"),
+                                public_note: self.public_note.clone(),
                                 frozen_identity: frozen_id,
                             }),
                             BackendTask::TokenTask(TokenTask::QueryMyTokenBalances),
@@ -400,7 +405,38 @@ impl ScreenLike for DestroyFrozenFundsScreen {
                 ui.heading("2. Frozen identity to destroy funds from");
                 ui.add_space(5.0);
                 self.render_frozen_identity_input(ui);
+                ui.add_space(10.0);
 
+                // Render text input for the public note
+                ui.horizontal(|ui| {
+                    ui.label("Public note (optional):");
+                    ui.add_space(10.0);
+                    let mut txt = self.public_note.clone().unwrap_or_default();
+                    if ui.text_edit_singleline(&mut txt).changed() {
+                        self.public_note = Some(txt);
+                    }
+                });
+                ui.add_space(10.0);
+                ui.separator();
+                ui.add_space(10.0);
+
+                // Render text input for the public note
+                ui.heading("3. Public note (optional)");
+                ui.add_space(5.0);
+                ui.horizontal(|ui| {
+                    ui.label("Public note (optional):");
+                    ui.add_space(10.0);
+                    let mut txt = self.public_note.clone().unwrap_or_default();
+                    if ui
+                        .text_edit_singleline(&mut txt)
+                        .on_hover_text(
+                            "A note about the transaction that can be seen by the public.",
+                        )
+                        .changed()
+                    {
+                        self.public_note = Some(txt);
+                    }
+                });
                 ui.add_space(10.0);
 
                 // Destroy button

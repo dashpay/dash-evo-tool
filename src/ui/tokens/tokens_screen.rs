@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 use std::sync::{Arc, Mutex, RwLock};
 
 use chrono::{DateTime, Duration, Utc};
@@ -7,10 +7,8 @@ use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::{TokenConfigurationPreset, TokenConfigurationPresetFeatures, TokenConfigurationV0};
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationPresetFeatures::{MostRestrictive, WithAllAdvancedActions, WithExtremeActions, WithMintingAndBurningActions, WithOnlyEmergencyAction};
-use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::TokenConfigurationConvention;
 use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::v0::TokenDistributionRulesV0;
 use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::TokenDistributionRules;
-use dash_sdk::dpp::data_contract::associated_token::token_keeps_history_rules::accessors::v0::TokenKeepsHistoryRulesV0Setters;
 use dash_sdk::dpp::data_contract::associated_token::token_keeps_history_rules::TokenKeepsHistoryRules;
 use dash_sdk::dpp::data_contract::associated_token::token_keeps_history_rules::v0::TokenKeepsHistoryRulesV0;
 use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::distribution_function::DistributionFunction;
@@ -65,6 +63,7 @@ use super::pause_tokens_screen::PauseTokensScreen;
 use super::resume_tokens_screen::ResumeTokensScreen;
 use super::transfer_tokens_screen::TransferTokensScreen;
 use super::unfreeze_tokens_screen::UnfreezeTokensScreen;
+use super::update_token_config::UpdateTokenConfigScreen;
 use super::view_token_claims_screen::ViewTokenClaimsScreen;
 
 const EXP_FORMULA_PNG: &[u8] = include_bytes!("../../../assets/exp_function.png");
@@ -102,21 +101,6 @@ pub struct TokenInfo {
 pub struct ContractDescriptionInfo {
     pub data_contract_id: Identifier,
     pub description: String,
-}
-
-/* helper: flip all flags on/off */
-trait SetAll {
-    fn set_all(&mut self, value: bool);
-}
-impl SetAll for TokenKeepsHistoryRulesV0 {
-    fn set_all(&mut self, value: bool) {
-        self.set_keeps_transfer_history(value);
-        self.set_keeps_freezing_history(value);
-        self.set_keeps_minting_history(value);
-        self.set_keeps_burning_history(value);
-        self.set_keeps_direct_pricing_history(value);
-        self.set_keeps_direct_purchase_history(value);
-    }
 }
 
 /* helper: tiny checkbox with no extra spacing */
@@ -252,8 +236,6 @@ impl Default for TokenCreatorStatus {
 /// Sorting columns
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SortColumn {
-    TokenName,
-    TokenID,
     OwnerIdentity,
     OwnerIdentityAlias,
     Balance,
@@ -1066,7 +1048,6 @@ pub struct TokensScreen {
     identities: IndexMap<Identifier, QualifiedIdentity>,
     my_tokens: IndexMap<IdentityTokenIdentifier, IdentityTokenBalance>,
     pub selected_token_id: Option<Identifier>,
-    show_token_info: Option<Identifier>,
     backend_message: Option<(String, MessageType, DateTime<Utc>)>,
     pending_backend_task: Option<BackendTask>,
     refreshing_status: RefreshingStatus,
@@ -1285,7 +1266,6 @@ impl TokensScreen {
             selected_contract_id: None,
             selected_contract_description: None,
             selected_token_infos: Vec::new(),
-            show_token_info: None,
             token_search_query: None,
             contract_search_status: ContractSearchStatus::NotStarted,
             search_current_page: 1,
@@ -1294,7 +1274,7 @@ impl TokensScreen {
             previous_cursors: vec![],
             search_results: Arc::new(Mutex::new(Vec::new())),
             backend_message: None,
-            sort_column: SortColumn::TokenName,
+            sort_column: SortColumn::OwnerIdentityAlias,
             sort_order: SortOrder::Ascending,
             use_custom_order: false,
             pending_backend_task: None,
@@ -1521,55 +1501,6 @@ impl TokensScreen {
             .ok();
     }
 
-    // ─────────────────────────────────────────────────────────────────
-    // Sorting
-    // ─────────────────────────────────────────────────────────────────
-
-    /// Sort the vector by the user-specified column/order, overriding any custom order.
-    fn sort_vec(&self, list: &mut [IdentityTokenBalance]) {
-        list.sort_by(|a, b| {
-            let ordering = match self.sort_column {
-                SortColumn::Balance => a.balance.cmp(&b.balance),
-                SortColumn::OwnerIdentity => a.identity_id.cmp(&b.identity_id),
-                SortColumn::OwnerIdentityAlias => {
-                    let alias_a = self
-                        .app_context
-                        .get_alias(&a.identity_id)
-                        .expect("Expected to get alias")
-                        .unwrap_or("".to_string());
-                    let alias_b = self
-                        .app_context
-                        .get_alias(&b.identity_id)
-                        .expect("Expected to get alias")
-                        .unwrap_or("".to_string());
-                    alias_a.cmp(&alias_b)
-                }
-                SortColumn::TokenName => a.token_alias.cmp(&b.token_alias),
-                SortColumn::TokenID => a.token_id.cmp(&b.token_id),
-            };
-            match self.sort_order {
-                SortOrder::Ascending => ordering,
-                SortOrder::Descending => ordering.reverse(),
-            }
-        });
-        self.save_current_order();
-    }
-
-    fn sort_vec_of_groups(&self, list: &mut [(Identifier, String, u64)]) {
-        list.sort_by(|a, b| {
-            let ordering = match self.sort_column {
-                SortColumn::Balance => a.2.cmp(&b.2),
-                SortColumn::TokenName => a.1.cmp(&b.1),
-                SortColumn::TokenID => a.0.cmp(&b.0),
-                _ => a.0.cmp(&b.0),
-            };
-            match self.sort_order {
-                SortOrder::Ascending => ordering,
-                SortOrder::Descending => ordering.reverse(),
-            }
-        });
-    }
-
     fn toggle_sort(&mut self, column: SortColumn) {
         self.use_custom_order = false;
         if self.sort_column == column {
@@ -1583,31 +1514,6 @@ impl TokensScreen {
             self.sort_order = SortOrder::Ascending;
             self.save_current_order();
         }
-    }
-
-    /// Group all IdentityTokenBalance objects by token_identifier.
-    /// Returns a Vec of (token_identifier, token_name, total_balance).
-    fn group_tokens_by_identifier(
-        &self,
-        tokens: &IndexMap<IdentityTokenIdentifier, IdentityTokenBalance>,
-    ) -> Vec<(Identifier, String, u64)> {
-        let mut map: HashMap<Identifier, (String, u64)> = HashMap::new();
-        for tb in tokens.values() {
-            let entry = map.entry(tb.token_id.clone()).or_insert_with(|| {
-                // Store (token_name, running_total_balance)
-                (tb.token_alias.clone(), 0u64)
-            });
-            entry.1 += tb.balance;
-        }
-
-        // Convert to a vec for display
-        let mut result = Vec::new();
-        for (identifier, (name, total_balance)) in map {
-            result.push((identifier, name, total_balance));
-        }
-        // Sort by token name, for example
-        result.sort_by(|a, b| a.1.cmp(&b.1));
-        result
     }
 
     // ─────────────────────────────────────────────────────────────────
@@ -2021,6 +1927,17 @@ impl TokensScreen {
                                                             action = AppAction::AddScreen(
                                                                 Screen::ViewTokenClaimsScreen(
                                                                     ViewTokenClaimsScreen::new(
+                                                                        itb.clone(),
+                                                                        &self.app_context,
+                                                                    ),
+                                                                ),
+                                                            );
+                                                            ui.close_menu();
+                                                        }
+                                                        if ui.button("Update Config").clicked() {
+                                                            action = AppAction::AddScreen(
+                                                                Screen::UpdateTokenConfigScreen(
+                                                                    UpdateTokenConfigScreen::new(
                                                                         itb.clone(),
                                                                         &self.app_context,
                                                                     ),
@@ -2631,7 +2548,7 @@ impl TokensScreen {
 
                             // Row 5: Token Description
                             ui.label("Token Description (max 100 chars):");
-                            ui.text_edit_multiline(&mut self.token_description_input);
+                            ui.text_edit_singleline(&mut self.token_description_input);
                             ui.end_row();
                         });
 

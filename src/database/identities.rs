@@ -226,6 +226,37 @@ impl Database {
         identities
     }
 
+    pub fn get_identity_by_id(
+        &self,
+        identifier: &Identifier,
+        app_context: &AppContext,
+    ) -> rusqlite::Result<Option<QualifiedIdentity>> {
+        let id = identifier.to_vec();
+        let network = app_context.network_string();
+
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT data, alias, wallet_index FROM identity WHERE id = ? AND network = ?",
+        )?;
+        let identity_iter = stmt.query_map(params![id, network], |row| {
+            let data: Vec<u8> = row.get(0)?;
+            let alias: Option<String> = row.get(1)?;
+            let wallet_index: Option<u32> = row.get(2)?;
+
+            let mut identity: QualifiedIdentity = QualifiedIdentity::from_bytes(&data);
+            identity.alias = alias;
+            identity.wallet_index = wallet_index;
+
+            Ok(identity)
+        })?;
+
+        // Collect the results
+        let identities: Vec<QualifiedIdentity> = identity_iter.collect::<rusqlite::Result<_>>()?;
+
+        // Return the first one if it exists
+        Ok(identities.into_iter().next())
+    }
+
     pub fn get_local_voting_identities(
         &self,
         app_context: &AppContext,

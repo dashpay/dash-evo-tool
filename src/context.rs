@@ -268,6 +268,22 @@ impl AppContext {
         self.db.get_local_qualified_identities(self, &wallets)
     }
 
+    pub fn get_identity_by_id(
+        &self,
+        identity_id: &Identifier,
+    ) -> Result<Option<QualifiedIdentity>> {
+        // Get the identity from the database
+        let identity = self.db.get_identity_by_id(identity_id, self)?;
+
+        // If the identity is not found in the database, return None
+        if identity.is_none() {
+            return Ok(None);
+        }
+
+        // If the identity is found, return it
+        Ok(Some(identity.unwrap()))
+    }
+
     /// Fetches all voting identities from the database
     pub fn load_local_voting_identities(&self) -> Result<Vec<QualifiedIdentity>> {
         self.db.get_local_voting_identities(self)
@@ -427,6 +443,14 @@ impl AppContext {
     // Remove contract from the database by ID
     pub fn remove_contract(&self, contract_id: &Identifier) -> Result<()> {
         self.db.remove_contract(contract_id.as_bytes(), &self)
+    }
+
+    pub fn replace_contract(
+        &self,
+        contract_id: Identifier,
+        new_contract: &DataContract,
+    ) -> Result<()> {
+        self.db.replace_contract(contract_id, new_contract, self)
     }
 
     pub(crate) fn received_transaction_finality(

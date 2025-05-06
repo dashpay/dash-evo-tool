@@ -168,7 +168,7 @@ pub(crate) enum TokenTask {
     },
     UpdateTokenConfig {
         identity_token_balance: IdentityTokenBalance,
-        change_items: Vec<TokenConfigurationChangeItem>,
+        change_item: TokenConfigurationChangeItem,
         signing_key: IdentityPublicKey,
         public_note: Option<String>,
     },
@@ -493,17 +493,16 @@ impl AppContext {
             }
             TokenTask::UpdateTokenConfig {
                 identity_token_balance,
-                change_items,
+                change_item,
                 signing_key,
                 public_note,
             } => self
                 .update_token_config(
                     identity_token_balance.clone(),
-                    change_items.clone(),
+                    change_item.clone(),
                     signing_key,
                     public_note.clone(),
                     sdk,
-                    sender,
                 )
                 .await
                 .map_err(|e| format!("Failed to update token config: {e}")),

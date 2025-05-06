@@ -5,10 +5,8 @@ use dash_sdk::{
     dpp::data_contract::associated_token::token_configuration_item::TokenConfigurationChangeItem,
     platform::transition::fungible_tokens::config_update::TokenConfigUpdateTransitionBuilder, Sdk,
 };
-use tokio::sync::mpsc;
 
 use super::BackendTaskSuccessResult;
-use crate::app::TaskResult;
 use crate::context::AppContext;
 use crate::ui::tokens::tokens_screen::IdentityTokenBalance;
 
@@ -16,12 +14,13 @@ impl AppContext {
     pub async fn update_token_config(
         &self,
         identity_token_balance: IdentityTokenBalance,
-        change_items: Vec<TokenConfigurationChangeItem>,
+        change_item: TokenConfigurationChangeItem,
         signing_key: &IdentityPublicKey,
         public_note: Option<String>,
         sdk: &Sdk,
-        sender: mpsc::Sender<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, String> {
+        // Get the existing contract and identity for building the state transition
+        // First, fetch the contract from the local database
         let existing_data_contract = &self
             .get_contract_by_id(&identity_token_balance.data_contract_id)
             .map_err(|e| {
@@ -38,6 +37,7 @@ impl AppContext {
             })?
             .contract;
 
+        // Then, fetch the identity from the local database
         let identity = self
             .get_identity_by_id(&identity_token_balance.identity_id)
             .map_err(|e| {
@@ -53,42 +53,39 @@ impl AppContext {
                 )
             })?;
 
-        for change_item in change_items.iter() {
-            let mut builder = TokenConfigUpdateTransitionBuilder::new(
-                existing_data_contract,
-                identity_token_balance.token_position,
-                identity_token_balance.identity_id,
-                change_item.clone(),
-                None,
-            );
+        // Create the TokenConfigUpdateTransition
+        let mut builder = TokenConfigUpdateTransitionBuilder::new(
+            existing_data_contract,
+            identity_token_balance.token_position,
+            identity_token_balance.identity_id,
+            change_item.clone(),
+            None,
+        );
 
-            if let Some(public_note) = &public_note {
-                builder = builder.with_public_note(public_note.clone());
-            }
-
-            let state_transition = builder
-                .sign(sdk, &signing_key, &identity, self.platform_version)
-                .await
-                .map_err(|e| {
-                    format!(
-                        "Error signing Token Config Update transition: {}",
-                        e.to_string()
-                    )
-                })?;
-
-            let _proof_result = state_transition
-                .broadcast_and_wait::<StateTransitionProofResult>(sdk, None)
-                .await
-                .map_err(|e| format!("Error broadcasting Token Config Update transition: {}", e))?;
-
-            let _ = sender
-                .send(TaskResult::Success(BackendTaskSuccessResult::Message(
-                    format!("Successfully updated {:?}", change_item),
-                )))
-                .await;
+        // Add the optional public note
+        if let Some(public_note) = &public_note {
+            builder = builder.with_public_note(public_note.clone());
         }
 
+        // Sign the state transition
+        let state_transition = builder
+            .sign(sdk, &signing_key, &identity, self.platform_version)
+            .await
+            .map_err(|e| {
+                format!(
+                    "Error signing Token Config Update transition: {}",
+                    e.to_string()
+                )
+            })?;
+
+        // Broadcast the state transition
+        let _proof_result = state_transition
+            .broadcast_and_wait::<StateTransitionProofResult>(sdk, None)
+            .await
+            .map_err(|e| format!("Error broadcasting Token Config Update transition: {}", e))?;
+
         // Now update the data contract in the local database
+        // First, fetch the updated contract from the platform
         let data_contract = DataContract::fetch(sdk, identity_token_balance.data_contract_id)
             .await
             .map_err(|e| format!("Error fetching contract from platform: {}", e.to_string()))?
@@ -99,11 +96,14 @@ impl AppContext {
                 )
             })?;
 
+        // Then replace the contract in the local database
         self.replace_contract(identity_token_balance.data_contract_id, &data_contract)
             .map_err(|e| format!("Error replacing contract in local database: {}", e))?;
 
-        Ok(BackendTaskSuccessResult::Message(
-            "Successfully updated all token config items".to_string(),
-        ))
+        // Return success
+        Ok(BackendTaskSuccessResult::Message(format!(
+            "Successfully updated token config item: {}",
+            change_item.to_string()
+        )))
     }
 }

@@ -2548,7 +2548,7 @@ impl TokensScreen {
 
                             // Row 5: Token Description
                             ui.label("Token Description (max 100 chars):");
-                            ui.text_edit_multiline(&mut self.token_description_input);
+                            ui.text_edit_singleline(&mut self.token_description_input);
                             ui.end_row();
                         });
 

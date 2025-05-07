@@ -131,6 +131,32 @@ fn main() -> eframe::Result<()> {
                         ..,
                         vec![
                             "Ubuntu-Light".into(),
+                            "emoji-icon-font".into(),
+                            "NotoEmoji-Regular".into(),
+                            "noto_sans".to_owned(),
+                            "noto_sans_sc".to_owned(), // Simplified Chinese
+                            "noto_sans_tc".to_owned(), // Traditional Chinese
+                            "noto_sans_jp".to_owned(), // Japanese
+                            "noto_sans_kr".to_owned(), // Korean
+                            "noto_sans_thai".to_owned(),
+                            "noto_sans_khmer".to_owned(),
+                            "noto_sans_arabic".to_owned(),
+                            "noto_sans_hebrew".to_owned(),
+                            "noto_sans_devanagari".to_owned(),
+                        ],
+                    );
+
+                fonts
+                    .families
+                    .entry(FontFamily::Monospace)
+                    .or_default()
+                    .splice(
+                        ..,
+                        vec![
+                            "Hack".into(),
+                            "Ubuntu-Light".into(),
+                            "emoji-icon-font".into(),
+                            "NotoEmoji-Regular".into(),
                             "noto_sans".to_owned(),
                             "noto_sans_sc".to_owned(), // Simplified Chinese
                             "noto_sans_tc".to_owned(), // Traditional Chinese

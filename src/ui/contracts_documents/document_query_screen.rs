@@ -474,10 +474,15 @@ impl DocumentQueryScreen {
                 let contract_alias_or_id = self
                     .app_context
                     .get_contract_by_id(&contract_to_remove)
-                    .expect("Expected to find contract by ID")
-                    .expect("Expected contract to be present")
-                    .alias
-                    .unwrap_or(contract_to_remove.to_string(Encoding::Base58));
+                    .map(|option_contract| {
+                        option_contract
+                            .map(|c| {
+                                c.alias
+                                    .unwrap_or_else(|| c.contract.id().to_string(Encoding::Base58))
+                            })
+                            .unwrap_or_else(|| contract_to_remove.to_string(Encoding::Base58))
+                    })
+                    .unwrap_or_else(|_| contract_to_remove.to_string(Encoding::Base58));
 
                 ui.label(format!(
                     "Are you sure you want to remove contract \"{}\"?",

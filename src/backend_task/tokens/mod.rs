@@ -57,7 +57,7 @@ pub(crate) enum TokenTask {
     RegisterTokenContract {
         identity: QualifiedIdentity,
         signing_key: IdentityPublicKey,
-        token_names: Vec<(String, String)>,
+        token_names: Vec<(String, String, String)>,
         contract_keywords: Vec<String>,
         token_description: Option<String>,
         should_capitalize: bool,
@@ -518,7 +518,7 @@ impl AppContext {
     pub fn build_data_contract_v1_with_one_token(
         &self,
         owner_id: Identifier,
-        token_names: Vec<(String, String)>,
+        token_names: Vec<(String, String, String)>,
         contract_keywords: Vec<String>,
         token_description: Option<String>,
         should_capitalize: bool,
@@ -566,13 +566,13 @@ impl AppContext {
 
         let TokenConfigurationConvention::V0(ref mut conv_v0) = token_config_v0.conventions;
         conv_v0.decimals = decimals;
-        for (token_name, language) in token_names {
+        for (token_name, token_plural, language) in token_names {
             conv_v0.localizations.insert(
                 language,
                 TokenConfigurationLocalization::V0(TokenConfigurationLocalizationV0 {
                     should_capitalize,
-                    singular_form: token_name.to_string(),
-                    plural_form: format!("{}s", token_name),
+                    singular_form: token_name,
+                    plural_form: token_plural,
                 }),
             );
         }

@@ -1,3 +1,4 @@
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::state_transition::proof_result::StateTransitionProofResult;
 use dash_sdk::platform::transition::broadcast::BroadcastStateTransition;
 use dash_sdk::platform::{DataContract, Fetch, IdentityPublicKey};
@@ -39,13 +40,15 @@ impl AppContext {
 
         // Then, fetch the identity from the local database
         let identity = self
-            .get_identity_by_id(&identity_token_balance.identity_id)
+            .load_local_qualified_identities()
             .map_err(|e| {
                 format!(
-                    "Error getting identity by ID {}: {}",
+                    "cannot list identities when loading identity {}: {}",
                     identity_token_balance.identity_id, e
                 )
             })?
+            .into_iter()
+            .find(|i| i.identity.id() == identity_token_balance.identity_id)
             .ok_or_else(|| {
                 format!(
                     "Identity with ID {} not found",

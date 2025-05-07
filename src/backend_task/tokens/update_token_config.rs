@@ -1,4 +1,3 @@
-use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::state_transition::proof_result::StateTransitionProofResult;
 use dash_sdk::platform::transition::broadcast::BroadcastStateTransition;
 use dash_sdk::platform::{DataContract, Fetch, IdentityPublicKey};
@@ -39,19 +38,18 @@ impl AppContext {
             .contract;
 
         // Then, fetch the identity from the local database
+        // Note we don't use `get_identity_by_id` because it leaves QualifiedIdentity.associated_wallets empty
         let identity = self
-            .load_local_qualified_identities()
+            .get_identity_by_id(&identity_token_balance.identity_id)
             .map_err(|e| {
                 format!(
-                    "cannot list identities when loading identity {}: {}",
+                    "error fetching identity {}: {}",
                     identity_token_balance.identity_id, e
                 )
             })?
-            .into_iter()
-            .find(|i| i.identity.id() == identity_token_balance.identity_id)
             .ok_or_else(|| {
                 format!(
-                    "Identity with ID {} not found",
+                    "identity with ID {} not found",
                     identity_token_balance.identity_id
                 )
             })?;

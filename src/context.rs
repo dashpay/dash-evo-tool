@@ -268,20 +268,23 @@ impl AppContext {
         self.db.get_local_qualified_identities(self, &wallets)
     }
 
+    /// Fetches identity by ID from the database
+    ///
+    /// This function will return the identity with its associated wallets
     pub fn get_identity_by_id(
         &self,
         identity_id: &Identifier,
     ) -> Result<Option<QualifiedIdentity>> {
         // Get the identity from the database
-        let identity = self.db.get_identity_by_id(identity_id, self)?;
-
-        // If the identity is not found in the database, return None
-        if identity.is_none() {
-            return Ok(None);
+        match self.db.get_identity_by_id(identity_id, self)? {
+            None => Ok(None),
+            Some(mut identity) => {
+                // If the identity is found, we need to get the wallets
+                // associated with it and set them in the identity
+                identity.associated_wallets = self.wallets.read().unwrap().clone();
+                Ok(Some(identity))
+            }
         }
-
-        // If the identity is found, return it
-        Ok(Some(identity.unwrap()))
     }
 
     /// Fetches all voting identities from the database

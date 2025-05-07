@@ -2,6 +2,7 @@ use crate::app::AppAction;
 use crate::backend_task::tokens::TokenTask;
 use crate::backend_task::BackendTask;
 use crate::context::AppContext;
+use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
@@ -17,11 +18,14 @@ use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution
 use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::v0::TokenPerpetualDistributionV0;
 use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::TokenPerpetualDistribution;
 use dash_sdk::dpp::data_contract::change_control_rules::authorized_action_takers::AuthorizedActionTakers;
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
 use egui::{Color32, Ui};
 use egui::{Context, RichText};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
 use super::tokens_screen::IdentityTokenBalance;
@@ -38,7 +42,8 @@ pub struct UpdateTokenConfigScreen {
     update_status: UpdateTokenConfigStatus,
     pub app_context: Arc<AppContext>,
     change_item: TokenConfigurationChangeItem,
-    signing_key: IdentityPublicKey,
+    signing_key: Option<IdentityPublicKey>,
+    identity: QualifiedIdentity,
     public_note: Option<String>,
 }
 
@@ -47,16 +52,26 @@ impl UpdateTokenConfigScreen {
         identity_token_balance: IdentityTokenBalance,
         app_context: &Arc<AppContext>,
     ) -> Self {
+        // Find the local qualified identity that corresponds to `identity_token_balance.identity_id`
         let identity = app_context
-            .get_identity_by_id(&identity_token_balance.identity_id)
-            .expect("Error getting identity by ID")
-            .expect("Identity not found");
-        let possible_key = identity
-            .available_authentication_keys_non_master()
-            .first()
-            .expect("No authentication keys found")
-            .identity_public_key
-            .clone();
+            .load_local_qualified_identities()
+            .unwrap_or_default()
+            .into_iter()
+            .find(|id| id.identity.id() == identity_token_balance.identity_id)
+            .expect("No local qualified identity found matching the token's identity");
+
+        // Grab a default key if possible
+        let identity_clone = identity.identity.clone();
+        let possible_key = identity_clone.get_first_public_key_matching(
+            Purpose::AUTHENTICATION,
+            HashSet::from([
+                SecurityLevel::HIGH,
+                SecurityLevel::MEDIUM,
+                SecurityLevel::CRITICAL,
+            ]),
+            KeyType::all_key_types().into(),
+            false,
+        );
 
         Self {
             identity_token_balance: identity_token_balance.clone(),
@@ -64,7 +79,8 @@ impl UpdateTokenConfigScreen {
             update_status: UpdateTokenConfigStatus::NotUpdating,
             app_context: app_context.clone(),
             change_item: TokenConfigurationChangeItem::TokenConfigurationNoChange,
-            signing_key: possible_key,
+            signing_key: possible_key.cloned(),
+            identity,
             public_note: None,
         }
     }
@@ -72,7 +88,7 @@ impl UpdateTokenConfigScreen {
     fn render_token_config_updater(&mut self, ui: &mut egui::Ui) -> AppAction {
         let mut action = AppAction::None;
 
-        ui.heading("1. Select the item to update");
+        ui.heading("2. Select the item to update");
         ui.add_space(10.0);
 
         let item = &mut self.change_item;
@@ -449,7 +465,7 @@ impl UpdateTokenConfigScreen {
         ui.separator();
         ui.add_space(10.0);
 
-        ui.heading("2. Public note (optional)");
+        ui.heading("3. Public note (optional)");
         ui.add_space(10.0);
 
         // Render text input for the public note
@@ -477,7 +493,7 @@ impl UpdateTokenConfigScreen {
             action = AppAction::BackendTask(BackendTask::TokenTask(TokenTask::UpdateTokenConfig {
                 identity_token_balance: self.identity_token_balance.clone(),
                 change_item: self.change_item.clone(),
-                signing_key: self.signing_key.clone(),
+                signing_key: self.signing_key.clone().expect("Signing key must be set"),
                 public_note: self.public_note.clone(),
             }));
         }
@@ -545,6 +561,36 @@ impl UpdateTokenConfigScreen {
         });
         action
     }
+
+    /// Renders a ComboBox or similar for selecting an authentication key
+    fn render_key_selection(&mut self, ui: &mut Ui) {
+        ui.horizontal(|ui| {
+            ui.label("Select Key:");
+            egui::ComboBox::from_id_salt("token_update_key_selector")
+                .selected_text(match &self.signing_key {
+                    Some(key) => format!("Key ID: {}", key.id()),
+                    None => "Select a key".to_string(),
+                })
+                .show_ui(ui, |ui| {
+                    if self.app_context.developer_mode {
+                        // Show all loaded public keys
+                        for key in self.identity.identity.public_keys().values() {
+                            let label =
+                                format!("Key ID: {} (Purpose: {:?})", key.id(), key.purpose());
+                            ui.selectable_value(&mut self.signing_key, Some(key.clone()), label);
+                        }
+                    } else {
+                        // Show only "available" auth keys
+                        for key_wrapper in self.identity.available_authentication_keys() {
+                            let key = &key_wrapper.identity_public_key;
+                            let label =
+                                format!("Key ID: {} (Purpose: {:?})", key.id(), key.purpose());
+                            ui.selectable_value(&mut self.signing_key, Some(key.clone()), label);
+                        }
+                    }
+                });
+        });
+    }
 }
 
 impl ScreenLike for UpdateTokenConfigScreen {
@@ -605,6 +651,25 @@ impl ScreenLike for UpdateTokenConfigScreen {
             }
 
             ui.heading("Update Token Configuration");
+            ui.add_space(10.0);
+
+            // 1) Key selection
+            ui.heading("1. Select the key to sign the transaction");
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                self.render_key_selection(ui);
+                ui.add_space(5.0);
+                let identity_id_string = self.identity.identity.id().to_string(Encoding::Base58);
+                let identity_display = self
+                    .identity
+                    .alias
+                    .as_deref()
+                    .unwrap_or_else(|| &identity_id_string);
+                ui.label(format!("Identity: {}", identity_display));
+            });
+
+            ui.add_space(10.0);
+            ui.separator();
             ui.add_space(10.0);
 
             action |= self.render_token_config_updater(ui);

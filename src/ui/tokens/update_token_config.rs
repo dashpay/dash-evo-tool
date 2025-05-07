@@ -3,10 +3,15 @@ use crate::backend_task::tokens::TokenTask;
 use crate::backend_task::BackendTask;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::wallet::Wallet;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::{MessageType, ScreenLike};
+use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
+use crate::ui::identities::get_selected_wallet;
+use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
+use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
+use crate::ui::{MessageType, Screen, ScreenLike};
 use chrono::{DateTime, Utc};
 use dash_sdk::dpp::balances::credits::TokenAmount;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::v0::TokenConfigurationConventionV0;
@@ -25,6 +30,7 @@ use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
 use egui::{Color32, Ui};
 use egui::{Context, RichText};
+use std::sync::RwLock;
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
@@ -45,6 +51,11 @@ pub struct UpdateTokenConfigScreen {
     signing_key: Option<IdentityPublicKey>,
     identity: QualifiedIdentity,
     public_note: Option<String>,
+
+    selected_wallet: Option<Arc<RwLock<Wallet>>>,
+    wallet_password: String,
+    show_password: bool,
+    error_message: Option<String>, // unused
 }
 
 impl UpdateTokenConfigScreen {
@@ -73,6 +84,10 @@ impl UpdateTokenConfigScreen {
             false,
         );
 
+        let mut error_message = None;
+        let selected_wallet =
+            get_selected_wallet(&identity, None, possible_key.clone(), &mut error_message);
+
         Self {
             identity_token_balance: identity_token_balance.clone(),
             backend_message: None,
@@ -82,6 +97,11 @@ impl UpdateTokenConfigScreen {
             signing_key: possible_key.cloned(),
             identity,
             public_note: None,
+
+            selected_wallet,
+            wallet_password: String::new(),
+            show_password: false,
+            error_message,
         }
     }
 
@@ -653,54 +673,144 @@ impl ScreenLike for UpdateTokenConfigScreen {
             ui.heading("Update Token Configuration");
             ui.add_space(10.0);
 
-            // 1) Key selection
-            ui.heading("1. Select the key to sign the transaction");
-            ui.add_space(10.0);
-            ui.horizontal(|ui| {
-                self.render_key_selection(ui);
-                ui.add_space(5.0);
-                let identity_id_string = self.identity.identity.id().to_string(Encoding::Base58);
-                let identity_display = self
-                    .identity
-                    .alias
-                    .as_deref()
-                    .unwrap_or_else(|| &identity_id_string);
-                ui.label(format!("Identity: {}", identity_display));
-            });
+            // Check if user has any auth keys
+            let has_keys = if self.app_context.developer_mode {
+                !self.identity.identity.public_keys().is_empty()
+            } else {
+                !self.identity.available_authentication_keys().is_empty()
+            };
 
-            ui.add_space(10.0);
-            ui.separator();
-            ui.add_space(10.0);
-
-            action |= self.render_token_config_updater(ui);
-
-            if let Some((msg, msg_type, _)) = &self.backend_message {
+            if !has_keys {
+                ui.colored_label(
+                    Color32::DARK_RED,
+                    format!(
+                        "No authentication keys found for this {} identity.",
+                        self.identity.identity_type,
+                    ),
+                );
                 ui.add_space(10.0);
-                match msg_type {
-                    MessageType::Success => {
-                        ui.colored_label(Color32::DARK_GREEN, msg);
-                    }
-                    MessageType::Error => {
-                        ui.colored_label(Color32::DARK_RED, msg);
-                    }
-                    MessageType::Info => {
-                        ui.label(msg);
-                    }
-                };
-            }
 
-            if self.update_status != UpdateTokenConfigStatus::NotUpdating {
-                ui.add_space(10.0);
-                match &self.update_status {
-                    UpdateTokenConfigStatus::Updating(start_time) => {
-                        let elapsed = Utc::now().signed_duration_since(*start_time);
-                        ui.label(format!("Updating... ({} seconds)", elapsed.num_seconds()));
+                // Show "Add key" or "Check keys" option
+                let first_key = self.identity.identity.get_first_public_key_matching(
+                    Purpose::AUTHENTICATION,
+                    HashSet::from([
+                        SecurityLevel::HIGH,
+                        SecurityLevel::MEDIUM,
+                        SecurityLevel::CRITICAL,
+                    ]),
+                    KeyType::all_key_types().into(),
+                    false,
+                );
+
+                if let Some(key) = first_key {
+                    if ui.button("Check Keys").clicked() {
+                        action |= AppAction::AddScreen(Screen::KeyInfoScreen(KeyInfoScreen::new(
+                            self.identity.clone(),
+                            key.clone(),
+                            None,
+                            &self.app_context,
+                        )));
                     }
-                    _ => {}
+                    ui.add_space(5.0);
+                }
+
+                if ui.button("Add key").clicked() {
+                    action |= AppAction::AddScreen(Screen::AddKeyScreen(AddKeyScreen::new(
+                        self.identity.clone(),
+                        &self.app_context,
+                    )));
+                }
+            } else {
+                // Possibly handle locked wallet scenario (similar to TransferTokens)
+                if self.selected_wallet.is_some() {
+                    let (needed_unlock, just_unlocked) = self.render_wallet_unlock_if_needed(ui);
+
+                    if needed_unlock && !just_unlocked {
+                        // Must unlock before we can proceed
+                        return;
+                    }
+                }
+
+                // 1) Key selection
+                ui.heading("1. Select the key to sign the transaction");
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    self.render_key_selection(ui);
+                    ui.add_space(5.0);
+                    let identity_id_string =
+                        self.identity.identity.id().to_string(Encoding::Base58);
+                    let identity_display = self
+                        .identity
+                        .alias
+                        .as_deref()
+                        .unwrap_or_else(|| &identity_id_string);
+                    ui.label(format!("Identity: {}", identity_display));
+                });
+
+                ui.add_space(10.0);
+                ui.separator();
+                ui.add_space(10.0);
+
+                action |= self.render_token_config_updater(ui);
+
+                if let Some((msg, msg_type, _)) = &self.backend_message {
+                    ui.add_space(10.0);
+                    match msg_type {
+                        MessageType::Success => {
+                            ui.colored_label(Color32::DARK_GREEN, msg);
+                        }
+                        MessageType::Error => {
+                            ui.colored_label(Color32::DARK_RED, msg);
+                        }
+                        MessageType::Info => {
+                            ui.label(msg);
+                        }
+                    };
+                }
+
+                if self.update_status != UpdateTokenConfigStatus::NotUpdating {
+                    ui.add_space(10.0);
+                    match &self.update_status {
+                        UpdateTokenConfigStatus::Updating(start_time) => {
+                            let elapsed = Utc::now().signed_duration_since(*start_time);
+                            ui.label(format!("Updating... ({} seconds)", elapsed.num_seconds()));
+                        }
+                        _ => {}
+                    }
                 }
             }
         });
 
         action
+    }
+}
+
+impl ScreenWithWalletUnlock for UpdateTokenConfigScreen {
+    fn selected_wallet_ref(&self) -> &Option<Arc<RwLock<Wallet>>> {
+        &self.selected_wallet
+    }
+
+    fn wallet_password_ref(&self) -> &String {
+        &self.wallet_password
+    }
+
+    fn wallet_password_mut(&mut self) -> &mut String {
+        &mut self.wallet_password
+    }
+
+    fn show_password(&self) -> bool {
+        self.show_password
+    }
+
+    fn show_password_mut(&mut self) -> &mut bool {
+        &mut self.show_password
+    }
+
+    fn set_error_message(&mut self, error_message: Option<String>) {
+        self.error_message = error_message;
+    }
+
+    fn error_message(&self) -> Option<&String> {
+        self.error_message.as_ref()
     }
 }

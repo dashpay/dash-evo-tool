@@ -36,6 +36,7 @@ use eframe::egui::{self, CentralPanel, Color32, Context, Frame, Margin, Ui};
 use egui::{Align, Checkbox, ColorImage, Label, Response, RichText, Sense, TextureHandle};
 use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
 use egui_extras::{Column, TableBuilder};
+use enum_iterator::Sequence;
 use image::ImageReader;
 use crate::app::BackendTasksExecutionMode;
 use crate::backend_task::contract::ContractTask;
@@ -907,7 +908,7 @@ pub struct DistributionEntry {
     pub amount_str: String,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Sequence)]
 pub enum TokenNameLanguage {
     English,
     French,
@@ -2532,8 +2533,12 @@ impl TokensScreen {
                                 }
                                 ui.horizontal(|ui| {
                                     if ui.button("+").clicked() {
+                                        let used_languages: HashSet<_> = self.token_names_input.iter().map(|(_, lang)| *lang).collect();
+                                        let next_non_used_language = enum_iterator::all::<TokenNameLanguage>()
+                                            .find(|lang| !used_languages.contains(lang))
+                                            .unwrap_or(TokenNameLanguage::English); // fallback
                                         // Add a new token name input
-                                        self.token_names_input.push((String::new(), String::new(), TokenNameLanguage::English));
+                                        self.token_names_input.push((String::new(), String::new(), next_non_used_language));
                                     }
                                     if i != 0 {
                                         if ui.button("-").clicked() {
@@ -4709,8 +4714,8 @@ Emits tokens in fixed amounts for specific intervals.
 
         // If user closes the popup window (the [x] button), also reset state
         if !is_open {
-            self.confirm_remove_identity_token_balance_popup = false;
-            self.identity_token_balance_to_remove = None;
+            self.confirm_remove_token_popup = false;
+            self.token_to_remove = None;
         }
     }
 }

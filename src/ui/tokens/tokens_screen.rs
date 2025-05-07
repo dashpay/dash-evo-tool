@@ -2252,36 +2252,36 @@ impl TokensScreen {
             sub_checkbox(
                 ui,
                 &mut self.token_advanced_keeps_history.keeps_transfer_history,
-                "Record transfers",
+                "Transfers",
             );
             sub_checkbox(
                 ui,
                 &mut self.token_advanced_keeps_history.keeps_freezing_history,
-                "Record freezes / unfreezes",
+                "Freezes / unfreezes",
             );
             sub_checkbox(
                 ui,
                 &mut self.token_advanced_keeps_history.keeps_minting_history,
-                "Record mints",
+                "Mints",
             );
             sub_checkbox(
                 ui,
                 &mut self.token_advanced_keeps_history.keeps_burning_history,
-                "Record burns",
+                "Burns",
             );
             sub_checkbox(
                 ui,
                 &mut self
                     .token_advanced_keeps_history
                     .keeps_direct_pricing_history,
-                "Record direct-pricing changes",
+                "Direct-pricing changes",
             );
             sub_checkbox(
                 ui,
                 &mut self
                     .token_advanced_keeps_history
                     .keeps_direct_purchase_history,
-                "Record direct purchases",
+                "Direct purchases",
             );
         }
     }

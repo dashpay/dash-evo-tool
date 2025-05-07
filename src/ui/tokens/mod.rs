@@ -9,4 +9,5 @@ pub mod resume_tokens_screen;
 pub mod tokens_screen;
 pub mod transfer_tokens_screen;
 pub mod unfreeze_tokens_screen;
+pub mod update_token_config;
 pub mod view_token_claims_screen;

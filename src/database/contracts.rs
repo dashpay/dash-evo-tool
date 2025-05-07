@@ -132,6 +132,31 @@ impl Database {
         }
     }
 
+    pub fn replace_contract(
+        &self,
+        contract_id: Identifier,
+        data_contract: &DataContract,
+        app_context: &AppContext,
+    ) -> Result<()> {
+        let contract_bytes = data_contract
+            .serialize_to_bytes_with_platform_version(app_context.platform_version)
+            .expect("expected to serialize contract");
+        let network = app_context.network_string();
+
+        // Replace the contract
+        self.execute(
+            "REPLACE INTO contract (contract_id, contract, name, network) VALUES (?, ?, ?, ?)",
+            params![
+                contract_id.to_vec(),
+                contract_bytes,
+                None::<String>,
+                network
+            ],
+        )?;
+
+        Ok(())
+    }
+
     pub fn get_contract_by_name(
         &self,
         name: &str,

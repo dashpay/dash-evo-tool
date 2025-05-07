@@ -45,6 +45,7 @@ use tokens::pause_tokens_screen::PauseTokensScreen;
 use tokens::resume_tokens_screen::ResumeTokensScreen;
 use tokens::tokens_screen::{IdentityTokenBalance, TokensScreen, TokensSubscreen};
 use tokens::unfreeze_tokens_screen::UnfreezeTokensScreen;
+use tokens::update_token_config::UpdateTokenConfigScreen;
 use tools::transition_visualizer_screen::TransitionVisualizerScreen;
 use wallets::add_new_wallet_screen::AddNewWalletScreen;
 
@@ -180,6 +181,8 @@ pub enum ScreenType {
     ScheduledVotes,
     AddContracts,
     ProofVisualizer,
+    DocumentsVisualizer,
+    CreateDocument,
 
     // Token Screens
     TokenBalances,
@@ -196,8 +199,7 @@ pub enum ScreenType {
     ResumeTokensScreen(IdentityTokenBalance),
     ClaimTokensScreen(IdentityTokenBalance),
     ViewTokenClaimsScreen(IdentityTokenBalance),
-    DocumentsVisualizer,
-    CreateDocument,
+    UpdateTokenConfigScreen(IdentityTokenBalance),
 }
 
 impl ScreenType {
@@ -276,6 +278,12 @@ impl ScreenType {
             ScreenType::ProofVisualizer => {
                 Screen::ProofVisualizerScreen(ProofVisualizerScreen::new(app_context))
             }
+            ScreenType::DocumentsVisualizer => {
+                Screen::DocumentVisualizerScreen(DocumentVisualizerScreen::new(app_context))
+            }
+            ScreenType::CreateDocument => {
+                Screen::CreateDocumentScreen(CreateDocumentScreen::new(app_context))
+            }
 
             // Token Screens
             ScreenType::TokenBalances => {
@@ -340,13 +348,13 @@ impl ScreenType {
                     app_context,
                 ))
             }
+            ScreenType::UpdateTokenConfigScreen(identity_token_balance) => {
+                Screen::UpdateTokenConfigScreen(UpdateTokenConfigScreen::new(
+                    identity_token_balance.clone(),
+                    app_context,
+                ))
+            }
             ScreenType::AddTokenById => Screen::AddTokenById(AddTokenByIdScreen::new(app_context)),
-            ScreenType::DocumentsVisualizer => {
-                Screen::DocumentVisualizerScreen(DocumentVisualizerScreen::new(app_context))
-            }
-            ScreenType::CreateDocument => {
-                Screen::CreateDocumentScreen(CreateDocumentScreen::new(app_context))
-            }
         }
     }
 }
@@ -388,6 +396,7 @@ pub enum Screen {
     ResumeTokensScreen(ResumeTokensScreen),
     ClaimTokensScreen(ClaimTokensScreen),
     ViewTokenClaimsScreen(ViewTokenClaimsScreen),
+    UpdateTokenConfigScreen(UpdateTokenConfigScreen),
     AddTokenById(AddTokenByIdScreen),
 }
 
@@ -430,6 +439,7 @@ impl Screen {
             Screen::ResumeTokensScreen(screen) => screen.app_context = app_context,
             Screen::ClaimTokensScreen(screen) => screen.app_context = app_context,
             Screen::ViewTokenClaimsScreen(screen) => screen.app_context = app_context,
+            Screen::UpdateTokenConfigScreen(screen) => screen.app_context = app_context,
             Screen::AddTokenById(screen) => screen.app_context = app_context,
         }
     }
@@ -563,6 +573,9 @@ impl Screen {
             Screen::ViewTokenClaimsScreen(screen) => {
                 ScreenType::ViewTokenClaimsScreen(screen.identity_token_balance.clone())
             }
+            Screen::UpdateTokenConfigScreen(screen) => {
+                ScreenType::UpdateTokenConfigScreen(screen.identity_token_balance.clone())
+            }
             Screen::AddTokenById(_) => ScreenType::AddTokenById,
         }
     }
@@ -607,6 +620,7 @@ impl ScreenLike for Screen {
             Screen::ResumeTokensScreen(screen) => screen.refresh(),
             Screen::ClaimTokensScreen(screen) => screen.refresh(),
             Screen::ViewTokenClaimsScreen(screen) => screen.refresh(),
+            Screen::UpdateTokenConfigScreen(screen) => screen.refresh(),
             Screen::AddTokenById(screen) => screen.refresh(),
         }
     }
@@ -649,6 +663,7 @@ impl ScreenLike for Screen {
             Screen::ResumeTokensScreen(screen) => screen.refresh_on_arrival(),
             Screen::ClaimTokensScreen(screen) => screen.refresh_on_arrival(),
             Screen::ViewTokenClaimsScreen(screen) => screen.refresh_on_arrival(),
+            Screen::UpdateTokenConfigScreen(screen) => screen.refresh_on_arrival(),
             Screen::AddTokenById(screen) => screen.refresh_on_arrival(),
         }
     }
@@ -691,6 +706,7 @@ impl ScreenLike for Screen {
             Screen::ResumeTokensScreen(screen) => screen.ui(ctx),
             Screen::ClaimTokensScreen(screen) => screen.ui(ctx),
             Screen::ViewTokenClaimsScreen(screen) => screen.ui(ctx),
+            Screen::UpdateTokenConfigScreen(screen) => screen.ui(ctx),
             Screen::AddTokenById(screen) => screen.ui(ctx),
         }
     }
@@ -743,6 +759,9 @@ impl ScreenLike for Screen {
             Screen::ResumeTokensScreen(screen) => screen.display_message(message, message_type),
             Screen::ClaimTokensScreen(screen) => screen.display_message(message, message_type),
             Screen::ViewTokenClaimsScreen(screen) => screen.display_message(message, message_type),
+            Screen::UpdateTokenConfigScreen(screen) => {
+                screen.display_message(message, message_type)
+            }
             Screen::AddTokenById(screen) => screen.display_message(message, message_type),
         }
     }
@@ -845,6 +864,9 @@ impl ScreenLike for Screen {
             Screen::ViewTokenClaimsScreen(screen) => {
                 screen.display_task_result(backend_task_success_result)
             }
+            Screen::UpdateTokenConfigScreen(screen) => {
+                screen.display_task_result(backend_task_success_result)
+            }
             Screen::AddTokenById(screen) => screen.display_task_result(backend_task_success_result),
         }
     }
@@ -887,6 +909,7 @@ impl ScreenLike for Screen {
             Screen::ResumeTokensScreen(screen) => screen.pop_on_success(),
             Screen::ClaimTokensScreen(screen) => screen.pop_on_success(),
             Screen::ViewTokenClaimsScreen(screen) => screen.pop_on_success(),
+            Screen::UpdateTokenConfigScreen(screen) => screen.pop_on_success(),
             Screen::AddTokenById(screen) => screen.pop_on_success(),
         }
     }

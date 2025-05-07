@@ -1,7 +1,8 @@
 use super::BackendTaskSuccessResult;
-use crate::ui::tokens::tokens_screen::IdentityTokenIdentifier;
+use crate::ui::tokens::tokens_screen::{IdentityTokenBalance, IdentityTokenIdentifier, TokenInfo};
 use crate::{app::TaskResult, context::AppContext, model::qualified_identity::QualifiedIdentity};
 use dash_sdk::dpp::balances::credits::TokenAmount;
+use dash_sdk::dpp::data_contract::associated_token::token_configuration_item::TokenConfigurationChangeItem;
 use dash_sdk::dpp::data_contract::GroupContractPosition;
 use dash_sdk::platform::Fetch;
 use dash_sdk::{
@@ -49,13 +50,14 @@ mod query_tokens;
 mod resume_tokens;
 mod transfer_tokens;
 mod unfreeze_tokens;
+mod update_token_config;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum TokenTask {
     RegisterTokenContract {
         identity: QualifiedIdentity,
         signing_key: IdentityPublicKey,
-        token_names: Vec<(String, String)>,
+        token_names: Vec<(String, String, String)>,
         contract_keywords: Vec<String>,
         token_description: Option<String>,
         should_capitalize: bool,
@@ -63,6 +65,7 @@ pub(crate) enum TokenTask {
         base_supply: TokenAmount,
         max_supply: Option<TokenAmount>,
         start_paused: bool,
+        allow_transfers_to_frozen_identities: bool,
         keeps_history: TokenKeepsHistoryRules,
         main_control_group: Option<GroupContractPosition>,
 
@@ -86,11 +89,13 @@ pub(crate) enum TokenTask {
     QueryIdentityTokenBalance(IdentityTokenIdentifier),
     QueryDescriptionsByKeyword(String, Option<Start>),
     FetchTokenByContractId(Identifier),
+    SaveTokenLocally(TokenInfo),
     MintTokens {
         sending_identity: QualifiedIdentity,
         data_contract: DataContract,
         token_position: TokenContractPosition,
         signing_key: IdentityPublicKey,
+        public_note: Option<String>,
         amount: TokenAmount,
         recipient_id: Option<Identifier>,
     },
@@ -101,12 +106,14 @@ pub(crate) enum TokenTask {
         data_contract: DataContract,
         token_position: TokenContractPosition,
         signing_key: IdentityPublicKey,
+        public_note: Option<String>,
     },
     BurnTokens {
         owner_identity: QualifiedIdentity,
         data_contract: DataContract,
         token_position: TokenContractPosition,
         signing_key: IdentityPublicKey,
+        public_note: Option<String>,
         amount: TokenAmount,
     },
     DestroyFrozenFunds {
@@ -114,6 +121,7 @@ pub(crate) enum TokenTask {
         data_contract: DataContract,
         token_position: TokenContractPosition,
         signing_key: IdentityPublicKey,
+        public_note: Option<String>,
         frozen_identity: Identifier,
     },
     FreezeTokens {
@@ -121,6 +129,7 @@ pub(crate) enum TokenTask {
         data_contract: DataContract,
         token_position: TokenContractPosition,
         signing_key: IdentityPublicKey,
+        public_note: Option<String>,
         freeze_identity: Identifier,
     },
     UnfreezeTokens {
@@ -128,6 +137,7 @@ pub(crate) enum TokenTask {
         data_contract: DataContract,
         token_position: TokenContractPosition,
         signing_key: IdentityPublicKey,
+        public_note: Option<String>,
         unfreeze_identity: Identifier,
     },
     PauseTokens {
@@ -135,12 +145,14 @@ pub(crate) enum TokenTask {
         data_contract: DataContract,
         token_position: TokenContractPosition,
         signing_key: IdentityPublicKey,
+        public_note: Option<String>,
     },
     ResumeTokens {
         actor_identity: QualifiedIdentity,
         data_contract: DataContract,
         token_position: TokenContractPosition,
         signing_key: IdentityPublicKey,
+        public_note: Option<String>,
     },
     ClaimTokens {
         data_contract: DataContract,
@@ -148,10 +160,17 @@ pub(crate) enum TokenTask {
         actor_identity: QualifiedIdentity,
         distribution_type: TokenDistributionType,
         signing_key: IdentityPublicKey,
+        public_note: Option<String>,
     },
     EstimatePerpetualTokenRewards {
         identity_id: Identifier,
         token_id: Identifier,
+    },
+    UpdateTokenConfig {
+        identity_token_balance: IdentityTokenBalance,
+        change_item: TokenConfigurationChangeItem,
+        signing_key: IdentityPublicKey,
+        public_note: Option<String>,
     },
 }
 
@@ -174,6 +193,7 @@ impl AppContext {
                 base_supply,
                 max_supply,
                 start_paused,
+                allow_transfers_to_frozen_identities,
                 keeps_history,
                 main_control_group,
                 manual_minting_rules,
@@ -199,6 +219,7 @@ impl AppContext {
                         *base_supply,
                         *max_supply,
                         *start_paused,
+                        *allow_transfers_to_frozen_identities,
                         *keeps_history,
                         *main_control_group,
                         manual_minting_rules.clone(),
@@ -239,6 +260,7 @@ impl AppContext {
                 data_contract,
                 token_position,
                 signing_key,
+                public_note,
                 amount,
                 recipient_id,
             } => self
@@ -247,6 +269,7 @@ impl AppContext {
                     data_contract,
                     *token_position,
                     signing_key.clone(),
+                    public_note.clone(),
                     *amount,
                     recipient_id.clone(),
                     sdk,
@@ -265,6 +288,7 @@ impl AppContext {
                 data_contract,
                 token_position,
                 signing_key,
+                public_note,
             } => self
                 .transfer_tokens(
                     &sending_identity,
@@ -273,6 +297,7 @@ impl AppContext {
                     data_contract,
                     *token_position,
                     signing_key.clone(),
+                    public_note.clone(),
                     sdk,
                     sender,
                 )
@@ -283,6 +308,7 @@ impl AppContext {
                 data_contract,
                 token_position,
                 signing_key,
+                public_note,
                 amount,
             } => self
                 .burn_tokens(
@@ -290,6 +316,7 @@ impl AppContext {
                     data_contract,
                     *token_position,
                     signing_key.clone(),
+                    public_note.clone(),
                     *amount,
                     sdk,
                     sender,
@@ -301,6 +328,7 @@ impl AppContext {
                 data_contract,
                 token_position,
                 signing_key,
+                public_note,
                 frozen_identity,
             } => self
                 .destroy_frozen_funds(
@@ -308,6 +336,7 @@ impl AppContext {
                     data_contract,
                     *token_position,
                     signing_key.clone(),
+                    public_note.clone(),
                     frozen_identity.clone(),
                     sdk,
                     sender,
@@ -319,6 +348,7 @@ impl AppContext {
                 data_contract,
                 token_position,
                 signing_key,
+                public_note,
                 freeze_identity,
             } => self
                 .freeze_tokens(
@@ -326,6 +356,7 @@ impl AppContext {
                     data_contract,
                     *token_position,
                     signing_key.clone(),
+                    public_note.clone(),
                     freeze_identity.clone(),
                     sdk,
                     sender,
@@ -337,6 +368,7 @@ impl AppContext {
                 data_contract,
                 token_position,
                 signing_key,
+                public_note,
                 unfreeze_identity,
             } => self
                 .unfreeze_tokens(
@@ -344,6 +376,7 @@ impl AppContext {
                     data_contract,
                     *token_position,
                     signing_key.clone(),
+                    public_note.clone(),
                     unfreeze_identity.clone(),
                     sdk,
                     sender,
@@ -355,12 +388,14 @@ impl AppContext {
                 data_contract,
                 token_position,
                 signing_key,
+                public_note,
             } => self
                 .pause_tokens(
                     actor_identity,
                     data_contract,
                     *token_position,
                     signing_key.clone(),
+                    public_note.clone(),
                     sdk,
                     sender,
                 )
@@ -371,12 +406,14 @@ impl AppContext {
                 data_contract,
                 token_position,
                 signing_key,
+                public_note,
             } => self
                 .resume_tokens(
                     actor_identity,
                     data_contract,
                     *token_position,
                     signing_key.clone(),
+                    public_note.clone(),
                     sdk,
                     sender,
                 )
@@ -388,6 +425,7 @@ impl AppContext {
                 actor_identity,
                 distribution_type,
                 signing_key,
+                public_note,
             } => self
                 .claim_tokens(
                     data_contract,
@@ -395,6 +433,7 @@ impl AppContext {
                     actor_identity,
                     *distribution_type,
                     signing_key.clone(),
+                    public_note.clone(),
                     sdk,
                 )
                 .await
@@ -430,6 +469,43 @@ impl AppContext {
                     Err(e) => Err(format!("Error fetching contracts: {}", e.to_string())),
                 }
             }
+            TokenTask::SaveTokenLocally(token_info) => {
+                let token_config_bytes = bincode::encode_to_vec(
+                    &token_info.token_configuration,
+                    bincode::config::standard(),
+                )
+                .map_err(|e| format!("error encoding token configuration: {}", e))?;
+
+                self.db
+                    .insert_token(
+                        &token_info.token_id,
+                        &token_info.token_name,
+                        &token_config_bytes,
+                        &token_info.data_contract_id,
+                        token_info.token_position,
+                        &self,
+                    )
+                    .map_err(|e| format!("error saving token: {}", e))?;
+
+                Ok(BackendTaskSuccessResult::Message(
+                    "Saved token to db".to_string(),
+                ))
+            }
+            TokenTask::UpdateTokenConfig {
+                identity_token_balance,
+                change_item,
+                signing_key,
+                public_note,
+            } => self
+                .update_token_config(
+                    identity_token_balance.clone(),
+                    change_item.clone(),
+                    signing_key,
+                    public_note.clone(),
+                    sdk,
+                )
+                .await
+                .map_err(|e| format!("Failed to update token config: {e}")),
         }
     }
 
@@ -442,7 +518,7 @@ impl AppContext {
     pub fn build_data_contract_v1_with_one_token(
         &self,
         owner_id: Identifier,
-        token_names: Vec<(String, String)>,
+        token_names: Vec<(String, String, String)>,
         contract_keywords: Vec<String>,
         token_description: Option<String>,
         should_capitalize: bool,
@@ -450,6 +526,7 @@ impl AppContext {
         base_supply: u64,
         max_supply: Option<u64>,
         start_as_paused: bool,
+        allow_transfer_to_frozen_balance: bool,
         keeps_history: TokenKeepsHistoryRules,
         main_control_group: Option<u16>,
         manual_minting_rules: ChangeControlRules,
@@ -489,13 +566,13 @@ impl AppContext {
 
         let TokenConfigurationConvention::V0(ref mut conv_v0) = token_config_v0.conventions;
         conv_v0.decimals = decimals;
-        for (token_name, language) in token_names {
+        for (token_name, token_plural, language) in token_names {
             conv_v0.localizations.insert(
                 language,
                 TokenConfigurationLocalization::V0(TokenConfigurationLocalizationV0 {
                     should_capitalize,
-                    singular_form: token_name.to_string(),
-                    plural_form: format!("{}s", token_name),
+                    singular_form: token_name,
+                    plural_form: token_plural,
                 }),
             );
         }
@@ -503,6 +580,7 @@ impl AppContext {
         token_config_v0.base_supply = base_supply;
         token_config_v0.max_supply = max_supply;
         token_config_v0.start_as_paused = start_as_paused;
+        token_config_v0.allow_transfer_to_frozen_balance = allow_transfer_to_frozen_balance;
         token_config_v0.keeps_history = keeps_history;
         token_config_v0.main_control_group = main_control_group;
         token_config_v0.manual_minting_rules = manual_minting_rules;

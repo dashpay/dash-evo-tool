@@ -71,258 +71,260 @@ pub fn add_contract_chooser_panel(
                 // List out each matching contract
                 ui.vertical(|ui| {
                     for contract in filtered_contracts {
-                        ui.horizontal(|ui| {
-                            let is_selected_contract = *selected_data_contract == *contract;
+                        ui.push_id(contract.contract.id().to_string(Encoding::Base58), |ui| {
+                            ui.horizontal(|ui| {
+                                let is_selected_contract = *selected_data_contract == *contract;
 
-                            let name_or_id = contract
-                                .alias
-                                .clone()
-                                .unwrap_or(contract.contract.id().to_string(Encoding::Base58));
+                                let name_or_id = contract
+                                    .alias
+                                    .clone()
+                                    .unwrap_or(contract.contract.id().to_string(Encoding::Base58));
 
-                            // Highlight the contract if selected
-                            let contract_header_text = if is_selected_contract {
-                                RichText::new(name_or_id).color(Color32::from_rgb(21, 101, 192))
-                            } else {
-                                RichText::new(name_or_id)
-                            };
+                                // Highlight the contract if selected
+                                let contract_header_text = if is_selected_contract {
+                                    RichText::new(name_or_id).color(Color32::from_rgb(21, 101, 192))
+                                } else {
+                                    RichText::new(name_or_id)
+                                };
 
-                            // Expand/collapse the contract info
-                            ui.collapsing(contract_header_text, |ui| {
-                                //
-                                // ===== Document Types Section =====
-                                //
-                                ui.collapsing("Document Types", |ui| {
-                                    for (doc_name, doc_type) in contract.contract.document_types() {
-                                        let is_selected_doc_type =
-                                            *selected_document_type == *doc_type;
+                                // Expand/collapse the contract info
+                                ui.collapsing(contract_header_text, |ui| {
+                                    //
+                                    // ===== Document Types Section =====
+                                    //
+                                    ui.collapsing("Document Types", |ui| {
+                                        for (doc_name, doc_type) in contract.contract.document_types() {
+                                            let is_selected_doc_type =
+                                                *selected_document_type == *doc_type;
 
-                                        let doc_type_header_text = if is_selected_doc_type {
-                                            RichText::new(doc_name.clone())
-                                                .color(Color32::from_rgb(21, 101, 192))
-                                        } else {
-                                            RichText::new(doc_name.clone())
-                                        };
-
-                                        let doc_resp = ui.collapsing(doc_type_header_text, |ui| {
-                                            // Show the indexes
-                                            if doc_type.indexes().is_empty() {
-                                                ui.label("No indexes defined");
+                                            let doc_type_header_text = if is_selected_doc_type {
+                                                RichText::new(doc_name.clone())
+                                                    .color(Color32::from_rgb(21, 101, 192))
                                             } else {
-                                                for (index_name, index) in doc_type.indexes() {
-                                                    let is_selected_index =
-                                                        *selected_index == Some(index.clone());
+                                                RichText::new(doc_name.clone())
+                                            };
 
-                                                    let index_header_text = if is_selected_index {
-                                                        RichText::new(format!(
-                                                            "Index: {}",
-                                                            index_name
-                                                        ))
-                                                        .color(Color32::from_rgb(21, 101, 192))
-                                                    } else {
-                                                        RichText::new(format!(
-                                                            "Index: {}",
-                                                            index_name
-                                                        ))
-                                                    };
+                                            let doc_resp = ui.collapsing(doc_type_header_text, |ui| {
+                                                // Show the indexes
+                                                if doc_type.indexes().is_empty() {
+                                                    ui.label("No indexes defined");
+                                                } else {
+                                                    for (index_name, index) in doc_type.indexes() {
+                                                        let is_selected_index =
+                                                            *selected_index == Some(index.clone());
 
-                                                    let index_resp =
-                                                        ui.collapsing(index_header_text, |ui| {
-                                                            // Show index properties if expanded
-                                                            for prop in &index.properties {
-                                                                ui.label(format!("{:?}", prop));
-                                                            }
-                                                        });
+                                                        let index_header_text = if is_selected_index {
+                                                            RichText::new(format!(
+                                                                "Index: {}",
+                                                                index_name
+                                                            ))
+                                                            .color(Color32::from_rgb(21, 101, 192))
+                                                        } else {
+                                                            RichText::new(format!(
+                                                                "Index: {}",
+                                                                index_name
+                                                            ))
+                                                        };
 
-                                                    // If index was just clicked (opened)
-                                                    if index_resp.header_response.clicked()
-                                                        && index_resp.body_response.is_some()
-                                                    {
-                                                        *selected_index = Some(index.clone());
-                                                        if let Ok(new_doc_type) = contract
-                                                            .contract
-                                                            .document_type_cloned_for_name(
-                                                                &doc_name,
-                                                            )
+                                                        let index_resp =
+                                                            ui.collapsing(index_header_text, |ui| {
+                                                                // Show index properties if expanded
+                                                                for prop in &index.properties {
+                                                                    ui.label(format!("{:?}", prop));
+                                                                }
+                                                            });
+
+                                                        // If index was just clicked (opened)
+                                                        if index_resp.header_response.clicked()
+                                                            && index_resp.body_response.is_some()
                                                         {
-                                                            *selected_document_type = new_doc_type;
-                                                            *selected_data_contract =
-                                                                contract.clone();
+                                                            *selected_index = Some(index.clone());
+                                                            if let Ok(new_doc_type) = contract
+                                                                .contract
+                                                                .document_type_cloned_for_name(
+                                                                    &doc_name,
+                                                                )
+                                                            {
+                                                                *selected_document_type = new_doc_type;
+                                                                *selected_data_contract =
+                                                                    contract.clone();
 
-                                                            // Build the WHERE clause using all property names
-                                                            let conditions: Vec<String> = index
-                                                                .property_names()
-                                                                .iter()
-                                                                .map(|property_name| {
-                                                                    format!(
-                                                                        "`{}` = '___'",
-                                                                        property_name
-                                                                    )
-                                                                })
-                                                                .collect();
+                                                                // Build the WHERE clause using all property names
+                                                                let conditions: Vec<String> = index
+                                                                    .property_names()
+                                                                    .iter()
+                                                                    .map(|property_name| {
+                                                                        format!(
+                                                                            "`{}` = '___'",
+                                                                            property_name
+                                                                        )
+                                                                    })
+                                                                    .collect();
 
-                                                            let where_clause =
-                                                                if conditions.is_empty() {
-                                                                    String::new()
-                                                                } else {
-                                                                    format!(
-                                                                        " WHERE {}",
-                                                                        conditions.join(" AND ")
-                                                                    )
-                                                                };
+                                                                let where_clause =
+                                                                    if conditions.is_empty() {
+                                                                        String::new()
+                                                                    } else {
+                                                                        format!(
+                                                                            " WHERE {}",
+                                                                            conditions.join(" AND ")
+                                                                        )
+                                                                    };
 
+                                                                *document_query = format!(
+                                                                    "SELECT * FROM {}{}",
+                                                                    selected_document_type.name(),
+                                                                    where_clause
+                                                                );
+                                                            }
+                                                        }
+                                                        // If index was just collapsed
+                                                        else if index_resp.header_response.clicked()
+                                                            && index_resp.body_response.is_none()
+                                                        {
+                                                            *selected_index = None;
                                                             *document_query = format!(
-                                                                "SELECT * FROM {}{}",
-                                                                selected_document_type.name(),
-                                                                where_clause
+                                                                "SELECT * FROM {}",
+                                                                selected_document_type.name()
                                                             );
                                                         }
                                                     }
-                                                    // If index was just collapsed
-                                                    else if index_resp.header_response.clicked()
-                                                        && index_resp.body_response.is_none()
+                                                }
+                                            });
+
+                                            // Document Type clicked
+                                            if doc_resp.header_response.clicked()
+                                                && doc_resp.body_response.is_some()
+                                            {
+                                                // Expand doc type
+                                                if let Ok(new_doc_type) = contract
+                                                    .contract
+                                                    .document_type_cloned_for_name(&doc_name)
+                                                {
+                                                    *pending_document_type = new_doc_type.clone();
+                                                    *selected_document_type = new_doc_type.clone();
+                                                    *selected_data_contract = contract.clone();
+                                                    *selected_index = None;
+                                                    *document_query = format!(
+                                                        "SELECT * FROM {}",
+                                                        selected_document_type.name()
+                                                    );
+
+                                                    // Reinitialize field selection
+                                                    pending_fields_selection.clear();
+
+                                                    // Mark doc-defined fields
+                                                    for (field_name, _schema) in
+                                                        new_doc_type.properties().iter()
                                                     {
-                                                        *selected_index = None;
-                                                        *document_query = format!(
-                                                            "SELECT * FROM {}",
-                                                            selected_document_type.name()
-                                                        );
+                                                        pending_fields_selection
+                                                            .insert(field_name.clone(), true);
+                                                    }
+                                                    // Show "internal" fields as unchecked by default
+                                                    for dash_field in DOCUMENT_PRIVATE_FIELDS {
+                                                        pending_fields_selection
+                                                            .insert(dash_field.to_string(), false);
                                                     }
                                                 }
                                             }
-                                        });
-
-                                        // Document Type clicked
-                                        if doc_resp.header_response.clicked()
-                                            && doc_resp.body_response.is_some()
-                                        {
-                                            // Expand doc type
-                                            if let Ok(new_doc_type) = contract
-                                                .contract
-                                                .document_type_cloned_for_name(&doc_name)
+                                            // Document Type collapsed
+                                            else if doc_resp.header_response.clicked()
+                                                && doc_resp.body_response.is_none()
                                             {
-                                                *pending_document_type = new_doc_type.clone();
-                                                *selected_document_type = new_doc_type.clone();
-                                                *selected_data_contract = contract.clone();
                                                 *selected_index = None;
                                                 *document_query = format!(
                                                     "SELECT * FROM {}",
                                                     selected_document_type.name()
                                                 );
-
-                                                // Reinitialize field selection
-                                                pending_fields_selection.clear();
-
-                                                // Mark doc-defined fields
-                                                for (field_name, _schema) in
-                                                    new_doc_type.properties().iter()
-                                                {
-                                                    pending_fields_selection
-                                                        .insert(field_name.clone(), true);
-                                                }
-                                                // Show "internal" fields as unchecked by default
-                                                for dash_field in DOCUMENT_PRIVATE_FIELDS {
-                                                    pending_fields_selection
-                                                        .insert(dash_field.to_string(), false);
-                                                }
                                             }
                                         }
-                                        // Document Type collapsed
-                                        else if doc_resp.header_response.clicked()
-                                            && doc_resp.body_response.is_none()
-                                        {
-                                            *selected_index = None;
-                                            *document_query = format!(
-                                                "SELECT * FROM {}",
-                                                selected_document_type.name()
-                                            );
+                                    });
+
+                                    //
+                                    // ===== Tokens Section =====
+                                    //
+                                    ui.collapsing("Tokens", |ui| {
+                                        let tokens_map = contract.contract.tokens();
+                                        if tokens_map.is_empty() {
+                                            ui.label("No tokens defined for this contract.");
+                                        } else {
+                                            for (token_name, token) in tokens_map {
+                                                // Each token is its own collapsible
+                                                ui.collapsing(token_name.to_string(), |ui| {
+                                                    // Now you can display base supply, max supply, etc.
+                                                    ui.label(format!(
+                                                        "Base Supply: {}",
+                                                        token.base_supply()
+                                                    ));
+                                                    if let Some(max_supply) = token.max_supply() {
+                                                        ui.label(format!("Max Supply: {}", max_supply));
+                                                    } else {
+                                                        ui.label("Max Supply: None");
+                                                    }
+
+                                                    // Add more details here
+                                                });
+                                            }
                                         }
-                                    }
-                                });
+                                    });
 
-                                //
-                                // ===== Tokens Section =====
-                                //
-                                ui.collapsing("Tokens", |ui| {
-                                    let tokens_map = contract.contract.tokens();
-                                    if tokens_map.is_empty() {
-                                        ui.label("No tokens defined for this contract.");
-                                    } else {
-                                        for (token_name, token) in tokens_map {
-                                            // Each token is its own collapsible
-                                            ui.collapsing(token_name.to_string(), |ui| {
-                                                // Now you can display base supply, max supply, etc.
-                                                ui.label(format!(
-                                                    "Base Supply: {}",
-                                                    token.base_supply()
-                                                ));
-                                                if let Some(max_supply) = token.max_supply() {
-                                                    ui.label(format!("Max Supply: {}", max_supply));
-                                                } else {
-                                                    ui.label("Max Supply: None");
-                                                }
+                                    //
+                                    // ===== Entire Contract JSON =====
+                                    //
+                                    ui.collapsing("Contract JSON", |ui| {
+                                        match contract.contract.to_json(app_context.platform_version) {
+                                            Ok(json_value) => {
+                                                let pretty_str =
+                                                    serde_json::to_string_pretty(&json_value)
+                                                        .unwrap_or_else(|_| {
+                                                            "Error formatting JSON".to_string()
+                                                        });
 
-                                                // Add more details here
-                                            });
-                                        }
-                                    }
-                                });
+                                                ui.add_space(2.0);
 
-                                //
-                                // ===== Entire Contract JSON =====
-                                //
-                                ui.collapsing("Contract JSON", |ui| {
-                                    match contract.contract.to_json(app_context.platform_version) {
-                                        Ok(json_value) => {
-                                            let pretty_str =
-                                                serde_json::to_string_pretty(&json_value)
-                                                    .unwrap_or_else(|_| {
-                                                        "Error formatting JSON".to_string()
+                                                // A resizable region that the user can drag to expand/shrink
+                                                egui::Resize::default()
+                                                    .id_salt("json_resize_area_for_contract")
+                                                    .default_size([400.0, 400.0]) // initial w,h
+                                                    .show(ui, |ui| {
+                                                        egui::ScrollArea::vertical()
+                                                            .auto_shrink([false; 2])
+                                                            .show(ui, |ui| {
+                                                                ui.monospace(pretty_str);
+                                                            });
                                                     });
 
-                                            ui.add_space(2.0);
-
-                                            // A resizable region that the user can drag to expand/shrink
-                                            egui::Resize::default()
-                                                .id_salt("json_resize_area_for_contract")
-                                                .default_size([400.0, 400.0]) // initial w,h
-                                                .show(ui, |ui| {
-                                                    egui::ScrollArea::vertical()
-                                                        .auto_shrink([false; 2])
-                                                        .show(ui, |ui| {
-                                                            ui.monospace(pretty_str);
-                                                        });
-                                                });
-
-                                            ui.add_space(3.0);
+                                                ui.add_space(3.0);
+                                            }
+                                            Err(e) => {
+                                                ui.label(format!(
+                                                    "Error converting contract to JSON: {e}"
+                                                ));
+                                            }
                                         }
-                                        Err(e) => {
-                                            ui.label(format!(
-                                                "Error converting contract to JSON: {e}"
-                                            ));
+                                    });
+                                });
+
+                                // Right‐aligned Remove button
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                                    if contract.alias != Some("dpns".to_string())
+                                        && contract.alias != Some("token_history".to_string())
+                                        && contract.alias != Some("withdrawals".to_string())
+                                        && contract.alias != Some("keyword_search".to_string())
+                                    {
+                                        if ui.button("X").clicked() {
+                                            action |=
+                                                AppAction::BackendTask(BackendTask::ContractTask(
+                                                    ContractTask::RemoveContract(
+                                                        contract.contract.id().clone(),
+                                                    ),
+                                                ));
                                         }
                                     }
                                 });
                             });
-
-                            // Right‐aligned Remove button
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-                                if contract.alias != Some("dpns".to_string())
-                                    && contract.alias != Some("token_history".to_string())
-                                    && contract.alias != Some("withdrawals".to_string())
-                                    && contract.alias != Some("keyword_search".to_string())
-                                {
-                                    if ui.button("X").clicked() {
-                                        action |=
-                                            AppAction::BackendTask(BackendTask::ContractTask(
-                                                ContractTask::RemoveContract(
-                                                    contract.contract.id().clone(),
-                                                ),
-                                            ));
-                                    }
-                                }
-                            });
                         });
-                    }
+                }
                 });
             });
         });

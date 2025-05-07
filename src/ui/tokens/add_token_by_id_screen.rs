@@ -12,6 +12,8 @@ use eframe::egui::{self, Color32, Context, RichText, Ui};
 use crate::backend_task::contract::ContractTask;
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::database::contracts::InsertTokensToo;
+use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
 use crate::ui::tokens::tokens_screen::TokenInfo;
 use crate::{
     app::AppAction,
@@ -183,6 +185,7 @@ impl ScreenLike for AddTokenByIdScreen {
                         token_name,
                         data_contract_id: contract.id(),
                         token_position: *pos as u16,
+                        token_configuration: cfg.clone(),
                         description: cfg.description().clone(),
                     }
                 })
@@ -216,6 +219,16 @@ impl ScreenLike for AddTokenByIdScreen {
             ],
             vec![],
         );
+
+        // Left panel
+        action |= add_left_panel(
+            ctx,
+            &self.app_context,
+            crate::ui::RootScreenType::RootScreenMyTokenBalances,
+        );
+
+        // Subscreen chooser
+        action |= add_tokens_subscreen_chooser_panel(ctx, &self.app_context);
 
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("Add Token");

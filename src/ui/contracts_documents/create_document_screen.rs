@@ -15,7 +15,7 @@ use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
 use dash_sdk::dpp::data_contract::document_type::methods::DocumentTypeBasicMethods;
 use dash_sdk::dpp::data_contract::document_type::DocumentPropertyType;
-use dash_sdk::dpp::document::DocumentV0;
+use dash_sdk::dpp::document::{DocumentV0, DocumentV0Getters};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::platform_value::Value;
@@ -56,6 +56,7 @@ enum BroadcastStatus {
 
 pub struct CreateDocumentScreen {
     pub app_context: Arc<AppContext>,
+    backend_message: Option<String>,
 
     /* ---- identity & key ---- */
     qualified_identities: Vec<(QualifiedIdentity, Vec<IdentityPublicKey>)>,
@@ -106,6 +107,7 @@ impl CreateDocumentScreen {
 
         Self {
             app_context: Arc::clone(ctx),
+            backend_message: None,
             qualified_identities: qids,
             selected_qid: None,
             selected_key: None,
@@ -126,7 +128,7 @@ impl CreateDocumentScreen {
     /* ---------------------------------------------------------- *
      *   identity + key selector (shorter than original version)  *
      * ---------------------------------------------------------- */
-    fn ui_identity_picker(&mut self, ui: &mut Ui) {
+    pub fn ui_identity_picker(&mut self, ui: &mut Ui) {
         egui::Grid::new("identity_key_grid")
             .num_columns(2)
             .spacing([10.0, 5.0])
@@ -164,6 +166,13 @@ impl CreateDocumentScreen {
                                     None,
                                     &mut self.error_message,
                                 );
+                                if let Some(default_public_key) = qi
+                                    .available_authentication_keys_with_high_security_level()
+                                    .first()
+                                {
+                                    self.selected_key =
+                                        Some(default_public_key.identity_public_key.clone());
+                                }
                             }
                         }
                     });
@@ -175,7 +184,7 @@ impl CreateDocumentScreen {
                         .selected_text(
                             self.selected_key
                                 .as_ref()
-                                .map(|k| format!("Key {} (SL {:?})", k.id(), k.security_level()))
+                                .map(|k| format!("Key {} Security {}", k.id(), k.security_level()))
                                 .unwrap_or_else(|| "Choose key…".into()),
                         )
                         .show_ui(ui, |cb| {
@@ -183,12 +192,16 @@ impl CreateDocumentScreen {
                                 if qi_ref != qi {
                                     continue;
                                 }
-                                for k in qi_ref.available_authentication_keys() {
+                                for k in qi_ref.available_authentication_keys_non_master() {
                                     if cb
                                         .selectable_label(
                                             self.selected_key.as_ref()
                                                 == Some(&k.identity_public_key),
-                                            format!("Key {}", k.identity_public_key.id()),
+                                            format!(
+                                                "Key {} Security {}",
+                                                k.identity_public_key.id(),
+                                                k.identity_public_key.security_level().to_string()
+                                            ),
                                         )
                                         .clicked()
                                     {
@@ -489,24 +502,37 @@ impl CreateDocumentScreen {
         let mut action = AppAction::None;
 
         ui.vertical_centered(|ui| {
-            ui.add_space(50.0);
+            ui.add_space(100.0);
 
             ui.heading("🎉");
-            ui.heading("Successfully broadcasted document");
+            if let Some(msg) = &self.backend_message {
+                if msg.contains("Document broadcasted successfully") {
+                    ui.heading(msg);
+                }
+            }
             ui.add_space(20.0);
 
-            let button =
-                egui::Button::new(RichText::new("Back to Contracts").color(Color32::WHITE))
-                    .fill(Color32::from_rgb(0, 128, 255))
-                    .frame(true)
-                    .corner_radius(3.0);
-            if ui.add(button).clicked() {
-                // Return to previous screen
+            if ui.button("Back").clicked() {
                 action = AppAction::PopScreenAndRefresh;
+            }
+
+            if ui.button("Add another document").clicked() {
+                self.reset_fields();
             }
         });
 
         action
+    }
+
+    fn reset_fields(&mut self) {
+        self.backend_message = None;
+        self.broadcast_status = BroadcastStatus::Idle;
+        self.field_inputs.clear();
+        self.contract_search.clear();
+        self.selected_contract = None;
+        self.selected_doc_type = None;
+        self.selected_qid = None;
+        self.selected_key = None;
     }
 }
 
@@ -518,11 +544,27 @@ impl ScreenLike for CreateDocumentScreen {
     fn display_message(&mut self, msg: &str, ty: MessageType) {
         match ty {
             MessageType::Error => self.broadcast_status = BroadcastStatus::Error(msg.into()),
-            MessageType::Success => self.broadcast_status = BroadcastStatus::Complete,
+            MessageType::Info => self.backend_message = Some(msg.to_string()),
+            MessageType::Success => {
+                if msg.contains("Document broadcasted successfully") {
+                    self.backend_message = Some(msg.to_string())
+                }
+            }
+        }
+    }
+
+    fn display_task_result(&mut self, task_result: BackendTaskSuccessResult) {
+        match task_result {
+            BackendTaskSuccessResult::Document(doc) => {
+                self.broadcast_status = BroadcastStatus::Complete;
+                self.display_message(
+                    &format!("Document broadcasted successfully.\n\nID: {}", doc.id()),
+                    MessageType::Success,
+                );
+            }
             _ => {}
         }
     }
-    fn display_task_result(&mut self, _: BackendTaskSuccessResult) {}
 
     /* ---------- main UI ---------- */
     fn ui(&mut self, ctx: &Context) -> AppAction {
@@ -536,6 +578,7 @@ impl ScreenLike for CreateDocumentScreen {
             ],
             vec![],
         );
+
         action |= add_left_panel(
             ctx,
             &self.app_context,
@@ -544,6 +587,11 @@ impl ScreenLike for CreateDocumentScreen {
 
         /* central panel logic */
         egui::CentralPanel::default().show(ctx, |ui| {
+            if self.broadcast_status == BroadcastStatus::Complete {
+                action |= self.show_success_screen(ui);
+                return;
+            }
+
             ui.heading("1. Select a contract and document type:");
             ui.add_space(10.0);
 
@@ -649,6 +697,7 @@ impl ScreenLike for CreateDocumentScreen {
                 });
 
             /* status read-out */
+            ui.add_space(10.0);
             match &self.broadcast_status {
                 BroadcastStatus::Idle => {}
                 BroadcastStatus::MissingField(e) | BroadcastStatus::Error(e) => {
@@ -663,7 +712,7 @@ impl ScreenLike for CreateDocumentScreen {
                     ui.label(format!("Broadcasting… {secs}s"));
                 }
                 BroadcastStatus::Complete => {
-                    self.show_success_screen(ui);
+                    // this is handled at the beginning of the CentralPanel
                 }
                 BroadcastStatus::BuildingError(e) => {
                     ui.colored_label(Color32::DARK_RED, e);

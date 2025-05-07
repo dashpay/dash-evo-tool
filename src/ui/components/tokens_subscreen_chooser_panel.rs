@@ -52,17 +52,19 @@ pub fn add_tokens_subscreen_chooser_panel(ctx: &Context, app_context: &AppContex
                         // Handle navigation based on which subscreen is selected
                         match subscreen {
                             TokensSubscreen::MyTokens => {
-                                action = AppAction::SetMainScreen(
+                                action = AppAction::SetMainScreenThenGoToMainScreen(
                                     RootScreenType::RootScreenMyTokenBalances,
                                 )
                             }
                             TokensSubscreen::SearchTokens => {
-                                action =
-                                    AppAction::SetMainScreen(RootScreenType::RootScreenTokenSearch)
+                                action = AppAction::SetMainScreenThenGoToMainScreen(
+                                    RootScreenType::RootScreenTokenSearch,
+                                )
                             }
                             TokensSubscreen::TokenCreator => {
-                                action =
-                                    AppAction::SetMainScreen(RootScreenType::RootScreenTokenCreator)
+                                action = AppAction::SetMainScreenThenGoToMainScreen(
+                                    RootScreenType::RootScreenTokenCreator,
+                                )
                             }
                         }
                     }

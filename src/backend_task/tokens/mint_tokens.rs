@@ -19,6 +19,7 @@ impl AppContext {
         data_contract: &DataContract,
         token_position: u16,
         signing_key: IdentityPublicKey,
+        public_note: Option<String>,
         amount: u64,
         optional_recipient: Option<Identifier>,
         sdk: &Sdk,
@@ -31,11 +32,15 @@ impl AppContext {
             amount,
         );
 
-        let builder = if let Some(recipient_id) = optional_recipient {
+        let mut builder = if let Some(recipient_id) = optional_recipient {
             builder.issued_to_identity_id(recipient_id)
         } else {
             builder
         };
+
+        if let Some(note) = public_note {
+            builder = builder.with_public_note(note);
+        }
 
         let state_transition = builder
             .sign(sdk, &signing_key, sending_identity, self.platform_version)

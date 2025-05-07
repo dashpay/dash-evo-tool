@@ -18,17 +18,20 @@ impl AppContext {
         data_contract: &DataContract,
         token_position: u16,
         signing_key: IdentityPublicKey,
+        public_note: Option<String>,
         sdk: &Sdk,
         _sender: mpsc::Sender<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, String> {
         // Use .pause(...) constructor
-        let builder = TokenEmergencyActionTransitionBuilder::pause(
+        let mut builder = TokenEmergencyActionTransitionBuilder::pause(
             data_contract,
             token_position,
             actor_identity.identity.id(),
         );
 
-        // Optionally chain .with_public_note(...).with_settings(...), etc.
+        if let Some(note) = public_note {
+            builder = builder.with_public_note(note);
+        }
 
         let state_transition = builder
             .sign(sdk, &signing_key, actor_identity, self.platform_version)

@@ -18,6 +18,8 @@ use crate::backend_task::BackendTask;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
+use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
 use crate::ui::identities::get_selected_wallet;
@@ -41,6 +43,7 @@ pub struct FreezeTokensScreen {
     pub identity: QualifiedIdentity,
     pub identity_token_balance: IdentityTokenBalance,
     selected_key: Option<IdentityPublicKey>,
+    public_note: Option<String>,
 
     /// The identity we want to freeze
     freeze_identity_id: String,
@@ -92,6 +95,7 @@ impl FreezeTokensScreen {
             identity,
             identity_token_balance,
             selected_key: possible_key.cloned(),
+            public_note: None,
             freeze_identity_id: String::new(),
             status: FreezeTokensStatus::NotStarted,
             error_message: None,
@@ -198,6 +202,7 @@ impl FreezeTokensScreen {
                             data_contract,
                             token_position: self.identity_token_balance.token_position,
                             signing_key: self.selected_key.clone().expect("No key selected"),
+                            public_note: self.public_note.clone(),
                             freeze_identity: freeze_id,
                         }));
                 }
@@ -269,13 +274,23 @@ impl ScreenLike for FreezeTokensScreen {
             vec![
                 ("Tokens", AppAction::GoToMainScreen),
                 (
-                    &self.identity_token_balance.token_name,
+                    &self.identity_token_balance.token_alias,
                     AppAction::PopScreen,
                 ),
                 ("Freeze", AppAction::None),
             ],
             vec![],
         );
+
+        // Left panel
+        action |= add_left_panel(
+            ctx,
+            &self.app_context,
+            crate::ui::RootScreenType::RootScreenMyTokenBalances,
+        );
+
+        // Subscreen chooser
+        action |= add_tokens_subscreen_chooser_panel(ctx, &self.app_context);
 
         egui::CentralPanel::default().show(ctx, |ui| {
             if self.status == FreezeTokensStatus::Complete {
@@ -368,6 +383,27 @@ impl ScreenLike for FreezeTokensScreen {
                 ui.add_space(5.0);
                 self.render_freeze_identity_input(ui);
 
+                ui.add_space(10.0);
+                ui.separator();
+                ui.add_space(10.0);
+
+                // Render text input for the public note
+                ui.heading("3. Public note (optional)");
+                ui.add_space(5.0);
+                ui.horizontal(|ui| {
+                    ui.label("Public note (optional):");
+                    ui.add_space(10.0);
+                    let mut txt = self.public_note.clone().unwrap_or_default();
+                    if ui
+                        .text_edit_singleline(&mut txt)
+                        .on_hover_text(
+                            "A note about the transaction that can be seen by the public.",
+                        )
+                        .changed()
+                    {
+                        self.public_note = Some(txt);
+                    }
+                });
                 ui.add_space(10.0);
 
                 // Freeze button

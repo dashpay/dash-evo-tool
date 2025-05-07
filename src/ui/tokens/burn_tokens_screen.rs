@@ -7,6 +7,8 @@ use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use eframe::egui::{self, Color32, Context, Ui};
 use egui::RichText;
 
+use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
@@ -43,6 +45,7 @@ pub struct BurnTokensScreen {
 
     // The user chooses how many tokens to burn
     amount_to_burn: String,
+    public_note: Option<String>,
 
     status: BurnTokensStatus,
     error_message: Option<String>,
@@ -95,6 +98,7 @@ impl BurnTokensScreen {
             identity_token_balance,
             selected_key: possible_key.cloned(),
             amount_to_burn: String::new(),
+            public_note: None,
             status: BurnTokensStatus::NotStarted,
             error_message: None,
             app_context: app_context.clone(),
@@ -195,6 +199,7 @@ impl BurnTokensScreen {
                                 data_contract,
                                 token_position: self.identity_token_balance.token_position,
                                 signing_key: self.selected_key.clone().expect("Expected a key"),
+                                public_note: self.public_note.clone(),
                                 amount: amount_ok.unwrap(),
                             }),
                             BackendTask::TokenTask(TokenTask::QueryMyTokenBalances),
@@ -272,13 +277,23 @@ impl ScreenLike for BurnTokensScreen {
             vec![
                 ("Tokens", AppAction::GoToMainScreen),
                 (
-                    &self.identity_token_balance.token_name,
+                    &self.identity_token_balance.token_alias,
                     AppAction::PopScreen,
                 ),
                 ("Burn", AppAction::None),
             ],
             vec![],
         );
+
+        // Left panel
+        action |= add_left_panel(
+            ctx,
+            &self.app_context,
+            crate::ui::RootScreenType::RootScreenMyTokenBalances,
+        );
+
+        // Subscreen chooser
+        action |= add_tokens_subscreen_chooser_panel(ctx, &self.app_context);
 
         egui::CentralPanel::default().show(ctx, |ui| {
             // If we are in the "Complete" status, just show success screen
@@ -373,6 +388,27 @@ impl ScreenLike for BurnTokensScreen {
                 ui.add_space(5.0);
                 self.render_amount_input(ui);
 
+                ui.add_space(10.0);
+                ui.separator();
+                ui.add_space(10.0);
+
+                // Render text input for the public note
+                ui.heading("3. Public note (optional)");
+                ui.add_space(5.0);
+                ui.horizontal(|ui| {
+                    ui.label("Public note (optional):");
+                    ui.add_space(10.0);
+                    let mut txt = self.public_note.clone().unwrap_or_default();
+                    if ui
+                        .text_edit_singleline(&mut txt)
+                        .on_hover_text(
+                            "A note about the transaction that can be seen by the public.",
+                        )
+                        .changed()
+                    {
+                        self.public_note = Some(txt);
+                    }
+                });
                 ui.add_space(10.0);
 
                 // Burn button

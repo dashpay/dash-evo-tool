@@ -411,17 +411,6 @@ impl ScreenLike for BurnTokensScreen {
                 });
                 ui.add_space(10.0);
 
-                // Render text input for the public note
-                ui.horizontal(|ui| {
-                    ui.label("Public note (optional):");
-                    ui.add_space(10.0);
-                    let mut txt = self.public_note.clone().unwrap_or_default();
-                    if ui.text_edit_singleline(&mut txt).changed() {
-                        self.public_note = Some(txt);
-                    }
-                });
-                ui.add_space(10.0);
-
                 // Burn button
                 let button = egui::Button::new(RichText::new("Burn").color(Color32::WHITE))
                     .fill(Color32::from_rgb(255, 0, 0))

@@ -1,4 +1,4 @@
-use crate::app::AppAction;
+use crate::app::{self, AppAction};
 use crate::context::AppContext;
 use crate::ui::RootScreenType;
 use eframe::epaint::{Color32, Margin};
@@ -37,7 +37,7 @@ fn load_icon(ctx: &Context, path: &str) -> Option<TextureHandle> {
 
 pub fn add_left_panel(
     ctx: &Context,
-    _app_context: &Arc<AppContext>,
+    app_context: &Arc<AppContext>,
     selected_screen: RootScreenType,
 ) -> AppAction {
     let mut action = AppAction::None;
@@ -80,11 +80,21 @@ pub fn add_left_panel(
                 for (label, screen_type, icon_path) in buttons.iter() {
                     let texture: Option<TextureHandle> = load_icon(ctx, icon_path);
                     let is_selected = selected_screen == *screen_type;
-                    let button_color = if is_selected {
-                        Color32::from_rgb(100, 149, 237) // Highlighted blue color for selected
+
+                    let button_color;
+                    if app_context.developer_mode {
+                        button_color = if is_selected {
+                            Color32::from_rgb(100, 149, 237) // Highlighted blue color for selected
+                        } else {
+                            Color32::from_rgb(169, 169, 169) // Default grayish blue color for unselected
+                        };
                     } else {
-                        Color32::from_rgb(169, 169, 169) // Default grayish blue color for unselected
-                    };
+                        button_color = if is_selected {
+                            Color32::DARK_GRAY // Highlighted blue color for selected
+                        } else {
+                            Color32::DARK_GRAY // Default grayish blue color for unselected
+                        };
+                    }
 
                     // Add icon-based button if texture is loaded
                     if let Some(ref texture) = texture {
@@ -108,6 +118,14 @@ pub fn add_left_panel(
 
                     ui.add_space(10.0); // Add some space between buttons
                 }
+
+                // Push content to the top and dev label to the bottom
+                ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
+                    if app_context.developer_mode {
+                        ui.add_space(10.0);
+                        ui.label("Dev mode");
+                    }
+                });
             });
         });
 

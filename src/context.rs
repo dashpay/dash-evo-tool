@@ -133,7 +133,7 @@ impl AppContext {
 
         let app_context = AppContext {
             network,
-            developer_mode: false,
+            developer_mode: network_config.developer_mode.unwrap_or(false),
             devnet_name: None,
             db,
             sdk: sdk.into(),

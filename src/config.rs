@@ -44,6 +44,8 @@ pub struct NetworkConfig {
     pub wallet_private_key: Option<String>,
     /// Should this network be visible in the UI
     pub show_in_ui: bool,
+    /// Developer mode
+    pub developer_mode: Option<bool>,
 }
 
 impl Config {
@@ -118,6 +120,12 @@ impl Config {
             // Whether or not to show in UI
             writeln!(env_file, "{}show_in_ui={}", prefix, config.show_in_ui)
                 .map_err(|e| ConfigError::LoadError(e.to_string()))?;
+
+            // Developer mode
+            if let Some(developer_mode) = config.developer_mode {
+                writeln!(env_file, "{}developer_mode={}", prefix, developer_mode)
+                    .map_err(|e| ConfigError::LoadError(e.to_string()))?;
+            }
 
             // Add a blank line after each config block
             writeln!(env_file).map_err(|e| ConfigError::LoadError(e.to_string()))?;

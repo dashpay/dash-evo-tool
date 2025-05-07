@@ -471,18 +471,13 @@ impl DocumentQueryScreen {
             .collapsible(false)
             .open(&mut is_open)
             .show(ui.ctx(), |ui| {
-                let contract_alias_or_id = self
-                    .app_context
-                    .get_contract_by_id(&contract_to_remove)
-                    .map(|option_contract| {
-                        option_contract
-                            .map(|c| {
-                                c.alias
-                                    .unwrap_or_else(|| c.contract.id().to_string(Encoding::Base58))
-                            })
-                            .unwrap_or_else(|| contract_to_remove.to_string(Encoding::Base58))
-                    })
-                    .unwrap_or_else(|_| contract_to_remove.to_string(Encoding::Base58));
+                let contract_alias_or_id =
+                    match self.app_context.get_contract_by_id(&contract_to_remove) {
+                        Ok(Some(contract)) => contract
+                            .alias
+                            .unwrap_or_else(|| contract.contract.id().to_string(Encoding::Base58)),
+                        Ok(None) | Err(_) => contract_to_remove.to_string(Encoding::Base58),
+                    };
 
                 ui.label(format!(
                     "Are you sure you want to remove contract \"{}\"?",

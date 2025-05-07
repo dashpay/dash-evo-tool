@@ -3874,8 +3874,15 @@ Emits tokens in fixed amounts for specific intervals.
         } else {
             self.contract_keywords_input
                 .split(',')
-                .map(|s| s.trim().to_string())
-                .collect::<Vec<String>>()
+                .map(|s| {
+                    let trimmed = s.trim().to_string();
+                    if trimmed.len() < 3 || trimmed.len() > 50 {
+                        Err(format!("Invalid contract keyword {}, keyword must be between 3 and 50 characters", trimmed))
+                    } else {
+                        Ok(trimmed)
+                    }
+                })
+                .collect::<Result<Vec<String>, String>>()?
         };
         let token_description = if self.token_description_input.len() > 0 {
             Some(self.token_description_input.clone())

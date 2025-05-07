@@ -502,17 +502,6 @@ impl ScreenLike for TransferTokensScreen {
                 });
                 ui.add_space(10.0);
 
-                // Render text input for the public note
-                ui.horizontal(|ui| {
-                    ui.label("Public note (optional):");
-                    ui.add_space(10.0);
-                    let mut txt = self.public_note.clone().unwrap_or_default();
-                    if ui.text_edit_singleline(&mut txt).changed() {
-                        self.public_note = Some(txt);
-                    }
-                });
-                ui.add_space(10.0);
-
                 // Transfer button
                 let mut new_style = (**ui.style()).clone();
                 new_style.spacing.button_padding = egui::vec2(10.0, 5.0);

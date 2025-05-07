@@ -2533,7 +2533,7 @@ impl TokensScreen {
                                 }
                                 ui.horizontal(|ui| {
                                     if ui.button("+").clicked() {
-                                        let used_languages: HashSet<_> = self.token_names_input.iter().map(|(_, lang)| *lang).collect();
+                                        let used_languages: HashSet<_> = self.token_names_input.iter().map(|(_, _, lang)| *lang).collect();
                                         let next_non_used_language = enum_iterator::all::<TokenNameLanguage>()
                                             .find(|lang| !used_languages.contains(lang))
                                             .unwrap_or(TokenNameLanguage::English); // fallback
@@ -3887,7 +3887,11 @@ Emits tokens in fixed amounts for specific intervals.
                 TokenNameLanguage::Polish => "pl".to_string(),
             };
 
-            token_names.push((name_with_language.0.clone(), name_with_language.1.clone(), language));
+            token_names.push((
+                name_with_language.0.clone(),
+                name_with_language.1.clone(),
+                language,
+            ));
         }
 
         // Remove whitespace and parse the comma separated string into a vec
@@ -5190,8 +5194,11 @@ mod tests {
         token_creator_ui.selected_key = Some(mock_key);
 
         // Basic token info
-        token_creator_ui.token_names_input =
-            vec![("AcmeCoin".to_string(), "AcmeCoins".to_string(), TokenNameLanguage::English)];
+        token_creator_ui.token_names_input = vec![(
+            "AcmeCoin".to_string(),
+            "AcmeCoins".to_string(),
+            TokenNameLanguage::English,
+        )];
         token_creator_ui.base_supply_input = "5000000".to_string();
         token_creator_ui.max_supply_input = "10000000".to_string();
         token_creator_ui.decimals_input = "8".to_string();
@@ -5482,8 +5489,11 @@ mod tests {
         let mock_key = IdentityPublicKey::random_key(0, None, app_context.platform_version);
         token_creator_ui.selected_key = Some(mock_key);
 
-        token_creator_ui.token_names_input =
-            vec![("TestToken".to_owned(), "TestToken".to_owned(), TokenNameLanguage::English)];
+        token_creator_ui.token_names_input = vec![(
+            "TestToken".to_owned(),
+            "TestToken".to_owned(),
+            TokenNameLanguage::English,
+        )];
 
         // Enable perpetual distribution, select Random
         token_creator_ui.enable_perpetual_distribution = true;

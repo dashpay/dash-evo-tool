@@ -286,6 +286,13 @@ impl AppContext {
         self.db.get_local_qualified_identities(self, &wallets)
     }
 
+    /// Fetches all local qualified identities from the database
+    pub fn load_local_qualified_identities_in_wallets(&self) -> Result<Vec<QualifiedIdentity>> {
+        let wallets = self.wallets.read().unwrap();
+        self.db
+            .get_local_qualified_identities_in_wallets(self, &wallets)
+    }
+
     pub fn get_identity_by_id(
         &self,
         identity_id: &Identifier,

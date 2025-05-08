@@ -27,7 +27,7 @@ use dash_sdk::dpp::data_contract::group::{Group, GroupMemberPower, GroupRequired
 use dash_sdk::dpp::data_contract::TokenConfiguration;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
-use dash_sdk::dpp::identity::SecurityLevel;
+use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::Start;
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
@@ -2356,7 +2356,7 @@ impl TokensScreen {
                 .show(ui, |ui| {
                     // Identity selection
                     ui.add_space(10.0);
-                    let all_identities = match self.app_context.load_local_qualified_identities() {
+                    let all_identities = match self.app_context.load_local_qualified_identities_in_wallets() {
                         Ok(ids) => ids,
                         Err(_) => {
                             ui.colored_label(Color32::RED, "Error loading identities from local DB");
@@ -2422,16 +2422,10 @@ impl TokensScreen {
                                 .cloned()
                                 .collect::<Vec<_>>()
                         } else {
-                            qid.available_authentication_keys()
+                            qid.available_authentication_keys_with_critical_or_high_security_level()
                                 .into_iter()
-                                .filter_map(|k| {
-                                    if k.identity_public_key.security_level() == SecurityLevel::CRITICAL
-                                        || k.identity_public_key.security_level() == SecurityLevel::HIGH
-                                    {
-                                        Some(k.identity_public_key.clone())
-                                    } else {
-                                        None
-                                    }
+                                .map(|k| {
+                                    k.identity_public_key.clone()
                                 })
                                 .collect()
                         };
@@ -2449,27 +2443,37 @@ impl TokensScreen {
                                     None => "Select Key".to_owned(),
                                 })
                                 .show_ui(ui, |ui| {
-                                    for k in keys {
+                                    for key in keys {
+                                        let is_valid = key.purpose() == Purpose::AUTHENTICATION
+                                            && (key.security_level() == SecurityLevel::CRITICAL || key.security_level() == SecurityLevel::HIGH);
+
                                         let label = format!(
-                                            "Key {} (Purpose: {:?}, Security Level: {:?})",
-                                            k.id(),
-                                            k.purpose(),
-                                            k.security_level()
+                                            "Key {} (Info: {}/{}/{})",
+                                            key.id(),
+                                            key.purpose(),
+                                            key.security_level(),
+                                            key.key_type()
                                         );
+                                        let styled_label = if is_valid {
+                                            RichText::new(label.clone())
+                                        } else {
+                                            RichText::new(label.clone()).color(Color32::RED)
+                                        };
+
                                         if ui
                                             .selectable_label(
-                                                Some(k.id()) == self.selected_key.as_ref().map(|kk| kk.id()),
-                                                label,
+                                                Some(key.id()) == self.selected_key.as_ref().map(|kk| kk.id()),
+                                                styled_label,
                                             )
                                             .clicked()
                                         {
-                                            self.selected_key = Some(k.clone());
+                                            self.selected_key = Some(key.clone());
 
                                             // If the key belongs to a wallet, set that wallet reference:
                                             self.selected_wallet = crate::ui::identities::get_selected_wallet(
                                                 qid,
                                                 None,
-                                                Some(&k),
+                                                Some(&key),
                                                 &mut self.token_creator_error_message,
                                             );
                                         }

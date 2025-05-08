@@ -25,6 +25,7 @@ use dash_sdk::dpp::data_contract::conversion::json::DataContractJsonConversionMe
 use dash_sdk::dpp::data_contract::group::v0::GroupV0;
 use dash_sdk::dpp::data_contract::group::{Group, GroupMemberPower, GroupRequiredPower};
 use dash_sdk::dpp::data_contract::TokenConfiguration;
+use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
@@ -2367,8 +2368,8 @@ impl TokensScreen {
                 .show(ui, |ui| {
                     // Identity selection
                     ui.add_space(10.0);
-                    let all_identities = match self.app_context.load_local_qualified_identities_in_wallets() {
-                        Ok(ids) => ids,
+                    let all_identities = match self.app_context.load_local_qualified_identities() {
+                        Ok(identities) => identities.into_iter().filter(|qi| !qi.private_keys.private_keys.is_empty()).collect::<Vec<_>>(),
                         Err(_) => {
                             ui.colored_label(Color32::RED, "Error loading identities from local DB");
                             return;
@@ -3829,6 +3830,49 @@ Emits tokens in fixed amounts for specific intervals.
         }
     }
 
+    fn estimate_registration_cost(&self) -> Credits {
+        let registration_fees = &self
+            .app_context
+            .platform_version
+            .fee_version
+            .data_contract_registration;
+        let mut fee = registration_fees.base_contract_registration_fee;
+        fee += registration_fees.token_registration_fee;
+        if self.enable_perpetual_distribution {
+            fee += registration_fees.token_uses_perpetual_distribution_fee;
+        }
+        if self.enable_pre_programmed_distribution {
+            fee += registration_fees.token_uses_pre_programmed_distribution_fee;
+        }
+        let mut contract_keywords = if self.contract_keywords_input.trim().is_empty() {
+            Vec::new()
+        } else {
+            self.contract_keywords_input
+                .split(',')
+                .filter_map(|s| {
+                    let trimmed = s.trim().to_string();
+                    if trimmed.len() < 3 || trimmed.len() > 50 {
+                        None
+                    } else {
+                        Some(trimmed)
+                    }
+                })
+                .collect::<Vec<String>>()
+        };
+        fee += registration_fees.search_keyword_fee * contract_keywords.len() as u64;
+        let searchable_count = self
+            .token_names_input
+            .iter()
+            .filter(|(_, _, _, searchable)| *searchable) // or `.is_searchable()` if it's a method
+            .count();
+
+        fee += registration_fees.search_keyword_fee * searchable_count as u64;
+
+        fee += 200_000_000; //just an extra estimate
+
+        fee
+    }
+
     /// Shows a popup "Are you sure?" for creating the token contract
     fn render_token_creator_confirmation_popup(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
@@ -3849,6 +3893,13 @@ Emits tokens in fixed amounts for specific intervals.
                 ui.label(format!(
                     "Name: {}\nBase Supply: {}\nMax Supply: {}",
                     self.token_names_input[0].0, self.base_supply_input, max_supply_display,
+                ));
+
+                ui.add_space(10.0);
+
+                ui.label(format!(
+                    "Estimated cost to register this token is {} Dash",
+                    self.estimate_registration_cost() as f64 / 100_000_000_000.0
                 ));
 
                 ui.add_space(10.0);
@@ -4038,6 +4089,20 @@ Emits tokens in fixed amounts for specific intervals.
                 TokenNameLanguage::Vietnamese => "vi",
                 TokenNameLanguage::Yoruba => "yo",
             };
+
+            if name_with_language.0.len() < 3 || name_with_language.0.len() > 50 {
+                return Err(format!(
+                    "The name in {:?} must be between 3 and 50 characters",
+                    name_with_language.2
+                ));
+            }
+
+            if name_with_language.1.len() < 3 || name_with_language.1.len() > 50 {
+                return Err(format!(
+                    "The plural form in {:?} must be between 3 and 50 characters",
+                    name_with_language.2
+                ));
+            }
 
             token_names.push((
                 name_with_language.0.clone(),

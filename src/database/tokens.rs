@@ -1,6 +1,5 @@
-use bincode::{self, config, config::standard};
+use bincode::{self, config::standard};
 use dash_sdk::dpp::dashcore::Network;
-use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::TokenConfigurationConvention;
 use dash_sdk::dpp::data_contract::TokenConfiguration;
 use dash_sdk::platform::Identifier;
 use dash_sdk::query_types::IndexMap;

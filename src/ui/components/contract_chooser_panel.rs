@@ -93,7 +93,9 @@ pub fn add_contract_chooser_panel(
                                     // ===== Document Types Section =====
                                     //
                                     ui.collapsing("Document Types", |ui| {
-                                        for (doc_name, doc_type) in contract.contract.document_types() {
+                                        for (doc_name, doc_type) in
+                                            contract.contract.document_types()
+                                        {
                                             let is_selected_doc_type =
                                                 *selected_document_type == *doc_type;
 
@@ -104,93 +106,115 @@ pub fn add_contract_chooser_panel(
                                                 RichText::new(doc_name.clone())
                                             };
 
-                                            let doc_resp = ui.collapsing(doc_type_header_text, |ui| {
-                                                // Show the indexes
-                                                if doc_type.indexes().is_empty() {
-                                                    ui.label("No indexes defined");
-                                                } else {
-                                                    for (index_name, index) in doc_type.indexes() {
-                                                        let is_selected_index =
-                                                            *selected_index == Some(index.clone());
-
-                                                        let index_header_text = if is_selected_index {
-                                                            RichText::new(format!(
-                                                                "Index: {}",
-                                                                index_name
-                                                            ))
-                                                            .color(Color32::from_rgb(21, 101, 192))
-                                                        } else {
-                                                            RichText::new(format!(
-                                                                "Index: {}",
-                                                                index_name
-                                                            ))
-                                                        };
-
-                                                        let index_resp =
-                                                            ui.collapsing(index_header_text, |ui| {
-                                                                // Show index properties if expanded
-                                                                for prop in &index.properties {
-                                                                    ui.label(format!("{:?}", prop));
-                                                                }
-                                                            });
-
-                                                        // If index was just clicked (opened)
-                                                        if index_resp.header_response.clicked()
-                                                            && index_resp.body_response.is_some()
+                                            let doc_resp =
+                                                ui.collapsing(doc_type_header_text, |ui| {
+                                                    // Show the indexes
+                                                    if doc_type.indexes().is_empty() {
+                                                        ui.label("No indexes defined");
+                                                    } else {
+                                                        for (index_name, index) in
+                                                            doc_type.indexes()
                                                         {
-                                                            *selected_index = Some(index.clone());
-                                                            if let Ok(new_doc_type) = contract
-                                                                .contract
-                                                                .document_type_cloned_for_name(
-                                                                    &doc_name,
-                                                                )
+                                                            let is_selected_index = *selected_index
+                                                                == Some(index.clone());
+
+                                                            let index_header_text =
+                                                                if is_selected_index {
+                                                                    RichText::new(format!(
+                                                                        "Index: {}",
+                                                                        index_name
+                                                                    ))
+                                                                    .color(Color32::from_rgb(
+                                                                        21, 101, 192,
+                                                                    ))
+                                                                } else {
+                                                                    RichText::new(format!(
+                                                                        "Index: {}",
+                                                                        index_name
+                                                                    ))
+                                                                };
+
+                                                            let index_resp = ui.collapsing(
+                                                                index_header_text,
+                                                                |ui| {
+                                                                    // Show index properties if expanded
+                                                                    for prop in &index.properties {
+                                                                        ui.label(format!(
+                                                                            "{:?}",
+                                                                            prop
+                                                                        ));
+                                                                    }
+                                                                },
+                                                            );
+
+                                                            // If index was just clicked (opened)
+                                                            if index_resp.header_response.clicked()
+                                                                && index_resp
+                                                                    .body_response
+                                                                    .is_some()
                                                             {
-                                                                *selected_document_type = new_doc_type;
-                                                                *selected_data_contract =
-                                                                    contract.clone();
+                                                                *selected_index =
+                                                                    Some(index.clone());
+                                                                if let Ok(new_doc_type) = contract
+                                                                    .contract
+                                                                    .document_type_cloned_for_name(
+                                                                        &doc_name,
+                                                                    )
+                                                                {
+                                                                    *selected_document_type =
+                                                                        new_doc_type;
+                                                                    *selected_data_contract =
+                                                                        contract.clone();
 
-                                                                // Build the WHERE clause using all property names
-                                                                let conditions: Vec<String> = index
-                                                                    .property_names()
-                                                                    .iter()
-                                                                    .map(|property_name| {
-                                                                        format!(
-                                                                            "`{}` = '___'",
-                                                                            property_name
-                                                                        )
-                                                                    })
-                                                                    .collect();
+                                                                    // Build the WHERE clause using all property names
+                                                                    let conditions: Vec<String> =
+                                                                        index
+                                                                            .property_names()
+                                                                            .iter()
+                                                                            .map(|property_name| {
+                                                                                format!(
+                                                                                    "`{}` = '___'",
+                                                                                    property_name
+                                                                                )
+                                                                            })
+                                                                            .collect();
 
-                                                                let where_clause =
-                                                                    if conditions.is_empty() {
-                                                                        String::new()
-                                                                    } else {
-                                                                        format!(
-                                                                            " WHERE {}",
-                                                                            conditions.join(" AND ")
-                                                                        )
-                                                                    };
+                                                                    let where_clause =
+                                                                        if conditions.is_empty() {
+                                                                            String::new()
+                                                                        } else {
+                                                                            format!(
+                                                                                " WHERE {}",
+                                                                                conditions
+                                                                                    .join(" AND ")
+                                                                            )
+                                                                        };
 
+                                                                    *document_query = format!(
+                                                                        "SELECT * FROM {}{}",
+                                                                        selected_document_type
+                                                                            .name(),
+                                                                        where_clause
+                                                                    );
+                                                                }
+                                                            }
+                                                            // If index was just collapsed
+                                                            else if index_resp
+                                                                .header_response
+                                                                .clicked()
+                                                                && index_resp
+                                                                    .body_response
+                                                                    .is_none()
+                                                            {
+                                                                *selected_index = None;
                                                                 *document_query = format!(
-                                                                    "SELECT * FROM {}{}",
-                                                                    selected_document_type.name(),
-                                                                    where_clause
+                                                                    "SELECT * FROM {}",
+                                                                    selected_document_type.name()
                                                                 );
                                                             }
                                                         }
-                                                        // If index was just collapsed
-                                                        else if index_resp.header_response.clicked()
-                                                            && index_resp.body_response.is_none()
-                                                        {
-                                                            *selected_index = None;
-                                                            *document_query = format!(
-                                                                "SELECT * FROM {}",
-                                                                selected_document_type.name()
-                                                            );
-                                                        }
                                                     }
-                                                }
-                                            });
+                                                });
 
                                             // Document Type clicked
                                             if doc_resp.header_response.clicked()
@@ -257,7 +281,10 @@ pub fn add_contract_chooser_panel(
                                                         token.base_supply()
                                                     ));
                                                     if let Some(max_supply) = token.max_supply() {
-                                                        ui.label(format!("Max Supply: {}", max_supply));
+                                                        ui.label(format!(
+                                                            "Max Supply: {}",
+                                                            max_supply
+                                                        ));
                                                     } else {
                                                         ui.label("Max Supply: None");
                                                     }
@@ -272,7 +299,10 @@ pub fn add_contract_chooser_panel(
                                     // ===== Entire Contract JSON =====
                                     //
                                     ui.collapsing("Contract JSON", |ui| {
-                                        match contract.contract.to_json(app_context.platform_version) {
+                                        match contract
+                                            .contract
+                                            .to_json(app_context.platform_version)
+                                        {
                                             Ok(json_value) => {
                                                 let pretty_str =
                                                     serde_json::to_string_pretty(&json_value)
@@ -306,25 +336,29 @@ pub fn add_contract_chooser_panel(
                                 });
 
                                 // Right‐aligned Remove button
-                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-                                    if contract.alias != Some("dpns".to_string())
-                                        && contract.alias != Some("token_history".to_string())
-                                        && contract.alias != Some("withdrawals".to_string())
-                                        && contract.alias != Some("keyword_search".to_string())
-                                    {
-                                        if ui.button("X").clicked() {
-                                            action |=
-                                                AppAction::BackendTask(BackendTask::ContractTask(
-                                                    ContractTask::RemoveContract(
-                                                        contract.contract.id().clone(),
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Min),
+                                    |ui| {
+                                        if contract.alias != Some("dpns".to_string())
+                                            && contract.alias != Some("token_history".to_string())
+                                            && contract.alias != Some("withdrawals".to_string())
+                                            && contract.alias != Some("keyword_search".to_string())
+                                        {
+                                            if ui.button("X").clicked() {
+                                                action |= AppAction::BackendTask(
+                                                    BackendTask::ContractTask(
+                                                        ContractTask::RemoveContract(
+                                                            contract.contract.id().clone(),
+                                                        ),
                                                     ),
-                                                ));
+                                                );
+                                            }
                                         }
-                                    }
-                                });
+                                    },
+                                );
                             });
                         });
-                }
+                    }
                 });
             });
         });

@@ -1,4 +1,4 @@
-use crate::app::{self, AppAction};
+use crate::app::AppAction;
 use crate::context::AppContext;
 use crate::ui::RootScreenType;
 use eframe::epaint::{Color32, Margin};

@@ -1051,7 +1051,7 @@ pub struct TokenBuildArgs {
     pub contract_keywords: Vec<String>,
     pub token_description: Option<String>,
     pub should_capitalize: bool,
-    pub decimals: u16,
+    pub decimals: u8,
     pub base_supply: u64,
     pub max_supply: Option<u64>,
     pub start_paused: bool,
@@ -4017,8 +4017,14 @@ Emits tokens in fixed amounts for specific intervals.
         } else {
             None
         };
-        let decimals = self.decimals_input.parse::<u16>().unwrap_or(8);
-        let base_supply = self.base_supply_input.parse::<u64>().unwrap_or(1000000);
+        let decimals = self
+            .decimals_input
+            .parse::<u8>()
+            .map_err(|_| "Invalid decimal places amount".to_string())?;
+        let base_supply = self
+            .base_supply_input
+            .parse::<u64>()
+            .map_err(|_| "Invalid base supply amount".to_string())?;
         let max_supply = if self.max_supply_input.is_empty() {
             None
         } else {

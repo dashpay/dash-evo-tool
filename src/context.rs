@@ -25,6 +25,8 @@ use dash_sdk::dpp::identity::state_transition::asset_lock_proof::chain::ChainAss
 use dash_sdk::dpp::identity::state_transition::asset_lock_proof::InstantAssetLockProof;
 use dash_sdk::dpp::identity::Identity;
 use dash_sdk::dpp::prelude::{AssetLockProof, CoreBlockHeight};
+use dash_sdk::dpp::state_transition::batch_transition::methods::StateTransitionCreationOptions;
+use dash_sdk::dpp::state_transition::StateTransitionSigningOptions;
 use dash_sdk::dpp::system_data_contracts::{load_system_data_contract, SystemDataContract};
 use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::platform::{DataContract, Identifier};
@@ -157,6 +159,22 @@ impl AppContext {
         provider.bind_app_context(app_context.clone());
 
         Some(app_context)
+    }
+
+    pub fn state_transition_options(&self) -> Option<StateTransitionCreationOptions> {
+        if self.developer_mode {
+            Some(StateTransitionCreationOptions {
+                signing_options: StateTransitionSigningOptions {
+                    allow_signing_with_any_security_level: true,
+                    allow_signing_with_any_purpose: true,
+                },
+                batch_feature_version: None,
+                method_feature_version: None,
+                base_feature_version: None,
+            })
+        } else {
+            None
+        }
     }
 
     /// Rebuild both the Dash RPC `core_client` and the `Sdk` using the

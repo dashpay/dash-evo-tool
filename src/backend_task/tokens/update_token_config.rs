@@ -1,14 +1,15 @@
+use super::BackendTaskSuccessResult;
+use crate::context::AppContext;
+use crate::ui::tokens::tokens_screen::IdentityTokenBalance;
+use dash_sdk::dpp::state_transition::batch_transition::methods::StateTransitionCreationOptions;
 use dash_sdk::dpp::state_transition::proof_result::StateTransitionProofResult;
+use dash_sdk::dpp::state_transition::StateTransitionSigningOptions;
 use dash_sdk::platform::transition::broadcast::BroadcastStateTransition;
 use dash_sdk::platform::{DataContract, Fetch, IdentityPublicKey};
 use dash_sdk::{
     dpp::data_contract::associated_token::token_configuration_item::TokenConfigurationChangeItem,
     platform::transition::fungible_tokens::config_update::TokenConfigUpdateTransitionBuilder, Sdk,
 };
-
-use super::BackendTaskSuccessResult;
-use crate::context::AppContext;
-use crate::ui::tokens::tokens_screen::IdentityTokenBalance;
 
 impl AppContext {
     pub async fn update_token_config(
@@ -68,9 +69,11 @@ impl AppContext {
             builder = builder.with_public_note(public_note.clone());
         }
 
+        let options = self.state_transition_options();
+
         // Sign the state transition
         let state_transition = builder
-            .sign(sdk, &signing_key, &identity, self.platform_version)
+            .sign(sdk, &signing_key, &identity, self.platform_version, options)
             .await
             .map_err(|e| {
                 format!(

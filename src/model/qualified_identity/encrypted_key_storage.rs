@@ -294,7 +294,11 @@ impl KeyStorage {
                             *wallet_seed_hash,
                             derivation_path,
                         )?
-                        .ok_or("Wallet not present".to_string())?;
+                        .ok_or(format!(
+                            "Wallet for key at derivation path {} not present, we have {} wallets",
+                            derivation_path,
+                            wallets.len()
+                        ))?;
                         // match qualified_identity_public_key_data
                         //     .identity_public_key
                         //     .security_level()

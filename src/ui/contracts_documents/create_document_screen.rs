@@ -11,6 +11,8 @@ use crate::ui::BackendTaskSuccessResult;
 use crate::ui::{MessageType, ScreenLike};
 
 use crate::ui::tools::document_visualizer_screen::add_simple_contract_doc_type_chooser;
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
 use dash_sdk::dpp::data_contract::document_type::methods::DocumentTypeBasicMethods;
@@ -420,7 +422,7 @@ impl CreateDocumentScreen {
                     let bytes = if let Ok(b) = hex::decode(input_str) {
                         b
                     } else {
-                        base64::decode(input_str).map_err(|_| {
+                        STANDARD.decode(input_str).map_err(|_| {
                             format!("“{name}” must be hex or base64 for a ByteArray field")
                         })?
                     };

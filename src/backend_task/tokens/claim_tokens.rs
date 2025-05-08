@@ -5,7 +5,9 @@ use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::proof_log_item::{ProofLogItem, RequestType};
 use dash_sdk::dpp::data_contract::associated_token::token_distribution_key::TokenDistributionType;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::dpp::state_transition::batch_transition::methods::StateTransitionCreationOptions;
 use dash_sdk::dpp::state_transition::proof_result::StateTransitionProofResult;
+use dash_sdk::dpp::state_transition::StateTransitionSigningOptions;
 use dash_sdk::platform::transition::broadcast::BroadcastStateTransition;
 use dash_sdk::platform::transition::fungible_tokens::claim::TokenClaimTransitionBuilder;
 use dash_sdk::platform::{DataContract, IdentityPublicKey};
@@ -34,9 +36,17 @@ impl AppContext {
             builder = builder.with_public_note(note);
         }
 
+        let options = self.state_transition_options();
+
         // Sign
         let state_transition = builder
-            .sign(sdk, &signing_key, actor_identity, self.platform_version)
+            .sign(
+                sdk,
+                &signing_key,
+                actor_identity,
+                self.platform_version,
+                options,
+            )
             .await
             .map_err(|e| format!("Error signing ClaimTokens transition: {}", e.to_string()))?;
 

@@ -110,7 +110,7 @@ impl ResumeTokensScreen {
                     None => "Select a key".to_string(),
                 })
                 .show_ui(ui, |ui| {
-if self.app_context.developer_mode {
+                    if self.app_context.developer_mode {
                         // Show all loaded public keys
                         for key in self.identity.identity.public_keys().values() {
                             let is_valid = key.purpose() == Purpose::AUTHENTICATION

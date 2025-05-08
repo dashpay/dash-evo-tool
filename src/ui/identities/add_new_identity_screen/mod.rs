@@ -124,7 +124,7 @@ impl AddNewIdentityScreen {
                                     .expect("expected to have decrypted wallet"),
                                 KeyType::ECDSA_HASH160,
                                 Purpose::AUTHENTICATION,
-                                SecurityLevel::HIGH,
+                                SecurityLevel::CRITICAL,
                             ),
                             (
                                 wallet
@@ -132,6 +132,19 @@ impl AddNewIdentityScreen {
                                         app_context.network,
                                         0,
                                         2,
+                                        Some(&app_context),
+                                    )
+                                    .expect("expected to have decrypted wallet"),
+                                KeyType::ECDSA_HASH160,
+                                Purpose::AUTHENTICATION,
+                                SecurityLevel::HIGH,
+                            ),
+                            (
+                                wallet
+                                    .identity_authentication_ecdsa_private_key(
+                                        app_context.network,
+                                        0,
+                                        3,
                                         Some(&app_context),
                                     )
                                     .expect("expected to have decrypted wallet"),
@@ -987,7 +1000,7 @@ impl ScreenLike for AddNewIdentityScreen {
                                     .expect("expected to have decrypted wallet"),
                                 KeyType::ECDSA_HASH160,
                                 Purpose::AUTHENTICATION,
-                                SecurityLevel::HIGH,
+                                SecurityLevel::CRITICAL,
                             ),
                             (
                                 wallet
@@ -995,6 +1008,19 @@ impl ScreenLike for AddNewIdentityScreen {
                                         self.app_context.network,
                                         self.identity_id_number,
                                         2,
+                                        Some(&self.app_context),
+                                    )
+                                    .expect("expected to have decrypted wallet"),
+                                KeyType::ECDSA_HASH160,
+                                Purpose::AUTHENTICATION,
+                                SecurityLevel::HIGH,
+                            ),
+                            (
+                                wallet
+                                    .identity_authentication_ecdsa_private_key(
+                                        self.app_context.network,
+                                        self.identity_id_number,
+                                        3,
                                         Some(&self.app_context),
                                     )
                                     .expect("expected to have decrypted wallet"),

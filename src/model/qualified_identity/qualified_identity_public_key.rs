@@ -41,28 +41,35 @@ impl QualifiedIdentityPublicKey {
         // Initialize `in_wallet_at_derivation_path` as `None`
         let mut in_wallet_at_derivation_path = None;
 
-        let pubkey =
-            PublicKey::from_slice(value.data().as_slice()).expect("Expected valid public key");
+        if value.data().len() > 20 {
+            let pubkey =
+                PublicKey::from_slice(value.data().as_slice()).expect("Expected valid public key");
 
-        let address = Address::p2pkh(&pubkey, network);
+            let address = Address::p2pkh(&pubkey, network);
 
-        // Iterate over each wallet to check for matching derivation paths
-        for locked_wallet in wallets {
-            let wallet = locked_wallet.read().unwrap();
-            if let Some(derivation_path) = wallet.known_addresses.get(&address) {
-                in_wallet_at_derivation_path = Some(WalletDerivationPath {
-                    wallet_seed_hash: wallet.seed_hash(),
-                    derivation_path: derivation_path.clone(),
-                });
+            // Iterate over each wallet to check for matching derivation paths
+            for locked_wallet in wallets {
+                let wallet = locked_wallet.read().unwrap();
+                if let Some(derivation_path) = wallet.known_addresses.get(&address) {
+                    in_wallet_at_derivation_path = Some(WalletDerivationPath {
+                        wallet_seed_hash: wallet.seed_hash(),
+                        derivation_path: derivation_path.clone(),
+                    });
+                }
+                if in_wallet_at_derivation_path.is_some() {
+                    break;
+                }
             }
-            if in_wallet_at_derivation_path.is_some() {
-                break;
-            }
-        }
 
-        Self {
-            identity_public_key: value,
-            in_wallet_at_derivation_path,
+            Self {
+                identity_public_key: value,
+                in_wallet_at_derivation_path,
+            }
+        } else {
+            Self {
+                identity_public_key: value,
+                in_wallet_at_derivation_path: None,
+            }
         }
     }
 }

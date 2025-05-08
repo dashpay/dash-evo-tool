@@ -290,16 +290,11 @@ impl AppContext {
         &self,
         identity_id: &Identifier,
     ) -> Result<Option<QualifiedIdentity>> {
+        let wallets = self.wallets.read().unwrap();
         // Get the identity from the database
-        let identity = self.db.get_identity_by_id(identity_id, self)?;
+        let result = self.db.get_identity_by_id(identity_id, self, &wallets)?;
 
-        // If the identity is not found in the database, return None
-        if identity.is_none() {
-            return Ok(None);
-        }
-
-        // If the identity is found, return it
-        Ok(Some(identity.unwrap()))
+        Ok(result)
     }
 
     /// Fetches all voting identities from the database

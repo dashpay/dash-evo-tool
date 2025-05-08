@@ -135,23 +135,45 @@ impl TransferTokensScreen {
                 })
                 .show_ui(ui, |ui| {
                     if self.app_context.developer_mode {
+                        // Show all loaded public keys
                         for key in self.identity.identity.public_keys().values() {
-                            let label =
-                                format!("Key ID: {} (Purpose: {:?})", key.id(), key.purpose());
-                            ui.selectable_value(&mut self.selected_key, Some(key.clone()), label);
-                        }
-                    } else {
-                        for key in self.identity.available_authentication_keys() {
+                            let is_valid = key.purpose() == Purpose::AUTHENTICATION
+                                && key.security_level() == SecurityLevel::CRITICAL;
+
                             let label = format!(
-                                "Key ID: {} (Purpose: {:?})",
-                                key.identity_public_key.id(),
-                                key.identity_public_key.purpose()
+                                "Key ID: {} (Info: {}/{}/{})",
+                                key.id(),
+                                key.purpose(),
+                                key.security_level(),
+                                key.key_type()
                             );
+                            let styled_label = if is_valid {
+                                RichText::new(label.clone())
+                            } else {
+                                RichText::new(label.clone()).color(Color32::RED)
+                            };
+
                             ui.selectable_value(
                                 &mut self.selected_key,
-                                Some(key.identity_public_key.clone()),
-                                label,
+                                Some(key.clone()),
+                                styled_label,
                             );
+                        }
+                    } else {
+                        // Show only "available" auth keys
+                        for key_wrapper in self
+                            .identity
+                            .available_authentication_keys_with_critical_security_level()
+                        {
+                            let key = &key_wrapper.identity_public_key;
+                            let label = format!(
+                                "Key ID: {} (Info: {}/{}/{})",
+                                key.id(),
+                                key.purpose(),
+                                key.security_level(),
+                                key.key_type()
+                            );
+                            ui.selectable_value(&mut self.selected_key, Some(key.clone()), label);
                         }
                     }
                 });

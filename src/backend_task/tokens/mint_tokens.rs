@@ -44,19 +44,7 @@ impl AppContext {
             builder = builder.with_public_note(note);
         }
 
-        let options = if self.developer_mode {
-            Some(StateTransitionCreationOptions {
-                signing_options: StateTransitionSigningOptions {
-                    allow_signing_with_any_security_level: true,
-                    allow_signing_with_any_purpose: true,
-                },
-                batch_feature_version: None,
-                method_feature_version: None,
-                base_feature_version: None,
-            })
-        } else {
-            None
-        };
+        let options = self.state_transition_options();
 
         let state_transition = builder
             .sign(

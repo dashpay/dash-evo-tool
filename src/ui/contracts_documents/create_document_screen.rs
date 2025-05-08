@@ -6,11 +6,11 @@ use crate::model::{qualified_contract::QualifiedContract, qualified_identity::Qu
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
+use crate::ui::helpers::add_simple_contract_doc_type_chooser;
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::BackendTaskSuccessResult;
 use crate::ui::{MessageType, ScreenLike};
 
-use crate::ui::tools::document_visualizer_screen::add_simple_contract_doc_type_chooser;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
@@ -46,7 +46,6 @@ use std::{
 enum BroadcastStatus {
     Idle,
     MissingField(String),
-    BuildingError(String),
     Broadcasting(u64),
     Error(String),
     Complete,
@@ -597,7 +596,6 @@ impl ScreenLike for CreateDocumentScreen {
             ui.heading("1. Select a contract and document type:");
             ui.add_space(10.0);
 
-            /* floating contract/doc-type chooser */
             add_simple_contract_doc_type_chooser(
                 ui,
                 &mut self.contract_search,
@@ -715,9 +713,6 @@ impl ScreenLike for CreateDocumentScreen {
                 }
                 BroadcastStatus::Complete => {
                     // this is handled at the beginning of the CentralPanel
-                }
-                BroadcastStatus::BuildingError(e) => {
-                    ui.colored_label(Color32::DARK_RED, e);
                 }
             }
         });

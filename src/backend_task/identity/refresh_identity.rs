@@ -52,7 +52,7 @@ impl AppContext {
         qualified_identity_to_update.identity = refreshed_identity;
 
         // Insert the updated identity into local state
-        self.insert_local_qualified_identity(&qualified_identity_to_update, None)
+        self.update_local_qualified_identity(&qualified_identity_to_update)
             .map_err(|e| e.to_string())?;
 
         // Send refresh message to refresh the Identities Screen

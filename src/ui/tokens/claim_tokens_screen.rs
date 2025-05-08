@@ -2,14 +2,16 @@ use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_distribution_key::TokenDistributionType;
 use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::accessors::v0::TokenDistributionRulesV0Getters;
+use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::distribution_function::DistributionFunction;
 use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::distribution_recipient::TokenDistributionRecipient;
 use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::methods::v0::TokenPerpetualDistributionV0Accessors;
+use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::reward_distribution_type::RewardDistributionType;
 use dash_sdk::dpp::data_contract::TokenConfiguration;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
@@ -134,22 +136,42 @@ impl ClaimTokensScreen {
                     if self.app_context.developer_mode {
                         // Show all loaded public keys
                         for key in self.identity.identity.public_keys().values() {
-                            let label =
-                                format!("Key ID: {} (Purpose: {:?})", key.id(), key.purpose());
-                            ui.selectable_value(&mut self.selected_key, Some(key.clone()), label);
+                            let is_valid = key.purpose() == Purpose::AUTHENTICATION
+                                && key.security_level() == SecurityLevel::CRITICAL;
+
+                            let label = format!(
+                                "Key ID: {} (Info: {}/{}/{})",
+                                key.id(),
+                                key.purpose(),
+                                key.security_level(),
+                                key.key_type()
+                            );
+                            let styled_label = if is_valid {
+                                RichText::new(label.clone())
+                            } else {
+                                RichText::new(label.clone()).color(Color32::RED)
+                            };
+
+                            ui.selectable_value(
+                                &mut self.selected_key,
+                                Some(key.clone()),
+                                styled_label,
+                            );
                         }
                     } else {
                         // Show only "available" auth keys
-                        for key_wrapper in self.identity.available_authentication_keys() {
-                            if key_wrapper.identity_public_key.security_level()
-                                == SecurityLevel::MASTER
-                            {
-                                // Master keys can't sign claims
-                                continue;
-                            }
+                        for key_wrapper in self
+                            .identity
+                            .available_authentication_keys_with_critical_security_level()
+                        {
                             let key = &key_wrapper.identity_public_key;
-                            let label =
-                                format!("Key ID: {} (Purpose: {:?})", key.id(), key.purpose());
+                            let label = format!(
+                                "Key ID: {} (Info: {}/{}/{})",
+                                key.id(),
+                                key.purpose(),
+                                key.security_level(),
+                                key.key_type()
+                            );
                             ui.selectable_value(&mut self.selected_key, Some(key.clone()), label);
                         }
                     }
@@ -435,6 +457,90 @@ impl ScreenLike for ClaimTokensScreen {
                     }
                 });
                 ui.add_space(10.0);
+
+                if self.distribution_type == Some(TokenDistributionType::Perpetual) {
+                    ui.heading("!Understanding Claim Limitations!");
+                    ui.add_space(5.0);
+                    let extra_info = if let Some(perpetual_distribution) = self.token_configuration.distribution_rules().perpetual_distribution() {
+                        let function_string = match perpetual_distribution.distribution_type().function() {
+                            DistributionFunction::FixedAmount { amount } => {
+                                format!("a fixed amount of {} base tokens", amount)
+                            }
+                            DistributionFunction::Random { min, max } => {
+                                format!("a random amount between {} and {} base tokens", min, max)
+                            }
+                            DistributionFunction::StepDecreasingAmount {
+                                step_count,
+                                decrease_per_interval_numerator,
+                                decrease_per_interval_denominator,
+                                distribution_start_amount,
+                                min_value,
+                                ..
+                            } => {
+                                format!(
+                                    "a decreasing amount starting at {} and stepping every {} interval{} by {}/{}{}",
+                                    distribution_start_amount,
+                                    step_count,
+                                    if *step_count == 1 { "" } else { "s" },
+                                    decrease_per_interval_numerator,
+                                    decrease_per_interval_denominator,
+                                    min_value
+                                        .map(|v| format!(", with a minimum of {}", v))
+                                        .unwrap_or_default()
+                                )
+                            }
+                            DistributionFunction::Stepwise(_) => {
+                                "a variable amount based on a stepwise function".to_string()
+                            }
+                            DistributionFunction::Linear { .. } => {
+                                "a variable amount based on a linear function".to_string()
+                            }
+                            DistributionFunction::Polynomial { .. } => {
+                                "a variable amount based on a polynomial function".to_string()
+                            }
+                            DistributionFunction::Exponential { .. } => {
+                                "a variable amount based on an exponential function".to_string()
+                            }
+                            DistributionFunction::Logarithmic { .. } => {
+                                "a variable amount based on a logarithmic function".to_string()
+                            }
+                            DistributionFunction::InvertedLogarithmic { .. } => {
+                                "a variable amount based on an inverted logarithmic function".to_string()
+                            }
+                        };
+
+                        match perpetual_distribution.distribution_type() {
+                            RewardDistributionType::BlockBasedDistribution { interval, .. } => {
+                                let block_str = if *interval == 1 { "block" } else { "blocks" };
+                                format!(
+                                    "This token is using a block based distribution where every {} {} it will distribute {}.",
+                                    interval, block_str, function_string
+                                )
+                            }
+                            RewardDistributionType::TimeBasedDistribution { interval, .. } => {
+                                let duration = Duration::from_millis(*interval);
+                                let interval_str = humantime::format_duration(duration).to_string();
+                                format!(
+                                    "This token is using a time based distribution where every {} it will distribute {}.",
+                                    interval_str, function_string
+                                )
+                            }
+                            RewardDistributionType::EpochBasedDistribution { interval, .. } => {
+                                let epoch_str = if *interval == 1 { "epoch" } else { "epochs" };
+                                format!(
+                                    "This token is using an epoch based distribution where every {} {} it will distribute {}.",
+                                    interval, epoch_str, function_string
+                                )
+                            }
+                        }
+                    } else {
+                        String::new()
+                    };
+                    ui.label(format!("A perpetual distribution can only claim 128 cycles at a time, except for fixed amount distributions where you can claim 32,767 cycles.\n\n\
+                    If your token would pay out every hour 1 Token, then you could only claim 128 hours worth of tokens in one claim, you can issue multiple claims back to back until you have nothing left to claim.\n\n\
+                    {}", extra_info));
+                    ui.add_space(10.0);
+                }
 
                 let button = egui::Button::new(RichText::new("Claim").color(Color32::WHITE))
                     .fill(Color32::from_rgb(0, 128, 0))

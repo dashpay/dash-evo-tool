@@ -99,7 +99,6 @@ pub struct AddExistingIdentityScreen {
     keys_input: Vec<String>,
     add_identity_status: AddIdentityStatus,
     testnet_loaded_nodes: Option<TestnetNodes>,
-    pub identity_load_method: IdentityLoadMethod,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     show_password: bool,
     wallet_password: String,
@@ -127,7 +126,6 @@ impl AddExistingIdentityScreen {
             keys_input: vec![String::new(), String::new(), String::new()],
             add_identity_status: AddIdentityStatus::NotStarted,
             testnet_loaded_nodes,
-            identity_load_method: IdentityLoadMethod::ByIdentifier,
             selected_wallet,
             show_password: false,
             wallet_password: "".to_string(),
@@ -138,7 +136,7 @@ impl AddExistingIdentityScreen {
         }
     }
 
-    fn render_by_identity(&mut self, ui: &mut egui::Ui) -> AppAction {
+    fn render_by_identity(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
 
         if self.app_context.network == Network::Testnet && self.testnet_loaded_nodes.is_some() {
@@ -543,40 +541,8 @@ impl ScreenLike for AddExistingIdentityScreen {
                 return;
             }
 
-            // ui.heading(format!("1. Select a method to load the identity:"));
-            // ui.add_space(10.0);
-            // // Prepare tabs
-            // let tabs = vec![("By Identifier", IdentityLoadMethod::ByIdentifier)];
-            // // let wallets_len = {
-            // //     // Check if there are wallets
-            // //     let wallets = self.app_context.wallets.read().unwrap();
-            // //     let has_wallet = !wallets.is_empty();
-            // //     if has_wallet {
-            // //         tabs.push(("From Wallet", IdentityLoadMethod::FromWallet));
-            // //     }
-            // //     wallets.len()
-            // // };
+            action |= self.render_by_identity(ui);
 
-            // // Render tabs
-            // ui.horizontal(|ui| {
-            //     for (tab_name, tab_method) in &tabs {
-            //         let selected = self.identity_load_method == *tab_method;
-            //         if ui.selectable_label(selected, *tab_name).clicked() {
-            //             self.identity_load_method = tab_method.clone();
-            //         }
-            //     }
-            // });
-
-            // ui.add_space(10.0);
-            // ui.separator();
-            // ui.add_space(10.0);
-
-            match self.identity_load_method {
-                IdentityLoadMethod::ByIdentifier => action |= self.render_by_identity(ui),
-                IdentityLoadMethod::FromWallet => {
-                    // action |= self.render_from_wallet(ui, wallets_len)
-                }
-            }
             ui.add_space(10.0);
 
             match &self.add_identity_status {

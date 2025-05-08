@@ -1073,6 +1073,8 @@ pub struct TokenBuildArgs {
     pub groups: BTreeMap<u16, Group>,
 }
 
+pub type TokenSearchable = bool;
+
 /// The main, combined TokensScreen:
 /// - Displays token balances or a search UI
 /// - Allows reordering of tokens if desired
@@ -1122,7 +1124,7 @@ pub struct TokensScreen {
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     wallet_password: String,
     show_password: bool,
-    token_names_input: Vec<(String, String, TokenNameLanguage)>,
+    token_names_input: Vec<(String, String, TokenNameLanguage, TokenSearchable)>,
     contract_keywords_input: String,
     token_description_input: String,
     should_capitalize_input: bool,
@@ -1333,7 +1335,12 @@ impl TokensScreen {
             show_token_creator_confirmation_popup: false,
             token_creator_status: TokenCreatorStatus::NotStarted,
             token_creator_error_message: None,
-            token_names_input: vec![(String::new(), String::new(), TokenNameLanguage::English)],
+            token_names_input: vec![(
+                String::new(),
+                String::new(),
+                TokenNameLanguage::English,
+                true,
+            )],
             contract_keywords_input: String::new(),
             token_description_input: String::new(),
             should_capitalize_input: true,
@@ -2065,9 +2072,13 @@ impl TokensScreen {
             let query_ref = self
                 .token_search_query
                 .get_or_insert_with(|| "".to_string());
-            ui.text_edit_singleline(query_ref);
+            let text_edit_response = ui.text_edit_singleline(query_ref);
 
-            if ui.button("Go").clicked() {
+            let go_clicked = ui.button("Go").clicked();
+            let enter_pressed =
+                text_edit_response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+
+            if go_clicked || enter_pressed {
                 // Clear old results, set status
                 self.search_results.lock().unwrap().clear();
                 let now = Utc::now().timestamp() as u64;
@@ -2078,7 +2089,7 @@ impl TokensScreen {
                 self.search_has_next_page = false;
 
                 // Dispatch a backend task to do the actual keyword => token retrieval
-                let keyword = query_ref.clone();
+                let keyword = query_ref.to_lowercase();
                 action = AppAction::BackendTask(BackendTask::TokenTask(
                     TokenTask::QueryDescriptionsByKeyword(keyword, None),
                 ));
@@ -2605,18 +2616,28 @@ impl TokensScreen {
                                 }
                                 ui.horizontal(|ui| {
                                     if ui.button("+").clicked() {
-                                        let used_languages: HashSet<_> = self.token_names_input.iter().map(|(_, _, lang)| *lang).collect();
+                                        let used_languages: HashSet<_> = self.token_names_input.iter().map(|(_, _, lang, _)| *lang).collect();
                                         let next_non_used_language = enum_iterator::all::<TokenNameLanguage>()
                                             .find(|lang| !used_languages.contains(lang))
                                             .unwrap_or(TokenNameLanguage::English); // fallback
                                         // Add a new token name input
-                                        self.token_names_input.push((String::new(), String::new(), next_non_used_language));
+                                        self.token_names_input.push((String::new(), String::new(), next_non_used_language, false));
                                     }
                                     if i != 0 {
                                         if ui.button("-").clicked() {
                                             token_to_remove = Some(i.try_into().expect("Failed to convert index"));
                                         }
                                     }
+
+                                    ui.checkbox(&mut self.token_names_input[i].3, "Searchable");
+
+                                    let info_icon = egui::Label::new("ℹ").sense(egui::Sense::click());
+                                    let response = ui.add(info_icon)
+                                        .on_hover_text("Each searchable keyword costs 0.1 Dash");
+                                    if response.clicked() {
+                                        self.show_pop_up_info = Some("Each searchable keyword costs 0.1 Dash".to_string());
+                                    }
+
                                 });
                                 ui.end_row();
                             }
@@ -2636,7 +2657,15 @@ impl TokensScreen {
                             ui.end_row();
 
                             // Row 4: Contract Keywords
-                            ui.label("Contract Keywords (comma separated):");
+                            ui.horizontal(|ui| {
+                                ui.label("Contract Keywords (comma separated):");
+                                let info_icon = egui::Label::new("ℹ").sense(egui::Sense::click());
+                                let response = ui.add(info_icon)
+                                    .on_hover_text("Each searchable keyword costs 0.1 Dash");
+                                if response.clicked() {
+                                    self.show_pop_up_info = Some("Each searchable keyword costs 0.1 Dash".to_string());
+                                }
+                            });
                             ui.text_edit_singleline(&mut self.contract_keywords_input);
                             ui.end_row();
 
@@ -3921,6 +3950,23 @@ Emits tokens in fixed amounts for specific intervals.
             .ok_or_else(|| "Please select an identity".to_string())?;
         let identity_id = identity.identity.id().clone();
 
+        // Remove whitespace and parse the comma separated string into a vec
+        let mut contract_keywords = if self.contract_keywords_input.trim().is_empty() {
+            Vec::new()
+        } else {
+            self.contract_keywords_input
+                .split(',')
+                .map(|s| {
+                    let trimmed = s.trim().to_string();
+                    if trimmed.len() < 3 || trimmed.len() > 50 {
+                        Err(format!("Invalid contract keyword {}, keyword must be between 3 and 50 characters", trimmed))
+                    } else {
+                        Ok(trimmed)
+                    }
+                })
+                .collect::<Result<Vec<String>, String>>()?
+        };
+
         // 2) Basic fields
         if self.token_names_input.is_empty() {
             return Err("Please enter a token name".to_string());
@@ -3998,24 +4044,13 @@ Emits tokens in fixed amounts for specific intervals.
                 name_with_language.1.clone(),
                 language.to_owned(),
             ));
+
+            // are we searchable?
+            if name_with_language.3 {
+                contract_keywords.push(name_with_language.0.clone())
+            }
         }
 
-        // Remove whitespace and parse the comma separated string into a vec
-        let contract_keywords = if self.contract_keywords_input.trim().is_empty() {
-            Vec::new()
-        } else {
-            self.contract_keywords_input
-                .split(',')
-                .map(|s| {
-                    let trimmed = s.trim().to_string();
-                    if trimmed.len() < 3 || trimmed.len() > 50 {
-                        Err(format!("Invalid contract keyword {}, keyword must be between 3 and 50 characters", trimmed))
-                    } else {
-                        Ok(trimmed)
-                    }
-                })
-                .collect::<Result<Vec<String>, String>>()?
-        };
         let token_description = if self.token_description_input.len() > 0 {
             Some(self.token_description_input.clone())
         } else {
@@ -4497,7 +4532,12 @@ Emits tokens in fixed amounts for specific intervals.
         self.selected_identity = None;
         self.selected_key = None;
         self.token_creator_status = TokenCreatorStatus::NotStarted;
-        self.token_names_input = vec![(String::new(), String::new(), TokenNameLanguage::English)];
+        self.token_names_input = vec![(
+            String::new(),
+            String::new(),
+            TokenNameLanguage::English,
+            true,
+        )];
         self.contract_keywords_input = "".to_string();
         self.token_description_input = "".to_string();
         self.decimals_input = "8".to_string();
@@ -5310,6 +5350,7 @@ mod tests {
             "AcmeCoin".to_string(),
             "AcmeCoins".to_string(),
             TokenNameLanguage::English,
+            true,
         )];
         token_creator_ui.base_supply_input = "5000000".to_string();
         token_creator_ui.max_supply_input = "10000000".to_string();
@@ -5605,6 +5646,7 @@ mod tests {
             "TestToken".to_owned(),
             "TestToken".to_owned(),
             TokenNameLanguage::English,
+            true,
         )];
 
         // Enable perpetual distribution, select Random

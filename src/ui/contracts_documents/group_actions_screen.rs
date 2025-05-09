@@ -144,91 +144,102 @@ impl GroupActionsScreen {
                 TableBuilder::new(ui)
                     .striped(true)
                     .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                    .column(Column::auto().resizable(true)) // Identifier
-                    .column(Column::auto().resizable(true)) // Action
+                    .column(Column::auto().resizable(true)) // Action ID
+                    .column(Column::auto().resizable(true)) // Type
+                    .column(Column::auto().resizable(true)) // Info
+                    .column(Column::auto().resizable(true)) // Note
                     .column(Column::auto()) // Button
                     .min_scrolled_height(0.0)
                     .header(row_height, |mut header| {
+                        for title in ["Action ID", "Type", "Info", "Note"] {
+                            header.col(|ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label(RichText::new(title).strong());
+                                    ui.add_space(30.0);
+                                });
+                            });
+                        }
                         header.col(|ui| {
-                            ui.label(RichText::new("Identifier").strong().monospace());
-                        });
-                        header.col(|ui| {
-                            ui.label(RichText::new("Action").strong().monospace());
-                        });
-                        header.col(|ui| {
-                            ui.label(""); // Button column has no header
+                            ui.label(""); // No header for button
                         });
                     })
                     .body(|mut body| {
                         for (id, group_action) in group_actions {
-                            let action_info_string = match group_action {
+                            let (typ, info, note): (&str, String, String) = match group_action {
                                 GroupAction::V0(action_v0) => match &action_v0.event {
                                     GroupActionEvent::TokenEvent(token_event) => {
                                         match token_event {
-                                            TokenEvent::Mint(amount, identifier, note) => {
-                                                format!(
-                                                    "Mint {} to {} [{:?}]",
-                                                    amount, identifier, note
-                                                )
-                                            }
-                                            TokenEvent::Burn(amount, note) => {
-                                                format!("Burn {} [{:?}]", amount, note)
-                                            }
-                                            TokenEvent::Freeze(identifier, note) => {
-                                                format!("Freeze {} [{:?}]", identifier, note)
-                                            }
-                                            TokenEvent::Unfreeze(identifier, note) => {
-                                                format!("Unfreeze {} [{:?}]", identifier, note)
-                                            }
+                                            TokenEvent::Mint(amount, identifier, note_opt) => (
+                                                "Mint",
+                                                format!("{} to {}", amount, identifier),
+                                                format!("{}", note_opt.clone().unwrap_or_default()),
+                                            ),
+                                            TokenEvent::Burn(amount, note_opt) => (
+                                                "Burn",
+                                                format!("{}", amount),
+                                                format!("{}", note_opt.clone().unwrap_or_default()),
+                                            ),
+                                            TokenEvent::Freeze(identifier, note_opt) => (
+                                                "Freeze",
+                                                format!("{}", identifier),
+                                                format!("{}", note_opt.clone().unwrap_or_default()),
+                                            ),
+                                            TokenEvent::Unfreeze(identifier, note_opt) => (
+                                                "Unfreeze",
+                                                format!("{}", identifier),
+                                                format!("{}", note_opt.clone().unwrap_or_default()),
+                                            ),
                                             TokenEvent::DestroyFrozenFunds(
                                                 identifier,
                                                 amount,
-                                                note,
-                                            ) => {
-                                                format!(
-                                                    "Destroy {} frozen funds from {} [{:?}]",
-                                                    amount, identifier, note
-                                                )
-                                            }
+                                                note_opt,
+                                            ) => (
+                                                "DestroyFrozenFunds",
+                                                format!("{} from {}", amount, identifier),
+                                                format!("{}", note_opt.clone().unwrap_or_default()),
+                                            ),
                                             TokenEvent::Transfer(
                                                 identifier,
                                                 public_note,
                                                 _,
                                                 _,
                                                 amount,
-                                            ) => {
+                                            ) => (
+                                                "Transfer",
+                                                format!("{} to {}", amount, identifier),
                                                 format!(
-                                                    "Transfer {} to {} [{:?}]",
-                                                    amount, identifier, public_note
-                                                )
-                                            }
-                                            TokenEvent::Claim(dist_type, amount, note) => {
-                                                format!(
-                                                    "Claim {} via {:?} [{:?}]",
-                                                    amount, dist_type, note
-                                                )
-                                            }
-                                            TokenEvent::EmergencyAction(action, note) => {
-                                                format!("Emergency {:?} [{:?}]", action, note)
-                                            }
-                                            TokenEvent::ConfigUpdate(change_item, note) => {
-                                                format!(
-                                                    "Config Update: {:?} [{:?}]",
-                                                    change_item, note
-                                                )
-                                            }
+                                                    "{}",
+                                                    public_note.clone().unwrap_or_default()
+                                                ),
+                                            ),
+                                            TokenEvent::Claim(dist_type, amount, note_opt) => (
+                                                "Claim",
+                                                format!("{} via {:?}", amount, dist_type),
+                                                format!("{}", note_opt.clone().unwrap_or_default()),
+                                            ),
+                                            TokenEvent::EmergencyAction(action, note_opt) => (
+                                                "Emergency",
+                                                format!("{:?}", action),
+                                                format!("{}", note_opt.clone().unwrap_or_default()),
+                                            ),
+                                            TokenEvent::ConfigUpdate(change_item, note_opt) => (
+                                                "ConfigUpdate",
+                                                format!("{:?}", change_item),
+                                                format!("{}", note_opt.clone().unwrap_or_default()),
+                                            ),
                                             TokenEvent::ChangePriceForDirectPurchase(
                                                 schedule,
-                                                note,
-                                            ) => {
-                                                format!("Change Price: {:?} [{:?}]", schedule, note)
-                                            }
-                                            TokenEvent::DirectPurchase(amount, credits) => {
-                                                format!(
-                                                    "Direct Purchase: {} for {} credits",
-                                                    amount, credits
-                                                )
-                                            }
+                                                note_opt,
+                                            ) => (
+                                                "ChangePrice",
+                                                format!("{:?}", schedule),
+                                                format!("{}", note_opt.clone().unwrap_or_default()),
+                                            ),
+                                            TokenEvent::DirectPurchase(amount, credits) => (
+                                                "DirectPurchase",
+                                                format!("{} for {} credits", amount, credits),
+                                                "".to_string(),
+                                            ),
                                         }
                                     }
                                 },
@@ -236,18 +247,33 @@ impl GroupActionsScreen {
 
                             body.row(row_height, |mut row| {
                                 row.col(|ui| {
-                                    ui.label(RichText::new(
-                                        id.to_string(Encoding::Base58)
-                                            .chars()
-                                            .take(16)
-                                            .collect::<String>(),
-                                    ));
+                                    ui.horizontal(|ui| {
+                                        ui.label(RichText::new(
+                                            id.to_string(Encoding::Base58)
+                                                .chars()
+                                                .take(16)
+                                                .collect::<String>(),
+                                        ));
+                                        ui.add_space(30.0);
+                                    });
                                 });
                                 row.col(|ui| {
-                                    ui.label(
-                                        egui::RichText::new(action_info_string)
-                                            .text_style(TextStyle::Body),
-                                    );
+                                    ui.horizontal(|ui| {
+                                        ui.label(typ);
+                                        ui.add_space(30.0);
+                                    });
+                                });
+                                row.col(|ui| {
+                                    ui.horizontal(|ui| {
+                                        ui.label(info);
+                                        ui.add_space(30.0);
+                                    });
+                                });
+                                row.col(|ui| {
+                                    ui.horizontal(|ui| {
+                                        ui.label(note);
+                                        ui.add_space(30.0);
+                                    });
                                 });
                                 row.col(|ui| {
                                     if ui

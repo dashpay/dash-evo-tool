@@ -33,7 +33,6 @@ use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicK
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
-use itertools::Itertools;
 
 /// Internal states for the mint process.
 #[derive(PartialEq)]
@@ -154,7 +153,6 @@ impl MintTokensScreen {
         };
 
         // Attempt to get an unlocked wallet reference
-        let mut error_message = None;
         let selected_wallet = get_selected_wallet(
             &identity_token_info.identity,
             None,

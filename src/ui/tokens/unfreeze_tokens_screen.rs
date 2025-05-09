@@ -92,7 +92,7 @@ impl UnfreezeTokensScreen {
 
         let group = match identity_token_info
             .token_config
-            .manual_burning_rules()
+            .unfreeze_rules()
             .authorized_to_make_change_action_takers()
         {
             AuthorizedActionTakers::NoOne => {

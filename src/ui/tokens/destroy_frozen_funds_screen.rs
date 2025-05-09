@@ -100,7 +100,7 @@ impl DestroyFrozenFundsScreen {
 
         let group = match identity_token_info
             .token_config
-            .manual_burning_rules()
+            .destroy_frozen_funds_rules()
             .authorized_to_make_change_action_takers()
         {
             AuthorizedActionTakers::NoOne => {

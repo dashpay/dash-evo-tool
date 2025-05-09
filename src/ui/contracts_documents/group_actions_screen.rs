@@ -25,12 +25,16 @@ use dash_sdk::dpp::data_contract::associated_token::token_configuration::accesso
 use dash_sdk::dpp::data_contract::change_control_rules::authorized_action_takers::AuthorizedActionTakers;
 use dash_sdk::dpp::data_contract::change_control_rules::ChangeControlRules;
 use dash_sdk::dpp::data_contract::TokenContractPosition;
+use dash_sdk::dpp::group::action_event::GroupActionEvent;
 use dash_sdk::dpp::group::group_action::GroupAction;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::prelude::TimestampMillis;
+use dash_sdk::dpp::tokens::token_event::TokenEvent;
 use dash_sdk::platform::Identifier;
 use dash_sdk::query_types::IndexMap;
-use eframe::egui::{self, Color32, Context, RichText, Ui};
+use eframe::egui::{self, Color32, Context, RichText};
+use egui::{ScrollArea, TextStyle};
+use egui_extras::{Column, TableBuilder};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -120,51 +124,150 @@ impl GroupActionsScreen {
 
     fn render_group_actions(
         &self,
-        ui: &mut Ui,
+        ui: &mut egui::Ui,
         group_actions: &IndexMap<Identifier, GroupAction>,
     ) -> AppAction {
         ui.heading("Active Group Actions:");
-
         ui.add_space(10.0);
+
         if group_actions.is_empty() {
             ui.label("No active group actions found.");
             return AppAction::None;
         }
 
-        egui::Grid::new("group_actions_table")
-            .striped(true)
-            .spacing([8.0, 4.0])
+        let text_style = TextStyle::Body;
+        let row_height = ui.text_style_height(&text_style) + 8.0;
+
+        ScrollArea::vertical()
+            .auto_shrink([false; 2])
             .show(ui, |ui| {
-                ui.label("Identifier");
-                ui.label("Action");
-                ui.label("");
-                ui.end_row();
+                TableBuilder::new(ui)
+                    .striped(true)
+                    .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                    .column(Column::auto().resizable(true)) // Identifier
+                    .column(Column::auto().resizable(true)) // Action
+                    .column(Column::auto()) // Button
+                    .min_scrolled_height(0.0)
+                    .header(row_height, |mut header| {
+                        header.col(|ui| {
+                            ui.label(RichText::new("Identifier").strong().monospace());
+                        });
+                        header.col(|ui| {
+                            ui.label(RichText::new("Action").strong().monospace());
+                        });
+                        header.col(|ui| {
+                            ui.label(""); // Button column has no header
+                        });
+                    })
+                    .body(|mut body| {
+                        for (id, group_action) in group_actions {
+                            let action_info_string = match group_action {
+                                GroupAction::V0(action_v0) => match &action_v0.event {
+                                    GroupActionEvent::TokenEvent(token_event) => {
+                                        match token_event {
+                                            TokenEvent::Mint(amount, identifier, note) => {
+                                                format!(
+                                                    "Mint {} to {} [{:?}]",
+                                                    amount, identifier, note
+                                                )
+                                            }
+                                            TokenEvent::Burn(amount, note) => {
+                                                format!("Burn {} [{:?}]", amount, note)
+                                            }
+                                            TokenEvent::Freeze(identifier, note) => {
+                                                format!("Freeze {} [{:?}]", identifier, note)
+                                            }
+                                            TokenEvent::Unfreeze(identifier, note) => {
+                                                format!("Unfreeze {} [{:?}]", identifier, note)
+                                            }
+                                            TokenEvent::DestroyFrozenFunds(
+                                                identifier,
+                                                amount,
+                                                note,
+                                            ) => {
+                                                format!(
+                                                    "Destroy {} frozen funds from {} [{:?}]",
+                                                    amount, identifier, note
+                                                )
+                                            }
+                                            TokenEvent::Transfer(
+                                                identifier,
+                                                public_note,
+                                                _,
+                                                _,
+                                                amount,
+                                            ) => {
+                                                format!(
+                                                    "Transfer {} to {} [{:?}]",
+                                                    amount, identifier, public_note
+                                                )
+                                            }
+                                            TokenEvent::Claim(dist_type, amount, note) => {
+                                                format!(
+                                                    "Claim {} via {:?} [{:?}]",
+                                                    amount, dist_type, note
+                                                )
+                                            }
+                                            TokenEvent::EmergencyAction(action, note) => {
+                                                format!("Emergency {:?} [{:?}]", action, note)
+                                            }
+                                            TokenEvent::ConfigUpdate(change_item, note) => {
+                                                format!(
+                                                    "Config Update: {:?} [{:?}]",
+                                                    change_item, note
+                                                )
+                                            }
+                                            TokenEvent::ChangePriceForDirectPurchase(
+                                                schedule,
+                                                note,
+                                            ) => {
+                                                format!("Change Price: {:?} [{:?}]", schedule, note)
+                                            }
+                                            TokenEvent::DirectPurchase(amount, credits) => {
+                                                format!(
+                                                    "Direct Purchase: {} for {} credits",
+                                                    amount, credits
+                                                )
+                                            }
+                                        }
+                                    }
+                                },
+                            };
 
-                for ga in group_actions {
-                    ui.label(
-                        ga.0.to_string(Encoding::Base58)
-                            .chars()
-                            .take(16)
-                            .collect::<String>(),
-                    );
-
-                    ui.label(format!("{:?}", &ga.1));
-
-                    if ui
-                        .add(
-                            egui::Button::new("Take Action")
-                                .fill(Color32::LIGHT_BLUE)
-                                .frame(true)
-                                .min_size(egui::vec2(60.0, 24.0)),
-                        )
-                        .clicked()
-                    {
-                        // action |= AppAction::GoToGroupActionScreen(ga.clone());
-                    }
-
-                    ui.end_row();
-                }
+                            body.row(row_height, |mut row| {
+                                row.col(|ui| {
+                                    ui.label(RichText::new(
+                                        id.to_string(Encoding::Base58)
+                                            .chars()
+                                            .take(16)
+                                            .collect::<String>(),
+                                    ));
+                                });
+                                row.col(|ui| {
+                                    ui.label(
+                                        egui::RichText::new(action_info_string)
+                                            .text_style(TextStyle::Body),
+                                    );
+                                });
+                                row.col(|ui| {
+                                    if ui
+                                        .add(
+                                            egui::Button::new(
+                                                RichText::new("Take Action").color(Color32::WHITE),
+                                            )
+                                            .fill(Color32::from_rgb(0, 128, 255))
+                                            .frame(true),
+                                        )
+                                        .clicked()
+                                    {
+                                        // return AppAction::GoToGroupActionScreen(id.clone());
+                                    }
+                                });
+                            });
+                        }
+                    });
             });
+
         AppAction::None
     }
 }

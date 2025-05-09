@@ -4,7 +4,7 @@ use crate::model::qualified_contract::QualifiedContract;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::tools_subscreen_chooser_panel::add_tools_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::helpers::add_simple_contract_doc_type_chooser;
+use crate::ui::helpers::add_contract_doc_type_chooser_with_filtering;
 use crate::ui::BackendTaskSuccessResult;
 
 use dash_sdk::dpp::document::serialization_traits::DocumentPlatformConversionMethodsV0;
@@ -161,7 +161,8 @@ impl crate::ui::ScreenLike for DocumentVisualizerScreen {
         /* ---------- central panel ---------- */
         egui::CentralPanel::default().show(ctx, |ui| {
             /* ---------- simple dual-combo chooser ---------- */
-            add_simple_contract_doc_type_chooser(
+            //todo cache the contracts
+            add_contract_doc_type_chooser_with_filtering(
                 ui,
                 &mut self.contract_search_term,
                 &self.app_context,

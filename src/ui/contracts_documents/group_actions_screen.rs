@@ -14,25 +14,27 @@ use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::qualified_contract::QualifiedContract;
 use crate::model::qualified_identity::QualifiedIdentity;
-use crate::model::wallet::Wallet;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
-use crate::ui::helpers::add_simple_contract_doc_type_chooser;
-use crate::ui::helpers::{render_identity_selector, render_key_selector};
+use crate::ui::helpers::add_contract_chooser_pre_filtered;
+use crate::ui::helpers::render_identity_selector;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
-use dash_sdk::dpp::bls_signatures::inner_types::Group;
-use dash_sdk::dpp::data_contract::document_type::{DocumentType, Index};
+use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
+use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
+use dash_sdk::dpp::data_contract::change_control_rules::authorized_action_takers::AuthorizedActionTakers;
+use dash_sdk::dpp::data_contract::change_control_rules::ChangeControlRules;
+use dash_sdk::dpp::data_contract::TokenContractPosition;
 use dash_sdk::dpp::group::action_event::GroupActionEvent;
 use dash_sdk::dpp::group::group_action::GroupAction;
+use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::prelude::TimestampMillis;
-use dash_sdk::platform::{DataContract, Identifier, IdentityPublicKey};
+use dash_sdk::platform::Identifier;
 use dash_sdk::query_types::IndexMap;
 use eframe::egui::{self, Color32, Context, RichText, Ui};
-use egui::Id;
-use std::sync::{Arc, RwLock};
+use std::collections::BTreeMap;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tracing::event;
 
 // Status of the fetch group actions task
 enum FetchGroupActionsStatus {
@@ -46,8 +48,14 @@ enum FetchGroupActionsStatus {
 pub struct GroupActionsScreen {
     // Contract and identity selectors
     selected_contract: Option<QualifiedContract>,
+    contracts_with_group_actions: BTreeMap<
+        Identifier,
+        (
+            QualifiedContract,
+            BTreeMap<TokenContractPosition, BTreeMap<String, ChangeControlRules>>,
+        ),
+    >,
     contract_search: String,
-    selected_doc_type: Option<DocumentType>,
     qualified_identities: Vec<QualifiedIdentity>,
     selected_identity: Option<QualifiedIdentity>,
 
@@ -64,11 +72,42 @@ impl GroupActionsScreen {
             .load_local_qualified_identities()
             .expect("Failed to load identities");
 
+        let contracts_with_group_actions = app_context.db.get_contracts(app_context, None, None).unwrap_or_default().into_iter().filter_map(|qualified_contract| {
+            let tokens = qualified_contract.contract.tokens().clone().into_iter().filter_map(|(pos, token_config)| {
+                let change_control_rules = token_config.all_change_control_rules().into_iter().filter_map(|(name, change_control_rules)| {
+                    match change_control_rules.authorized_to_make_change_action_takers() {
+                        AuthorizedActionTakers::MainGroup | AuthorizedActionTakers::Group(_) => {
+                            return Some((name.to_string(), change_control_rules.clone()))
+                        }
+                        _ => {}
+                    }
+
+                    match change_control_rules.admin_action_takers() {
+                        AuthorizedActionTakers::MainGroup | AuthorizedActionTakers::Group(_) => {
+                            return Some((name.to_string(), change_control_rules.clone()))
+                        }
+                        _ => {}
+                    }
+                    None
+                }).collect::<BTreeMap<String, ChangeControlRules>>();
+                if change_control_rules.is_empty() {
+                    None
+                } else {
+                    Some((pos, change_control_rules))
+                }
+            }).collect::<BTreeMap<TokenContractPosition, BTreeMap<String, ChangeControlRules>>>();
+            if tokens.is_empty() {
+                None
+            } else {
+                Some((qualified_contract.contract.id(), (qualified_contract, tokens)))
+            }
+        }).collect();
+
         Self {
             // Contract and identity selectors
             selected_contract: None,
+            contracts_with_group_actions,
             contract_search: String::new(),
-            selected_doc_type: None,
             qualified_identities,
             selected_identity: None,
 
@@ -86,7 +125,7 @@ impl GroupActionsScreen {
         group_actions: &IndexMap<Identifier, GroupAction>,
     ) -> AppAction {
         ui.add_space(10.0);
-        ui.label("Group Actions:");
+        ui.label("Active Group Actions:");
         for action in group_actions {
             let action_id = action.0;
             let action = action.1;
@@ -152,7 +191,7 @@ impl ScreenLike for GroupActionsScreen {
 
         // Central panel
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("Group Actions");
+            ui.heading("Active Group Actions");
 
             match &self.fetch_group_actions_status {
                 // Fetch not started, show contract and identity selector and fetch button
@@ -168,12 +207,36 @@ impl ScreenLike for GroupActionsScreen {
                     // First a contract selector
                     ui.add_space(10.0);
                     ui.heading("1. Select a contract:");
-                    add_simple_contract_doc_type_chooser(
+                    let contract_search_clone = self.contract_search.clone();
+                    add_contract_chooser_pre_filtered(
                         ui,
                         &mut self.contract_search,
-                        &self.app_context,
+                        self.contracts_with_group_actions
+                            .values()
+                            .filter_map(|(contract, _)| {
+                                if contract_search_clone.is_empty() {
+                                    return Some(contract);
+                                }
+                                if contract
+                                    .alias
+                                    .as_ref()
+                                    .map(|alias| {
+                                        alias.contains(&contract_search_clone)
+                                            || alias.to_lowercase().contains(&contract_search_clone)
+                                    })
+                                    .unwrap_or_default()
+                                    || contract
+                                        .contract
+                                        .id()
+                                        .to_string(Encoding::Base58)
+                                        .contains(&contract_search_clone)
+                                {
+                                    Some(contract)
+                                } else {
+                                    None
+                                }
+                            }),
                         &mut self.selected_contract,
-                        &mut self.selected_doc_type,
                     );
 
                     // Then an identity selector

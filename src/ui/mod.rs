@@ -16,6 +16,7 @@ use crate::ui::identities::transfer_screen::TransferScreen;
 use crate::ui::identities::withdraw_screen::WithdrawalScreen;
 use crate::ui::network_chooser_screen::NetworkChooserScreen;
 use crate::ui::tokens::add_token_by_id_screen::AddTokenByIdScreen;
+use crate::ui::tokens::tokens_screen::IdentityTokenInfo;
 use crate::ui::tokens::transfer_tokens_screen::TransferTokensScreen;
 use crate::ui::tokens::view_token_claims_screen::ViewTokenClaimsScreen;
 use crate::ui::tools::document_visualizer_screen::DocumentVisualizerScreen;
@@ -193,7 +194,7 @@ pub enum ScreenType {
     TokenCreator,
     AddTokenById,
     TransferTokensScreen(IdentityTokenBalance),
-    MintTokensScreen(IdentityTokenBalance),
+    MintTokensScreen(IdentityTokenInfo),
     BurnTokensScreen(IdentityTokenBalance),
     DestroyFrozenFundsScreen(IdentityTokenBalance),
     FreezeTokensScreen(IdentityTokenBalance),
@@ -309,8 +310,8 @@ impl ScreenType {
                     app_context,
                 ))
             }
-            ScreenType::MintTokensScreen(identity_token_balance) => Screen::MintTokensScreen(
-                MintTokensScreen::new(identity_token_balance.clone(), app_context),
+            ScreenType::MintTokensScreen(identity_token_info) => Screen::MintTokensScreen(
+                MintTokensScreen::new(identity_token_info.clone(), app_context),
             ),
             ScreenType::BurnTokensScreen(identity_token_balance) => Screen::BurnTokensScreen(
                 BurnTokensScreen::new(identity_token_balance.clone(), app_context),
@@ -556,7 +557,7 @@ impl Screen {
                 ScreenType::TransferTokensScreen(screen.identity_token_balance.clone())
             }
             Screen::MintTokensScreen(screen) => {
-                ScreenType::MintTokensScreen(screen.identity_token_balance.clone())
+                ScreenType::MintTokensScreen(screen.identity_token_info.clone())
             }
             Screen::BurnTokensScreen(screen) => {
                 ScreenType::BurnTokensScreen(screen.identity_token_balance.clone())

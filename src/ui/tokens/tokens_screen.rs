@@ -24,7 +24,7 @@ use dash_sdk::dpp::data_contract::change_control_rules::ChangeControlRules;
 use dash_sdk::dpp::data_contract::conversion::json::DataContractJsonConversionMethodsV0;
 use dash_sdk::dpp::data_contract::group::v0::GroupV0;
 use dash_sdk::dpp::data_contract::group::{Group, GroupMemberPower, GroupRequiredPower};
-use dash_sdk::dpp::data_contract::TokenConfiguration;
+use dash_sdk::dpp::data_contract::{TokenConfiguration, TokenContractPosition};
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
@@ -46,6 +46,7 @@ use crate::backend_task::BackendTask;
 
 use crate::app::{AppAction, DesiredAppAction};
 use crate::context::AppContext;
+use crate::model::qualified_contract::QualifiedContract;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::ui::components::left_panel::add_left_panel;
@@ -173,6 +174,50 @@ pub struct IdentityTokenMaybeBalance {
     pub identity_id: Identifier,
     pub identity_alias: Option<String>,
     pub balance: Option<IdentityTokenBalance>,
+}
+
+/// Identity Token Info
+#[derive(Clone, Debug, PartialEq)]
+pub struct IdentityTokenInfo {
+    pub token_id: Identifier,
+    pub token_alias: String,
+    pub identity: QualifiedIdentity,
+    pub data_contract: QualifiedContract,
+    pub token_config: TokenConfiguration,
+    pub token_position: TokenContractPosition,
+}
+
+impl IdentityTokenInfo {
+    pub fn try_from_identity_token_balance_with_lookup(
+        identity_token_balance: &IdentityTokenBalance,
+        app_context: &AppContext,
+    ) -> Result<Self, String> {
+        let IdentityTokenBalance {
+            token_id,
+            token_alias,
+            token_config,
+            identity_id,
+            data_contract_id,
+            token_position,
+            ..
+        } = identity_token_balance;
+        let identity = app_context
+            .get_identity_by_id(identity_id)
+            .map_err(|err| err.to_string())?
+            .ok_or("Identity not found".to_string())?;
+        let data_contract = app_context
+            .get_contract_by_id(data_contract_id)
+            .map_err(|err| err.to_string())?
+            .ok_or("Contract not found".to_string())?;
+        Ok(Self {
+            token_id: *token_id,
+            token_alias: token_alias.clone(),
+            identity,
+            data_contract,
+            token_config: token_config.clone(),
+            token_position: *token_position,
+        })
+    }
 }
 
 /// A token owned by an identity.
@@ -1890,14 +1935,22 @@ impl TokensScreen {
                                                     // Expandable advanced actions menu
                                                     ui.menu_button("...", |ui| {
                                                         if ui.button("Mint").clicked() {
-                                                            action = AppAction::AddScreen(
-                                                                Screen::MintTokensScreen(
-                                                                    MintTokensScreen::new(
-                                                                        itb.clone(),
-                                                                        &self.app_context,
-                                                                    ),
-                                                                ),
-                                                            );
+                                                            match IdentityTokenInfo::try_from_identity_token_balance_with_lookup(itb, &self.app_context) {
+                                                                Ok(info) => {
+                                                                    action = AppAction::AddScreen(
+                                                                        Screen::MintTokensScreen(
+                                                                            MintTokensScreen::new(
+                                                                                info,
+                                                                                &self.app_context,
+                                                                            ),
+                                                                        ),
+                                                                    );
+                                                                }
+                                                                Err(e) => {
+                                                                    self.set_error_message(Some(e));
+                                                                }
+                                                            };
+
                                                             ui.close_menu();
                                                         }
                                                         if ui.button("Burn").clicked() {
@@ -3844,7 +3897,7 @@ Emits tokens in fixed amounts for specific intervals.
         if self.enable_pre_programmed_distribution {
             fee += registration_fees.token_uses_pre_programmed_distribution_fee;
         }
-        let mut contract_keywords = if self.contract_keywords_input.trim().is_empty() {
+        let contract_keywords = if self.contract_keywords_input.trim().is_empty() {
             Vec::new()
         } else {
             self.contract_keywords_input

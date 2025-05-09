@@ -4,6 +4,7 @@ use crate::{app::TaskResult, context::AppContext, model::qualified_identity::Qua
 use dash_sdk::dpp::balances::credits::TokenAmount;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration_item::TokenConfigurationChangeItem;
 use dash_sdk::dpp::data_contract::GroupContractPosition;
+use dash_sdk::dpp::group::GroupStateTransitionInfoStatus;
 use dash_sdk::platform::Fetch;
 use dash_sdk::{
     dpp::{
@@ -98,6 +99,7 @@ pub(crate) enum TokenTask {
         public_note: Option<String>,
         amount: TokenAmount,
         recipient_id: Option<Identifier>,
+        group_info: Option<GroupStateTransitionInfoStatus>,
     },
     TransferTokens {
         sending_identity: QualifiedIdentity,
@@ -263,6 +265,7 @@ impl AppContext {
                 public_note,
                 amount,
                 recipient_id,
+                group_info,
             } => self
                 .mint_tokens(
                     sending_identity,
@@ -272,6 +275,7 @@ impl AppContext {
                     public_note.clone(),
                     *amount,
                     recipient_id.clone(),
+                    group_info.clone(),
                     sdk,
                     sender,
                 )

@@ -6,7 +6,7 @@ use crate::model::{qualified_contract::QualifiedContract, qualified_identity::Qu
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
-use crate::ui::helpers::add_simple_contract_doc_type_chooser;
+use crate::ui::helpers::add_contract_doc_type_chooser_with_filtering;
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::BackendTaskSuccessResult;
 use crate::ui::{MessageType, ScreenLike};
@@ -596,7 +596,7 @@ impl ScreenLike for CreateDocumentScreen {
             ui.heading("1. Select a contract and document type:");
             ui.add_space(10.0);
 
-            add_simple_contract_doc_type_chooser(
+            add_contract_doc_type_chooser_with_filtering(
                 ui,
                 &mut self.contract_search,
                 &self.app_context,

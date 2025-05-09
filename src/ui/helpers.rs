@@ -94,32 +94,46 @@ pub fn render_key_selector(
     new_selected_key
 }
 
-/// Extremely compact chooser: just two combo-boxes (Contract ▸ Doc-Type)
-///
-/// * No collapsible tree.
-/// * Optional search box on top.
-/// * Emits `ContractTask::RemoveContract` via a small “🗑” button next to the contract picker.
-pub fn add_simple_contract_doc_type_chooser(
-    ui: &mut egui::Ui,
+pub fn add_contract_doc_type_chooser_with_filtering(
+    ui: &mut Ui,
     search_term: &mut String,
     app_context: &Arc<AppContext>,
     selected_contract: &mut Option<QualifiedContract>,
     selected_doc_type: &mut Option<DocumentType>,
 ) {
     let contracts = app_context.get_contracts(None, None).unwrap_or_default();
+    let search_term_lowercase = search_term.to_lowercase();
+    let filtered = contracts.iter().filter(|qc| {
+        let key = qc
+            .alias
+            .clone()
+            .unwrap_or_else(|| qc.contract.id().to_string(Encoding::Base58));
+        key.to_lowercase().contains(&search_term_lowercase)
+    });
 
-    let filtered: Vec<_> = contracts
-        .iter()
-        .filter(|qc| {
-            let key = qc
-                .alias
-                .clone()
-                .unwrap_or_else(|| qc.contract.id().to_string(Encoding::Base58));
-            key.to_lowercase().contains(&search_term.to_lowercase())
-        })
-        .cloned()
-        .collect();
+    add_contract_doc_type_chooser_pre_filtered(
+        ui,
+        search_term,
+        filtered,
+        selected_contract,
+        selected_doc_type,
+    );
+}
 
+/// Extremely compact chooser: just two combo-boxes (Contract ▸ Doc-Type)
+///
+/// * No collapsible tree.
+/// * Optional search box on top.
+/// * Emits `ContractTask::RemoveContract` via a small “🗑” button next to the contract picker.
+pub fn add_contract_doc_type_chooser_pre_filtered<'a, T>(
+    ui: &mut Ui,
+    search_term: &mut String,
+    filtered_contracts: T,
+    selected_contract: &mut Option<QualifiedContract>,
+    selected_doc_type: &mut Option<DocumentType>,
+) where
+    T: Iterator<Item = &'a QualifiedContract>,
+{
     egui::Grid::new("contract_doc_type_grid")
         .num_columns(2)
         .spacing([10.0, 5.0])
@@ -130,7 +144,7 @@ pub fn add_simple_contract_doc_type_chooser(
             ui.end_row();
 
             ui.label("Contract:");
-            egui::ComboBox::from_id_salt("contract_combo")
+            ComboBox::from_id_salt("contract_combo")
                 .width(220.0)
                 .selected_text(match selected_contract {
                     Some(qc) => qc
@@ -140,7 +154,7 @@ pub fn add_simple_contract_doc_type_chooser(
                     None => "Select Contract…".into(),
                 })
                 .show_ui(ui, |cui| {
-                    for qc in &filtered {
+                    for qc in filtered_contracts {
                         let label = qc
                             .alias
                             .clone()
@@ -157,7 +171,7 @@ pub fn add_simple_contract_doc_type_chooser(
             ui.end_row();
 
             ui.label("Doc Type:");
-            egui::ComboBox::from_id_salt("doctype_combo")
+            ComboBox::from_id_salt("doctype_combo")
                 .width(220.0)
                 .selected_text(
                     selected_doc_type
@@ -186,6 +200,56 @@ pub fn add_simple_contract_doc_type_chooser(
                         dui.label("Pick a contract first");
                     }
                 });
+            ui.end_row();
+        });
+}
+
+/// Extremely compact chooser: just two combo-boxes (Contract ▸ Doc-Type)
+///
+/// * No collapsible tree.
+/// * Optional search box on top.
+pub fn add_contract_chooser_pre_filtered<'a, T>(
+    ui: &mut Ui,
+    search_term: &mut String,
+    filtered_contracts: T,
+    selected_contract: &mut Option<QualifiedContract>,
+) where
+    T: Iterator<Item = &'a QualifiedContract>,
+{
+    egui::Grid::new("contract_doc_type_grid")
+        .num_columns(2)
+        .spacing([10.0, 5.0])
+        .striped(false)
+        .show(ui, |ui| {
+            ui.label("Filter contracts:");
+            ui.text_edit_singleline(search_term);
+            ui.end_row();
+
+            ui.label("Contract:");
+            ComboBox::from_id_salt("contract_chooser")
+                .width(220.0)
+                .selected_text(match selected_contract {
+                    Some(qc) => qc
+                        .alias
+                        .clone()
+                        .unwrap_or_else(|| qc.contract.id().to_string(Encoding::Base58)),
+                    None => "Select Contract…".into(),
+                })
+                .show_ui(ui, |cui| {
+                    for qc in filtered_contracts {
+                        let label = qc
+                            .alias
+                            .clone()
+                            .unwrap_or_else(|| qc.contract.id().to_string(Encoding::Base58));
+                        if cui
+                            .selectable_label(selected_contract.as_ref() == Some(qc), label.clone())
+                            .clicked()
+                        {
+                            *selected_contract = Some(qc.clone());
+                        }
+                    }
+                });
+
             ui.end_row();
         });
 }

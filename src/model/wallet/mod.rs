@@ -228,6 +228,13 @@ impl WalletSeed {
     }
 }
 
+impl Drop for WalletSeed {
+    fn drop(&mut self) {
+        // Securely erase sensitive data
+        self.close();
+    }
+}
+
 impl Wallet {
     pub fn is_open(&self) -> bool {
         matches!(self.wallet_seed, WalletSeed::Open(_))
@@ -434,29 +441,14 @@ impl Wallet {
                             Some(false),
                         )
                         .map_err(|e| e.to_string())?;
-                    app_context
-                        .db
-                        .add_address_if_not_exists(
-                            &self.seed_hash(),
-                            &address,
-                            &derivation_path,
-                            DerivationPathReference::BIP44,
-                            DerivationPathType::CLEAR_FUNDS,
-                            None,
-                        )
-                        .map_err(|e| e.to_string())?;
-                    self.watched_addresses.insert(
-                        derivation_path.clone(),
-                        AddressInfo {
-                            address: address.clone(),
-                            path_type: DerivationPathType::CLEAR_FUNDS,
-                            path_reference: DerivationPathReference::BIP44,
-                        },
-                    );
 
-                    // Add the address and its derivation path to `known_addresses`
-                    self.known_addresses
-                        .insert(address, derivation_path.clone());
+                    self.register_address(
+                        address,
+                        &derivation_path,
+                        DerivationPathType::CLEAR_FUNDS,
+                        DerivationPathReference::BIP44,
+                        app_context,
+                    )?;
                 }
                 found_unused_derivation_path = Some(derivation_path.clone());
                 break;
@@ -601,11 +593,21 @@ impl Wallet {
         path_reference: DerivationPathReference,
         app_context: &AppContext,
     ) -> Result<(), String> {
+        if !address.network().eq(&app_context.network) {
+            return Err(format!(
+                "address {} network {} does not match wallet network {}",
+                address,
+                address.network(),
+                app_context.network
+            ));
+        }
+
         app_context
             .db
             .add_address_if_not_exists(
                 &self.seed_hash(),
                 &address,
+                &app_context.network,
                 derivation_path,
                 DerivationPathReference::BlockchainIdentityCreditRegistrationFunding,
                 DerivationPathType::CREDIT_FUNDING,
@@ -617,10 +619,16 @@ impl Wallet {
         self.watched_addresses.insert(
             derivation_path.clone(),
             AddressInfo {
-                address,
+                address: address.clone(),
                 path_type,
                 path_reference,
             },
+        );
+
+        tracing::trace!(
+            address = ?&address,
+            network = &address.network().to_string(),
+            "registered new address"
         );
         Ok(())
     }

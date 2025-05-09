@@ -529,6 +529,7 @@ impl ScreenLike for MintTokensScreen {
                 ui.add_space(5.0);
                 self.render_amount_input(ui);
 
+                ui.add_space(10.0);
                 ui.separator();
                 ui.add_space(10.0);
 

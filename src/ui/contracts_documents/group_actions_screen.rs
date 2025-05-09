@@ -25,7 +25,6 @@ use dash_sdk::dpp::data_contract::associated_token::token_configuration::accesso
 use dash_sdk::dpp::data_contract::change_control_rules::authorized_action_takers::AuthorizedActionTakers;
 use dash_sdk::dpp::data_contract::change_control_rules::ChangeControlRules;
 use dash_sdk::dpp::data_contract::TokenContractPosition;
-use dash_sdk::dpp::group::action_event::GroupActionEvent;
 use dash_sdk::dpp::group::group_action::GroupAction;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::prelude::TimestampMillis;
@@ -124,22 +123,48 @@ impl GroupActionsScreen {
         ui: &mut Ui,
         group_actions: &IndexMap<Identifier, GroupAction>,
     ) -> AppAction {
+        ui.heading("Active Group Actions:");
+
         ui.add_space(10.0);
-        ui.label("Active Group Actions:");
-        for action in group_actions {
-            let action_id = action.0;
-            let action = action.1;
-            match action {
-                GroupAction::V0(group_action_v0) => {
-                    let event = group_action_v0.event.clone();
-                    match event {
-                        GroupActionEvent::TokenEvent(token_event) => {
-                            ui.label(format!(" - Action ID: {}/nAction: {:?}", action_id, action));
-                        }
-                    }
-                }
-            }
+        if group_actions.is_empty() {
+            ui.label("No active group actions found.");
+            return AppAction::None;
         }
+
+        egui::Grid::new("group_actions_table")
+            .striped(true)
+            .spacing([8.0, 4.0])
+            .show(ui, |ui| {
+                ui.label("Identifier");
+                ui.label("Action");
+                ui.label("");
+                ui.end_row();
+
+                for ga in group_actions {
+                    ui.label(
+                        ga.0.to_string(Encoding::Base58)
+                            .chars()
+                            .take(16)
+                            .collect::<String>(),
+                    );
+
+                    ui.label(format!("{:?}", &ga.1));
+
+                    if ui
+                        .add(
+                            egui::Button::new("Take Action")
+                                .fill(Color32::LIGHT_BLUE)
+                                .frame(true)
+                                .min_size(egui::vec2(60.0, 24.0)),
+                        )
+                        .clicked()
+                    {
+                        // action |= AppAction::GoToGroupActionScreen(ga.clone());
+                    }
+
+                    ui.end_row();
+                }
+            });
         AppAction::None
     }
 }
@@ -171,7 +196,6 @@ impl ScreenLike for GroupActionsScreen {
     }
 
     fn ui(&mut self, ctx: &Context) -> AppAction {
-        // Add top panel, set action
         let mut action = add_top_panel(
             ctx,
             &self.app_context,
@@ -182,135 +206,132 @@ impl ScreenLike for GroupActionsScreen {
             vec![],
         );
 
-        // Add left panel
         action |= add_left_panel(
             ctx,
             &self.app_context,
             RootScreenType::RootScreenDocumentQuery,
         );
 
-        // Central panel
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("Active Group Actions");
 
-            match &self.fetch_group_actions_status {
-                // Fetch not started, show contract and identity selector and fetch button
-                // If there is an error message, show it at the top
-                FetchGroupActionsStatus::NotStarted | FetchGroupActionsStatus::ErrorMessage(_) => {
-                    if let FetchGroupActionsStatus::ErrorMessage(msg) =
-                        &self.fetch_group_actions_status
-                    {
-                        ui.add_space(10.0);
-                        ui.colored_label(Color32::RED, format!("Error: {}", msg));
-                    }
+            ui.add_space(10.0);
+            ui.heading("1. Select a contract:");
 
-                    // First a contract selector
-                    ui.add_space(10.0);
-                    ui.heading("1. Select a contract:");
-                    let contract_search_clone = self.contract_search.clone();
-                    add_contract_chooser_pre_filtered(
-                        ui,
-                        &mut self.contract_search,
-                        self.contracts_with_group_actions
-                            .values()
-                            .filter_map(|(contract, _)| {
-                                if contract_search_clone.is_empty() {
-                                    return Some(contract);
-                                }
-                                if contract
-                                    .alias
-                                    .as_ref()
-                                    .map(|alias| {
-                                        alias.contains(&contract_search_clone)
-                                            || alias.to_lowercase().contains(&contract_search_clone)
-                                    })
-                                    .unwrap_or_default()
-                                    || contract
-                                        .contract
-                                        .id()
-                                        .to_string(Encoding::Base58)
-                                        .contains(&contract_search_clone)
-                                {
-                                    Some(contract)
-                                } else {
-                                    None
-                                }
-                            }),
-                        &mut self.selected_contract,
-                    );
-
-                    // Then an identity selector
-                    ui.add_space(10.0);
-                    ui.separator();
-                    ui.add_space(10.0);
-                    ui.heading("2. Select an identity:");
-
-                    ui.add_space(10.0);
-                    self.selected_identity = render_identity_selector(
-                        ui,
-                        &self.qualified_identities,
-                        &self.selected_identity,
-                    );
-
-                    // Fetch Button
-                    if let Some(selected_contract) = &self.selected_contract {
-                        if let Some(selected_identity) = &self.selected_identity {
-                            let button = egui::Button::new(
-                                RichText::new("Fetch Group Actions").color(Color32::WHITE),
-                            )
-                            .fill(Color32::from_rgb(0, 128, 255))
-                            .frame(true)
-                            .corner_radius(3.0);
-                            ui.add_space(10.0);
-                            if ui.add(button).clicked() {
-                                action |= AppAction::BackendTask(BackendTask::ContractTask(
-                                    ContractTask::FetchActiveGroupActions(
-                                        selected_contract.clone(),
-                                        selected_identity.clone(),
-                                    ),
-                                ));
-                            }
+            let contract_search_clone = self.contract_search.clone();
+            ui.add_space(10.0);
+            add_contract_chooser_pre_filtered(
+                ui,
+                &mut self.contract_search,
+                self.contracts_with_group_actions
+                    .values()
+                    .filter_map(|(contract, _)| {
+                        if contract_search_clone.is_empty() {
+                            Some(contract)
+                        } else if contract
+                            .alias
+                            .as_ref()
+                            .map(|alias| {
+                                alias.contains(&contract_search_clone)
+                                    || alias
+                                        .to_lowercase()
+                                        .contains(&contract_search_clone.to_lowercase())
+                            })
+                            .unwrap_or_default()
+                            || contract
+                                .contract
+                                .id()
+                                .to_string(Encoding::Base58)
+                                .contains(&contract_search_clone)
+                        {
+                            Some(contract)
+                        } else {
+                            None
                         }
-                    }
+                    }),
+                &mut self.selected_contract,
+            );
+
+            ui.add_space(10.0);
+            ui.separator();
+            ui.add_space(10.0);
+            ui.heading("2. Select an identity:");
+
+            ui.add_space(10.0);
+            self.selected_identity =
+                render_identity_selector(ui, &self.qualified_identities, &self.selected_identity);
+
+            let mut fetch_clicked = false;
+            if self.selected_contract.is_some() && self.selected_identity.is_some() {
+                ui.add_space(10.0);
+                let button =
+                    egui::Button::new(RichText::new("Fetch Group Actions").color(Color32::WHITE))
+                        .fill(Color32::from_rgb(0, 128, 255))
+                        .frame(true)
+                        .corner_radius(3.0);
+
+                if ui.add(button).clicked() {
+                    self.fetch_group_actions_status = FetchGroupActionsStatus::WaitingForResult(
+                        SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .expect("Time went backwards")
+                            .as_secs(),
+                    );
+                    fetch_clicked = true;
+                }
+            }
+
+            match &self.fetch_group_actions_status {
+                FetchGroupActionsStatus::ErrorMessage(msg) => {
+                    ui.add_space(10.0);
+                    ui.colored_label(Color32::RED, format!("Error: {}", msg));
                 }
 
-                // Actively fetching, display a loading message
                 FetchGroupActionsStatus::WaitingForResult(start_time) => {
                     let now = SystemTime::now()
                         .duration_since(UNIX_EPOCH)
                         .expect("Time went backwards")
                         .as_secs();
-                    let elapsed_seconds = now - start_time;
-
-                    let display_time = if elapsed_seconds < 60 {
-                        format!(
-                            "{} second{}",
-                            elapsed_seconds,
-                            if elapsed_seconds == 1 { "" } else { "s" }
-                        )
+                    let elapsed = now - start_time;
+                    let status = if elapsed < 60 {
+                        format!("{} second{}", elapsed, if elapsed == 1 { "" } else { "s" })
                     } else {
-                        let minutes = elapsed_seconds / 60;
-                        let seconds = elapsed_seconds % 60;
                         format!(
                             "{} minute{} and {} second{}",
-                            minutes,
-                            if minutes == 1 { "" } else { "s" },
-                            seconds,
-                            if seconds == 1 { "" } else { "s" }
+                            elapsed / 60,
+                            if elapsed / 60 == 1 { "" } else { "s" },
+                            elapsed % 60,
+                            if elapsed % 60 == 1 { "" } else { "s" }
                         )
                     };
-
                     ui.add_space(10.0);
                     ui.label(format!(
-                        "Fetching group actions... Time taken so far: {}",
-                        display_time
+                        "Fetching group actions… Time taken so far: {}",
+                        status
                     ));
                 }
 
-                // Fetch complete, display the active group actions
-                FetchGroupActionsStatus::Complete(group_actions) => {
-                    action |= self.render_group_actions(ui, group_actions);
+                _ => {}
+            }
+
+            if fetch_clicked {
+                if let (Some(contract), Some(identity)) = (
+                    self.selected_contract.clone(),
+                    self.selected_identity.clone(),
+                ) {
+                    action |= AppAction::BackendTask(BackendTask::ContractTask(
+                        ContractTask::FetchActiveGroupActions(contract, identity),
+                    ));
                 }
+            }
+
+            if let FetchGroupActionsStatus::Complete(group_actions) =
+                &self.fetch_group_actions_status
+            {
+                ui.add_space(10.0);
+                ui.separator();
+                ui.add_space(10.0);
+                action |= self.render_group_actions(ui, group_actions);
             }
         });
 

@@ -28,36 +28,37 @@ pub fn render_identity_selector(
 ) -> Option<QualifiedIdentity> {
     let mut new_selected_identity = selected_identity.clone();
 
-    ui.label("Identity:");
-    ComboBox::from_id_salt("identity_selector")
-        .selected_text(
-            selected_identity
-                .as_ref()
-                .map(|qi| {
-                    qi.alias
+    ui.horizontal(|ui| {
+        ui.label("Identity:");
+        ComboBox::from_id_salt("identity_selector")
+            .selected_text(
+                selected_identity
+                    .as_ref()
+                    .map(|qi| {
+                        qi.alias
+                            .as_ref()
+                            .unwrap_or(&qi.identity.id().to_string(Encoding::Base58))
+                            .clone()
+                    })
+                    .unwrap_or_else(|| "Choose identity…".into()),
+            )
+            .show_ui(ui, |cb| {
+                for qi in qualified_identities {
+                    let label = qi
+                        .alias
                         .as_ref()
                         .unwrap_or(&qi.identity.id().to_string(Encoding::Base58))
-                        .clone()
-                })
-                .unwrap_or_else(|| "Choose identity…".into()),
-        )
-        .show_ui(ui, |cb| {
-            for qi in qualified_identities {
-                let label = qi
-                    .alias
-                    .as_ref()
-                    .unwrap_or(&qi.identity.id().to_string(Encoding::Base58))
-                    .clone();
+                        .clone();
 
-                if cb
-                    .selectable_label(selected_identity.as_ref() == Some(qi), label)
-                    .clicked()
-                {
-                    new_selected_identity = Some(qi.clone());
-                    // caller is responsible for resetting the key & wallet when identity changes
+                    if cb
+                        .selectable_label(selected_identity.as_ref() == Some(qi), label)
+                        .clicked()
+                    {
+                        new_selected_identity = Some(qi.clone());
+                    }
                 }
-            }
-        });
+            });
+    });
 
     new_selected_identity
 }

@@ -4,12 +4,10 @@ use crate::model::qualified_contract::QualifiedContract;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::tools_subscreen_chooser_panel::add_tools_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::helpers::add_contract_doc_type_chooser_with_filtering;
 use crate::ui::BackendTaskSuccessResult;
 
-use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
-use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
 use dash_sdk::dpp::document::serialization_traits::DocumentPlatformConversionMethodsV0;
-use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::{data_contract::document_type::DocumentType, document::Document};
 use eframe::egui::{self, Color32, Context, ScrollArea, TextEdit, Ui};
 use std::sync::Arc;
@@ -40,102 +38,6 @@ pub struct DocumentVisualizerScreen {
 
     // ---- helper for chooser search ----
     contract_search_term: String,
-}
-
-/// Extremely compact chooser: just two combo-boxes (Contract ▸ Doc-Type)
-///
-/// * No collapsible tree.
-/// * Optional search box on top.
-/// * Emits `ContractTask::RemoveContract` via a small “🗑” button next to the contract picker.
-pub fn add_simple_contract_doc_type_chooser(
-    ui: &mut egui::Ui,
-    search_term: &mut String,
-    app_context: &Arc<AppContext>,
-    selected_contract: &mut Option<QualifiedContract>,
-    selected_doc_type: &mut Option<DocumentType>,
-) {
-    let contracts = app_context.get_contracts(None, None).unwrap_or_default();
-
-    let filtered: Vec<_> = contracts
-        .iter()
-        .filter(|qc| {
-            let key = qc
-                .alias
-                .clone()
-                .unwrap_or_else(|| qc.contract.id().to_string(Encoding::Base58));
-            key.to_lowercase().contains(&search_term.to_lowercase())
-        })
-        .cloned()
-        .collect();
-
-    egui::Grid::new("contract_doc_type_grid")
-        .num_columns(2)
-        .spacing([10.0, 5.0])
-        .striped(false)
-        .show(ui, |ui| {
-            ui.label("Filter contracts:");
-            ui.text_edit_singleline(search_term);
-            ui.end_row();
-
-            ui.label("Contract:");
-            egui::ComboBox::from_id_salt("contract_combo")
-                .width(220.0)
-                .selected_text(match selected_contract {
-                    Some(qc) => qc
-                        .alias
-                        .clone()
-                        .unwrap_or_else(|| qc.contract.id().to_string(Encoding::Base58)),
-                    None => "Select Contract…".into(),
-                })
-                .show_ui(ui, |cui| {
-                    for qc in &filtered {
-                        let label = qc
-                            .alias
-                            .clone()
-                            .unwrap_or_else(|| qc.contract.id().to_string(Encoding::Base58));
-                        if cui
-                            .selectable_label(selected_contract.as_ref() == Some(qc), label.clone())
-                            .clicked()
-                        {
-                            *selected_contract = Some(qc.clone());
-                        }
-                    }
-                });
-
-            ui.end_row();
-
-            ui.label("Doc Type:");
-            egui::ComboBox::from_id_salt("doctype_combo")
-                .width(220.0)
-                .selected_text(
-                    selected_doc_type
-                        .as_ref()
-                        .map(|d| d.name().to_owned())
-                        .unwrap_or_else(|| "Select Doc Type…".into()),
-                )
-                .show_ui(ui, |dui| {
-                    if let Some(qc) = selected_contract {
-                        for (name, _dt) in qc.contract.document_types() {
-                            if dui
-                                .selectable_label(
-                                    selected_doc_type
-                                        .as_ref()
-                                        .map(|cur| cur.name() == name)
-                                        .unwrap_or(false),
-                                    name,
-                                )
-                                .clicked()
-                            {
-                                *selected_doc_type =
-                                    qc.contract.document_type_cloned_for_name(name).ok();
-                            }
-                        }
-                    } else {
-                        dui.label("Pick a contract first");
-                    }
-                });
-            ui.end_row();
-        });
 }
 
 impl DocumentVisualizerScreen {
@@ -259,7 +161,8 @@ impl crate::ui::ScreenLike for DocumentVisualizerScreen {
         /* ---------- central panel ---------- */
         egui::CentralPanel::default().show(ctx, |ui| {
             /* ---------- simple dual-combo chooser ---------- */
-            add_simple_contract_doc_type_chooser(
+            //todo cache the contracts
+            add_contract_doc_type_chooser_with_filtering(
                 ui,
                 &mut self.contract_search_term,
                 &self.app_context,

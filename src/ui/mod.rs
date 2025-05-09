@@ -5,8 +5,8 @@ use crate::model::qualified_identity::encrypted_key_storage::{
     PrivateKeyData, WalletDerivationPath,
 };
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::ui::contracts_documents::contracts_documents_screen::DocumentQueryScreen;
 use crate::ui::contracts_documents::create_document_screen::CreateDocumentScreen;
-use crate::ui::contracts_documents::document_query_screen::DocumentQueryScreen;
 use crate::ui::dpns::dpns_contested_names_screen::DPNSScreen;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
@@ -16,6 +16,7 @@ use crate::ui::identities::transfer_screen::TransferScreen;
 use crate::ui::identities::withdraw_screen::WithdrawalScreen;
 use crate::ui::network_chooser_screen::NetworkChooserScreen;
 use crate::ui::tokens::add_token_by_id_screen::AddTokenByIdScreen;
+use crate::ui::tokens::tokens_screen::IdentityTokenInfo;
 use crate::ui::tokens::transfer_tokens_screen::TransferTokensScreen;
 use crate::ui::tokens::view_token_claims_screen::ViewTokenClaimsScreen;
 use crate::ui::tools::document_visualizer_screen::DocumentVisualizerScreen;
@@ -24,6 +25,7 @@ use crate::ui::tools::proof_visualizer_screen::ProofVisualizerScreen;
 use crate::ui::wallets::import_wallet_screen::ImportWalletScreen;
 use crate::ui::wallets::wallets_screen::WalletsBalancesScreen;
 use contracts_documents::add_contracts_screen::AddContractsScreen;
+use contracts_documents::group_actions_screen::GroupActionsScreen;
 use contracts_documents::register_contract_screen::RegisterDataContractScreen;
 use dash_sdk::dpp::identity::Identity;
 use dash_sdk::dpp::prelude::IdentityPublicKey;
@@ -52,6 +54,7 @@ use wallets::add_new_wallet_screen::AddNewWalletScreen;
 pub mod components;
 pub mod contracts_documents;
 pub mod dpns;
+pub mod helpers;
 pub(crate) mod identities;
 pub mod network_chooser_screen;
 pub mod tokens;
@@ -183,6 +186,7 @@ pub enum ScreenType {
     ProofVisualizer,
     DocumentsVisualizer,
     CreateDocument,
+    GroupActions,
 
     // Token Screens
     TokenBalances,
@@ -190,7 +194,7 @@ pub enum ScreenType {
     TokenCreator,
     AddTokenById,
     TransferTokensScreen(IdentityTokenBalance),
-    MintTokensScreen(IdentityTokenBalance),
+    MintTokensScreen(IdentityTokenInfo),
     BurnTokensScreen(IdentityTokenBalance),
     DestroyFrozenFundsScreen(IdentityTokenBalance),
     FreezeTokensScreen(IdentityTokenBalance),
@@ -284,6 +288,9 @@ impl ScreenType {
             ScreenType::CreateDocument => {
                 Screen::CreateDocumentScreen(CreateDocumentScreen::new(app_context))
             }
+            ScreenType::GroupActions => {
+                Screen::GroupActionsScreen(GroupActionsScreen::new(app_context))
+            }
 
             // Token Screens
             ScreenType::TokenBalances => {
@@ -303,8 +310,8 @@ impl ScreenType {
                     app_context,
                 ))
             }
-            ScreenType::MintTokensScreen(identity_token_balance) => Screen::MintTokensScreen(
-                MintTokensScreen::new(identity_token_balance.clone(), app_context),
+            ScreenType::MintTokensScreen(identity_token_info) => Screen::MintTokensScreen(
+                MintTokensScreen::new(identity_token_info.clone(), app_context),
             ),
             ScreenType::BurnTokensScreen(identity_token_balance) => Screen::BurnTokensScreen(
                 BurnTokensScreen::new(identity_token_balance.clone(), app_context),
@@ -372,6 +379,7 @@ pub enum Screen {
     RegisterDpnsNameScreen(RegisterDpnsNameScreen),
     RegisterDataContractScreen(RegisterDataContractScreen),
     CreateDocumentScreen(CreateDocumentScreen),
+    GroupActionsScreen(GroupActionsScreen),
     WithdrawalScreen(WithdrawalScreen),
     TopUpIdentityScreen(TopUpIdentityScreen),
     TransferScreen(TransferScreen),
@@ -417,6 +425,7 @@ impl Screen {
             Screen::RegisterDpnsNameScreen(screen) => screen.app_context = app_context,
             Screen::RegisterDataContractScreen(screen) => screen.app_context = app_context,
             Screen::CreateDocumentScreen(screen) => screen.app_context = app_context,
+            Screen::GroupActionsScreen(screen) => screen.app_context = app_context,
             Screen::AddNewWalletScreen(screen) => screen.app_context = app_context,
             Screen::TransferScreen(screen) => screen.app_context = app_context,
             Screen::TopUpIdentityScreen(screen) => screen.app_context = app_context,
@@ -521,6 +530,7 @@ impl Screen {
             Screen::RegisterDpnsNameScreen(_) => ScreenType::RegisterDpnsName,
             Screen::RegisterDataContractScreen(_) => ScreenType::RegisterContract,
             Screen::CreateDocumentScreen(_) => ScreenType::CreateDocument,
+            Screen::GroupActionsScreen(_) => ScreenType::GroupActions,
             Screen::AddNewWalletScreen(_) => ScreenType::AddNewWallet,
             Screen::WalletsBalancesScreen(_) => ScreenType::WalletsBalances,
             Screen::ImportWalletScreen(_) => ScreenType::ImportWallet,
@@ -547,7 +557,7 @@ impl Screen {
                 ScreenType::TransferTokensScreen(screen.identity_token_balance.clone())
             }
             Screen::MintTokensScreen(screen) => {
-                ScreenType::MintTokensScreen(screen.identity_token_balance.clone())
+                ScreenType::MintTokensScreen(screen.identity_token_info.clone())
             }
             Screen::BurnTokensScreen(screen) => {
                 ScreenType::BurnTokensScreen(screen.identity_token_balance.clone())
@@ -597,6 +607,7 @@ impl ScreenLike for Screen {
             Screen::RegisterDpnsNameScreen(screen) => screen.refresh(),
             Screen::RegisterDataContractScreen(screen) => screen.refresh(),
             Screen::CreateDocumentScreen(screen) => screen.refresh(),
+            Screen::GroupActionsScreen(screen) => screen.refresh(),
             Screen::WithdrawalScreen(screen) => screen.refresh(),
             Screen::TransferScreen(screen) => screen.refresh(),
             Screen::AddKeyScreen(screen) => screen.refresh(),
@@ -640,6 +651,7 @@ impl ScreenLike for Screen {
             Screen::RegisterDpnsNameScreen(screen) => screen.refresh_on_arrival(),
             Screen::RegisterDataContractScreen(screen) => screen.refresh_on_arrival(),
             Screen::CreateDocumentScreen(screen) => screen.refresh_on_arrival(),
+            Screen::GroupActionsScreen(screen) => screen.refresh_on_arrival(),
             Screen::WithdrawalScreen(screen) => screen.refresh_on_arrival(),
             Screen::TransferScreen(screen) => screen.refresh_on_arrival(),
             Screen::AddKeyScreen(screen) => screen.refresh_on_arrival(),
@@ -683,6 +695,7 @@ impl ScreenLike for Screen {
             Screen::RegisterDpnsNameScreen(screen) => screen.ui(ctx),
             Screen::RegisterDataContractScreen(screen) => screen.ui(ctx),
             Screen::CreateDocumentScreen(screen) => screen.ui(ctx),
+            Screen::GroupActionsScreen(screen) => screen.ui(ctx),
             Screen::WithdrawalScreen(screen) => screen.ui(ctx),
             Screen::TransferScreen(screen) => screen.ui(ctx),
             Screen::AddKeyScreen(screen) => screen.ui(ctx),
@@ -730,6 +743,7 @@ impl ScreenLike for Screen {
                 screen.display_message(message, message_type)
             }
             Screen::CreateDocumentScreen(screen) => screen.display_message(message, message_type),
+            Screen::GroupActionsScreen(screen) => screen.display_message(message, message_type),
             Screen::WithdrawalScreen(screen) => screen.display_message(message, message_type),
             Screen::TransferScreen(screen) => screen.display_message(message, message_type),
             Screen::AddKeyScreen(screen) => screen.display_message(message, message_type),
@@ -801,6 +815,9 @@ impl ScreenLike for Screen {
                 screen.display_task_result(backend_task_success_result)
             }
             Screen::CreateDocumentScreen(screen) => {
+                screen.display_task_result(backend_task_success_result)
+            }
+            Screen::GroupActionsScreen(screen) => {
                 screen.display_task_result(backend_task_success_result)
             }
             Screen::WithdrawalScreen(screen) => {
@@ -886,6 +903,7 @@ impl ScreenLike for Screen {
             Screen::RegisterDpnsNameScreen(screen) => screen.pop_on_success(),
             Screen::RegisterDataContractScreen(screen) => screen.pop_on_success(),
             Screen::CreateDocumentScreen(screen) => screen.pop_on_success(),
+            Screen::GroupActionsScreen(screen) => screen.pop_on_success(),
             Screen::WithdrawalScreen(screen) => screen.pop_on_success(),
             Screen::TransferScreen(screen) => screen.pop_on_success(),
             Screen::AddKeyScreen(screen) => screen.pop_on_success(),

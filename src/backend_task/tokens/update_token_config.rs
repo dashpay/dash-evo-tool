@@ -1,5 +1,6 @@
 use super::BackendTaskSuccessResult;
 use crate::context::AppContext;
+use crate::model::proof_log_item::{ProofLogItem, RequestType};
 use crate::ui::tokens::tokens_screen::IdentityTokenBalance;
 use dash_sdk::dpp::state_transition::batch_transition::methods::StateTransitionCreationOptions;
 use dash_sdk::dpp::state_transition::proof_result::StateTransitionProofResult;
@@ -8,7 +9,8 @@ use dash_sdk::platform::transition::broadcast::BroadcastStateTransition;
 use dash_sdk::platform::{DataContract, Fetch, IdentityPublicKey};
 use dash_sdk::{
     dpp::data_contract::associated_token::token_configuration_item::TokenConfigurationChangeItem,
-    platform::transition::fungible_tokens::config_update::TokenConfigUpdateTransitionBuilder, Sdk,
+    platform::transition::fungible_tokens::config_update::TokenConfigUpdateTransitionBuilder,
+    Error, Sdk,
 };
 
 impl AppContext {
@@ -85,7 +87,26 @@ impl AppContext {
         let _proof_result = state_transition
             .broadcast_and_wait::<StateTransitionProofResult>(sdk, None)
             .await
-            .map_err(|e| format!("Error broadcasting Token Config Update transition: {}", e))?;
+            .map_err(|e| match e {
+                Error::DriveProofError(proof_error, proof_bytes, block_info) => {
+                    self.db
+                        .insert_proof_log_item(ProofLogItem {
+                            request_type: RequestType::BroadcastStateTransition,
+                            request_bytes: vec![],
+                            verification_path_query_bytes: vec![],
+                            height: block_info.height,
+                            time_ms: block_info.time_ms,
+                            proof_bytes,
+                            error: Some(proof_error.to_string()),
+                        })
+                        .ok();
+                    format!(
+                        "Error broadcasting Update token config transition: {}, proof error logged",
+                        proof_error
+                    )
+                }
+                e => format!("Error broadcasting Update token config transition: {}", e),
+            })?;
 
         // Now update the data contract in the local database
         // First, fetch the updated contract from the platform

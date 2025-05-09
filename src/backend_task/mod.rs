@@ -12,6 +12,7 @@ use crate::ui::tokens::tokens_screen::{
 };
 use contested_names::ScheduledDPNSVote;
 use dash_sdk::dpp::balances::credits::TokenAmount;
+use dash_sdk::dpp::group::group_action::GroupAction;
 use dash_sdk::dpp::prelude::DataContract;
 use dash_sdk::dpp::state_transition::StateTransition;
 use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
@@ -69,6 +70,7 @@ pub(crate) enum BackendTaskSuccessResult {
     ContractsWithDescriptions(
         BTreeMap<Identifier, (Option<ContractDescriptionInfo>, Vec<TokenInfo>)>,
     ),
+    ActiveGroupActions(IndexMap<Identifier, GroupAction>),
 }
 
 impl BackendTaskSuccessResult {}

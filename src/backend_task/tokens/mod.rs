@@ -1,5 +1,5 @@
 use super::BackendTaskSuccessResult;
-use crate::ui::tokens::tokens_screen::{IdentityTokenBalance, IdentityTokenIdentifier, TokenInfo};
+use crate::ui::tokens::tokens_screen::{IdentityTokenIdentifier, IdentityTokenInfo, TokenInfo};
 use crate::{app::TaskResult, context::AppContext, model::qualified_identity::QualifiedIdentity};
 use dash_sdk::dpp::balances::credits::TokenAmount;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration_item::TokenConfigurationChangeItem;
@@ -169,7 +169,7 @@ pub(crate) enum TokenTask {
         token_id: Identifier,
     },
     UpdateTokenConfig {
-        identity_token_balance: IdentityTokenBalance,
+        identity_token_info: IdentityTokenInfo,
         change_item: TokenConfigurationChangeItem,
         signing_key: IdentityPublicKey,
         public_note: Option<String>,
@@ -496,13 +496,13 @@ impl AppContext {
                 ))
             }
             TokenTask::UpdateTokenConfig {
-                identity_token_balance,
+                identity_token_info,
                 change_item,
                 signing_key,
                 public_note,
             } => self
                 .update_token_config(
-                    identity_token_balance.clone(),
+                    identity_token_info.clone(),
                     change_item.clone(),
                     signing_key,
                     public_note.clone(),

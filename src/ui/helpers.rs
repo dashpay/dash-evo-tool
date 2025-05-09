@@ -9,6 +9,7 @@ use dash_sdk::{
         data_contract::{
             accessors::v0::DataContractV0Getters,
             document_type::{accessors::DocumentTypeV0Getters, DocumentType},
+            group::{accessors::v0::GroupV0Getters, Group},
         },
         identity::{
             accessors::IdentityGettersV0,
@@ -18,7 +19,9 @@ use dash_sdk::{
     },
     platform::IdentityPublicKey,
 };
-use egui::{ComboBox, Ui};
+use egui::{Color32, ComboBox, Ui};
+
+use super::tokens::tokens_screen::IdentityTokenInfo;
 
 /// Returns the newly selected identity (if changed), otherwise the existing one.
 pub fn render_identity_selector(
@@ -253,4 +256,68 @@ pub fn add_contract_chooser_pre_filtered<'a, T>(
 
             ui.end_row();
         });
+}
+
+pub fn render_group_action_text(
+    ui: &mut Ui,
+    group: &Option<(u16, Group)>,
+    identity_token_info: &IdentityTokenInfo,
+    group_action_type_str: &str,
+) -> String {
+    if let Some((_, group)) = group.as_ref() {
+        let your_power = group
+            .members()
+            .get(&identity_token_info.identity.identity.id());
+
+        ui.add_space(20.0);
+        ui.add(egui::Label::new(
+            egui::RichText::new("This is a group action.")
+                .heading()
+                .color(egui::Color32::DARK_RED),
+        ));
+
+        if your_power.is_none() {
+            ui.add_space(10.0);
+            ui.colored_label(
+                Color32::DARK_RED,
+                format!(
+                    "You are not a valid group member for {} on this token",
+                    group_action_type_str
+                ),
+            );
+            return format!("Test {} (Should fail)", group_action_type_str);
+        }
+
+        ui.add_space(10.0);
+        if let Some(your_power) = your_power {
+            if *your_power >= group.required_power() {
+                ui.label(format!("You are a unilateral group member.\nYou do not need other group members to sign off on this action for it to process."));
+                format!("{}", group_action_type_str)
+            } else {
+                ui.label(format!("You are not a unilateral group member.\nYou can initiate the {group_action_type_str} action but will need other group members to sign off on it for it to process.\nThis action requires a total power of {}.\nYour power is {your_power}.", group.required_power()));
+
+                ui.add_space(10.0);
+                ui.label(format!(
+                    "Other group members are : \n{}",
+                    group
+                        .members()
+                        .iter()
+                        .filter_map(|(member, power)| {
+                            if member != &identity_token_info.identity.identity.id() {
+                                Some(format!(" - {} with power {}", member, power))
+                            } else {
+                                None
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", \n")
+                ));
+                format!("Initiate Group {}", group_action_type_str)
+            }
+        } else {
+            format!("Test {} (It should fail)", group_action_type_str)
+        }
+    } else {
+        format!("{}", group_action_type_str)
+    }
 }

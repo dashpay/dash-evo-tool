@@ -195,15 +195,15 @@ pub enum ScreenType {
     AddTokenById,
     TransferTokensScreen(IdentityTokenBalance),
     MintTokensScreen(IdentityTokenInfo),
-    BurnTokensScreen(IdentityTokenBalance),
-    DestroyFrozenFundsScreen(IdentityTokenBalance),
-    FreezeTokensScreen(IdentityTokenBalance),
-    UnfreezeTokensScreen(IdentityTokenBalance),
-    PauseTokensScreen(IdentityTokenBalance),
-    ResumeTokensScreen(IdentityTokenBalance),
+    BurnTokensScreen(IdentityTokenInfo),
+    DestroyFrozenFundsScreen(IdentityTokenInfo),
+    FreezeTokensScreen(IdentityTokenInfo),
+    UnfreezeTokensScreen(IdentityTokenInfo),
+    PauseTokensScreen(IdentityTokenInfo),
+    ResumeTokensScreen(IdentityTokenInfo),
     ClaimTokensScreen(IdentityTokenBalance),
     ViewTokenClaimsScreen(IdentityTokenBalance),
-    UpdateTokenConfigScreen(IdentityTokenBalance),
+    UpdateTokenConfigScreen(IdentityTokenInfo),
 }
 
 impl ScreenType {
@@ -313,36 +313,33 @@ impl ScreenType {
             ScreenType::MintTokensScreen(identity_token_info) => Screen::MintTokensScreen(
                 MintTokensScreen::new(identity_token_info.clone(), app_context),
             ),
-            ScreenType::BurnTokensScreen(identity_token_balance) => Screen::BurnTokensScreen(
-                BurnTokensScreen::new(identity_token_balance.clone(), app_context),
+            ScreenType::BurnTokensScreen(identity_token_info) => Screen::BurnTokensScreen(
+                BurnTokensScreen::new(identity_token_info.clone(), app_context),
             ),
-            ScreenType::DestroyFrozenFundsScreen(identity_token_balance) => {
+            ScreenType::DestroyFrozenFundsScreen(identity_token_info) => {
                 Screen::DestroyFrozenFundsScreen(DestroyFrozenFundsScreen::new(
-                    identity_token_balance.clone(),
+                    identity_token_info.clone(),
                     app_context,
                 ))
             }
-            ScreenType::FreezeTokensScreen(identity_token_balance) => {
+            ScreenType::FreezeTokensScreen(identity_token_info) => {
                 Screen::DestroyFrozenFundsScreen(DestroyFrozenFundsScreen::new(
-                    identity_token_balance.clone(),
+                    identity_token_info.clone(),
                     app_context,
                 ))
             }
-            ScreenType::UnfreezeTokensScreen(identity_token_balance) => {
+            ScreenType::UnfreezeTokensScreen(identity_token_info) => {
                 Screen::DestroyFrozenFundsScreen(DestroyFrozenFundsScreen::new(
-                    identity_token_balance.clone(),
+                    identity_token_info.clone(),
                     app_context,
                 ))
             }
-            ScreenType::PauseTokensScreen(identity_token_balance) => {
+            ScreenType::PauseTokensScreen(identity_token_info) => Screen::DestroyFrozenFundsScreen(
+                DestroyFrozenFundsScreen::new(identity_token_info.clone(), app_context),
+            ),
+            ScreenType::ResumeTokensScreen(identity_token_info) => {
                 Screen::DestroyFrozenFundsScreen(DestroyFrozenFundsScreen::new(
-                    identity_token_balance.clone(),
-                    app_context,
-                ))
-            }
-            ScreenType::ResumeTokensScreen(identity_token_balance) => {
-                Screen::DestroyFrozenFundsScreen(DestroyFrozenFundsScreen::new(
-                    identity_token_balance.clone(),
+                    identity_token_info.clone(),
                     app_context,
                 ))
             }
@@ -355,9 +352,9 @@ impl ScreenType {
                     app_context,
                 ))
             }
-            ScreenType::UpdateTokenConfigScreen(identity_token_balance) => {
+            ScreenType::UpdateTokenConfigScreen(identity_token_info) => {
                 Screen::UpdateTokenConfigScreen(UpdateTokenConfigScreen::new(
-                    identity_token_balance.clone(),
+                    identity_token_info.clone(),
                     app_context,
                 ))
             }
@@ -560,22 +557,22 @@ impl Screen {
                 ScreenType::MintTokensScreen(screen.identity_token_info.clone())
             }
             Screen::BurnTokensScreen(screen) => {
-                ScreenType::BurnTokensScreen(screen.identity_token_balance.clone())
+                ScreenType::BurnTokensScreen(screen.identity_token_info.clone())
             }
             Screen::DestroyFrozenFundsScreen(screen) => {
-                ScreenType::DestroyFrozenFundsScreen(screen.identity_token_balance.clone())
+                ScreenType::DestroyFrozenFundsScreen(screen.identity_token_info.clone())
             }
             Screen::FreezeTokensScreen(screen) => {
-                ScreenType::FreezeTokensScreen(screen.identity_token_balance.clone())
+                ScreenType::FreezeTokensScreen(screen.identity_token_info.clone())
             }
             Screen::UnfreezeTokensScreen(screen) => {
-                ScreenType::UnfreezeTokensScreen(screen.identity_token_balance.clone())
+                ScreenType::UnfreezeTokensScreen(screen.identity_token_info.clone())
             }
             Screen::PauseTokensScreen(screen) => {
-                ScreenType::PauseTokensScreen(screen.identity_token_balance.clone())
+                ScreenType::PauseTokensScreen(screen.identity_token_info.clone())
             }
             Screen::ResumeTokensScreen(screen) => {
-                ScreenType::ResumeTokensScreen(screen.identity_token_balance.clone())
+                ScreenType::ResumeTokensScreen(screen.identity_token_info.clone())
             }
             Screen::ClaimTokensScreen(screen) => {
                 ScreenType::ClaimTokensScreen(screen.identity_token_balance.clone())
@@ -584,7 +581,7 @@ impl Screen {
                 ScreenType::ViewTokenClaimsScreen(screen.identity_token_balance.clone())
             }
             Screen::UpdateTokenConfigScreen(screen) => {
-                ScreenType::UpdateTokenConfigScreen(screen.identity_token_balance.clone())
+                ScreenType::UpdateTokenConfigScreen(screen.identity_token_info.clone())
             }
             Screen::AddTokenById(_) => ScreenType::AddTokenById,
         }

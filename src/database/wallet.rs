@@ -297,7 +297,7 @@ impl Database {
                     .insert(address.clone(), derivation_path.clone());
                 tracing::trace!(
                     address = ?address,
-                    network = address.network().to_string(),  
+                    network = address.network().to_string(),
                     expected_network = network.to_string(),
                     "loaded adddress from database");
 
@@ -464,32 +464,44 @@ impl Database {
 /// update its network if necessary.
 ///
 /// Consumes the adress and returns a new Address with the correct network.
-///
-
 fn check_address_for_network(
     address_unchecked: Address<NetworkUnchecked>,
     network: &Network,
 ) -> Result<Address<NetworkChecked>, WalletError> {
-    let address_checked = address_unchecked.require_network(*network)
-    .inspect_err(|e| {
-        tracing::error!("address is not valid for the network: {}", e);
-    })?;
-    
-    // For devnet addresses, the address.network() can be set to Testnet; we need to
-    // overwrite this to match the network we are using.
-    if address_checked.network() !=  network {
-        // this should happen only for devnet addresses
-        if network != &Network::Devnet {
-         tracing::warn!(address = ?address_checked,
-            network = address_checked.network().to_string(),
-            expected_network = network.to_string(),
-            "address has invalid network set");
-        }
+    let address_checked = address_unchecked
+        .require_network(*network)
+        .inspect_err(|e| {
+            tracing::error!("address is not valid for the network: {}", e);
+        })?;
 
-        Ok(Address::new(*network, address_checked.payload().clone()))
-    } else {
-        Ok(address_checked)
-    }    
+    // For devnet/regtest addresses, require_network() accepts testnet addresses; we need to overwrite it here in case there is
+    // a mismatch to match the network we are using.
+    //
+    // See also logic in [`Address::is_valid_for_network()`].
+    match address_checked.network() {
+        // When the address is correct, do nothing
+        address_network if network == address_network => Ok(address_checked),
+        // For devnet/regtest addresses, address type can default to testnet, require_network() accepts this;
+        //  we need to overwrite it with correct network.
+        Network::Testnet if network == &Network::Devnet || network == &Network::Regtest => {
+            Ok(Address::new(*network, address_checked.payload().clone()))
+        }
+        // other cases, like mainnet or testnet, return an error on mismatch
+        address_network => {
+            tracing::error!(address = ?address_checked,
+            network = address_network.to_string(),
+            required_network = network.to_string(),
+            "address has invalid network set");
+
+            Err(WalletError::AddressError(
+                dashcore::address::Error::NetworkValidation {
+                    required: *network,
+                    found: *address_checked.network(),
+                    address: address_checked.as_unchecked().clone(),
+                },
+            ))
+        }
+    }
 }
 
 #[derive(thiserror::Error, Debug)]

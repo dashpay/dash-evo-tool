@@ -609,8 +609,8 @@ impl Wallet {
                 &address,
                 &app_context.network,
                 derivation_path,
-                DerivationPathReference::BlockchainIdentityCreditRegistrationFunding,
-                DerivationPathType::CREDIT_FUNDING,
+                path_reference,
+                path_type,
                 None,
             )
             .map_err(|e| e.to_string())?;

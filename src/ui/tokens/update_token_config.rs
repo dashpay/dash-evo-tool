@@ -15,6 +15,7 @@ use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution
 use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::v0::TokenPerpetualDistributionV0;
 use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::TokenPerpetualDistribution;
 use dash_sdk::dpp::data_contract::change_control_rules::authorized_action_takers::AuthorizedActionTakers;
+use dash_sdk::dpp::group::GroupStateTransitionInfoStatus;
 use eframe::egui::{self, Color32, Context, Ui};
 use egui::RichText;
 
@@ -577,6 +578,10 @@ impl UpdateTokenConfigScreen {
             .frame(true)
             .corner_radius(3.0);
 
+        let group_info = group
+            .as_ref()
+            .map(|(pos, _)| GroupStateTransitionInfoStatus::GroupStateTransitionInfoProposer(*pos));
+
         if self.app_context.developer_mode || !button_text.contains("Test") {
             ui.add_space(20.0);
             if ui.add(button).clicked() {
@@ -587,6 +592,7 @@ impl UpdateTokenConfigScreen {
                         change_item: self.change_item.clone(),
                         signing_key: self.signing_key.clone().expect("Signing key must be set"),
                         public_note: self.public_note.clone(),
+                        group_info,
                     }));
             }
         }

@@ -8,6 +8,7 @@ use dash_sdk::dpp::data_contract::associated_token::token_configuration::accesso
 use dash_sdk::dpp::data_contract::change_control_rules::authorized_action_takers::AuthorizedActionTakers;
 use dash_sdk::dpp::data_contract::group::Group;
 use dash_sdk::dpp::data_contract::GroupContractPosition;
+use dash_sdk::dpp::group::GroupStateTransitionInfoStatus;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use eframe::egui::{self, Color32, Context, Ui};
 use egui::RichText;
@@ -307,6 +308,10 @@ impl DestroyFrozenFundsScreen {
                         .contract
                         .clone();
 
+                    let group_info = self.group.as_ref().map(|(pos, _)| {
+                        GroupStateTransitionInfoStatus::GroupStateTransitionInfoProposer(*pos)
+                    });
+
                     // Dispatch the actual backend destroy action
                     action = AppAction::BackendTasks(
                         vec![
@@ -317,6 +322,7 @@ impl DestroyFrozenFundsScreen {
                                 signing_key: self.selected_key.clone().expect("Expected a key"),
                                 public_note: self.public_note.clone(),
                                 frozen_identity: frozen_id,
+                                group_info,
                             }),
                             BackendTask::TokenTask(TokenTask::QueryMyTokenBalances),
                         ],

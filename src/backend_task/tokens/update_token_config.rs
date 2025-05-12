@@ -3,6 +3,7 @@ use crate::context::AppContext;
 use crate::model::proof_log_item::{ProofLogItem, RequestType};
 use crate::ui::tokens::tokens_screen::IdentityTokenInfo;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+use dash_sdk::dpp::group::GroupStateTransitionInfoStatus;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::state_transition::proof_result::StateTransitionProofResult;
 use dash_sdk::platform::transition::broadcast::BroadcastStateTransition;
@@ -20,6 +21,7 @@ impl AppContext {
         change_item: TokenConfigurationChangeItem,
         signing_key: &IdentityPublicKey,
         public_note: Option<String>,
+        group_info: Option<GroupStateTransitionInfoStatus>,
         sdk: &Sdk,
     ) -> Result<BackendTaskSuccessResult, String> {
         // Get the existing contract and identity for building the state transition
@@ -64,7 +66,7 @@ impl AppContext {
             identity_token_info.token_position,
             identity_token_info.identity.identity.id(),
             change_item.clone(),
-            None,
+            group_info,
         );
 
         // Add the optional public note

@@ -4,10 +4,9 @@ use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 
 use crate::model::proof_log_item::{ProofLogItem, RequestType};
+use dash_sdk::dpp::group::GroupStateTransitionInfoStatus;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-use dash_sdk::dpp::state_transition::batch_transition::methods::StateTransitionCreationOptions;
 use dash_sdk::dpp::state_transition::proof_result::StateTransitionProofResult;
-use dash_sdk::dpp::state_transition::StateTransitionSigningOptions;
 use dash_sdk::platform::transition::broadcast::BroadcastStateTransition;
 use dash_sdk::platform::transition::fungible_tokens::emergency_action::TokenEmergencyActionTransitionBuilder;
 use dash_sdk::platform::{DataContract, IdentityPublicKey};
@@ -22,6 +21,7 @@ impl AppContext {
         token_position: u16,
         signing_key: IdentityPublicKey,
         public_note: Option<String>,
+        group_info: Option<GroupStateTransitionInfoStatus>,
         sdk: &Sdk,
         _sender: mpsc::Sender<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, String> {
@@ -34,6 +34,10 @@ impl AppContext {
 
         if let Some(note) = public_note {
             builder = builder.with_public_note(note);
+        }
+
+        if let Some(group_info) = group_info {
+            builder = builder.with_using_group_info(group_info);
         }
 
         let options = self.state_transition_options();

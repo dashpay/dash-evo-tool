@@ -5,9 +5,7 @@ use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::dpp::group::GroupStateTransitionInfoStatus;
 
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-use dash_sdk::dpp::state_transition::batch_transition::methods::StateTransitionCreationOptions;
 use dash_sdk::dpp::state_transition::proof_result::StateTransitionProofResult;
-use dash_sdk::dpp::state_transition::StateTransitionSigningOptions;
 use dash_sdk::platform::transition::broadcast::BroadcastStateTransition;
 use dash_sdk::platform::transition::fungible_tokens::mint::TokenMintTransitionBuilder;
 use dash_sdk::platform::{DataContract, Identifier, IdentityPublicKey};

@@ -637,7 +637,11 @@ impl ScreenLike for MintTokensScreen {
                         )
                         .changed()
                     {
-                        self.public_note = Some(txt);
+                        self.public_note = if txt.len() > 0 {
+                            Some(txt)
+                        } else {
+                            None
+                        };
                     }
                 });
 

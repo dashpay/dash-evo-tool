@@ -275,7 +275,7 @@ pub fn render_group_action_text(
 
         ui.add_space(10.0);
         ui.label(format!(
-            "You are signing the active {} group action with ID {}",
+            "You are signing an active {} group action (Action ID {})",
             group_action_type_str,
             group_action_id.to_string(Encoding::Base58)
         ));

@@ -573,10 +573,13 @@ impl ScreenLike for DestroyFrozenFundsScreen {
                         )
                         .changed()
                     {
-                        self.public_note = Some(txt);
+                        self.public_note = if txt.len() > 0 {
+                            Some(txt)
+                        } else {
+                            None
+                        };
                     }
                 });
-                ui.add_space(10.0);
 
                 let button_text = render_group_action_text(
                     ui,

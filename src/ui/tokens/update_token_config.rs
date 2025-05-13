@@ -570,10 +570,10 @@ impl UpdateTokenConfigScreen {
             let mut txt = self.public_note.clone().unwrap_or_default();
             if ui
                 .text_edit_singleline(&mut txt)
-                .on_hover_text("A note to go with the transaction that can be seen by the public")
+                .on_hover_text("A note about the transaction that can be seen by the public.")
                 .changed()
             {
-                self.public_note = Some(txt);
+                self.public_note = if txt.len() > 0 { Some(txt) } else { None };
             }
         });
 

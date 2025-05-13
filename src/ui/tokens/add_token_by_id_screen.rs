@@ -163,7 +163,7 @@ impl AddTokenByIdScreen {
             }
 
             if ui.button("Back to Tokens screen").clicked() {
-                action = AppAction::GoToMainScreen;
+                action = AppAction::PopScreenAndRefresh;
             }
         });
         action

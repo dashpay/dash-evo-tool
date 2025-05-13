@@ -330,16 +330,12 @@ impl GroupActionsScreen {
                                             "Mint" => {
                                                 let mut mint_screen =
                                                     MintTokensScreen::new(identity_token_info, &self.app_context);
+
                                                 mint_screen.group_action_id = Some(*id);
                                                 mint_screen.amount_to_mint = info
                                                     .split_whitespace()
                                                     .next()
                                                     .unwrap_or("0")
-                                                    .to_string();
-                                                mint_screen.recipient_identity_id = info
-                                                    .split_whitespace()
-                                                    .nth(2)
-                                                    .unwrap_or("")
                                                     .to_string();
 
                                                 action |= AppAction::AddScreen(
@@ -349,12 +345,14 @@ impl GroupActionsScreen {
                                             "Burn" => {
                                                 let mut burn_screen =
                                                     BurnTokensScreen::new(identity_token_info, &self.app_context);
+
                                                 burn_screen.group_action_id = Some(*id);
                                                 burn_screen.amount_to_burn = info
                                                     .split_whitespace()
                                                     .next()
                                                     .unwrap_or("0")
                                                     .to_string();
+
                                                 action |= AppAction::AddScreen(
                                                     Screen::BurnTokensScreen(burn_screen),
                                                 );

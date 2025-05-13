@@ -7,11 +7,12 @@ use crate::model::wallet::{
 use dash_sdk::dashcore_rpc::dashcore::transaction::special_transaction::TransactionPayload;
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dpp::balances::credits::Duffs;
+use dash_sdk::dpp::dashcore::address::{NetworkChecked, NetworkUnchecked};
 use dash_sdk::dpp::dashcore::bip32::{DerivationPath, ExtendedPubKey};
 use dash_sdk::dpp::dashcore::consensus::deserialize;
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::{
-    InstantLock, Network, OutPoint, ScriptBuf, Transaction, TxOut, Txid,
+    self, InstantLock, Network, OutPoint, ScriptBuf, Transaction, TxOut, Txid,
 };
 use dash_sdk::dpp::identity::state_transition::asset_lock_proof::chain::ChainAssetLockProof;
 use dash_sdk::dpp::identity::state_transition::asset_lock_proof::InstantAssetLockProof;
@@ -85,12 +86,16 @@ impl Database {
         &self,
         seed_hash: &[u8; 32],
         address: &Address,
+        network: &Network,
         derivation_path: &DerivationPath,
         path_reference: DerivationPathReference,
         path_type: DerivationPathType,
         balance: Option<u64>,
     ) -> rusqlite::Result<()> {
         let conn = self.conn.lock().unwrap();
+
+        let address = check_address_for_network(address.as_unchecked().clone(), network)
+            .expect("Expected address to be valid for network");
 
         // Step 1: Check if the address already exists for the given seed.
         let mut stmt = conn.prepare(
@@ -236,10 +241,10 @@ impl Database {
 
         // Step 2: Retrieve all addresses, balances, and derivation paths associated with the wallets.
         let mut address_stmt = conn.prepare(
-            "SELECT seed_hash, address, derivation_path, balance, path_reference, path_type FROM wallet_addresses",
+            "SELECT seed_hash, address, derivation_path, balance, path_reference, path_type FROM wallet_addresses WHERE seed_hash IN (SELECT seed_hash FROM wallet WHERE network = ?)",
         )?;
 
-        let address_rows = address_stmt.query_map([], |row| {
+        let address_rows = address_stmt.query_map([network_str.clone()], |row| {
             let seed_hash: Vec<u8> = row.get(0)?;
             let address: String = row.get(1)?;
             let derivation_path: String = row.get(2)?;
@@ -249,9 +254,9 @@ impl Database {
 
             let seed_hash_array: [u8; 32] =
                 seed_hash.try_into().expect("Seed hash should be 32 bytes");
-            let address = Address::from_str(&address)
-                .expect("Invalid address format")
-                .assume_checked();
+            let address_unchecked = Address::from_str(&address).expect("Invalid address format");
+            let address = check_address_for_network(address_unchecked, network)?;
+
             let derivation_path = DerivationPath::from_str(&derivation_path)
                 .expect("Expected to convert to derivation path");
 
@@ -280,7 +285,6 @@ impl Database {
         // Step 3: Add addresses, balances, and known addresses to the corresponding wallets.
         for row in address_rows {
             let (seed_array, address, derivation_path, balance, path_reference, path_type) = row?;
-
             if let Some(wallet) = wallets_map.get_mut(&seed_array) {
                 // Update the address balance if available.
                 if let Some(balance) = balance {
@@ -291,6 +295,11 @@ impl Database {
                 wallet
                     .known_addresses
                     .insert(address.clone(), derivation_path.clone());
+                tracing::trace!(
+                    address = ?address,
+                    network = address.network().to_string(),
+                    expected_network = network.to_string(),
+                    "loaded adddress from database");
 
                 // Add the address to the `watched_addresses` map with AddressInfo.
                 let address_info = AddressInfo {
@@ -448,5 +457,62 @@ impl Database {
 
         // Convert the BTreeMap into a Vec of Wallets.
         Ok(wallets_map.into_values().collect())
+    }
+}
+
+/// Ensure the address is valid for the given network and
+/// update its network if necessary.
+///
+/// Consumes the adress and returns a new Address with the correct network.
+fn check_address_for_network(
+    address_unchecked: Address<NetworkUnchecked>,
+    network: &Network,
+) -> Result<Address<NetworkChecked>, WalletError> {
+    let address_checked = address_unchecked
+        .require_network(*network)
+        .inspect_err(|e| {
+            tracing::error!("address is not valid for the network: {}", e);
+        })?;
+
+    // For devnet/regtest addresses, require_network() accepts testnet addresses; we need to overwrite it here in case there is
+    // a mismatch to match the network we are using.
+    //
+    // See also logic in [`Address::is_valid_for_network()`].
+    match address_checked.network() {
+        // When the address is correct, do nothing
+        address_network if network == address_network => Ok(address_checked),
+        // For devnet/regtest addresses, address type can default to testnet, require_network() accepts this;
+        //  we need to overwrite it with correct network.
+        Network::Testnet if network == &Network::Devnet || network == &Network::Regtest => {
+            Ok(Address::new(*network, address_checked.payload().clone()))
+        }
+        // other cases, like mainnet or testnet, return an error on mismatch
+        address_network => {
+            tracing::error!(address = ?address_checked,
+            network = address_network.to_string(),
+            required_network = network.to_string(),
+            "address has invalid network set");
+
+            Err(WalletError::AddressError(
+                dashcore::address::Error::NetworkValidation {
+                    required: *network,
+                    found: *address_checked.network(),
+                    address: address_checked.as_unchecked().clone(),
+                },
+            ))
+        }
+    }
+}
+
+#[derive(thiserror::Error, Debug)]
+/// Error type for wallet operations.
+pub enum WalletError {
+    #[error("Error in address: {0}")]
+    AddressError(#[from] dashcore::address::Error),
+}
+
+impl From<WalletError> for rusqlite::Error {
+    fn from(err: WalletError) -> Self {
+        rusqlite::Error::UserFunctionError(Box::new(err))
     }
 }

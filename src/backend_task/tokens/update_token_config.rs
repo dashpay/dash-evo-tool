@@ -66,12 +66,15 @@ impl AppContext {
             identity_token_info.token_position,
             identity_token_info.identity.identity.id(),
             change_item.clone(),
-            group_info,
         );
 
         // Add the optional public note
         if let Some(public_note) = &public_note {
             builder = builder.with_public_note(public_note.clone());
+        }
+
+        if let Some(group_info) = group_info {
+            builder = builder.with_using_group_info(group_info);
         }
 
         let options = self.state_transition_options();

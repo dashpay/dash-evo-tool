@@ -52,6 +52,10 @@ pub struct UpdateTokenConfigScreen {
     identity: QualifiedIdentity,
     public_note: Option<String>,
 
+    // Input state fields
+    pub authorized_identity_input: Option<String>,
+    pub authorized_group_input: Option<String>,
+
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     wallet_password: String,
     show_password: bool,
@@ -97,6 +101,9 @@ impl UpdateTokenConfigScreen {
             signing_key: possible_key.cloned(),
             identity,
             public_note: None,
+
+            authorized_identity_input: None,
+            authorized_group_input: None,
 
             selected_wallet,
             wallet_password: String::new(),
@@ -473,7 +480,12 @@ impl UpdateTokenConfigScreen {
             | TokenConfigurationChangeItem::NewTokensDestinationIdentityAdminGroup(t)
             | TokenConfigurationChangeItem::MintingAllowChoosingDestinationControlGroup(t)
             | TokenConfigurationChangeItem::MintingAllowChoosingDestinationAdminGroup(t) => {
-                Self::render_authorized_action_takers_editor(ui, t, &mut None, &mut None);
+                Self::render_authorized_action_takers_editor(
+                    ui,
+                    t,
+                    &mut self.authorized_identity_input,
+                    &mut self.authorized_group_input,
+                );
             }
 
             TokenConfigurationChangeItem::TokenConfigurationNoChange => {
@@ -596,7 +608,7 @@ impl UpdateTokenConfigScreen {
                             let is_valid =
                                 Identifier::from_string(id_str, Encoding::Base58).is_ok();
                             let (symbol, color) = if is_valid {
-                                ("✔", Color32::GREEN)
+                                ("✔", Color32::DARK_GREEN)
                             } else {
                                 ("×", Color32::RED)
                             };

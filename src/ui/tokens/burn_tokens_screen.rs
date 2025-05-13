@@ -581,7 +581,7 @@ impl ScreenLike for BurnTokensScreen {
                 });
 
                 let button_text =
-                    render_group_action_text(ui, &self.group, &self.identity_token_info, "Burn");
+                    render_group_action_text(ui, &self.group, &self.identity_token_info, "Burn", &self.group_action_id);
 
                 // Burn button
                 if self.app_context.developer_mode || !button_text.contains("Test") {

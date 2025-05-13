@@ -583,6 +583,7 @@ impl ScreenLike for DestroyFrozenFundsScreen {
                     &self.group,
                     &self.identity_token_info,
                     "Destroy Frozen Funds",
+                    &self.group_action_id,
                 );
 
                 // Destroy button

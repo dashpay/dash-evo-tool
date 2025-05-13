@@ -559,6 +559,7 @@ impl ScreenLike for UnfreezeTokensScreen {
                     &self.group,
                     &self.identity_token_info,
                     "Unfreeze",
+                    &self.group_action_id,
                 );
 
                 // Unfreeze button

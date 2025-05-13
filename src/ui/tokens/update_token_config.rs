@@ -577,8 +577,13 @@ impl UpdateTokenConfigScreen {
             }
         });
 
-        let button_text =
-            render_group_action_text(ui, &self.group, &self.identity_token_info, "Update Config");
+        let button_text = render_group_action_text(
+            ui,
+            &self.group,
+            &self.identity_token_info,
+            "Update Config",
+            &self.group_action_id,
+        );
 
         let button = egui::Button::new(RichText::new(&button_text).color(Color32::WHITE))
             .fill(Color32::from_rgb(0, 128, 255))

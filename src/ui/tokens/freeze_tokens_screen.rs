@@ -558,7 +558,7 @@ impl ScreenLike for FreezeTokensScreen {
                 });
 
                 let button_text =
-                    render_group_action_text(ui, &self.group, &self.identity_token_info, "Freeze");
+                    render_group_action_text(ui, &self.group, &self.identity_token_info, "Freeze", &self.group_action_id);
 
                 // Freeze button
                 if self.app_context.developer_mode || !button_text.contains("Test") {

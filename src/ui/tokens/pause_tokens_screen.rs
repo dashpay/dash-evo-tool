@@ -496,8 +496,13 @@ impl ScreenLike for PauseTokensScreen {
                     }
                 });
 
-                let button_text =
-                    render_group_action_text(ui, &self.group, &self.identity_token_info, "Pause");
+                let button_text = render_group_action_text(
+                    ui,
+                    &self.group,
+                    &self.identity_token_info,
+                    "Pause",
+                    &self.group_action_id,
+                );
 
                 // Pause button
                 if self.app_context.developer_mode || !button_text.contains("Test") {

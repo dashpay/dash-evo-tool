@@ -495,8 +495,13 @@ impl ScreenLike for ResumeTokensScreen {
                     }
                 });
 
-                let button_text =
-                    render_group_action_text(ui, &self.group, &self.identity_token_info, "Resume");
+                let button_text = render_group_action_text(
+                    ui,
+                    &self.group,
+                    &self.identity_token_info,
+                    "Resume",
+                    &self.group_action_id,
+                );
 
                 // Resume button
                 if self.app_context.developer_mode || !button_text.contains("Test") {

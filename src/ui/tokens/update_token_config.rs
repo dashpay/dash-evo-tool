@@ -2,6 +2,7 @@ use crate::app::AppAction;
 use crate::backend_task::tokens::TokenTask;
 use crate::backend_task::BackendTask;
 use crate::context::AppContext;
+use crate::model::qualified_contract::QualifiedContract;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::ui::components::left_panel::add_left_panel;
@@ -14,6 +15,7 @@ use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
 use crate::ui::{MessageType, Screen, ScreenLike};
 use chrono::{DateTime, Utc};
 use dash_sdk::dpp::balances::credits::TokenAmount;
+use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::v0::TokenConfigurationConventionV0;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::TokenConfigurationConvention;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration_item::TokenConfigurationChangeItem;
@@ -44,6 +46,7 @@ pub enum UpdateTokenConfigStatus {
 
 pub struct UpdateTokenConfigScreen {
     pub identity_token_balance: IdentityTokenBalance,
+    data_contract_option: Option<QualifiedContract>,
     backend_message: Option<(String, MessageType, DateTime<Utc>)>,
     update_status: UpdateTokenConfigStatus,
     pub app_context: Arc<AppContext>,
@@ -92,8 +95,13 @@ impl UpdateTokenConfigScreen {
         let selected_wallet =
             get_selected_wallet(&identity, None, possible_key.clone(), &mut error_message);
 
+        let data_contract_option = app_context
+            .get_contract_by_id(&identity_token_balance.data_contract_id)
+            .unwrap_or_default();
+
         Self {
             identity_token_balance: identity_token_balance.clone(),
+            data_contract_option,
             backend_message: None,
             update_status: UpdateTokenConfigStatus::NotUpdating,
             app_context: app_context.clone(),
@@ -485,6 +493,7 @@ impl UpdateTokenConfigScreen {
                     t,
                     &mut self.authorized_identity_input,
                     &mut self.authorized_group_input,
+                    &self.data_contract_option,
                 );
             }
 
@@ -539,8 +548,9 @@ impl UpdateTokenConfigScreen {
     pub fn render_authorized_action_takers_editor(
         ui: &mut egui::Ui,
         takers: &mut AuthorizedActionTakers,
-        identity_input: &mut Option<String>,
-        group_input: &mut Option<String>,
+        authorized_identity_input: &mut Option<String>,
+        authorized_group_input: &mut Option<String>,
+        data_contract_option: &Option<QualifiedContract>,
     ) {
         ui.horizontal(|ui| {
             // Display label
@@ -559,7 +569,7 @@ impl UpdateTokenConfigScreen {
                             format!("Identity({})", id)
                         }
                     }
-                    AuthorizedActionTakers::Group(g) => format!("Group {}", g),
+                    AuthorizedActionTakers::Group(_) => format!("Group"),
                 })
                 .show_ui(ui, |ui| {
                     ui.selectable_value(takers, AuthorizedActionTakers::NoOne, "No One");
@@ -579,7 +589,7 @@ impl UpdateTokenConfigScreen {
                         .clicked()
                     {
                         *takers = AuthorizedActionTakers::Identity(Identifier::default());
-                        identity_input.get_or_insert_with(String::new);
+                        authorized_identity_input.get_or_insert_with(String::new);
                     }
 
                     if ui
@@ -590,14 +600,14 @@ impl UpdateTokenConfigScreen {
                         .clicked()
                     {
                         *takers = AuthorizedActionTakers::Group(0);
-                        group_input.get_or_insert_with(|| "0".to_owned());
+                        authorized_group_input.get_or_insert_with(|| "0".to_owned());
                     }
                 });
 
             // Render input for Identity
             if let AuthorizedActionTakers::Identity(id) = takers {
-                identity_input.get_or_insert_with(String::new);
-                if let Some(ref mut id_str) = identity_input {
+                authorized_identity_input.get_or_insert_with(String::new);
+                if let Some(ref mut id_str) = authorized_identity_input {
                     ui.horizontal(|ui| {
                         ui.add_sized(
                             [300.0, 22.0],
@@ -623,12 +633,37 @@ impl UpdateTokenConfigScreen {
             }
 
             // Render input for Group
-            if let AuthorizedActionTakers::Group(g) = takers {
-                group_input.get_or_insert_with(|| g.to_string());
-                if let Some(ref mut group_str) = group_input {
-                    ui.add(egui::TextEdit::singleline(group_str).hint_text("Enter group position"));
-                    if let Ok(parsed) = group_str.parse::<u16>() {
-                        *g = parsed;
+            if let Some(data_contract) = data_contract_option {
+                let contract_group_positions: Vec<u16> =
+                    data_contract.contract.groups().keys().cloned().collect();
+                if let AuthorizedActionTakers::Group(g) = takers {
+                    authorized_group_input.get_or_insert_with(|| g.to_string());
+                    egui::ComboBox::from_id_salt("group_position_selector")
+                        .selected_text(format!(
+                            "Group Position: {}",
+                            authorized_group_input.as_deref().unwrap_or(&g.to_string())
+                        ))
+                        .show_ui(ui, |ui| {
+                            for position in &contract_group_positions {
+                                if ui
+                                    .selectable_value(g, *position, format!("Group {}", position))
+                                    .clicked()
+                                {
+                                    *authorized_group_input = Some(position.to_string());
+                                }
+                            }
+                        });
+                }
+            } else {
+                if let AuthorizedActionTakers::Group(g) = takers {
+                    authorized_group_input.get_or_insert_with(|| g.to_string());
+                    if let Some(ref mut group_str) = authorized_group_input {
+                        ui.add(
+                            egui::TextEdit::singleline(group_str).hint_text("Enter group position"),
+                        );
+                        if let Ok(parsed) = group_str.parse::<u16>() {
+                            *g = parsed;
+                        }
                     }
                 }
             }

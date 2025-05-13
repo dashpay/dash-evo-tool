@@ -593,10 +593,6 @@ impl ScreenLike for MintTokensScreen {
                     self.render_amount_input(ui);
                 }
 
-                ui.add_space(10.0);
-                ui.separator();
-                ui.add_space(10.0);
-
                 if self
                     .identity_token_info
                     .token_config
@@ -604,6 +600,10 @@ impl ScreenLike for MintTokensScreen {
                     .minting_allow_choosing_destination()
                     || self.app_context.developer_mode
                 {
+                    ui.add_space(10.0);
+                    ui.separator();
+                    ui.add_space(10.0);
+
                     if self
                         .identity_token_info
                         .token_config
@@ -616,13 +616,7 @@ impl ScreenLike for MintTokensScreen {
                         ui.heading("3. Recipient identity (required)");
                     }
                     ui.add_space(5.0);
-                    if self.group_action_id.is_some() {
-                        ui.label(
-                            "You are signing a group mint so you are not allowed to choose the recipient.",
-                        );
-                    } else {
-                        self.render_recipient_input(ui);
-                    }
+                    self.render_recipient_input(ui);
                 }
 
                 ui.add_space(10.0);
@@ -648,7 +642,7 @@ impl ScreenLike for MintTokensScreen {
                 });
 
                 let button_text =
-                    render_group_action_text(ui, &self.group, &self.identity_token_info, "Mint");
+                    render_group_action_text(ui, &self.group, &self.identity_token_info, "Mint", &self.group_action_id);
 
                 // Mint button
                 if self.app_context.developer_mode || !button_text.contains("Test") {

@@ -17,7 +17,7 @@ use dash_sdk::{
         },
         platform_value::string_encoding::Encoding,
     },
-    platform::IdentityPublicKey,
+    platform::{Identifier, IdentityPublicKey},
 };
 use egui::{Color32, ComboBox, Ui};
 
@@ -263,8 +263,24 @@ pub fn render_group_action_text(
     group: &Option<(u16, Group)>,
     identity_token_info: &IdentityTokenInfo,
     group_action_type_str: &str,
+    group_action_id: &Option<Identifier>,
 ) -> String {
-    if let Some((_, group)) = group.as_ref() {
+    if let Some(group_action_id) = group_action_id {
+        ui.add_space(20.0);
+        ui.add(egui::Label::new(
+            egui::RichText::new("This is a group action.")
+                .heading()
+                .color(egui::Color32::DARK_RED),
+        ));
+
+        ui.add_space(10.0);
+        ui.label(format!(
+            "You are signing the active {} group action with ID {}",
+            group_action_type_str,
+            group_action_id.to_string(Encoding::Base58)
+        ));
+        return format!("Sign {}", group_action_type_str);
+    } else if let Some((_, group)) = group.as_ref() {
         let your_power = group
             .members()
             .get(&identity_token_info.identity.identity.id());

@@ -13,6 +13,7 @@ use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use eframe::egui::{self, Color32, Context, Ui};
 use egui::RichText;
 
+use dash_sdk::dpp::group::GroupStateTransitionInfo;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
@@ -53,9 +54,10 @@ pub struct UnfreezeTokensScreen {
     public_note: Option<String>,
 
     group: Option<(GroupContractPosition, Group)>,
+    pub group_action_id: Option<Identifier>,
 
     /// The identity we want to freeze
-    unfreeze_identity_id: String,
+    pub unfreeze_identity_id: String,
 
     status: UnfreezeTokensStatus,
     error_message: Option<String>,
@@ -169,6 +171,7 @@ impl UnfreezeTokensScreen {
             identity_token_info,
             selected_key: possible_key,
             group,
+            group_action_id: None,
             public_note: None,
             unfreeze_identity_id: String::new(),
             status: UnfreezeTokensStatus::NotStarted,
@@ -294,9 +297,22 @@ impl UnfreezeTokensScreen {
                         .contract
                         .clone();
 
-                    let group_info = self.group.as_ref().map(|(pos, _)| {
-                        GroupStateTransitionInfoStatus::GroupStateTransitionInfoProposer(*pos)
-                    });
+                    let group_info;
+                    if self.group_action_id.is_some() {
+                        group_info = self.group.as_ref().map(|(pos, _)| {
+                            GroupStateTransitionInfoStatus::GroupStateTransitionInfoOtherSigner(
+                                GroupStateTransitionInfo {
+                                    group_contract_position: *pos,
+                                    action_id: self.group_action_id.unwrap(),
+                                    action_is_proposer: false,
+                                },
+                            )
+                        });
+                    } else {
+                        group_info = self.group.as_ref().map(|(pos, _)| {
+                            GroupStateTransitionInfoStatus::GroupStateTransitionInfoProposer(*pos)
+                        });
+                    }
 
                     // Dispatch to backend
                     action =
@@ -333,7 +349,13 @@ impl UnfreezeTokensScreen {
 
             ui.add_space(20.0);
 
-            if ui.button("Back to Tokens").clicked() {
+            let button_text;
+            if self.group_action_id.is_some() {
+                button_text = "Back to Group Actions";
+            } else {
+                button_text = "Back to Tokens";
+            }
+            if ui.button(button_text).clicked() {
                 action = AppAction::PopScreenAndRefresh;
             }
         });
@@ -371,16 +393,32 @@ impl ScreenLike for UnfreezeTokensScreen {
     }
 
     fn ui(&mut self, ctx: &Context) -> AppAction {
-        let mut action = add_top_panel(
-            ctx,
-            &self.app_context,
-            vec![
-                ("Tokens", AppAction::GoToMainScreen),
-                (&self.identity_token_info.token_alias, AppAction::PopScreen),
-                ("Unfreeze", AppAction::None),
-            ],
-            vec![],
-        );
+        let mut action;
+
+        // Build a top panel
+        if self.group_action_id.is_some() {
+            action = add_top_panel(
+                ctx,
+                &self.app_context,
+                vec![
+                    ("Contracts", AppAction::GoToMainScreen),
+                    ("Group Actions", AppAction::PopScreen),
+                    ("Unfreeze", AppAction::None),
+                ],
+                vec![],
+            );
+        } else {
+            action = add_top_panel(
+                ctx,
+                &self.app_context,
+                vec![
+                    ("Tokens", AppAction::GoToMainScreen),
+                    (&self.identity_token_info.token_alias, AppAction::PopScreen),
+                    ("Unfreeze", AppAction::None),
+                ],
+                vec![],
+            );
+        }
 
         // Left panel
         action |= add_left_panel(
@@ -481,7 +519,18 @@ impl ScreenLike for UnfreezeTokensScreen {
                 // 2) Identity to unfreeze
                 ui.heading("2. Enter the identity ID to unfreeze");
                 ui.add_space(5.0);
-                self.render_unfreeze_identity_input(ui);
+                if self.group_action_id.is_some() {
+                    ui.label(
+                        "You are signing an existing group Unfreeze so you are not allowed to choose the identity.",
+                    );
+                    ui.add_space(5.0);
+                    ui.label(format!(
+                        "Identity: {}",
+                        self.unfreeze_identity_id
+                    ));
+                } else {
+                    self.render_unfreeze_identity_input(ui);
+                }
 
                 ui.add_space(10.0);
                 ui.separator();

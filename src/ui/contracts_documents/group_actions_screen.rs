@@ -18,7 +18,18 @@ use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::helpers::add_contract_chooser_pre_filtered;
 use crate::ui::helpers::render_identity_selector;
-use crate::ui::{MessageType, RootScreenType, ScreenLike};
+use crate::ui::tokens::burn_tokens_screen::BurnTokensScreen;
+use crate::ui::tokens::destroy_frozen_funds_screen::DestroyFrozenFundsScreen;
+use crate::ui::tokens::freeze_tokens_screen::FreezeTokensScreen;
+use crate::ui::tokens::mint_tokens_screen::MintTokensScreen;
+use crate::ui::tokens::pause_tokens_screen::PauseTokensScreen;
+use crate::ui::tokens::resume_tokens_screen::ResumeTokensScreen;
+use crate::ui::tokens::tokens_screen::{
+    IdentityTokenBalance, IdentityTokenIdentifier, IdentityTokenInfo,
+};
+use crate::ui::tokens::unfreeze_tokens_screen::UnfreezeTokensScreen;
+use crate::ui::tokens::update_token_config::UpdateTokenConfigScreen;
+use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike};
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
@@ -26,7 +37,8 @@ use dash_sdk::dpp::data_contract::change_control_rules::authorized_action_takers
 use dash_sdk::dpp::data_contract::change_control_rules::ChangeControlRules;
 use dash_sdk::dpp::data_contract::TokenContractPosition;
 use dash_sdk::dpp::group::action_event::GroupActionEvent;
-use dash_sdk::dpp::group::group_action::GroupAction;
+use dash_sdk::dpp::group::group_action::{GroupAction, GroupActionAccessors};
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::prelude::TimestampMillis;
 use dash_sdk::dpp::tokens::token_event::TokenEvent;
@@ -60,6 +72,7 @@ pub struct GroupActionsScreen {
     >,
     contract_search: String,
     qualified_identities: Vec<QualifiedIdentity>,
+    identity_token_balances: IndexMap<IdentityTokenIdentifier, IdentityTokenBalance>,
     selected_identity: Option<QualifiedIdentity>,
 
     // Backend task status
@@ -106,12 +119,17 @@ impl GroupActionsScreen {
             }
         }).collect();
 
+        let identity_token_balances = app_context
+            .identity_token_balances()
+            .expect("Failed to load identity token balances");
+
         Self {
             // Contract and identity selectors
             selected_contract: None,
             contracts_with_group_actions,
             contract_search: String::new(),
             qualified_identities,
+            identity_token_balances,
             selected_identity: None,
 
             // Backend task status
@@ -127,12 +145,14 @@ impl GroupActionsScreen {
         ui: &mut egui::Ui,
         group_actions: &IndexMap<Identifier, GroupAction>,
     ) -> AppAction {
+        let mut action = AppAction::None;
+
         ui.heading("Active Group Actions:");
         ui.add_space(10.0);
 
         if group_actions.is_empty() {
             ui.label("No active group actions found.");
-            return AppAction::None;
+            return action;
         }
 
         let text_style = TextStyle::Body;
@@ -264,8 +284,9 @@ impl GroupActionsScreen {
                                     });
                                 });
                                 row.col(|ui| {
+                                    let info_clone = info.clone();
                                     ui.horizontal(|ui| {
-                                        ui.label(info);
+                                        ui.label(info_clone);
                                         ui.add_space(30.0);
                                     });
                                 });
@@ -286,7 +307,140 @@ impl GroupActionsScreen {
                                         )
                                         .clicked()
                                     {
-                                        // return AppAction::GoToGroupActionScreen(id.clone());
+                                        let token_contract_position = match group_action {
+                                            GroupAction::V0(action_v0) => action_v0
+                                                .token_contract_position()
+                                                .clone(),
+                                        };
+                                        let token_id = self.selected_contract.clone().expect("No contract selected").contract.token_id(token_contract_position).expect("No token ID found");
+                                        let identity_token_balance = self
+                                            .identity_token_balances
+                                            .get(&IdentityTokenIdentifier {
+                                                token_id,
+                                                identity_id: self.selected_identity
+                                                    .as_ref()
+                                                    .unwrap()
+                                                    .identity
+                                                    .id()
+                                            })
+                                            .cloned()
+                                            .expect("Failed to get identity token balance");
+                                        let identity_token_info = IdentityTokenInfo::try_from_identity_token_balance_with_lookup(&identity_token_balance, &self.app_context).expect("Failed to convert identity token balance");
+                                        match typ {
+                                            "Mint" => {
+                                                let mut mint_screen =
+                                                    MintTokensScreen::new(identity_token_info, &self.app_context);
+                                                mint_screen.group_action_id = Some(*id);
+                                                mint_screen.amount_to_mint = info
+                                                    .split_whitespace()
+                                                    .next()
+                                                    .unwrap_or("0")
+                                                    .to_string();
+                                                mint_screen.recipient_identity_id = info
+                                                    .split_whitespace()
+                                                    .nth(2)
+                                                    .unwrap_or("")
+                                                    .to_string();
+
+                                                action |= AppAction::AddScreen(
+                                                    Screen::MintTokensScreen(mint_screen),
+                                                );
+                                            }
+                                            "Burn" => {
+                                                let mut burn_screen =
+                                                    BurnTokensScreen::new(identity_token_info, &self.app_context);
+                                                burn_screen.group_action_id = Some(*id);
+                                                burn_screen.amount_to_burn = info
+                                                    .split_whitespace()
+                                                    .next()
+                                                    .unwrap_or("0")
+                                                    .to_string();
+                                                action |= AppAction::AddScreen(
+                                                    Screen::BurnTokensScreen(burn_screen),
+                                                );
+                                            }
+                                            "Freeze" => {
+                                                let mut freeze_screen = FreezeTokensScreen::new(
+                                                    identity_token_info, &self.app_context,
+                                                );
+                                                freeze_screen.group_action_id = Some(*id);
+                                                freeze_screen.freeze_identity_id = info
+                                                    .split_whitespace()
+                                                    .next()
+                                                    .unwrap_or("")
+                                                    .to_string();
+                                                action |= AppAction::AddScreen(
+                                                    Screen::FreezeTokensScreen(freeze_screen),
+                                                );
+                                            }
+                                            "Unfreeze" => {
+                                                let mut unfreeze_screen = UnfreezeTokensScreen::new(
+                                                    identity_token_info, &self.app_context,
+                                                );
+                                                unfreeze_screen.group_action_id = Some(*id);
+                                                unfreeze_screen.unfreeze_identity_id = info
+                                                    .split_whitespace()
+                                                    .next()
+                                                    .unwrap_or("")
+                                                    .to_string();
+                                                action |= AppAction::AddScreen(
+                                                    Screen::UnfreezeTokensScreen(unfreeze_screen),
+                                                );
+                                            }
+                                            "DestroyFrozenFunds" => {
+                                                let mut destroy_screen =
+                                                    DestroyFrozenFundsScreen::new(
+                                                        identity_token_info, &self.app_context,
+                                                    );
+                                                destroy_screen.group_action_id = Some(*id);
+                                                destroy_screen.frozen_identity_id = info
+                                                    .split_whitespace()
+                                                    .nth(2)
+                                                    .unwrap_or("")
+                                                    .to_string();
+                                                action |= AppAction::AddScreen(
+                                                    Screen::DestroyFrozenFundsScreen(
+                                                        destroy_screen,
+                                                    ),
+                                                );
+                                            }
+                                            "Emergency" => match info.split_whitespace().nth(1) {
+                                                Some("Pause") => {
+                                                    let mut pause_screen = PauseTokensScreen::new(
+                                                        identity_token_info, &self.app_context,
+                                                    );
+                                                    pause_screen.group_action_id = Some(*id);
+                                                    action |= AppAction::AddScreen(
+                                                        Screen::PauseTokensScreen(pause_screen),
+                                                    );
+                                                }
+                                                Some("Resume") => {
+                                                    let mut resume_screen = ResumeTokensScreen::new(
+                                                        identity_token_info, &self.app_context,
+                                                    );
+                                                    resume_screen.group_action_id = Some(*id);
+                                                    action |= AppAction::AddScreen(
+                                                        Screen::ResumeTokensScreen(resume_screen),
+                                                    );
+                                                }
+                                                _ => {}
+                                            },
+                                            "ConfigUpdate" => {
+                                                let mut update_screen =
+                                                    UpdateTokenConfigScreen::new(
+                                                        identity_token_info, &self.app_context,
+                                                    );
+                                                update_screen.group_action_id = Some(*id);
+                                                action |= AppAction::AddScreen(
+                                                    Screen::UpdateTokenConfigScreen(update_screen),
+                                                );
+                                            }
+
+                                            // To do: Change price and direct purchase
+                                            _ => {
+                                                action |= AppAction::None;
+                                            }
+                                        }
                                     }
                                 });
                             });
@@ -294,11 +448,15 @@ impl GroupActionsScreen {
                     });
             });
 
-        AppAction::None
+        action
     }
 }
 
 impl ScreenLike for GroupActionsScreen {
+    fn refresh(&mut self) {
+        self.fetch_group_actions_status = FetchGroupActionsStatus::NotStarted;
+    }
+
     fn display_message(&mut self, message: &str, message_type: MessageType) {
         match message_type {
             MessageType::Success => {

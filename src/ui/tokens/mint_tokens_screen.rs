@@ -27,7 +27,7 @@ use crate::ui::identities::get_selected_wallet;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
 use crate::ui::{MessageType, Screen, ScreenLike};
-use dash_sdk::dpp::group::GroupStateTransitionInfoStatus;
+use dash_sdk::dpp::group::{GroupStateTransitionInfo, GroupStateTransitionInfoStatus};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
@@ -49,10 +49,11 @@ pub struct MintTokensScreen {
     selected_key: Option<IdentityPublicKey>,
     public_note: Option<String>,
     group: Option<(GroupContractPosition, Group)>,
+    pub group_action_id: Option<Identifier>,
 
-    recipient_identity_id: String,
+    pub recipient_identity_id: String,
 
-    amount_to_mint: String,
+    pub amount_to_mint: String,
     status: MintTokensStatus,
     error_message: Option<String>,
 
@@ -165,6 +166,7 @@ impl MintTokensScreen {
             selected_key: possible_key,
             public_note: None,
             group,
+            group_action_id: None,
             recipient_identity_id: "".to_string(),
             amount_to_mint: "".to_string(),
             status: MintTokensStatus::NotStarted,
@@ -323,9 +325,22 @@ impl MintTokensScreen {
                         .as_secs();
                     self.status = MintTokensStatus::WaitingForResult(now);
 
-                    let group_info = self.group.as_ref().map(|(pos, _)| {
-                        GroupStateTransitionInfoStatus::GroupStateTransitionInfoProposer(*pos)
-                    });
+                    let group_info;
+                    if self.group_action_id.is_some() {
+                        group_info = self.group.as_ref().map(|(pos, _)| {
+                            GroupStateTransitionInfoStatus::GroupStateTransitionInfoOtherSigner(
+                                GroupStateTransitionInfo {
+                                    group_contract_position: *pos,
+                                    action_id: self.group_action_id.unwrap(),
+                                    action_is_proposer: false,
+                                },
+                            )
+                        });
+                    } else {
+                        group_info = self.group.as_ref().map(|(pos, _)| {
+                            GroupStateTransitionInfoStatus::GroupStateTransitionInfoProposer(*pos)
+                        });
+                    }
 
                     // Dispatch the actual backend mint action
                     action = AppAction::BackendTasks(
@@ -373,7 +388,13 @@ impl MintTokensScreen {
 
             ui.add_space(20.0);
 
-            if ui.button("Back to Tokens").clicked() {
+            let button_text;
+            if self.group_action_id.is_some() {
+                button_text = "Back to Group Actions";
+            } else {
+                button_text = "Back to Tokens";
+            }
+            if ui.button(button_text).clicked() {
                 // Pop this screen and refresh
                 action = AppAction::PopScreenAndRefresh;
             }
@@ -413,17 +434,32 @@ impl ScreenLike for MintTokensScreen {
     }
 
     fn ui(&mut self, ctx: &Context) -> AppAction {
+        let mut action;
+
         // Build a top panel
-        let mut action = add_top_panel(
-            ctx,
-            &self.app_context,
-            vec![
-                ("Tokens", AppAction::GoToMainScreen),
-                (&self.identity_token_info.token_alias, AppAction::PopScreen),
-                ("Mint", AppAction::None),
-            ],
-            vec![],
-        );
+        if self.group_action_id.is_some() {
+            action = add_top_panel(
+                ctx,
+                &self.app_context,
+                vec![
+                    ("Contracts", AppAction::GoToMainScreen),
+                    ("Group Actions", AppAction::PopScreen),
+                    ("Mint", AppAction::None),
+                ],
+                vec![],
+            );
+        } else {
+            action = add_top_panel(
+                ctx,
+                &self.app_context,
+                vec![
+                    ("Tokens", AppAction::GoToMainScreen),
+                    (&self.identity_token_info.token_alias, AppAction::PopScreen),
+                    ("Mint", AppAction::None),
+                ],
+                vec![],
+            );
+        }
 
         // Left panel
         action |= add_left_panel(
@@ -544,7 +580,18 @@ impl ScreenLike for MintTokensScreen {
                 // 2) Amount to mint
                 ui.heading("2. Amount to mint");
                 ui.add_space(5.0);
-                self.render_amount_input(ui);
+                if self.group_action_id.is_some() {
+                    ui.label(
+                        "You are signing an existing group Mint so you are not allowed to choose the amount.",
+                    );
+                    ui.add_space(5.0);
+                    ui.label(format!(
+                        "Amount: {}",
+                        self.amount_to_mint
+                    ));
+                } else {
+                    self.render_amount_input(ui);
+                }
 
                 ui.add_space(10.0);
                 ui.separator();
@@ -569,7 +616,13 @@ impl ScreenLike for MintTokensScreen {
                         ui.heading("3. Recipient identity (required)");
                     }
                     ui.add_space(5.0);
-                    self.render_recipient_input(ui);
+                    if self.group_action_id.is_some() {
+                        ui.label(
+                            "You are signing a group mint so you are not allowed to choose the recipient.",
+                        );
+                    } else {
+                        self.render_recipient_input(ui);
+                    }
                 }
 
                 ui.add_space(10.0);

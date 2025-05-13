@@ -15,7 +15,9 @@ use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution
 use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::v0::TokenPerpetualDistributionV0;
 use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::TokenPerpetualDistribution;
 use dash_sdk::dpp::data_contract::change_control_rules::authorized_action_takers::AuthorizedActionTakers;
-use dash_sdk::dpp::group::GroupStateTransitionInfoStatus;
+use dash_sdk::dpp::data_contract::group::Group;
+use dash_sdk::dpp::data_contract::GroupContractPosition;
+use dash_sdk::dpp::group::{GroupStateTransitionInfo, GroupStateTransitionInfoStatus};
 use eframe::egui::{self, Color32, Context, Ui};
 use egui::RichText;
 
@@ -52,10 +54,12 @@ pub struct UpdateTokenConfigScreen {
     backend_message: Option<(String, MessageType, DateTime<Utc>)>,
     update_status: UpdateTokenConfigStatus,
     pub app_context: Arc<AppContext>,
-    change_item: TokenConfigurationChangeItem,
+    pub change_item: TokenConfigurationChangeItem,
     signing_key: Option<IdentityPublicKey>,
     identity: QualifiedIdentity,
     public_note: Option<String>,
+    group: Option<(GroupContractPosition, Group)>,
+    pub group_action_id: Option<Identifier>,
 
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     wallet_password: String,
@@ -82,6 +86,71 @@ impl UpdateTokenConfigScreen {
 
         let mut error_message = None;
 
+        let group = match identity_token_info
+            .token_config
+            .manual_minting_rules()
+            .authorized_to_make_change_action_takers()
+        {
+            AuthorizedActionTakers::NoOne => {
+                error_message = Some("Minting is not allowed on this token".to_string());
+                None
+            }
+            AuthorizedActionTakers::ContractOwner => {
+                if identity_token_info.data_contract.contract.owner_id()
+                    != &identity_token_info.identity.identity.id()
+                {
+                    error_message = Some(
+                        "You are not allowed to mint this token. Only the contract owner is."
+                            .to_string(),
+                    );
+                }
+                None
+            }
+            AuthorizedActionTakers::Identity(identifier) => {
+                if identifier != &identity_token_info.identity.identity.id() {
+                    error_message = Some("You are not allowed to mint this token".to_string());
+                }
+                None
+            }
+            AuthorizedActionTakers::MainGroup => {
+                match identity_token_info.token_config.main_control_group() {
+                    None => {
+                        error_message = Some(
+                            "Invalid contract: No main control group, though one should exist"
+                                .to_string(),
+                        );
+                        None
+                    }
+                    Some(group_pos) => {
+                        match identity_token_info
+                            .data_contract
+                            .contract
+                            .expected_group(group_pos)
+                        {
+                            Ok(group) => Some((group_pos, group.clone())),
+                            Err(e) => {
+                                error_message = Some(format!("Invalid contract: {}", e));
+                                None
+                            }
+                        }
+                    }
+                }
+            }
+            AuthorizedActionTakers::Group(group_pos) => {
+                match identity_token_info
+                    .data_contract
+                    .contract
+                    .expected_group(*group_pos)
+                {
+                    Ok(group) => Some((*group_pos, group.clone())),
+                    Err(e) => {
+                        error_message = Some(format!("Invalid contract: {}", e));
+                        None
+                    }
+                }
+            }
+        };
+
         // Attempt to get an unlocked wallet reference
         let selected_wallet = get_selected_wallet(
             &identity_token_info.identity,
@@ -103,6 +172,8 @@ impl UpdateTokenConfigScreen {
             backend_message: None,
             signing_key: possible_key,
             identity: identity_token_info.identity,
+            group,
+            group_action_id: None,
         }
     }
 
@@ -111,6 +182,9 @@ impl UpdateTokenConfigScreen {
 
         ui.heading("2. Select the item to update");
         ui.add_space(10.0);
+        if self.group_action_id.is_some() {
+            ui.label("You are signing an existing group action. Make sure you construct the exact same item as the one in the group action, details of which can be found on the previous screen.");
+        }
 
         let item = &mut self.change_item;
 
@@ -503,88 +577,34 @@ impl UpdateTokenConfigScreen {
             }
         });
 
-        let group = match self
-            .identity_token_info
-            .token_config
-            .authorized_action_takers_for_configuration_item(&self.change_item)
-        {
-            AuthorizedActionTakers::NoOne => {
-                self.error_message = Some("Minting is not allowed on this token".to_string());
-                None
-            }
-            AuthorizedActionTakers::ContractOwner => {
-                if self.identity_token_info.data_contract.contract.owner_id()
-                    != &self.identity_token_info.identity.identity.id()
-                {
-                    self.error_message = Some(
-                        "You are not allowed to mint this token. Only the contract owner is."
-                            .to_string(),
-                    );
-                }
-                None
-            }
-            AuthorizedActionTakers::Identity(identifier) => {
-                if identifier != &self.identity_token_info.identity.identity.id() {
-                    self.error_message = Some("You are not allowed to mint this token".to_string());
-                }
-                None
-            }
-            AuthorizedActionTakers::MainGroup => {
-                match self.identity_token_info.token_config.main_control_group() {
-                    None => {
-                        self.error_message = Some(
-                            "Invalid contract: No main control group, though one should exist"
-                                .to_string(),
-                        );
-                        None
-                    }
-                    Some(group_pos) => {
-                        match self
-                            .identity_token_info
-                            .data_contract
-                            .contract
-                            .expected_group(group_pos)
-                        {
-                            Ok(group) => Some((group_pos, group.clone())),
-                            Err(e) => {
-                                self.error_message = Some(format!("Invalid contract: {}", e));
-                                None
-                            }
-                        }
-                    }
-                }
-            }
-            AuthorizedActionTakers::Group(group_pos) => {
-                match self
-                    .identity_token_info
-                    .data_contract
-                    .contract
-                    .expected_group(group_pos)
-                {
-                    Ok(group) => Some((group_pos, group.clone())),
-                    Err(e) => {
-                        self.error_message = Some(format!("Invalid contract: {}", e));
-                        None
-                    }
-                }
-            }
-        };
-
         let button_text =
-            render_group_action_text(ui, &group, &self.identity_token_info, "Update Config");
+            render_group_action_text(ui, &self.group, &self.identity_token_info, "Update Config");
 
         let button = egui::Button::new(RichText::new(&button_text).color(Color32::WHITE))
             .fill(Color32::from_rgb(0, 128, 255))
             .frame(true)
             .corner_radius(3.0);
 
-        let group_info = group
-            .as_ref()
-            .map(|(pos, _)| GroupStateTransitionInfoStatus::GroupStateTransitionInfoProposer(*pos));
-
         if self.app_context.developer_mode || !button_text.contains("Test") {
             ui.add_space(20.0);
             if ui.add(button).clicked() {
+                let group_info;
+                if self.group_action_id.is_some() {
+                    group_info = self.group.as_ref().map(|(pos, _)| {
+                        GroupStateTransitionInfoStatus::GroupStateTransitionInfoOtherSigner(
+                            GroupStateTransitionInfo {
+                                group_contract_position: *pos,
+                                action_id: self.group_action_id.unwrap(),
+                                action_is_proposer: false,
+                            },
+                        )
+                    });
+                } else {
+                    group_info = self.group.as_ref().map(|(pos, _)| {
+                        GroupStateTransitionInfoStatus::GroupStateTransitionInfoProposer(*pos)
+                    });
+                }
+
                 self.update_status = UpdateTokenConfigStatus::Updating(Utc::now());
                 action =
                     AppAction::BackendTask(BackendTask::TokenTask(TokenTask::UpdateTokenConfig {
@@ -654,7 +674,13 @@ impl UpdateTokenConfigScreen {
 
             ui.add_space(20.0);
 
-            if ui.button("Back to Tokens").clicked() {
+            let button_text;
+            if self.group_action_id.is_some() {
+                button_text = "Back to Group Actions";
+            } else {
+                button_text = "Back to Tokens";
+            }
+            if ui.button(button_text).clicked() {
                 action = AppAction::PopScreenAndRefresh;
             }
         });
@@ -741,17 +767,32 @@ impl ScreenLike for UpdateTokenConfigScreen {
     }
 
     fn ui(&mut self, ctx: &Context) -> AppAction {
-        // Top panel
-        let mut action = add_top_panel(
-            ctx,
-            &self.app_context,
-            vec![
-                ("Tokens", AppAction::GoToMainScreen),
-                (&self.identity_token_info.token_alias, AppAction::PopScreen),
-                ("Update Config", AppAction::None),
-            ],
-            vec![],
-        );
+        let mut action;
+
+        // Build a top panel
+        if self.group_action_id.is_some() {
+            action = add_top_panel(
+                ctx,
+                &self.app_context,
+                vec![
+                    ("Contracts", AppAction::GoToMainScreen),
+                    ("Group Actions", AppAction::PopScreen),
+                    ("Update Token Config", AppAction::None),
+                ],
+                vec![],
+            );
+        } else {
+            action = add_top_panel(
+                ctx,
+                &self.app_context,
+                vec![
+                    ("Tokens", AppAction::GoToMainScreen),
+                    (&self.identity_token_info.token_alias, AppAction::PopScreen),
+                    ("Update Token Config", AppAction::None),
+                ],
+                vec![],
+            );
+        }
 
         // Left panel
         action |= add_left_panel(

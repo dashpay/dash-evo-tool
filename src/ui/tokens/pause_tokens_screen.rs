@@ -8,8 +8,9 @@ use dash_sdk::dpp::data_contract::associated_token::token_configuration::accesso
 use dash_sdk::dpp::data_contract::change_control_rules::authorized_action_takers::AuthorizedActionTakers;
 use dash_sdk::dpp::data_contract::group::Group;
 use dash_sdk::dpp::data_contract::GroupContractPosition;
-use dash_sdk::dpp::group::GroupStateTransitionInfoStatus;
+use dash_sdk::dpp::group::{GroupStateTransitionInfo, GroupStateTransitionInfoStatus};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+use dash_sdk::platform::Identifier;
 use eframe::egui::{self, Color32, Context, Ui};
 use egui::RichText;
 
@@ -50,6 +51,7 @@ pub struct PauseTokensScreen {
     pub identity_token_info: IdentityTokenInfo,
     selected_key: Option<dash_sdk::platform::IdentityPublicKey>,
     group: Option<(GroupContractPosition, Group)>,
+    pub group_action_id: Option<Identifier>,
     pub public_note: Option<String>,
 
     status: PauseTokensStatus,
@@ -164,6 +166,7 @@ impl PauseTokensScreen {
             identity_token_info,
             selected_key: possible_key,
             group,
+            group_action_id: None,
             public_note: None,
             status: PauseTokensStatus::NotStarted,
             error_message: None,
@@ -261,9 +264,22 @@ impl PauseTokensScreen {
                         .contract
                         .clone();
 
-                    let group_info = self.group.as_ref().map(|(pos, _)| {
-                        GroupStateTransitionInfoStatus::GroupStateTransitionInfoProposer(*pos)
-                    });
+                    let group_info;
+                    if self.group_action_id.is_some() {
+                        group_info = self.group.as_ref().map(|(pos, _)| {
+                            GroupStateTransitionInfoStatus::GroupStateTransitionInfoOtherSigner(
+                                GroupStateTransitionInfo {
+                                    group_contract_position: *pos,
+                                    action_id: self.group_action_id.unwrap(),
+                                    action_is_proposer: false,
+                                },
+                            )
+                        });
+                    } else {
+                        group_info = self.group.as_ref().map(|(pos, _)| {
+                            GroupStateTransitionInfoStatus::GroupStateTransitionInfoProposer(*pos)
+                        });
+                    }
 
                     action =
                         AppAction::BackendTask(BackendTask::TokenTask(TokenTask::PauseTokens {
@@ -297,7 +313,13 @@ impl PauseTokensScreen {
 
             ui.add_space(20.0);
 
-            if ui.button("Back to Tokens").clicked() {
+            let button_text;
+            if self.group_action_id.is_some() {
+                button_text = "Back to Group Actions";
+            } else {
+                button_text = "Back to Tokens";
+            }
+            if ui.button(button_text).clicked() {
                 action = AppAction::PopScreenAndRefresh;
             }
         });
@@ -335,16 +357,32 @@ impl ScreenLike for PauseTokensScreen {
     }
 
     fn ui(&mut self, ctx: &Context) -> AppAction {
-        let mut action = add_top_panel(
-            ctx,
-            &self.app_context,
-            vec![
-                ("Tokens", AppAction::GoToMainScreen),
-                (&self.identity_token_info.token_alias, AppAction::PopScreen),
-                ("Pause", AppAction::None),
-            ],
-            vec![],
-        );
+        let mut action;
+
+        // Build a top panel
+        if self.group_action_id.is_some() {
+            action = add_top_panel(
+                ctx,
+                &self.app_context,
+                vec![
+                    ("Contracts", AppAction::GoToMainScreen),
+                    ("Group Actions", AppAction::PopScreen),
+                    ("Pause", AppAction::None),
+                ],
+                vec![],
+            );
+        } else {
+            action = add_top_panel(
+                ctx,
+                &self.app_context,
+                vec![
+                    ("Tokens", AppAction::GoToMainScreen),
+                    (&self.identity_token_info.token_alias, AppAction::PopScreen),
+                    ("Pause", AppAction::None),
+                ],
+                vec![],
+            );
+        }
 
         // Left panel
         action |= add_left_panel(

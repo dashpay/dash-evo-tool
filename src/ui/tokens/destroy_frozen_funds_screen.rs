@@ -8,7 +8,7 @@ use dash_sdk::dpp::data_contract::associated_token::token_configuration::accesso
 use dash_sdk::dpp::data_contract::change_control_rules::authorized_action_takers::AuthorizedActionTakers;
 use dash_sdk::dpp::data_contract::group::Group;
 use dash_sdk::dpp::data_contract::GroupContractPosition;
-use dash_sdk::dpp::group::GroupStateTransitionInfoStatus;
+use dash_sdk::dpp::group::{GroupStateTransitionInfo, GroupStateTransitionInfoStatus};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use eframe::egui::{self, Color32, Context, Ui};
 use egui::RichText;
@@ -57,13 +57,14 @@ pub struct DestroyFrozenFundsScreen {
     selected_key: Option<IdentityPublicKey>,
 
     group: Option<(GroupContractPosition, Group)>,
+    pub group_action_id: Option<Identifier>,
 
     /// Optional public note
     pub public_note: Option<String>,
 
     /// The user must specify the identity ID whose frozen funds are to be destroyed
     /// Typically some Identity that has been frozen by the system or a group
-    frozen_identity_id: String,
+    pub frozen_identity_id: String,
 
     status: DestroyFrozenFundsStatus,
     error_message: Option<String>,
@@ -178,6 +179,7 @@ impl DestroyFrozenFundsScreen {
             identity_token_info,
             selected_key: possible_key,
             group,
+            group_action_id: None,
             public_note: None,
             status: DestroyFrozenFundsStatus::NotStarted,
             error_message: None,
@@ -308,9 +310,22 @@ impl DestroyFrozenFundsScreen {
                         .contract
                         .clone();
 
-                    let group_info = self.group.as_ref().map(|(pos, _)| {
-                        GroupStateTransitionInfoStatus::GroupStateTransitionInfoProposer(*pos)
-                    });
+                    let group_info;
+                    if self.group_action_id.is_some() {
+                        group_info = self.group.as_ref().map(|(pos, _)| {
+                            GroupStateTransitionInfoStatus::GroupStateTransitionInfoOtherSigner(
+                                GroupStateTransitionInfo {
+                                    group_contract_position: *pos,
+                                    action_id: self.group_action_id.unwrap(),
+                                    action_is_proposer: false,
+                                },
+                            )
+                        });
+                    } else {
+                        group_info = self.group.as_ref().map(|(pos, _)| {
+                            GroupStateTransitionInfoStatus::GroupStateTransitionInfoProposer(*pos)
+                        });
+                    }
 
                     // Dispatch the actual backend destroy action
                     action = AppAction::BackendTasks(
@@ -353,7 +368,13 @@ impl DestroyFrozenFundsScreen {
 
             ui.add_space(20.0);
 
-            if ui.button("Back to Tokens").clicked() {
+            let button_text;
+            if self.group_action_id.is_some() {
+                button_text = "Back to Group Actions";
+            } else {
+                button_text = "Back to Tokens";
+            }
+            if ui.button(button_text).clicked() {
                 action = AppAction::PopScreenAndRefresh;
             }
         });
@@ -396,16 +417,32 @@ impl ScreenLike for DestroyFrozenFundsScreen {
     }
 
     fn ui(&mut self, ctx: &Context) -> AppAction {
-        let mut action = add_top_panel(
-            ctx,
-            &self.app_context,
-            vec![
-                ("Tokens", AppAction::GoToMainScreen),
-                (&self.identity_token_info.token_alias, AppAction::PopScreen),
-                ("Destroy", AppAction::None),
-            ],
-            vec![],
-        );
+        let mut action;
+
+        // Build a top panel
+        if self.group_action_id.is_some() {
+            action = add_top_panel(
+                ctx,
+                &self.app_context,
+                vec![
+                    ("Contracts", AppAction::GoToMainScreen),
+                    ("Group Actions", AppAction::PopScreen),
+                    ("Destroy Frozen Funds", AppAction::None),
+                ],
+                vec![],
+            );
+        } else {
+            action = add_top_panel(
+                ctx,
+                &self.app_context,
+                vec![
+                    ("Tokens", AppAction::GoToMainScreen),
+                    (&self.identity_token_info.token_alias, AppAction::PopScreen),
+                    ("Destroy Frozen Funds", AppAction::None),
+                ],
+                vec![],
+            );
+        }
 
         // Left panel
         action |= add_left_panel(
@@ -505,7 +542,18 @@ impl ScreenLike for DestroyFrozenFundsScreen {
                 // Frozen identity
                 ui.heading("2. Frozen identity to destroy funds from");
                 ui.add_space(5.0);
-                self.render_frozen_identity_input(ui);
+                if self.group_action_id.is_some() {
+                    ui.label(
+                        "You are signing an existing group Destroy so you are not allowed to choose the identity.",
+                    );
+                    ui.add_space(5.0);
+                    ui.label(format!(
+                        "Identity: {}",
+                        self.frozen_identity_id
+                    ));
+                } else {
+                    self.render_frozen_identity_input(ui);
+                }
 
                 ui.add_space(10.0);
                 ui.separator();

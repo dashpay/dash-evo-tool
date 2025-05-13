@@ -8,7 +8,7 @@ use dash_sdk::dpp::data_contract::associated_token::token_configuration::accesso
 use dash_sdk::dpp::data_contract::change_control_rules::authorized_action_takers::AuthorizedActionTakers;
 use dash_sdk::dpp::data_contract::group::Group;
 use dash_sdk::dpp::data_contract::GroupContractPosition;
-use dash_sdk::dpp::group::GroupStateTransitionInfoStatus;
+use dash_sdk::dpp::group::{GroupStateTransitionInfo, GroupStateTransitionInfoStatus};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use eframe::egui::{self, Color32, Context, Ui};
 use egui::RichText;
@@ -19,7 +19,7 @@ use crate::ui::helpers::render_group_action_text;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
-use dash_sdk::platform::IdentityPublicKey;
+use dash_sdk::platform::{Identifier, IdentityPublicKey};
 
 use crate::app::{AppAction, BackendTasksExecutionMode};
 use crate::backend_task::tokens::TokenTask;
@@ -48,9 +48,10 @@ pub struct BurnTokensScreen {
     pub identity_token_info: IdentityTokenInfo,
     selected_key: Option<IdentityPublicKey>,
     group: Option<(GroupContractPosition, Group)>,
+    pub group_action_id: Option<Identifier>,
 
     // The user chooses how many tokens to burn
-    amount_to_burn: String,
+    pub amount_to_burn: String,
     public_note: Option<String>,
 
     status: BurnTokensStatus,
@@ -164,6 +165,7 @@ impl BurnTokensScreen {
             identity_token_info,
             selected_key: possible_key,
             group,
+            group_action_id: None,
             amount_to_burn: String::new(),
             public_note: None,
             status: BurnTokensStatus::NotStarted,
@@ -293,9 +295,22 @@ impl BurnTokensScreen {
                         .contract
                         .clone();
 
-                    let group_info = self.group.as_ref().map(|(pos, _)| {
-                        GroupStateTransitionInfoStatus::GroupStateTransitionInfoProposer(*pos)
-                    });
+                    let group_info;
+                    if self.group_action_id.is_some() {
+                        group_info = self.group.as_ref().map(|(pos, _)| {
+                            GroupStateTransitionInfoStatus::GroupStateTransitionInfoOtherSigner(
+                                GroupStateTransitionInfo {
+                                    group_contract_position: *pos,
+                                    action_id: self.group_action_id.unwrap(),
+                                    action_is_proposer: false,
+                                },
+                            )
+                        });
+                    } else {
+                        group_info = self.group.as_ref().map(|(pos, _)| {
+                            GroupStateTransitionInfoStatus::GroupStateTransitionInfoProposer(*pos)
+                        });
+                    }
 
                     // Dispatch the actual backend burn action
                     action = AppAction::BackendTasks(
@@ -338,7 +353,13 @@ impl BurnTokensScreen {
 
             ui.add_space(20.0);
 
-            if ui.button("Back to Tokens").clicked() {
+            let button_text;
+            if self.group_action_id.is_some() {
+                button_text = "Back to Group Actions";
+            } else {
+                button_text = "Back to Tokens";
+            }
+            if ui.button(button_text).clicked() {
                 // Pop this screen and refresh
                 action = AppAction::PopScreenAndRefresh;
             }
@@ -378,16 +399,32 @@ impl ScreenLike for BurnTokensScreen {
     }
 
     fn ui(&mut self, ctx: &Context) -> AppAction {
-        let mut action = add_top_panel(
-            ctx,
-            &self.app_context,
-            vec![
-                ("Tokens", AppAction::GoToMainScreen),
-                (&self.identity_token_info.token_alias, AppAction::PopScreen),
-                ("Burn", AppAction::None),
-            ],
-            vec![],
-        );
+        let mut action;
+
+        // Build a top panel
+        if self.group_action_id.is_some() {
+            action = add_top_panel(
+                ctx,
+                &self.app_context,
+                vec![
+                    ("Contracts", AppAction::GoToMainScreen),
+                    ("Group Actions", AppAction::PopScreen),
+                    ("Burn", AppAction::None),
+                ],
+                vec![],
+            );
+        } else {
+            action = add_top_panel(
+                ctx,
+                &self.app_context,
+                vec![
+                    ("Tokens", AppAction::GoToMainScreen),
+                    (&self.identity_token_info.token_alias, AppAction::PopScreen),
+                    ("Burn", AppAction::None),
+                ],
+                vec![],
+            );
+        }
 
         // Left panel
         action |= add_left_panel(
@@ -508,7 +545,18 @@ impl ScreenLike for BurnTokensScreen {
                 // 2) Amount to burn
                 ui.heading("2. Amount to burn");
                 ui.add_space(5.0);
-                self.render_amount_input(ui);
+                if self.group_action_id.is_some() {
+                    ui.label(
+                        "You are signing an existing group Burn so you are not allowed to choose the amount.",
+                    );
+                    ui.add_space(5.0);
+                    ui.label(format!(
+                        "Amount: {}",
+                        self.amount_to_burn
+                    ));
+                } else {
+                    self.render_amount_input(ui);
+                }
 
                 ui.add_space(10.0);
                 ui.separator();

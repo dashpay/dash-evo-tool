@@ -97,7 +97,7 @@ impl UpdateTokenConfigScreen {
 
         let data_contract_option = app_context
             .get_contract_by_id(&identity_token_balance.data_contract_id)
-            .expect("Error getting contract from local db");
+            .unwrap_or_default();
 
         Self {
             identity_token_balance: identity_token_balance.clone(),

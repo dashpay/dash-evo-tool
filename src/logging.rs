@@ -12,7 +12,7 @@ pub fn initialize_logger() {
     };
 
     let filter = EnvFilter::try_new(
-        "debug,dash_evo_tool=trace,dash_sdk=debug,tenderdash_abci=debug,drive=debug,drive_proof_verifier=debug,rs_dapi_client=debug,h2=warn",
+        "info,dash_evo_tool=trace,dash_sdk=debug,tenderdash_abci=debug,drive=debug,drive_proof_verifier=debug,rs_dapi_client=debug,h2=warn",
     )
         .unwrap_or_else(|e| panic!("Failed to create EnvFilter: {:?}", e));
 

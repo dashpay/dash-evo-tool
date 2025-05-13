@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use chrono::Utc;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
@@ -26,7 +27,7 @@ use crate::{
 #[derive(PartialEq, Clone)]
 enum AddTokenStatus {
     Idle,
-    Searching,
+    Searching(u32),
     FoundSingle(TokenInfo),
     FoundMultiple(Vec<TokenInfo>),
     Error(String),
@@ -73,7 +74,8 @@ impl AddTokenByIdScreen {
             )
             .clicked()
         {
-            self.status = AddTokenStatus::Searching;
+            let now = Utc::now().timestamp() as u32;
+            self.status = AddTokenStatus::Searching(now);
             self.error_message = None;
 
             if !self.contract_id_input.is_empty() {
@@ -142,13 +144,37 @@ impl AddTokenByIdScreen {
         }
         AppAction::None
     }
+
+    /// Renders a simple "Success!" screen after completion
+    fn show_success_screen(&mut self, ui: &mut Ui) -> AppAction {
+        let mut action = AppAction::None;
+        ui.vertical_centered(|ui| {
+            ui.add_space(50.0);
+
+            ui.heading("🎉");
+            ui.heading("Token Added Successfully!");
+
+            ui.add_space(20.0);
+            if ui.button("Add another token").clicked() {
+                self.status = AddTokenStatus::Idle;
+                self.contract_id_input.clear();
+                self.fetched_contract = None;
+                self.selected_token = None;
+            }
+
+            if ui.button("Back to Tokens screen").clicked() {
+                action = AppAction::PopScreenAndRefresh;
+            }
+        });
+        action
+    }
 }
 
 impl ScreenLike for AddTokenByIdScreen {
     fn display_message(&mut self, msg: &str, msg_type: MessageType) {
         match msg_type {
             MessageType::Success => {
-                if msg.contains("AddToken") {
+                if msg.contains("DataContract successfully saved") {
                     self.status = AddTokenStatus::Complete;
                 }
             }
@@ -231,11 +257,23 @@ impl ScreenLike for AddTokenByIdScreen {
         action |= add_tokens_subscreen_chooser_panel(ctx, &self.app_context);
 
         egui::CentralPanel::default().show(ctx, |ui| {
+            // If we are in the "Complete" status, just show success screen
+            if self.status == AddTokenStatus::Complete {
+                action = self.show_success_screen(ui);
+                return;
+            }
+
             ui.heading("Add Token");
             ui.add_space(10.0);
 
             // Input and search
             action |= self.render_search_inputs(ui);
+
+            if let AddTokenStatus::Searching(start_time) = self.status {
+                ui.add_space(10.0);
+                let elapsed_seconds = Utc::now().timestamp() as u32 - start_time;
+                ui.label(format!("Searching... {} seconds elapsed", elapsed_seconds));
+            }
 
             ui.add_space(10.0);
             self.render_search_results(ui);
@@ -246,11 +284,6 @@ impl ScreenLike for AddTokenByIdScreen {
 
             ui.add_space(10.0);
             action |= self.render_add_button(ui);
-
-            if self.status == AddTokenStatus::Complete {
-                ui.colored_label(Color32::LIGHT_GREEN, "Token added successfully!");
-                action |= AppAction::PopScreenAndRefresh;
-            }
         });
 
         action

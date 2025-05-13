@@ -7,11 +7,6 @@ default-run = "dash-evo-tool"
 rust-version = "1.85"
 build = "build.rs"
 
-[build]
-rustflags = [
-    "-C", "target-feature=+avx,-avx2,-avx512f,-avx512cd,-avx512er,-avx512pf,-avx512bw,-avx512dq,-avx512vl"
-]
-
 [dependencies]
 bip39 = { version = "2.1.0", features = ["all-languages", "rand"] }
 derive_more = "2.0.1"
@@ -40,16 +35,18 @@ envy = "0.4.2"
 chrono = "0.4"
 chrono-humanize = "0.2.3"
 sha2 = "0.10.8"
-arboard = { version = "3.4.0", default-features = false, features = ["windows-sys"] }
+arboard = { version = "3.4.0", default-features = false, features = [
+    "windows-sys",
+] }
 directories = "5.0"
-rusqlite = { version = "0.32.1",  features = ["functions"]}
+rusqlite = { version = "0.32.1", features = ["functions"] }
 serde_yaml = "0.9.34+deprecated"
 image = { version = "0.25.2", default-features = false, features = ["png"] }
 bitflags = "2.6.0"
 rust-embed = "8.5.0"
 zeroize = "1.8.1"
 zxcvbn = "3.1.0"
-argon2 = "0.5"           # For Argon2 key derivation
+argon2 = "0.5" # For Argon2 key derivation
 aes-gcm = "0.10" # For AES-256-GCM encryption
 crossbeam-channel = "0.5.13"
 regex = "1.11"

@@ -95,6 +95,12 @@ impl Wallet {
     ) -> Result<HashMap<OutPoint, TxOut>, String> {
         // Collect the addresses for which we want to load UTXOs.
         let addresses: Vec<_> = self.known_addresses.keys().collect();
+        if tracing::enabled!(tracing::Level::TRACE) {
+            for addr in addresses.iter() {
+                let (net, payload) = (*addr).clone().into_parts();
+                tracing::trace!(net=net.to_string(),payload=?payload , "Address to load UTXOs for");
+            }
+        }
 
         // Use the RPC client to list unspent outputs.
         match core_client.list_unspent(None, None, Some(&addresses), Some(false), None) {

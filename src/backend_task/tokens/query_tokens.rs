@@ -82,19 +82,25 @@ impl AppContext {
                 value: Value::Identifier(cid.to_owned().into()),
             });
 
-            if let Some((_, Some(desc_doc))) = Document::fetch_many(sdk, desc_query)
+            let description = if let Some((_, Some(desc_doc))) = Document::fetch_many(sdk, desc_query)
                 .await
                 .map_err(|e| format!("Error fetching description doc: {e}"))?
                 .into_iter()
                 .next()
             {
                 if let Some(Value::Text(desc_txt)) = desc_doc.get("description") {
-                    descriptions.push(ContractDescriptionInfo {
-                        data_contract_id: *cid,
-                        description: desc_txt.to_owned(),
-                    });
+                    desc_txt.to_owned()
+                } else {
+                    "".to_string()
                 }
-            }
+            } else {
+                "".to_string()
+            };
+
+            descriptions.push(ContractDescriptionInfo {
+                data_contract_id: *cid,
+                description,
+            });
         }
 
         // ── 3. return result ────────────────────────────────────────────────

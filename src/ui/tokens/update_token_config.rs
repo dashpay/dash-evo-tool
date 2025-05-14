@@ -26,6 +26,7 @@ use crate::app::AppAction;
 use crate::backend_task::tokens::TokenTask;
 use crate::backend_task::BackendTask;
 use crate::context::AppContext;
+use crate::model::qualified_contract::QualifiedContract;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::ui::components::left_panel::add_left_panel;
@@ -51,6 +52,7 @@ pub enum UpdateTokenConfigStatus {
 
 pub struct UpdateTokenConfigScreen {
     pub identity_token_info: IdentityTokenInfo,
+    data_contract_option: Option<QualifiedContract>,
     backend_message: Option<(String, MessageType, DateTime<Utc>)>,
     update_status: UpdateTokenConfigStatus,
     pub app_context: Arc<AppContext>,
@@ -60,6 +62,10 @@ pub struct UpdateTokenConfigScreen {
     public_note: Option<String>,
     group: Option<(GroupContractPosition, Group)>,
     pub group_action_id: Option<Identifier>,
+
+    // Input state fields
+    pub authorized_identity_input: Option<String>,
+    pub authorized_group_input: Option<String>,
 
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     wallet_password: String,
@@ -159,18 +165,28 @@ impl UpdateTokenConfigScreen {
             &mut error_message,
         );
 
+        let data_contract_option = app_context
+            .get_contract_by_id(&identity_token_info.data_contract.contract.id())
+            .unwrap_or_default();
+
         Self {
             identity_token_info: identity_token_info.clone(),
-            public_note: None,
-            change_item: TokenConfigurationChangeItem::TokenConfigurationNoChange,
+            data_contract_option,
+            backend_message: None,
             update_status: UpdateTokenConfigStatus::NotUpdating,
-            error_message: None,
             app_context: app_context.clone(),
+            change_item: TokenConfigurationChangeItem::TokenConfigurationNoChange,
+            signing_key: possible_key,
+            public_note: None,
+
+            authorized_identity_input: None,
+            authorized_group_input: None,
+
             selected_wallet,
             wallet_password: String::new(),
             show_password: false,
-            backend_message: None,
-            signing_key: possible_key,
+            error_message: None, // unused
+
             identity: identity_token_info.identity,
             group,
             group_action_id: None,
@@ -548,7 +564,13 @@ impl UpdateTokenConfigScreen {
             | TokenConfigurationChangeItem::NewTokensDestinationIdentityAdminGroup(t)
             | TokenConfigurationChangeItem::MintingAllowChoosingDestinationControlGroup(t)
             | TokenConfigurationChangeItem::MintingAllowChoosingDestinationAdminGroup(t) => {
-                Self::render_authorized_action_takers_editor(ui, t);
+                Self::render_authorized_action_takers_editor(
+                    ui,
+                    t,
+                    &mut self.authorized_identity_input,
+                    &mut self.authorized_group_input,
+                    &self.data_contract_option,
+                );
             }
 
             TokenConfigurationChangeItem::TokenConfigurationNoChange => {
@@ -628,13 +650,32 @@ impl UpdateTokenConfigScreen {
     /* ===================================================================== */
     /* Helper: render AuthorizedActionTakers editor                          */
     /* ===================================================================== */
-    fn render_authorized_action_takers_editor(
+    pub fn render_authorized_action_takers_editor(
         ui: &mut egui::Ui,
         takers: &mut AuthorizedActionTakers,
+        authorized_identity_input: &mut Option<String>,
+        authorized_group_input: &mut Option<String>,
+        data_contract_option: &Option<QualifiedContract>,
     ) {
         ui.horizontal(|ui| {
-            egui::ComboBox::from_id_salt(format!("aat_combo"))
-                .selected_text(format!("{takers:?}"))
+            // Display label
+            ui.label("Authorized:");
+
+            // Combo box for selecting the type of authorized taker
+            egui::ComboBox::from_id_salt("authorized_action_takers")
+                .selected_text(match takers {
+                    AuthorizedActionTakers::NoOne => "No One".to_string(),
+                    AuthorizedActionTakers::ContractOwner => "Contract Owner".to_string(),
+                    AuthorizedActionTakers::MainGroup => "Main Group".to_string(),
+                    AuthorizedActionTakers::Identity(id) => {
+                        if id == &Identifier::default() {
+                            "Identity".to_string()
+                        } else {
+                            format!("Identity({})", id)
+                        }
+                    }
+                    AuthorizedActionTakers::Group(_) => format!("Group"),
+                })
                 .show_ui(ui, |ui| {
                     ui.selectable_value(takers, AuthorizedActionTakers::NoOne, "No One");
                     ui.selectable_value(
@@ -643,28 +684,93 @@ impl UpdateTokenConfigScreen {
                         "Contract Owner",
                     );
                     ui.selectable_value(takers, AuthorizedActionTakers::MainGroup, "Main Group");
-                    ui.selectable_value(
-                        takers,
-                        AuthorizedActionTakers::Identity(Default::default()),
-                        "Specific Identity",
-                    );
-                    ui.selectable_value(takers, AuthorizedActionTakers::Group(0), "Specific Group");
+
+                    // Set temporary input fields on select
+                    if ui
+                        .selectable_label(
+                            matches!(takers, AuthorizedActionTakers::Identity(_)),
+                            "Identity",
+                        )
+                        .clicked()
+                    {
+                        *takers = AuthorizedActionTakers::Identity(Identifier::default());
+                        authorized_identity_input.get_or_insert_with(String::new);
+                    }
+
+                    if ui
+                        .selectable_label(
+                            matches!(takers, AuthorizedActionTakers::Group(_)),
+                            "Group",
+                        )
+                        .clicked()
+                    {
+                        *takers = AuthorizedActionTakers::Group(0);
+                        authorized_group_input.get_or_insert_with(|| "0".to_owned());
+                    }
                 });
 
-            match takers {
-                AuthorizedActionTakers::Identity(id) => {
-                    let mut txt = id.to_string();
-                    if ui.text_edit_singleline(&mut txt).changed() {
-                        *id = Identifier::from_string(&txt, Encoding::Base58).unwrap_or_default();
+            // Render input for Identity
+            if let AuthorizedActionTakers::Identity(id) = takers {
+                authorized_identity_input.get_or_insert_with(String::new);
+                if let Some(ref mut id_str) = authorized_identity_input {
+                    ui.horizontal(|ui| {
+                        ui.add_sized(
+                            [300.0, 22.0],
+                            egui::TextEdit::singleline(id_str).hint_text("Enter base58 identity"),
+                        );
+
+                        if !id_str.is_empty() {
+                            let is_valid =
+                                Identifier::from_string(id_str, Encoding::Base58).is_ok();
+                            let (symbol, color) = if is_valid {
+                                ("✔", Color32::DARK_GREEN)
+                            } else {
+                                ("×", Color32::RED)
+                            };
+                            ui.label(RichText::new(symbol).color(color).strong());
+
+                            if is_valid {
+                                *id = Identifier::from_string(id_str, Encoding::Base58).unwrap();
+                            }
+                        }
+                    });
+                }
+            }
+
+            // Render input for Group
+            if let Some(data_contract) = data_contract_option {
+                let contract_group_positions: Vec<u16> =
+                    data_contract.contract.groups().keys().cloned().collect();
+                if let AuthorizedActionTakers::Group(g) = takers {
+                    authorized_group_input.get_or_insert_with(|| g.to_string());
+                    egui::ComboBox::from_id_salt("group_position_selector")
+                        .selected_text(format!(
+                            "Group Position: {}",
+                            authorized_group_input.as_deref().unwrap_or(&g.to_string())
+                        ))
+                        .show_ui(ui, |ui| {
+                            for position in &contract_group_positions {
+                                if ui
+                                    .selectable_value(g, *position, format!("Group {}", position))
+                                    .clicked()
+                                {
+                                    *authorized_group_input = Some(position.to_string());
+                                }
+                            }
+                        });
+                }
+            } else {
+                if let AuthorizedActionTakers::Group(g) = takers {
+                    authorized_group_input.get_or_insert_with(|| g.to_string());
+                    if let Some(ref mut group_str) = authorized_group_input {
+                        ui.add(
+                            egui::TextEdit::singleline(group_str).hint_text("Enter group position"),
+                        );
+                        if let Ok(parsed) = group_str.parse::<u16>() {
+                            *g = parsed;
+                        }
                     }
                 }
-                AuthorizedActionTakers::Group(g) => {
-                    let mut txt = g.to_string();
-                    if ui.text_edit_singleline(&mut txt).changed() {
-                        *g = txt.parse::<u16>().unwrap_or(0);
-                    }
-                }
-                _ => {}
             }
         });
     }

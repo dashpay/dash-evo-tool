@@ -4169,6 +4169,10 @@ Emits tokens in fixed amounts for specific intervals.
             }
         }
 
+        // ---- Deduplicate contract_keywords after adding token names ----
+        let mut seen = HashSet::new();
+        contract_keywords.retain(|kw| seen.insert(kw.clone()));
+
         let token_description = if self.token_description_input.len() > 0 {
             Some(self.token_description_input.clone())
         } else {

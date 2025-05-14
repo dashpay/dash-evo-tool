@@ -348,7 +348,11 @@ impl FreezeTokensScreen {
             ui.add_space(50.0);
 
             ui.heading("🎉");
-            ui.heading("Frozen Successfully!");
+            if self.group_action_id.is_some() {
+                ui.label("Group Freeze Signing Successful.");
+            } else {
+                ui.heading("Freeze Successful.");
+            }
 
             ui.add_space(20.0);
 

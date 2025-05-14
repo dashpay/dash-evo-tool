@@ -384,7 +384,11 @@ impl MintTokensScreen {
             ui.add_space(50.0);
 
             ui.heading("🎉");
-            ui.heading("Mint Successful!");
+            if self.group_action_id.is_some() {
+                ui.label("Group Mint Signing Successful.");
+            } else {
+                ui.heading("Mint Successful.");
+            }
 
             ui.add_space(20.0);
 

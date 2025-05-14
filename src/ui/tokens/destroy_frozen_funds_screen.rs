@@ -364,7 +364,11 @@ impl DestroyFrozenFundsScreen {
             ui.add_space(50.0);
 
             ui.heading("🎉");
-            ui.heading("Successfully destroyed frozen funds!");
+            if self.group_action_id.is_some() {
+                ui.label("Group Destroy Signing Successful.");
+            } else {
+                ui.heading("Destroy Successful.");
+            }
 
             ui.add_space(20.0);
 

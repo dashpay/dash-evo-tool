@@ -781,7 +781,11 @@ impl UpdateTokenConfigScreen {
             ui.add_space(50.0);
 
             ui.heading("🎉");
-            ui.heading(format!("{}", self.backend_message.as_ref().unwrap().0));
+            if self.group_action_id.is_some() {
+                ui.label("Group Update Signing Successful.");
+            } else {
+                ui.heading(format!("{}", self.backend_message.as_ref().unwrap().0));
+            }
 
             ui.add_space(20.0);
 

@@ -345,7 +345,11 @@ impl UnfreezeTokensScreen {
             ui.add_space(50.0);
 
             ui.heading("🎉");
-            ui.heading("Unfroze Successfully!");
+            if self.group_action_id.is_some() {
+                ui.label("Group Unfreeze Signing Successful.");
+            } else {
+                ui.heading("Unfreeze Successful.");
+            }
 
             ui.add_space(20.0);
 

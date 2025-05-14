@@ -349,7 +349,11 @@ impl BurnTokensScreen {
             ui.add_space(50.0);
 
             ui.heading("🎉");
-            ui.heading("Burn Successful!");
+            if self.group_action_id.is_some() {
+                ui.label("Group Burn Signing Successful.");
+            } else {
+                ui.heading("Burn Successful.");
+            }
 
             ui.add_space(20.0);
 

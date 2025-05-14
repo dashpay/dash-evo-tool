@@ -309,7 +309,11 @@ impl PauseTokensScreen {
             ui.add_space(50.0);
 
             ui.heading("🎉");
-            ui.heading("Paused Successfully!");
+            if self.group_action_id.is_some() {
+                ui.label("Group Pause Signing Successful.");
+            } else {
+                ui.heading("Pause Successful.");
+            }
 
             ui.add_space(20.0);
 

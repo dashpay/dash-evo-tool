@@ -24,9 +24,7 @@ struct MasternodeInfo {
     #[serde(rename = "pro-tx-hash")]
     pro_tx_hash: String,
     owner: KeyInfo,
-    collateral: KeyInfo,
     voter: KeyInfo,
-    operator: OperatorInfo,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -34,32 +32,12 @@ struct HPMasternodeInfo {
     #[serde(rename = "protx-tx-hash")]
     protx_tx_hash: String,
     owner: KeyInfo,
-    collateral: KeyInfo,
     voter: KeyInfo,
     payout: KeyInfo,
-    operator: OperatorInfo,
-    #[serde(rename = "node_key")]
-    node_key: Option<NodeKeyInfo>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 struct KeyInfo {
-    address: String,
-    #[serde(rename = "private_key")]
-    private_key: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct OperatorInfo {
-    #[serde(rename = "public_key")]
-    public_key: String,
-    #[serde(rename = "private_key")]
-    private_key: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct NodeKeyInfo {
-    id: String,
     #[serde(rename = "private_key")]
     private_key: String,
 }
@@ -81,12 +59,6 @@ pub enum AddIdentityStatus {
     WaitingForResult(TimestampMillis),
     ErrorMessage(String),
     Complete,
-}
-
-#[derive(Clone, PartialEq)]
-pub enum IdentityLoadMethod {
-    ByIdentifier,
-    FromWallet,
 }
 
 pub struct AddExistingIdentityScreen {
@@ -286,7 +258,7 @@ impl AddExistingIdentityScreen {
         action
     }
 
-    fn render_wallet_selection(&mut self, ui: &mut Ui) {
+    fn _render_wallet_selection(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
             if self.app_context.has_wallet.load(Ordering::Relaxed) {
                 let wallets = &self.app_context.wallets.read().unwrap();
@@ -337,12 +309,12 @@ impl AddExistingIdentityScreen {
         });
     }
 
-    fn render_from_wallet(&mut self, ui: &mut egui::Ui, wallets_len: usize) -> AppAction {
+    fn _render_from_wallet(&mut self, ui: &mut egui::Ui, wallets_len: usize) -> AppAction {
         let mut action = AppAction::None;
 
         // Wallet selection
         if wallets_len > 1 {
-            self.render_wallet_selection(ui);
+            self._render_wallet_selection(ui);
         }
 
         if self.selected_wallet.is_none() {

@@ -122,10 +122,6 @@ impl AddNewIdentityScreen {
         // Extract the step from the RwLock to minimize borrow scope
         let step = self.step.read().unwrap().clone();
 
-        let Ok(amount_dash) = self.funding_amount.parse::<f64>() else {
-            return AppAction::None;
-        };
-
         ui.add_space(10.0);
 
         ui.heading(
@@ -139,6 +135,14 @@ impl AddNewIdentityScreen {
         ui.add_space(8.0);
 
         self.render_funding_amount_input(ui);
+
+        let Ok(amount_dash) = self.funding_amount.parse::<f64>() else {
+            return AppAction::None;
+        };
+
+        if amount_dash <= 0.0 {
+            return AppAction::None;
+        }
 
         ui.with_layout(
             egui::Layout::top_down(egui::Align::Min).with_cross_align(egui::Align::Center),

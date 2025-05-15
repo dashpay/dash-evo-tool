@@ -124,7 +124,7 @@ impl TopUpIdentityScreen {
             return;
         };
         let funding_method_arc = self.funding_method.clone();
-        let mut funding_method = funding_method_arc.write().unwrap(); // Write lock on funding_method
+        let mut funding_method = funding_method_arc.write().unwrap();
 
         ComboBox::from_id_salt("funding_method")
             .selected_text(format!("{}", *funding_method))
@@ -153,6 +153,7 @@ impl TopUpIdentityScreen {
                         *step = WalletFundedScreenStep::ReadyToCreate;
                     }
                 }
+
                 if has_balance {
                     if ui
                         .selectable_value(
@@ -163,16 +164,17 @@ impl TopUpIdentityScreen {
                         .changed()
                     {
                         if let Some(wallet) = &self.wallet {
-                            let wallet = wallet.read().unwrap(); // Read lock on the wallet
+                            let wallet = wallet.read().unwrap();
                             let max_amount = wallet.max_balance();
                             self.funding_amount = format!("{:.4}", max_amount as f64 * 1e-8);
                             self.funding_amount_exact =
                                 Some(self.funding_amount.parse::<f64>().unwrap() as u64);
                         }
-                        let mut step = self.step.write().unwrap(); // Write lock on step
+                        let mut step = self.step.write().unwrap();
                         *step = WalletFundedScreenStep::ReadyToCreate;
                     }
                 }
+
                 if ui
                     .selectable_value(
                         &mut *funding_method,
@@ -181,18 +183,12 @@ impl TopUpIdentityScreen {
                     )
                     .changed()
                 {
-                    let mut step = self.step.write().unwrap(); // Write lock on step
+                    let mut step = self.step.write().unwrap();
                     *step = WalletFundedScreenStep::WaitingOnFunds;
                 }
-
-                // Uncomment this if AttachedCoreWallet is available in the future
-                // ui.selectable_value(
-                //     &mut *funding_method,
-                //     FundingMethod::AttachedCoreWallet,
-                //     "Attached Core Wallet",
-                // );
             });
     }
+
     fn top_up_identity_clicked(&mut self, funding_method: FundingMethod) -> AppAction {
         let Some(selected_wallet) = &self.wallet else {
             return AppAction::None;
@@ -202,7 +198,7 @@ impl TopUpIdentityScreen {
                 if let Some((tx, funding_asset_lock, address)) = self.funding_asset_lock.clone() {
                     let identity_input = IdentityTopUpInfo {
                         qualified_identity: self.identity.clone(),
-                        wallet: Arc::clone(selected_wallet), // Clone the Arc reference
+                        wallet: Arc::clone(selected_wallet),
                         identity_funding_method: TopUpIdentityFundingMethod::UseAssetLock(
                             address,
                             funding_asset_lock,
@@ -483,7 +479,6 @@ impl ScreenLike for TopUpIdentityScreen {
                     FundingMethod::AddressWithQRCode => {
                         action |= self.render_ui_by_wallet_qr_code(ui, step_number)
                     }
-                    FundingMethod::AttachedCoreWallet => return,
                 }
             });
         });

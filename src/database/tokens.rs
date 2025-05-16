@@ -125,9 +125,8 @@ impl Database {
         Ok(())
     }
 
-    /// Creates the identity_token_balances table if it doesn't already exist
+    /// Drops the identity_token_balances table (if necessary to enforce schema update)
     pub fn drop_identity_token_balances_table(&self) -> rusqlite::Result<()> {
-        // Drop existing token table (if necessary to enforce schema update)
         self.execute("DROP TABLE IF EXISTS identity_token_balances", [])?;
 
         Ok(())
@@ -172,6 +171,7 @@ impl Database {
 
         Ok(())
     }
+
     /// Retrieves all known tokens as a map from token ID to `TokenInfo`.
     ///
     /// Now also fetches and decodes the **`token_config`** blob.

@@ -4,6 +4,7 @@ use crate::{app::TaskResult, context::AppContext, model::qualified_identity::Qua
 use dash_sdk::dpp::balances::credits::TokenAmount;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration_item::TokenConfigurationChangeItem;
 use dash_sdk::dpp::data_contract::GroupContractPosition;
+use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::group::GroupStateTransitionInfoStatus;
 use dash_sdk::platform::Fetch;
 use dash_sdk::{
@@ -173,6 +174,14 @@ pub(crate) enum TokenTask {
         change_item: TokenConfigurationChangeItem,
         signing_key: IdentityPublicKey,
         public_note: Option<String>,
+    },
+    PurchaseTokens {
+        identity: QualifiedIdentity,
+        data_contract: DataContract,
+        token_position: TokenContractPosition,
+        signing_key: IdentityPublicKey,
+        amount: TokenAmount,
+        total_agreed_price: Credits,
     },
 }
 
@@ -510,6 +519,26 @@ impl AppContext {
                 )
                 .await
                 .map_err(|e| format!("Failed to update token config: {e}")),
+            TokenTask::PurchaseTokens {
+                identity,
+                data_contract,
+                token_position,
+                signing_key,
+                amount,
+                total_agreed_price,
+            } => self
+                .purchase_tokens(
+                    identity,
+                    data_contract,
+                    *token_position,
+                    signing_key.clone(),
+                    *amount,
+                    *total_agreed_price,
+                    sdk,
+                    sender,
+                )
+                .await
+                .map_err(|e| format!("Failed to purchase tokens: {e}")),
         }
     }
 

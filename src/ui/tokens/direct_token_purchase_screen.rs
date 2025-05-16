@@ -2,14 +2,7 @@ use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
-use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
-use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
-use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::accessors::v0::TokenDistributionRulesV0Getters;
-use dash_sdk::dpp::data_contract::change_control_rules::authorized_action_takers::AuthorizedActionTakers;
-use dash_sdk::dpp::data_contract::group::accessors::v0::GroupV0Getters;
-use dash_sdk::dpp::data_contract::group::Group;
-use dash_sdk::dpp::data_contract::GroupContractPosition;
+use dash_sdk::dpp::fee::Credits;
 use eframe::egui::{self, Color32, Context, Ui};
 use egui::RichText;
 
@@ -27,12 +20,11 @@ use crate::ui::identities::get_selected_wallet;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
 use crate::ui::{MessageType, Screen, ScreenLike};
-use dash_sdk::dpp::group::GroupStateTransitionInfoStatus;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
-use dash_sdk::platform::{Identifier, IdentityPublicKey};
+use dash_sdk::platform::IdentityPublicKey;
 
 /// Internal states for the purchase process.
 #[derive(PartialEq)]
@@ -45,24 +37,21 @@ pub enum PurchaseTokensStatus {
 
 /// A UI Screen for purchasing tokens from an existing token contract
 pub struct PurchaseTokenScreen {
+    pub app_context: Arc<AppContext>,
+
     pub identity_token_info: IdentityTokenInfo,
     selected_key: Option<IdentityPublicKey>,
-    public_note: Option<String>,
-    group: Option<(GroupContractPosition, Group)>,
 
-    recipient_identity_id: String,
-
+    // Specific to this transition
     amount_to_purchase: String,
+    total_agreed_price: String,
+
+    /// Screen stuff
+    show_confirmation_popup: bool,
     status: PurchaseTokensStatus,
     error_message: Option<String>,
 
-    /// Basic references
-    pub app_context: Arc<AppContext>,
-
-    /// Confirmation popup
-    show_confirmation_popup: bool,
-
-    // If needed for password-based wallet unlocking:
+    // Wallet fields
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     wallet_password: String,
     show_password: bool,
@@ -87,72 +76,6 @@ impl PurchaseTokenScreen {
 
         let mut error_message = None;
 
-        let group = match identity_token_info
-            .token_config
-            .manual_purchasing_rules()
-            .authorized_to_make_change_action_takers()
-        {
-            AuthorizedActionTakers::NoOne => {
-                error_message = Some("Purchasing is not allowed on this token".to_string());
-                None
-            }
-            AuthorizedActionTakers::ContractOwner => {
-                if identity_token_info.data_contract.contract.owner_id()
-                    != &identity_token_info.identity.identity.id()
-                {
-                    error_message = Some(
-                        "You are not allowed to purchase on this token. Only the contract owner is."
-                            .to_string(),
-                    );
-                }
-                None
-            }
-            AuthorizedActionTakers::Identity(identifier) => {
-                if identifier != &identity_token_info.identity.identity.id() {
-                    error_message =
-                        Some("You are not allowed to purchase on this token".to_string());
-                }
-                None
-            }
-            AuthorizedActionTakers::MainGroup => {
-                match identity_token_info.token_config.main_control_group() {
-                    None => {
-                        error_message = Some(
-                            "Invalid contract: No main control group, though one should exist"
-                                .to_string(),
-                        );
-                        None
-                    }
-                    Some(group_pos) => {
-                        match identity_token_info
-                            .data_contract
-                            .contract
-                            .expected_group(group_pos)
-                        {
-                            Ok(group) => Some((group_pos, group.clone())),
-                            Err(e) => {
-                                error_message = Some(format!("Invalid contract: {}", e));
-                                None
-                            }
-                        }
-                    }
-                }
-            }
-            AuthorizedActionTakers::Group(group_pos) => {
-                match identity_token_info
-                    .data_contract
-                    .contract
-                    .expected_group(*group_pos)
-                {
-                    Ok(group) => Some((*group_pos, group.clone())),
-                    Err(e) => {
-                        error_message = Some(format!("Invalid contract: {}", e));
-                        None
-                    }
-                }
-            }
-        };
-
         // Attempt to get an unlocked wallet reference
         let selected_wallet = get_selected_wallet(
             &identity_token_info.identity,
@@ -164,10 +87,8 @@ impl PurchaseTokenScreen {
         Self {
             identity_token_info,
             selected_key: possible_key,
-            public_note: None,
-            group,
-            recipient_identity_id: "".to_string(),
             amount_to_purchase: "".to_string(),
+            total_agreed_price: "".to_string(),
             status: PurchaseTokensStatus::NotStarted,
             error_message: None,
             app_context: app_context.clone(),
@@ -246,20 +167,7 @@ impl PurchaseTokenScreen {
         ui.horizontal(|ui| {
             ui.label("Amount to Purchase:");
             ui.text_edit_singleline(&mut self.amount_to_purchase);
-
-            // Since it's purchasing, we often don't do "Max."
-            // But you could show a help text or put constraints if needed.
         });
-    }
-
-    /// Renders an optional text input for the user to specify a "Recipient Identity"
-    fn render_recipient_input(&mut self, ui: &mut Ui) {
-        ui.horizontal(|ui| {
-            ui.label("Recipient:");
-            ui.text_edit_singleline(&mut self.recipient_identity_id);
-        });
-
-        // If empty, purchaseed tokens go to the 'issuer' identity (self.identity).
     }
 
     /// Renders a confirm popup with the final "Are you sure?" step
@@ -279,42 +187,20 @@ impl PurchaseTokenScreen {
                     return;
                 }
 
-                let maybe_identifier = if self.recipient_identity_id.trim().is_empty() {
-                    None
-                } else {
-                    // Attempt to parse from base58 or hex
-                    match Identifier::from_string_try_encodings(
-                        &self.recipient_identity_id,
-                        &[Encoding::Base58, Encoding::Hex],
-                    ) {
-                        Ok(id) => Some(id),
-                        Err(_) => {
-                            self.error_message = Some("Invalid recipient identity format.".into());
-                            self.status = PurchaseTokensStatus::ErrorMessage(
-                                "Invalid recipient identity".into(),
-                            );
-                            self.show_confirmation_popup = false;
-                            return;
-                        }
-                    }
-                };
+                let total_agreed_price_ok: Option<Credits> =
+                    self.total_agreed_price.parse::<u64>().ok();
+                if total_agreed_price_ok.is_none() {
+                    self.error_message = Some("Please enter a valid total agreed price.".into());
+                    self.status =
+                        PurchaseTokensStatus::ErrorMessage("Invalid total agreed price".into());
+                    self.show_confirmation_popup = false;
+                    return;
+                }
 
                 ui.label(format!(
-                    "Are you sure you want to purchase {} token(s)?",
-                    self.amount_to_purchase
+                    "Are you sure you want to purchase {} token(s) for {} Credits?",
+                    self.amount_to_purchase, self.total_agreed_price
                 ));
-
-                // If user provided a recipient:
-                if let Some(ref recipient_id) = maybe_identifier {
-                    ui.label(format!(
-                        "Recipient: {}",
-                        recipient_id.to_string(Encoding::Base58)
-                    ));
-                } else {
-                    ui.label(
-                        "No recipient specified; tokens will be purchaseed to default identity.",
-                    );
-                }
 
                 ui.add_space(10.0);
 
@@ -326,10 +212,6 @@ impl PurchaseTokenScreen {
                         .expect("Time went backwards")
                         .as_secs();
                     self.status = PurchaseTokensStatus::WaitingForResult(now);
-
-                    let group_info = self.group.as_ref().map(|(pos, _)| {
-                        GroupStateTransitionInfoStatus::GroupStateTransitionInfoProposer(*pos)
-                    });
 
                     // Dispatch the actual backend purchase action
                     action = AppAction::BackendTasks(
@@ -343,10 +225,9 @@ impl PurchaseTokenScreen {
                                     .clone(),
                                 token_position: self.identity_token_info.token_position,
                                 signing_key: self.selected_key.clone().expect("Expected a key"),
-                                public_note: self.public_note.clone(),
-                                amount: amount_ok.unwrap(),
-                                recipient_id: maybe_identifier,
-                                group_info,
+                                amount: amount_ok.expect("Expected a valid amount"),
+                                total_agreed_price: total_agreed_price_ok
+                                    .expect("Expected a valid total agreed price"),
                             }),
                             BackendTask::TokenTask(TokenTask::QueryMyTokenBalances),
                         ],
@@ -452,9 +333,18 @@ impl ScreenLike for PurchaseTokenScreen {
 
             // Check if user has any auth keys
             let has_keys = if self.app_context.developer_mode {
-                !self.identity_token_info.identity.identity.public_keys().is_empty()
+                !self
+                    .identity_token_info
+                    .identity
+                    .identity
+                    .public_keys()
+                    .is_empty()
             } else {
-                !self.identity_token_info.identity.available_authentication_keys().is_empty()
+                !self
+                    .identity_token_info
+                    .identity
+                    .available_authentication_keys()
+                    .is_empty()
             };
 
             if !has_keys {
@@ -468,16 +358,20 @@ impl ScreenLike for PurchaseTokenScreen {
                 ui.add_space(10.0);
 
                 // Show "Add key" or "Check keys" option
-                let first_key = self.identity_token_info.identity.identity.get_first_public_key_matching(
-                    Purpose::AUTHENTICATION,
-                    HashSet::from([
-                        SecurityLevel::HIGH,
-                        SecurityLevel::MEDIUM,
-                        SecurityLevel::CRITICAL,
-                    ]),
-                    KeyType::all_key_types().into(),
-                    false,
-                );
+                let first_key = self
+                    .identity_token_info
+                    .identity
+                    .identity
+                    .get_first_public_key_matching(
+                        Purpose::AUTHENTICATION,
+                        HashSet::from([
+                            SecurityLevel::HIGH,
+                            SecurityLevel::MEDIUM,
+                            SecurityLevel::CRITICAL,
+                        ]),
+                        KeyType::all_key_types().into(),
+                        false,
+                    );
 
                 if let Some(key) = first_key {
                     if ui.button("Check Keys").clicked() {
@@ -514,9 +408,15 @@ impl ScreenLike for PurchaseTokenScreen {
                 ui.horizontal(|ui| {
                     self.render_key_selection(ui);
                     ui.add_space(5.0);
-                    let identity_id_string =
-                        self.identity_token_info.identity.identity.id().to_string(Encoding::Base58);
-                    let identity_display = self.identity_token_info.identity
+                    let identity_id_string = self
+                        .identity_token_info
+                        .identity
+                        .identity
+                        .id()
+                        .to_string(Encoding::Base58);
+                    let identity_display = self
+                        .identity_token_info
+                        .identity
                         .alias
                         .as_deref()
                         .unwrap_or_else(|| &identity_id_string);
@@ -536,69 +436,28 @@ impl ScreenLike for PurchaseTokenScreen {
                 ui.separator();
                 ui.add_space(10.0);
 
-                if self.identity_token_info.token_config.distribution_rules().purchasing_allow_choosing_destination() || self.app_context.developer_mode {
-                    if self.identity_token_info.token_config.distribution_rules().new_tokens_destination_identity().is_some() {
-                        ui.heading("3. Recipient identity (optional)");
-                    } else {
-                        ui.heading("3. Recipient identity (required)");
+                // 3) Total agreed price
+                ui.heading("3. Total agreed price");
+                ui.add_space(5.0);
+                ui.horizontal(|ui| {
+                    ui.label("Total agreed price:");
+                    ui.add_space(10.0);
+                    let mut txt = self.total_agreed_price.clone();
+                    if ui
+                        .text_edit_singleline(&mut txt)
+                        .on_hover_text("Total agreed price in credits")
+                        .changed()
+                    {
+                        self.total_agreed_price = txt;
                     }
-                    ui.add_space(5.0);
-                    self.render_recipient_input(ui);
-                }
+                });
 
                 ui.add_space(10.0);
                 ui.separator();
                 ui.add_space(10.0);
 
-                // Render text input for the public note
-                ui.heading("4. Public note (optional)");
-                ui.add_space(5.0);
-                ui.horizontal(|ui| {
-                    ui.label("Public note (optional):");
-                    ui.add_space(10.0);
-                    let mut txt = self.public_note.clone().unwrap_or_default();
-                    if ui
-                        .text_edit_singleline(&mut txt)
-                        .on_hover_text(
-                            "A note about the transaction that can be seen by the public.",
-                        )
-                        .changed()
-                    {
-                        self.public_note = Some(txt);
-                    }
-                });
-                ui.add_space(10.0);
-
-                let purchase_text = if let Some((_, group)) = self.group.as_ref() {
-                    let your_power = group.members().get(&self.identity_token_info.identity.identity.id());
-                    if your_power.is_none() {
-                        self.error_message = Some("Only group members can purchase on this token".to_string());
-                    }
-                    ui.heading("This is a group action, it is not immediate.");
-                    ui.label(format!("Members are : \n{}", group.members().iter().map(|(member, power)| {
-                        if member == &self.identity_token_info.identity.identity.id() {
-                            format!("{} (You) with power {}", member, power)
-                        } else {
-                            format!("{} with power {}", member, power)
-                        }
-                    }).collect::<Vec<_>>().join(", \n")));
-                    ui.add_space(10.0);
-                    if let Some(your_power) = your_power {
-                        if *your_power >= group.required_power() {
-                            ui.label(format!("Even though this is a group action, you are able to unilaterally approve it because your power ({}) in the group exceeds the required amount : {}", *your_power,  group.required_power()));
-                            "Purchase"
-                        } else {
-                            ui.label(format!("You will need at least {} voting power for this action to go through. Contact other group members to let them know to authorize this action after you have initiated it.", group.required_power()));
-                            "Initiate Group Purchase"
-                        }
-                    } else {
-                        "Test Purchase (It should fail)"
-                    }
-                } else {
-                    "Purchase"
-                };
-
                 // Purchase button
+                let purchase_text = "Purchase".to_string();
                 let button = egui::Button::new(RichText::new(purchase_text).color(Color32::WHITE))
                     .fill(Color32::from_rgb(0, 128, 255))
                     .corner_radius(3.0);

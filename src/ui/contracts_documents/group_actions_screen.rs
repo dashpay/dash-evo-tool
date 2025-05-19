@@ -187,7 +187,7 @@ impl GroupActionsScreen {
                             });
                         }
                         header.col(|ui| {
-                            ui.label(""); // No header for button
+                            ui.label("");
                         });
                     })
                     .body(|mut body| {

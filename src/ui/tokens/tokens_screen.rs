@@ -1766,8 +1766,6 @@ impl TokensScreen {
         //     self.sort_vec(&mut detail_list);
         // }
 
-        // This is basically your old `render_table_my_token_balances` logic, but
-        // limited to just the single token.
         // Allocate space for refreshing indicator
         let refreshing_height = 33.0;
         let mut max_scroll_height = if let RefreshingStatus::Refreshing(_) = self.refreshing_status
@@ -3742,11 +3740,56 @@ Emits tokens in fixed amounts for specific intervals.
                                     ui.horizontal(|ui| {
                                         ui.label(format!("Member {}:", j + 1));
 
-                                        ui.label("Identity (base58):");
+
+                                        egui::ComboBox::from_id_salt(format!("member_identity_selector_{}", j))
+                                            .width(200.0)
+                                            .selected_text(
+                                                self.identities
+                                                    .get(&Identifier::from_string(&member.identity_str, Encoding::Base58).unwrap_or_default())
+                                                    .map(|q| q.display_string())
+                                                    .unwrap_or_else(|| member.identity_str.clone()),
+                                            )
+                                            .show_ui(ui, |ui| {
+                                                for (i, (identifier, qualified_identity)) in self.identities.iter().enumerate() {
+                                                    let id_str = identifier.to_string(Encoding::Base58);
+
+                                                    // Prevent duplicates unless in developer mode
+                                                    if !self.app_context.developer_mode
+                                                        && group_ui
+                                                        .members
+                                                        .iter()
+                                                        .enumerate().any(|(i, m)| i != j && m.identity_str == id_str)
+                                                    {
+                                                        continue;
+                                                    }
+
+                                                    if ui
+                                                        .selectable_label(false, qualified_identity.display_string())
+                                                        .clicked()
+                                                    {
+                                                        member.identity_str = id_str.clone();
+                                                    }
+                                                }
+                                            });
+
                                         ui.text_edit_singleline(&mut member.identity_str);
 
                                         ui.label("Power (u32):");
                                         ui.text_edit_singleline(&mut member.power_str);
+
+                                        // Show red warning if someone else already used this identity
+                                        if self.app_context.developer_mode
+                                            && group_ui.members[j].identity_str != ""
+                                            && group_ui.members.iter().enumerate().any(|(i, m)| {
+                                            i > j && m.identity_str == group_ui.members[j].identity_str
+                                        })
+                                        {
+                                            ui.colored_label(
+                                                Color32::RED,
+                                                "This member is set later as part of this group (this entry will be ignored)",
+                                            );
+                                        }
+
 
                                         if ui.button("Remove Member").clicked() {
                                             group_ui.members.remove(j);

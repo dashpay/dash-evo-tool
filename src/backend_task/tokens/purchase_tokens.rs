@@ -1,0 +1,86 @@
+use crate::app::TaskResult;
+use crate::backend_task::BackendTaskSuccessResult;
+use crate::context::AppContext;
+use crate::model::qualified_identity::QualifiedIdentity;
+use dash_sdk::dpp::balances::credits::TokenAmount;
+use dash_sdk::dpp::fee::Credits;
+
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::dpp::state_transition::proof_result::StateTransitionProofResult;
+use dash_sdk::platform::transition::broadcast::BroadcastStateTransition;
+use dash_sdk::platform::transition::fungible_tokens::purchase::TokenDirectPurchaseTransitionBuilder;
+use dash_sdk::platform::{DataContract, IdentityPublicKey};
+use dash_sdk::{Error, Sdk};
+
+use crate::model::proof_log_item::{ProofLogItem, RequestType};
+use tokio::sync::mpsc;
+
+impl AppContext {
+    pub async fn purchase_tokens(
+        &self,
+        sending_identity: &QualifiedIdentity,
+        data_contract: &DataContract,
+        token_position: u16,
+        signing_key: IdentityPublicKey,
+        amount: TokenAmount,
+        total_agreed_price: Credits,
+        sdk: &Sdk,
+        _sender: mpsc::Sender<TaskResult>,
+    ) -> Result<BackendTaskSuccessResult, String> {
+        let builder = TokenDirectPurchaseTransitionBuilder::new(
+            data_contract,
+            token_position,
+            sending_identity.identity.id(),
+            amount,
+            total_agreed_price,
+        );
+
+        let options = self.state_transition_options();
+
+        let state_transition = builder
+            .sign(
+                sdk,
+                &signing_key,
+                sending_identity,
+                self.platform_version,
+                options,
+            )
+            .await
+            .map_err(|e| {
+                format!(
+                    "Error signing Purchase Tokens state transition: {}",
+                    e.to_string()
+                )
+            })?;
+
+        // broadcast and wait
+        let _proof_result = state_transition
+            .broadcast_and_wait::<StateTransitionProofResult>(sdk, None)
+            .await
+            .map_err(|e| match e {
+                Error::DriveProofError(proof_error, proof_bytes, block_info) => {
+                    self.db
+                        .insert_proof_log_item(ProofLogItem {
+                            request_type: RequestType::BroadcastStateTransition,
+                            request_bytes: vec![],
+                            verification_path_query_bytes: vec![],
+                            height: block_info.height,
+                            time_ms: block_info.time_ms,
+                            proof_bytes,
+                            error: Some(proof_error.to_string()),
+                        })
+                        .ok();
+                    format!(
+                        "Error broadcasting Purchase Tokens transition: {}, proof error logged",
+                        proof_error
+                    )
+                }
+                e => format!("Error broadcasting Purchase Tokens transition: {}", e),
+            })?;
+
+        // Return success
+        Ok(BackendTaskSuccessResult::Message(
+            "PurchaseTokens".to_string(),
+        ))
+    }
+}

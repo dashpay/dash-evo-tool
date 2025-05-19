@@ -5,100 +5,91 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
+use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::accessors::v0::TokenDistributionRulesV0Getters;
 use dash_sdk::dpp::data_contract::change_control_rules::authorized_action_takers::AuthorizedActionTakers;
+use dash_sdk::dpp::data_contract::group::accessors::v0::GroupV0Getters;
 use dash_sdk::dpp::data_contract::group::Group;
 use dash_sdk::dpp::data_contract::GroupContractPosition;
-use dash_sdk::dpp::group::{GroupStateTransitionInfo, GroupStateTransitionInfoStatus};
-use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+use dash_sdk::dpp::tokens::token_pricing_schedule::TokenPricingSchedule;
 use eframe::egui::{self, Color32, Context, Ui};
 use egui::RichText;
 
-use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
-use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
-use dash_sdk::platform::{Identifier, IdentityPublicKey};
-
+use super::tokens_screen::IdentityTokenInfo;
 use crate::app::AppAction;
 use crate::backend_task::tokens::TokenTask;
 use crate::backend_task::BackendTask;
 use crate::context::AppContext;
-use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
-use crate::ui::helpers::render_group_action_text;
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
 use crate::ui::{MessageType, Screen, ScreenLike};
+use dash_sdk::dpp::group::GroupStateTransitionInfoStatus;
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
+use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+use dash_sdk::platform::IdentityPublicKey;
 
-use super::tokens_screen::IdentityTokenInfo;
-
-/// Internal states for the freeze operation
+/// Internal states for the mint process.
 #[derive(PartialEq)]
-pub enum FreezeTokensStatus {
+pub enum SetTokenPriceStatus {
     NotStarted,
-    WaitingForResult(u64),
+    WaitingForResult(u64), // Use seconds or millis
     ErrorMessage(String),
     Complete,
 }
 
-/// A UI Screen that allows freezing an identity’s tokens for a particular contract
-pub struct FreezeTokensScreen {
-    pub identity: QualifiedIdentity,
+/// A UI Screen for minting tokens from an existing token contract
+pub struct SetTokenPriceScreen {
     pub identity_token_info: IdentityTokenInfo,
     selected_key: Option<IdentityPublicKey>,
     public_note: Option<String>,
-
     group: Option<(GroupContractPosition, Group)>,
-    pub group_action_id: Option<Identifier>,
 
-    /// The identity we want to freeze
-    pub freeze_identity_id: String,
-
-    status: FreezeTokensStatus,
+    token_pricing_schedule: String,
+    status: SetTokenPriceStatus,
     error_message: Option<String>,
 
-    // Basic references
+    /// Basic references
     pub app_context: Arc<AppContext>,
 
-    // Confirmation popup
+    /// Confirmation popup
     show_confirmation_popup: bool,
 
-    // If password-based wallet unlocking is needed
+    // If needed for password-based wallet unlocking:
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     wallet_password: String,
     show_password: bool,
 }
 
-impl FreezeTokensScreen {
+impl SetTokenPriceScreen {
     pub fn new(identity_token_info: IdentityTokenInfo, app_context: &Arc<AppContext>) -> Self {
         let possible_key = identity_token_info
             .identity
             .identity
             .get_first_public_key_matching(
                 Purpose::AUTHENTICATION,
-                HashSet::from([
-                    SecurityLevel::HIGH,
-                    SecurityLevel::MEDIUM,
-                    SecurityLevel::CRITICAL,
-                ]),
+                HashSet::from([SecurityLevel::CRITICAL]),
                 KeyType::all_key_types().into(),
                 false,
-            )
-            .cloned();
+            );
 
         let mut error_message = None;
 
         let group = match identity_token_info
             .token_config
-            .freeze_rules()
+            .distribution_rules()
+            .change_direct_purchase_pricing_rules()
             .authorized_to_make_change_action_takers()
         {
             AuthorizedActionTakers::NoOne => {
-                error_message = Some("Burning is not allowed on this token".to_string());
+                error_message =
+                    Some("Setting token price is not allowed on this token".to_string());
                 None
             }
             AuthorizedActionTakers::ContractOwner => {
@@ -106,7 +97,7 @@ impl FreezeTokensScreen {
                     != &identity_token_info.identity.identity.id()
                 {
                     error_message = Some(
-                        "You are not allowed to burn this token. Only the contract owner is."
+                        "You are not allowed to set token price on this token. Only the contract owner is."
                             .to_string(),
                     );
                 }
@@ -114,7 +105,8 @@ impl FreezeTokensScreen {
             }
             AuthorizedActionTakers::Identity(identifier) => {
                 if identifier != &identity_token_info.identity.identity.id() {
-                    error_message = Some("You are not allowed to burn this token".to_string());
+                    error_message =
+                        Some("You are not allowed to set token price on this token".to_string());
                 }
                 None
             }
@@ -161,20 +153,18 @@ impl FreezeTokensScreen {
         let selected_wallet = get_selected_wallet(
             &identity_token_info.identity,
             None,
-            possible_key.as_ref(),
+            possible_key,
             &mut error_message,
         );
 
         Self {
-            identity: identity_token_info.identity.clone(),
-            identity_token_info,
-            selected_key: possible_key,
-            group,
-            group_action_id: None,
+            identity_token_info: identity_token_info.clone(),
+            selected_key: possible_key.cloned(),
             public_note: None,
-            freeze_identity_id: String::new(),
-            status: FreezeTokensStatus::NotStarted,
-            error_message,
+            group,
+            token_pricing_schedule: "".to_string(),
+            status: SetTokenPriceStatus::NotStarted,
+            error_message: None,
             app_context: app_context.clone(),
             show_confirmation_popup: false,
             selected_wallet,
@@ -187,7 +177,7 @@ impl FreezeTokensScreen {
     fn render_key_selection(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
             ui.label("Select Key:");
-            egui::ComboBox::from_id_salt("freeze_key_selector")
+            egui::ComboBox::from_id_salt("set_price_key_selector")
                 .selected_text(match &self.selected_key {
                     Some(key) => format!("Key ID: {}", key.id()),
                     None => "Select a key".to_string(),
@@ -195,7 +185,13 @@ impl FreezeTokensScreen {
                 .show_ui(ui, |ui| {
                     if self.app_context.developer_mode {
                         // Show all loaded public keys
-                        for key in self.identity.identity.public_keys().values() {
+                        for key in self
+                            .identity_token_info
+                            .identity
+                            .identity
+                            .public_keys()
+                            .values()
+                        {
                             let is_valid = key.purpose() == Purpose::AUTHENTICATION
                                 && key.security_level() == SecurityLevel::CRITICAL;
 
@@ -221,6 +217,7 @@ impl FreezeTokensScreen {
                     } else {
                         // Show only "available" auth keys
                         for key_wrapper in self
+                            .identity_token_info
                             .identity
                             .available_authentication_keys_with_critical_security_level()
                         {
@@ -239,97 +236,116 @@ impl FreezeTokensScreen {
         });
     }
 
-    /// Renders text input for the identity to freeze
-    fn render_freeze_identity_input(&mut self, ui: &mut Ui) {
+    /// Renders a text input for the user to specify an amount to mint
+    fn render_pricing_input(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
-            ui.label("Freeze Identity ID:");
-            ui.text_edit_singleline(&mut self.freeze_identity_id);
+            ui.label("Token pricing schedule:");
+            ui.text_edit_singleline(&mut self.token_pricing_schedule);
         });
     }
 
-    /// Confirmation popup
+    /// Renders a confirm popup with the final "Are you sure?" step
     fn show_confirmation_popup(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
         let mut is_open = true;
-        egui::Window::new("Confirm Freeze")
+        egui::Window::new("Confirm SetPricingSchedule")
             .collapsible(false)
             .open(&mut is_open)
             .show(ui.ctx(), |ui| {
                 // Validate user input
-                let parsed = Identifier::from_string_try_encodings(
-                    &self.freeze_identity_id,
-                    &[
-                        dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58,
-                        dash_sdk::dpp::platform_value::string_encoding::Encoding::Hex,
-                    ],
-                );
-                if parsed.is_err() {
-                    self.error_message = Some("Please enter a valid identity ID.".into());
-                    self.status = FreezeTokensStatus::ErrorMessage("Invalid identity".into());
-                    self.show_confirmation_popup = false;
-                    return;
-                }
-                let freeze_id = parsed.unwrap();
+                let token_pricing_schedule_opt = if self.token_pricing_schedule.trim().is_empty() {
+                    None
+                } else {
+                    // Try to parse as a single price (u64)
+                    if let Ok(single_price) = self.token_pricing_schedule.trim().parse::<u64>() {
+                        Some(TokenPricingSchedule::SinglePrice(single_price))
+                    } else {
+                        // Try to parse as a tiered pricing schedule: "amount1:price1,amount2:price2"
+                        let mut map = std::collections::BTreeMap::new();
+                        let mut parse_error = None;
+                        for pair in self.token_pricing_schedule.trim().split(',') {
+                            let parts: Vec<_> = pair.split(':').collect();
+                            if parts.len() != 2 {
+                                parse_error = Some(format!(
+                                    "Invalid pair '{}', expected format amount:price",
+                                    pair
+                                ));
+                                break;
+                            }
+                            let amount = match parts[0].trim().parse::<u64>() {
+                                Ok(a) => a,
+                                Err(_) => {
+                                    parse_error =
+                                        Some(format!("Invalid amount '{}'", parts[0].trim()));
+                                    break;
+                                }
+                            };
+                            let price = match parts[1].trim().parse::<u64>() {
+                                Ok(p) => p,
+                                Err(_) => {
+                                    parse_error =
+                                        Some(format!("Invalid price '{}'", parts[1].trim()));
+                                    break;
+                                }
+                            };
+                            map.insert(amount, price);
+                        }
+                        if let Some(e) = parse_error {
+                            self.error_message = Some(format!("Invalid pricing schedule: {}", e));
+                            self.status = SetTokenPriceStatus::ErrorMessage(
+                                "Invalid pricing schedule".into(),
+                            );
+                            self.show_confirmation_popup = false;
+                            return;
+                        }
+                        if map.is_empty() {
+                            self.error_message =
+                                Some("Pricing schedule cannot be empty".to_string());
+                            self.status = SetTokenPriceStatus::ErrorMessage(
+                                "Invalid pricing schedule".into(),
+                            );
+                            self.show_confirmation_popup = false;
+                            return;
+                        }
+                        Some(TokenPricingSchedule::SetPrices(map))
+                    }
+                };
 
                 ui.label(format!(
-                    "Are you sure you want to freeze identity {}?",
-                    self.freeze_identity_id
+                    "Are you sure you want to set the pricing schedule to \"{}\"?",
+                    self.token_pricing_schedule
                 ));
 
                 ui.add_space(10.0);
 
-                // Confirm
+                // Confirm button
                 if ui.button("Confirm").clicked() {
                     self.show_confirmation_popup = false;
                     let now = SystemTime::now()
                         .duration_since(UNIX_EPOCH)
                         .expect("Time went backwards")
                         .as_secs();
-                    self.status = FreezeTokensStatus::WaitingForResult(now);
+                    self.status = SetTokenPriceStatus::WaitingForResult(now);
 
-                    let data_contract = self
-                        .app_context
-                        .get_contracts(None, None)
-                        .expect("Contracts not loaded")
-                        .iter()
-                        .find(|c| {
-                            c.contract.id() == self.identity_token_info.data_contract.contract.id()
-                        })
-                        .expect("Data contract not found")
-                        .contract
-                        .clone();
+                    let group_info = self.group.as_ref().map(|(pos, _)| {
+                        GroupStateTransitionInfoStatus::GroupStateTransitionInfoProposer(*pos)
+                    });
 
-                    let group_info;
-                    if self.group_action_id.is_some() {
-                        group_info = self.group.as_ref().map(|(pos, _)| {
-                            GroupStateTransitionInfoStatus::GroupStateTransitionInfoOtherSigner(
-                                GroupStateTransitionInfo {
-                                    group_contract_position: *pos,
-                                    action_id: self.group_action_id.unwrap(),
-                                    action_is_proposer: false,
-                                },
-                            )
-                        });
-                    } else {
-                        group_info = self.group.as_ref().map(|(pos, _)| {
-                            GroupStateTransitionInfoStatus::GroupStateTransitionInfoProposer(*pos)
-                        });
-                    }
-
-                    // Dispatch to backend
-                    action =
-                        AppAction::BackendTask(BackendTask::TokenTask(TokenTask::FreezeTokens {
-                            actor_identity: self.identity.clone(),
-                            data_contract,
+                    // Dispatch the actual backend mint action
+                    action = AppAction::BackendTask(BackendTask::TokenTask(
+                        TokenTask::SetDirectPurchasePrice {
+                            identity: self.identity_token_info.identity.clone(),
+                            data_contract: self.identity_token_info.data_contract.contract.clone(),
                             token_position: self.identity_token_info.token_position,
-                            signing_key: self.selected_key.clone().expect("No key selected"),
+                            signing_key: self.selected_key.clone().expect("Expected a key"),
                             public_note: self.public_note.clone(),
-                            freeze_identity: freeze_id,
+                            token_pricing_schedule: token_pricing_schedule_opt,
                             group_info,
-                        }));
+                        },
+                    ));
                 }
 
-                // Cancel
+                // Cancel button
                 if ui.button("Cancel").clicked() {
                     self.show_confirmation_popup = false;
                 }
@@ -341,28 +357,19 @@ impl FreezeTokensScreen {
         action
     }
 
-    /// Success screen
+    /// Renders a simple "Success!" screen after completion
     fn show_success_screen(&self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
         ui.vertical_centered(|ui| {
             ui.add_space(50.0);
 
             ui.heading("🎉");
-            if self.group_action_id.is_some() {
-                ui.label("Group Freeze Signing Successful.");
-            } else {
-                ui.heading("Freeze Successful.");
-            }
+            ui.heading("Set Token Pricing Schedule Successful!");
 
             ui.add_space(20.0);
 
-            let button_text;
-            if self.group_action_id.is_some() {
-                button_text = "Back to Group Actions";
-            } else {
-                button_text = "Back to Tokens";
-            }
-            if ui.button(button_text).clicked() {
+            if ui.button("Back to Tokens").clicked() {
+                // Pop this screen and refresh
                 action = AppAction::PopScreenAndRefresh;
             }
         });
@@ -370,62 +377,50 @@ impl FreezeTokensScreen {
     }
 }
 
-impl ScreenLike for FreezeTokensScreen {
+impl ScreenLike for SetTokenPriceScreen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
         match message_type {
             MessageType::Success => {
-                // Possibly check the exact message used in your backend
-                if message.contains("Successfully froze identity") || message == "FreezeTokens" {
-                    self.status = FreezeTokensStatus::Complete;
+                if message.contains("Successfully set token pricing schedule")
+                    || message == "SetDirectPurchasePrice"
+                {
+                    self.status = SetTokenPriceStatus::Complete;
                 }
             }
             MessageType::Error => {
-                self.status = FreezeTokensStatus::ErrorMessage(message.to_string());
+                self.status = SetTokenPriceStatus::ErrorMessage(message.to_string());
                 self.error_message = Some(message.to_string());
             }
-            MessageType::Info => {}
+            MessageType::Info => {
+                // no-op
+            }
         }
     }
 
     fn refresh(&mut self) {
-        // Reload identity if needed
+        // If you need to reload local identity data or re-check keys:
         if let Ok(all_identities) = self.app_context.load_local_qualified_identities() {
             if let Some(updated_identity) = all_identities
                 .into_iter()
-                .find(|id| id.identity.id() == self.identity.identity.id())
+                .find(|id| id.identity.id() == self.identity_token_info.identity.identity.id())
             {
-                self.identity = updated_identity;
+                self.identity_token_info.identity = updated_identity;
             }
         }
     }
 
     fn ui(&mut self, ctx: &Context) -> AppAction {
-        let mut action;
-
         // Build a top panel
-        if self.group_action_id.is_some() {
-            action = add_top_panel(
-                ctx,
-                &self.app_context,
-                vec![
-                    ("Contracts", AppAction::GoToMainScreen),
-                    ("Group Actions", AppAction::PopScreen),
-                    ("Freeze", AppAction::None),
-                ],
-                vec![],
-            );
-        } else {
-            action = add_top_panel(
-                ctx,
-                &self.app_context,
-                vec![
-                    ("Tokens", AppAction::GoToMainScreen),
-                    (&self.identity_token_info.token_alias, AppAction::PopScreen),
-                    ("Freeze", AppAction::None),
-                ],
-                vec![],
-            );
-        }
+        let mut action = add_top_panel(
+            ctx,
+            &self.app_context,
+            vec![
+                ("Tokens", AppAction::GoToMainScreen),
+                (&self.identity_token_info.token_alias, AppAction::PopScreen),
+                ("SetPrice", AppAction::None),
+            ],
+            vec![],
+        );
 
         // Left panel
         action |= add_left_panel(
@@ -438,38 +433,38 @@ impl ScreenLike for FreezeTokensScreen {
         action |= add_tokens_subscreen_chooser_panel(ctx, &self.app_context);
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            if self.status == FreezeTokensStatus::Complete {
+            // If we are in the "Complete" status, just show success screen
+            if self.status == SetTokenPriceStatus::Complete {
                 action = self.show_success_screen(ui);
                 return;
             }
 
-            ui.heading("Freeze Identity’s Tokens");
+            ui.heading("Set Token Pricing Schedule");
             ui.add_space(10.0);
 
             // Check if user has any auth keys
             let has_keys = if self.app_context.developer_mode {
-                !self.identity.identity.public_keys().is_empty()
+                !self.identity_token_info.identity.identity.public_keys().is_empty()
             } else {
-                !self
-                    .identity
-                    .available_authentication_keys_with_critical_security_level()
-                    .is_empty()
+                !self.identity_token_info.identity.available_authentication_keys_with_critical_security_level().is_empty()
             };
 
             if !has_keys {
                 ui.colored_label(
-                    Color32::RED,
+                    Color32::DARK_RED,
                     format!(
                         "No authentication keys found for this {} identity.",
-                        self.identity.identity_type,
+                        self.identity_token_info.identity.identity_type,
                     ),
                 );
                 ui.add_space(10.0);
 
                 // Show "Add key" or "Check keys" option
-                let first_key = self.identity.identity.get_first_public_key_matching(
+                let first_key = self.identity_token_info.identity.identity.get_first_public_key_matching(
                     Purpose::AUTHENTICATION,
-                    HashSet::from([SecurityLevel::CRITICAL]),
+                    HashSet::from([
+                        SecurityLevel::CRITICAL,
+                    ]),
                     KeyType::all_key_types().into(),
                     false,
                 );
@@ -477,7 +472,7 @@ impl ScreenLike for FreezeTokensScreen {
                 if let Some(key) = first_key {
                     if ui.button("Check Keys").clicked() {
                         action |= AppAction::AddScreen(Screen::KeyInfoScreen(KeyInfoScreen::new(
-                            self.identity.clone(),
+                            self.identity_token_info.identity.clone(),
                             key.clone(),
                             None,
                             &self.app_context,
@@ -488,30 +483,30 @@ impl ScreenLike for FreezeTokensScreen {
 
                 if ui.button("Add key").clicked() {
                     action |= AppAction::AddScreen(Screen::AddKeyScreen(AddKeyScreen::new(
-                        self.identity.clone(),
+                        self.identity_token_info.identity.clone(),
                         &self.app_context,
                     )));
                 }
             } else {
-                // Possibly handle locked wallet scenario
+                // Possibly handle locked wallet scenario (similar to TransferTokens)
                 if self.selected_wallet.is_some() {
                     let (needed_unlock, just_unlocked) = self.render_wallet_unlock_if_needed(ui);
 
                     if needed_unlock && !just_unlocked {
+                        // Must unlock before we can proceed
                         return;
                     }
                 }
 
                 // 1) Key selection
-                ui.heading("1. Select the key to sign the Freeze transition");
+                ui.heading("1. Select the key to sign the SetPrice transaction");
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {
                     self.render_key_selection(ui);
                     ui.add_space(5.0);
                     let identity_id_string =
-                        self.identity.identity.id().to_string(Encoding::Base58);
-                    let identity_display = self
-                        .identity
+                        self.identity_token_info.identity.identity.id().to_string(Encoding::Base58);
+                    let identity_display = self.identity_token_info.identity
                         .alias
                         .as_deref()
                         .unwrap_or_else(|| &identity_id_string);
@@ -522,21 +517,10 @@ impl ScreenLike for FreezeTokensScreen {
                 ui.separator();
                 ui.add_space(10.0);
 
-                // 2) Identity to freeze
-                ui.heading("2. Enter the identity ID to freeze");
+                // 2) Pricing schedule
+                ui.heading("2. Pricing schedule");
                 ui.add_space(5.0);
-                if self.group_action_id.is_some() {
-                    ui.label(
-                        "You are signing an existing group Freeze so you are not allowed to choose the identity.",
-                    );
-                    ui.add_space(5.0);
-                    ui.label(format!(
-                        "Identity: {}",
-                        self.freeze_identity_id
-                    ));
-                } else {
-                    self.render_freeze_identity_input(ui);
-                }
+                self.render_pricing_input(ui);
 
                 ui.add_space(10.0);
                 ui.separator();
@@ -556,31 +540,50 @@ impl ScreenLike for FreezeTokensScreen {
                         )
                         .changed()
                     {
-                        self.public_note = if txt.len() > 0 {
-                            Some(txt)
-                        } else {
-                            None
-                        };
+                        self.public_note = Some(txt);
                     }
                 });
+                ui.add_space(10.0);
 
-                let button_text =
-                    render_group_action_text(ui, &self.group, &self.identity_token_info, "Freeze", &self.group_action_id);
-
-                // Freeze button
-                if self.app_context.developer_mode || !button_text.contains("Test") {
-                    ui.add_space(10.0);
-                    let button =
-                        egui::Button::new(RichText::new(button_text).color(Color32::WHITE))
-                            .fill(Color32::from_rgb(0, 128, 255))
-                            .corner_radius(3.0);
-
-                    if ui.add(button).clicked() {
-                        self.show_confirmation_popup = true;
+                let set_price_text = if let Some((_, group)) = self.group.as_ref() {
+                    let your_power = group.members().get(&self.identity_token_info.identity.identity.id());
+                    if your_power.is_none() {
+                        self.error_message = Some("Only group members can set price on this token".to_string());
                     }
+                    ui.heading("This is a group action, it is not immediate.");
+                    ui.label(format!("Members are : \n{}", group.members().iter().map(|(member, power)| {
+                        if member == &self.identity_token_info.identity.identity.id() {
+                            format!("{} (You) with power {}", member, power)
+                        } else {
+                            format!("{} with power {}", member, power)
+                        }
+                    }).collect::<Vec<_>>().join(", \n")));
+                    ui.add_space(10.0);
+                    if let Some(your_power) = your_power {
+                        if *your_power >= group.required_power() {
+                            ui.label(format!("Even though this is a group action, you are able to unilaterally approve it because your power ({}) in the group exceeds the required amount : {}", *your_power,  group.required_power()));
+                            "Set Price"
+                        } else {
+                            ui.label(format!("You will need at least {} voting power for this action to go through. Contact other group members to let them know to authorize this action after you have initiated it.", group.required_power()));
+                            "Initiate Group SetPrice"
+                        }
+                    } else {
+                        "Test SetPrice (It should fail)"
+                    }
+                } else {
+                    "Set Price"
+                };
+
+                // Set price button
+                let button = egui::Button::new(RichText::new(set_price_text).color(Color32::WHITE))
+                    .fill(Color32::from_rgb(0, 128, 255))
+                    .corner_radius(3.0);
+
+                if ui.add(button).clicked() {
+                    self.show_confirmation_popup = true;
                 }
 
-                // If user pressed "Freeze," show popup
+                // If the user pressed "Set Price," show a popup
                 if self.show_confirmation_popup {
                     action |= self.show_confirmation_popup(ui);
                 }
@@ -588,21 +591,21 @@ impl ScreenLike for FreezeTokensScreen {
                 // Show in-progress or error messages
                 ui.add_space(10.0);
                 match &self.status {
-                    FreezeTokensStatus::NotStarted => {
+                    SetTokenPriceStatus::NotStarted => {
                         // no-op
                     }
-                    FreezeTokensStatus::WaitingForResult(start_time) => {
+                    SetTokenPriceStatus::WaitingForResult(start_time) => {
                         let now = SystemTime::now()
                             .duration_since(UNIX_EPOCH)
                             .expect("Time went backwards")
                             .as_secs();
                         let elapsed = now - start_time;
-                        ui.label(format!("Freezing... elapsed: {}s", elapsed));
+                        ui.label(format!("Setting price... elapsed: {} seconds", elapsed));
                     }
-                    FreezeTokensStatus::ErrorMessage(msg) => {
-                        ui.colored_label(Color32::RED, format!("Error: {}", msg));
+                    SetTokenPriceStatus::ErrorMessage(msg) => {
+                        ui.colored_label(Color32::DARK_RED, format!("Error: {}", msg));
                     }
-                    FreezeTokensStatus::Complete => {
+                    SetTokenPriceStatus::Complete => {
                         // handled above
                     }
                 }
@@ -613,7 +616,7 @@ impl ScreenLike for FreezeTokensScreen {
     }
 }
 
-impl ScreenWithWalletUnlock for FreezeTokensScreen {
+impl ScreenWithWalletUnlock for SetTokenPriceScreen {
     fn selected_wallet_ref(&self) -> &Option<Arc<RwLock<Wallet>>> {
         &self.selected_wallet
     }

@@ -162,7 +162,7 @@ impl SetTokenPriceScreen {
         );
 
         Self {
-            identity_token_info,
+            identity_token_info: identity_token_info.clone(),
             selected_key: possible_key.cloned(),
             public_note: None,
             group,

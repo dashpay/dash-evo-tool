@@ -174,7 +174,7 @@ impl FreezeTokensScreen {
             public_note: None,
             freeze_identity_id: String::new(),
             status: FreezeTokensStatus::NotStarted,
-            error_message: None,
+            error_message,
             app_context: app_context.clone(),
             show_confirmation_popup: false,
             selected_wallet,

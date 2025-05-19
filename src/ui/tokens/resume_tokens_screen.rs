@@ -168,7 +168,7 @@ impl ResumeTokensScreen {
             group_action_id: None,
             public_note: None,
             status: ResumeTokensStatus::NotStarted,
-            error_message: None,
+            error_message,
             app_context: app_context.clone(),
             show_confirmation_popup: false,
             selected_wallet,

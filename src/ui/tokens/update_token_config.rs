@@ -185,7 +185,7 @@ impl UpdateTokenConfigScreen {
             selected_wallet,
             wallet_password: String::new(),
             show_password: false,
-            error_message: None, // unused
+            error_message,
 
             identity: identity_token_info.identity,
             group,

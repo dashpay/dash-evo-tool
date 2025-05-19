@@ -170,7 +170,7 @@ impl MintTokensScreen {
             recipient_identity_id: "".to_string(),
             amount_to_mint: "".to_string(),
             status: MintTokensStatus::NotStarted,
-            error_message: None,
+            error_message,
             app_context: app_context.clone(),
             show_confirmation_popup: false,
             selected_wallet,

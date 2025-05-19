@@ -182,7 +182,7 @@ impl DestroyFrozenFundsScreen {
             group_action_id: None,
             public_note: None,
             status: DestroyFrozenFundsStatus::NotStarted,
-            error_message: None,
+            error_message,
             app_context: app_context.clone(),
             show_confirmation_popup: false,
             selected_wallet,

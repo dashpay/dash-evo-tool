@@ -201,9 +201,9 @@ impl GroupActionsScreen {
                                                 format!("{} to {}", amount, identifier),
                                                 format!("{}", note_opt.clone().unwrap_or_default()),
                                             ),
-                                            TokenEvent::Burn(amount, note_opt) => (
+                                            TokenEvent::Burn(amount, burn_from, note_opt) => (
                                                 "Burn",
-                                                format!("{}", amount),
+                                                format!("{} from {}", amount, burn_from),
                                                 format!("{}", note_opt.clone().unwrap_or_default()),
                                             ),
                                             TokenEvent::Freeze(identifier, note_opt) => (

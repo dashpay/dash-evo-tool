@@ -61,7 +61,6 @@ impl AppContext {
             identity_token_balance.token_position,
             identity_token_balance.identity_id,
             change_item.clone(),
-            None,
         );
 
         // Add the optional public note

@@ -1766,8 +1766,6 @@ impl TokensScreen {
         //     self.sort_vec(&mut detail_list);
         // }
 
-        // This is basically your old `render_table_my_token_balances` logic, but
-        // limited to just the single token.
         // Allocate space for refreshing indicator
         let refreshing_height = 33.0;
         let mut max_scroll_height = if let RefreshingStatus::Refreshing(_) = self.refreshing_status

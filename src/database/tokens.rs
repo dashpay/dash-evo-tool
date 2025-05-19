@@ -1,6 +1,7 @@
 use bincode::{self, config::standard};
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::data_contract::TokenConfiguration;
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::platform::Identifier;
 use dash_sdk::query_types::IndexMap;
 use rusqlite::params;
@@ -121,6 +122,12 @@ impl Database {
                 network
             ],
         )?;
+
+        // Insert an identity token balance of 0 for each identity for this token
+        let wallets = app_context.wallets.read().unwrap();
+        for identity in self.get_local_qualified_identities(app_context, &wallets)? {
+            self.insert_identity_token_balance(&token_id, &identity.identity.id(), 0, app_context)?;
+        }
 
         Ok(())
     }

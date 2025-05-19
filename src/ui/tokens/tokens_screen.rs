@@ -4888,9 +4888,13 @@ Emits tokens in fixed amounts for specific intervals.
 
         self.display_message("Added token", MessageType::Success);
 
-        AppAction::BackendTask(BackendTask::TokenTask(TokenTask::SaveTokenLocally(
-            token_info,
-        )))
+        AppAction::BackendTasks(
+            vec![
+                BackendTask::TokenTask(TokenTask::SaveTokenLocally(token_info)),
+                BackendTask::TokenTask(TokenTask::QueryMyTokenBalances),
+            ],
+            BackendTasksExecutionMode::Sequential,
+        )
     }
 
     fn goto_next_search_page(&mut self) -> AppAction {

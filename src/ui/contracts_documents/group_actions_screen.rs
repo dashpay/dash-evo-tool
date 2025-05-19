@@ -86,7 +86,10 @@ impl GroupActionsScreen {
     pub fn new(app_context: &Arc<AppContext>) -> Self {
         let qualified_identities = app_context
             .load_local_qualified_identities()
-            .expect("Failed to load identities");
+            .unwrap_or_else(|_| {
+                tracing::info!("Failed to load local qualified identities");
+                vec![]
+            });
 
         let contracts_with_group_actions = app_context.db.get_contracts(app_context, None, None).unwrap_or_default().into_iter().filter_map(|qualified_contract| {
             let tokens = qualified_contract.contract.tokens().clone().into_iter().filter_map(|(pos, token_config)| {
@@ -119,9 +122,13 @@ impl GroupActionsScreen {
             }
         }).collect();
 
-        let identity_token_balances = app_context
-            .identity_token_balances()
-            .expect("Failed to load identity token balances");
+        let identity_token_balances = match app_context.identity_token_balances() {
+            Ok(identity_token_balances) => identity_token_balances,
+            Err(e) => {
+                tracing::error!("Failed to load identity token balances: {}", e);
+                IndexMap::new()
+            }
+        };
 
         Self {
             // Contract and identity selectors
@@ -141,7 +148,7 @@ impl GroupActionsScreen {
     }
 
     fn render_group_actions(
-        &self,
+        &mut self,
         ui: &mut egui::Ui,
         group_actions: &IndexMap<Identifier, GroupAction>,
     ) -> AppAction {
@@ -312,8 +319,8 @@ impl GroupActionsScreen {
                                                 .token_contract_position()
                                                 .clone(),
                                         };
-                                        let token_id = self.selected_contract.clone().expect("No contract selected").contract.token_id(token_contract_position).expect("No token ID found");
-                                        let identity_token_balance = self
+                                        let token_id = self.selected_contract.clone().expect("No contract selected").contract.token_id(token_contract_position).expect("No token ID found at the given position");
+                                        let identity_token_balance = match self
                                             .identity_token_balances
                                             .get(&IdentityTokenIdentifier {
                                                 token_id,
@@ -323,9 +330,26 @@ impl GroupActionsScreen {
                                                     .identity
                                                     .id()
                                             })
-                                            .cloned()
-                                            .expect("Failed to get identity token balance");
-                                        let identity_token_info = IdentityTokenInfo::try_from_identity_token_balance_with_lookup(&identity_token_balance, &self.app_context).expect("Failed to convert identity token balance");
+                                            .cloned() {
+                                            Some(identity_token_balance) => identity_token_balance,
+                                            None => {
+                                                self.fetch_group_actions_status =
+                                                    FetchGroupActionsStatus::ErrorMessage(
+                                                        "No identity token balance found".to_string(),
+                                                    );
+                                                return;
+                                            }
+                                        };
+                                        let identity_token_info = match IdentityTokenInfo::try_from_identity_token_balance_with_lookup(&identity_token_balance, &self.app_context) {
+                                            Ok(identity_token_info) => identity_token_info,
+                                            Err(e) => {
+                                                self.fetch_group_actions_status =
+                                                    FetchGroupActionsStatus::ErrorMessage(
+                                                        format!("Failed to get identity token info: {}", e),
+                                                    );
+                                                return;
+                                            }
+                                        };
                                         match typ {
                                             "Mint" => {
                                                 let mut mint_screen =
@@ -613,10 +637,11 @@ impl ScreenLike for GroupActionsScreen {
             if let FetchGroupActionsStatus::Complete(group_actions) =
                 &self.fetch_group_actions_status
             {
+                let group_actions = group_actions.clone();
                 ui.add_space(10.0);
                 ui.separator();
                 ui.add_space(10.0);
-                action |= self.render_group_actions(ui, group_actions);
+                action |= self.render_group_actions(ui, &group_actions);
             }
         });
 

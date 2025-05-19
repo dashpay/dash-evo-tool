@@ -2,9 +2,7 @@ use super::BackendTaskSuccessResult;
 use crate::context::AppContext;
 use crate::model::proof_log_item::{ProofLogItem, RequestType};
 use crate::ui::tokens::tokens_screen::IdentityTokenBalance;
-use dash_sdk::dpp::state_transition::batch_transition::methods::StateTransitionCreationOptions;
 use dash_sdk::dpp::state_transition::proof_result::StateTransitionProofResult;
-use dash_sdk::dpp::state_transition::StateTransitionSigningOptions;
 use dash_sdk::platform::transition::broadcast::BroadcastStateTransition;
 use dash_sdk::platform::{DataContract, Fetch, IdentityPublicKey};
 use dash_sdk::{
@@ -62,7 +60,6 @@ impl AppContext {
             identity_token_balance.token_position,
             identity_token_balance.identity_id,
             change_item.clone(),
-            None,
         );
 
         // Add the optional public note

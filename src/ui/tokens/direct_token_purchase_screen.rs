@@ -64,11 +64,7 @@ impl PurchaseTokenScreen {
             .identity
             .get_first_public_key_matching(
                 Purpose::AUTHENTICATION,
-                HashSet::from([
-                    SecurityLevel::HIGH,
-                    SecurityLevel::MEDIUM,
-                    SecurityLevel::CRITICAL,
-                ]),
+                HashSet::from([SecurityLevel::CRITICAL]),
                 KeyType::all_key_types().into(),
                 false,
             )
@@ -217,7 +213,7 @@ impl PurchaseTokenScreen {
                     action = AppAction::BackendTasks(
                         vec![
                             BackendTask::TokenTask(TokenTask::PurchaseTokens {
-                                sending_identity: self.identity_token_info.identity.clone(),
+                                identity: self.identity_token_info.identity.clone(),
                                 data_contract: self
                                     .identity_token_info
                                     .data_contract
@@ -364,11 +360,7 @@ impl ScreenLike for PurchaseTokenScreen {
                     .identity
                     .get_first_public_key_matching(
                         Purpose::AUTHENTICATION,
-                        HashSet::from([
-                            SecurityLevel::HIGH,
-                            SecurityLevel::MEDIUM,
-                            SecurityLevel::CRITICAL,
-                        ]),
+                        HashSet::from([SecurityLevel::CRITICAL]),
                         KeyType::all_key_types().into(),
                         false,
                     );

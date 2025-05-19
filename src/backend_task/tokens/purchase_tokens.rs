@@ -2,52 +2,38 @@ use crate::app::TaskResult;
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
-use dash_sdk::dpp::group::GroupStateTransitionInfoStatus;
+use dash_sdk::dpp::balances::credits::TokenAmount;
+use dash_sdk::dpp::fee::Credits;
 
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::state_transition::proof_result::StateTransitionProofResult;
 use dash_sdk::platform::transition::broadcast::BroadcastStateTransition;
-use dash_sdk::platform::transition::fungible_tokens::mint::TokenMintTransitionBuilder;
-use dash_sdk::platform::{DataContract, Identifier, IdentityPublicKey};
+use dash_sdk::platform::transition::fungible_tokens::purchase::TokenDirectPurchaseTransitionBuilder;
+use dash_sdk::platform::{DataContract, IdentityPublicKey};
 use dash_sdk::{Error, Sdk};
 
 use crate::model::proof_log_item::{ProofLogItem, RequestType};
 use tokio::sync::mpsc;
 
 impl AppContext {
-    pub async fn mint_tokens(
+    pub async fn purchase_tokens(
         &self,
         sending_identity: &QualifiedIdentity,
         data_contract: &DataContract,
         token_position: u16,
         signing_key: IdentityPublicKey,
-        public_note: Option<String>,
-        amount: u64,
-        optional_recipient: Option<Identifier>,
-        group_info: Option<GroupStateTransitionInfoStatus>,
+        amount: TokenAmount,
+        total_agreed_price: Credits,
         sdk: &Sdk,
         _sender: mpsc::Sender<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, String> {
-        let builder = TokenMintTransitionBuilder::new(
+        let builder = TokenDirectPurchaseTransitionBuilder::new(
             data_contract,
             token_position,
             sending_identity.identity.id(),
             amount,
+            total_agreed_price,
         );
-
-        let mut builder = if let Some(recipient_id) = optional_recipient {
-            builder.issued_to_identity_id(recipient_id)
-        } else {
-            builder
-        };
-
-        if let Some(note) = public_note {
-            builder = builder.with_public_note(note);
-        }
-
-        if let Some(group_info) = group_info {
-            builder = builder.with_using_group_info(group_info);
-        }
 
         let options = self.state_transition_options();
 
@@ -62,7 +48,7 @@ impl AppContext {
             .await
             .map_err(|e| {
                 format!(
-                    "Error signing Mint Tokens state transition: {}",
+                    "Error signing Purchase Tokens state transition: {}",
                     e.to_string()
                 )
             })?;
@@ -85,14 +71,16 @@ impl AppContext {
                         })
                         .ok();
                     format!(
-                        "Error broadcasting Mint Tokens transition: {}, proof error logged",
+                        "Error broadcasting Purchase Tokens transition: {}, proof error logged",
                         proof_error
                     )
                 }
-                e => format!("Error broadcasting Mint Tokens transition: {}", e),
+                e => format!("Error broadcasting Purchase Tokens transition: {}", e),
             })?;
 
         // Return success
-        Ok(BackendTaskSuccessResult::Message("MintTokens".to_string()))
+        Ok(BackendTaskSuccessResult::Message(
+            "PurchaseTokens".to_string(),
+        ))
     }
 }

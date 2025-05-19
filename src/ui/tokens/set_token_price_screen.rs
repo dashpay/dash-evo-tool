@@ -10,11 +10,12 @@ use dash_sdk::dpp::data_contract::change_control_rules::authorized_action_takers
 use dash_sdk::dpp::data_contract::group::accessors::v0::GroupV0Getters;
 use dash_sdk::dpp::data_contract::group::Group;
 use dash_sdk::dpp::data_contract::GroupContractPosition;
+use dash_sdk::dpp::tokens::token_pricing_schedule::TokenPricingSchedule;
 use eframe::egui::{self, Color32, Context, Ui};
 use egui::RichText;
 
 use super::tokens_screen::IdentityTokenInfo;
-use crate::app::{AppAction, BackendTasksExecutionMode};
+use crate::app::AppAction;
 use crate::backend_task::tokens::TokenTask;
 use crate::backend_task::BackendTask;
 use crate::context::AppContext;
@@ -32,11 +33,11 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
-use dash_sdk::platform::{Identifier, IdentityPublicKey};
+use dash_sdk::platform::IdentityPublicKey;
 
 /// Internal states for the mint process.
 #[derive(PartialEq)]
-pub enum MintTokensStatus {
+pub enum SetTokenPriceStatus {
     NotStarted,
     WaitingForResult(u64), // Use seconds or millis
     ErrorMessage(String),
@@ -44,16 +45,14 @@ pub enum MintTokensStatus {
 }
 
 /// A UI Screen for minting tokens from an existing token contract
-pub struct MintTokensScreen {
+pub struct SetTokenPriceScreen {
     pub identity_token_info: IdentityTokenInfo,
     selected_key: Option<IdentityPublicKey>,
     public_note: Option<String>,
     group: Option<(GroupContractPosition, Group)>,
 
-    recipient_identity_id: String,
-
-    amount_to_mint: String,
-    status: MintTokensStatus,
+    token_pricing_schedule: String,
+    status: SetTokenPriceStatus,
     error_message: Option<String>,
 
     /// Basic references
@@ -68,7 +67,7 @@ pub struct MintTokensScreen {
     show_password: bool,
 }
 
-impl MintTokensScreen {
+impl SetTokenPriceScreen {
     pub fn new(identity_token_info: IdentityTokenInfo, app_context: &Arc<AppContext>) -> Self {
         let possible_key = identity_token_info
             .identity
@@ -78,18 +77,19 @@ impl MintTokensScreen {
                 HashSet::from([SecurityLevel::CRITICAL]),
                 KeyType::all_key_types().into(),
                 false,
-            )
-            .cloned();
+            );
 
         let mut error_message = None;
 
         let group = match identity_token_info
             .token_config
-            .manual_minting_rules()
+            .distribution_rules()
+            .change_direct_purchase_pricing_rules()
             .authorized_to_make_change_action_takers()
         {
             AuthorizedActionTakers::NoOne => {
-                error_message = Some("Minting is not allowed on this token".to_string());
+                error_message =
+                    Some("Setting token price is not allowed on this token".to_string());
                 None
             }
             AuthorizedActionTakers::ContractOwner => {
@@ -97,7 +97,7 @@ impl MintTokensScreen {
                     != &identity_token_info.identity.identity.id()
                 {
                     error_message = Some(
-                        "You are not allowed to mint on this token. Only the contract owner is."
+                        "You are not allowed to set token price on this token. Only the contract owner is."
                             .to_string(),
                     );
                 }
@@ -105,7 +105,8 @@ impl MintTokensScreen {
             }
             AuthorizedActionTakers::Identity(identifier) => {
                 if identifier != &identity_token_info.identity.identity.id() {
-                    error_message = Some("You are not allowed to mint on this token".to_string());
+                    error_message =
+                        Some("You are not allowed to set token price on this token".to_string());
                 }
                 None
             }
@@ -152,18 +153,17 @@ impl MintTokensScreen {
         let selected_wallet = get_selected_wallet(
             &identity_token_info.identity,
             None,
-            possible_key.as_ref(),
+            possible_key,
             &mut error_message,
         );
 
         Self {
-            identity_token_info,
-            selected_key: possible_key,
+            identity_token_info: identity_token_info.clone(),
+            selected_key: possible_key.cloned(),
             public_note: None,
             group,
-            recipient_identity_id: "".to_string(),
-            amount_to_mint: "".to_string(),
-            status: MintTokensStatus::NotStarted,
+            token_pricing_schedule: "".to_string(),
+            status: SetTokenPriceStatus::NotStarted,
             error_message: None,
             app_context: app_context.clone(),
             show_confirmation_popup: false,
@@ -177,7 +177,7 @@ impl MintTokensScreen {
     fn render_key_selection(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
             ui.label("Select Key:");
-            egui::ComboBox::from_id_salt("mint_key_selector")
+            egui::ComboBox::from_id_salt("set_price_key_selector")
                 .selected_text(match &self.selected_key {
                     Some(key) => format!("Key ID: {}", key.id()),
                     None => "Select a key".to_string(),
@@ -237,76 +237,84 @@ impl MintTokensScreen {
     }
 
     /// Renders a text input for the user to specify an amount to mint
-    fn render_amount_input(&mut self, ui: &mut Ui) {
+    fn render_pricing_input(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
-            ui.label("Amount to Mint:");
-            ui.text_edit_singleline(&mut self.amount_to_mint);
-
-            // Since it's minting, we often don't do "Max."
-            // But you could show a help text or put constraints if needed.
+            ui.label("Token pricing schedule:");
+            ui.text_edit_singleline(&mut self.token_pricing_schedule);
         });
-    }
-
-    /// Renders an optional text input for the user to specify a "Recipient Identity"
-    fn render_recipient_input(&mut self, ui: &mut Ui) {
-        ui.horizontal(|ui| {
-            ui.label("Recipient:");
-            ui.text_edit_singleline(&mut self.recipient_identity_id);
-        });
-
-        // If empty, minted tokens go to the 'issuer' identity (self.identity).
     }
 
     /// Renders a confirm popup with the final "Are you sure?" step
     fn show_confirmation_popup(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
         let mut is_open = true;
-        egui::Window::new("Confirm Mint")
+        egui::Window::new("Confirm SetPricingSchedule")
             .collapsible(false)
             .open(&mut is_open)
             .show(ui.ctx(), |ui| {
                 // Validate user input
-                let amount_ok = self.amount_to_mint.parse::<u64>().ok();
-                if amount_ok.is_none() {
-                    self.error_message = Some("Please enter a valid amount.".into());
-                    self.status = MintTokensStatus::ErrorMessage("Invalid amount".into());
-                    self.show_confirmation_popup = false;
-                    return;
-                }
-
-                let maybe_identifier = if self.recipient_identity_id.trim().is_empty() {
+                let token_pricing_schedule_opt = if self.token_pricing_schedule.trim().is_empty() {
                     None
                 } else {
-                    // Attempt to parse from base58 or hex
-                    match Identifier::from_string_try_encodings(
-                        &self.recipient_identity_id,
-                        &[Encoding::Base58, Encoding::Hex],
-                    ) {
-                        Ok(id) => Some(id),
-                        Err(_) => {
-                            self.error_message = Some("Invalid recipient identity format.".into());
-                            self.status =
-                                MintTokensStatus::ErrorMessage("Invalid recipient identity".into());
+                    // Try to parse as a single price (u64)
+                    if let Ok(single_price) = self.token_pricing_schedule.trim().parse::<u64>() {
+                        Some(TokenPricingSchedule::SinglePrice(single_price))
+                    } else {
+                        // Try to parse as a tiered pricing schedule: "amount1:price1,amount2:price2"
+                        let mut map = std::collections::BTreeMap::new();
+                        let mut parse_error = None;
+                        for pair in self.token_pricing_schedule.trim().split(',') {
+                            let parts: Vec<_> = pair.split(':').collect();
+                            if parts.len() != 2 {
+                                parse_error = Some(format!(
+                                    "Invalid pair '{}', expected format amount:price",
+                                    pair
+                                ));
+                                break;
+                            }
+                            let amount = match parts[0].trim().parse::<u64>() {
+                                Ok(a) => a,
+                                Err(_) => {
+                                    parse_error =
+                                        Some(format!("Invalid amount '{}'", parts[0].trim()));
+                                    break;
+                                }
+                            };
+                            let price = match parts[1].trim().parse::<u64>() {
+                                Ok(p) => p,
+                                Err(_) => {
+                                    parse_error =
+                                        Some(format!("Invalid price '{}'", parts[1].trim()));
+                                    break;
+                                }
+                            };
+                            map.insert(amount, price);
+                        }
+                        if let Some(e) = parse_error {
+                            self.error_message = Some(format!("Invalid pricing schedule: {}", e));
+                            self.status = SetTokenPriceStatus::ErrorMessage(
+                                "Invalid pricing schedule".into(),
+                            );
                             self.show_confirmation_popup = false;
                             return;
                         }
+                        if map.is_empty() {
+                            self.error_message =
+                                Some("Pricing schedule cannot be empty".to_string());
+                            self.status = SetTokenPriceStatus::ErrorMessage(
+                                "Invalid pricing schedule".into(),
+                            );
+                            self.show_confirmation_popup = false;
+                            return;
+                        }
+                        Some(TokenPricingSchedule::SetPrices(map))
                     }
                 };
 
                 ui.label(format!(
-                    "Are you sure you want to mint {} token(s)?",
-                    self.amount_to_mint
+                    "Are you sure you want to set the pricing schedule to \"{}\"?",
+                    self.token_pricing_schedule
                 ));
-
-                // If user provided a recipient:
-                if let Some(ref recipient_id) = maybe_identifier {
-                    ui.label(format!(
-                        "Recipient: {}",
-                        recipient_id.to_string(Encoding::Base58)
-                    ));
-                } else {
-                    ui.label("No recipient specified; tokens will be minted to default identity.");
-                }
 
                 ui.add_space(10.0);
 
@@ -317,33 +325,24 @@ impl MintTokensScreen {
                         .duration_since(UNIX_EPOCH)
                         .expect("Time went backwards")
                         .as_secs();
-                    self.status = MintTokensStatus::WaitingForResult(now);
+                    self.status = SetTokenPriceStatus::WaitingForResult(now);
 
                     let group_info = self.group.as_ref().map(|(pos, _)| {
                         GroupStateTransitionInfoStatus::GroupStateTransitionInfoProposer(*pos)
                     });
 
                     // Dispatch the actual backend mint action
-                    action = AppAction::BackendTasks(
-                        vec![
-                            BackendTask::TokenTask(TokenTask::MintTokens {
-                                sending_identity: self.identity_token_info.identity.clone(),
-                                data_contract: self
-                                    .identity_token_info
-                                    .data_contract
-                                    .contract
-                                    .clone(),
-                                token_position: self.identity_token_info.token_position,
-                                signing_key: self.selected_key.clone().expect("Expected a key"),
-                                public_note: self.public_note.clone(),
-                                amount: amount_ok.unwrap(),
-                                recipient_id: maybe_identifier,
-                                group_info,
-                            }),
-                            BackendTask::TokenTask(TokenTask::QueryMyTokenBalances),
-                        ],
-                        BackendTasksExecutionMode::Sequential,
-                    );
+                    action = AppAction::BackendTask(BackendTask::TokenTask(
+                        TokenTask::SetDirectPurchasePrice {
+                            identity: self.identity_token_info.identity.clone(),
+                            data_contract: self.identity_token_info.data_contract.contract.clone(),
+                            token_position: self.identity_token_info.token_position,
+                            signing_key: self.selected_key.clone().expect("Expected a key"),
+                            public_note: self.public_note.clone(),
+                            token_pricing_schedule: token_pricing_schedule_opt,
+                            group_info,
+                        },
+                    ));
                 }
 
                 // Cancel button
@@ -365,7 +364,7 @@ impl MintTokensScreen {
             ui.add_space(50.0);
 
             ui.heading("🎉");
-            ui.heading("Mint Successful!");
+            ui.heading("Set Token Pricing Schedule Successful!");
 
             ui.add_space(20.0);
 
@@ -378,16 +377,18 @@ impl MintTokensScreen {
     }
 }
 
-impl ScreenLike for MintTokensScreen {
+impl ScreenLike for SetTokenPriceScreen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
         match message_type {
             MessageType::Success => {
-                if message.contains("Successfully minted tokens") || message == "MintTokens" {
-                    self.status = MintTokensStatus::Complete;
+                if message.contains("Successfully set token pricing schedule")
+                    || message == "SetDirectPurchasePrice"
+                {
+                    self.status = SetTokenPriceStatus::Complete;
                 }
             }
             MessageType::Error => {
-                self.status = MintTokensStatus::ErrorMessage(message.to_string());
+                self.status = SetTokenPriceStatus::ErrorMessage(message.to_string());
                 self.error_message = Some(message.to_string());
             }
             MessageType::Info => {
@@ -416,7 +417,7 @@ impl ScreenLike for MintTokensScreen {
             vec![
                 ("Tokens", AppAction::GoToMainScreen),
                 (&self.identity_token_info.token_alias, AppAction::PopScreen),
-                ("Mint", AppAction::None),
+                ("SetPrice", AppAction::None),
             ],
             vec![],
         );
@@ -433,12 +434,12 @@ impl ScreenLike for MintTokensScreen {
 
         egui::CentralPanel::default().show(ctx, |ui| {
             // If we are in the "Complete" status, just show success screen
-            if self.status == MintTokensStatus::Complete {
+            if self.status == SetTokenPriceStatus::Complete {
                 action = self.show_success_screen(ui);
                 return;
             }
 
-            ui.heading("Mint Tokens");
+            ui.heading("Set Token Pricing Schedule");
             ui.add_space(10.0);
 
             // Check if user has any auth keys
@@ -498,7 +499,7 @@ impl ScreenLike for MintTokensScreen {
                 }
 
                 // 1) Key selection
-                ui.heading("1. Select the key to sign the Mint transaction");
+                ui.heading("1. Select the key to sign the SetPrice transaction");
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {
                     self.render_key_selection(ui);
@@ -516,31 +517,17 @@ impl ScreenLike for MintTokensScreen {
                 ui.separator();
                 ui.add_space(10.0);
 
-                // 2) Amount to mint
-                ui.heading("2. Amount to mint");
+                // 2) Pricing schedule
+                ui.heading("2. Pricing schedule");
                 ui.add_space(5.0);
-                self.render_amount_input(ui);
-
-                ui.add_space(10.0);
-                ui.separator();
-                ui.add_space(10.0);
-
-                if self.identity_token_info.token_config.distribution_rules().minting_allow_choosing_destination() || self.app_context.developer_mode {
-                    if self.identity_token_info.token_config.distribution_rules().new_tokens_destination_identity().is_some() {
-                        ui.heading("3. Recipient identity (optional)");
-                    } else {
-                        ui.heading("3. Recipient identity (required)");
-                    }
-                    ui.add_space(5.0);
-                    self.render_recipient_input(ui);
-                }
+                self.render_pricing_input(ui);
 
                 ui.add_space(10.0);
                 ui.separator();
                 ui.add_space(10.0);
 
                 // Render text input for the public note
-                ui.heading("4. Public note (optional)");
+                ui.heading("3. Public note (optional)");
                 ui.add_space(5.0);
                 ui.horizontal(|ui| {
                     ui.label("Public note (optional):");
@@ -558,10 +545,10 @@ impl ScreenLike for MintTokensScreen {
                 });
                 ui.add_space(10.0);
 
-                let mint_text = if let Some((_, group)) = self.group.as_ref() {
+                let set_price_text = if let Some((_, group)) = self.group.as_ref() {
                     let your_power = group.members().get(&self.identity_token_info.identity.identity.id());
                     if your_power.is_none() {
-                        self.error_message = Some("Only group members can mint on this token".to_string());
+                        self.error_message = Some("Only group members can set price on this token".to_string());
                     }
                     ui.heading("This is a group action, it is not immediate.");
                     ui.label(format!("Members are : \n{}", group.members().iter().map(|(member, power)| {
@@ -575,20 +562,20 @@ impl ScreenLike for MintTokensScreen {
                     if let Some(your_power) = your_power {
                         if *your_power >= group.required_power() {
                             ui.label(format!("Even though this is a group action, you are able to unilaterally approve it because your power ({}) in the group exceeds the required amount : {}", *your_power,  group.required_power()));
-                            "Mint"
+                            "Set Price"
                         } else {
                             ui.label(format!("You will need at least {} voting power for this action to go through. Contact other group members to let them know to authorize this action after you have initiated it.", group.required_power()));
-                            "Initiate Group Mint"
+                            "Initiate Group SetPrice"
                         }
                     } else {
-                        "Test Mint (It should fail)"
+                        "Test SetPrice (It should fail)"
                     }
                 } else {
-                    "Mint"
+                    "Set Price"
                 };
 
-                // Mint button
-                let button = egui::Button::new(RichText::new(mint_text).color(Color32::WHITE))
+                // Set price button
+                let button = egui::Button::new(RichText::new(set_price_text).color(Color32::WHITE))
                     .fill(Color32::from_rgb(0, 128, 255))
                     .corner_radius(3.0);
 
@@ -596,7 +583,7 @@ impl ScreenLike for MintTokensScreen {
                     self.show_confirmation_popup = true;
                 }
 
-                // If the user pressed "Mint," show a popup
+                // If the user pressed "Set Price," show a popup
                 if self.show_confirmation_popup {
                     action |= self.show_confirmation_popup(ui);
                 }
@@ -604,21 +591,21 @@ impl ScreenLike for MintTokensScreen {
                 // Show in-progress or error messages
                 ui.add_space(10.0);
                 match &self.status {
-                    MintTokensStatus::NotStarted => {
+                    SetTokenPriceStatus::NotStarted => {
                         // no-op
                     }
-                    MintTokensStatus::WaitingForResult(start_time) => {
+                    SetTokenPriceStatus::WaitingForResult(start_time) => {
                         let now = SystemTime::now()
                             .duration_since(UNIX_EPOCH)
                             .expect("Time went backwards")
                             .as_secs();
                         let elapsed = now - start_time;
-                        ui.label(format!("Minting... elapsed: {} seconds", elapsed));
+                        ui.label(format!("Setting price... elapsed: {} seconds", elapsed));
                     }
-                    MintTokensStatus::ErrorMessage(msg) => {
+                    SetTokenPriceStatus::ErrorMessage(msg) => {
                         ui.colored_label(Color32::DARK_RED, format!("Error: {}", msg));
                     }
-                    MintTokensStatus::Complete => {
+                    SetTokenPriceStatus::Complete => {
                         // handled above
                     }
                 }
@@ -629,7 +616,7 @@ impl ScreenLike for MintTokensScreen {
     }
 }
 
-impl ScreenWithWalletUnlock for MintTokensScreen {
+impl ScreenWithWalletUnlock for SetTokenPriceScreen {
     fn selected_wallet_ref(&self) -> &Option<Arc<RwLock<Wallet>>> {
         &self.selected_wallet
     }

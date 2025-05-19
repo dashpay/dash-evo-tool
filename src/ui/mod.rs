@@ -41,10 +41,12 @@ use std::sync::Arc;
 use tokens::burn_tokens_screen::BurnTokensScreen;
 use tokens::claim_tokens_screen::ClaimTokensScreen;
 use tokens::destroy_frozen_funds_screen::DestroyFrozenFundsScreen;
+use tokens::direct_token_purchase_screen::PurchaseTokenScreen;
 use tokens::freeze_tokens_screen::FreezeTokensScreen;
 use tokens::mint_tokens_screen::MintTokensScreen;
 use tokens::pause_tokens_screen::PauseTokensScreen;
 use tokens::resume_tokens_screen::ResumeTokensScreen;
+use tokens::set_token_price_screen::SetTokenPriceScreen;
 use tokens::tokens_screen::{IdentityTokenBalance, TokensScreen, TokensSubscreen};
 use tokens::unfreeze_tokens_screen::UnfreezeTokensScreen;
 use tokens::update_token_config::UpdateTokenConfigScreen;
@@ -204,6 +206,8 @@ pub enum ScreenType {
     ClaimTokensScreen(IdentityTokenBalance),
     ViewTokenClaimsScreen(IdentityTokenBalance),
     UpdateTokenConfigScreen(IdentityTokenBalance),
+    PurchaseTokenScreen(IdentityTokenInfo),
+    SetTokenPriceScreen(IdentityTokenInfo),
 }
 
 impl ScreenType {
@@ -347,7 +351,7 @@ impl ScreenType {
                 ))
             }
             ScreenType::ClaimTokensScreen(_) => {
-                unreachable!();
+                unreachable!()
             }
             ScreenType::ViewTokenClaimsScreen(identity_token_balance) => {
                 Screen::ViewTokenClaimsScreen(ViewTokenClaimsScreen::new(
@@ -362,6 +366,12 @@ impl ScreenType {
                 ))
             }
             ScreenType::AddTokenById => Screen::AddTokenById(AddTokenByIdScreen::new(app_context)),
+            ScreenType::PurchaseTokenScreen(identity_token_info) => Screen::PurchaseTokenScreen(
+                PurchaseTokenScreen::new(identity_token_info.clone(), app_context),
+            ),
+            ScreenType::SetTokenPriceScreen(identity_token_info) => Screen::SetTokenPriceScreen(
+                SetTokenPriceScreen::new(identity_token_info.clone(), app_context),
+            ),
         }
     }
 }
@@ -406,6 +416,8 @@ pub enum Screen {
     ViewTokenClaimsScreen(ViewTokenClaimsScreen),
     UpdateTokenConfigScreen(UpdateTokenConfigScreen),
     AddTokenById(AddTokenByIdScreen),
+    PurchaseTokenScreen(PurchaseTokenScreen),
+    SetTokenPriceScreen(SetTokenPriceScreen),
 }
 
 impl Screen {
@@ -450,6 +462,8 @@ impl Screen {
             Screen::ViewTokenClaimsScreen(screen) => screen.app_context = app_context,
             Screen::UpdateTokenConfigScreen(screen) => screen.app_context = app_context,
             Screen::AddTokenById(screen) => screen.app_context = app_context,
+            Screen::PurchaseTokenScreen(screen) => screen.app_context = app_context,
+            Screen::SetTokenPriceScreen(screen) => screen.app_context = app_context,
         }
     }
 }
@@ -587,6 +601,12 @@ impl Screen {
                 ScreenType::UpdateTokenConfigScreen(screen.identity_token_balance.clone())
             }
             Screen::AddTokenById(_) => ScreenType::AddTokenById,
+            Screen::PurchaseTokenScreen(screen) => {
+                ScreenType::PurchaseTokenScreen(screen.identity_token_info.clone())
+            }
+            Screen::SetTokenPriceScreen(screen) => {
+                ScreenType::SetTokenPriceScreen(screen.identity_token_info.clone())
+            }
         }
     }
 }
@@ -633,6 +653,8 @@ impl ScreenLike for Screen {
             Screen::ViewTokenClaimsScreen(screen) => screen.refresh(),
             Screen::UpdateTokenConfigScreen(screen) => screen.refresh(),
             Screen::AddTokenById(screen) => screen.refresh(),
+            Screen::PurchaseTokenScreen(screen) => screen.refresh(),
+            Screen::SetTokenPriceScreen(screen) => screen.refresh(),
         }
     }
 
@@ -677,6 +699,8 @@ impl ScreenLike for Screen {
             Screen::ViewTokenClaimsScreen(screen) => screen.refresh_on_arrival(),
             Screen::UpdateTokenConfigScreen(screen) => screen.refresh_on_arrival(),
             Screen::AddTokenById(screen) => screen.refresh_on_arrival(),
+            Screen::PurchaseTokenScreen(screen) => screen.refresh_on_arrival(),
+            Screen::SetTokenPriceScreen(screen) => screen.refresh_on_arrival(),
         }
     }
 
@@ -721,6 +745,8 @@ impl ScreenLike for Screen {
             Screen::ViewTokenClaimsScreen(screen) => screen.ui(ctx),
             Screen::UpdateTokenConfigScreen(screen) => screen.ui(ctx),
             Screen::AddTokenById(screen) => screen.ui(ctx),
+            Screen::PurchaseTokenScreen(screen) => screen.ui(ctx),
+            Screen::SetTokenPriceScreen(screen) => screen.ui(ctx),
         }
     }
 
@@ -777,6 +803,8 @@ impl ScreenLike for Screen {
                 screen.display_message(message, message_type)
             }
             Screen::AddTokenById(screen) => screen.display_message(message, message_type),
+            Screen::PurchaseTokenScreen(screen) => screen.display_message(message, message_type),
+            Screen::SetTokenPriceScreen(screen) => screen.display_message(message, message_type),
         }
     }
 
@@ -885,6 +913,12 @@ impl ScreenLike for Screen {
                 screen.display_task_result(backend_task_success_result)
             }
             Screen::AddTokenById(screen) => screen.display_task_result(backend_task_success_result),
+            Screen::PurchaseTokenScreen(screen) => {
+                screen.display_task_result(backend_task_success_result)
+            }
+            Screen::SetTokenPriceScreen(screen) => {
+                screen.display_task_result(backend_task_success_result)
+            }
         }
     }
 
@@ -929,6 +963,8 @@ impl ScreenLike for Screen {
             Screen::ViewTokenClaimsScreen(screen) => screen.pop_on_success(),
             Screen::UpdateTokenConfigScreen(screen) => screen.pop_on_success(),
             Screen::AddTokenById(screen) => screen.pop_on_success(),
+            Screen::PurchaseTokenScreen(screen) => screen.pop_on_success(),
+            Screen::SetTokenPriceScreen(screen) => screen.pop_on_success(),
         }
     }
 }

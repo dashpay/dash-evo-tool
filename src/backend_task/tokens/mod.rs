@@ -4,7 +4,9 @@ use crate::{app::TaskResult, context::AppContext, model::qualified_identity::Qua
 use dash_sdk::dpp::balances::credits::TokenAmount;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration_item::TokenConfigurationChangeItem;
 use dash_sdk::dpp::data_contract::GroupContractPosition;
+use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::group::GroupStateTransitionInfoStatus;
+use dash_sdk::dpp::tokens::token_pricing_schedule::TokenPricingSchedule;
 use dash_sdk::platform::Fetch;
 use dash_sdk::{
     dpp::{
@@ -45,10 +47,12 @@ mod destroy_frozen_funds;
 mod freeze_tokens;
 mod mint_tokens;
 mod pause_tokens;
+mod purchase_tokens;
 mod query_my_token_balances;
 mod query_token_non_claimed_perpetual_distribution_rewards;
 mod query_tokens;
 mod resume_tokens;
+mod set_token_price;
 mod transfer_tokens;
 mod unfreeze_tokens;
 mod update_token_config;
@@ -173,6 +177,23 @@ pub(crate) enum TokenTask {
         change_item: TokenConfigurationChangeItem,
         signing_key: IdentityPublicKey,
         public_note: Option<String>,
+    },
+    PurchaseTokens {
+        identity: QualifiedIdentity,
+        data_contract: DataContract,
+        token_position: TokenContractPosition,
+        signing_key: IdentityPublicKey,
+        amount: TokenAmount,
+        total_agreed_price: Credits,
+    },
+    SetDirectPurchasePrice {
+        identity: QualifiedIdentity,
+        data_contract: DataContract,
+        token_position: TokenContractPosition,
+        signing_key: IdentityPublicKey,
+        token_pricing_schedule: Option<TokenPricingSchedule>,
+        public_note: Option<String>,
+        group_info: Option<GroupStateTransitionInfoStatus>,
     },
 }
 
@@ -510,6 +531,48 @@ impl AppContext {
                 )
                 .await
                 .map_err(|e| format!("Failed to update token config: {e}")),
+            TokenTask::PurchaseTokens {
+                identity,
+                data_contract,
+                token_position,
+                signing_key,
+                amount,
+                total_agreed_price,
+            } => self
+                .purchase_tokens(
+                    identity,
+                    data_contract,
+                    *token_position,
+                    signing_key.clone(),
+                    *amount,
+                    *total_agreed_price,
+                    sdk,
+                    sender,
+                )
+                .await
+                .map_err(|e| format!("Failed to purchase tokens: {e}")),
+            TokenTask::SetDirectPurchasePrice {
+                identity,
+                data_contract,
+                token_position,
+                signing_key,
+                token_pricing_schedule,
+                public_note,
+                group_info,
+            } => self
+                .set_direct_purchase_price(
+                    identity,
+                    data_contract,
+                    *token_position,
+                    signing_key.clone(),
+                    public_note.clone(),
+                    token_pricing_schedule.clone(),
+                    group_info.clone(),
+                    sdk,
+                    sender,
+                )
+                .await
+                .map_err(|e| format!("Failed to set direct purchase price: {e}")),
         }
     }
 

@@ -3,10 +3,10 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use chrono::{DateTime, Duration, Utc};
 use dash_sdk::dpp::balances::credits::TokenAmount;
-use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::{TokenConfigurationPreset, TokenConfigurationPresetFeatures, TokenConfigurationV0};
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationPresetFeatures::{MostRestrictive, WithAllAdvancedActions, WithExtremeActions, WithMintingAndBurningActions, WithOnlyEmergencyAction};
+use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::accessors::v0::TokenDistributionRulesV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::v0::TokenDistributionRulesV0;
 use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::TokenDistributionRules;
 use dash_sdk::dpp::data_contract::associated_token::token_keeps_history_rules::TokenKeepsHistoryRules;
@@ -60,10 +60,12 @@ use crate::ui::{
 use super::burn_tokens_screen::BurnTokensScreen;
 use super::claim_tokens_screen::ClaimTokensScreen;
 use super::destroy_frozen_funds_screen::DestroyFrozenFundsScreen;
+use super::direct_token_purchase_screen::PurchaseTokenScreen;
 use super::freeze_tokens_screen::FreezeTokensScreen;
 use super::mint_tokens_screen::MintTokensScreen;
 use super::pause_tokens_screen::PauseTokensScreen;
 use super::resume_tokens_screen::ResumeTokensScreen;
+use super::set_token_price_screen::SetTokenPriceScreen;
 use super::transfer_tokens_screen::TransferTokensScreen;
 use super::unfreeze_tokens_screen::UnfreezeTokensScreen;
 use super::update_token_config::UpdateTokenConfigScreen;
@@ -1829,6 +1831,23 @@ impl TokensScreen {
                             })
                             .body(|mut body| {
                                 for itb in &detail_list {
+                                    let token_configuration = match self.app_context
+                                        .db
+                                        .get_token_config_for_id(&itb.token_id, &self.app_context)
+                                        .map_err(|_err| "Expected to get token configuration") {
+                                            Ok(token_configuration) => match token_configuration.clone() {
+                                                Some(token_configuration) => token_configuration,
+                                                None => {
+                                                    self.set_error_message(Some("Token configuration not found".to_string()));
+                                                    return;
+                                                }
+                                            },
+                                            Err(e) => {
+                                                self.set_error_message(Some(e.to_string()));
+                                                return;
+                                            }
+                                        };
+
                                     body.row(25.0, |mut row| {
                                         row.col(|ui| {
                                             // Show identity alias or ID
@@ -1896,40 +1915,32 @@ impl TokensScreen {
                                                     }
 
                                                     // Claim
-                                                    if ui.button("Claim").clicked() {
-                                                        let token_contract = match self.app_context
-                                                            .db
-                                                            .get_contract_by_id(itb.data_contract_id, &self.app_context)
-                                                            .ok()
-                                                            .flatten().ok_or("Expected token contract") {
-                                                            Ok(contract) => contract,
-                                                            Err(e) => {
-                                                                self.set_error_message(Some(e.to_string()));
-                                                                return;
-                                                            }
-                                                        };
+                                                    if token_configuration.distribution_rules().perpetual_distribution().is_some() || token_configuration.distribution_rules().pre_programmed_distribution().is_some() || self.app_context.developer_mode {
+                                                        if ui.button("Claim").clicked() {
+                                                            let token_contract = match self.app_context.get_contract_by_token_id(&itb.token_id) {
+                                                                Ok(Some(contract)) => contract,
+                                                                Ok(None) => {
+                                                                    self.set_error_message(Some("Token contract not found".to_string()));
+                                                                    return;
+                                                                }
+                                                                Err(e) => {
+                                                                    self.set_error_message(Some(format!("Error fetching token contract: {e}")));
+                                                                    return;
+                                                                }
+                                                            };
 
-                                                        let token_configuration = match token_contract
-                                                            .contract
-                                                            .expected_token_configuration(itb.token_position)
-                                                            .map_err(|_err| "Expected to get token configuration") {
-                                                            Ok(token_configuration) => token_configuration.clone(),
-                                                            Err(e) => {
-                                                                self.set_error_message(Some(e.to_string()));
-                                                                return;
-                                                            }
-                                                        };
-                                                        action = AppAction::AddScreen(
-                                                            Screen::ClaimTokensScreen(
-                                                                ClaimTokensScreen::new(
-                                                                    itb.clone(),
-                                                                    token_contract,
-                                                                    token_configuration,
-                                                                    &self.app_context,
+                                                            action = AppAction::AddScreen(
+                                                                Screen::ClaimTokensScreen(
+                                                                    ClaimTokensScreen::new(
+                                                                        itb.clone(),
+                                                                        token_contract,
+                                                                        token_configuration,
+                                                                        &self.app_context,
+                                                                    ),
                                                                 ),
-                                                            ),
-                                                        );
-                                                        ui.close_menu();
+                                                            );
+                                                            ui.close_menu();
+                                                        }
                                                     }
 
                                                     // Expandable advanced actions menu
@@ -2039,6 +2050,46 @@ impl TokensScreen {
                                                                     ),
                                                                 ),
                                                             );
+                                                            ui.close_menu();
+                                                        }
+                                                        // Purchase
+                                                        if ui.button("Purchase").clicked() {
+                                                            match IdentityTokenInfo::try_from_identity_token_balance_with_lookup(itb, &self.app_context) {
+                                                                Ok(info) => {
+                                                                    action = AppAction::AddScreen(
+                                                                        Screen::PurchaseTokenScreen(
+                                                                            PurchaseTokenScreen::new(
+                                                                                info,
+                                                                                &self.app_context,
+                                                                            ),
+                                                                        ),
+                                                                    );
+                                                                }
+                                                                Err(e) => {
+                                                                    self.set_error_message(Some(e));
+                                                                }
+                                                            };
+
+                                                            ui.close_menu();
+                                                        }
+                                                        // Set Price
+                                                        if ui.button("Set Price").clicked() {
+                                                            match IdentityTokenInfo::try_from_identity_token_balance_with_lookup(itb, &self.app_context) {
+                                                                Ok(info) => {
+                                                                    action = AppAction::AddScreen(
+                                                                        Screen::SetTokenPriceScreen(
+                                                                            SetTokenPriceScreen::new(
+                                                                                info,
+                                                                                &self.app_context,
+                                                                            ),
+                                                                        ),
+                                                                    );
+                                                                }
+                                                                Err(e) => {
+                                                                    self.set_error_message(Some(e));
+                                                                }
+                                                            };
+
                                                             ui.close_menu();
                                                         }
                                                     });

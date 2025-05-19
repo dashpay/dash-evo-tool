@@ -81,8 +81,7 @@ impl SetTokenPriceScreen {
                 ]),
                 KeyType::all_key_types().into(),
                 false,
-            )
-            .cloned();
+            );
 
         let mut error_message = None;
 
@@ -158,7 +157,7 @@ impl SetTokenPriceScreen {
         let selected_wallet = get_selected_wallet(
             &identity_token_info.identity,
             None,
-            possible_key.as_ref(),
+            possible_key,
             &mut error_message,
         );
 

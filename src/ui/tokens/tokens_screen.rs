@@ -2643,12 +2643,7 @@ impl TokensScreen {
                             let mut token_to_remove: Option<u8> = None;
                             for i in 0..self.token_names_input.len() {
                                 ui.label("Token Name (singular):");
-                                ui.horizontal(|ui| {
-                                    ui.text_edit_singleline(&mut self.token_names_input[i].0);
-                                    // Plural name
-                                    ui.label("(plural):");
-                                    ui.text_edit_singleline(&mut self.token_names_input[i].1);
-                                });
+                                ui.text_edit_singleline(&mut self.token_names_input[i].0);
                                 if i == 0 {
                                     egui::ComboBox::from_id_salt(format!("token_name_language_selector_{}", i))
                                         .selected_text(format!(
@@ -2719,12 +2714,13 @@ impl TokensScreen {
                                             ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Yoruba, "Yoruba");
                                             });
                                 }
+
                                 ui.horizontal(|ui| {
                                     if ui.button("+").clicked() {
                                         let used_languages: HashSet<_> = self.token_names_input.iter().map(|(_, _, lang, _)| *lang).collect();
                                         let next_non_used_language = enum_iterator::all::<TokenNameLanguage>()
                                             .find(|lang| !used_languages.contains(lang))
-                                            .unwrap_or(TokenNameLanguage::English); // fallback
+                                            .unwrap_or(TokenNameLanguage::English);
                                         // Add a new token name input
                                         self.token_names_input.push((String::new(), String::new(), next_non_used_language, false));
                                     }
@@ -2734,7 +2730,7 @@ impl TokensScreen {
                                         }
                                     }
 
-                                    ui.checkbox(&mut self.token_names_input[i].3, "Searchable");
+                                    ui.checkbox(&mut self.token_names_input[i].3, "Add singular name to keywords");
 
                                     let info_icon = egui::Label::new("ℹ").sense(egui::Sense::click());
                                     let response = ui.add(info_icon)
@@ -2742,9 +2738,14 @@ impl TokensScreen {
                                     if response.clicked() {
                                         self.show_pop_up_info = Some("Each searchable keyword costs 0.1 Dash".to_string());
                                     }
-
-                                });
+                                    });
                                 ui.end_row();
+
+                                // Plural name
+                                ui.label("Token Name (plural):");
+                                ui.text_edit_singleline(&mut self.token_names_input[i].1);
+                                ui.end_row();
+
                             }
 
                             if let Some(token) = token_to_remove {
@@ -2772,6 +2773,24 @@ impl TokensScreen {
                                 }
                             });
                             ui.text_edit_singleline(&mut self.contract_keywords_input);
+
+                            for name in self.token_names_input.iter() {
+                                if name.0.len() > 0 {
+                                    if name.3 {
+                                        let contract_keywords = self.contract_keywords_input.split(',').map(|s| s.trim()).collect::<Vec<_>>();
+
+                                        // If there are any duplicate keywords, show an error
+                                        let mut seen_keywords = HashSet::new();
+                                        seen_keywords.insert(name.0.clone());
+                                        for keyword in contract_keywords.iter() {
+                                            if seen_keywords.contains(*keyword) {
+                                                ui.colored_label(Color32::DARK_RED, format!("Duplicate contract keyword: {}", keyword));
+                                            }
+                                            seen_keywords.insert(keyword.to_string());
+                                        }
+                                    }
+                                }
+                            }
                             ui.end_row();
 
                             // Row 5: Token Description
@@ -3725,11 +3744,56 @@ Emits tokens in fixed amounts for specific intervals.
                                     ui.horizontal(|ui| {
                                         ui.label(format!("Member {}:", j + 1));
 
-                                        ui.label("Identity (base58):");
+
+                                        egui::ComboBox::from_id_salt(format!("member_identity_selector_{}", j))
+                                            .width(200.0)
+                                            .selected_text(
+                                                self.identities
+                                                    .get(&Identifier::from_string(&member.identity_str, Encoding::Base58).unwrap_or_default())
+                                                    .map(|q| q.display_string())
+                                                    .unwrap_or_else(|| member.identity_str.clone()),
+                                            )
+                                            .show_ui(ui, |ui| {
+                                                for (i, (identifier, qualified_identity)) in self.identities.iter().enumerate() {
+                                                    let id_str = identifier.to_string(Encoding::Base58);
+
+                                                    // Prevent duplicates unless in developer mode
+                                                    if !self.app_context.developer_mode
+                                                        && group_ui
+                                                        .members
+                                                        .iter()
+                                                        .enumerate().any(|(i, m)| i != j && m.identity_str == id_str)
+                                                    {
+                                                        continue;
+                                                    }
+
+                                                    if ui
+                                                        .selectable_label(false, qualified_identity.display_string())
+                                                        .clicked()
+                                                    {
+                                                        member.identity_str = id_str.clone();
+                                                    }
+                                                }
+                                            });
+
                                         ui.text_edit_singleline(&mut member.identity_str);
 
                                         ui.label("Power (u32):");
                                         ui.text_edit_singleline(&mut member.power_str);
+
+                                        // Show red warning if someone else already used this identity
+                                        if self.app_context.developer_mode
+                                            && group_ui.members[j].identity_str != ""
+                                            && group_ui.members.iter().enumerate().any(|(i, m)| {
+                                            i > j && m.identity_str == group_ui.members[j].identity_str
+                                        })
+                                        {
+                                            ui.colored_label(
+                                                Color32::RED,
+                                                "This member is set later as part of this group (this entry will be ignored)",
+                                            );
+                                        }
+
 
                                         if ui.button("Remove Member").clicked() {
                                             group_ui.members.remove(j);
@@ -3963,6 +4027,7 @@ Emits tokens in fixed amounts for specific intervals.
                 })
                 .collect::<Vec<String>>()
         };
+
         fee += registration_fees.search_keyword_fee * contract_keywords.len() as u64;
         let searchable_count = self
             .token_names_input
@@ -4216,7 +4281,7 @@ Emits tokens in fixed amounts for specific intervals.
 
             // are we searchable?
             if name_with_language.3 {
-                contract_keywords.push(name_with_language.0.clone())
+                contract_keywords.push(name_with_language.0.clone());
             }
         }
 

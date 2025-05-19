@@ -27,9 +27,9 @@ use eframe::egui::Context;
 use egui::ahash::HashSet;
 use egui::{Color32, ComboBox, ScrollArea, Ui};
 use std::cmp::PartialEq;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::fmt;
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
-use std::{fmt, thread};
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub enum FundingMethod {
@@ -37,7 +37,6 @@ pub enum FundingMethod {
     UseUnusedAssetLock,
     UseWalletBalance,
     AddressWithQRCode,
-    AttachedCoreWallet,
 }
 
 impl fmt::Display for FundingMethod {
@@ -45,7 +44,6 @@ impl fmt::Display for FundingMethod {
         let output = match self {
             FundingMethod::NoSelection => "Select funding method",
             FundingMethod::AddressWithQRCode => "Address with QR Code",
-            FundingMethod::AttachedCoreWallet => "Attached Core Wallet",
             FundingMethod::UseWalletBalance => "Use Wallet Balance",
             FundingMethod::UseUnusedAssetLock => "Use Unused Asset Lock (recommended)",
         };
@@ -60,7 +58,6 @@ pub struct AddNewIdentityScreen {
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     core_has_funding_address: Option<bool>,
     funding_address: Option<Address>,
-    funding_address_balance: Arc<RwLock<Option<Duffs>>>,
     funding_method: Arc<RwLock<FundingMethod>>,
     funding_amount: String,
     funding_amount_exact: Option<Duffs>,
@@ -68,7 +65,6 @@ pub struct AddNewIdentityScreen {
     alias_input: String,
     copied_to_clipboard: Option<Option<String>>,
     identity_keys: IdentityKeys,
-    balance_check_handle: Option<(Arc<AtomicBool>, thread::JoinHandle<()>)>,
     error_message: Option<String>,
     show_password: bool,
     wallet_password: String,
@@ -165,7 +161,6 @@ impl AddNewIdentityScreen {
             selected_wallet,
             core_has_funding_address: None,
             funding_address: None,
-            funding_address_balance: Arc::new(RwLock::new(None)),
             funding_method: Arc::new(RwLock::new(FundingMethod::NoSelection)),
             funding_amount: "0.5".to_string(),
             funding_amount_exact: None,
@@ -177,7 +172,6 @@ impl AddNewIdentityScreen {
                 master_private_key_type: KeyType::ECDSA_HASH160,
                 keys_input: vec![],
             }),
-            balance_check_handle: None,
             error_message: None,
             show_password: false,
             wallet_password: "".to_string(),
@@ -187,87 +181,6 @@ impl AddNewIdentityScreen {
             successful_qualified_identity_id: None,
         }
     }
-
-    // // Start the balance checking process
-    // pub fn start_balance_check(&mut self, check_address: &Address, ui_context: &Context) {
-    //     let app_context = self.app_context.clone();
-    //     let balance_state = Arc::clone(&self.funding_address_balance);
-    //     let stop_flag = Arc::new(AtomicBool::new(false));
-    //     let stop_flag_clone = Arc::clone(&stop_flag);
-    //     let ctx = ui_context.clone();
-    //
-    //     let selected_wallet = self.selected_wallet.clone();
-    //     let funding_method = Arc::clone(&self.funding_method);
-    //     let step = Arc::clone(&self.step);
-    //
-    //     let starting_balance = balance_state.read().unwrap().unwrap_or_default();
-    //     let expected_balance = starting_balance + self.funding_amount.parse::<Duffs>().unwrap_or(1);
-    //
-    //     let address = check_address.clone();
-    //
-    //     // Spawn a new thread to monitor the balance.
-    //     let handle = thread::spawn(move || {
-    //         while !stop_flag_clone.load(Ordering::Relaxed) {
-    //             match app_context
-    //                 .core_client
-    //                 .get_received_by_address(&address, Some(1))
-    //             {
-    //                 Ok(new_balance) => {
-    //                     // Update wallet balance if it has changed.
-    //                     if let Some(wallet_guard) = selected_wallet.as_ref() {
-    //                         let mut wallet = wallet_guard.write().unwrap();
-    //                         wallet
-    //                             .update_address_balance(
-    //                                 &address,
-    //                                 new_balance.to_sat(),
-    //                                 &app_context,
-    //                             )
-    //                             .ok();
-    //                     }
-    //
-    //                     // Write the new balance into the RwLock.
-    //                     if let Ok(mut balance) = balance_state.write() {
-    //                         *balance = Some(new_balance.to_sat());
-    //                     }
-    //
-    //                     // Trigger UI redraw.
-    //                     ctx.request_repaint();
-    //
-    //                     // Check if expected balance is reached and update funding method and step.
-    //                     if new_balance.to_sat() >= expected_balance {
-    //                         *funding_method.write().unwrap() = FundingMethod::UseWalletBalance;
-    //                         *step.write().unwrap() =
-    //                             AddNewIdentityWalletFundedScreenStep::FundsReceived;
-    //                         break;
-    //                     }
-    //                 }
-    //                 Err(e) => {
-    //                     // Get the current time
-    //                     let now = SystemTime::now()
-    //                         .duration_since(UNIX_EPOCH)
-    //                         .expect("Time went backwards");
-    //                     eprintln!("[{:?}] Error fetching balance: {:?}", now, e);
-    //                 }
-    //             }
-    //             thread::sleep(Duration::from_secs(1));
-    //         }
-    //     });
-    //
-    //     // Save the handle and stop flag to allow stopping the thread later.
-    //     self.balance_check_handle = Some((stop_flag, handle));
-    // }
-    //
-    // // Stop the balance checking process
-    // fn stop_balance_check(&mut self) {
-    //     if let Some((stop_flag, handle)) = self.balance_check_handle.take() {
-    //         // Set the atomic flag to stop the thread
-    //         stop_flag.store(true, Ordering::Relaxed);
-    //         // Wait for the thread to finish
-    //         if let Err(e) = handle.join() {
-    //             eprintln!("Failed to join balance check thread: {:?}", e);
-    //         }
-    //     }
-    // }
 
     fn render_identity_index_input(&mut self, ui: &mut egui::Ui) {
         let mut index_changed = false; // Track if the index has changed
@@ -458,11 +371,18 @@ impl AddNewIdentityScreen {
         ComboBox::from_id_salt("funding_method")
             .selected_text(format!("{}", *funding_method))
             .show_ui(ui, |ui| {
-                ui.selectable_value(
-                    &mut *funding_method,
-                    FundingMethod::NoSelection,
-                    "Please select funding method",
-                );
+                if ui
+                    .selectable_value(
+                        &mut *funding_method,
+                        FundingMethod::NoSelection,
+                        "Please select funding method",
+                    )
+                    .changed()
+                {
+                    let mut step = self.step.write().unwrap();
+                    *step = WalletFundedScreenStep::ChooseFundingMethod;
+                    self.funding_amount = "0.5".to_string();
+                }
 
                 let (has_unused_asset_lock, has_balance) = {
                     let wallet = selected_wallet.read().unwrap();
@@ -479,8 +399,9 @@ impl AddNewIdentityScreen {
                         .changed()
                     {
                         self.update_identity_key();
-                        let mut step = self.step.write().unwrap(); // Write lock on step
+                        let mut step = self.step.write().unwrap();
                         *step = WalletFundedScreenStep::ReadyToCreate;
+                        self.funding_amount = "0.5".to_string();
                     }
                 }
                 if has_balance {
@@ -493,7 +414,7 @@ impl AddNewIdentityScreen {
                         .changed()
                     {
                         if let Some(wallet) = &self.selected_wallet {
-                            let wallet = wallet.read().unwrap(); // Read lock on the wallet
+                            let wallet = wallet.read().unwrap();
                             let max_amount = wallet.max_balance();
                             self.funding_amount = format!("{:.4}", max_amount as f64 * 1e-8);
                         }
@@ -509,16 +430,10 @@ impl AddNewIdentityScreen {
                     )
                     .changed()
                 {
-                    let mut step = self.step.write().unwrap(); // Write lock on step
+                    let mut step = self.step.write().unwrap();
                     *step = WalletFundedScreenStep::WaitingOnFunds;
+                    self.funding_amount = "0.5".to_string();
                 }
-
-                // Uncomment this if AttachedCoreWallet is available in the future
-                // ui.selectable_value(
-                //     &mut *funding_method,
-                //     FundingMethod::AttachedCoreWallet,
-                //     "Attached Core Wallet",
-                // );
             });
     }
 
@@ -705,7 +620,7 @@ impl AddNewIdentityScreen {
     }
 
     fn render_funding_amount_input(&mut self, ui: &mut egui::Ui) {
-        let funding_method = self.funding_method.read().unwrap(); // Read lock on funding_method
+        let funding_method = self.funding_method.read().unwrap();
 
         ui.horizontal(|ui| {
             ui.label("Amount (DASH):");
@@ -739,6 +654,12 @@ impl AddNewIdentityScreen {
                         self.funding_amount_exact = Some(max_amount);
                     }
                 }
+            }
+
+            if self.funding_amount.parse::<f64>().is_err()
+                || self.funding_amount.parse::<f64>().unwrap_or_default() <= 0.0
+            {
+                ui.colored_label(Color32::DARK_RED, "Invalid amount");
             }
         });
 
@@ -1133,7 +1054,6 @@ impl ScreenLike for AddNewIdentityScreen {
                     FundingMethod::AddressWithQRCode => {
                         action |= self.render_ui_by_wallet_qr_code(ui, step_number)
                     },
-                    FundingMethod::AttachedCoreWallet => return,
                 }
             });
         });
@@ -1141,8 +1061,8 @@ impl ScreenLike for AddNewIdentityScreen {
         // Show the popup window if `show_popup` is true
         if let Some(show_pop_up_info_text) = self.show_pop_up_info.clone() {
             egui::Window::new("Identity Index Information")
-                .collapsible(false) // Prevent collapsing
-                .resizable(false) // Prevent resizing
+                .collapsible(false)
+                .resizable(false)
                 .show(ctx, |ui| {
                     ui.label(show_pop_up_info_text);
 

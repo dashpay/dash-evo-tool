@@ -322,27 +322,18 @@ impl ScreenType {
                     app_context,
                 ))
             }
-            ScreenType::FreezeTokensScreen(identity_token_info) => {
-                Screen::DestroyFrozenFundsScreen(DestroyFrozenFundsScreen::new(
-                    identity_token_info.clone(),
-                    app_context,
-                ))
-            }
-            ScreenType::UnfreezeTokensScreen(identity_token_info) => {
-                Screen::DestroyFrozenFundsScreen(DestroyFrozenFundsScreen::new(
-                    identity_token_info.clone(),
-                    app_context,
-                ))
-            }
-            ScreenType::PauseTokensScreen(identity_token_info) => Screen::DestroyFrozenFundsScreen(
-                DestroyFrozenFundsScreen::new(identity_token_info.clone(), app_context),
+            ScreenType::FreezeTokensScreen(identity_token_info) => Screen::FreezeTokensScreen(
+                FreezeTokensScreen::new(identity_token_info.clone(), app_context),
             ),
-            ScreenType::ResumeTokensScreen(identity_token_info) => {
-                Screen::DestroyFrozenFundsScreen(DestroyFrozenFundsScreen::new(
-                    identity_token_info.clone(),
-                    app_context,
-                ))
-            }
+            ScreenType::UnfreezeTokensScreen(identity_token_info) => Screen::UnfreezeTokensScreen(
+                UnfreezeTokensScreen::new(identity_token_info.clone(), app_context),
+            ),
+            ScreenType::PauseTokensScreen(identity_token_info) => Screen::PauseTokensScreen(
+                PauseTokensScreen::new(identity_token_info.clone(), app_context),
+            ),
+            ScreenType::ResumeTokensScreen(identity_token_info) => Screen::ResumeTokensScreen(
+                ResumeTokensScreen::new(identity_token_info.clone(), app_context),
+            ),
             ScreenType::ClaimTokensScreen(_) => {
                 unreachable!();
             }

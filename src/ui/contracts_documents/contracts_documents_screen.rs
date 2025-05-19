@@ -10,14 +10,13 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::{BackendTaskSuccessResult, MessageType, RootScreenType, ScreenLike, ScreenType};
 use crate::utils::parsers::{DocumentQueryTextInputParser, TextInputParser};
 use chrono::{DateTime, Utc};
-use dash_sdk::dpp::consensus::basic::group;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
 use dash_sdk::dpp::data_contract::document_type::{DocumentType, Index};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::prelude::TimestampMillis;
 use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::Start;
-use dash_sdk::platform::{group_actions, Document, DocumentQuery, Identifier};
+use dash_sdk::platform::{Document, DocumentQuery, Identifier};
 use egui::{Color32, Context, Frame, Margin, ScrollArea, Ui};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -342,7 +341,7 @@ impl DocumentQueryScreen {
                     DocumentQueryStatus::ErrorMessage(ref message) => {
                         self.error_message =
                             Some((message.to_string(), MessageType::Error, Utc::now()));
-                        ui.colored_label(egui::Color32::DARK_RED, message);
+                        ui.colored_label(Color32::DARK_RED, message);
                     }
                     _ => {
                         // Nothing

@@ -339,7 +339,7 @@ impl ScreenLike for PurchaseTokenScreen {
                 !self
                     .identity_token_info
                     .identity
-                    .available_authentication_keys()
+                    .available_authentication_keys_with_critical_security_level()
                     .is_empty()
             };
 

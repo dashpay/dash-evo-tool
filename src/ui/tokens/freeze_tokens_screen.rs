@@ -327,7 +327,10 @@ impl ScreenLike for FreezeTokensScreen {
             let has_keys = if self.app_context.developer_mode {
                 !self.identity.identity.public_keys().is_empty()
             } else {
-                !self.identity.available_authentication_keys().is_empty()
+                !self
+                    .identity
+                    .available_authentication_keys_with_critical_security_level()
+                    .is_empty()
             };
 
             if !has_keys {
@@ -343,11 +346,7 @@ impl ScreenLike for FreezeTokensScreen {
                 // Show "Add key" or "Check keys" option
                 let first_key = self.identity.identity.get_first_public_key_matching(
                     Purpose::AUTHENTICATION,
-                    HashSet::from([
-                        SecurityLevel::HIGH,
-                        SecurityLevel::MEDIUM,
-                        SecurityLevel::CRITICAL,
-                    ]),
+                    HashSet::from([SecurityLevel::CRITICAL]),
                     KeyType::all_key_types().into(),
                     false,
                 );

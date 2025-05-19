@@ -284,6 +284,9 @@ impl Database {
 
         // Step 3: Add addresses, balances, and known addresses to the corresponding wallets.
         for row in address_rows {
+            if row.is_err() {
+                continue;
+            }
             let (seed_array, address, derivation_path, balance, path_reference, path_type) = row?;
             if let Some(wallet) = wallets_map.get_mut(&seed_array) {
                 // Update the address balance if available.
@@ -299,7 +302,7 @@ impl Database {
                     address = ?address,
                     network = address.network().to_string(),
                     expected_network = network.to_string(),
-                    "loaded adddress from database");
+                    "loaded address from database");
 
                 // Add the address to the `watched_addresses` map with AddressInfo.
                 let address_info = AddressInfo {
@@ -463,7 +466,7 @@ impl Database {
 /// Ensure the address is valid for the given network and
 /// update its network if necessary.
 ///
-/// Consumes the adress and returns a new Address with the correct network.
+/// Consumes the address and returns a new Address with the correct network.
 fn check_address_for_network(
     address_unchecked: Address<NetworkUnchecked>,
     network: &Network,

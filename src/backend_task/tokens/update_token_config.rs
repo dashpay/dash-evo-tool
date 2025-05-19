@@ -3,6 +3,7 @@ use crate::context::AppContext;
 use crate::model::proof_log_item::{ProofLogItem, RequestType};
 use crate::ui::tokens::tokens_screen::IdentityTokenInfo;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
 use dash_sdk::dpp::group::GroupStateTransitionInfoStatus;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::state_transition::proof_result::StateTransitionProofResult;
@@ -128,12 +129,44 @@ impl AppContext {
                     )
                 })?;
 
+        let token = data_contract
+            .tokens()
+            .get(&identity_token_info.token_position)
+            .ok_or_else(|| {
+                format!(
+                    "Token with position {} not found in contract",
+                    identity_token_info.token_position
+                )
+            })?;
+
         // Then replace the contract in the local database
         self.replace_contract(
             identity_token_info.data_contract.contract.id(),
             &data_contract,
         )
         .map_err(|e| format!("Error replacing contract in local database: {}", e))?;
+
+        self.remove_token(&identity_token_info.token_id)
+            .map_err(|e| {
+                format!(
+                    "Error removing token from local database: {}",
+                    e.to_string()
+                )
+            })?;
+
+        self.insert_token(
+            &identity_token_info.token_id,
+            &identity_token_info.token_alias,
+            token.clone(),
+            &identity_token_info.data_contract.contract.id(),
+            identity_token_info.token_position,
+        )
+        .map_err(|e| {
+            format!(
+                "Error inserting token into local database: {}",
+                e.to_string()
+            )
+        })?;
 
         // Return success
         Ok(BackendTaskSuccessResult::Message(format!(

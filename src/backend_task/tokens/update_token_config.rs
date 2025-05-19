@@ -2,9 +2,8 @@ use super::BackendTaskSuccessResult;
 use crate::context::AppContext;
 use crate::model::proof_log_item::{ProofLogItem, RequestType};
 use crate::ui::tokens::tokens_screen::IdentityTokenBalance;
-use dash_sdk::dpp::state_transition::batch_transition::methods::StateTransitionCreationOptions;
+use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
 use dash_sdk::dpp::state_transition::proof_result::StateTransitionProofResult;
-use dash_sdk::dpp::state_transition::StateTransitionSigningOptions;
 use dash_sdk::platform::transition::broadcast::BroadcastStateTransition;
 use dash_sdk::platform::{DataContract, Fetch, IdentityPublicKey};
 use dash_sdk::{
@@ -108,8 +107,8 @@ impl AppContext {
                 e => format!("Error broadcasting Update token config transition: {}", e),
             })?;
 
-        // Now update the data contract in the local database
-        // First, fetch the updated contract from the platform
+        // Now update the token in the local database
+        // First, fetch the updated contract from Platform
         let data_contract = DataContract::fetch(sdk, identity_token_balance.data_contract_id)
             .await
             .map_err(|e| format!("Error fetching contract from platform: {}", e.to_string()))?
@@ -120,9 +119,46 @@ impl AppContext {
                 )
             })?;
 
+        let token = data_contract
+            .tokens()
+            .get(&identity_token_balance.token_position)
+            .ok_or_else(|| {
+                format!(
+                    "Token with position {} not found in contract",
+                    identity_token_balance.token_position
+                )
+            })?;
+
         // Then replace the contract in the local database
         self.replace_contract(identity_token_balance.data_contract_id, &data_contract)
-            .map_err(|e| format!("Error replacing contract in local database: {}", e))?;
+            .map_err(|e| {
+                format!(
+                    "Error replacing contract in local database: {}",
+                    e.to_string()
+                )
+            })?;
+
+        self.remove_token(&identity_token_balance.token_id)
+            .map_err(|e| {
+                format!(
+                    "Error removing token from local database: {}",
+                    e.to_string()
+                )
+            })?;
+
+        self.insert_token(
+            &identity_token_balance.token_id,
+            &identity_token_balance.token_alias,
+            token.clone(),
+            &identity_token_balance.data_contract_id,
+            identity_token_balance.token_position,
+        )
+        .map_err(|e| {
+            format!(
+                "Error inserting token into local database: {}",
+                e.to_string()
+            )
+        })?;
 
         // Return success
         Ok(BackendTaskSuccessResult::Message(format!(

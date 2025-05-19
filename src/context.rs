@@ -665,6 +665,10 @@ impl AppContext {
         Ok(())
     }
 
+    pub fn remove_token(&self, token_id: &Identifier) -> Result<()> {
+        self.db.remove_token(token_id, self)
+    }
+
     pub fn insert_token_identity_balance(
         &self,
         token_id: &Identifier,

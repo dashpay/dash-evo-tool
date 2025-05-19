@@ -163,7 +163,7 @@ impl SetTokenPriceScreen {
 
         Self {
             identity_token_info,
-            selected_key: possible_key,
+            selected_key: possible_key.cloned(),
             public_note: None,
             group,
             token_pricing_schedule: "".to_string(),

@@ -75,11 +75,7 @@ impl ResumeTokensScreen {
             .identity
             .get_first_public_key_matching(
                 Purpose::AUTHENTICATION,
-                HashSet::from([
-                    SecurityLevel::HIGH,
-                    SecurityLevel::MEDIUM,
-                    SecurityLevel::CRITICAL,
-                ]),
+                HashSet::from([SecurityLevel::CRITICAL]),
                 KeyType::all_key_types().into(),
                 false,
             )

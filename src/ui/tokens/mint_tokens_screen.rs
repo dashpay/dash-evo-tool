@@ -7,7 +7,6 @@ use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::accessors::v0::TokenDistributionRulesV0Getters;
 use dash_sdk::dpp::data_contract::change_control_rules::authorized_action_takers::AuthorizedActionTakers;
-use dash_sdk::dpp::data_contract::group::accessors::v0::GroupV0Getters;
 use dash_sdk::dpp::data_contract::group::Group;
 use dash_sdk::dpp::data_contract::GroupContractPosition;
 use eframe::egui::{self, Color32, Context, Ui};
@@ -23,11 +22,12 @@ use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
+use crate::ui::helpers::render_group_action_text;
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
 use crate::ui::{MessageType, Screen, ScreenLike};
-use dash_sdk::dpp::group::GroupStateTransitionInfoStatus;
+use dash_sdk::dpp::group::{GroupStateTransitionInfo, GroupStateTransitionInfoStatus};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
@@ -49,10 +49,11 @@ pub struct MintTokensScreen {
     selected_key: Option<IdentityPublicKey>,
     public_note: Option<String>,
     group: Option<(GroupContractPosition, Group)>,
+    pub group_action_id: Option<Identifier>,
 
-    recipient_identity_id: String,
+    pub recipient_identity_id: String,
 
-    amount_to_mint: String,
+    pub amount_to_mint: String,
     status: MintTokensStatus,
     error_message: Option<String>,
 
@@ -97,7 +98,7 @@ impl MintTokensScreen {
                     != &identity_token_info.identity.identity.id()
                 {
                     error_message = Some(
-                        "You are not allowed to mint on this token. Only the contract owner is."
+                        "You are not allowed to mint this token. Only the contract owner is."
                             .to_string(),
                     );
                 }
@@ -105,7 +106,7 @@ impl MintTokensScreen {
             }
             AuthorizedActionTakers::Identity(identifier) => {
                 if identifier != &identity_token_info.identity.identity.id() {
-                    error_message = Some("You are not allowed to mint on this token".to_string());
+                    error_message = Some("You are not allowed to mint this token".to_string());
                 }
                 None
             }
@@ -161,10 +162,11 @@ impl MintTokensScreen {
             selected_key: possible_key,
             public_note: None,
             group,
+            group_action_id: None,
             recipient_identity_id: "".to_string(),
             amount_to_mint: "".to_string(),
             status: MintTokensStatus::NotStarted,
-            error_message: None,
+            error_message,
             app_context: app_context.clone(),
             show_confirmation_popup: false,
             selected_wallet,
@@ -319,9 +321,22 @@ impl MintTokensScreen {
                         .as_secs();
                     self.status = MintTokensStatus::WaitingForResult(now);
 
-                    let group_info = self.group.as_ref().map(|(pos, _)| {
-                        GroupStateTransitionInfoStatus::GroupStateTransitionInfoProposer(*pos)
-                    });
+                    let group_info;
+                    if self.group_action_id.is_some() {
+                        group_info = self.group.as_ref().map(|(pos, _)| {
+                            GroupStateTransitionInfoStatus::GroupStateTransitionInfoOtherSigner(
+                                GroupStateTransitionInfo {
+                                    group_contract_position: *pos,
+                                    action_id: self.group_action_id.unwrap(),
+                                    action_is_proposer: false,
+                                },
+                            )
+                        });
+                    } else {
+                        group_info = self.group.as_ref().map(|(pos, _)| {
+                            GroupStateTransitionInfoStatus::GroupStateTransitionInfoProposer(*pos)
+                        });
+                    }
 
                     // Dispatch the actual backend mint action
                     action = AppAction::BackendTasks(
@@ -365,11 +380,21 @@ impl MintTokensScreen {
             ui.add_space(50.0);
 
             ui.heading("🎉");
-            ui.heading("Mint Successful!");
+            if self.group_action_id.is_some() {
+                ui.label("Group Mint Signing Successful.");
+            } else {
+                ui.heading("Mint Successful.");
+            }
 
             ui.add_space(20.0);
 
-            if ui.button("Back to Tokens").clicked() {
+            let button_text;
+            if self.group_action_id.is_some() {
+                button_text = "Back to Group Actions";
+            } else {
+                button_text = "Back to Tokens";
+            }
+            if ui.button(button_text).clicked() {
                 // Pop this screen and refresh
                 action = AppAction::PopScreenAndRefresh;
             }
@@ -409,17 +434,32 @@ impl ScreenLike for MintTokensScreen {
     }
 
     fn ui(&mut self, ctx: &Context) -> AppAction {
+        let mut action;
+
         // Build a top panel
-        let mut action = add_top_panel(
-            ctx,
-            &self.app_context,
-            vec![
-                ("Tokens", AppAction::GoToMainScreen),
-                (&self.identity_token_info.token_alias, AppAction::PopScreen),
-                ("Mint", AppAction::None),
-            ],
-            vec![],
-        );
+        if self.group_action_id.is_some() {
+            action = add_top_panel(
+                ctx,
+                &self.app_context,
+                vec![
+                    ("Contracts", AppAction::GoToMainScreen),
+                    ("Group Actions", AppAction::PopScreen),
+                    ("Mint", AppAction::None),
+                ],
+                vec![],
+            );
+        } else {
+            action = add_top_panel(
+                ctx,
+                &self.app_context,
+                vec![
+                    ("Tokens", AppAction::GoToMainScreen),
+                    (&self.identity_token_info.token_alias, AppAction::PopScreen),
+                    ("Mint", AppAction::None),
+                ],
+                vec![],
+            );
+        }
 
         // Left panel
         action |= add_left_panel(
@@ -443,7 +483,12 @@ impl ScreenLike for MintTokensScreen {
 
             // Check if user has any auth keys
             let has_keys = if self.app_context.developer_mode {
-                !self.identity_token_info.identity.identity.public_keys().is_empty()
+                !self
+                    .identity_token_info
+                    .identity
+                    .identity
+                    .public_keys()
+                    .is_empty()
             } else {
                 !self.identity_token_info.identity.available_authentication_keys_with_critical_security_level().is_empty()
             };
@@ -503,9 +548,15 @@ impl ScreenLike for MintTokensScreen {
                 ui.horizontal(|ui| {
                     self.render_key_selection(ui);
                     ui.add_space(5.0);
-                    let identity_id_string =
-                        self.identity_token_info.identity.identity.id().to_string(Encoding::Base58);
-                    let identity_display = self.identity_token_info.identity
+                    let identity_id_string = self
+                        .identity_token_info
+                        .identity
+                        .identity
+                        .id()
+                        .to_string(Encoding::Base58);
+                    let identity_display = self
+                        .identity_token_info
+                        .identity
                         .alias
                         .as_deref()
                         .unwrap_or_else(|| &identity_id_string);
@@ -519,14 +570,37 @@ impl ScreenLike for MintTokensScreen {
                 // 2) Amount to mint
                 ui.heading("2. Amount to mint");
                 ui.add_space(5.0);
-                self.render_amount_input(ui);
+                if self.group_action_id.is_some() {
+                    ui.label(
+                        "You are signing an existing group Mint so you are not allowed to choose the amount.",
+                    );
+                    ui.add_space(5.0);
+                    ui.label(format!(
+                        "Amount: {}",
+                        self.amount_to_mint
+                    ));
+                } else {
+                    self.render_amount_input(ui);
+                }
 
-                ui.add_space(10.0);
-                ui.separator();
-                ui.add_space(10.0);
+                if self
+                    .identity_token_info
+                    .token_config
+                    .distribution_rules()
+                    .minting_allow_choosing_destination()
+                    || self.app_context.developer_mode
+                {
+                    ui.add_space(10.0);
+                    ui.separator();
+                    ui.add_space(10.0);
 
-                if self.identity_token_info.token_config.distribution_rules().minting_allow_choosing_destination() || self.app_context.developer_mode {
-                    if self.identity_token_info.token_config.distribution_rules().new_tokens_destination_identity().is_some() {
+                    if self
+                        .identity_token_info
+                        .token_config
+                        .distribution_rules()
+                        .new_tokens_destination_identity()
+                        .is_some()
+                    {
                         ui.heading("3. Recipient identity (optional)");
                     } else {
                         ui.heading("3. Recipient identity (required)");
@@ -553,47 +627,28 @@ impl ScreenLike for MintTokensScreen {
                         )
                         .changed()
                     {
-                        self.public_note = Some(txt);
+                        self.public_note = if txt.len() > 0 {
+                            Some(txt)
+                        } else {
+                            None
+                        };
                     }
                 });
-                ui.add_space(10.0);
 
-                let mint_text = if let Some((_, group)) = self.group.as_ref() {
-                    let your_power = group.members().get(&self.identity_token_info.identity.identity.id());
-                    if your_power.is_none() {
-                        self.error_message = Some("Only group members can mint on this token".to_string());
-                    }
-                    ui.heading("This is a group action, it is not immediate.");
-                    ui.label(format!("Members are : \n{}", group.members().iter().map(|(member, power)| {
-                        if member == &self.identity_token_info.identity.identity.id() {
-                            format!("{} (You) with power {}", member, power)
-                        } else {
-                            format!("{} with power {}", member, power)
-                        }
-                    }).collect::<Vec<_>>().join(", \n")));
-                    ui.add_space(10.0);
-                    if let Some(your_power) = your_power {
-                        if *your_power >= group.required_power() {
-                            ui.label(format!("Even though this is a group action, you are able to unilaterally approve it because your power ({}) in the group exceeds the required amount : {}", *your_power,  group.required_power()));
-                            "Mint"
-                        } else {
-                            ui.label(format!("You will need at least {} voting power for this action to go through. Contact other group members to let them know to authorize this action after you have initiated it.", group.required_power()));
-                            "Initiate Group Mint"
-                        }
-                    } else {
-                        "Test Mint (It should fail)"
-                    }
-                } else {
-                    "Mint"
-                };
+                let button_text =
+                    render_group_action_text(ui, &self.group, &self.identity_token_info, "Mint", &self.group_action_id);
 
                 // Mint button
-                let button = egui::Button::new(RichText::new(mint_text).color(Color32::WHITE))
-                    .fill(Color32::from_rgb(0, 128, 255))
-                    .corner_radius(3.0);
+                if self.app_context.developer_mode || !button_text.contains("Test") {
+                    ui.add_space(10.0);
+                    let button =
+                        egui::Button::new(RichText::new(button_text).color(Color32::WHITE))
+                            .fill(Color32::from_rgb(0, 128, 255))
+                            .corner_radius(3.0);
 
-                if ui.add(button).clicked() {
-                    self.show_confirmation_popup = true;
+                    if ui.add(button).clicked() {
+                        self.show_confirmation_popup = true;
+                    }
                 }
 
                 // If the user pressed "Mint," show a popup

@@ -1,5 +1,5 @@
 use super::BackendTaskSuccessResult;
-use crate::ui::tokens::tokens_screen::{IdentityTokenBalance, IdentityTokenIdentifier, TokenInfo};
+use crate::ui::tokens::tokens_screen::{IdentityTokenIdentifier, IdentityTokenInfo, TokenInfo};
 use crate::{app::TaskResult, context::AppContext, model::qualified_identity::QualifiedIdentity};
 use dash_sdk::dpp::balances::credits::TokenAmount;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration_item::TokenConfigurationChangeItem;
@@ -121,6 +121,7 @@ pub(crate) enum TokenTask {
         signing_key: IdentityPublicKey,
         public_note: Option<String>,
         amount: TokenAmount,
+        group_info: Option<GroupStateTransitionInfoStatus>,
     },
     DestroyFrozenFunds {
         actor_identity: QualifiedIdentity,
@@ -129,6 +130,7 @@ pub(crate) enum TokenTask {
         signing_key: IdentityPublicKey,
         public_note: Option<String>,
         frozen_identity: Identifier,
+        group_info: Option<GroupStateTransitionInfoStatus>,
     },
     FreezeTokens {
         actor_identity: QualifiedIdentity,
@@ -137,6 +139,7 @@ pub(crate) enum TokenTask {
         signing_key: IdentityPublicKey,
         public_note: Option<String>,
         freeze_identity: Identifier,
+        group_info: Option<GroupStateTransitionInfoStatus>,
     },
     UnfreezeTokens {
         actor_identity: QualifiedIdentity,
@@ -145,6 +148,7 @@ pub(crate) enum TokenTask {
         signing_key: IdentityPublicKey,
         public_note: Option<String>,
         unfreeze_identity: Identifier,
+        group_info: Option<GroupStateTransitionInfoStatus>,
     },
     PauseTokens {
         actor_identity: QualifiedIdentity,
@@ -152,6 +156,7 @@ pub(crate) enum TokenTask {
         token_position: TokenContractPosition,
         signing_key: IdentityPublicKey,
         public_note: Option<String>,
+        group_info: Option<GroupStateTransitionInfoStatus>,
     },
     ResumeTokens {
         actor_identity: QualifiedIdentity,
@@ -159,6 +164,7 @@ pub(crate) enum TokenTask {
         token_position: TokenContractPosition,
         signing_key: IdentityPublicKey,
         public_note: Option<String>,
+        group_info: Option<GroupStateTransitionInfoStatus>,
     },
     ClaimTokens {
         data_contract: DataContract,
@@ -173,10 +179,11 @@ pub(crate) enum TokenTask {
         token_id: Identifier,
     },
     UpdateTokenConfig {
-        identity_token_balance: IdentityTokenBalance,
+        identity_token_info: IdentityTokenInfo,
         change_item: TokenConfigurationChangeItem,
         signing_key: IdentityPublicKey,
         public_note: Option<String>,
+        group_info: Option<GroupStateTransitionInfoStatus>,
     },
     PurchaseTokens {
         identity: QualifiedIdentity,
@@ -335,6 +342,7 @@ impl AppContext {
                 signing_key,
                 public_note,
                 amount,
+                group_info,
             } => self
                 .burn_tokens(
                     owner_identity,
@@ -343,6 +351,7 @@ impl AppContext {
                     signing_key.clone(),
                     public_note.clone(),
                     *amount,
+                    group_info.clone(),
                     sdk,
                     sender,
                 )
@@ -355,6 +364,7 @@ impl AppContext {
                 signing_key,
                 public_note,
                 frozen_identity,
+                group_info,
             } => self
                 .destroy_frozen_funds(
                     actor_identity,
@@ -363,6 +373,7 @@ impl AppContext {
                     signing_key.clone(),
                     public_note.clone(),
                     frozen_identity.clone(),
+                    group_info.clone(),
                     sdk,
                     sender,
                 )
@@ -375,6 +386,7 @@ impl AppContext {
                 signing_key,
                 public_note,
                 freeze_identity,
+                group_info,
             } => self
                 .freeze_tokens(
                     actor_identity,
@@ -383,6 +395,7 @@ impl AppContext {
                     signing_key.clone(),
                     public_note.clone(),
                     freeze_identity.clone(),
+                    group_info.clone(),
                     sdk,
                     sender,
                 )
@@ -395,6 +408,7 @@ impl AppContext {
                 signing_key,
                 public_note,
                 unfreeze_identity,
+                group_info,
             } => self
                 .unfreeze_tokens(
                     actor_identity,
@@ -403,6 +417,7 @@ impl AppContext {
                     signing_key.clone(),
                     public_note.clone(),
                     unfreeze_identity.clone(),
+                    group_info.clone(),
                     sdk,
                     sender,
                 )
@@ -414,6 +429,7 @@ impl AppContext {
                 token_position,
                 signing_key,
                 public_note,
+                group_info,
             } => self
                 .pause_tokens(
                     actor_identity,
@@ -421,6 +437,7 @@ impl AppContext {
                     *token_position,
                     signing_key.clone(),
                     public_note.clone(),
+                    group_info.clone(),
                     sdk,
                     sender,
                 )
@@ -432,6 +449,7 @@ impl AppContext {
                 token_position,
                 signing_key,
                 public_note,
+                group_info,
             } => self
                 .resume_tokens(
                     actor_identity,
@@ -439,6 +457,7 @@ impl AppContext {
                     *token_position,
                     signing_key.clone(),
                     public_note.clone(),
+                    group_info.clone(),
                     sdk,
                     sender,
                 )
@@ -517,16 +536,18 @@ impl AppContext {
                 ))
             }
             TokenTask::UpdateTokenConfig {
-                identity_token_balance,
+                identity_token_info,
                 change_item,
                 signing_key,
                 public_note,
+                group_info,
             } => self
                 .update_token_config(
-                    identity_token_balance.clone(),
+                    identity_token_info.clone(),
                     change_item.clone(),
                     signing_key,
                     public_note.clone(),
+                    group_info.clone(),
                     sdk,
                 )
                 .await

@@ -1,8 +1,11 @@
 use super::BackendTaskSuccessResult;
 use crate::context::AppContext;
 use crate::model::proof_log_item::{ProofLogItem, RequestType};
-use crate::ui::tokens::tokens_screen::IdentityTokenBalance;
+use crate::ui::tokens::tokens_screen::IdentityTokenInfo;
+use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
+use dash_sdk::dpp::group::GroupStateTransitionInfoStatus;
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::state_transition::proof_result::StateTransitionProofResult;
 use dash_sdk::platform::transition::broadcast::BroadcastStateTransition;
 use dash_sdk::platform::{DataContract, Fetch, IdentityPublicKey};
@@ -15,57 +18,64 @@ use dash_sdk::{
 impl AppContext {
     pub async fn update_token_config(
         &self,
-        identity_token_balance: IdentityTokenBalance,
+        identity_token_info: IdentityTokenInfo,
         change_item: TokenConfigurationChangeItem,
         signing_key: &IdentityPublicKey,
         public_note: Option<String>,
+        group_info: Option<GroupStateTransitionInfoStatus>,
         sdk: &Sdk,
     ) -> Result<BackendTaskSuccessResult, String> {
         // Get the existing contract and identity for building the state transition
         // First, fetch the contract from the local database
         let existing_data_contract = &self
-            .get_contract_by_id(&identity_token_balance.data_contract_id)
+            .get_contract_by_id(&identity_token_info.data_contract.contract.id())
             .map_err(|e| {
                 format!(
                     "Error getting contract by ID {}: {}",
-                    identity_token_balance.data_contract_id, e
+                    identity_token_info.data_contract.contract.id(),
+                    e
                 )
             })?
             .ok_or_else(|| {
                 format!(
                     "Contract with ID {} not found",
-                    identity_token_balance.data_contract_id
+                    identity_token_info.data_contract.contract.id()
                 )
             })?
             .contract;
 
         // Then, fetch the identity from the local database
         let identity = self
-            .get_identity_by_id(&identity_token_balance.identity_id)
+            .get_identity_by_id(&identity_token_info.identity.identity.id())
             .map_err(|e| {
                 format!(
                     "Error getting identity by ID {}: {}",
-                    identity_token_balance.identity_id, e
+                    identity_token_info.identity.identity.id(),
+                    e
                 )
             })?
             .ok_or_else(|| {
                 format!(
                     "Identity with ID {} not found",
-                    identity_token_balance.identity_id
+                    identity_token_info.identity.identity.id()
                 )
             })?;
 
         // Create the TokenConfigUpdateTransition
         let mut builder = TokenConfigUpdateTransitionBuilder::new(
             existing_data_contract,
-            identity_token_balance.token_position,
-            identity_token_balance.identity_id,
+            identity_token_info.token_position,
+            identity_token_info.identity.identity.id(),
             change_item.clone(),
         );
 
         // Add the optional public note
         if let Some(public_note) = &public_note {
             builder = builder.with_public_note(public_note.clone());
+        }
+
+        if let Some(group_info) = group_info {
+            builder = builder.with_using_group_info(group_info);
         }
 
         let options = self.state_transition_options();
@@ -106,38 +116,37 @@ impl AppContext {
                 e => format!("Error broadcasting Update token config transition: {}", e),
             })?;
 
-        // Now update the token in the local database
-        // First, fetch the updated contract from Platform
-        let data_contract = DataContract::fetch(sdk, identity_token_balance.data_contract_id)
-            .await
-            .map_err(|e| format!("Error fetching contract from platform: {}", e.to_string()))?
-            .ok_or_else(|| {
-                format!(
-                    "Contract with ID {} not found on platform",
-                    identity_token_balance.data_contract_id
-                )
-            })?;
+        // Now update the data contract in the local database
+        // First, fetch the updated contract from the platform
+        let data_contract =
+            DataContract::fetch(sdk, identity_token_info.data_contract.contract.id())
+                .await
+                .map_err(|e| format!("Error fetching contract from platform: {}", e.to_string()))?
+                .ok_or_else(|| {
+                    format!(
+                        "Contract with ID {} not found on platform",
+                        identity_token_info.data_contract.contract.id()
+                    )
+                })?;
 
         let token = data_contract
             .tokens()
-            .get(&identity_token_balance.token_position)
+            .get(&identity_token_info.token_position)
             .ok_or_else(|| {
                 format!(
                     "Token with position {} not found in contract",
-                    identity_token_balance.token_position
+                    identity_token_info.token_position
                 )
             })?;
 
         // Then replace the contract in the local database
-        self.replace_contract(identity_token_balance.data_contract_id, &data_contract)
-            .map_err(|e| {
-                format!(
-                    "Error replacing contract in local database: {}",
-                    e.to_string()
-                )
-            })?;
+        self.replace_contract(
+            identity_token_info.data_contract.contract.id(),
+            &data_contract,
+        )
+        .map_err(|e| format!("Error replacing contract in local database: {}", e))?;
 
-        self.remove_token(&identity_token_balance.token_id)
+        self.remove_token(&identity_token_info.token_id)
             .map_err(|e| {
                 format!(
                     "Error removing token from local database: {}",
@@ -146,11 +155,11 @@ impl AppContext {
             })?;
 
         self.insert_token(
-            &identity_token_balance.token_id,
-            &identity_token_balance.token_alias,
+            &identity_token_info.token_id,
+            &identity_token_info.token_alias,
             token.clone(),
-            &identity_token_balance.data_contract_id,
-            identity_token_balance.token_position,
+            &identity_token_info.data_contract.contract.id(),
+            identity_token_info.token_position,
         )
         .map_err(|e| {
             format!(

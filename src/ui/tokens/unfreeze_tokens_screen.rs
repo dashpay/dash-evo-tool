@@ -3,10 +3,17 @@ use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
+use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
+use dash_sdk::dpp::data_contract::change_control_rules::authorized_action_takers::AuthorizedActionTakers;
+use dash_sdk::dpp::data_contract::group::Group;
+use dash_sdk::dpp::data_contract::GroupContractPosition;
+use dash_sdk::dpp::group::GroupStateTransitionInfoStatus;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use eframe::egui::{self, Color32, Context, Ui};
 use egui::RichText;
 
+use dash_sdk::dpp::group::GroupStateTransitionInfo;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
@@ -22,12 +29,13 @@ use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
+use crate::ui::helpers::render_group_action_text;
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
 use crate::ui::{MessageType, Screen, ScreenLike};
 
-use super::tokens_screen::IdentityTokenBalance;
+use super::tokens_screen::IdentityTokenInfo;
 
 /// The states for the unfreeze flow
 #[derive(PartialEq)]
@@ -41,12 +49,15 @@ pub enum UnfreezeTokensStatus {
 /// A screen that allows unfreezing a previously frozen identity’s tokens for a specific contract
 pub struct UnfreezeTokensScreen {
     pub identity: QualifiedIdentity,
-    pub identity_token_balance: IdentityTokenBalance,
+    pub identity_token_info: IdentityTokenInfo,
     selected_key: Option<IdentityPublicKey>,
     public_note: Option<String>,
 
-    /// Identity that’s currently frozen and we want to unfreeze
-    unfreeze_identity_id: String,
+    group: Option<(GroupContractPosition, Group)>,
+    pub group_action_id: Option<Identifier>,
+
+    /// The identity we want to freeze
+    pub unfreeze_identity_id: String,
 
     status: UnfreezeTokensStatus,
     error_message: Option<String>,
@@ -64,37 +75,103 @@ pub struct UnfreezeTokensScreen {
 }
 
 impl UnfreezeTokensScreen {
-    pub fn new(
-        identity_token_balance: IdentityTokenBalance,
-        app_context: &Arc<AppContext>,
-    ) -> Self {
-        let identity = app_context
-            .load_local_qualified_identities()
-            .unwrap_or_default()
-            .into_iter()
-            .find(|id| id.identity.id() == identity_token_balance.identity_id)
-            .expect("No local qualified identity found for this token’s identity");
-
-        let identity_clone = identity.identity.clone();
-        let possible_key = identity_clone.get_first_public_key_matching(
-            Purpose::AUTHENTICATION,
-            HashSet::from([SecurityLevel::CRITICAL]),
-            KeyType::all_key_types().into(),
-            false,
-        );
+    pub fn new(identity_token_info: IdentityTokenInfo, app_context: &Arc<AppContext>) -> Self {
+        let possible_key = identity_token_info
+            .identity
+            .identity
+            .get_first_public_key_matching(
+                Purpose::AUTHENTICATION,
+                HashSet::from([SecurityLevel::CRITICAL]),
+                KeyType::all_key_types().into(),
+                false,
+            )
+            .cloned();
 
         let mut error_message = None;
-        let selected_wallet =
-            get_selected_wallet(&identity, None, possible_key.clone(), &mut error_message);
+
+        let group = match identity_token_info
+            .token_config
+            .unfreeze_rules()
+            .authorized_to_make_change_action_takers()
+        {
+            AuthorizedActionTakers::NoOne => {
+                error_message = Some("Burning is not allowed on this token".to_string());
+                None
+            }
+            AuthorizedActionTakers::ContractOwner => {
+                if identity_token_info.data_contract.contract.owner_id()
+                    != &identity_token_info.identity.identity.id()
+                {
+                    error_message = Some(
+                        "You are not allowed to burn this token. Only the contract owner is."
+                            .to_string(),
+                    );
+                }
+                None
+            }
+            AuthorizedActionTakers::Identity(identifier) => {
+                if identifier != &identity_token_info.identity.identity.id() {
+                    error_message = Some("You are not allowed to burn this token".to_string());
+                }
+                None
+            }
+            AuthorizedActionTakers::MainGroup => {
+                match identity_token_info.token_config.main_control_group() {
+                    None => {
+                        error_message = Some(
+                            "Invalid contract: No main control group, though one should exist"
+                                .to_string(),
+                        );
+                        None
+                    }
+                    Some(group_pos) => {
+                        match identity_token_info
+                            .data_contract
+                            .contract
+                            .expected_group(group_pos)
+                        {
+                            Ok(group) => Some((group_pos, group.clone())),
+                            Err(e) => {
+                                error_message = Some(format!("Invalid contract: {}", e));
+                                None
+                            }
+                        }
+                    }
+                }
+            }
+            AuthorizedActionTakers::Group(group_pos) => {
+                match identity_token_info
+                    .data_contract
+                    .contract
+                    .expected_group(*group_pos)
+                {
+                    Ok(group) => Some((*group_pos, group.clone())),
+                    Err(e) => {
+                        error_message = Some(format!("Invalid contract: {}", e));
+                        None
+                    }
+                }
+            }
+        };
+
+        // Attempt to get an unlocked wallet reference
+        let selected_wallet = get_selected_wallet(
+            &identity_token_info.identity,
+            None,
+            possible_key.as_ref(),
+            &mut error_message,
+        );
 
         Self {
-            identity,
-            identity_token_balance,
-            selected_key: possible_key.cloned(),
+            identity: identity_token_info.identity.clone(),
+            identity_token_info,
+            selected_key: possible_key,
+            group,
+            group_action_id: None,
             public_note: None,
             unfreeze_identity_id: String::new(),
             status: UnfreezeTokensStatus::NotStarted,
-            error_message: None,
+            error_message,
             app_context: app_context.clone(),
             show_confirmation_popup: false,
             selected_wallet,
@@ -209,20 +286,40 @@ impl UnfreezeTokensScreen {
                         .get_contracts(None, None)
                         .expect("Contracts not loaded")
                         .iter()
-                        .find(|c| c.contract.id() == self.identity_token_balance.data_contract_id)
+                        .find(|c| {
+                            c.contract.id() == self.identity_token_info.data_contract.contract.id()
+                        })
                         .expect("Data contract not found")
                         .contract
                         .clone();
+
+                    let group_info;
+                    if self.group_action_id.is_some() {
+                        group_info = self.group.as_ref().map(|(pos, _)| {
+                            GroupStateTransitionInfoStatus::GroupStateTransitionInfoOtherSigner(
+                                GroupStateTransitionInfo {
+                                    group_contract_position: *pos,
+                                    action_id: self.group_action_id.unwrap(),
+                                    action_is_proposer: false,
+                                },
+                            )
+                        });
+                    } else {
+                        group_info = self.group.as_ref().map(|(pos, _)| {
+                            GroupStateTransitionInfoStatus::GroupStateTransitionInfoProposer(*pos)
+                        });
+                    }
 
                     // Dispatch to backend
                     action =
                         AppAction::BackendTask(BackendTask::TokenTask(TokenTask::UnfreezeTokens {
                             actor_identity: self.identity.clone(),
                             data_contract,
-                            token_position: self.identity_token_balance.token_position,
+                            token_position: self.identity_token_info.token_position,
                             signing_key: self.selected_key.clone().expect("No key selected"),
                             public_note: self.public_note.clone(),
                             unfreeze_identity: unfreeze_id,
+                            group_info,
                         }));
                 }
 
@@ -244,11 +341,21 @@ impl UnfreezeTokensScreen {
             ui.add_space(50.0);
 
             ui.heading("🎉");
-            ui.heading("Unfroze Successfully!");
+            if self.group_action_id.is_some() {
+                ui.label("Group Unfreeze Signing Successful.");
+            } else {
+                ui.heading("Unfreeze Successful.");
+            }
 
             ui.add_space(20.0);
 
-            if ui.button("Back to Tokens").clicked() {
+            let button_text;
+            if self.group_action_id.is_some() {
+                button_text = "Back to Group Actions";
+            } else {
+                button_text = "Back to Tokens";
+            }
+            if ui.button(button_text).clicked() {
                 action = AppAction::PopScreenAndRefresh;
             }
         });
@@ -286,19 +393,32 @@ impl ScreenLike for UnfreezeTokensScreen {
     }
 
     fn ui(&mut self, ctx: &Context) -> AppAction {
-        let mut action = add_top_panel(
-            ctx,
-            &self.app_context,
-            vec![
-                ("Tokens", AppAction::GoToMainScreen),
-                (
-                    &self.identity_token_balance.token_alias,
-                    AppAction::PopScreen,
-                ),
-                ("Unfreeze", AppAction::None),
-            ],
-            vec![],
-        );
+        let mut action;
+
+        // Build a top panel
+        if self.group_action_id.is_some() {
+            action = add_top_panel(
+                ctx,
+                &self.app_context,
+                vec![
+                    ("Contracts", AppAction::GoToMainScreen),
+                    ("Group Actions", AppAction::PopScreen),
+                    ("Unfreeze", AppAction::None),
+                ],
+                vec![],
+            );
+        } else {
+            action = add_top_panel(
+                ctx,
+                &self.app_context,
+                vec![
+                    ("Tokens", AppAction::GoToMainScreen),
+                    (&self.identity_token_info.token_alias, AppAction::PopScreen),
+                    ("Unfreeze", AppAction::None),
+                ],
+                vec![],
+            );
+        }
 
         // Left panel
         action |= add_left_panel(
@@ -398,7 +518,18 @@ impl ScreenLike for UnfreezeTokensScreen {
                 // 2) Identity to unfreeze
                 ui.heading("2. Enter the identity ID to unfreeze");
                 ui.add_space(5.0);
-                self.render_unfreeze_identity_input(ui);
+                if self.group_action_id.is_some() {
+                    ui.label(
+                        "You are signing an existing group Unfreeze so you are not allowed to choose the identity.",
+                    );
+                    ui.add_space(5.0);
+                    ui.label(format!(
+                        "Identity: {}",
+                        self.unfreeze_identity_id
+                    ));
+                } else {
+                    self.render_unfreeze_identity_input(ui);
+                }
 
                 ui.add_space(10.0);
                 ui.separator();
@@ -418,18 +549,33 @@ impl ScreenLike for UnfreezeTokensScreen {
                         )
                         .changed()
                     {
-                        self.public_note = Some(txt);
+                        self.public_note = if txt.len() > 0 {
+                            Some(txt)
+                        } else {
+                            None
+                        };
                     }
                 });
-                ui.add_space(10.0);
+
+                let button_text = render_group_action_text(
+                    ui,
+                    &self.group,
+                    &self.identity_token_info,
+                    "Unfreeze",
+                    &self.group_action_id,
+                );
 
                 // Unfreeze button
-                let button = egui::Button::new(RichText::new("Unfreeze").color(Color32::WHITE))
-                    .fill(Color32::from_rgb(0, 128, 128))
-                    .corner_radius(3.0);
+                if self.app_context.developer_mode || !button_text.contains("Test") {
+                    ui.add_space(10.0);
+                    let button =
+                        egui::Button::new(RichText::new(button_text).color(Color32::WHITE))
+                            .fill(Color32::from_rgb(0, 128, 255))
+                            .corner_radius(3.0);
 
-                if ui.add(button).clicked() {
-                    self.show_confirmation_popup = true;
+                    if ui.add(button).clicked() {
+                        self.show_confirmation_popup = true;
+                    }
                 }
 
                 // If user pressed "Unfreeze," show popup

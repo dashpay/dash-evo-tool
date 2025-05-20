@@ -1768,8 +1768,6 @@ impl TokensScreen {
         //     self.sort_vec(&mut detail_list);
         // }
 
-        // This is basically your old `render_table_my_token_balances` logic, but
-        // limited to just the single token.
         // Allocate space for refreshing indicator
         let refreshing_height = 33.0;
         let mut max_scroll_height = if let RefreshingStatus::Refreshing(_) = self.refreshing_status
@@ -1965,69 +1963,111 @@ impl TokensScreen {
                                                             ui.close_menu();
                                                         }
                                                         if ui.button("Burn").clicked() {
-                                                            action = AppAction::AddScreen(
-                                                                Screen::BurnTokensScreen(
-                                                                    BurnTokensScreen::new(
-                                                                        itb.clone(),
-                                                                        &self.app_context,
-                                                                    ),
-                                                                ),
-                                                            );
+                                                            match IdentityTokenInfo::try_from_identity_token_balance_with_lookup(itb, &self.app_context) {
+                                                                Ok(info) => {
+                                                                    action = AppAction::AddScreen(
+                                                                        Screen::BurnTokensScreen(
+                                                                            BurnTokensScreen::new(
+                                                                                info,
+                                                                                &self.app_context,
+                                                                            ),
+                                                                        ),
+                                                                    );
+                                                                }
+                                                                Err(e) => {
+                                                                    self.set_error_message(Some(e));
+                                                                }
+                                                            };
                                                             ui.close_menu();
                                                         }
                                                         if ui.button("Freeze").clicked() {
-                                                            action = AppAction::AddScreen(
-                                                                Screen::FreezeTokensScreen(
-                                                                    FreezeTokensScreen::new(
-                                                                        itb.clone(),
-                                                                        &self.app_context,
-                                                                    ),
-                                                                ),
-                                                            );
+                                                            match IdentityTokenInfo::try_from_identity_token_balance_with_lookup(itb, &self.app_context) {
+                                                                Ok(info) => {
+                                                                    action = AppAction::AddScreen(
+                                                                        Screen::FreezeTokensScreen(
+                                                                            FreezeTokensScreen::new(
+                                                                                info,
+                                                                                &self.app_context,
+                                                                            ),
+                                                                        ),
+                                                                    );
+                                                                }
+                                                                Err(e) => {
+                                                                    self.set_error_message(Some(e));
+                                                                }
+                                                            };
                                                             ui.close_menu();
                                                         }
                                                         if ui.button("Destroy").clicked() {
-                                                            action = AppAction::AddScreen(
-                                                                Screen::DestroyFrozenFundsScreen(
-                                                                    DestroyFrozenFundsScreen::new(
-                                                                        itb.clone(),
-                                                                        &self.app_context,
-                                                                    ),
-                                                                ),
-                                                            );
+                                                            match IdentityTokenInfo::try_from_identity_token_balance_with_lookup(itb, &self.app_context) {
+                                                                Ok(info) => {
+                                                                    action = AppAction::AddScreen(
+                                                                        Screen::DestroyFrozenFundsScreen(
+                                                                            DestroyFrozenFundsScreen::new(
+                                                                                info,
+                                                                                &self.app_context,
+                                                                            ),
+                                                                        ),
+                                                                    );
+                                                                }
+                                                                Err(e) => {
+                                                                    self.set_error_message(Some(e));
+                                                                }
+                                                            };
                                                             ui.close_menu();
                                                         }
                                                         if ui.button("Unfreeze").clicked() {
-                                                            action = AppAction::AddScreen(
-                                                                Screen::UnfreezeTokensScreen(
-                                                                    UnfreezeTokensScreen::new(
-                                                                        itb.clone(),
-                                                                        &self.app_context,
-                                                                    ),
-                                                                ),
-                                                            );
+                                                            match IdentityTokenInfo::try_from_identity_token_balance_with_lookup(itb, &self.app_context) {
+                                                                Ok(info) => {
+                                                                    action = AppAction::AddScreen(
+                                                                        Screen::UnfreezeTokensScreen(
+                                                                            UnfreezeTokensScreen::new(
+                                                                                info,
+                                                                                &self.app_context,
+                                                                            ),
+                                                                        ),
+                                                                    );
+                                                                }
+                                                                Err(e) => {
+                                                                    self.set_error_message(Some(e));
+                                                                }
+                                                            };
                                                             ui.close_menu();
                                                         }
                                                         if ui.button("Pause").clicked() {
-                                                            action = AppAction::AddScreen(
-                                                                Screen::PauseTokensScreen(
-                                                                    PauseTokensScreen::new(
-                                                                        itb.clone(),
-                                                                        &self.app_context,
-                                                                    ),
-                                                                ),
-                                                            );
+                                                            match IdentityTokenInfo::try_from_identity_token_balance_with_lookup(itb, &self.app_context) {
+                                                                Ok(info) => {
+                                                                    action = AppAction::AddScreen(
+                                                                        Screen::PauseTokensScreen(
+                                                                            PauseTokensScreen::new(
+                                                                                info,
+                                                                                &self.app_context,
+                                                                            ),
+                                                                        ),
+                                                                    );
+                                                                }
+                                                                Err(e) => {
+                                                                    self.set_error_message(Some(e));
+                                                                }
+                                                            };
                                                             ui.close_menu();
                                                         }
                                                         if ui.button("Resume").clicked() {
-                                                            action = AppAction::AddScreen(
-                                                                Screen::ResumeTokensScreen(
-                                                                    ResumeTokensScreen::new(
-                                                                        itb.clone(),
-                                                                        &self.app_context,
-                                                                    ),
-                                                                ),
-                                                            );
+                                                            match IdentityTokenInfo::try_from_identity_token_balance_with_lookup(itb, &self.app_context) {
+                                                                Ok(info) => {
+                                                                    action = AppAction::AddScreen(
+                                                                        Screen::ResumeTokensScreen(
+                                                                            ResumeTokensScreen::new(
+                                                                                info,
+                                                                                &self.app_context,
+                                                                            ),
+                                                                        ),
+                                                                    );
+                                                                }
+                                                                Err(e) => {
+                                                                    self.set_error_message(Some(e));
+                                                                }
+                                                            };
                                                             ui.close_menu();
                                                         }
                                                         if ui.button("View Claims").clicked() {
@@ -2042,14 +2082,21 @@ impl TokensScreen {
                                                             ui.close_menu();
                                                         }
                                                         if ui.button("Update Config").clicked() {
-                                                            action = AppAction::AddScreen(
-                                                                Screen::UpdateTokenConfigScreen(
-                                                                    UpdateTokenConfigScreen::new(
-                                                                        itb.clone(),
-                                                                        &self.app_context,
-                                                                    ),
-                                                                ),
-                                                            );
+                                                            match IdentityTokenInfo::try_from_identity_token_balance_with_lookup(itb, &self.app_context) {
+                                                                Ok(info) => {
+                                                                    action = AppAction::AddScreen(
+                                                                        Screen::UpdateTokenConfigScreen(
+                                                                            UpdateTokenConfigScreen::new(
+                                                                                info,
+                                                                                &self.app_context,
+                                                                            ),
+                                                                        ),
+                                                                    );
+                                                                }
+                                                                Err(e) => {
+                                                                    self.set_error_message(Some(e));
+                                                                }
+                                                            };
                                                             ui.close_menu();
                                                         }
                                                         // Purchase
@@ -4935,9 +4982,13 @@ Emits tokens in fixed amounts for specific intervals.
 
         self.display_message("Added token", MessageType::Success);
 
-        AppAction::BackendTask(BackendTask::TokenTask(TokenTask::SaveTokenLocally(
-            token_info,
-        )))
+        AppAction::BackendTasks(
+            vec![
+                BackendTask::TokenTask(TokenTask::SaveTokenLocally(token_info)),
+                BackendTask::TokenTask(TokenTask::QueryMyTokenBalances),
+            ],
+            BackendTasksExecutionMode::Sequential,
+        )
     }
 
     fn goto_next_search_page(&mut self) -> AppAction {

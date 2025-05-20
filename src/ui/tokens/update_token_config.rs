@@ -1,3 +1,27 @@
+use std::collections::{BTreeMap, HashSet};
+use std::sync::{Arc, RwLock};
+
+use chrono::{DateTime, Utc};
+use dash_sdk::dpp::balances::credits::TokenAmount;
+use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
+use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
+use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::v0::TokenConfigurationConventionV0;
+use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::TokenConfigurationConvention;
+use dash_sdk::dpp::data_contract::associated_token::token_configuration_item::TokenConfigurationChangeItem;
+use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::distribution_function::DistributionFunction;
+use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::distribution_recipient::TokenDistributionRecipient;
+use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::reward_distribution_type::RewardDistributionType;
+use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::v0::TokenPerpetualDistributionV0;
+use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::TokenPerpetualDistribution;
+use dash_sdk::dpp::data_contract::change_control_rules::authorized_action_takers::AuthorizedActionTakers;
+use dash_sdk::dpp::data_contract::group::Group;
+use dash_sdk::dpp::data_contract::GroupContractPosition;
+use dash_sdk::dpp::group::{GroupStateTransitionInfo, GroupStateTransitionInfoStatus};
+use eframe::egui::{self, Color32, Context, Ui};
+use egui::RichText;
+
+use super::tokens_screen::IdentityTokenInfo;
 use crate::app::AppAction;
 use crate::backend_task::tokens::TokenTask;
 use crate::backend_task::BackendTask;
@@ -9,34 +33,16 @@ use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
+use crate::ui::helpers::render_group_action_text;
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
 use crate::ui::{MessageType, Screen, ScreenLike};
-use chrono::{DateTime, Utc};
-use dash_sdk::dpp::balances::credits::TokenAmount;
-use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
-use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::v0::TokenConfigurationConventionV0;
-use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::TokenConfigurationConvention;
-use dash_sdk::dpp::data_contract::associated_token::token_configuration_item::TokenConfigurationChangeItem;
-use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::distribution_function::DistributionFunction;
-use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::distribution_recipient::TokenDistributionRecipient;
-use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::reward_distribution_type::RewardDistributionType;
-use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::v0::TokenPerpetualDistributionV0;
-use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::TokenPerpetualDistribution;
-use dash_sdk::dpp::data_contract::change_control_rules::authorized_action_takers::AuthorizedActionTakers;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
-use egui::{Color32, Ui};
-use egui::{Context, RichText};
-use std::sync::RwLock;
-use std::collections::{BTreeMap, HashSet};
-use std::sync::Arc;
-
-use super::tokens_screen::IdentityTokenBalance;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum UpdateTokenConfigStatus {
@@ -45,15 +51,17 @@ pub enum UpdateTokenConfigStatus {
 }
 
 pub struct UpdateTokenConfigScreen {
-    pub identity_token_balance: IdentityTokenBalance,
+    pub identity_token_info: IdentityTokenInfo,
     data_contract_option: Option<QualifiedContract>,
     backend_message: Option<(String, MessageType, DateTime<Utc>)>,
     update_status: UpdateTokenConfigStatus,
     pub app_context: Arc<AppContext>,
-    change_item: TokenConfigurationChangeItem,
+    pub change_item: TokenConfigurationChangeItem,
     signing_key: Option<IdentityPublicKey>,
     identity: QualifiedIdentity,
     public_note: Option<String>,
+    group: Option<(GroupContractPosition, Group)>,
+    pub group_action_id: Option<Identifier>,
 
     // Input state fields
     pub authorized_identity_input: Option<String>,
@@ -66,44 +74,105 @@ pub struct UpdateTokenConfigScreen {
 }
 
 impl UpdateTokenConfigScreen {
-    pub fn new(
-        identity_token_balance: IdentityTokenBalance,
-        app_context: &Arc<AppContext>,
-    ) -> Self {
-        // Find the local qualified identity that corresponds to `identity_token_balance.identity_id`
-        let identity = app_context
-            .load_local_qualified_identities()
-            .unwrap_or_default()
-            .into_iter()
-            .find(|id| id.identity.id() == identity_token_balance.identity_id)
-            .expect("No local qualified identity found matching the token's identity");
-
-        // Grab a default key if possible
-        let identity_clone = identity.identity.clone();
-        let possible_key = identity_clone.get_first_public_key_matching(
-            Purpose::AUTHENTICATION,
-            HashSet::from([SecurityLevel::CRITICAL]),
-            KeyType::all_key_types().into(),
-            false,
-        );
+    pub fn new(identity_token_info: IdentityTokenInfo, app_context: &Arc<AppContext>) -> Self {
+        let possible_key = identity_token_info
+            .identity
+            .identity
+            .get_first_public_key_matching(
+                Purpose::AUTHENTICATION,
+                HashSet::from([SecurityLevel::CRITICAL]),
+                KeyType::all_key_types().into(),
+                false,
+            )
+            .cloned();
 
         let mut error_message = None;
-        let selected_wallet =
-            get_selected_wallet(&identity, None, possible_key.clone(), &mut error_message);
+
+        let group = match identity_token_info
+            .token_config
+            .manual_minting_rules()
+            .authorized_to_make_change_action_takers()
+        {
+            AuthorizedActionTakers::NoOne => {
+                error_message = Some("Minting is not allowed on this token".to_string());
+                None
+            }
+            AuthorizedActionTakers::ContractOwner => {
+                if identity_token_info.data_contract.contract.owner_id()
+                    != &identity_token_info.identity.identity.id()
+                {
+                    error_message = Some(
+                        "You are not allowed to mint this token. Only the contract owner is."
+                            .to_string(),
+                    );
+                }
+                None
+            }
+            AuthorizedActionTakers::Identity(identifier) => {
+                if identifier != &identity_token_info.identity.identity.id() {
+                    error_message = Some("You are not allowed to mint this token".to_string());
+                }
+                None
+            }
+            AuthorizedActionTakers::MainGroup => {
+                match identity_token_info.token_config.main_control_group() {
+                    None => {
+                        error_message = Some(
+                            "Invalid contract: No main control group, though one should exist"
+                                .to_string(),
+                        );
+                        None
+                    }
+                    Some(group_pos) => {
+                        match identity_token_info
+                            .data_contract
+                            .contract
+                            .expected_group(group_pos)
+                        {
+                            Ok(group) => Some((group_pos, group.clone())),
+                            Err(e) => {
+                                error_message = Some(format!("Invalid contract: {}", e));
+                                None
+                            }
+                        }
+                    }
+                }
+            }
+            AuthorizedActionTakers::Group(group_pos) => {
+                match identity_token_info
+                    .data_contract
+                    .contract
+                    .expected_group(*group_pos)
+                {
+                    Ok(group) => Some((*group_pos, group.clone())),
+                    Err(e) => {
+                        error_message = Some(format!("Invalid contract: {}", e));
+                        None
+                    }
+                }
+            }
+        };
+
+        // Attempt to get an unlocked wallet reference
+        let selected_wallet = get_selected_wallet(
+            &identity_token_info.identity,
+            None,
+            possible_key.as_ref(),
+            &mut error_message,
+        );
 
         let data_contract_option = app_context
-            .get_contract_by_id(&identity_token_balance.data_contract_id)
+            .get_contract_by_id(&identity_token_info.data_contract.contract.id())
             .unwrap_or_default();
 
         Self {
-            identity_token_balance: identity_token_balance.clone(),
+            identity_token_info: identity_token_info.clone(),
             data_contract_option,
             backend_message: None,
             update_status: UpdateTokenConfigStatus::NotUpdating,
             app_context: app_context.clone(),
             change_item: TokenConfigurationChangeItem::TokenConfigurationNoChange,
-            signing_key: possible_key.cloned(),
-            identity,
+            signing_key: possible_key,
             public_note: None,
 
             authorized_identity_input: None,
@@ -113,6 +182,10 @@ impl UpdateTokenConfigScreen {
             wallet_password: String::new(),
             show_password: false,
             error_message,
+
+            identity: identity_token_info.identity,
+            group,
+            group_action_id: None,
         }
     }
 
@@ -121,6 +194,9 @@ impl UpdateTokenConfigScreen {
 
         ui.heading("2. Select the item to update");
         ui.add_space(10.0);
+        if self.group_action_id.is_some() {
+            ui.label("You are signing an existing group action. Make sure you construct the exact same item as the one in the group action, details of which can be found on the previous screen.");
+        }
 
         let item = &mut self.change_item;
 
@@ -512,27 +588,56 @@ impl UpdateTokenConfigScreen {
             let mut txt = self.public_note.clone().unwrap_or_default();
             if ui
                 .text_edit_singleline(&mut txt)
-                .on_hover_text("A note to go with the transaction that can be seen by the public")
+                .on_hover_text("A note about the transaction that can be seen by the public.")
                 .changed()
             {
-                self.public_note = Some(txt);
+                self.public_note = if txt.len() > 0 { Some(txt) } else { None };
             }
         });
 
-        ui.add_space(20.0);
+        let button_text = render_group_action_text(
+            ui,
+            &self.group,
+            &self.identity_token_info,
+            "Update Config",
+            &self.group_action_id,
+        );
 
-        let button = egui::Button::new(RichText::new("Broadcast Update").color(Color32::WHITE))
+        let button = egui::Button::new(RichText::new(&button_text).color(Color32::WHITE))
             .fill(Color32::from_rgb(0, 128, 255))
             .frame(true)
             .corner_radius(3.0);
-        if ui.add(button).clicked() {
-            self.update_status = UpdateTokenConfigStatus::Updating(Utc::now());
-            action = AppAction::BackendTask(BackendTask::TokenTask(TokenTask::UpdateTokenConfig {
-                identity_token_balance: self.identity_token_balance.clone(),
-                change_item: self.change_item.clone(),
-                signing_key: self.signing_key.clone().expect("Signing key must be set"),
-                public_note: self.public_note.clone(),
-            }));
+
+        if self.app_context.developer_mode || !button_text.contains("Test") {
+            ui.add_space(20.0);
+            if ui.add(button).clicked() {
+                let group_info;
+                if self.group_action_id.is_some() {
+                    group_info = self.group.as_ref().map(|(pos, _)| {
+                        GroupStateTransitionInfoStatus::GroupStateTransitionInfoOtherSigner(
+                            GroupStateTransitionInfo {
+                                group_contract_position: *pos,
+                                action_id: self.group_action_id.unwrap(),
+                                action_is_proposer: false,
+                            },
+                        )
+                    });
+                } else {
+                    group_info = self.group.as_ref().map(|(pos, _)| {
+                        GroupStateTransitionInfoStatus::GroupStateTransitionInfoProposer(*pos)
+                    });
+                }
+
+                self.update_status = UpdateTokenConfigStatus::Updating(Utc::now());
+                action =
+                    AppAction::BackendTask(BackendTask::TokenTask(TokenTask::UpdateTokenConfig {
+                        identity_token_info: self.identity_token_info.clone(),
+                        change_item: self.change_item.clone(),
+                        signing_key: self.signing_key.clone().expect("Signing key must be set"),
+                        public_note: self.public_note.clone(),
+                        group_info,
+                    }));
+            }
         }
 
         action
@@ -672,11 +777,21 @@ impl UpdateTokenConfigScreen {
             ui.add_space(50.0);
 
             ui.heading("🎉");
-            ui.heading(format!("{}", self.backend_message.as_ref().unwrap().0));
+            if self.group_action_id.is_some() {
+                ui.label("Group Update Signing Successful.");
+            } else {
+                ui.heading(format!("{}", self.backend_message.as_ref().unwrap().0));
+            }
 
             ui.add_space(20.0);
 
-            if ui.button("Back to Tokens").clicked() {
+            let button_text;
+            if self.group_action_id.is_some() {
+                button_text = "Back to Group Actions";
+            } else {
+                button_text = "Back to Tokens";
+            }
+            if ui.button(button_text).clicked() {
                 action = AppAction::PopScreenAndRefresh;
             }
         });
@@ -763,20 +878,32 @@ impl ScreenLike for UpdateTokenConfigScreen {
     }
 
     fn ui(&mut self, ctx: &Context) -> AppAction {
-        // Top panel
-        let mut action = add_top_panel(
-            ctx,
-            &self.app_context,
-            vec![
-                ("Tokens", AppAction::GoToMainScreen),
-                (
-                    &self.identity_token_balance.token_alias,
-                    AppAction::PopScreen,
-                ),
-                ("Update Config", AppAction::None),
-            ],
-            vec![],
-        );
+        let mut action;
+
+        // Build a top panel
+        if self.group_action_id.is_some() {
+            action = add_top_panel(
+                ctx,
+                &self.app_context,
+                vec![
+                    ("Contracts", AppAction::GoToMainScreen),
+                    ("Group Actions", AppAction::PopScreen),
+                    ("Update Token Config", AppAction::None),
+                ],
+                vec![],
+            );
+        } else {
+            action = add_top_panel(
+                ctx,
+                &self.app_context,
+                vec![
+                    ("Tokens", AppAction::GoToMainScreen),
+                    (&self.identity_token_info.token_alias, AppAction::PopScreen),
+                    ("Update Token Config", AppAction::None),
+                ],
+                vec![],
+            );
+        }
 
         // Left panel
         action |= add_left_panel(

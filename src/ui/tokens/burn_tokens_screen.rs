@@ -6,6 +6,7 @@ use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
 use dash_sdk::dpp::data_contract::change_control_rules::authorized_action_takers::AuthorizedActionTakers;
+use dash_sdk::dpp::data_contract::group::accessors::v0::GroupV0Getters;
 use dash_sdk::dpp::data_contract::group::Group;
 use dash_sdk::dpp::data_contract::GroupContractPosition;
 use dash_sdk::dpp::group::{GroupStateTransitionInfo, GroupStateTransitionInfoStatus};
@@ -15,6 +16,7 @@ use egui::RichText;
 
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
+use crate::ui::contracts_documents::group_actions_screen::GroupActionsScreen;
 use crate::ui::helpers::render_group_action_text;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
@@ -31,7 +33,7 @@ use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
-use crate::ui::{MessageType, Screen, ScreenLike};
+use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike};
 
 use super::tokens_screen::IdentityTokenInfo;
 
@@ -48,11 +50,12 @@ pub struct BurnTokensScreen {
     pub identity_token_info: IdentityTokenInfo,
     selected_key: Option<IdentityPublicKey>,
     group: Option<(GroupContractPosition, Group)>,
+    is_unilateral_group_member: bool,
     pub group_action_id: Option<Identifier>,
 
     // The user chooses how many tokens to burn
     pub amount_to_burn: String,
-    public_note: Option<String>,
+    pub public_note: Option<String>,
 
     status: BurnTokensStatus,
     error_message: Option<String>,
@@ -149,6 +152,21 @@ impl BurnTokensScreen {
             }
         };
 
+        let mut is_unilateral_group_member = false;
+        if group.is_some() {
+            if let Some((_, group)) = group.clone() {
+                let your_power = group
+                    .members()
+                    .get(&identity_token_info.identity.identity.id());
+
+                if let Some(your_power) = your_power {
+                    if your_power >= &group.required_power() {
+                        is_unilateral_group_member = true;
+                    }
+                }
+            }
+        };
+
         // Attempt to get an unlocked wallet reference
         let selected_wallet = get_selected_wallet(
             &identity_token_info.identity,
@@ -161,6 +179,7 @@ impl BurnTokensScreen {
             identity_token_info,
             selected_key: possible_key,
             group,
+            is_unilateral_group_member,
             group_action_id: None,
             amount_to_burn: String::new(),
             public_note: None,
@@ -316,7 +335,11 @@ impl BurnTokensScreen {
                                 data_contract,
                                 token_position: self.identity_token_info.token_position,
                                 signing_key: self.selected_key.clone().expect("Expected a key"),
-                                public_note: self.public_note.clone(),
+                                public_note: if self.group_action_id.is_some() {
+                                    None
+                                } else {
+                                    self.public_note.clone()
+                                },
                                 amount: amount_ok.unwrap(),
                                 group_info,
                             }),
@@ -346,22 +369,42 @@ impl BurnTokensScreen {
 
             ui.heading("🎉");
             if self.group_action_id.is_some() {
-                ui.label("Group Burn Signing Successful.");
+                // This burn is already initiated by the group, we are just signing it
+                ui.heading("Group Burn Signing Successful.");
             } else {
-                ui.heading("Burn Successful.");
+                if !self.is_unilateral_group_member {
+                    ui.heading("Group Burn Initiated.");
+                } else {
+                    ui.heading("Burn Successful.");
+                }
             }
 
             ui.add_space(20.0);
 
-            let button_text;
             if self.group_action_id.is_some() {
-                button_text = "Back to Group Actions";
+                if ui.button("Back to Group Actions").clicked() {
+                    action = AppAction::PopScreenAndRefresh;
+                }
+                if ui.button("Back to Tokens").clicked() {
+                    action = AppAction::SetMainScreenThenGoToMainScreen(
+                        RootScreenType::RootScreenMyTokenBalances,
+                    );
+                }
             } else {
-                button_text = "Back to Tokens";
-            }
-            if ui.button(button_text).clicked() {
-                // Pop this screen and refresh
-                action = AppAction::PopScreenAndRefresh;
+                if ui.button("Back to Tokens").clicked() {
+                    action = AppAction::PopScreenAndRefresh;
+                }
+
+                if !self.is_unilateral_group_member {
+                    if ui.button("Go to Group Actions").clicked() {
+                        action = AppAction::PopThenAddScreenToMainScreen(
+                            RootScreenType::RootScreenDocumentQuery,
+                            Screen::GroupActionsScreen(GroupActionsScreen::new(
+                                &self.app_context.clone(),
+                            )),
+                        );
+                    }
+                }
             }
         });
         action
@@ -439,7 +482,7 @@ impl ScreenLike for BurnTokensScreen {
         egui::CentralPanel::default().show(ctx, |ui| {
             // If we are in the "Complete" status, just show success screen
             if self.status == BurnTokensStatus::Complete {
-                action = self.show_success_screen(ui);
+                action |= self.show_success_screen(ui);
                 return;
             }
 
@@ -563,24 +606,35 @@ impl ScreenLike for BurnTokensScreen {
                 // Render text input for the public note
                 ui.heading("3. Public note (optional)");
                 ui.add_space(5.0);
-                ui.horizontal(|ui| {
-                    ui.label("Public note (optional):");
-                    ui.add_space(10.0);
-                    let mut txt = self.public_note.clone().unwrap_or_default();
-                    if ui
-                        .text_edit_singleline(&mut txt)
-                        .on_hover_text(
-                            "A note about the transaction that can be seen by the public.",
-                        )
-                        .changed()
-                    {
-                        self.public_note = if txt.len() > 0 {
-                            Some(txt)
-                        } else {
-                            None
-                        };
-                    }
-                });
+                if self.group_action_id.is_some() {
+                    ui.label(
+                        "You are signing an existing group Burn so you are not allowed to put a note.",
+                    );
+                    ui.add_space(5.0);
+                    ui.label(format!(
+                        "Note: {}",
+                        self.public_note.clone().unwrap_or("None".to_string())
+                    ));
+                } else {
+                    ui.horizontal(|ui| {
+                        ui.label("Public note (optional):");
+                        ui.add_space(10.0);
+                        let mut txt = self.public_note.clone().unwrap_or_default();
+                        if ui
+                            .text_edit_singleline(&mut txt)
+                            .on_hover_text(
+                                "A note about the transaction that can be seen by the public.",
+                            )
+                            .changed()
+                        {
+                            self.public_note = if txt.len() > 0 {
+                                Some(txt)
+                            } else {
+                                None
+                            };
+                        }
+                    });
+                }
 
                 let button_text =
                     render_group_action_text(ui, &self.group, &self.identity_token_info, "Burn", &self.group_action_id);

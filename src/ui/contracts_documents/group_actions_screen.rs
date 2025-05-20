@@ -24,6 +24,7 @@ use crate::ui::tokens::freeze_tokens_screen::FreezeTokensScreen;
 use crate::ui::tokens::mint_tokens_screen::MintTokensScreen;
 use crate::ui::tokens::pause_tokens_screen::PauseTokensScreen;
 use crate::ui::tokens::resume_tokens_screen::ResumeTokensScreen;
+use crate::ui::tokens::set_token_price_screen::SetTokenPriceScreen;
 use crate::ui::tokens::tokens_screen::{
     IdentityTokenBalance, IdentityTokenIdentifier, IdentityTokenInfo,
 };
@@ -298,8 +299,9 @@ impl GroupActionsScreen {
                                     });
                                 });
                                 row.col(|ui| {
+                                    let note_clone = note.clone();
                                     ui.horizontal(|ui| {
-                                        ui.label(note);
+                                        ui.label(note_clone);
                                         ui.add_space(30.0);
                                     });
                                 });
@@ -361,6 +363,11 @@ impl GroupActionsScreen {
                                                     .next()
                                                     .unwrap_or("0")
                                                     .to_string();
+                                                mint_screen.public_note = if note.len() > 0 {
+                                                    Some(note)
+                                                } else {
+                                                    None
+                                                };
 
                                                 action |= AppAction::AddScreen(
                                                     Screen::MintTokensScreen(mint_screen),
@@ -376,6 +383,11 @@ impl GroupActionsScreen {
                                                     .next()
                                                     .unwrap_or("0")
                                                     .to_string();
+                                                burn_screen.public_note = if note.len() > 0 {
+                                                    Some(note)
+                                                } else {
+                                                    None
+                                                };
 
                                                 action |= AppAction::AddScreen(
                                                     Screen::BurnTokensScreen(burn_screen),
@@ -391,6 +403,12 @@ impl GroupActionsScreen {
                                                     .next()
                                                     .unwrap_or("")
                                                     .to_string();
+                                                freeze_screen.public_note = if note.len() > 0 {
+                                                    Some(note)
+                                                } else {
+                                                    None
+                                                };
+
                                                 action |= AppAction::AddScreen(
                                                     Screen::FreezeTokensScreen(freeze_screen),
                                                 );
@@ -405,6 +423,12 @@ impl GroupActionsScreen {
                                                     .next()
                                                     .unwrap_or("")
                                                     .to_string();
+                                                unfreeze_screen.public_note = if note.len() > 0 {
+                                                    Some(note)
+                                                } else {
+                                                    None
+                                                };
+
                                                 action |= AppAction::AddScreen(
                                                     Screen::UnfreezeTokensScreen(unfreeze_screen),
                                                 );
@@ -420,6 +444,12 @@ impl GroupActionsScreen {
                                                     .nth(2)
                                                     .unwrap_or("")
                                                     .to_string();
+                                                destroy_screen.public_note = if note.len() > 0 {
+                                                    Some(note)
+                                                } else {
+                                                    None
+                                                };
+
                                                 action |= AppAction::AddScreen(
                                                     Screen::DestroyFrozenFundsScreen(
                                                         destroy_screen,
@@ -432,6 +462,11 @@ impl GroupActionsScreen {
                                                         identity_token_info, &self.app_context,
                                                     );
                                                     pause_screen.group_action_id = Some(*id);
+                                                    pause_screen.public_note = if note.len() > 0 {
+                                                        Some(note)
+                                                    } else {
+                                                        None
+                                                    };
                                                     action |= AppAction::AddScreen(
                                                         Screen::PauseTokensScreen(pause_screen),
                                                     );
@@ -441,6 +476,11 @@ impl GroupActionsScreen {
                                                         identity_token_info, &self.app_context,
                                                     );
                                                     resume_screen.group_action_id = Some(*id);
+                                                    resume_screen.public_note = if note.len() > 0 {
+                                                        Some(note)
+                                                    } else {
+                                                        None
+                                                    };
                                                     action |= AppAction::AddScreen(
                                                         Screen::ResumeTokensScreen(resume_screen),
                                                     );
@@ -453,12 +493,37 @@ impl GroupActionsScreen {
                                                         identity_token_info, &self.app_context,
                                                     );
                                                 update_screen.group_action_id = Some(*id);
+                                                update_screen.public_note = if note.len() > 0 {
+                                                    Some(note)
+                                                } else {
+                                                    None
+                                                };
                                                 action |= AppAction::AddScreen(
                                                     Screen::UpdateTokenConfigScreen(update_screen),
                                                 );
                                             }
-
-                                            // To do: Change price and direct purchase
+                                            "ChangePrice" => {
+                                                let mut change_price_screen =
+                                                    SetTokenPriceScreen::new(
+                                                        identity_token_info, &self.app_context,
+                                                    );
+                                                change_price_screen.group_action_id = Some(*id);
+                                                change_price_screen.token_pricing_schedule =
+                                                    info.split_whitespace()
+                                                        .next()
+                                                        .unwrap_or("")
+                                                        .to_string();
+                                                change_price_screen.public_note = if note.len() > 0 {
+                                                    Some(note)
+                                                } else {
+                                                    None
+                                                };
+                                                action |= AppAction::AddScreen(
+                                                    Screen::SetTokenPriceScreen(
+                                                        change_price_screen,
+                                                    ),
+                                                );
+                                            }
                                             _ => {
                                                 action |= AppAction::None;
                                             }

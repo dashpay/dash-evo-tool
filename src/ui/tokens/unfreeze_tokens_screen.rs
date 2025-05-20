@@ -1,24 +1,4 @@
-use std::collections::HashSet;
-use std::sync::{Arc, RwLock};
-use std::time::{SystemTime, UNIX_EPOCH};
-
-use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
-use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
-use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
-use dash_sdk::dpp::data_contract::change_control_rules::authorized_action_takers::AuthorizedActionTakers;
-use dash_sdk::dpp::data_contract::group::Group;
-use dash_sdk::dpp::data_contract::GroupContractPosition;
-use dash_sdk::dpp::group::GroupStateTransitionInfoStatus;
-use dash_sdk::dpp::platform_value::string_encoding::Encoding;
-use eframe::egui::{self, Color32, Context, Ui};
-use egui::RichText;
-
-use dash_sdk::dpp::group::GroupStateTransitionInfo;
-use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
-use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
-use dash_sdk::platform::{Identifier, IdentityPublicKey};
-
+use super::tokens_screen::IdentityTokenInfo;
 use crate::app::AppAction;
 use crate::backend_task::tokens::TokenTask;
 use crate::backend_task::BackendTask;
@@ -29,13 +9,31 @@ use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
+use crate::ui::contracts_documents::group_actions_screen::GroupActionsScreen;
 use crate::ui::helpers::render_group_action_text;
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
-use crate::ui::{MessageType, Screen, ScreenLike};
-
-use super::tokens_screen::IdentityTokenInfo;
+use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike};
+use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
+use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
+use dash_sdk::dpp::data_contract::change_control_rules::authorized_action_takers::AuthorizedActionTakers;
+use dash_sdk::dpp::data_contract::group::accessors::v0::GroupV0Getters;
+use dash_sdk::dpp::data_contract::group::Group;
+use dash_sdk::dpp::data_contract::GroupContractPosition;
+use dash_sdk::dpp::group::GroupStateTransitionInfo;
+use dash_sdk::dpp::group::GroupStateTransitionInfoStatus;
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
+use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+use dash_sdk::platform::{Identifier, IdentityPublicKey};
+use eframe::egui::{self, Color32, Context, Ui};
+use egui::RichText;
+use std::collections::HashSet;
+use std::sync::{Arc, RwLock};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// The states for the unfreeze flow
 #[derive(PartialEq)]
@@ -51,9 +49,10 @@ pub struct UnfreezeTokensScreen {
     pub identity: QualifiedIdentity,
     pub identity_token_info: IdentityTokenInfo,
     selected_key: Option<IdentityPublicKey>,
-    public_note: Option<String>,
+    pub public_note: Option<String>,
 
     group: Option<(GroupContractPosition, Group)>,
+    is_unilateral_group_member: bool,
     pub group_action_id: Option<Identifier>,
 
     /// The identity we want to freeze
@@ -154,6 +153,21 @@ impl UnfreezeTokensScreen {
             }
         };
 
+        let mut is_unilateral_group_member = false;
+        if group.is_some() {
+            if let Some((_, group)) = group.clone() {
+                let your_power = group
+                    .members()
+                    .get(&identity_token_info.identity.identity.id());
+
+                if let Some(your_power) = your_power {
+                    if your_power >= &group.required_power() {
+                        is_unilateral_group_member = true;
+                    }
+                }
+            }
+        };
+
         // Attempt to get an unlocked wallet reference
         let selected_wallet = get_selected_wallet(
             &identity_token_info.identity,
@@ -167,6 +181,7 @@ impl UnfreezeTokensScreen {
             identity_token_info,
             selected_key: possible_key,
             group,
+            is_unilateral_group_member,
             group_action_id: None,
             public_note: None,
             unfreeze_identity_id: String::new(),
@@ -317,7 +332,11 @@ impl UnfreezeTokensScreen {
                             data_contract,
                             token_position: self.identity_token_info.token_position,
                             signing_key: self.selected_key.clone().expect("No key selected"),
-                            public_note: self.public_note.clone(),
+                            public_note: if self.group_action_id.is_some() {
+                                None
+                            } else {
+                                self.public_note.clone()
+                            },
                             unfreeze_identity: unfreeze_id,
                             group_info,
                         }));
@@ -342,21 +361,42 @@ impl UnfreezeTokensScreen {
 
             ui.heading("🎉");
             if self.group_action_id.is_some() {
-                ui.label("Group Unfreeze Signing Successful.");
+                // This is already initiated by the group, we are just signing it
+                ui.heading("Group Unfreeze Signing Successful.");
             } else {
-                ui.heading("Unfreeze Successful.");
+                if !self.is_unilateral_group_member {
+                    ui.heading("Group Unfreeze Initiated.");
+                } else {
+                    ui.heading("Unfreeze Successful.");
+                }
             }
 
             ui.add_space(20.0);
 
-            let button_text;
             if self.group_action_id.is_some() {
-                button_text = "Back to Group Actions";
+                if ui.button("Back to Group Actions").clicked() {
+                    action = AppAction::PopScreenAndRefresh;
+                }
+                if ui.button("Back to Tokens").clicked() {
+                    action = AppAction::SetMainScreenThenGoToMainScreen(
+                        RootScreenType::RootScreenMyTokenBalances,
+                    );
+                }
             } else {
-                button_text = "Back to Tokens";
-            }
-            if ui.button(button_text).clicked() {
-                action = AppAction::PopScreenAndRefresh;
+                if ui.button("Back to Tokens").clicked() {
+                    action = AppAction::PopScreenAndRefresh;
+                }
+
+                if !self.is_unilateral_group_member {
+                    if ui.button("Go to Group Actions").clicked() {
+                        action = AppAction::PopThenAddScreenToMainScreen(
+                            RootScreenType::RootScreenDocumentQuery,
+                            Screen::GroupActionsScreen(GroupActionsScreen::new(
+                                &self.app_context.clone(),
+                            )),
+                        );
+                    }
+                }
             }
         });
         action
@@ -432,7 +472,7 @@ impl ScreenLike for UnfreezeTokensScreen {
 
         egui::CentralPanel::default().show(ctx, |ui| {
             if self.status == UnfreezeTokensStatus::Complete {
-                action = self.show_success_screen(ui);
+                action |= self.show_success_screen(ui);
                 return;
             }
 
@@ -538,24 +578,35 @@ impl ScreenLike for UnfreezeTokensScreen {
                 // Render text input for the public note
                 ui.heading("3. Public note (optional)");
                 ui.add_space(5.0);
-                ui.horizontal(|ui| {
-                    ui.label("Public note (optional):");
-                    ui.add_space(10.0);
-                    let mut txt = self.public_note.clone().unwrap_or_default();
-                    if ui
-                        .text_edit_singleline(&mut txt)
-                        .on_hover_text(
-                            "A note about the transaction that can be seen by the public.",
-                        )
-                        .changed()
-                    {
-                        self.public_note = if txt.len() > 0 {
-                            Some(txt)
-                        } else {
-                            None
-                        };
-                    }
-                });
+                if self.group_action_id.is_some() {
+                    ui.label(
+                        "You are signing an existing group Mint so you are not allowed to put a note.",
+                    );
+                    ui.add_space(5.0);
+                    ui.label(format!(
+                        "Note: {}",
+                        self.public_note.clone().unwrap_or("None".to_string())
+                    ));
+                } else {
+                    ui.horizontal(|ui| {
+                        ui.label("Public note (optional):");
+                        ui.add_space(10.0);
+                        let mut txt = self.public_note.clone().unwrap_or_default();
+                        if ui
+                            .text_edit_singleline(&mut txt)
+                            .on_hover_text(
+                                "A note about the transaction that can be seen by the public.",
+                            )
+                            .changed()
+                        {
+                            self.public_note = if txt.len() > 0 {
+                                Some(txt)
+                            } else {
+                                None
+                            };
+                        }
+                    });
+                }
 
                 let button_text = render_group_action_text(
                     ui,

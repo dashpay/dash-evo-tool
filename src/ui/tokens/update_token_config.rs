@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashSet};
 use std::sync::{Arc, RwLock};
-
+use crate::ui::contracts_documents::group_actions_screen::GroupActionsScreen;
 use chrono::{DateTime, Utc};
 use dash_sdk::dpp::balances::credits::TokenAmount;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
@@ -20,13 +20,13 @@ use dash_sdk::dpp::data_contract::GroupContractPosition;
 use dash_sdk::dpp::group::{GroupStateTransitionInfo, GroupStateTransitionInfoStatus};
 use eframe::egui::{self, Color32, Context, Ui};
 use egui::RichText;
-
 use super::tokens_screen::IdentityTokenInfo;
 use crate::app::AppAction;
 use crate::backend_task::tokens::TokenTask;
 use crate::backend_task::BackendTask;
 use crate::context::AppContext;
 use crate::model::qualified_contract::QualifiedContract;
+use dash_sdk::dpp::data_contract::group::accessors::v0::GroupV0Getters;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::ui::components::left_panel::add_left_panel;
@@ -37,7 +37,7 @@ use crate::ui::helpers::render_group_action_text;
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
-use crate::ui::{MessageType, Screen, ScreenLike};
+use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
@@ -59,8 +59,9 @@ pub struct UpdateTokenConfigScreen {
     pub change_item: TokenConfigurationChangeItem,
     signing_key: Option<IdentityPublicKey>,
     identity: QualifiedIdentity,
-    public_note: Option<String>,
+    pub public_note: Option<String>,
     group: Option<(GroupContractPosition, Group)>,
+    is_unilateral_group_member: bool,
     pub group_action_id: Option<Identifier>,
 
     // Input state fields
@@ -153,6 +154,21 @@ impl UpdateTokenConfigScreen {
             }
         };
 
+        let mut is_unilateral_group_member = false;
+        if group.is_some() {
+            if let Some((_, group)) = group.clone() {
+                let your_power = group
+                    .members()
+                    .get(&identity_token_info.identity.identity.id());
+
+                if let Some(your_power) = your_power {
+                    if your_power >= &group.required_power() {
+                        is_unilateral_group_member = true;
+                    }
+                }
+            }
+        };
+
         // Attempt to get an unlocked wallet reference
         let selected_wallet = get_selected_wallet(
             &identity_token_info.identity,
@@ -185,6 +201,7 @@ impl UpdateTokenConfigScreen {
 
             identity: identity_token_info.identity,
             group,
+            is_unilateral_group_member,
             group_action_id: None,
         }
     }
@@ -579,21 +596,30 @@ impl UpdateTokenConfigScreen {
         ui.add_space(10.0);
 
         ui.heading("3. Public note (optional)");
-        ui.add_space(10.0);
-
-        // Render text input for the public note
-        ui.horizontal(|ui| {
-            ui.label("Public note (optional):");
-            ui.add_space(10.0);
-            let mut txt = self.public_note.clone().unwrap_or_default();
-            if ui
-                .text_edit_singleline(&mut txt)
-                .on_hover_text("A note about the transaction that can be seen by the public.")
-                .changed()
-            {
-                self.public_note = if txt.len() > 0 { Some(txt) } else { None };
-            }
-        });
+        ui.add_space(5.0);
+        if self.group_action_id.is_some() {
+            ui.label(
+                "You are signing an existing group ConfigUpdate so you are not allowed to put a note.",
+            );
+            ui.add_space(5.0);
+            ui.label(format!(
+                "Note: {}",
+                self.public_note.clone().unwrap_or("None".to_string())
+            ));
+        } else {
+            ui.horizontal(|ui| {
+                ui.label("Public note (optional):");
+                ui.add_space(10.0);
+                let mut txt = self.public_note.clone().unwrap_or_default();
+                if ui
+                    .text_edit_singleline(&mut txt)
+                    .on_hover_text("A note about the transaction that can be seen by the public.")
+                    .changed()
+                {
+                    self.public_note = if txt.len() > 0 { Some(txt) } else { None };
+                }
+            });
+        }
 
         let button_text = render_group_action_text(
             ui,
@@ -634,7 +660,11 @@ impl UpdateTokenConfigScreen {
                         identity_token_info: self.identity_token_info.clone(),
                         change_item: self.change_item.clone(),
                         signing_key: self.signing_key.clone().expect("Signing key must be set"),
-                        public_note: self.public_note.clone(),
+                        public_note: if self.group_action_id.is_some() {
+                            None
+                        } else {
+                            self.public_note.clone()
+                        },
                         group_info,
                     }));
             }
@@ -778,21 +808,42 @@ impl UpdateTokenConfigScreen {
 
             ui.heading("🎉");
             if self.group_action_id.is_some() {
-                ui.label("Group Update Signing Successful.");
+                // This ConfigUpdate is already initiated by the group, we are just signing it
+                ui.heading("Group ConfigUpdate Signing Successful.");
             } else {
-                ui.heading(format!("{}", self.backend_message.as_ref().unwrap().0));
+                if !self.is_unilateral_group_member {
+                    ui.heading("Group ConfigUpdate Initiated.");
+                } else {
+                    ui.heading("ConfigUpdate Successful.");
+                }
             }
 
             ui.add_space(20.0);
 
-            let button_text;
             if self.group_action_id.is_some() {
-                button_text = "Back to Group Actions";
+                if ui.button("Back to Group Actions").clicked() {
+                    action = AppAction::PopScreenAndRefresh;
+                }
+                if ui.button("Back to Tokens").clicked() {
+                    action = AppAction::SetMainScreenThenGoToMainScreen(
+                        RootScreenType::RootScreenMyTokenBalances,
+                    );
+                }
             } else {
-                button_text = "Back to Tokens";
-            }
-            if ui.button(button_text).clicked() {
-                action = AppAction::PopScreenAndRefresh;
+                if ui.button("Back to Tokens").clicked() {
+                    action = AppAction::PopScreenAndRefresh;
+                }
+
+                if !self.is_unilateral_group_member {
+                    if ui.button("Go to Group Actions").clicked() {
+                        action = AppAction::PopThenAddScreenToMainScreen(
+                            RootScreenType::RootScreenDocumentQuery,
+                            Screen::GroupActionsScreen(GroupActionsScreen::new(
+                                &self.app_context.clone(),
+                            )),
+                        );
+                    }
+                }
             }
         });
         action

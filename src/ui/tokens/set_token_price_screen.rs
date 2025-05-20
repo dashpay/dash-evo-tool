@@ -1,19 +1,3 @@
-use std::collections::HashSet;
-use std::sync::{Arc, RwLock};
-use std::time::{SystemTime, UNIX_EPOCH};
-
-use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
-use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
-use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
-use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::accessors::v0::TokenDistributionRulesV0Getters;
-use dash_sdk::dpp::data_contract::change_control_rules::authorized_action_takers::AuthorizedActionTakers;
-use dash_sdk::dpp::data_contract::group::accessors::v0::GroupV0Getters;
-use dash_sdk::dpp::data_contract::group::Group;
-use dash_sdk::dpp::data_contract::GroupContractPosition;
-use dash_sdk::dpp::tokens::token_pricing_schedule::TokenPricingSchedule;
-use eframe::egui::{self, Color32, Context, Ui};
-use egui::RichText;
-
 use super::tokens_screen::IdentityTokenInfo;
 use crate::app::AppAction;
 use crate::backend_task::tokens::TokenTask;
@@ -24,16 +8,31 @@ use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
+use crate::ui::contracts_documents::group_actions_screen::GroupActionsScreen;
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
-use crate::ui::{MessageType, Screen, ScreenLike};
-use dash_sdk::dpp::group::GroupStateTransitionInfoStatus;
+use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike};
+use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
+use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
+use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::accessors::v0::TokenDistributionRulesV0Getters;
+use dash_sdk::dpp::data_contract::change_control_rules::authorized_action_takers::AuthorizedActionTakers;
+use dash_sdk::dpp::data_contract::group::accessors::v0::GroupV0Getters;
+use dash_sdk::dpp::data_contract::group::Group;
+use dash_sdk::dpp::data_contract::GroupContractPosition;
+use dash_sdk::dpp::group::{GroupStateTransitionInfo, GroupStateTransitionInfoStatus};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
-use dash_sdk::platform::IdentityPublicKey;
+use dash_sdk::dpp::tokens::token_pricing_schedule::TokenPricingSchedule;
+use dash_sdk::platform::{Identifier, IdentityPublicKey};
+use eframe::egui::{self, Color32, Context, Ui};
+use egui::RichText;
+use std::collections::HashSet;
+use std::sync::{Arc, RwLock};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Internal states for the mint process.
 #[derive(PartialEq)]
@@ -48,10 +47,12 @@ pub enum SetTokenPriceStatus {
 pub struct SetTokenPriceScreen {
     pub identity_token_info: IdentityTokenInfo,
     selected_key: Option<IdentityPublicKey>,
-    public_note: Option<String>,
+    pub public_note: Option<String>,
     group: Option<(GroupContractPosition, Group)>,
+    is_unilateral_group_member: bool,
+    pub group_action_id: Option<Identifier>,
 
-    token_pricing_schedule: String,
+    pub token_pricing_schedule: String,
     status: SetTokenPriceStatus,
     error_message: Option<String>,
 
@@ -149,6 +150,21 @@ impl SetTokenPriceScreen {
             }
         };
 
+        let mut is_unilateral_group_member = false;
+        if group.is_some() {
+            if let Some((_, group)) = group.clone() {
+                let your_power = group
+                    .members()
+                    .get(&identity_token_info.identity.identity.id());
+
+                if let Some(your_power) = your_power {
+                    if your_power >= &group.required_power() {
+                        is_unilateral_group_member = true;
+                    }
+                }
+            }
+        };
+
         // Attempt to get an unlocked wallet reference
         let selected_wallet = get_selected_wallet(
             &identity_token_info.identity,
@@ -162,6 +178,8 @@ impl SetTokenPriceScreen {
             selected_key: possible_key.cloned(),
             public_note: None,
             group,
+            is_unilateral_group_member,
+            group_action_id: None,
             token_pricing_schedule: "".to_string(),
             status: SetTokenPriceStatus::NotStarted,
             error_message: None,
@@ -327,9 +345,22 @@ impl SetTokenPriceScreen {
                         .as_secs();
                     self.status = SetTokenPriceStatus::WaitingForResult(now);
 
-                    let group_info = self.group.as_ref().map(|(pos, _)| {
-                        GroupStateTransitionInfoStatus::GroupStateTransitionInfoProposer(*pos)
-                    });
+                    let group_info;
+                    if self.group_action_id.is_some() {
+                        group_info = self.group.as_ref().map(|(pos, _)| {
+                            GroupStateTransitionInfoStatus::GroupStateTransitionInfoOtherSigner(
+                                GroupStateTransitionInfo {
+                                    group_contract_position: *pos,
+                                    action_id: self.group_action_id.unwrap(),
+                                    action_is_proposer: false,
+                                },
+                            )
+                        });
+                    } else {
+                        group_info = self.group.as_ref().map(|(pos, _)| {
+                            GroupStateTransitionInfoStatus::GroupStateTransitionInfoProposer(*pos)
+                        });
+                    }
 
                     // Dispatch the actual backend mint action
                     action = AppAction::BackendTask(BackendTask::TokenTask(
@@ -338,7 +369,11 @@ impl SetTokenPriceScreen {
                             data_contract: self.identity_token_info.data_contract.contract.clone(),
                             token_position: self.identity_token_info.token_position,
                             signing_key: self.selected_key.clone().expect("Expected a key"),
-                            public_note: self.public_note.clone(),
+                            public_note: if self.group_action_id.is_some() {
+                                None
+                            } else {
+                                self.public_note.clone()
+                            },
                             token_pricing_schedule: token_pricing_schedule_opt,
                             group_info,
                         },
@@ -364,13 +399,43 @@ impl SetTokenPriceScreen {
             ui.add_space(50.0);
 
             ui.heading("🎉");
-            ui.heading("Set Token Pricing Schedule Successful!");
+            if self.group_action_id.is_some() {
+                // This is already initiated by the group, we are just signing it
+                ui.heading("Group SetPrice Signing Successful.");
+            } else {
+                if !self.is_unilateral_group_member {
+                    ui.heading("Group SetPrice Initiated.");
+                } else {
+                    ui.heading("SetPrice Successful.");
+                }
+            }
 
             ui.add_space(20.0);
 
-            if ui.button("Back to Tokens").clicked() {
-                // Pop this screen and refresh
-                action = AppAction::PopScreenAndRefresh;
+            if self.group_action_id.is_some() {
+                if ui.button("Back to Group Actions").clicked() {
+                    action = AppAction::PopScreenAndRefresh;
+                }
+                if ui.button("Back to Tokens").clicked() {
+                    action = AppAction::SetMainScreenThenGoToMainScreen(
+                        RootScreenType::RootScreenMyTokenBalances,
+                    );
+                }
+            } else {
+                if ui.button("Back to Tokens").clicked() {
+                    action = AppAction::PopScreenAndRefresh;
+                }
+
+                if !self.is_unilateral_group_member {
+                    if ui.button("Go to Group Actions").clicked() {
+                        action = AppAction::PopThenAddScreenToMainScreen(
+                            RootScreenType::RootScreenDocumentQuery,
+                            Screen::GroupActionsScreen(GroupActionsScreen::new(
+                                &self.app_context.clone(),
+                            )),
+                        );
+                    }
+                }
             }
         });
         action
@@ -410,17 +475,32 @@ impl ScreenLike for SetTokenPriceScreen {
     }
 
     fn ui(&mut self, ctx: &Context) -> AppAction {
+        let mut action;
+
         // Build a top panel
-        let mut action = add_top_panel(
-            ctx,
-            &self.app_context,
-            vec![
-                ("Tokens", AppAction::GoToMainScreen),
-                (&self.identity_token_info.token_alias, AppAction::PopScreen),
-                ("SetPrice", AppAction::None),
-            ],
-            vec![],
-        );
+        if self.group_action_id.is_some() {
+            action = add_top_panel(
+                ctx,
+                &self.app_context,
+                vec![
+                    ("Contracts", AppAction::GoToMainScreen),
+                    ("Group Actions", AppAction::PopScreen),
+                    ("SetPrice", AppAction::None),
+                ],
+                vec![],
+            );
+        } else {
+            action = add_top_panel(
+                ctx,
+                &self.app_context,
+                vec![
+                    ("Tokens", AppAction::GoToMainScreen),
+                    (&self.identity_token_info.token_alias, AppAction::PopScreen),
+                    ("SetPrice", AppAction::None),
+                ],
+                vec![],
+            );
+        }
 
         // Left panel
         action |= add_left_panel(
@@ -435,7 +515,7 @@ impl ScreenLike for SetTokenPriceScreen {
         egui::CentralPanel::default().show(ctx, |ui| {
             // If we are in the "Complete" status, just show success screen
             if self.status == SetTokenPriceStatus::Complete {
-                action = self.show_success_screen(ui);
+                action |= self.show_success_screen(ui);
                 return;
             }
 
@@ -520,7 +600,18 @@ impl ScreenLike for SetTokenPriceScreen {
                 // 2) Pricing schedule
                 ui.heading("2. Pricing schedule");
                 ui.add_space(5.0);
-                self.render_pricing_input(ui);
+                                if self.group_action_id.is_some() {
+                    ui.label(
+                        "You are signing an existing group SetPrice so you are not allowed to choose the pricing schedule.",
+                    );
+                    ui.add_space(5.0);
+                    ui.label(format!(
+                        "Schedule: {}",
+                        self.token_pricing_schedule
+                    ));
+                } else {
+                    self.render_pricing_input(ui);
+                }
 
                 ui.add_space(10.0);
                 ui.separator();
@@ -529,21 +620,35 @@ impl ScreenLike for SetTokenPriceScreen {
                 // Render text input for the public note
                 ui.heading("3. Public note (optional)");
                 ui.add_space(5.0);
-                ui.horizontal(|ui| {
-                    ui.label("Public note (optional):");
-                    ui.add_space(10.0);
-                    let mut txt = self.public_note.clone().unwrap_or_default();
-                    if ui
-                        .text_edit_singleline(&mut txt)
-                        .on_hover_text(
-                            "A note about the transaction that can be seen by the public.",
-                        )
-                        .changed()
-                    {
-                        self.public_note = Some(txt);
-                    }
-                });
-                ui.add_space(10.0);
+                if self.group_action_id.is_some() {
+                    ui.label(
+                        "You are signing an existing group SetPrice so you are not allowed to put a note.",
+                    );
+                    ui.add_space(5.0);
+                    ui.label(format!(
+                        "Note: {}",
+                        self.public_note.clone().unwrap_or("None".to_string())
+                    ));
+                } else {
+                    ui.horizontal(|ui| {
+                        ui.label("Public note (optional):");
+                        ui.add_space(10.0);
+                        let mut txt = self.public_note.clone().unwrap_or_default();
+                        if ui
+                            .text_edit_singleline(&mut txt)
+                            .on_hover_text(
+                                "A note about the transaction that can be seen by the public.",
+                            )
+                            .changed()
+                        {
+                            self.public_note = if txt.len() > 0 {
+                                Some(txt)
+                            } else {
+                                None
+                            };
+                        }
+                    });
+                }
 
                 let set_price_text = if let Some((_, group)) = self.group.as_ref() {
                     let your_power = group.members().get(&self.identity_token_info.identity.identity.id());

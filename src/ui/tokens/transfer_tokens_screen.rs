@@ -422,7 +422,7 @@ impl ScreenLike for TransferTokensScreen {
                 ui.colored_label(
                     egui::Color32::DARK_RED,
                     format!(
-                        "You do not have any authentication keys loaded for this {} identity.",
+                        "You do not have any authentication keys with CRITICAL security level loaded for this {} identity.",
                         self.identity.identity_type
                     ),
                 );

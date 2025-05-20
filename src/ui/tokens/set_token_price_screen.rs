@@ -533,7 +533,7 @@ impl ScreenLike for SetTokenPriceScreen {
                 ui.colored_label(
                     Color32::DARK_RED,
                     format!(
-                        "No authentication keys found for this {} identity.",
+                        "No authentication keys with CRITICAL security level found for this {} identity.",
                         self.identity_token_info.identity.identity_type,
                     ),
                 );

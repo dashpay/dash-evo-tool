@@ -496,7 +496,7 @@ impl ScreenLike for FreezeTokensScreen {
                 ui.colored_label(
                     Color32::RED,
                     format!(
-                        "No authentication keys found for this {} identity.",
+                        "No authentication keys with CRITICAL security level found for this {} identity.",
                         self.identity.identity_type,
                     ),
                 );

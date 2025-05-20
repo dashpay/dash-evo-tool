@@ -35,6 +35,7 @@ pub mod identity;
 pub mod register_contract;
 pub mod system_task;
 pub mod tokens;
+pub mod update_data_contract;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum BackendTask {

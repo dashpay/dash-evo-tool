@@ -2,22 +2,24 @@ use crate::app::AppAction;
 use crate::backend_task::contract::ContractTask;
 use crate::backend_task::BackendTask;
 use crate::context::AppContext;
+use crate::model::qualified_contract::QualifiedContract;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::{BackendTaskSuccessResult, MessageType, ScreenLike};
-use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Setters;
+use dash_sdk::dpp::data_contract::accessors::v0::{DataContractV0Getters, DataContractV0Setters};
 use dash_sdk::dpp::data_contract::conversion::json::DataContractJsonConversionMethodsV0;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
-use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
+use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::platform::{DataContract, IdentityPublicKey};
 use eframe::egui::{self, Color32, Context, TextEdit};
 use egui::{RichText, ScrollArea, Ui};
+use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -26,16 +28,17 @@ enum BroadcastStatus {
     Idle,
     ParsingError(String),
     ValidContract(DataContract),
-    Broadcasting(u64), // store "start time" so we can show how long
+    Broadcasting(u64),
     BroadcastError(String),
     Done,
 }
 
-pub struct RegisterDataContractScreen {
+pub struct UpdateDataContractScreen {
     pub app_context: Arc<AppContext>,
     contract_json_input: String,
-    contract_alias_input: String,
     broadcast_status: BroadcastStatus,
+    known_contracts: Vec<QualifiedContract>,
+    selected_contract: Option<String>,
 
     pub show_key_selector: bool,
     pub qualified_identities: Vec<(QualifiedIdentity, Vec<IdentityPublicKey>)>,
@@ -48,7 +51,7 @@ pub struct RegisterDataContractScreen {
     error_message: Option<String>,
 }
 
-impl RegisterDataContractScreen {
+impl UpdateDataContractScreen {
     pub fn new(app_context: &Arc<AppContext>) -> Self {
         let security_level_requirements = vec![SecurityLevel::HIGH, SecurityLevel::CRITICAL];
 
@@ -62,8 +65,8 @@ impl RegisterDataContractScreen {
                     .public_keys()
                     .values()
                     .filter(|key| {
-                        key.purpose() == Purpose::AUTHENTICATION // is this right?
-                            && security_level_requirements.contains(&key.security_level())
+                        key.purpose() == Purpose::AUTHENTICATION
+                            && security_level_requirements.contains(&SecurityLevel::CRITICAL)
                             && !key.is_disabled()
                     })
                     .cloned()
@@ -86,16 +89,35 @@ impl RegisterDataContractScreen {
 
         let show_key_selector = selected_qualified_identity.is_some();
 
+        let known_contracts = app_context
+            .get_contracts(None, None)
+            .expect("Failed to load contracts");
+
+        let mut selected_key = None;
+        if let Some(identity) = &selected_qualified_identity {
+            selected_key = identity
+                .0
+                .identity
+                .get_first_public_key_matching(
+                    Purpose::AUTHENTICATION,
+                    HashSet::from([SecurityLevel::HIGH, SecurityLevel::CRITICAL]),
+                    KeyType::all_key_types().into(),
+                    false,
+                )
+                .cloned();
+        }
+
         Self {
             app_context: app_context.clone(),
             contract_json_input: String::new(),
-            contract_alias_input: String::new(),
             broadcast_status: BroadcastStatus::Idle,
+            known_contracts,
+            selected_contract: None,
 
             show_key_selector,
             qualified_identities,
             selected_qualified_identity,
-            selected_key: None,
+            selected_key,
 
             selected_wallet,
             wallet_password: String::new(),
@@ -132,7 +154,7 @@ impl RegisterDataContractScreen {
                 ui.label("Identity ID:");
 
                 // Create a ComboBox for selecting a Qualified Identity
-                egui::ComboBox::from_label("")
+                egui::ComboBox::from_label("identity")
                     .selected_text(
                         self.selected_qualified_identity
                             .as_ref()
@@ -254,12 +276,10 @@ impl RegisterDataContractScreen {
             // No input yet
             return;
         }
-        println!("Parsing contract JSON: {}", self.contract_json_input);
 
         // Try to parse the user’s JSON -> serde_json::Value
         let json_result: Result<serde_json::Value, serde_json::Error> =
             serde_json::from_str(&self.contract_json_input);
-        println!("Parsed JSON: {:?}", json_result);
 
         match json_result {
             Ok(json_val) => {
@@ -319,23 +339,22 @@ impl RegisterDataContractScreen {
                 ui.colored_label(Color32::RED, format!("Parsing error: {err}"));
             }
             BroadcastStatus::ValidContract(contract) => {
-                // “Register” button
+                // “Update” button
                 ui.add_space(10.0);
-                // Register button
+                // Update button
                 let mut new_style = (**ui.style()).clone();
                 new_style.spacing.button_padding = egui::vec2(10.0, 5.0);
                 ui.set_style(new_style);
                 let button =
-                    egui::Button::new(RichText::new("Register Contract").color(Color32::WHITE))
+                    egui::Button::new(RichText::new("Update Contract").color(Color32::WHITE))
                         .fill(Color32::from_rgb(0, 128, 255))
                         .frame(true)
                         .corner_radius(3.0);
                 if ui.add(button).clicked() {
                     // Fire off a backend task
                     app_action = AppAction::BackendTask(BackendTask::ContractTask(
-                        ContractTask::RegisterDataContract(
+                        ContractTask::UpdateDataContract(
                             contract.clone(),
-                            self.contract_alias_input.clone(),
                             self.selected_qualified_identity.clone().unwrap().0, // unwrap should be safe here
                             self.selected_key.clone().unwrap(), // unwrap should be safe here
                         ),
@@ -358,13 +377,13 @@ impl RegisterDataContractScreen {
                 ui.colored_label(Color32::RED, format!("Broadcast error: {msg}"));
             }
             BroadcastStatus::Done => {
-                ui.colored_label(Color32::GREEN, "Data Contract registered successfully!");
+                ui.colored_label(Color32::GREEN, "Data Contract updated successfully!");
             }
         }
 
         match app_action {
             AppAction::BackendTask(BackendTask::ContractTask(
-                ContractTask::RegisterDataContract(_, _, _, _),
+                ContractTask::UpdateDataContract(_, _, _),
             )) => {
                 self.broadcast_status = BroadcastStatus::Broadcasting(
                     SystemTime::now()
@@ -387,7 +406,7 @@ impl RegisterDataContractScreen {
             ui.add_space(50.0);
 
             ui.heading("🎉");
-            ui.heading("Successfully registered data contract.");
+            ui.heading("Successfully updated data contract.");
 
             ui.add_space(20.0);
 
@@ -396,9 +415,8 @@ impl RegisterDataContractScreen {
             }
             ui.add_space(5.0);
 
-            if ui.button("Register another contract").clicked() {
+            if ui.button("Update another contract").clicked() {
                 self.contract_json_input = String::new();
-                self.contract_alias_input = String::new();
                 self.broadcast_status = BroadcastStatus::Idle;
             }
         });
@@ -407,7 +425,7 @@ impl RegisterDataContractScreen {
     }
 }
 
-impl ScreenLike for RegisterDataContractScreen {
+impl ScreenLike for UpdateDataContractScreen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
         match message_type {
             MessageType::Success => {
@@ -439,7 +457,7 @@ impl ScreenLike for RegisterDataContractScreen {
             &self.app_context,
             vec![
                 ("Contracts", AppAction::GoToMainScreen),
-                ("Register Data Contract", AppAction::None),
+                ("Update Data Contract", AppAction::None),
             ],
             vec![],
         );
@@ -450,19 +468,19 @@ impl ScreenLike for RegisterDataContractScreen {
                 return;
             }
 
-            ui.heading("Register Data Contract");
+            ui.heading("Update Data Contract");
             ui.add_space(10.0);
 
             // If no identities loaded, give message
             if self.qualified_identities.is_empty() {
                 ui.colored_label(
                     egui::Color32::DARK_RED,
-                    "No qualified identities available to register a data contract.",
+                    "No qualified identities available to update a data contract.",
                 );
                 return;
             }
 
-            // Select the identity to register the name for
+            // Select the identity to update the name for
             ui.heading("1. Select Identity");
             ui.add_space(5.0);
             self.render_identity_id_and_key_selection(ui);
@@ -479,13 +497,45 @@ impl ScreenLike for RegisterDataContractScreen {
                 return;
             }
 
-            // Input for the alias
             ui.add_space(10.0);
             ui.separator();
             ui.add_space(10.0);
-            ui.heading("2. Contract alias for DET (optional)");
+
+            // Select the contract to update
+            ui.heading("2. Select contract to update");
             ui.add_space(5.0);
-            ui.text_edit_singleline(&mut self.contract_alias_input);
+            ui.horizontal(|ui| {
+                ui.label("Contract alias:");
+                egui::ComboBox::from_label("contract")
+                    .selected_text(
+                        self.selected_contract
+                            .as_ref()
+                            .unwrap_or(&"Select a contract".to_string())
+                            .clone(),
+                    )
+                    .show_ui(ui, |ui| {
+                        for contract in &self.known_contracts {
+                            if ui
+                                .selectable_value(
+                                    &mut self.selected_contract,
+                                    contract.alias.clone(),
+                                    contract.alias.as_deref().unwrap_or(
+                                        &contract.contract.id().to_string(Encoding::Base58),
+                                    ),
+                                )
+                                .clicked()
+                            {
+                                let platform_version = PlatformVersion::latest();
+                                self.contract_json_input =
+                                    match contract.contract.to_json(platform_version) {
+                                        Ok(json) => serde_json::to_string_pretty(&json)
+                                            .expect("Expected to get string pretty"),
+                                        Err(e) => format!("Error serialising contract: {e}"),
+                                    };
+                            }
+                        }
+                    });
+            });
 
             ui.add_space(10.0);
             ui.separator();
@@ -500,7 +550,7 @@ impl ScreenLike for RegisterDataContractScreen {
             }
 
             // Input for the contract
-            ui.heading("3. Paste the contract JSON below");
+            ui.heading("2. Edit the contract JSON below or paste a new one");
             ui.add_space(5.0);
             self.ui_input_field(ui);
 
@@ -513,7 +563,7 @@ impl ScreenLike for RegisterDataContractScreen {
 }
 
 // If you also need wallet unlocking, implement the trait
-impl ScreenWithWalletUnlock for RegisterDataContractScreen {
+impl ScreenWithWalletUnlock for UpdateDataContractScreen {
     fn selected_wallet_ref(&self) -> &Option<Arc<RwLock<Wallet>>> {
         &self.selected_wallet
     }

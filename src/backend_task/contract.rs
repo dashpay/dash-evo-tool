@@ -32,7 +32,8 @@ pub(crate) enum ContractTask {
     FetchContractsWithDescriptions(Vec<Identifier>),
     FetchActiveGroupActions(QualifiedContract, QualifiedIdentity),
     RemoveContract(Identifier),
-    RegisterDataContract(DataContract, String, QualifiedIdentity, IdentityPublicKey),
+    RegisterDataContract(DataContract, String, QualifiedIdentity, IdentityPublicKey), // contract, alias, identity, signing_key
+    UpdateDataContract(DataContract, QualifiedIdentity, IdentityPublicKey), // contract, identity, signing_key
     SaveDataContract(DataContract, Option<String>, InsertTokensToo),
 }
 
@@ -196,6 +197,20 @@ impl AppContext {
                     )
                 })
                 .map_err(|e| format!("Error registering contract: {}", e.to_string()))
+            }
+            ContractTask::UpdateDataContract(mut data_contract, identity, signing_key) => {
+                AppContext::update_data_contract(
+                    &self,
+                    &mut data_contract,
+                    identity,
+                    signing_key,
+                    sdk,
+                )
+                .await
+                .map(|_| {
+                    BackendTaskSuccessResult::Message("Successfully updated contract".to_string())
+                })
+                .map_err(|e| format!("Error updating contract: {}", e.to_string()))
             }
             ContractTask::RemoveContract(identifier) => self
                 .remove_contract(&identifier)

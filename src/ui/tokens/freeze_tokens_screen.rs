@@ -334,7 +334,11 @@ impl FreezeTokensScreen {
                             data_contract,
                             token_position: self.identity_token_info.token_position,
                             signing_key: self.selected_key.clone().expect("No key selected"),
-                            public_note: self.public_note.clone(),
+                            public_note: if self.group_action_id.is_some() {
+                                None
+                            } else {
+                                self.public_note.clone()
+                            },
                             freeze_identity: freeze_id,
                             group_info,
                         }));

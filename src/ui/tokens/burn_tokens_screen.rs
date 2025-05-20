@@ -335,7 +335,11 @@ impl BurnTokensScreen {
                                 data_contract,
                                 token_position: self.identity_token_info.token_position,
                                 signing_key: self.selected_key.clone().expect("Expected a key"),
-                                public_note: self.public_note.clone(),
+                                public_note: if self.group_action_id.is_some() {
+                                    None
+                                } else {
+                                    self.public_note.clone()
+                                },
                                 amount: amount_ok.unwrap(),
                                 group_info,
                             }),

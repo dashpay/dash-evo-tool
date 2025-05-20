@@ -660,7 +660,11 @@ impl UpdateTokenConfigScreen {
                         identity_token_info: self.identity_token_info.clone(),
                         change_item: self.change_item.clone(),
                         signing_key: self.signing_key.clone().expect("Signing key must be set"),
-                        public_note: self.public_note.clone(),
+                        public_note: if self.group_action_id.is_some() {
+                            None
+                        } else {
+                            self.public_note.clone()
+                        },
                         group_info,
                     }));
             }

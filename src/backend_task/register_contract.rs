@@ -10,10 +10,11 @@ use dash_sdk::{
     },
     Error, Sdk,
 };
-use tokio::time::sleep;
+use tokio::{sync::mpsc, time::sleep};
 
 use super::BackendTaskSuccessResult;
 use crate::{
+    app::TaskResult,
     context::AppContext,
     model::{proof_log_item::RequestType, qualified_identity::QualifiedIdentity},
 };
@@ -30,6 +31,7 @@ impl AppContext {
         identity: QualifiedIdentity,
         signing_key: IdentityPublicKey,
         sdk: &Sdk,
+        sender: mpsc::Sender<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, String> {
         match data_contract
             .put_to_platform_and_wait_for_response(&sdk, signing_key.clone(), &identity, None)
@@ -59,6 +61,12 @@ impl AppContext {
             }
             Err(e) => match e {
                 Error::DriveProofError(proof_error, proof_bytes, block_info) => {
+                    sender
+                        .send(TaskResult::Success(BackendTaskSuccessResult::Message(
+                            "Transaction returned proof error".to_string(),
+                        )))
+                        .await
+                        .map_err(|e| format!("Failed to send message: {}", e.to_string()))?;
                     match self.network {
                         Network::Regtest => sleep(Duration::from_secs(3)).await,
                         _ => sleep(Duration::from_secs(10)).await,

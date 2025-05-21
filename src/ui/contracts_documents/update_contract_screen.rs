@@ -579,21 +579,21 @@ impl ScreenLike for UpdateDataContractScreen {
                     )
                     .show_ui(ui, |ui| {
                         for contract in &self.known_contracts {
+                            let contract_id_str =
+                                contract.contract.id().to_string(Encoding::Base58);
+                            let display_text =
+                                contract.alias.as_deref().unwrap_or(&contract_id_str);
+
                             if ui
                                 .selectable_value(
                                     &mut self.selected_contract,
-                                    contract.alias.clone(),
-                                    contract.alias.as_deref().unwrap_or(
-                                        &contract.contract.id().to_string(Encoding::Base58),
-                                    ),
+                                    Some(display_text.to_string()), // 👈 always Some(String)
+                                    display_text,
                                 )
                                 .clicked()
                             {
                                 let platform_version = PlatformVersion::latest();
-                                self.selected_contract =
-                                    Some(contract.alias.clone().unwrap_or(
-                                        contract.contract.id().to_string(Encoding::Base58),
-                                    ));
+                                self.selected_contract = Some(display_text.to_string());
                                 self.contract_json_input =
                                     match contract.contract.to_json(platform_version) {
                                         Ok(json) => serde_json::to_string_pretty(&json)

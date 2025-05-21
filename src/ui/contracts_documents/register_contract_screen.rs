@@ -26,7 +26,8 @@ enum BroadcastStatus {
     Idle,
     ParsingError(String),
     ValidContract(DataContract),
-    Broadcasting(u64), // store "start time" so we can show how long
+    Broadcasting(u64),
+    ProofError(u64),
     BroadcastError(String),
     Done,
 }
@@ -352,6 +353,15 @@ impl RegisterDataContractScreen {
                     elapsed
                 ));
             }
+            BroadcastStatus::ProofError(start_time) => {
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs();
+                let elapsed = now - start_time;
+                ui.label("Broadcasted but received proof error. ⚠");
+                ui.label(format!("Fetching contract from Platform and inserting into DET... {elapsed} seconds elapsed."));
+            }
             BroadcastStatus::BroadcastError(msg) => {
                 ui.colored_label(Color32::RED, format!("Broadcast error: {msg}"));
             }
@@ -387,16 +397,18 @@ impl RegisterDataContractScreen {
             if let Some(error_message) = &self.error_message {
                 if error_message.contains("proof error logged, contract inserted into the database")
                 {
-                    ui.heading("⚠️");
+                    ui.heading("⚠");
                     ui.heading("Transaction succeeded but received a proof error.");
                     ui.add_space(10.0);
                     ui.label("Please check if the contract was registered correctly.");
-                    ui.label("If it was, this is a Platform proofs bug and no need for concern.");
+                    ui.label(
+                        "If it was, this is just a Platform proofs bug and no need for concern.",
+                    );
                     ui.label("Either way, please report to Dash Core Group.");
                 }
             } else {
                 ui.heading("🎉");
-                ui.heading("Successfully updated data contract.");
+                ui.heading("Successfully registered data contract.");
             }
 
             ui.add_space(20.0);
@@ -421,7 +433,23 @@ impl ScreenLike for RegisterDataContractScreen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
         match message_type {
             MessageType::Success => {
-                self.broadcast_status = BroadcastStatus::Done;
+                if message.contains("Nonce fetched successfully") {
+                    self.broadcast_status = BroadcastStatus::Broadcasting(
+                        SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap()
+                            .as_secs(),
+                    );
+                } else if message.contains("Transaction returned proof error") {
+                    self.broadcast_status = BroadcastStatus::ProofError(
+                        SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap()
+                            .as_secs(),
+                    );
+                } else {
+                    self.broadcast_status = BroadcastStatus::Done;
+                }
             }
             MessageType::Error => {
                 if message.contains("proof error logged, contract inserted into the database") {

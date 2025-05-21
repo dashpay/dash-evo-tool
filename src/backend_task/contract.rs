@@ -192,6 +192,7 @@ impl AppContext {
                     identity,
                     signing_key,
                     sdk,
+                    sender,
                 )
                 .await
                 .map(|_| {

@@ -272,6 +272,7 @@ impl AppContext {
                     identity.clone(),
                     signing_key.clone(),
                     sdk,
+                    sender,
                 )
                 .await
                 .map(|_| {

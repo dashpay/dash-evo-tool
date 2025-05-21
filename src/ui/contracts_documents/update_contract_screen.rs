@@ -399,7 +399,9 @@ impl UpdateDataContractScreen {
                 let elapsed = now - start_time;
                 ui.label("Fetched nonce successfully. ✅ ");
                 ui.label("Broadcasted but received proof error. ⚠");
-                ui.label(format!("Fetching contract from Platform and inserting into DET... {elapsed} seconds elapsed."));
+                ui.label(format!(
+                    "Fetching contract from Platform... {elapsed} seconds elapsed."
+                ));
             }
             BroadcastStatus::BroadcastError(msg) => {
                 ui.label("Fetched nonce successfully. ✅ ");

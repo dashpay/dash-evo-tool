@@ -143,15 +143,21 @@ impl Database {
             .expect("expected to serialize contract");
         let network = app_context.network_string();
 
+        let conn = self.conn.lock().unwrap();
+        let mut stmt =
+            conn.prepare("SELECT name FROM contract WHERE contract_id = ? AND network = ?")?;
+        let existing_name: Option<String> = match stmt
+            .query_row(params![contract_id.to_vec(), network.clone()], |row| {
+                row.get(0)
+            }) {
+            Ok(name) => name,
+            Err(e) => return Err(e.into()),
+        };
+
         // Replace the contract
         self.execute(
             "REPLACE INTO contract (contract_id, contract, name, network) VALUES (?, ?, ?, ?)",
-            params![
-                contract_id.to_vec(),
-                contract_bytes,
-                None::<String>,
-                network
-            ],
+            params![contract_id.to_vec(), contract_bytes, existing_name, network],
         )?;
 
         Ok(())

@@ -1,5 +1,12 @@
 use super::BackendTaskSuccessResult;
-use crate::{context::AppContext, model::qualified_identity::QualifiedIdentity};
+use crate::{
+    app::TaskResult,
+    context::AppContext,
+    model::{
+        proof_log_item::{ProofLogItem, RequestType},
+        qualified_identity::QualifiedIdentity,
+    },
+};
 use dash_sdk::{
     dpp::{
         dashcore::Network,
@@ -16,10 +23,10 @@ use dash_sdk::{
         transition::broadcast::BroadcastStateTransition, DataContract, Fetch, Identifier,
         IdentityPublicKey,
     },
-    Sdk,
+    Error, Sdk,
 };
 use std::time::Duration;
-use tokio::time::sleep;
+use tokio::{sync::mpsc, time::sleep};
 
 impl AppContext {
     pub async fn update_data_contract(
@@ -28,13 +35,24 @@ impl AppContext {
         identity: QualifiedIdentity,
         signing_key: IdentityPublicKey,
         sdk: &Sdk,
+        sender: mpsc::Sender<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, String> {
+        // Increment the version of the data contract
         data_contract.increment_version();
 
+        // Fetch the identity contract nonce
         let identity_contract_nonce = sdk
             .get_identity_contract_nonce(identity.identity.id(), data_contract.id(), true, None)
             .await
             .map_err(|_| format!("Failed to get nonce"))?;
+
+        // Update UI
+        sender
+            .send(TaskResult::Success(BackendTaskSuccessResult::Message(
+                "Nonce fetched successfully".to_string(),
+            )))
+            .await
+            .map_err(|e| format!("Failed to send message: {}", e.to_string()))?;
 
         let contract_update_transition: DataContractUpdateTransition =
             (data_contract.clone(), identity_contract_nonce)
@@ -72,15 +90,19 @@ impl AppContext {
                     "DataContract successfully updated".to_string(),
                 ))
             }
-            Err(e) => {
-                // If the error is a Proof error, fetch the contract from Platform state and add to local database
-                if e.to_string().contains("proof") {
-                    println!("Received proof error when updateing contract. Attempting to fetch contract from Platform state and add to local database");
+            Err(e) => match e {
+                Error::DriveProofError(proof_error, proof_bytes, block_info) => {
+                    sender
+                        .send(TaskResult::Success(BackendTaskSuccessResult::Message(
+                            "Transaction returned proof error".to_string(),
+                        )))
+                        .await
+                        .map_err(|e| format!("Failed to send message: {}", e.to_string()))?;
                     match self.network {
                         Network::Regtest => sleep(Duration::from_secs(3)).await,
                         _ => sleep(Duration::from_secs(10)).await,
                     }
-                    let error_string = e.to_string();
+                    let error_string = format!("{}", proof_error);
                     let id_str = error_string
                         .split(" ")
                         .last()
@@ -109,17 +131,30 @@ impl AppContext {
                                     e.to_string()
                                 )
                             })?;
-                        println!("DataContract successfully updated but the proof was wrong. Please report to Dash Core Group. Error: {}", e.to_string());
-                        Ok(BackendTaskSuccessResult::Message(
-                            "DataContract successfully updated".to_string(),
-                        ))
-                    } else {
-                        Err(format!("Failed to update DataContract: {}", e.to_string()))
                     }
-                } else {
-                    Err(format!("Failed to update DataContract: {}", e.to_string()))
+                    self.db
+                        .insert_proof_log_item(ProofLogItem {
+                            request_type: RequestType::BroadcastStateTransition,
+                            request_bytes: vec![],
+                            verification_path_query_bytes: vec![],
+                            height: block_info.height,
+                            time_ms: block_info.time_ms,
+                            proof_bytes,
+                            error: Some(proof_error.to_string()),
+                        })
+                        .ok();
+                    return Err(format!(
+                        "Error broadcasting Contract Update transition: {}, proof error logged, contract inserted into the database",
+                        proof_error
+                    ));
                 }
-            }
+                e => {
+                    return Err(format!(
+                        "Error broadcasting Contract Update transition: {}",
+                        e
+                    ))
+                }
+            },
         }
     }
 }

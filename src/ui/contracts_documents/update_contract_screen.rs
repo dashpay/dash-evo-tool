@@ -28,7 +28,9 @@ enum BroadcastStatus {
     Idle,
     ParsingError(String),
     ValidContract(DataContract),
+    FetchingNonce(u64),
     Broadcasting(u64),
+    ProofError(u64),
     BroadcastError(String),
     Done,
 }
@@ -89,9 +91,16 @@ impl UpdateDataContractScreen {
 
         let show_key_selector = selected_qualified_identity.is_some();
 
+        let excluded_aliases = ["dpns", "keyword_search", "token_history", "withdrawals"];
         let known_contracts = app_context
             .get_contracts(None, None)
-            .expect("Failed to load contracts");
+            .expect("Failed to load contracts")
+            .into_iter()
+            .filter(|c| match &c.alias {
+                Some(alias) => !excluded_aliases.contains(&alias.as_str()),
+                None => true,
+            })
+            .collect::<Vec<_>>();
 
         let mut selected_key = None;
         if let Some(identity) = &selected_qualified_identity {
@@ -100,7 +109,7 @@ impl UpdateDataContractScreen {
                 .identity
                 .get_first_public_key_matching(
                     Purpose::AUTHENTICATION,
-                    HashSet::from([SecurityLevel::HIGH, SecurityLevel::CRITICAL]),
+                    HashSet::from([SecurityLevel::CRITICAL]),
                     KeyType::all_key_types().into(),
                     false,
                 )
@@ -154,7 +163,7 @@ impl UpdateDataContractScreen {
                 ui.label("Identity ID:");
 
                 // Create a ComboBox for selecting a Qualified Identity
-                egui::ComboBox::from_label("identity")
+                egui::ComboBox::from_id_salt("identity")
                     .selected_text(
                         self.selected_qualified_identity
                             .as_ref()
@@ -213,9 +222,7 @@ impl UpdateDataContractScreen {
                     .available_authentication_keys()
                     .into_iter()
                     .filter_map(|k| {
-                        if k.identity_public_key.security_level() == SecurityLevel::CRITICAL
-                            || k.identity_public_key.security_level() == SecurityLevel::HIGH
-                        {
+                        if k.identity_public_key.security_level() == SecurityLevel::CRITICAL {
                             Some(k.identity_public_key.clone())
                         } else {
                             None
@@ -329,12 +336,10 @@ impl UpdateDataContractScreen {
     fn ui_parsed_contract(&mut self, ui: &mut egui::Ui) -> AppAction {
         let mut app_action = AppAction::None;
 
-        ui.add_space(5.0);
+        ui.add_space(10.0);
 
         match &self.broadcast_status {
-            BroadcastStatus::Idle => {
-                ui.label("No contract parsed yet or empty input.");
-            }
+            BroadcastStatus::Idle => {}
             BroadcastStatus::ParsingError(err) => {
                 ui.colored_label(Color32::RED, format!("Parsing error: {err}"));
             }
@@ -361,6 +366,18 @@ impl UpdateDataContractScreen {
                     ));
                 }
             }
+            BroadcastStatus::FetchingNonce(start_time) => {
+                // Show how long we've been fetching nonce
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs();
+                let elapsed = now - start_time;
+                ui.label(format!(
+                    "Fetching identity contract nonce... {} seconds elapsed.",
+                    elapsed
+                ));
+            }
             BroadcastStatus::Broadcasting(start_time) => {
                 // Show how long we've been broadcasting
                 let now = SystemTime::now()
@@ -368,16 +385,28 @@ impl UpdateDataContractScreen {
                     .unwrap()
                     .as_secs();
                 let elapsed = now - start_time;
+                ui.label("Fetched nonce successfully. ✅ ");
                 ui.label(format!(
                     "Broadcasting contract... {} seconds elapsed.",
                     elapsed
                 ));
             }
+            BroadcastStatus::ProofError(start_time) => {
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs();
+                let elapsed = now - start_time;
+                ui.label("Fetched nonce successfully. ✅ ");
+                ui.label("Broadcasted but received proof error. ⚠");
+                ui.label(format!("Fetching contract from Platform and inserting into DET... {elapsed} seconds elapsed."));
+            }
             BroadcastStatus::BroadcastError(msg) => {
+                ui.label("Fetched nonce successfully. ✅ ");
                 ui.colored_label(Color32::RED, format!("Broadcast error: {msg}"));
             }
             BroadcastStatus::Done => {
-                ui.colored_label(Color32::GREEN, "Data Contract updated successfully!");
+                ui.colored_label(Color32::DARK_GREEN, "Data Contract updated successfully!");
             }
         }
 
@@ -385,7 +414,7 @@ impl UpdateDataContractScreen {
             AppAction::BackendTask(BackendTask::ContractTask(
                 ContractTask::UpdateDataContract(_, _, _),
             )) => {
-                self.broadcast_status = BroadcastStatus::Broadcasting(
+                self.broadcast_status = BroadcastStatus::FetchingNonce(
                     SystemTime::now()
                         .duration_since(UNIX_EPOCH)
                         .unwrap()
@@ -405,8 +434,22 @@ impl UpdateDataContractScreen {
         ui.vertical_centered(|ui| {
             ui.add_space(50.0);
 
-            ui.heading("🎉");
-            ui.heading("Successfully updated data contract.");
+            if let Some(error_message) = &self.error_message {
+                if error_message.contains("proof error logged, contract inserted into the database")
+                {
+                    ui.heading("⚠");
+                    ui.heading("Transaction succeeded but received a proof error.");
+                    ui.add_space(10.0);
+                    ui.label("Please check if the contract was updated correctly.");
+                    ui.label(
+                        "If it was, this is just a Platform proofs bug and no need for concern.",
+                    );
+                    ui.label("Either way, please report to Dash Core Group.");
+                }
+            } else {
+                ui.heading("🎉");
+                ui.heading("Successfully updated data contract.");
+            }
 
             ui.add_space(20.0);
 
@@ -429,10 +472,31 @@ impl ScreenLike for UpdateDataContractScreen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
         match message_type {
             MessageType::Success => {
-                self.broadcast_status = BroadcastStatus::Done;
+                if message.contains("Nonce fetched successfully") {
+                    self.broadcast_status = BroadcastStatus::Broadcasting(
+                        SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap()
+                            .as_secs(),
+                    );
+                } else if message.contains("Transaction returned proof error") {
+                    self.broadcast_status = BroadcastStatus::ProofError(
+                        SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap()
+                            .as_secs(),
+                    );
+                } else {
+                    self.broadcast_status = BroadcastStatus::Done;
+                }
             }
             MessageType::Error => {
-                self.broadcast_status = BroadcastStatus::BroadcastError(message.to_string());
+                if message.contains("proof error logged, contract inserted into the database") {
+                    self.error_message = Some(message.to_string());
+                    self.broadcast_status = BroadcastStatus::Done;
+                } else {
+                    self.broadcast_status = BroadcastStatus::BroadcastError(message.to_string());
+                }
             }
             MessageType::Info => {
                 // You could display an info label, or do nothing
@@ -505,8 +569,8 @@ impl ScreenLike for UpdateDataContractScreen {
             ui.heading("2. Select contract to update");
             ui.add_space(5.0);
             ui.horizontal(|ui| {
-                ui.label("Contract alias:");
-                egui::ComboBox::from_label("contract")
+                ui.label("Contract:");
+                egui::ComboBox::from_id_salt("contract_selector")
                     .selected_text(
                         self.selected_contract
                             .as_ref()
@@ -526,6 +590,10 @@ impl ScreenLike for UpdateDataContractScreen {
                                 .clicked()
                             {
                                 let platform_version = PlatformVersion::latest();
+                                self.selected_contract =
+                                    Some(contract.alias.clone().unwrap_or(
+                                        contract.contract.id().to_string(Encoding::Base58),
+                                    ));
                                 self.contract_json_input =
                                     match contract.contract.to_json(platform_version) {
                                         Ok(json) => serde_json::to_string_pretty(&json)
@@ -551,7 +619,7 @@ impl ScreenLike for UpdateDataContractScreen {
 
             // Input for the contract
             ui.heading("2. Edit the contract JSON below or paste a new one");
-            ui.add_space(5.0);
+            ui.add_space(10.0);
             self.ui_input_field(ui);
 
             // Parse the contract and show the result

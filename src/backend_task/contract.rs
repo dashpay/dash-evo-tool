@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use super::BackendTaskSuccessResult;
+use crate::app::TaskResult;
 use crate::context::AppContext;
 use crate::database::contracts::InsertTokensToo;
 use crate::database::contracts::InsertTokensToo::NoTokensShouldBeAdded;
@@ -25,6 +26,7 @@ use dash_sdk::platform::{
 };
 use dash_sdk::query_types::IndexMap;
 use dash_sdk::Sdk;
+use tokio::sync::mpsc;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum ContractTask {
@@ -42,6 +44,7 @@ impl AppContext {
         &self,
         task: ContractTask,
         sdk: &Sdk,
+        sender: mpsc::Sender<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, String> {
         match task {
             ContractTask::FetchContracts(identifiers) => {
@@ -205,6 +208,7 @@ impl AppContext {
                     identity,
                     signing_key,
                     sdk,
+                    sender,
                 )
                 .await
                 .map(|_| {

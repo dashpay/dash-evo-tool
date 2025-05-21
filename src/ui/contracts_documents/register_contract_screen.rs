@@ -254,12 +254,10 @@ impl RegisterDataContractScreen {
             // No input yet
             return;
         }
-        println!("Parsing contract JSON: {}", self.contract_json_input);
 
         // Try to parse the user’s JSON -> serde_json::Value
         let json_result: Result<serde_json::Value, serde_json::Error> =
             serde_json::from_str(&self.contract_json_input);
-        println!("Parsed JSON: {:?}", json_result);
 
         match json_result {
             Ok(json_val) => {
@@ -386,8 +384,20 @@ impl RegisterDataContractScreen {
         ui.vertical_centered(|ui| {
             ui.add_space(50.0);
 
-            ui.heading("🎉");
-            ui.heading("Successfully registered data contract.");
+            if let Some(error_message) = &self.error_message {
+                if error_message.contains("proof error logged, contract inserted into the database")
+                {
+                    ui.heading("⚠️");
+                    ui.heading("Transaction succeeded but received a proof error.");
+                    ui.add_space(10.0);
+                    ui.label("Please check if the contract was registered correctly.");
+                    ui.label("If it was, this is a Platform proofs bug and no need for concern.");
+                    ui.label("Either way, please report to Dash Core Group.");
+                }
+            } else {
+                ui.heading("🎉");
+                ui.heading("Successfully updated data contract.");
+            }
 
             ui.add_space(20.0);
 
@@ -414,7 +424,12 @@ impl ScreenLike for RegisterDataContractScreen {
                 self.broadcast_status = BroadcastStatus::Done;
             }
             MessageType::Error => {
-                self.broadcast_status = BroadcastStatus::BroadcastError(message.to_string());
+                if message.contains("proof error logged, contract inserted into the database") {
+                    self.error_message = Some(message.to_string());
+                    self.broadcast_status = BroadcastStatus::Done;
+                } else {
+                    self.broadcast_status = BroadcastStatus::BroadcastError(message.to_string());
+                }
             }
             MessageType::Info => {
                 // You could display an info label, or do nothing

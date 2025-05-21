@@ -1851,7 +1851,7 @@ impl TokensScreen {
                                             // Show identity alias or ID
                                             if let Some(alias) = self
                                                 .app_context
-                                                .get_alias(&itb.identity_id)
+                                                .get_identity_alias(&itb.identity_id)
                                                 .expect("Expected to get alias")
                                             {
                                                 ui.label(alias);

@@ -9,6 +9,7 @@ use dash_sdk::dpp::data_contract::associated_token::token_configuration::accesso
 use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::v0::TokenConfigurationConventionV0;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::TokenConfigurationConvention;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration_item::TokenConfigurationChangeItem;
+use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::accessors::v0::TokenDistributionRulesV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::distribution_function::DistributionFunction;
 use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::distribution_recipient::TokenDistributionRecipient;
 use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::reward_distribution_type::RewardDistributionType;
@@ -57,6 +58,8 @@ pub struct UpdateTokenConfigScreen {
     update_status: UpdateTokenConfigStatus,
     pub app_context: Arc<AppContext>,
     pub change_item: TokenConfigurationChangeItem,
+    pub update_text: String,
+    pub text_input_error: String,
     signing_key: Option<IdentityPublicKey>,
     identity: QualifiedIdentity,
     pub public_note: Option<String>,
@@ -188,6 +191,8 @@ impl UpdateTokenConfigScreen {
             update_status: UpdateTokenConfigStatus::NotUpdating,
             app_context: app_context.clone(),
             change_item: TokenConfigurationChangeItem::TokenConfigurationNoChange,
+            update_text: "".to_string(),
+            text_input_error: "".to_string(),
             signing_key: possible_key,
             public_note: None,
 
@@ -206,7 +211,7 @@ impl UpdateTokenConfigScreen {
         }
     }
 
-    fn render_token_config_updater(&mut self, ui: &mut egui::Ui) -> AppAction {
+    fn render_token_config_updater(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
 
         ui.heading("2. Select the item to update");
@@ -216,6 +221,8 @@ impl UpdateTokenConfigScreen {
         }
 
         let item = &mut self.change_item;
+
+        let default_token_configuration = &self.identity_token_info.token_config;
 
         ui.horizontal(|ui| {
             let label = match item {
@@ -278,7 +285,7 @@ impl UpdateTokenConfigScreen {
                 TokenConfigurationChangeItem::MainControlGroup(_) => "Main Control Group",
             };
 
-            egui::ComboBox::from_id_salt(format!("cfg_item_type"))
+            egui::ComboBox::from_id_salt("cfg_item_type".to_string())
                 .selected_text(label)
                 .width(270.0)
                 .show_ui(ui, |ui| {
@@ -292,27 +299,38 @@ impl UpdateTokenConfigScreen {
                     ui.separator();
 
                     /* ───────── Conventions + groups ───────── */
-                    ui.selectable_value(
-                        item,
-                        TokenConfigurationChangeItem::Conventions(
-                            TokenConfigurationConvention::V0(TokenConfigurationConventionV0 {
-                                localizations: BTreeMap::new(),
-                                decimals: 0,
-                            }),
-                        ),
-                        "Conventions",
-                    );
+                    if ui
+                        .selectable_value(
+                            item,
+                            TokenConfigurationChangeItem::Conventions(
+                                default_token_configuration.conventions().clone(),
+                            ),
+                            "Conventions",
+                        )
+                        .clicked()
+                    {
+                        self.update_text =
+                            serde_json::to_string_pretty(default_token_configuration.conventions())
+                                .unwrap_or_default();
+                        self.text_input_error = "".to_string();
+                    };
                     ui.selectable_value(
                         item,
                         TokenConfigurationChangeItem::ConventionsControlGroup(
-                            AuthorizedActionTakers::ContractOwner,
+                            default_token_configuration
+                                .conventions_change_rules()
+                                .authorized_to_make_change_action_takers()
+                                .clone(),
                         ),
                         "Conventions Control Group",
                     );
                     ui.selectable_value(
                         item,
                         TokenConfigurationChangeItem::ConventionsAdminGroup(
-                            AuthorizedActionTakers::ContractOwner,
+                            default_token_configuration
+                                .conventions_change_rules()
+                                .admin_action_takers()
+                                .clone(),
                         ),
                         "Conventions Admin Group",
                     );
@@ -322,20 +340,28 @@ impl UpdateTokenConfigScreen {
                     /* ───────── Max‑supply + groups ───────── */
                     ui.selectable_value(
                         item,
-                        TokenConfigurationChangeItem::MaxSupply(Some(TokenAmount::from(0u64))),
+                        TokenConfigurationChangeItem::MaxSupply(
+                            default_token_configuration.max_supply(),
+                        ),
                         "Max Supply",
                     );
                     ui.selectable_value(
                         item,
                         TokenConfigurationChangeItem::MaxSupplyControlGroup(
-                            AuthorizedActionTakers::ContractOwner,
+                            default_token_configuration
+                                .max_supply_change_rules()
+                                .authorized_to_make_change_action_takers()
+                                .clone(),
                         ),
                         "Max Supply Control Group",
                     );
                     ui.selectable_value(
                         item,
                         TokenConfigurationChangeItem::MaxSupplyAdminGroup(
-                            AuthorizedActionTakers::ContractOwner,
+                            default_token_configuration
+                                .max_supply_change_rules()
+                                .admin_action_takers()
+                                .clone(),
                         ),
                         "Max Supply Admin Group",
                     );
@@ -343,22 +369,42 @@ impl UpdateTokenConfigScreen {
                     ui.separator();
 
                     /* ───────── Perpetual‑dist + groups ───────── */
-                    ui.selectable_value(
-                        item,
-                        TokenConfigurationChangeItem::PerpetualDistribution(None),
-                        "Perpetual Distribution",
-                    );
+                    if ui
+                        .selectable_value(
+                            item,
+                            TokenConfigurationChangeItem::PerpetualDistribution(
+                                default_token_configuration
+                                    .distribution_rules()
+                                    .perpetual_distribution()
+                                    .cloned(),
+                            ),
+                            "Perpetual Distribution",
+                        )
+                        .clicked()
+                    {
+                        self.update_text = "".to_string();
+                        self.text_input_error =
+                            "The perpetual distribution can not be modified".to_string();
+                    };
                     ui.selectable_value(
                         item,
                         TokenConfigurationChangeItem::PerpetualDistributionControlGroup(
-                            AuthorizedActionTakers::ContractOwner,
+                            default_token_configuration
+                                .distribution_rules()
+                                .perpetual_distribution_rules()
+                                .authorized_to_make_change_action_takers()
+                                .clone(),
                         ),
                         "Perpetual Distribution Control Group",
                     );
                     ui.selectable_value(
                         item,
                         TokenConfigurationChangeItem::PerpetualDistributionAdminGroup(
-                            AuthorizedActionTakers::ContractOwner,
+                            default_token_configuration
+                                .distribution_rules()
+                                .perpetual_distribution_rules()
+                                .admin_action_takers()
+                                .clone(),
                         ),
                         "Perpetual Distribution Admin Group",
                     );
@@ -368,22 +414,33 @@ impl UpdateTokenConfigScreen {
                     /* ───────── New‑tokens destination + groups ───────── */
                     ui.selectable_value(
                         item,
-                        TokenConfigurationChangeItem::NewTokensDestinationIdentity(Some(
-                            Identifier::default(),
-                        )),
+                        TokenConfigurationChangeItem::NewTokensDestinationIdentity(
+                            default_token_configuration
+                                .distribution_rules()
+                                .new_tokens_destination_identity()
+                                .copied(),
+                        ),
                         "New‑Tokens Destination",
                     );
                     ui.selectable_value(
                         item,
                         TokenConfigurationChangeItem::NewTokensDestinationIdentityControlGroup(
-                            AuthorizedActionTakers::ContractOwner,
+                            default_token_configuration
+                                .distribution_rules()
+                                .new_tokens_destination_identity_rules()
+                                .authorized_to_make_change_action_takers()
+                                .clone(),
                         ),
                         "New‑Tokens Destination Control Group",
                     );
                     ui.selectable_value(
                         item,
                         TokenConfigurationChangeItem::NewTokensDestinationIdentityAdminGroup(
-                            AuthorizedActionTakers::ContractOwner,
+                            default_token_configuration
+                                .distribution_rules()
+                                .new_tokens_destination_identity_rules()
+                                .admin_action_takers()
+                                .clone(),
                         ),
                         "New‑Tokens Destination Admin Group",
                     );
@@ -393,20 +450,32 @@ impl UpdateTokenConfigScreen {
                     /* ───────── Mint‑dest‑choice + groups ───────── */
                     ui.selectable_value(
                         item,
-                        TokenConfigurationChangeItem::MintingAllowChoosingDestination(false),
+                        TokenConfigurationChangeItem::MintingAllowChoosingDestination(
+                            default_token_configuration
+                                .distribution_rules()
+                                .minting_allow_choosing_destination(),
+                        ),
                         "Minting Allow Choosing Destination",
                     );
                     ui.selectable_value(
                         item,
                         TokenConfigurationChangeItem::MintingAllowChoosingDestinationControlGroup(
-                            AuthorizedActionTakers::ContractOwner,
+                            default_token_configuration
+                                .distribution_rules()
+                                .minting_allow_choosing_destination_rules()
+                                .authorized_to_make_change_action_takers()
+                                .clone(),
                         ),
                         "Minting Allow Choosing Destination Control Group",
                     );
                     ui.selectable_value(
                         item,
                         TokenConfigurationChangeItem::MintingAllowChoosingDestinationAdminGroup(
-                            AuthorizedActionTakers::ContractOwner,
+                            default_token_configuration
+                                .distribution_rules()
+                                .minting_allow_choosing_destination_rules()
+                                .admin_action_takers()
+                                .clone(),
                         ),
                         "Minting Allow Choosing Destination Admin Group",
                     );
@@ -451,7 +520,9 @@ impl UpdateTokenConfigScreen {
 
                     ui.selectable_value(
                         item,
-                        TokenConfigurationChangeItem::MainControlGroup(Some(0)),
+                        TokenConfigurationChangeItem::MainControlGroup(
+                            default_token_configuration.main_control_group(),
+                        ),
                         "Main Control Group",
                     );
                 });
@@ -463,19 +534,34 @@ impl UpdateTokenConfigScreen {
         match item {
             /* -------- simple value items -------- */
             TokenConfigurationChangeItem::Conventions(conv) => {
-                ui.label(
-                    "Paste a replacement JSON if you can't manually make the changes you want.",
-                );
+                ui.label("Update the JSON formatted text below to change the token conventions.");
                 ui.add_space(5.0);
-                let mut txt = serde_json::to_string_pretty(conv).unwrap_or_default();
-                if ui.text_edit_multiline(&mut txt).changed() {
-                    *conv = serde_json::from_str(&txt).unwrap_or(TokenConfigurationConvention::V0(
-                        TokenConfigurationConventionV0 {
-                            localizations: BTreeMap::new(),
-                            decimals: 8,
-                        },
-                    ));
+
+                let text_response = ui.text_edit_multiline(&mut self.update_text);
+
+                if text_response.changed() {
+                    match serde_json::from_str::<TokenConfigurationConvention>(&self.update_text) {
+                        Ok(new_conv) => {
+                            *conv = new_conv;
+                            self.text_input_error = "".to_string();
+                        }
+                        Err(e) => {
+                            self.text_input_error = format!("Invalid JSON: {}", e);
+                        }
+                    }
                 }
+
+                ui.horizontal(|ui| {
+                    if ui.button("Reset to Current").clicked() {
+                        *conv = self.identity_token_info.token_config.conventions().clone();
+                        self.update_text = serde_json::to_string_pretty(conv).unwrap_or_default(); // Update displayed text
+                        self.text_input_error = "".to_string();
+                    }
+
+                    if !self.text_input_error.is_empty() {
+                        ui.colored_label(Color32::RED, &self.text_input_error);
+                    }
+                });
             }
 
             TokenConfigurationChangeItem::MaxSupply(opt_amt) => {
@@ -499,50 +585,23 @@ impl UpdateTokenConfigScreen {
             }
 
             TokenConfigurationChangeItem::PerpetualDistribution(opt_json) => {
-                ui.horizontal(|ui| {
-                    if ui.button("Set to None").clicked() {
-                        *opt_json = None;
-                    }
+                ui.add_space(5.0);
 
-                    if opt_json.is_none() {
-                        if ui.button("Open Editor").clicked() {
-                            *opt_json = Some(TokenPerpetualDistribution::V0(
-                                TokenPerpetualDistributionV0 {
-                                    distribution_type:
-                                        RewardDistributionType::BlockBasedDistribution {
-                                            interval: 100,
-                                            function: DistributionFunction::FixedAmount {
-                                                amount: 10,
-                                            },
-                                        },
-                                    distribution_recipient:
-                                        TokenDistributionRecipient::ContractOwner,
-                                },
-                            ));
+                ui.label(&self.update_text);
+
+                ui.horizontal(|ui| {
+                    if let Some(opt_json) = opt_json {
+                        if ui.button("View Current").clicked() {
+                            self.update_text =
+                                serde_json::to_string_pretty(opt_json).unwrap_or_default();
+                            // Update displayed text
                         }
                     }
-                });
 
-                if let Some(json) = opt_json {
-                    ui.add_space(5.0);
-                    ui.label(
-                        "Paste a replacement JSON if you can't manually make the changes you want.",
-                    );
-                    ui.add_space(5.0);
-
-                    let mut raw = serde_json::to_string_pretty(json).unwrap_or_default();
-                    if ui.text_edit_multiline(&mut raw).changed() {
-                        *opt_json = serde_json::from_str(&raw).unwrap_or(Some(
-                            TokenPerpetualDistribution::V0(TokenPerpetualDistributionV0 {
-                                distribution_type: RewardDistributionType::BlockBasedDistribution {
-                                    interval: 100,
-                                    function: DistributionFunction::FixedAmount { amount: 10 },
-                                },
-                                distribution_recipient: TokenDistributionRecipient::ContractOwner,
-                            }),
-                        ));
+                    if !self.text_input_error.is_empty() {
+                        ui.colored_label(Color32::RED, &self.text_input_error);
                     }
-                }
+                });
             }
 
             TokenConfigurationChangeItem::MainControlGroup(opt_grp) => {

@@ -131,6 +131,7 @@ impl AppContext {
                 preorder_document_type.to_owned_document_type(),
                 entropy.0,
                 public_key.clone(),
+                None,
                 &qualified_identity,
                 None,
             )
@@ -143,6 +144,7 @@ impl AppContext {
                 domain_document_type.to_owned_document_type(),
                 entropy.0,
                 public_key.clone(),
+                None,
                 &qualified_identity,
                 None,
             )

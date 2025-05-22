@@ -28,6 +28,8 @@ use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicK
 use dash_sdk::dpp::platform_value::Value;
 use dash_sdk::dpp::tokens::gas_fees_paid_by::GasFeesPaidBy;
 use dash_sdk::dpp::tokens::token_amount_on_contract_token::DocumentActionTokenEffect;
+use dash_sdk::dpp::tokens::token_payment_info::v0::TokenPaymentInfoV0;
+use dash_sdk::dpp::tokens::token_payment_info::TokenPaymentInfo;
 use dash_sdk::dpp::{
     data_contract::document_type::DocumentType,
     document::Document,
@@ -710,6 +712,26 @@ impl ScreenLike for CreateDocumentScreen {
                     if ui.add(button).clicked() {
                         match self.try_build_document() {
                             Ok((doc, entropy)) => {
+                                let doc_type = match &self.selected_doc_type {
+                                    Some(dt) => dt.clone(),
+                                    None => {
+                                        self.broadcast_status = BroadcastStatus::Error("Document type not set".to_string());
+                                        return;
+                                    }
+                                };
+                                let token_payment_info = if let Some(token_creation_cost) =
+                                    doc_type.document_creation_token_cost()
+                                {
+                                    Some(TokenPaymentInfo::V0(TokenPaymentInfoV0 {
+                                        payment_token_contract_id: token_creation_cost.contract_id,
+                                        token_contract_position: token_creation_cost.token_contract_position,
+                                        gas_fees_paid_by: token_creation_cost.gas_fees_paid_by,
+                                        minimum_token_cost: None,
+                                        maximum_token_cost: Some(token_creation_cost.token_amount),
+                                    }))
+                                } else {
+                                    None
+                                };
                                 self.broadcast_status = BroadcastStatus::Broadcasting(
                                     SystemTime::now()
                                         .duration_since(UNIX_EPOCH)
@@ -719,6 +741,7 @@ impl ScreenLike for CreateDocumentScreen {
                                 action |= AppAction::BackendTask(BackendTask::DocumentTask(
                                     DocumentTask::BroadcastDocument(
                                         doc,
+                                        token_payment_info,
                                         entropy,
                                         self.selected_doc_type
                                             .as_ref()

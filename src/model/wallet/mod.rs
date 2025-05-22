@@ -231,7 +231,9 @@ impl WalletSeed {
 impl Drop for WalletSeed {
     fn drop(&mut self) {
         // Securely erase sensitive data
-        self.close();
+        if let WalletSeed::Open(open_seed) = self {
+            open_seed.seed.zeroize();
+        }
     }
 }
 

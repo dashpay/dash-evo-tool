@@ -556,6 +556,10 @@ impl ScreenLike for DocumentQueryScreen {
             "Register Contract",
             DesiredAppAction::AddScreenType(ScreenType::RegisterContract),
         );
+        let update_contract_button = (
+            "Update Contract",
+            DesiredAppAction::AddScreenType(ScreenType::UpdateContract),
+        );
         let add_document_button = (
             "Add Document",
             DesiredAppAction::AddScreenType(ScreenType::CreateDocument),
@@ -571,6 +575,7 @@ impl ScreenLike for DocumentQueryScreen {
             vec![
                 load_contract_button,
                 register_contract_button,
+                update_contract_button,
                 add_document_button,
                 group_actions_button,
             ],

@@ -139,7 +139,7 @@ impl AppContext {
             .map_err(|e| format!("Failed to calculate estimated rewards: {e}"))?;
 
         let amount_to_claim = reward_distribution_type
-            .rewards_in_interval::<fn(EpochIndex) -> Option<RewardRatio>>(
+            .rewards_in_interval::<fn(std::ops::RangeInclusive<EpochIndex>) -> Option<RewardRatio>>(
                 contract_creation_cycle_start,
                 start_from_moment_for_distribution,
                 max_cycle_moment,

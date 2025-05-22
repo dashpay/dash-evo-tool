@@ -1,54 +1,90 @@
-use std::time::Duration;
-
-use dash_sdk::{
-    dpp::{
-        dashcore::Network, data_contract::accessors::v0::DataContractV0Getters,
-        platform_value::string_encoding::Encoding,
-    },
-    platform::{
-        transition::put_contract::PutContract, DataContract, Fetch, Identifier, IdentityPublicKey,
-    },
-    Error, Sdk,
-};
-use tokio::{sync::mpsc, time::sleep};
-
 use super::BackendTaskSuccessResult;
 use crate::{
     app::TaskResult,
     context::AppContext,
-    model::{proof_log_item::RequestType, qualified_identity::QualifiedIdentity},
+    model::{
+        proof_log_item::{ProofLogItem, RequestType},
+        qualified_identity::QualifiedIdentity,
+    },
 };
-use crate::{
-    database::contracts::InsertTokensToo::AllTokensShouldBeAdded,
-    model::proof_log_item::ProofLogItem,
+use dash_sdk::{
+    dpp::{
+        dashcore::Network,
+        data_contract::accessors::v0::{DataContractV0Getters, DataContractV0Setters},
+        identity::{accessors::IdentityGettersV0, SecurityLevel},
+        platform_value::string_encoding::Encoding,
+        state_transition::{
+            data_contract_update_transition::DataContractUpdateTransition, StateTransition,
+            StateTransitionSigningOptions,
+        },
+        version::TryIntoPlatformVersioned,
+    },
+    platform::{
+        transition::broadcast::BroadcastStateTransition, DataContract, Fetch, Identifier,
+        IdentityPublicKey,
+    },
+    Error, Sdk,
 };
+use std::time::Duration;
+use tokio::{sync::mpsc, time::sleep};
 
 impl AppContext {
-    pub async fn register_data_contract(
+    pub async fn update_data_contract(
         &self,
-        data_contract: DataContract,
-        alias: String,
+        data_contract: &mut DataContract,
         identity: QualifiedIdentity,
         signing_key: IdentityPublicKey,
         sdk: &Sdk,
         sender: mpsc::Sender<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, String> {
-        match data_contract
-            .put_to_platform_and_wait_for_response(&sdk, signing_key.clone(), &identity, None)
+        // Increment the version of the data contract
+        data_contract.increment_version();
+
+        // Fetch the identity contract nonce
+        let identity_contract_nonce = sdk
+            .get_identity_contract_nonce(identity.identity.id(), data_contract.id(), true, None)
             .await
-        {
-            Ok(returned_contract) => {
-                let optional_alias = match alias.is_empty() {
-                    true => None,
-                    false => Some(alias),
-                };
-                self.db
-                    .insert_contract_if_not_exists(
-                        &returned_contract,
-                        optional_alias.as_deref(),
-                        AllTokensShouldBeAdded,
-                        self,
+            .map_err(|_| format!("Failed to get nonce"))?;
+
+        // Update UI
+        sender
+            .send(TaskResult::Success(BackendTaskSuccessResult::Message(
+                "Nonce fetched successfully".to_string(),
+            )))
+            .await
+            .map_err(|e| format!("Failed to send message: {}", e.to_string()))?;
+
+        let contract_update_transition: DataContractUpdateTransition =
+            (data_contract.clone(), identity_contract_nonce)
+                .try_into_platform_versioned(sdk.version())
+                .map_err(|e: dash_sdk::dpp::ProtocolError| {
+                    format!(
+                        "Failed to convert data contract to DataContractUpdateTransition: {}",
+                        e.to_string()
                     )
+                })?;
+
+        let mut state_transition = StateTransition::DataContractUpdate(contract_update_transition);
+
+        state_transition.sign_external_with_options(
+            &signing_key,
+            &identity,
+            None::<fn(Identifier, String) -> Result<SecurityLevel, dash_sdk::dpp::ProtocolError>>,
+            StateTransitionSigningOptions {
+                allow_signing_with_any_security_level: false,
+                allow_signing_with_any_purpose: false,
+            },
+        ).map_err(|e| {
+            format!(
+                "Failed to sign state transition: {}",
+                e.to_string()
+            )
+        })?;
+
+        match state_transition.broadcast_and_wait(sdk, None).await {
+            Ok(returned_contract) => {
+                self.db
+                    .replace_contract(data_contract.id(), &returned_contract, self)
                     .map_err(|e| {
                         format!(
                             "Error inserting contract into the database: {}",
@@ -56,7 +92,7 @@ impl AppContext {
                         )
                     })?;
                 Ok(BackendTaskSuccessResult::Message(
-                    "DataContract successfully registered".to_string(),
+                    "DataContract successfully updated".to_string(),
                 ))
             }
             Err(e) => match e {
@@ -92,29 +128,8 @@ impl AppContext {
                         }
                     };
                     if let Some(contract) = maybe_contract {
-                        let optional_alias = self
-                            .get_contract_by_id(&contract.id())
-                            .map(|contract| {
-                                if let Some(contract) = contract {
-                                    contract.alias
-                                } else {
-                                    None
-                                }
-                            })
-                            .map_err(|e| {
-                                format!(
-                                    "Failed to get contract by ID from database: {}",
-                                    e.to_string()
-                                )
-                            })?;
-
                         self.db
-                            .insert_contract_if_not_exists(
-                                &contract,
-                                optional_alias.as_deref(),
-                                AllTokensShouldBeAdded,
-                                self,
-                            )
+                            .replace_contract(contract.id(), &contract, self)
                             .map_err(|e| {
                                 format!(
                                     "Error inserting contract into the database: {}",
@@ -134,13 +149,13 @@ impl AppContext {
                         })
                         .ok();
                     return Err(format!(
-                        "Error broadcasting Register Contract transition: {}, proof error logged, contract inserted into the database",
+                        "Error broadcasting Contract Update transition: {}, proof error logged, contract inserted into the database",
                         proof_error
                     ));
                 }
                 e => {
                     return Err(format!(
-                        "Error broadcasting Register Contract transition: {}",
+                        "Error broadcasting Contract Update transition: {}",
                         e
                     ))
                 }

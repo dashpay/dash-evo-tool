@@ -133,11 +133,11 @@ impl AddNewIdentityScreen {
     /// * Err(String) if there was an error during the process, e.g. wallet not open
     pub fn ensure_correct_identity_keys(&mut self) -> Result<(), String> {
         if self.identity_keys.master_private_key.is_some() {
-            if self.update_identity_key() != Ok(true) {
-                return Err("failed to update identity keys".to_string());
-            }
-
-            return Ok(());
+            return match self.update_identity_key() {
+                Ok(true) => Ok(()),
+                Ok(false) => Err("failed to update identity keys".to_string()),
+                Err(e) => Err(format!("failed to update identity keys: {}", e)),
+            };
         }
 
         if let Some(wallet_lock) = &self.selected_wallet {
@@ -387,7 +387,11 @@ impl AddNewIdentityScreen {
         } else {
             false
         };
-        selected_wallet.map(|w| self.update_wallet(w));
+
+        if let Some(wallet) = selected_wallet {
+            self.update_wallet(wallet);
+        }
+
         rendered
     }
 
@@ -401,8 +405,6 @@ impl AddNewIdentityScreen {
         self.selected_wallet = Some(wallet);
         self.identity_id_number = self.next_identity_id();
 
-        // When wallet is open, we try to initialize default keys; if they are already initialized,
-        // we need to run the update.
         if is_open {
             self.ensure_correct_identity_keys()
                 .expect("failed to initialize keys")

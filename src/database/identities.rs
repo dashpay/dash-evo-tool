@@ -71,7 +71,7 @@ impl Database {
                 ],
             )?;
         } else {
-            tracing::debug!("saving identity without wallet");
+            tracing::warn!(identity_id=?id, alias, network, "saving identity without wallet; this needs investigating");
             // If wallet information is not provided, insert without wallet and wallet_index
             self.execute(
                 "INSERT OR REPLACE INTO identity

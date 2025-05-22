@@ -101,7 +101,7 @@ impl AddNewIdentityScreen {
                             wallet
                                 .identity_authentication_ecdsa_private_key(
                                     app_context.network,
-                                    0,
+                                    identity_id_number,
                                     0,
                                     Some(&app_context),
                                 )
@@ -113,7 +113,7 @@ impl AddNewIdentityScreen {
                                 wallet
                                     .identity_authentication_ecdsa_private_key(
                                         app_context.network,
-                                        0,
+                                        identity_id_number,
                                         1,
                                         Some(&app_context),
                                     )
@@ -126,7 +126,7 @@ impl AddNewIdentityScreen {
                                 wallet
                                     .identity_authentication_ecdsa_private_key(
                                         app_context.network,
-                                        0,
+                                        identity_id_number,
                                         2,
                                         Some(&app_context),
                                     )
@@ -139,7 +139,7 @@ impl AddNewIdentityScreen {
                                 wallet
                                     .identity_authentication_ecdsa_private_key(
                                         app_context.network,
-                                        0,
+                                        identity_id_number,
                                         3,
                                         Some(&app_context),
                                     )

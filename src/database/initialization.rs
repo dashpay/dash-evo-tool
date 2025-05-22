@@ -4,7 +4,7 @@ use rusqlite::{params, Connection};
 use std::fs;
 use std::path::Path;
 
-pub const DEFAULT_DB_VERSION: u16 = 7;
+pub const DEFAULT_DB_VERSION: u16 = 8;
 
 pub const DEFAULT_NETWORK: &str = "dash";
 
@@ -34,6 +34,9 @@ impl Database {
 
     fn apply_version_changes(&self, version: u16) -> rusqlite::Result<()> {
         match version {
+            8 => {
+                self.fix_identity_devnet_network_name()?;
+            }
             7 => {
                 self.migrate_asset_lock_fk_to_set_null()?;
             }

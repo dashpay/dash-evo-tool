@@ -71,6 +71,7 @@ impl Database {
                 ],
             )?;
         } else {
+            tracing::debug!("saving identity without wallet");
             // If wallet information is not provided, insert without wallet and wallet_index
             self.execute(
                 "INSERT OR REPLACE INTO identity
@@ -510,5 +511,17 @@ impl Database {
         }
 
         Ok(final_list)
+    }
+
+    /// Fixes bug in identity table where network name for devnet was stored as `devnet:` instead of `devnet`.
+    pub fn fix_identity_devnet_network_name(&self) -> rusqlite::Result<()> {
+        let conn = self.conn.lock().unwrap();
+
+        conn.execute(
+            "UPDATE identity SET network = 'devnet' WHERE network = 'devnet:'",
+            [],
+        )?;
+
+        Ok(())
     }
 }

@@ -222,7 +222,7 @@ impl AppContext {
         match self.network {
             Network::Dash => "dash".to_string(),
             Network::Testnet => "testnet".to_string(),
-            Network::Devnet => format!("devnet:{}", self.devnet_name.clone().unwrap_or_default()),
+            Network::Devnet => "devnet".to_string(),
             Network::Regtest => "local".to_string(),
             _ => "unknown".to_string(),
         }

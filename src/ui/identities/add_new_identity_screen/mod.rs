@@ -305,7 +305,8 @@ impl AddNewIdentityScreen {
     // }
 
     fn render_wallet_selection(&mut self, ui: &mut Ui) -> bool {
-        if self.app_context.has_wallet.load(Ordering::Relaxed) {
+        let mut selected_wallet = None;
+        let rendered = if self.app_context.has_wallet.load(Ordering::Relaxed) {
             let wallets = &self.app_context.wallets.read().unwrap();
             if wallets.len() > 1 {
                 // Retrieve the alias of the currently selected wallet, if any
@@ -342,7 +343,7 @@ impl AddNewIdentityScreen {
                                         wallet.identities.keys().copied().max().unwrap_or_default();
                                 }
                                 // Update the selected wallet
-                                self.selected_wallet = Some(wallet.clone());
+                                selected_wallet = Some(wallet.clone());
                             }
                         }
                     });
@@ -350,7 +351,7 @@ impl AddNewIdentityScreen {
             } else if let Some(wallet) = wallets.values().next() {
                 if self.selected_wallet.is_none() {
                     // Automatically select the only available wallet
-                    self.selected_wallet = Some(wallet.clone());
+                    selected_wallet = Some(wallet.clone());
                 }
                 false
             } else {
@@ -358,7 +359,29 @@ impl AddNewIdentityScreen {
             }
         } else {
             false
-        }
+        };
+        selected_wallet.map(|w| self.select_wallet(w));
+        rendered
+    }
+
+    /// Update selected wallet and trigger all dependent actions, like updating identity keys
+    /// and identity index
+    fn select_wallet(&mut self, wallet: Arc<RwLock<Wallet>>) {
+        self.selected_wallet = Some(wallet);
+        self.identity_id_number = self
+            .selected_wallet
+            .as_ref()
+            .unwrap()
+            .read()
+            .unwrap()
+            .identities
+            .keys()
+            .copied()
+            .max()
+            .map(|max| max + 1)
+            .unwrap_or_default();
+
+        self.update_identity_key();
     }
 
     fn render_funding_method(&mut self, ui: &mut egui::Ui) {
@@ -596,6 +619,9 @@ impl AddNewIdentityScreen {
                 if amount == 0 {
                     return AppAction::None;
                 }
+
+                let seed = selected_wallet.read().unwrap().wallet_seed.clone();
+                tracing::debug!(selected_wallet = ?selected_wallet,?seed, "funding with wallet balance");
                 let identity_input = IdentityRegistrationInfo {
                     alias_input: self.alias_input.clone(),
                     keys: self.identity_keys.clone(),

@@ -661,6 +661,7 @@ impl Wallet {
         Ok(private_key)
     }
 
+    /// Generate Core key for identity registration
     pub fn identity_registration_ecdsa_private_key(
         &mut self,
         network: Network,

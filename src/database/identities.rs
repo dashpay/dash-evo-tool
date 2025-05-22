@@ -11,7 +11,7 @@ use std::sync::{Arc, RwLock};
 
 impl Database {
     /// Updates the alias of a specified identity.
-    pub fn set_alias(
+    pub fn set_identity_alias(
         &self,
         identifier: &Identifier,
         new_alias: Option<&str>,
@@ -31,7 +31,7 @@ impl Database {
         Ok(())
     }
 
-    pub fn get_alias(&self, identifier: &Identifier) -> rusqlite::Result<Option<String>> {
+    pub fn get_identity_alias(&self, identifier: &Identifier) -> rusqlite::Result<Option<String>> {
         let id = identifier.to_vec();
         let conn = self.conn.lock().unwrap();
 

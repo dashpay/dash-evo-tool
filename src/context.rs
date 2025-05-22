@@ -256,13 +256,25 @@ impl AppContext {
     }
 
     /// Sets the alias for an identity
-    pub fn set_alias(&self, identifier: &Identifier, new_alias: Option<&str>) -> Result<()> {
-        self.db.set_alias(identifier, new_alias)
+    pub fn set_identity_alias(
+        &self,
+        identifier: &Identifier,
+        new_alias: Option<&str>,
+    ) -> Result<()> {
+        self.db.set_identity_alias(identifier, new_alias)
+    }
+
+    pub fn set_contract_alias(
+        &self,
+        contract_id: &Identifier,
+        new_alias: Option<&str>,
+    ) -> Result<()> {
+        self.db.set_contract_alias(contract_id, new_alias)
     }
 
     /// Gets the alias for an identity
     pub fn get_alias(&self, identifier: &Identifier) -> Result<Option<String>> {
-        self.db.get_alias(identifier)
+        self.db.get_identity_alias(identifier)
     }
 
     /// This is for before we know if Platform will accept the identity

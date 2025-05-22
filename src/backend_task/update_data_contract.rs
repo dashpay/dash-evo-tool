@@ -57,7 +57,12 @@ impl AppContext {
         let contract_update_transition: DataContractUpdateTransition =
             (data_contract.clone(), identity_contract_nonce)
                 .try_into_platform_versioned(sdk.version())
-                .expect("expected to get transition");
+                .map_err(|e: dash_sdk::dpp::ProtocolError| {
+                    format!(
+                        "Failed to convert data contract to DataContractUpdateTransition: {}",
+                        e.to_string()
+                    )
+                })?;
 
         let mut state_transition = StateTransition::DataContractUpdate(contract_update_transition);
 

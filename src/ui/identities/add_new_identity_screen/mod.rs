@@ -18,6 +18,7 @@ use crate::ui::{MessageType, ScreenLike};
 use dash_sdk::dashcore_rpc::dashcore::transaction::special_transaction::TransactionPayload;
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dpp::balances::credits::Duffs;
+use dash_sdk::dpp::dashcore::secp256k1::hashes::hex::DisplayHex;
 use dash_sdk::dpp::dashcore::{OutPoint, PrivateKey, Transaction, TxOut};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
@@ -121,75 +122,94 @@ impl AddNewIdentityScreen {
         created
     }
 
-    /// Generate default set of keys for the newly created identity.
+    /// Ensure that identity keys are correctly set up and generated.
     ///
-    /// This function creates a master key and a set of default keys for the identity.
-    /// It does NOT update `self`.
-    fn generate_default_keys(&self) -> Option<IdentityKeys> {
-        if let Some(wallet_lock) = &self.selected_wallet {
-            // Don't lock here
-            let is_open = wallet_lock.read().unwrap().is_open();
-            if is_open {
-                let app_context = &self.app_context;
-                let identity_id_number = self.next_identity_id(); // note: this grabs rlock on the wallet
-
-                const DEFAULT_KEY_TYPES: [(KeyType, Purpose, SecurityLevel); 3] = [
-                    (
-                        KeyType::ECDSA_HASH160,
-                        Purpose::AUTHENTICATION,
-                        SecurityLevel::CRITICAL,
-                    ),
-                    (
-                        KeyType::ECDSA_HASH160,
-                        Purpose::AUTHENTICATION,
-                        SecurityLevel::HIGH,
-                    ),
-                    (
-                        KeyType::ECDSA_HASH160,
-                        Purpose::TRANSFER,
-                        SecurityLevel::CRITICAL,
-                    ),
-                ];
-                let mut wallet = wallet_lock.write().expect("wallet lock failed");
-                let master_key = wallet
-                    .identity_authentication_ecdsa_private_key(
-                        app_context.network,
-                        identity_id_number,
-                        0,
-                        Some(&app_context),
-                    )
-                    .expect("expected to have decrypted wallet");
-
-                let other_keys = DEFAULT_KEY_TYPES
-                    .into_iter()
-                    .enumerate()
-                    .map(|(i, (key_type, purpose, security_level))| {
-                        (
-                            wallet
-                                .identity_authentication_ecdsa_private_key(
-                                    app_context.network,
-                                    identity_id_number,
-                                    (i + 1).try_into().expect("key index must fit u32"), // key index 0 is the master key
-                                    Some(&app_context),
-                                )
-                                .expect("expected to have decrypted wallet"),
-                            key_type,
-                            purpose,
-                            security_level,
-                        )
-                    })
-                    .collect();
-
-                Some(IdentityKeys {
-                    master_private_key: Some(master_key),
-                    master_private_key_type: KeyType::ECDSA_HASH160,
-                    keys_input: other_keys,
-                })
-            } else {
-                None
+    /// If the master key is not set, it generates a new master key and derives other keys from it.
+    /// Otherwise, it updates the existing keys based on the current wallet and identity index.
+    ///
+    /// ## Return value
+    ///
+    /// * Ok(()) when the keys are correctly set up.
+    /// * Err(String) if there was an error during the process, e.g. wallet not open
+    pub fn ensure_correct_identity_keys(&mut self) -> Result<(), String> {
+        if self.identity_keys.master_private_key.is_some() {
+            if self.update_identity_key() != Ok(true) {
+                return Err("failed to update identity keys".to_string());
             }
+
+            return Ok(());
+        }
+
+        if let Some(wallet_lock) = &self.selected_wallet {
+            // sanity checks
+            {
+                let wallet = wallet_lock.read().unwrap();
+                if !wallet.is_open() {
+                    return Err(format!(
+                        "wallet {} is not open",
+                        wallet
+                            .alias
+                            .as_ref()
+                            .unwrap_or(&wallet.seed_hash().to_lower_hex_string())
+                    ));
+                }
+            }
+
+            let app_context = &self.app_context;
+            let identity_id_number = self.next_identity_id(); // note: this grabs rlock on the wallet
+
+            const DEFAULT_KEY_TYPES: [(KeyType, Purpose, SecurityLevel); 3] = [
+                (
+                    KeyType::ECDSA_HASH160,
+                    Purpose::AUTHENTICATION,
+                    SecurityLevel::CRITICAL,
+                ),
+                (
+                    KeyType::ECDSA_HASH160,
+                    Purpose::AUTHENTICATION,
+                    SecurityLevel::HIGH,
+                ),
+                (
+                    KeyType::ECDSA_HASH160,
+                    Purpose::TRANSFER,
+                    SecurityLevel::CRITICAL,
+                ),
+            ];
+            let mut wallet = wallet_lock.write().expect("wallet lock failed");
+            let master_key = wallet.identity_authentication_ecdsa_private_key(
+                app_context.network,
+                identity_id_number,
+                0,
+                Some(&app_context),
+            )?;
+
+            let other_keys = DEFAULT_KEY_TYPES
+                .into_iter()
+                .enumerate()
+                .map(|(i, (key_type, purpose, security_level))| {
+                    Ok((
+                        wallet.identity_authentication_ecdsa_private_key(
+                            app_context.network,
+                            identity_id_number,
+                            (i + 1).try_into().expect("key index must fit u32"), // key index 0 is the master key
+                            Some(&app_context),
+                        )?,
+                        key_type,
+                        purpose,
+                        security_level,
+                    ))
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+
+            self.identity_keys = IdentityKeys {
+                master_private_key: Some(master_key),
+                master_private_key_type: KeyType::ECDSA_HASH160,
+                keys_input: other_keys,
+            };
+
+            Ok(())
         } else {
-            None
+            Err("no wallet selected".to_string())
         }
     }
 
@@ -252,7 +272,8 @@ impl AddNewIdentityScreen {
 
         // If the index has changed, update the identity key
         if index_changed {
-            self.update_identity_key();
+            self.ensure_correct_identity_keys()
+                .expect("failed to update identity key");
         }
     }
 
@@ -375,23 +396,16 @@ impl AddNewIdentityScreen {
     ///
     /// This function is called whenever a wallet was changed in the UI or unlocked
     fn update_wallet(&mut self, wallet: Arc<RwLock<Wallet>>) {
-        let wallet_guard = wallet.read().expect("wallet lock poisoned");
-        let is_open = wallet_guard.is_open();
-        drop(wallet_guard); // Release the read lock
+        let is_open = wallet.read().expect("wallet lock poisoned").is_open();
 
         self.selected_wallet = Some(wallet);
         self.identity_id_number = self.next_identity_id();
 
-        if is_open
-            && self.identity_keys.master_private_key.is_none()
-            && self.identity_keys.keys_input.is_empty()
-        {
-            // We are missing the keys, so we need to generate it
-            if let Some(keys) = self.generate_default_keys() {
-                self.identity_keys = keys;
-            }
-        } else {
-            self.update_identity_key();
+        // When wallet is open, we try to initialize default keys; if they are already initialized,
+        // we need to run the update.
+        if is_open {
+            self.ensure_correct_identity_keys()
+                .expect("failed to initialize keys")
         }
     }
 
@@ -451,7 +465,8 @@ impl AddNewIdentityScreen {
                         )
                         .changed()
                     {
-                        self.update_identity_key();
+                        self.ensure_correct_identity_keys()
+                            .expect("failed to initialize keys");
                         let mut step = self.step.write().unwrap();
                         *step = WalletFundedScreenStep::ReadyToCreate;
                         self.funding_amount = "0.5".to_string();
@@ -726,22 +741,25 @@ impl AddNewIdentityScreen {
         ui.add_space(10.0);
     }
 
-    fn update_identity_key(&mut self) {
+    /// Update existing identity keys based on the current wallet and identity index.
+    ///
+    /// When the wallet is updated, we need to ensure that all the private keys are
+    /// generated with the correct parameters (seed, derivation path, etc.).
+    ///
+    /// If the master key is not set, this function is a no-op and returns Ok(false).
+    fn update_identity_key(&mut self) -> Result<bool, String> {
         if let Some(wallet_guard) = self.selected_wallet.as_ref() {
             let mut wallet = wallet_guard.write().unwrap();
             let identity_index = self.identity_id_number;
 
             // Update the master private key and keys input from the wallet
-            self.identity_keys.master_private_key = Some(
-                wallet
-                    .identity_authentication_ecdsa_private_key(
-                        self.app_context.network,
-                        identity_index,
-                        0,
-                        Some(&self.app_context),
-                    )
-                    .expect("expected to have decrypted wallet"),
-            );
+            self.identity_keys.master_private_key =
+                Some(wallet.identity_authentication_ecdsa_private_key(
+                    self.app_context.network,
+                    identity_index,
+                    0,
+                    Some(&self.app_context),
+                )?);
 
             // Update the additional keys input
             self.identity_keys.keys_input = self
@@ -750,21 +768,23 @@ impl AddNewIdentityScreen {
                 .iter()
                 .enumerate()
                 .map(|(key_index, (_, key_type, purpose, security_level))| {
-                    (
-                        wallet
-                            .identity_authentication_ecdsa_private_key(
-                                self.app_context.network,
-                                identity_index,
-                                key_index as u32 + 1,
-                                Some(&self.app_context),
-                            )
-                            .expect("expected to have decrypted wallet"),
+                    Ok((
+                        wallet.identity_authentication_ecdsa_private_key(
+                            self.app_context.network,
+                            identity_index,
+                            key_index as u32 + 1,
+                            Some(&self.app_context),
+                        )?,
                         *key_type,
                         *purpose,
                         *security_level,
-                    )
+                    ))
                 })
-                .collect();
+                .collect::<Result<_, String>>()?;
+
+            Ok(true)
+        } else {
+            Ok(false)
         }
     }
 

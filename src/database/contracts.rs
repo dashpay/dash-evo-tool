@@ -143,15 +143,24 @@ impl Database {
             .expect("expected to serialize contract");
         let network = app_context.network_string();
 
+        // Get the existing contract name (if any)
+        let existing_name = {
+            let conn = self.conn.lock().unwrap();
+            conn.query_row(
+                "SELECT name FROM contract WHERE contract_id = ? AND network = ?",
+                params![contract_id.to_vec(), network.clone()],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .or_else(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => Ok::<Option<String>, rusqlite::Error>(None),
+                other => Err(other.into()),
+            })?
+        };
+
         // Replace the contract
         self.execute(
             "REPLACE INTO contract (contract_id, contract, name, network) VALUES (?, ?, ?, ?)",
-            params![
-                contract_id.to_vec(),
-                contract_bytes,
-                None::<String>,
-                network
-            ],
+            params![contract_id.to_vec(), contract_bytes, existing_name, network],
         )?;
 
         Ok(())

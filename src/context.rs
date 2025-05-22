@@ -261,8 +261,8 @@ impl AppContext {
     }
 
     /// Gets the alias for an identity
-    pub fn get_alias(&self, identifier: &Identifier) -> Result<Option<String>> {
-        self.db.get_alias(identifier)
+    pub fn get_identity_alias(&self, identifier: &Identifier) -> Result<Option<String>> {
+        self.db.get_identity_alias(identifier)
     }
 
     /// This is for before we know if Platform will accept the identity

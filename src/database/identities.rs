@@ -31,7 +31,7 @@ impl Database {
         Ok(())
     }
 
-    pub fn get_alias(&self, identifier: &Identifier) -> rusqlite::Result<Option<String>> {
+    pub fn get_identity_alias(&self, identifier: &Identifier) -> rusqlite::Result<Option<String>> {
         let id = identifier.to_vec();
         let conn = self.conn.lock().unwrap();
 

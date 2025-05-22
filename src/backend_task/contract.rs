@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use super::BackendTaskSuccessResult;
+use crate::app::TaskResult;
 use crate::context::AppContext;
 use crate::database::contracts::InsertTokensToo;
 use crate::database::contracts::InsertTokensToo::NoTokensShouldBeAdded;
@@ -25,6 +26,7 @@ use dash_sdk::platform::{
 };
 use dash_sdk::query_types::IndexMap;
 use dash_sdk::Sdk;
+use tokio::sync::mpsc;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum ContractTask {
@@ -32,7 +34,8 @@ pub(crate) enum ContractTask {
     FetchContractsWithDescriptions(Vec<Identifier>),
     FetchActiveGroupActions(QualifiedContract, QualifiedIdentity),
     RemoveContract(Identifier),
-    RegisterDataContract(DataContract, String, QualifiedIdentity, IdentityPublicKey),
+    RegisterDataContract(DataContract, String, QualifiedIdentity, IdentityPublicKey), // contract, alias, identity, signing_key
+    UpdateDataContract(DataContract, QualifiedIdentity, IdentityPublicKey), // contract, identity, signing_key
     SaveDataContract(DataContract, Option<String>, InsertTokensToo),
 }
 
@@ -41,6 +44,7 @@ impl AppContext {
         &self,
         task: ContractTask,
         sdk: &Sdk,
+        sender: mpsc::Sender<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, String> {
         match task {
             ContractTask::FetchContracts(identifiers) => {
@@ -188,6 +192,7 @@ impl AppContext {
                     identity,
                     signing_key,
                     sdk,
+                    sender,
                 )
                 .await
                 .map(|_| {
@@ -196,6 +201,21 @@ impl AppContext {
                     )
                 })
                 .map_err(|e| format!("Error registering contract: {}", e.to_string()))
+            }
+            ContractTask::UpdateDataContract(mut data_contract, identity, signing_key) => {
+                AppContext::update_data_contract(
+                    &self,
+                    &mut data_contract,
+                    identity,
+                    signing_key,
+                    sdk,
+                    sender,
+                )
+                .await
+                .map(|_| {
+                    BackendTaskSuccessResult::Message("Successfully updated contract".to_string())
+                })
+                .map_err(|e| format!("Error updating contract: {}", e.to_string()))
             }
             ContractTask::RemoveContract(identifier) => self
                 .remove_contract(&identifier)

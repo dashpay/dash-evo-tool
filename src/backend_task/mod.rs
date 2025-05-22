@@ -35,6 +35,7 @@ pub mod identity;
 pub mod register_contract;
 pub mod system_task;
 pub mod tokens;
+pub mod update_data_contract;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum BackendTask {
@@ -122,7 +123,7 @@ impl AppContext {
         };
         match task {
             BackendTask::ContractTask(contract_task) => {
-                self.run_contract_task(contract_task, &sdk).await
+                self.run_contract_task(contract_task, &sdk, sender).await
             }
             BackendTask::ContestedResourceTask(contested_resource_task) => {
                 self.run_contested_resource_task(contested_resource_task, &sdk, sender)

@@ -273,7 +273,7 @@ impl AppContext {
     }
 
     /// Gets the alias for an identity
-    pub fn get_alias(&self, identifier: &Identifier) -> Result<Option<String>> {
+    pub fn get_identity_alias(&self, identifier: &Identifier) -> Result<Option<String>> {
         self.db.get_identity_alias(identifier)
     }
 

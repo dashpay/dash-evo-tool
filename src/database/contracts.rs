@@ -141,13 +141,27 @@ impl Database {
             .expect("expected to serialize contract");
         let network = app_context.network_string();
 
+        // Get the existing contract alias (if any)
+        let existing_alias = {
+            let conn = self.conn.lock().unwrap();
+            conn.query_row(
+                "SELECT alias FROM contract WHERE contract_id = ? AND network = ?",
+                params![contract_id.to_vec(), network.clone()],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .or_else(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => Ok::<Option<String>, rusqlite::Error>(None),
+                other => Err(other.into()),
+            })?
+        };
+
         // Replace the contract
         self.execute(
             "REPLACE INTO contract (contract_id, contract, alias, network) VALUES (?, ?, ?, ?)",
             params![
                 contract_id.to_vec(),
                 contract_bytes,
-                None::<String>,
+                existing_alias,
                 network
             ],
         )?;

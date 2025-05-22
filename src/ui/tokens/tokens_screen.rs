@@ -30,11 +30,12 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+use dash_sdk::dpp::prelude::TimestampMillisInterval;
 use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::Start;
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
 use dash_sdk::query_types::IndexMap;
 use eframe::egui::{self, CentralPanel, Color32, Context, Frame, Margin, Ui};
-use egui::{Align, Checkbox, ColorImage, Label, Response, RichText, Sense, TextureHandle};
+use egui::{Align, Checkbox, ColorImage, ComboBox, Label, Response, RichText, Sense, TextEdit, TextureHandle};
 use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
 use egui_extras::{Column, TableBuilder};
 use enum_iterator::Sequence;
@@ -130,6 +131,14 @@ fn tri_state(ui: &mut Ui, state: &mut Option<bool>, label: &str) -> Response {
         };
     }
     resp
+}
+
+fn sanitize_i64(input: &mut String) {
+    input.retain(|c| c.is_ascii_digit() || c == '-' || c == '+');
+}
+
+fn sanitize_u64(input: &mut String) {
+    input.retain(|c| c.is_ascii_digit());
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
@@ -335,7 +344,7 @@ impl ChangeControlRulesUI {
                     // Authorized action takers
                     ui.horizontal(|ui| {
                         ui.label("Authorized to perform action:");
-                        egui::ComboBox::from_id_salt(format!("Authorized {}", action_name))
+                        ComboBox::from_id_salt(format!("Authorized {}", action_name))
                             .selected_text(match self.rules.authorized_to_make_change {
                                 AuthorizedActionTakers::NoOne => "No One".to_string(),
                                 AuthorizedActionTakers::ContractOwner => "Contract Owner".to_string(),
@@ -385,7 +394,7 @@ impl ChangeControlRulesUI {
                                     ui.horizontal(|ui| {
                                         ui.add_sized(
                                             [300.0, 22.0],
-                                            egui::TextEdit::singleline(id_str).hint_text("Enter base58 id"),
+                                            TextEdit::singleline(id_str).hint_text("Enter base58 id"),
                                         );
 
                                         if !id_str.is_empty() {
@@ -406,7 +415,7 @@ impl ChangeControlRulesUI {
                                 self.authorized_group.get_or_insert_with(|| "0".to_owned());
                                 if let Some(ref mut group_str) = self.authorized_group {
                                     ui.add(
-                                        egui::TextEdit::singleline(group_str)
+                                        TextEdit::singleline(group_str)
                                             .hint_text("Group contract position"),
                                     );
                                 }
@@ -419,7 +428,7 @@ impl ChangeControlRulesUI {
                     // Admin action takers
                     ui.horizontal(|ui| {
                         ui.label("Authorized to change rules:");
-                        egui::ComboBox::from_id_salt(format!("Admin {}", action_name))
+                        ComboBox::from_id_salt(format!("Admin {}", action_name))
                             .selected_text(match self.rules.admin_action_takers {
                                 AuthorizedActionTakers::NoOne => "No One".to_string(),
                                 AuthorizedActionTakers::ContractOwner => "Contract Owner".to_string(),
@@ -468,7 +477,7 @@ impl ChangeControlRulesUI {
                                     ui.horizontal(|ui| {
                                         ui.add_sized(
                                             [300.0, 22.0],
-                                            egui::TextEdit::singleline(id_str).hint_text("Enter base58 id"),
+                                            TextEdit::singleline(id_str).hint_text("Enter base58 id"),
                                         );
 
                                         if !id_str.is_empty() {
@@ -489,7 +498,7 @@ impl ChangeControlRulesUI {
                                 self.admin_group.get_or_insert_with(|| "0".to_owned());
                                 if let Some(ref mut group_str) = self.admin_group {
                                     ui.add(
-                                        egui::TextEdit::singleline(group_str)
+                                        TextEdit::singleline(group_str)
                                             .hint_text("Group contract position"),
                                     );
                                 }
@@ -566,7 +575,7 @@ impl ChangeControlRulesUI {
                     // Authorized action takers
                     ui.horizontal(|ui| {
                         ui.label("Authorized to perform action:");
-                        egui::ComboBox::from_id_salt("Authorized Manual Mint")
+                        ComboBox::from_id_salt("Authorized Manual Mint")
                             .selected_text(match self.rules.authorized_to_make_change {
                                 AuthorizedActionTakers::NoOne => "No One".to_string(),
                                 AuthorizedActionTakers::ContractOwner => "Contract Owner".to_string(),
@@ -616,7 +625,7 @@ impl ChangeControlRulesUI {
                                     ui.horizontal(|ui| {
                                         ui.add_sized(
                                             [300.0, 22.0],
-                                            egui::TextEdit::singleline(id_str).hint_text("Enter base58 id"),
+                                            TextEdit::singleline(id_str).hint_text("Enter base58 id"),
                                         );
 
                                         if !id_str.is_empty() {
@@ -637,7 +646,7 @@ impl ChangeControlRulesUI {
                                 self.authorized_group.get_or_insert_with(|| "0".to_owned());
                                 if let Some(ref mut group_str) = self.authorized_group {
                                     ui.add(
-                                        egui::TextEdit::singleline(group_str)
+                                        TextEdit::singleline(group_str)
                                             .hint_text("Group contract position"),
                                     );
                                 }
@@ -650,7 +659,7 @@ impl ChangeControlRulesUI {
                     // Admin action takers
                     ui.horizontal(|ui| {
                         ui.label("Authorized to change rules:");
-                        egui::ComboBox::from_id_salt("Admin Manual Mint")
+                        ComboBox::from_id_salt("Admin Manual Mint")
                             .selected_text(match self.rules.admin_action_takers {
                                 AuthorizedActionTakers::NoOne => "No One".to_string(),
                                 AuthorizedActionTakers::ContractOwner => "Contract Owner".to_string(),
@@ -699,7 +708,7 @@ impl ChangeControlRulesUI {
                                     ui.horizontal(|ui| {
                                         ui.add_sized(
                                             [300.0, 22.0],
-                                            egui::TextEdit::singleline(id_str).hint_text("Enter base58 id"),
+                                            TextEdit::singleline(id_str).hint_text("Enter base58 id"),
                                         );
 
                                         if !id_str.is_empty() {
@@ -720,7 +729,7 @@ impl ChangeControlRulesUI {
                                 self.admin_group.get_or_insert_with(|| "0".to_owned());
                                 if let Some(ref mut group_str) = self.admin_group {
                                     ui.add(
-                                        egui::TextEdit::singleline(group_str)
+                                        TextEdit::singleline(group_str)
                                             .hint_text("Group contract position"),
                                     );
                                 }
@@ -1210,6 +1219,7 @@ pub struct TokensScreen {
     pub perpetual_distribution_rules: ChangeControlRulesUI,
     pub perpetual_dist_type: PerpetualDistributionIntervalTypeUI,
     pub perpetual_dist_interval_input: String,
+    pub perpetual_dist_interval_unit: IntervalTimeUnit,
     pub perpetual_dist_function: DistributionFunctionUI,
     pub perpetual_dist_recipient: TokenDistributionRecipientUI,
     pub perpetual_dist_recipient_identity_input: Option<String>,
@@ -1302,6 +1312,48 @@ pub struct TokensScreen {
 
     pub function_images: BTreeMap<DistributionFunctionUI, ColorImage>,
     pub function_textures: BTreeMap<DistributionFunctionUI, TextureHandle>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IntervalTimeUnit {
+    Second,
+    Minute,
+    Hour,
+    Day,
+    Week,
+    Year,
+}
+
+impl IntervalTimeUnit {
+    /// Returns the equivalent duration in milliseconds
+    /// for the given amount of the unit.
+    pub fn ms_for_amount(&self, amount: u64) -> TimestampMillisInterval {
+        match self {
+            IntervalTimeUnit::Second => amount.saturating_mul(1_000),
+            IntervalTimeUnit::Minute => amount.saturating_mul(60_000),
+            IntervalTimeUnit::Hour => amount.saturating_mul(3_600_000),
+            IntervalTimeUnit::Day => amount.saturating_mul(86_400_000),
+            IntervalTimeUnit::Week => amount.saturating_mul(7).saturating_mul(86_400_000),
+            IntervalTimeUnit::Year => amount.saturating_mul(31_556_952_000),
+        }
+    }
+    pub fn label_for_amount(&self, amount_str: &str) -> &'static str {
+        let is_singular = amount_str == "1";
+        match (self, is_singular) {
+            (IntervalTimeUnit::Second, true) => "second",
+            (IntervalTimeUnit::Second, false) => "seconds",
+            (IntervalTimeUnit::Minute, true) => "minute",
+            (IntervalTimeUnit::Minute, false) => "minutes",
+            (IntervalTimeUnit::Hour, true) => "hour",
+            (IntervalTimeUnit::Hour, false) => "hours",
+            (IntervalTimeUnit::Day, true) => "day",
+            (IntervalTimeUnit::Day, false) => "days",
+            (IntervalTimeUnit::Week, true) => "week",
+            (IntervalTimeUnit::Week, false) => "weeks",
+            (IntervalTimeUnit::Year, true) => "year",
+            (IntervalTimeUnit::Year, false) => "years",
+        }
+    }
 }
 
 impl TokensScreen {
@@ -1435,6 +1487,7 @@ impl TokensScreen {
             perpetual_dist_interval_input: String::new(),
 
             // Distribution function selection
+            perpetual_dist_interval_unit: IntervalTimeUnit::Day,
             perpetual_dist_function: DistributionFunctionUI::FixedAmount,
             fixed_amount_input: String::new(),
             random_min_input: String::new(),
@@ -1851,7 +1904,7 @@ impl TokensScreen {
                                             // Show identity alias or ID
                                             if let Some(alias) = self
                                                 .app_context
-                                                .get_alias(&itb.identity_id)
+                                                .get_identity_alias(&itb.identity_id)
                                                 .expect("Expected to get alias")
                                             {
                                                 ui.label(alias);
@@ -2539,7 +2592,7 @@ impl TokensScreen {
 
                     ui.horizontal(|ui| {
                         ui.label("Identity:");
-                        egui::ComboBox::from_id_salt("token_creator_identity_selector")
+                        ComboBox::from_id_salt("token_creator_identity_selector")
                             .selected_text(
                                 self.selected_identity
                                     .as_ref()
@@ -2595,7 +2648,7 @@ impl TokensScreen {
 
                         ui.horizontal(|ui| {
                             ui.label("Key:");
-                            egui::ComboBox::from_id_salt("token_creator_key_selector")
+                            ComboBox::from_id_salt("token_creator_key_selector")
                                 .selected_text(match &self.selected_key {
                                     Some(k) => format!(
                                         "Key {} (Purpose: {:?}, Security Level: {:?})",
@@ -2646,7 +2699,7 @@ impl TokensScreen {
                     } else {
                         ui.horizontal(|ui| {
                             ui.label("Key:");
-                            egui::ComboBox::from_id_salt("token_creator_key_selector_empty")
+                            ComboBox::from_id_salt("token_creator_key_selector_empty")
                                 .selected_text("Select Identity First")
                                 .show_ui(ui, |_| {
                                 });
@@ -2692,7 +2745,7 @@ impl TokensScreen {
                                 ui.label("Token Name (singular):");
                                 ui.text_edit_singleline(&mut self.token_names_input[i].0);
                                 if i == 0 {
-                                    egui::ComboBox::from_id_salt(format!("token_name_language_selector_{}", i))
+                                    ComboBox::from_id_salt(format!("token_name_language_selector_{}", i))
                                         .selected_text(format!(
                                             "{}",
                                             self.token_names_input[i].2.to_string()
@@ -2701,7 +2754,7 @@ impl TokensScreen {
                                             ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::English, "English");
                                         });
                                 } else {
-                                    egui::ComboBox::from_id_salt(format!("token_name_language_selector_{}", i))
+                                    ComboBox::from_id_salt(format!("token_name_language_selector_{}", i))
                                         .selected_text(format!(
                                             "{}",
                                             self.token_names_input[i].2.to_string()
@@ -2779,7 +2832,7 @@ impl TokensScreen {
 
                                     ui.checkbox(&mut self.token_names_input[i].3, "Add singular name to keywords");
 
-                                    let info_icon = egui::Label::new("ℹ").sense(egui::Sense::click());
+                                    let info_icon = Label::new("ℹ").sense(Sense::click());
                                     let response = ui.add(info_icon)
                                         .on_hover_text("Each searchable keyword costs 0.1 Dash");
                                     if response.clicked() {
@@ -2812,7 +2865,7 @@ impl TokensScreen {
                             // Row 4: Contract Keywords
                             ui.horizontal(|ui| {
                                 ui.label("Contract Keywords (comma separated):");
-                                let info_icon = egui::Label::new("ℹ").sense(egui::Sense::click());
+                                let info_icon = Label::new("ℹ").sense(Sense::click());
                                 let response = ui.add(info_icon)
                                     .on_hover_text("Each searchable keyword costs 0.1 Dash");
                                 if response.clicked() {
@@ -2927,7 +2980,7 @@ impl TokensScreen {
                         ui.horizontal(|ui| {
                             ui.label("Preset:");
 
-                            egui::ComboBox::from_id_salt("preset_selector")
+                            ComboBox::from_id_salt("preset_selector")
                                 .selected_text(
                                     self.selected_token_preset
                                         .map(|p|                                         match p {
@@ -2996,7 +3049,7 @@ impl TokensScreen {
                             // A) authorized_to_make_change
                             ui.horizontal(|ui| {
                                 ui.label("Allow main control group change:");
-                                egui::ComboBox::from_id_salt("main_control_group_change_selector")
+                                ComboBox::from_id_salt("main_control_group_change_selector")
                                     .selected_text(format!(
                                         "{}",
                                         self.authorized_main_control_group_change.to_string()
@@ -3034,7 +3087,7 @@ impl TokensScreen {
                                             self.main_control_group_change_authorized_identity = Some(String::new());
                                         }
                                         if let Some(ref mut id) = self.main_control_group_change_authorized_identity {
-                                            ui.add(egui::TextEdit::singleline(id).hint_text("base58 id"));
+                                            ui.add(TextEdit::singleline(id).hint_text("base58 id"));
                                         }
                                     }
                                     AuthorizedActionTakers::Group(_) => {
@@ -3042,7 +3095,7 @@ impl TokensScreen {
                                             self.main_control_group_change_authorized_group = Some("0".to_string());
                                         }
                                         if let Some(ref mut group) = self.main_control_group_change_authorized_group {
-                                            ui.add(egui::TextEdit::singleline(group).hint_text("group contract position"));
+                                            ui.add(TextEdit::singleline(group).hint_text("group contract position"));
                                         }
                                     }
                                     _ => {}
@@ -3061,7 +3114,7 @@ impl TokensScreen {
                             &mut self.enable_perpetual_distribution,
                             "Enable Perpetual Distribution",
                         ).clicked() {
-                            self.perpetual_dist_type = PerpetualDistributionIntervalTypeUI::BlockBased;
+                            self.perpetual_dist_type = PerpetualDistributionIntervalTypeUI::TimeBased;
                         };
                         if self.enable_perpetual_distribution {
                             ui.add_space(5.0);
@@ -3069,14 +3122,9 @@ impl TokensScreen {
                             // 2) Select the distribution type
                             ui.horizontal(|ui| {
                                 ui.label("     Type:");
-                                egui::ComboBox::from_id_salt("perpetual_dist_type_selector")
+                                ComboBox::from_id_salt("perpetual_dist_type_selector")
                                     .selected_text(format!("{:?}", self.perpetual_dist_type))
                                     .show_ui(ui, |ui| {
-                                        ui.selectable_value(
-                                            &mut self.perpetual_dist_type,
-                                            PerpetualDistributionIntervalTypeUI::BlockBased,
-                                            "Block-Based",
-                                        );
                                         ui.selectable_value(
                                             &mut self.perpetual_dist_type,
                                             PerpetualDistributionIntervalTypeUI::TimeBased,
@@ -3087,29 +3135,66 @@ impl TokensScreen {
                                             PerpetualDistributionIntervalTypeUI::EpochBased,
                                             "Epoch-Based",
                                         );
+                                        ui.selectable_value(
+                                            &mut self.perpetual_dist_type,
+                                            PerpetualDistributionIntervalTypeUI::BlockBased,
+                                            "Block-Based",
+                                        );
                                     });
                             });
 
                             // If user picked a real distribution type:
                             match self.perpetual_dist_type {
-                                PerpetualDistributionIntervalTypeUI::BlockBased => {
-                                    ui.add_space(2.0);
-                                    ui.horizontal(|ui| {
-                                        ui.label("        - Block Interval:");
-                                        ui.text_edit_singleline(&mut self.perpetual_dist_interval_input);
-                                    });
-                                }
                                 PerpetualDistributionIntervalTypeUI::TimeBased => {
                                     ui.add_space(2.0);
                                     ui.horizontal(|ui| {
-                                        ui.label("        - Time Interval (ms):");
-                                        ui.text_edit_singleline(&mut self.perpetual_dist_interval_input);
+                                        ui.label("        - Distributes every ");
+
+                                        // Restrict input to digits only
+                                        let response = ui.add(
+                                            TextEdit::singleline(&mut self.perpetual_dist_interval_input)
+                                        );
+
+                                        // Optionally filter out non-digit input
+                                        if response.changed() {
+                                            self.perpetual_dist_interval_input.retain(|c| c.is_ascii_digit());
+                                        }
+
+                                        // Dropdown for selecting unit
+                                        ComboBox::from_id_salt("interval_unit_selector")
+                                            .selected_text(
+                                                self.perpetual_dist_interval_unit
+                                                    .label_for_amount(&self.perpetual_dist_interval_input),
+                                            )
+                                            .show_ui(ui, |ui| {
+                                                for unit in [
+                                                    IntervalTimeUnit::Second,
+                                                    IntervalTimeUnit::Minute,
+                                                    IntervalTimeUnit::Hour,
+                                                    IntervalTimeUnit::Day,
+                                                    IntervalTimeUnit::Week,
+                                                    IntervalTimeUnit::Year,
+                                                ] {
+                                                    ui.selectable_value(
+                                                        &mut self.perpetual_dist_interval_unit,
+                                                        unit.clone(),
+                                                        unit.label_for_amount(&self.perpetual_dist_interval_input),
+                                                    );
+                                                }
+                                            });
                                     });
                                 }
                                 PerpetualDistributionIntervalTypeUI::EpochBased => {
                                     ui.add_space(2.0);
                                     ui.horizontal(|ui| {
-                                        ui.label("        - Epoch Interval:");
+                                        ui.label("        - Distributes every (Epoch Interval):");
+                                        ui.text_edit_singleline(&mut self.perpetual_dist_interval_input);
+                                    });
+                                }
+                                PerpetualDistributionIntervalTypeUI::BlockBased => {
+                                    ui.add_space(2.0);
+                                    ui.horizontal(|ui| {
+                                        ui.label("        - Distributes every (Block Interval):");
                                         ui.text_edit_singleline(&mut self.perpetual_dist_interval_input);
                                     });
                                 }
@@ -3123,7 +3208,7 @@ impl TokensScreen {
                             // 3) Select the distribution function
                             ui.horizontal(|ui| {
                                 ui.label("     Function:");
-                                egui::ComboBox::from_id_salt("perpetual_dist_function_selector")
+                                ComboBox::from_id_salt("perpetual_dist_function_selector")
                                     .selected_text(format!("{:?}", self.perpetual_dist_function))
                                     .show_ui(ui, |ui| {
                                         ui.selectable_value(
@@ -3436,184 +3521,332 @@ Emits tokens in fixed amounts for specific intervals.
 
                                 DistributionFunctionUI::Linear => {
                                     ui.horizontal(|ui| {
-                                        ui.label("        - Slope Numerator (a, i64):");
-                                        ui.text_edit_singleline(&mut self.linear_int_a_input);
+                                        ui.label("        - Slope Numerator (a, { -255 ≤ a ≤ 256 }):");
+                                        let response = ui.add(TextEdit::singleline(&mut self.linear_int_a_input));
+                                        if response.changed() {
+                                            sanitize_i64(&mut self.linear_int_a_input);
+                                        }
                                     });
                                     ui.horizontal(|ui| {
-                                        ui.label("        - Slope Divisor (d, i64):");
-                                        ui.text_edit_singleline(&mut self.linear_int_d_input);
+                                        ui.label("        - Slope Divisor (d, u64):");
+                                        let response = ui.add(TextEdit::singleline(&mut self.linear_int_d_input));
+                                        if response.changed() {
+                                            sanitize_u64(&mut self.linear_int_d_input);
+                                        }
                                     });
                                     ui.horizontal(|ui| {
-                                        ui.label("        - Start Step (s, i64):");
-                                        ui.text_edit_singleline(&mut self.linear_int_start_step_input);
+                                        ui.label("        - Start Step (s, i64, optional):");
+                                        let response = ui.add(
+                                            TextEdit::singleline(&mut self.linear_int_start_step_input)
+                                                .hint_text("None"),
+                                        );
+                                        if response.changed() {
+                                            sanitize_i64(&mut self.linear_int_start_step_input);
+                                        }
                                     });
                                     ui.horizontal(|ui| {
                                         ui.label("        - Starting Amount (b, i64):");
-                                        ui.text_edit_singleline(&mut self.linear_int_starting_amount_input);
+                                        let response = ui.add(TextEdit::singleline(&mut self.linear_int_starting_amount_input));
+                                        if response.changed() {
+                                            sanitize_i64(&mut self.linear_int_starting_amount_input);
+                                        }
                                     });
                                     ui.horizontal(|ui| {
                                         ui.label("        - Minimum Emission Value (optional):");
-                                        ui.text_edit_singleline(&mut self.linear_int_min_value_input);
+                                        let response = ui.add(
+                                            TextEdit::singleline(&mut self.linear_int_min_value_input)
+                                                .hint_text("None"),
+                                        );
+                                        if response.changed() {
+                                            sanitize_u64(&mut self.linear_int_min_value_input);
+                                        }
                                     });
                                     ui.horizontal(|ui| {
                                         ui.label("        - Maximum Emission Value (optional):");
-                                        ui.text_edit_singleline(&mut self.linear_int_max_value_input);
+                                        let response = ui.add(
+                                            TextEdit::singleline(&mut self.linear_int_max_value_input)
+                                                .hint_text("None"),
+                                        );
+                                        if response.changed() {
+                                            sanitize_u64(&mut self.linear_int_max_value_input);
+                                        }
                                     });
                                 }
 
                                 DistributionFunctionUI::Polynomial => {
                                     ui.horizontal(|ui| {
-                                        ui.label("        - Scaling Factor (a, i64):");
+                                        ui.label("        - Scaling Factor (a, { -255 ≤ a ≤ 256 }):");
                                         ui.text_edit_singleline(&mut self.poly_int_a_input);
+                                        sanitize_i64(&mut self.poly_int_a_input);
                                     });
+
                                     ui.horizontal(|ui| {
-                                        ui.label("        - Exponent Numerator (m, i64):");
+                                        ui.label("        - Exponent Numerator (m, { -8 ≤ m ≤ 8 }):");
                                         ui.text_edit_singleline(&mut self.poly_int_m_input);
+                                        sanitize_i64(&mut self.poly_int_m_input);
                                     });
+
                                     ui.horizontal(|ui| {
-                                        ui.label("        - Exponent Denominator (n, i64):");
+                                        ui.label("        - Exponent Denominator (n, { 0 < n ≤ 32 }):");
                                         ui.text_edit_singleline(&mut self.poly_int_n_input);
+                                        sanitize_u64(&mut self.poly_int_n_input);
                                     });
+
                                     ui.horizontal(|ui| {
-                                        ui.label("        - Divisor (d, i64):");
+                                        ui.label("        - Divisor (d, u64):");
                                         ui.text_edit_singleline(&mut self.poly_int_d_input);
+                                        sanitize_u64(&mut self.poly_int_d_input);
                                     });
+
                                     ui.horizontal(|ui| {
-                                        ui.label("        - Start Period Offset (s, i64):");
-                                        ui.text_edit_singleline(&mut self.poly_int_s_input);
+                                        ui.label("        - Start Period Offset (s, optional, u64):");
+                                        let response = ui.add(
+                                            TextEdit::singleline(&mut self.poly_int_s_input)
+                                                .hint_text("None"),
+                                        );
+                                        if response.changed() && !self.poly_int_s_input.trim().is_empty() {
+                                            sanitize_u64(&mut self.poly_int_s_input);
+                                        }
                                     });
+
                                     ui.horizontal(|ui| {
                                         ui.label("        - Offset (o, i64):");
                                         ui.text_edit_singleline(&mut self.poly_int_o_input);
+                                        sanitize_i64(&mut self.poly_int_o_input);
                                     });
+
                                     ui.horizontal(|ui| {
-                                        ui.label("        - Initial Token Emission (b, i64):");
+                                        ui.label("        - Initial Token Emission (b, u64):");
                                         ui.text_edit_singleline(&mut self.poly_int_b_input);
+                                        sanitize_u64(&mut self.poly_int_b_input);
                                     });
+
                                     ui.horizontal(|ui| {
-                                        ui.label("        - Minimum Emission Value (optional):");
-                                        ui.text_edit_singleline(&mut self.poly_int_min_value_input);
+                                        ui.label("        - Minimum Emission Value (optional, u64):");
+                                        let response = ui.add(
+                                            TextEdit::singleline(&mut self.poly_int_min_value_input)
+                                                .hint_text("None"),
+                                        );
+                                        if response.changed() && !self.poly_int_min_value_input.trim().is_empty() {
+                                            sanitize_u64(&mut self.poly_int_min_value_input);
+                                        }
                                     });
+
                                     ui.horizontal(|ui| {
-                                        ui.label("        - Maximum Emission Value (optional):");
-                                        ui.text_edit_singleline(&mut self.poly_int_max_value_input);
+                                        ui.label("        - Maximum Emission Value (optional, u64):");
+                                        let response = ui.add(
+                                            TextEdit::singleline(&mut self.poly_int_max_value_input)
+                                                .hint_text("None"),
+                                        );
+                                        if response.changed() && !self.poly_int_max_value_input.trim().is_empty() {
+                                            sanitize_u64(&mut self.poly_int_max_value_input);
+                                        }
                                     });
                                 }
 
                                 DistributionFunctionUI::Exponential => {
                                     ui.horizontal(|ui| {
-                                        ui.label("        - Scaling Factor (a, { 0 < a ≤ 256) }):");
+                                        ui.label("        - Scaling Factor (a, { 0 < a ≤ 256 }):");
                                         ui.text_edit_singleline(&mut self.exp_a_input);
+                                        sanitize_u64(&mut self.exp_a_input);
                                     });
                                     ui.horizontal(|ui| {
-                                        ui.label("        - Exponent Rate (m, { -8 ≤ m ≤ 8 ; m ≠ 0 }):");
+                                        ui.label("        - Exponent Rate Numerator (m, { -8 ≤ m ≤ 8 ; m ≠ 0 }):");
                                         ui.text_edit_singleline(&mut self.exp_m_input);
+                                        sanitize_i64(&mut self.exp_m_input);
                                     });
                                     ui.horizontal(|ui| {
-                                        ui.label("        - Exponent Rate (n, 0 < a ≤ 32):");
+                                        ui.label("        - Exponent Rate Denominator (n, { 0 < n ≤ 32 }):");
                                         ui.text_edit_singleline(&mut self.exp_n_input);
+                                        sanitize_u64(&mut self.exp_n_input);
                                     });
                                     ui.horizontal(|ui| {
-                                        ui.label("        - Divisor (d, {u64 ; d ≠ 0 }):");
+                                        ui.label("        - Divisor (d, { u64 ; d ≠ 0 }):");
                                         ui.text_edit_singleline(&mut self.exp_d_input);
+                                        sanitize_u64(&mut self.exp_d_input);
                                     });
                                     ui.horizontal(|ui| {
-                                        ui.label("        - Start Period Offset (s, i64):");
-                                        ui.text_edit_singleline(&mut self.exp_s_input);
+                                        ui.label("        - Start Period Offset (s, optional, u64):");
+                                        let response = ui.add(
+                                            TextEdit::singleline(&mut self.exp_s_input)
+                                                .hint_text("None"),
+                                        );
+                                        if response.changed() && !self.exp_s_input.trim().is_empty() {
+                                            sanitize_u64(&mut self.exp_s_input);
+                                        }
                                     });
                                     ui.horizontal(|ui| {
                                         ui.label("        - Offset (o, i64):");
                                         ui.text_edit_singleline(&mut self.exp_o_input);
+                                        sanitize_i64(&mut self.exp_o_input);
                                     });
                                     ui.horizontal(|ui| {
-                                        ui.label("        - Offset (b, i64):");
+                                        ui.label("        - Base amount (b, u64):");
                                         ui.text_edit_singleline(&mut self.exp_b_input);
+                                        sanitize_i64(&mut self.exp_b_input);
                                     });
                                     ui.horizontal(|ui| {
-                                        ui.label("        - Minimum Emission Value (optional):");
-                                        ui.text_edit_singleline(&mut self.exp_min_value_input);
+                                        ui.label("        - Minimum Emission Value (optional, u64):");
+                                        let response = ui.add(
+                                            TextEdit::singleline(&mut self.exp_min_value_input)
+                                                .hint_text("None"),
+                                        );
+                                        if response.changed() && !self.exp_min_value_input.trim().is_empty() {
+                                            sanitize_u64(&mut self.exp_min_value_input);
+                                        }
                                     });
+
                                     ui.horizontal(|ui| {
-                                        ui.label("        - Maximum Emission Value (optional):");
-                                        ui.text_edit_singleline(&mut self.exp_max_value_input);
+                                        ui.label("        - Maximum Emission Value (optional, u64):");
+                                        let response = ui.add(
+                                            TextEdit::singleline(&mut self.exp_max_value_input)
+                                                .hint_text("None"),
+                                        );
+                                        if response.changed() && !self.exp_max_value_input.trim().is_empty() {
+                                            sanitize_u64(&mut self.exp_max_value_input);
+                                        }
                                     });
                                 }
 
                                 DistributionFunctionUI::Logarithmic => {
                                     ui.horizontal(|ui| {
-                                        ui.label("        - Scaling Factor (a, i64):");
+                                        ui.label("        - Scaling Factor (a, i64, { -32_766 ≤ a ≤ 32_767 }):");
                                         ui.text_edit_singleline(&mut self.log_a_input);
+                                        sanitize_i64(&mut self.log_a_input);
                                     });
+
                                     ui.horizontal(|ui| {
-                                        ui.label("        - Divisor (d, i64):");
+                                        ui.label("        - Divisor (d, u64):");
                                         ui.text_edit_singleline(&mut self.log_d_input);
+                                        sanitize_u64(&mut self.log_d_input);
                                     });
+
                                     ui.horizontal(|ui| {
-                                        ui.label("        - Exponent Numerator (m, i64):");
+                                        ui.label("        - Exponent Numerator (m, u64):");
                                         ui.text_edit_singleline(&mut self.log_m_input);
+                                        sanitize_u64(&mut self.log_m_input);
                                     });
+
                                     ui.horizontal(|ui| {
-                                        ui.label("        - Exponent Denominator (n, i64):");
+                                        ui.label("        - Exponent Denominator (n, u64):");
                                         ui.text_edit_singleline(&mut self.log_n_input);
+                                        sanitize_u64(&mut self.log_n_input);
                                     });
+
                                     ui.horizontal(|ui| {
-                                        ui.label("        - Start Period Offset (s, i64):");
-                                        ui.text_edit_singleline(&mut self.log_s_input);
+                                        ui.label("        - Start Period Offset (s, optional, u64):");
+                                        let response = ui.add(
+                                            TextEdit::singleline(&mut self.log_s_input)
+                                                .hint_text("None"),
+                                        );
+                                        if response.changed() && !self.log_s_input.trim().is_empty() {
+                                            sanitize_u64(&mut self.log_s_input);
+                                        }
                                     });
+
                                     ui.horizontal(|ui| {
                                         ui.label("        - Offset (o, i64):");
                                         ui.text_edit_singleline(&mut self.log_o_input);
+                                        sanitize_i64(&mut self.log_o_input);
                                     });
+
                                     ui.horizontal(|ui| {
-                                        ui.label("        - Initial Token Emission (b, i64):");
+                                        ui.label("        - Base Amount (b, u64):");
                                         ui.text_edit_singleline(&mut self.log_b_input);
+                                        sanitize_u64(&mut self.log_b_input);
                                     });
+
                                     ui.horizontal(|ui| {
-                                        ui.label("        - Minimum Emission Value (optional):");
-                                        ui.text_edit_singleline(&mut self.log_min_value_input);
+                                        ui.label("        - Minimum Emission Value (optional, u64):");
+                                        let response = ui.add(
+                                            TextEdit::singleline(&mut self.log_min_value_input)
+                                                .hint_text("None"),
+                                        );
+                                        if response.changed() && !self.log_min_value_input.trim().is_empty() {
+                                            sanitize_u64(&mut self.log_min_value_input);
+                                        }
                                     });
+
                                     ui.horizontal(|ui| {
-                                        ui.label("        - Maximum Emission Value (optional):");
-                                        ui.text_edit_singleline(&mut self.log_max_value_input);
+                                        ui.label("        - Maximum Emission Value (optional, u64):");
+                                        let response = ui.add(
+                                            TextEdit::singleline(&mut self.log_max_value_input)
+                                                .hint_text("None"),
+                                        );
+                                        if response.changed() && !self.log_max_value_input.trim().is_empty() {
+                                            sanitize_u64(&mut self.log_max_value_input);
+                                        }
                                     });
                                 }
 
                                 DistributionFunctionUI::InvertedLogarithmic => {
                                     ui.horizontal(|ui| {
-                                        ui.label("        - Scaling Factor (a, i64):");
+                                        ui.label("        - Scaling Factor (a, i64, { -32_766 ≤ a ≤ 32_767 }):");
                                         ui.text_edit_singleline(&mut self.inv_log_a_input);
+                                        sanitize_i64(&mut self.inv_log_a_input);
                                     });
+
                                     ui.horizontal(|ui| {
-                                        ui.label("        - Divisor (d, i64):");
+                                        ui.label("        - Divisor (d, u64):");
                                         ui.text_edit_singleline(&mut self.inv_log_d_input);
+                                        sanitize_u64(&mut self.inv_log_d_input);
                                     });
+
                                     ui.horizontal(|ui| {
-                                        ui.label("        - Exponent Numerator (m, i64):");
+                                        ui.label("        - Exponent Numerator (m, u64):");
                                         ui.text_edit_singleline(&mut self.inv_log_m_input);
+                                        sanitize_u64(&mut self.inv_log_m_input);
                                     });
+
                                     ui.horizontal(|ui| {
-                                        ui.label("        - Exponent Denominator (n, i64):");
+                                        ui.label("        - Exponent Denominator (n, u64):");
                                         ui.text_edit_singleline(&mut self.inv_log_n_input);
+                                        sanitize_u64(&mut self.inv_log_n_input);
                                     });
+
                                     ui.horizontal(|ui| {
-                                        ui.label("        - Start Period Offset (s, i64):");
-                                        ui.text_edit_singleline(&mut self.inv_log_s_input);
+                                        ui.label("        - Start Period Offset (s, optional, u64):");
+                                        let response = ui.add(
+                                            TextEdit::singleline(&mut self.inv_log_s_input)
+                                                .hint_text("None"),
+                                        );
+                                        if response.changed() && !self.inv_log_s_input.trim().is_empty() {
+                                            sanitize_u64(&mut self.inv_log_s_input);
+                                        }
                                     });
+
                                     ui.horizontal(|ui| {
                                         ui.label("        - Offset (o, i64):");
                                         ui.text_edit_singleline(&mut self.inv_log_o_input);
+                                        sanitize_i64(&mut self.inv_log_o_input);
                                     });
+
                                     ui.horizontal(|ui| {
-                                        ui.label("        - Initial Token Emission (b, i64):");
+                                        ui.label("        - Base Amount (b, u64):");
                                         ui.text_edit_singleline(&mut self.inv_log_b_input);
+                                        sanitize_u64(&mut self.inv_log_b_input);
                                     });
+
                                     ui.horizontal(|ui| {
-                                        ui.label("        - Minimum Emission Value (optional):");
-                                        ui.text_edit_singleline(&mut self.inv_log_min_value_input);
+                                        ui.label("        - Minimum Emission Value (optional, u64):");
+                                        let response = ui.add(
+                                            TextEdit::singleline(&mut self.inv_log_min_value_input)
+                                                .hint_text("None"),
+                                        );
+                                        if response.changed() && !self.inv_log_min_value_input.trim().is_empty() {
+                                            sanitize_u64(&mut self.inv_log_min_value_input);
+                                        }
                                     });
+
                                     ui.horizontal(|ui| {
-                                        ui.label("        - Maximum Emission Value (optional):");
-                                        ui.text_edit_singleline(&mut self.inv_log_max_value_input);
+                                        ui.label("        - Maximum Emission Value (optional, u64):");
+                                        let response = ui.add(
+                                            TextEdit::singleline(&mut self.inv_log_max_value_input)
+                                                .hint_text("None"),
+                                        );
+                                        if response.changed() && !self.inv_log_max_value_input.trim().is_empty() {
+                                            sanitize_u64(&mut self.inv_log_max_value_input);
+                                        }
                                     });
                                 }
                             }
@@ -3623,7 +3856,7 @@ Emits tokens in fixed amounts for specific intervals.
                             // 4) Choose the distribution recipient
                             ui.horizontal(|ui| {
                                 ui.label("     Recipient:");
-                                egui::ComboBox::from_id_salt("perpetual_dist_recipient_selector")
+                                ComboBox::from_id_salt("perpetual_dist_recipient_selector")
                                     .selected_text(format!("{:?}", self.perpetual_dist_recipient))
                                     .show_ui(ui, |ui| {
                                         ui.selectable_value(
@@ -3650,7 +3883,7 @@ Emits tokens in fixed amounts for specific intervals.
                                             self.perpetual_dist_recipient_identity_input = Some(String::new());
                                         }
                                         if let Some(ref mut id) = self.perpetual_dist_recipient_identity_input {
-                                            ui.add(egui::TextEdit::singleline(id).hint_text("Enter base58 id"));
+                                            ui.add(TextEdit::singleline(id).hint_text("Enter base58 id"));
                                         }
                                     }
                                     _ => {}
@@ -3792,7 +4025,7 @@ Emits tokens in fixed amounts for specific intervals.
                                         ui.label(format!("Member {}:", j + 1));
 
 
-                                        egui::ComboBox::from_id_salt(format!("member_identity_selector_{}", j))
+                                        ComboBox::from_id_salt(format!("member_identity_selector_{}", j))
                                             .width(200.0)
                                             .selected_text(
                                                 self.identities
@@ -4557,25 +4790,49 @@ Emits tokens in fixed amounts for specific intervals.
             }
             DistributionFunctionUI::Linear => DistributionFunction::Linear {
                 a: self.linear_int_a_input.parse::<i64>().unwrap_or(0),
-                d: self.linear_int_d_input.parse::<u64>().unwrap_or(0),
-                start_step: Some(self.linear_int_start_step_input.parse::<u64>().unwrap_or(0)),
+                d: self.linear_int_d_input.parse::<u64>().unwrap_or(1),
+                start_step: self
+                    .linear_int_start_step_input
+                    .parse::<u64>()
+                    .map(Some)
+                    .unwrap_or(None),
                 starting_amount: self
                     .linear_int_starting_amount_input
                     .parse::<u64>()
                     .unwrap_or(0),
-                min_value: Some(self.linear_int_min_value_input.parse::<u64>().unwrap_or(0)),
-                max_value: Some(self.linear_int_max_value_input.parse::<u64>().unwrap_or(0)),
+                min_value: self
+                    .linear_int_min_value_input
+                    .parse::<u64>()
+                    .map(Some)
+                    .unwrap_or(None),
+                max_value: self
+                    .linear_int_max_value_input
+                    .parse::<u64>()
+                    .map(Some)
+                    .unwrap_or(None),
             },
             DistributionFunctionUI::Polynomial => DistributionFunction::Polynomial {
                 a: self.poly_int_a_input.parse::<i64>().unwrap_or(0),
                 m: self.poly_int_m_input.parse::<i64>().unwrap_or(0),
                 n: self.poly_int_n_input.parse::<u64>().unwrap_or(0),
                 d: self.poly_int_d_input.parse::<u64>().unwrap_or(0),
-                start_moment: Some(self.poly_int_s_input.parse::<u64>().unwrap_or(0)),
+                start_moment: self
+                    .poly_int_s_input
+                    .parse::<u64>()
+                    .map(Some)
+                    .unwrap_or(None),
                 o: self.poly_int_o_input.parse::<i64>().unwrap_or(0),
                 b: self.poly_int_b_input.parse::<u64>().unwrap_or(0),
-                min_value: Some(self.poly_int_min_value_input.parse::<u64>().unwrap_or(0)),
-                max_value: Some(self.poly_int_max_value_input.parse::<u64>().unwrap_or(0)),
+                min_value: self
+                    .poly_int_min_value_input
+                    .parse::<u64>()
+                    .map(Some)
+                    .unwrap_or(None),
+                max_value: self
+                    .poly_int_max_value_input
+                    .parse::<u64>()
+                    .map(Some)
+                    .unwrap_or(None),
             },
             DistributionFunctionUI::Exponential => DistributionFunction::Exponential {
                 a: self.exp_a_input.parse::<u64>().unwrap_or(0),
@@ -4583,21 +4840,37 @@ Emits tokens in fixed amounts for specific intervals.
                 m: self.exp_m_input.parse::<i64>().unwrap_or(0),
                 n: self.exp_n_input.parse::<u64>().unwrap_or(0),
                 o: self.exp_o_input.parse::<i64>().unwrap_or(0),
-                start_moment: Some(self.exp_s_input.parse::<u64>().unwrap_or(0)),
+                start_moment: self.exp_s_input.parse::<u64>().map(Some).unwrap_or(None),
                 b: self.exp_b_input.parse::<u64>().unwrap_or(0),
-                min_value: Some(self.exp_min_value_input.parse::<u64>().unwrap_or(0)),
-                max_value: Some(self.exp_max_value_input.parse::<u64>().unwrap_or(0)),
+                min_value: self
+                    .exp_min_value_input
+                    .parse::<u64>()
+                    .map(Some)
+                    .unwrap_or(None),
+                max_value: self
+                    .exp_max_value_input
+                    .parse::<u64>()
+                    .map(Some)
+                    .unwrap_or(None),
             },
             DistributionFunctionUI::Logarithmic => DistributionFunction::Logarithmic {
                 a: self.log_a_input.parse::<i64>().unwrap_or(0),
                 d: self.log_d_input.parse::<u64>().unwrap_or(0),
                 m: self.log_m_input.parse::<u64>().unwrap_or(0),
                 n: self.log_n_input.parse::<u64>().unwrap_or(0),
-                start_moment: Some(self.log_s_input.parse::<u64>().unwrap_or(0)),
+                start_moment: self.log_s_input.parse::<u64>().map(Some).unwrap_or(None),
                 o: self.log_o_input.parse::<i64>().unwrap_or(0),
                 b: self.log_b_input.parse::<u64>().unwrap_or(0),
-                min_value: Some(self.log_min_value_input.parse::<u64>().unwrap_or(0)),
-                max_value: Some(self.log_max_value_input.parse::<u64>().unwrap_or(0)),
+                min_value: self
+                    .log_min_value_input
+                    .parse::<u64>()
+                    .map(Some)
+                    .unwrap_or(None),
+                max_value: self
+                    .log_max_value_input
+                    .parse::<u64>()
+                    .map(Some)
+                    .unwrap_or(None),
             },
             DistributionFunctionUI::InvertedLogarithmic => {
                 DistributionFunction::InvertedLogarithmic {
@@ -4605,51 +4878,63 @@ Emits tokens in fixed amounts for specific intervals.
                     d: self.inv_log_d_input.parse::<u64>().unwrap_or(0),
                     m: self.inv_log_m_input.parse::<u64>().unwrap_or(0),
                     n: self.inv_log_n_input.parse::<u64>().unwrap_or(0),
-                    start_moment: Some(self.inv_log_s_input.parse::<u64>().unwrap_or(0)),
+                    start_moment: self
+                        .inv_log_s_input
+                        .parse::<u64>()
+                        .map(Some)
+                        .unwrap_or(None),
                     o: self.inv_log_o_input.parse::<i64>().unwrap_or(0),
                     b: self.inv_log_b_input.parse::<u64>().unwrap_or(0),
-                    min_value: Some(self.inv_log_min_value_input.parse::<u64>().unwrap_or(0)),
-                    max_value: Some(self.inv_log_max_value_input.parse::<u64>().unwrap_or(0)),
+                    min_value: self
+                        .inv_log_min_value_input
+                        .parse::<u64>()
+                        .map(Some)
+                        .unwrap_or(None),
+                    max_value: self
+                        .inv_log_max_value_input
+                        .parse::<u64>()
+                        .map(Some)
+                        .unwrap_or(None),
                 }
             }
         };
         let maybe_perpetual_distribution = if self.enable_perpetual_distribution {
             // Construct the `TokenPerpetualDistributionV0` from your selected type + function
-            let dist_type = match self.perpetual_dist_type {
-                PerpetualDistributionIntervalTypeUI::BlockBased => {
-                    // parse interval, parse emission
-                    // parse distribution function
-                    RewardDistributionType::BlockBasedDistribution {
-                        interval: self
-                            .perpetual_dist_interval_input
-                            .parse::<u64>()
-                            .unwrap_or(0),
-                        function: distribution_function,
+            let dist_type =
+                match self.perpetual_dist_type {
+                    PerpetualDistributionIntervalTypeUI::BlockBased => {
+                        // parse interval, parse emission
+                        // parse distribution function
+                        RewardDistributionType::BlockBasedDistribution {
+                            interval: self.perpetual_dist_interval_input.parse::<u64>().map_err(
+                                |_| "Distribution interval not a valid number".to_string(),
+                            )?,
+                            function: distribution_function,
+                        }
                     }
-                }
-                PerpetualDistributionIntervalTypeUI::EpochBased => {
-                    RewardDistributionType::EpochBasedDistribution {
-                        interval: self
-                            .perpetual_dist_interval_input
-                            .parse::<u16>()
-                            .unwrap_or(0),
-                        function: distribution_function,
+                    PerpetualDistributionIntervalTypeUI::EpochBased => {
+                        RewardDistributionType::EpochBasedDistribution {
+                            interval: self.perpetual_dist_interval_input.parse::<u16>().map_err(
+                                |_| "Distribution interval not a valid number".to_string(),
+                            )?,
+                            function: distribution_function,
+                        }
                     }
-                }
-                PerpetualDistributionIntervalTypeUI::TimeBased => {
-                    RewardDistributionType::TimeBasedDistribution {
-                        interval: self
-                            .perpetual_dist_interval_input
-                            .parse::<u64>()
-                            .unwrap_or(0),
-                        function: distribution_function,
+                    PerpetualDistributionIntervalTypeUI::TimeBased => {
+                        RewardDistributionType::TimeBasedDistribution {
+                            interval: self.perpetual_dist_interval_unit.ms_for_amount(
+                                self.perpetual_dist_interval_input.parse::<u64>().map_err(
+                                    |_| "Distribution interval not a valid number".to_string(),
+                                )?,
+                            ),
+                            function: distribution_function,
+                        }
                     }
-                }
-                _ => RewardDistributionType::BlockBasedDistribution {
-                    interval: 0,
-                    function: DistributionFunction::FixedAmount { amount: 0 },
-                },
-            };
+                    _ => RewardDistributionType::BlockBasedDistribution {
+                        interval: 0,
+                        function: DistributionFunction::FixedAmount { amount: 0 },
+                    },
+                };
 
             let recipient = match self.perpetual_dist_recipient {
                 TokenDistributionRecipientUI::ContractOwner => {

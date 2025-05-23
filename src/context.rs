@@ -218,14 +218,13 @@ impl AppContext {
         Ok(())
     }
 
+    /// Returns the network name as a string
+    #[deprecated(
+        since = "0.9.0",
+        note = "Replace with `Network::to_string()` to avoid confusion"
+    )]
     pub(crate) fn network_string(&self) -> String {
-        match self.network {
-            Network::Dash => "dash".to_string(),
-            Network::Testnet => "testnet".to_string(),
-            Network::Devnet => "devnet".to_string(),
-            Network::Regtest => "local".to_string(),
-            _ => "unknown".to_string(),
-        }
+        self.network.to_string()
     }
 
     pub fn insert_local_identity(&self, identity: &Identity) -> Result<()> {

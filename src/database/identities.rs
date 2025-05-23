@@ -521,6 +521,10 @@ impl Database {
             "UPDATE identity SET network = 'devnet' WHERE network = 'devnet:'",
             [],
         )?;
+        conn.execute(
+            "UPDATE identity SET network = 'regtest' WHERE network = 'local'",
+            [],
+        )?;
 
         Ok(())
     }

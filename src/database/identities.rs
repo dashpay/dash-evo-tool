@@ -11,7 +11,7 @@ use std::sync::{Arc, RwLock};
 
 impl Database {
     /// Updates the alias of a specified identity.
-    pub fn set_alias(
+    pub fn set_identity_alias(
         &self,
         identifier: &Identifier,
         new_alias: Option<&str>,

@@ -14,13 +14,22 @@ use crate::ui::{MessageType, ScreenLike};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
-use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
+use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
+use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
+use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::accessors::v0::TokenConfigurationConventionV0Getters;
+use dash_sdk::dpp::data_contract::document_type::accessors::{
+    DocumentTypeV0Getters, DocumentTypeV1Getters,
+};
 use dash_sdk::dpp::data_contract::document_type::methods::DocumentTypeBasicMethods;
 use dash_sdk::dpp::data_contract::document_type::DocumentPropertyType;
 use dash_sdk::dpp::document::{DocumentV0, DocumentV0Getters};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::platform_value::Value;
+use dash_sdk::dpp::tokens::gas_fees_paid_by::GasFeesPaidBy;
+use dash_sdk::dpp::tokens::token_amount_on_contract_token::DocumentActionTokenEffect;
+use dash_sdk::dpp::tokens::token_payment_info::v0::TokenPaymentInfoV0;
+use dash_sdk::dpp::tokens::token_payment_info::TokenPaymentInfo;
 use dash_sdk::dpp::{
     data_contract::document_type::DocumentType,
     document::Document,
@@ -653,8 +662,45 @@ impl ScreenLike for CreateDocumentScreen {
                     self.ui_field_inputs(ui);
                     ui.add_space(10.0);
 
+                    // Display token costs if any
+                    if let Some(doc_type) = &self.selected_doc_type {
+                        if let Some(token_creation_cost) = doc_type.document_creation_token_cost() {
+                            let token_amount = token_creation_cost.token_amount;
+                            let token_name = if let Some(contract_id) = token_creation_cost.contract_id {
+                                if let Ok(Some(contract)) = self
+                                    .app_context
+                                    .get_contract_by_id(&contract_id)
+                                    .map_err(|_| "Contract not found locally") {
+                                    contract
+                                        .contract.tokens().get(&token_creation_cost.token_contract_position)
+                                        .map(|t| t.conventions().singular_form_by_language_code_or_default("en").to_string())
+                                        .unwrap_or_else(|| format!(
+                                            "Token {}",
+                                            token_creation_cost.token_contract_position
+                                        ))
+                                } else {
+                                    "Unknown contract".to_string()
+                                }
+                            } else {
+                                "Unknown contract".to_string()
+                            };
+                            let token_effect_string = match token_creation_cost.effect {
+                                DocumentActionTokenEffect::TransferTokenToContractOwner => {
+                                    "transferred to the contract owner"
+                                }
+                                DocumentActionTokenEffect::BurnToken => "burned",
+                            };
+                            let gas_fees_paid_by_string = match token_creation_cost.gas_fees_paid_by {
+                                GasFeesPaidBy::DocumentOwner => "you",
+                                GasFeesPaidBy::ContractOwner => "the contract owner",
+                                GasFeesPaidBy::PreferContractOwner => "the contract owner unless their balance is insufficient, in which case you pay",
+                            };
+                            ui.label(format!("Creation cost: {} {} tokens. Tokens will be {}. Gas fees paid by {}.", token_amount, token_name, token_effect_string, gas_fees_paid_by_string));
+                        }
+                    }
+
                     /* ───────── Broadcast button & status ─────────── */
-                    ui.add_space(12.0);
+                    ui.add_space(10.0);
                     let button = egui::Button::new(
                         RichText::new("Broadcast document").color(Color32::WHITE),
                     )
@@ -666,6 +712,26 @@ impl ScreenLike for CreateDocumentScreen {
                     if ui.add(button).clicked() {
                         match self.try_build_document() {
                             Ok((doc, entropy)) => {
+                                let doc_type = match &self.selected_doc_type {
+                                    Some(dt) => dt.clone(),
+                                    None => {
+                                        self.broadcast_status = BroadcastStatus::Error("Document type not set".to_string());
+                                        return;
+                                    }
+                                };
+                                let token_payment_info = if let Some(token_creation_cost) =
+                                    doc_type.document_creation_token_cost()
+                                {
+                                    Some(TokenPaymentInfo::V0(TokenPaymentInfoV0 {
+                                        payment_token_contract_id: token_creation_cost.contract_id,
+                                        token_contract_position: token_creation_cost.token_contract_position,
+                                        gas_fees_paid_by: token_creation_cost.gas_fees_paid_by,
+                                        minimum_token_cost: None,
+                                        maximum_token_cost: Some(token_creation_cost.token_amount),
+                                    }))
+                                } else {
+                                    None
+                                };
                                 self.broadcast_status = BroadcastStatus::Broadcasting(
                                     SystemTime::now()
                                         .duration_since(UNIX_EPOCH)
@@ -675,6 +741,7 @@ impl ScreenLike for CreateDocumentScreen {
                                 action |= AppAction::BackendTask(BackendTask::DocumentTask(
                                     DocumentTask::BroadcastDocument(
                                         doc,
+                                        token_payment_info,
                                         entropy,
                                         self.selected_doc_type
                                             .as_ref()

@@ -2,6 +2,7 @@ use crate::backend_task::BackendTaskSuccessResult;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::dpp::data_contract::document_type::DocumentType;
+use dash_sdk::dpp::tokens::token_payment_info::TokenPaymentInfo;
 use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::Start;
 use dash_sdk::platform::transition::put_document::PutDocument;
 use dash_sdk::platform::{Document, DocumentQuery, FetchMany, Identifier, IdentityPublicKey};
@@ -12,6 +13,7 @@ use dash_sdk::Sdk;
 pub(crate) enum DocumentTask {
     BroadcastDocument(
         Document,
+        Option<TokenPaymentInfo>,
         [u8; 32],
         DocumentType,
         QualifiedIdentity,
@@ -73,6 +75,7 @@ impl AppContext {
             }
             DocumentTask::BroadcastDocument(
                 document,
+                token_payment_info,
                 entropy, // you usually don’t need it here
                 doc_type,
                 qualified_identity,
@@ -83,12 +86,13 @@ impl AppContext {
                     doc_type,
                     entropy,
                     identity_key,
+                    token_payment_info,
                     &qualified_identity,
                     None,
                 )
                 .await
                 .map(BackendTaskSuccessResult::Document)
-                .map_err(|e| format!("Error fetching documents: {}", e.to_string())),
+                .map_err(|e| format!("Error broadcasting document: {}", e.to_string())),
         }
     }
 }

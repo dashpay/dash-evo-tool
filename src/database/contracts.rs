@@ -26,7 +26,7 @@ impl Database {
     pub fn insert_contract_if_not_exists(
         &self,
         data_contract: &DataContract,
-        contract_name: Option<&str>,
+        contract_alias: Option<&str>,
         insert_tokens_too: InsertTokensToo,
         app_context: &AppContext,
     ) -> Result<()> {
@@ -39,8 +39,8 @@ impl Database {
 
         // Insert the contract if it does not exist
         self.execute(
-            "INSERT OR IGNORE INTO contract (contract_id, contract, name, network) VALUES (?, ?, ?, ?)",
-            params![contract_id, contract_bytes, contract_name, network],
+            "INSERT OR IGNORE INTO contract (contract_id, contract, alias, network) VALUES (?, ?, ?, ?)",
+            params![contract_id, contract_bytes, contract_alias, network],
         )?;
 
         // Next, if the contract has tokens, add the tokens
@@ -95,17 +95,18 @@ impl Database {
 
         // Query the contract by ID
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn
-            .prepare("SELECT contract, name FROM contract WHERE contract_id = ? AND network = ?")?;
+        let mut stmt = conn.prepare(
+            "SELECT contract, alias FROM contract WHERE contract_id = ? AND network = ?",
+        )?;
 
         let result = stmt.query_row(params![contract_id_bytes, network], |row| {
             let contract_bytes: Vec<u8> = row.get(0)?;
-            let name: Option<String> = row.get(1)?; // Assuming `name` can be NULL
-            Ok((contract_bytes, name))
+            let alias: Option<String> = row.get(1)?; // Assuming `alias` can be NULL
+            Ok((contract_bytes, alias))
         });
 
         match result {
-            Ok((bytes, name)) => {
+            Ok((bytes, alias)) => {
                 // Deserialize the DataContract
                 match DataContract::versioned_deserialize(
                     &bytes,
@@ -114,10 +115,7 @@ impl Database {
                 ) {
                     Ok(contract) => {
                         // Construct the QualifiedContract
-                        let qualified_contract = QualifiedContract {
-                            contract,
-                            alias: name,
-                        };
+                        let qualified_contract = QualifiedContract { contract, alias };
                         Ok(Some(qualified_contract))
                     }
                     Err(e) => {
@@ -143,11 +141,11 @@ impl Database {
             .expect("expected to serialize contract");
         let network = app_context.network_string();
 
-        // Get the existing contract name (if any)
-        let existing_name = {
+        // Get the existing contract alias (if any)
+        let existing_alias = {
             let conn = self.conn.lock().unwrap();
             conn.query_row(
-                "SELECT name FROM contract WHERE contract_id = ? AND network = ?",
+                "SELECT alias FROM contract WHERE contract_id = ? AND network = ?",
                 params![contract_id.to_vec(), network.clone()],
                 |row| row.get::<_, Option<String>>(0),
             )
@@ -159,29 +157,34 @@ impl Database {
 
         // Replace the contract
         self.execute(
-            "REPLACE INTO contract (contract_id, contract, name, network) VALUES (?, ?, ?, ?)",
-            params![contract_id.to_vec(), contract_bytes, existing_name, network],
+            "REPLACE INTO contract (contract_id, contract, alias, network) VALUES (?, ?, ?, ?)",
+            params![
+                contract_id.to_vec(),
+                contract_bytes,
+                existing_alias,
+                network
+            ],
         )?;
 
         Ok(())
     }
 
-    pub fn get_contract_by_name(
+    pub fn get_contract_by_alias(
         &self,
-        name: &str,
+        alias: &str,
         app_context: &AppContext,
     ) -> Result<Option<QualifiedContract>> {
         let network = app_context.network_string();
 
-        // Query the contract by name and network
+        // Query the contract by alias and network
         let conn = self.conn.lock().unwrap();
         let mut stmt =
-            conn.prepare("SELECT contract, name FROM contract WHERE name = ? AND network = ?")?;
+            conn.prepare("SELECT contract, alias FROM contract WHERE alias = ? AND network = ?")?;
 
-        let result = stmt.query_row(params![name, network], |row| {
+        let result = stmt.query_row(params![alias, network], |row| {
             let contract_bytes: Vec<u8> = row.get(0)?;
-            let contract_name: Option<String> = row.get(1)?; // Handle potential null values
-            Ok((contract_bytes, contract_name))
+            let contract_alias: Option<String> = row.get(1)?; // Handle potential null values
+            Ok((contract_bytes, contract_alias))
         });
 
         match result {
@@ -218,7 +221,7 @@ impl Database {
         let network = app_context.network_string();
 
         // Build the SQL query with optional limit and offset
-        let mut query = String::from("SELECT contract, name FROM contract WHERE network = ?");
+        let mut query = String::from("SELECT contract, alias FROM contract WHERE network = ?");
         if limit.is_some() {
             query.push_str(" LIMIT ?");
         }
@@ -300,6 +303,62 @@ impl Database {
 
         // Delete tokens and cascade deletions in related tables due to foreign keys
         conn.execute("DELETE FROM contract WHERE network = ?", params![network])?;
+
+        Ok(())
+    }
+
+    /// Updates the alias of a specified contract.
+    pub fn set_contract_alias(
+        &self,
+        identifier: &Identifier,
+        new_alias: Option<&str>,
+    ) -> rusqlite::Result<()> {
+        let id = identifier.to_vec();
+        let conn = self.conn.lock().unwrap();
+
+        let rows_updated = conn.execute(
+            "UPDATE contract SET alias = ? WHERE contract_id = ?",
+            params![new_alias, id],
+        )?;
+
+        if rows_updated == 0 {
+            return Err(rusqlite::Error::QueryReturnedNoRows);
+        }
+
+        Ok(())
+    }
+
+    pub fn get_contract_alias(&self, identifier: &Identifier) -> rusqlite::Result<Option<String>> {
+        let id = identifier.to_vec();
+        let conn = self.conn.lock().unwrap();
+
+        let mut stmt = conn.prepare("SELECT alias FROM contract WHERE contract_id = ?")?;
+        let alias: Option<String> = stmt.query_row(params![id], |row| row.get(0)).ok();
+
+        Ok(alias)
+    }
+
+    /// Perform the database migration to change the field "name" to "alias" in the contract table.
+    pub fn change_contract_name_to_alias(&self) -> rusqlite::Result<()> {
+        let conn = self.conn.lock().unwrap();
+
+        // Check if the column "name" exists
+        let mut stmt = conn.prepare("PRAGMA table_info(contract)")?;
+        let mut columns = stmt.query([])?;
+
+        let mut name_column_exists = false;
+        while let Some(row) = columns.next()? {
+            let column_name: String = row.get(1)?;
+            if column_name == "name" {
+                name_column_exists = true;
+                break;
+            }
+        }
+
+        // If the column "name" exists, rename it to "alias"
+        if name_column_exists {
+            conn.execute("ALTER TABLE contract RENAME COLUMN name TO alias", [])?;
+        }
 
         Ok(())
     }

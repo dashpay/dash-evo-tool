@@ -86,7 +86,7 @@ impl AppContext {
                     doc_type,
                     entropy,
                     identity_key,
-                    // token_payment_info,
+                    token_payment_info,
                     &qualified_identity,
                     None,
                 )

@@ -24,7 +24,7 @@ use dash_sdk::dpp::data_contract::change_control_rules::ChangeControlRules;
 use dash_sdk::dpp::data_contract::conversion::json::DataContractJsonConversionMethodsV0;
 use dash_sdk::dpp::data_contract::group::v0::GroupV0;
 use dash_sdk::dpp::data_contract::group::{Group, GroupMemberPower, GroupRequiredPower};
-use dash_sdk::dpp::data_contract::{TokenConfiguration, TokenContractPosition};
+use dash_sdk::dpp::data_contract::{GroupContractPosition, TokenConfiguration, TokenContractPosition};
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
@@ -309,9 +309,7 @@ enum SortOrder {
 pub struct ChangeControlRulesUI {
     pub rules: ChangeControlRulesV0,
     pub authorized_identity: Option<String>,
-    pub authorized_group: Option<String>,
     pub admin_identity: Option<String>,
-    pub admin_group: Option<String>,
 }
 
 impl From<ChangeControlRulesV0> for ChangeControlRulesUI {
@@ -319,9 +317,7 @@ impl From<ChangeControlRulesV0> for ChangeControlRulesUI {
         ChangeControlRulesUI {
             rules,
             authorized_identity: None,
-            authorized_group: None,
             admin_identity: None,
-            admin_group: None,
         }
     }
 }
@@ -331,6 +327,7 @@ impl ChangeControlRulesUI {
     pub fn render_control_change_rules_ui(
         &mut self,
         ui: &mut Ui,
+        current_groups: &Vec<GroupConfigUI>,
         action_name: &str,
         special_case_option: Option<&mut bool>,
     ) {
@@ -344,7 +341,7 @@ impl ChangeControlRulesUI {
                     // Authorized action takers
                     ui.horizontal(|ui| {
                         ui.label("Authorized to perform action:");
-                        ComboBox::from_id_salt(format!("Authorized {}", action_name))
+                        ComboBox::from_id_salt(format!("Authorized {} {}", action_name, current_groups.len()))
                             .selected_text(match self.rules.authorized_to_make_change {
                                 AuthorizedActionTakers::NoOne => "No One".to_string(),
                                 AuthorizedActionTakers::ContractOwner => "Contract Owner".to_string(),
@@ -374,16 +371,24 @@ impl ChangeControlRulesUI {
                                     AuthorizedActionTakers::Identity(Identifier::default()),
                                     "Identity",
                                 );
-                                ui.selectable_value(
-                                    &mut self.rules.authorized_to_make_change,
-                                    AuthorizedActionTakers::MainGroup,
-                                    "Main Group",
-                                );
-                                ui.selectable_value(
-                                    &mut self.rules.authorized_to_make_change,
-                                    AuthorizedActionTakers::Group(0),
-                                    "Group",
-                                );
+                                if current_groups.is_empty() {
+                                    ui.horizontal(|ui| {
+                                        ui.label(RichText::new("(No Groups Added Yet)").color(Color32::GRAY));
+                                    });
+                                } else {
+                                    ui.selectable_value(
+                                        &mut self.rules.authorized_to_make_change,
+                                        AuthorizedActionTakers::MainGroup,
+                                        "Main Group",
+                                    );
+                                }
+                                for (group_position, _group) in current_groups.iter().enumerate() {
+                                    ui.selectable_value(
+                                        &mut self.rules.authorized_to_make_change,
+                                        AuthorizedActionTakers::Group(group_position as GroupContractPosition),
+                                        format!("Group {}", group_position),
+                                    );
+                                }
                             });
 
                         // If user selected Identity or Group, show text edit
@@ -411,15 +416,6 @@ impl ChangeControlRulesUI {
                                     });
                                 }
                             }
-                            AuthorizedActionTakers::Group(_) => {
-                                self.authorized_group.get_or_insert_with(|| "0".to_owned());
-                                if let Some(ref mut group_str) = self.authorized_group {
-                                    ui.add(
-                                        TextEdit::singleline(group_str)
-                                            .hint_text("Group contract position"),
-                                    );
-                                }
-                            }
                             _ => {}
                         }
                     });
@@ -428,7 +424,7 @@ impl ChangeControlRulesUI {
                     // Admin action takers
                     ui.horizontal(|ui| {
                         ui.label("Authorized to change rules:");
-                        ComboBox::from_id_salt(format!("Admin {}", action_name))
+                        ComboBox::from_id_salt(format!("Admin {} {}", action_name, current_groups.len()))
                             .selected_text(match self.rules.admin_action_takers {
                                 AuthorizedActionTakers::NoOne => "No One".to_string(),
                                 AuthorizedActionTakers::ContractOwner => "Contract Owner".to_string(),
@@ -458,16 +454,24 @@ impl ChangeControlRulesUI {
                                     AuthorizedActionTakers::Identity(Identifier::default()),
                                     "Identity",
                                 );
-                                ui.selectable_value(
-                                    &mut self.rules.admin_action_takers,
-                                    AuthorizedActionTakers::MainGroup,
-                                    "Main Group",
-                                );
-                                ui.selectable_value(
-                                    &mut self.rules.admin_action_takers,
-                                    AuthorizedActionTakers::Group(0),
-                                    "Group",
-                                );
+                                if current_groups.is_empty() {
+                                    ui.horizontal(|ui| {
+                                        ui.label(RichText::new("(No Groups Added Yet)").color(Color32::GRAY));
+                                    });
+                                } else {
+                                    ui.selectable_value(
+                                        &mut self.rules.admin_action_takers,
+                                        AuthorizedActionTakers::MainGroup,
+                                        "Main Group",
+                                    );
+                                }
+                                for (group_position, _group) in current_groups.iter().enumerate() {
+                                    ui.selectable_value(
+                                        &mut self.rules.admin_action_takers,
+                                        AuthorizedActionTakers::Group(group_position as GroupContractPosition),
+                                        format!("Group {}", group_position),
+                                    );
+                                }
                             });
 
                         match &mut self.rules.admin_action_takers {
@@ -492,15 +496,6 @@ impl ChangeControlRulesUI {
                                             ui.label(RichText::new(symbol).color(color).strong());
                                         }
                                     });
-                                }
-                            }
-                            AuthorizedActionTakers::Group(_) => {
-                                self.admin_group.get_or_insert_with(|| "0".to_owned());
-                                if let Some(ref mut group_str) = self.admin_group {
-                                    ui.add(
-                                        TextEdit::singleline(group_str)
-                                            .hint_text("Group contract position"),
-                                    );
                                 }
                             }
                             _ => {}
@@ -558,6 +553,7 @@ impl ChangeControlRulesUI {
     pub fn render_mint_control_change_rules_ui(
         &mut self,
         ui: &mut Ui,
+        current_groups: &Vec<GroupConfigUI>,
         new_tokens_destination_identity_should_default_to_contract_owner: &mut bool,
         new_tokens_destination_identity_enabled: &mut bool,
         minting_allow_choosing_destination: &mut bool,
@@ -575,7 +571,7 @@ impl ChangeControlRulesUI {
                     // Authorized action takers
                     ui.horizontal(|ui| {
                         ui.label("Authorized to perform action:");
-                        ComboBox::from_id_salt("Authorized Manual Mint")
+                        ComboBox::from_id_salt(format!("Authorized Manual Mint {}", current_groups.len()))
                             .selected_text(match self.rules.authorized_to_make_change {
                                 AuthorizedActionTakers::NoOne => "No One".to_string(),
                                 AuthorizedActionTakers::ContractOwner => "Contract Owner".to_string(),
@@ -605,16 +601,24 @@ impl ChangeControlRulesUI {
                                     AuthorizedActionTakers::Identity(Identifier::default()),
                                     "Identity",
                                 );
-                                ui.selectable_value(
-                                    &mut self.rules.authorized_to_make_change,
-                                    AuthorizedActionTakers::MainGroup,
-                                    "Main Group",
-                                );
-                                ui.selectable_value(
-                                    &mut self.rules.authorized_to_make_change,
-                                    AuthorizedActionTakers::Group(0),
-                                    "Group",
-                                );
+                                if current_groups.is_empty() {
+                                    ui.horizontal(|ui| {
+                                        ui.label(RichText::new("(No Groups Added Yet)").color(Color32::GRAY));
+                                    });
+                                } else {
+                                    ui.selectable_value(
+                                        &mut self.rules.authorized_to_make_change,
+                                        AuthorizedActionTakers::MainGroup,
+                                        "Main Group",
+                                    );
+                                }
+                                for (group_position, _group) in current_groups.iter().enumerate() {
+                                    ui.selectable_value(
+                                        &mut self.rules.authorized_to_make_change,
+                                        AuthorizedActionTakers::Group(group_position as GroupContractPosition),
+                                        format!("Group {}", group_position),
+                                    );
+                                }
                             });
 
                         // If user selected Identity or Group, show text edit
@@ -642,15 +646,6 @@ impl ChangeControlRulesUI {
                                     });
                                 }
                             }
-                            AuthorizedActionTakers::Group(_) => {
-                                self.authorized_group.get_or_insert_with(|| "0".to_owned());
-                                if let Some(ref mut group_str) = self.authorized_group {
-                                    ui.add(
-                                        TextEdit::singleline(group_str)
-                                            .hint_text("Group contract position"),
-                                    );
-                                }
-                            }
                             _ => {}
                         }
                     });
@@ -659,7 +654,7 @@ impl ChangeControlRulesUI {
                     // Admin action takers
                     ui.horizontal(|ui| {
                         ui.label("Authorized to change rules:");
-                        ComboBox::from_id_salt("Admin Manual Mint")
+                        ComboBox::from_id_salt(format!("Admin Manual Mint {}", current_groups.len()))
                             .selected_text(match self.rules.admin_action_takers {
                                 AuthorizedActionTakers::NoOne => "No One".to_string(),
                                 AuthorizedActionTakers::ContractOwner => "Contract Owner".to_string(),
@@ -689,16 +684,24 @@ impl ChangeControlRulesUI {
                                     AuthorizedActionTakers::Identity(Identifier::default()),
                                     "Identity",
                                 );
-                                ui.selectable_value(
-                                    &mut self.rules.admin_action_takers,
-                                    AuthorizedActionTakers::MainGroup,
-                                    "Main Group",
-                                );
-                                ui.selectable_value(
-                                    &mut self.rules.admin_action_takers,
-                                    AuthorizedActionTakers::Group(0),
-                                    "Group",
-                                );
+                                if current_groups.is_empty() {
+                                    ui.horizontal(|ui| {
+                                        ui.label(RichText::new("(No Groups Added Yet)").color(Color32::GRAY));
+                                    });
+                                } else {
+                                    ui.selectable_value(
+                                        &mut self.rules.admin_action_takers,
+                                        AuthorizedActionTakers::MainGroup,
+                                        "Main Group",
+                                    );
+                                }
+                                for (group_position, _group) in current_groups.iter().enumerate() {
+                                    ui.selectable_value(
+                                        &mut self.rules.admin_action_takers,
+                                        AuthorizedActionTakers::Group(group_position as GroupContractPosition),
+                                        format!("Group {}", group_position),
+                                    );
+                                }
                             });
 
                         match &mut self.rules.admin_action_takers {
@@ -723,15 +726,6 @@ impl ChangeControlRulesUI {
                                             ui.label(RichText::new(symbol).color(color).strong());
                                         }
                                     });
-                                }
-                            }
-                            AuthorizedActionTakers::Group(_) => {
-                                self.admin_group.get_or_insert_with(|| "0".to_owned());
-                                if let Some(ref mut group_str) = self.admin_group {
-                                    ui.add(
-                                        TextEdit::singleline(group_str)
-                                            .hint_text("Group contract position"),
-                                    );
                                 }
                             }
                             _ => {}
@@ -801,7 +795,7 @@ impl ChangeControlRulesUI {
                             ui.text_edit_singleline(new_tokens_destination_identity);
                             ui.end_row();
 
-                            new_tokens_destination_identity_rules.render_control_change_rules_ui(ui, "New Tokens Destination Identity Rules", None);
+                            new_tokens_destination_identity_rules.render_control_change_rules_ui(ui, current_groups,"New Tokens Destination Identity Rules", None);
                         }
 
                         ui.end_row();
@@ -815,7 +809,7 @@ impl ChangeControlRulesUI {
 
                         if *minting_allow_choosing_destination {
                             ui.end_row();
-                            minting_allow_choosing_destination_rules.render_control_change_rules_ui(ui, "Minting Allow Choosing Destination Rules", None);
+                            minting_allow_choosing_destination_rules.render_control_change_rules_ui(ui, current_groups, "Minting Allow Choosing Destination Rules", None);
                         }
                         ui.end_row();
 
@@ -855,17 +849,6 @@ impl ChangeControlRulesUI {
                     self.rules.authorized_to_make_change = AuthorizedActionTakers::Identity(parsed);
                 }
             }
-            AuthorizedActionTakers::Group(_) => {
-                if let Some(ref group_str) = self.authorized_group {
-                    let parsed = group_str.parse::<u16>().map_err(|_| {
-                        format!(
-                            "Invalid group contract position for {} authorized group",
-                            action_name
-                        )
-                    })?;
-                    self.rules.authorized_to_make_change = AuthorizedActionTakers::Group(parsed);
-                }
-            }
             _ => {}
         }
 
@@ -881,17 +864,6 @@ impl ChangeControlRulesUI {
                             )
                         })?;
                     self.rules.admin_action_takers = AuthorizedActionTakers::Identity(parsed);
-                }
-            }
-            AuthorizedActionTakers::Group(_) => {
-                if let Some(ref group_str) = self.admin_group {
-                    let parsed = group_str.parse::<u16>().map_err(|_| {
-                        format!(
-                            "Invalid group contract position for {} admin group",
-                            action_name
-                        )
-                    })?;
-                    self.rules.admin_action_takers = AuthorizedActionTakers::Group(parsed);
                 }
             }
             _ => {}
@@ -1037,8 +1009,6 @@ pub struct GroupMemberUI {
 
 #[derive(Default, Clone)]
 pub struct GroupConfigUI {
-    /// The "position" in the contract's groups map (like 0, 1, etc.)
-    pub group_position_str: String,
     /// Required power for the group (u32), user enters as string
     pub required_power_str: String,
     /// The members for this group
@@ -1048,16 +1018,8 @@ pub struct GroupConfigUI {
 impl GroupConfigUI {
     /// Try converting this UI struct into a real `Group` (specifically `Group::V0`).
     /// We also return the `u16` key that this group should be inserted under in the contract’s `groups` map.
-    fn parse_into_group(&self) -> Result<(u16, Group), String> {
-        // 1) Parse group position
-        let group_position = self.group_position_str.parse::<u16>().map_err(|_| {
-            format!(
-                "Invalid group position: '{}'. Must be an unsigned integer.",
-                self.group_position_str
-            )
-        })?;
-
-        // 2) Parse required power
+    fn parse_into_group(&self, pos: GroupContractPosition) -> Result<(u16, Group), String> {
+        // 1) Parse required power
         let required_power = self.required_power_str.parse::<u32>().map_err(|_| {
             format!(
                 "Invalid required power: '{}'. Must be an unsigned integer.",
@@ -1065,7 +1027,7 @@ impl GroupConfigUI {
             )
         })? as GroupRequiredPower;
 
-        // 3) Build a BTreeMap<Identifier, u32> for members
+        // 2) Build a BTreeMap<Identifier, u32> for members
         let mut members_map = BTreeMap::new();
         for (i, member) in self.members.iter().enumerate() {
             // A) Parse member identity from base58
@@ -1088,14 +1050,14 @@ impl GroupConfigUI {
             members_map.insert(id, power);
         }
 
-        // 4) Construct Group::V0
+        // 3) Construct Group::V0
         let group_v0 = GroupV0 {
             members: members_map,
             required_power,
         };
 
         // 5) Return as (group_position, Group::V0 wrapped in Group::V0())
-        Ok((group_position, Group::V0(group_v0)))
+        Ok((pos, Group::V0(group_v0)))
     }
 }
 
@@ -1444,7 +1406,7 @@ impl TokensScreen {
             contract_keywords_input: String::new(),
             token_description_input: String::new(),
             should_capitalize_input: true,
-            decimals_input: 8.to_string(),
+            decimals_input: 0.to_string(),
             base_supply_input: TokenConfigurationV0::default_most_restrictive()
                 .base_supply()
                 .to_string(),
@@ -2956,8 +2918,32 @@ impl TokensScreen {
 
                                 // Decimals
                                 ui.horizontal(|ui| {
-                                    ui.label("Decimals:");
-                                    ui.text_edit_singleline(&mut self.decimals_input);
+                                    ui.label("Max Decimals:");
+                                    // Restrict input to digits only
+                                    let response = ui.add(
+                                        TextEdit::singleline(&mut self.decimals_input).desired_width(50.0)
+                                    );
+
+                                    // Optionally filter out non-digit input
+                                    if response.changed() {
+                                        self.decimals_input.retain(|c| c.is_ascii_digit());
+                                        self.decimals_input.truncate(2);
+                                    }
+
+                                    let token_name = self.token_names_input
+                                        .first()
+                                        .as_ref()
+                                        .and_then(|(_, name, _, _)| if name.is_empty() { None} else { Some(name.as_str())})
+                                        .unwrap_or("<Token Name>");
+
+                                    let message = if self.decimals_input == "0" {
+                                        format!("Non Fractional Token (i.e 0, 1, 2 or 10 {})", token_name)
+                                    } else {
+                                        format!("Fractional Token (i.e 0.2 {})", token_name)
+                                    };
+
+                                    ui.label(RichText::new(message).color(Color32::GRAY));
+
                                     if ui
                                         .add(Label::new(RichText::new("ℹ").monospace()).sense(Sense::hover()))
                                         .on_hover_text(
@@ -3033,14 +3019,14 @@ impl TokensScreen {
 
                         ui.add_space(3.0);
 
-                        self.manual_minting_rules.render_mint_control_change_rules_ui(ui, &mut self.new_tokens_destination_identity_should_default_to_contract_owner, &mut self.new_tokens_destination_other_identity_enabled, &mut self.minting_allow_choosing_destination, &mut self.new_tokens_destination_identity_rules, &mut self.new_tokens_destination_other_identity, &mut self.minting_allow_choosing_destination_rules);
-                        self.manual_burning_rules.render_control_change_rules_ui(ui, "Manual Burn", None);
-                        self.freeze_rules.render_control_change_rules_ui(ui, "Freeze", Some(&mut self.allow_transfers_to_frozen_identities));
-                        self.unfreeze_rules.render_control_change_rules_ui(ui, "Unfreeze", None);
-                        self.destroy_frozen_funds_rules.render_control_change_rules_ui(ui, "Destroy Frozen Funds", None);
-                        self.emergency_action_rules.render_control_change_rules_ui(ui, "Emergency Action", None);
-                        self.max_supply_change_rules.render_control_change_rules_ui(ui, "Max Supply Change", None);
-                        self.conventions_change_rules.render_control_change_rules_ui(ui, "Conventions Change", None);
+                        self.manual_minting_rules.render_mint_control_change_rules_ui(ui, &self.groups_ui, &mut self.new_tokens_destination_identity_should_default_to_contract_owner, &mut self.new_tokens_destination_other_identity_enabled, &mut self.minting_allow_choosing_destination, &mut self.new_tokens_destination_identity_rules, &mut self.new_tokens_destination_other_identity, &mut self.minting_allow_choosing_destination_rules);
+                        self.manual_burning_rules.render_control_change_rules_ui(ui, &self.groups_ui,"Manual Burn", None);
+                        self.freeze_rules.render_control_change_rules_ui(ui, &self.groups_ui, "Freeze", Some(&mut self.allow_transfers_to_frozen_identities));
+                        self.unfreeze_rules.render_control_change_rules_ui(ui, &self.groups_ui, "Unfreeze", None);
+                        self.destroy_frozen_funds_rules.render_control_change_rules_ui(ui, &self.groups_ui, "Destroy Frozen Funds", None);
+                        self.emergency_action_rules.render_control_change_rules_ui(ui, &self.groups_ui, "Emergency Action", None);
+                        self.max_supply_change_rules.render_control_change_rules_ui(ui, &self.groups_ui, "Max Supply Change", None);
+                        self.conventions_change_rules.render_control_change_rules_ui(ui, &self.groups_ui, "Conventions Change", None);
 
                         // Main control group change is slightly different so do this one manually.
                         ui.collapsing("Main Control Group Change", |ui| {
@@ -3894,7 +3880,7 @@ Emits tokens in fixed amounts for specific intervals.
 
                             ui.horizontal(|ui| {
                                 ui.label(" ");
-                                self.perpetual_distribution_rules.render_control_change_rules_ui(ui, "Perpetual Distribution Rules", None);
+                                self.perpetual_distribution_rules.render_control_change_rules_ui(ui, &self.groups_ui,"Perpetual Distribution Rules", None);
                             });
 
                             ui.add_space(5.0);
@@ -3985,29 +3971,21 @@ Emits tokens in fixed amounts for specific intervals.
 
                         ui.add_space(2.0);
 
-                        // Draw each group in a loop
-                        let mut i = 0;
-                        while i < self.groups_ui.len() {
-                            // We’ll clone it so we can safely mutate it
-                            let mut group_ui = self.groups_ui[i].clone();
+                        let mut group_to_remove = None;
 
-                            // Create a collapsible for the group: “Group #i”
-                            // or use the group_position_str to label it
+                        let last_group_position = self.groups_ui.len().saturating_sub(1);
+
+                        for (group_position, group_ui) in self.groups_ui.iter_mut().enumerate() {
                             egui::collapsing_header::CollapsingState::load_with_default_open(
                                 ui.ctx(),
-                                format!("group_header_{}", i).into(),
+                                format!("group_header_{}", group_position).into(),
                                 true,
                             )
                             .show_header(ui, |ui| {
-                                ui.label(format!("Group {}", group_ui.group_position_str));
+                                ui.label(format!("Group {}", group_position));
                             })
                             .body(|ui| {
                                 ui.add_space(3.0);
-
-                                ui.horizontal(|ui| {
-                                    ui.label("Group Position (u16):");
-                                    ui.text_edit_singleline(&mut group_ui.group_position_str);
-                                });
 
                                 ui.horizontal(|ui| {
                                     ui.label("Required Power:");
@@ -4034,7 +4012,7 @@ Emits tokens in fixed amounts for specific intervals.
                                                     .unwrap_or_else(|| member.identity_str.clone()),
                                             )
                                             .show_ui(ui, |ui| {
-                                                for (i, (identifier, qualified_identity)) in self.identities.iter().enumerate() {
+                                                for (identifier, qualified_identity) in self.identities.iter() {
                                                     let id_str = identifier.to_string(Encoding::Base58);
 
                                                     // Prevent duplicates unless in developer mode
@@ -4097,24 +4075,31 @@ Emits tokens in fixed amounts for specific intervals.
 
                                 ui.add_space(3.0);
 
-                                // A remove button for the entire group
-                                if ui.button("Remove This Group").clicked() {
-                                    self.groups_ui.remove(i);
-                                    return;
-                                } else {
-                                    self.groups_ui[i] = group_ui;
+                                if group_position == last_group_position {
+                                    // A remove button for the entire group, only for last group
+                                    if ui.button("Remove This Group").clicked() {
+                                        group_to_remove = Some(group_position);
+                                        return;
+                                    }
                                 }
                             });
+                        }
 
-                            i += 1;
+                        if let Some(group_to_remove) = group_to_remove{
+                            self.groups_ui.remove(group_to_remove);
                         }
 
                         ui.add_space(5.0);
                         if ui.button("Add New Group").clicked() {
                             self.groups_ui.push(GroupConfigUI {
-                                group_position_str: (self.groups_ui.len() as u16).to_string(),
-                                required_power_str: "1".to_owned(),
-                                members: vec![],
+                                required_power_str: "2".to_owned(),
+                                members: vec![GroupMemberUI {
+                                    identity_str: self.selected_identity.as_ref().map(|q| q.identity.id().to_string(Encoding::Base58)).unwrap_or_default(),
+                                    power_str: "1".to_string(),
+                                }, GroupMemberUI {
+                                    identity_str: "".to_string(),
+                                    power_str: "1".to_string(),
+                                }],
                             });
                         }
                     });
@@ -5078,7 +5063,7 @@ Emits tokens in fixed amounts for specific intervals.
         let mut map = BTreeMap::new();
         for (i, g) in self.groups_ui.iter().enumerate() {
             let (pos, group) = g
-                .parse_into_group()
+                .parse_into_group(i as GroupContractPosition)
                 .map_err(|e| format!("Error in Group #{}: {e}", i + 1))?;
 
             // Check for duplicates
@@ -5503,80 +5488,6 @@ impl ScreenLike for TokensScreen {
             .collect();
     }
 
-    fn display_message(&mut self, msg: &str, msg_type: MessageType) {
-        match self.tokens_subscreen {
-            TokensSubscreen::TokenCreator => {
-                if msg.contains("Successfully registered token contract") {
-                    self.token_creator_status = TokenCreatorStatus::Complete;
-                } else if msg.contains("Failed to register token contract")
-                    | msg.contains("Error building contract V1")
-                {
-                    self.token_creator_status = TokenCreatorStatus::ErrorMessage(msg.to_string());
-                    self.token_creator_error_message = Some(msg.to_string());
-                } else {
-                    return;
-                }
-            }
-            TokensSubscreen::MyTokens => {
-                if msg.contains("Successfully fetched token balances")
-                    | msg.contains("Failed to fetch token balances")
-                    | msg.contains("Failed to get estimated rewards")
-                {
-                    self.backend_message = Some((msg.to_string(), msg_type, Utc::now()));
-                    self.refreshing_status = RefreshingStatus::NotRefreshing;
-                } else {
-                    return;
-                }
-            }
-            TokensSubscreen::SearchTokens => {
-                if msg.contains("Error fetching tokens") {
-                    self.contract_search_status =
-                        ContractSearchStatus::ErrorMessage(msg.to_string());
-                    self.backend_message = Some((msg.to_string(), msg_type, Utc::now()));
-                } else if msg.contains("Added token") | msg.contains("Token already added") {
-                    self.backend_message = Some((msg.to_string(), msg_type, Utc::now()));
-                } else {
-                    return;
-                }
-            }
-        }
-    }
-
-    fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
-        match backend_task_success_result {
-            BackendTaskSuccessResult::DescriptionsByKeyword(descriptions, next_cursor) => {
-                let mut sr = self.search_results.lock().unwrap();
-                *sr = descriptions;
-                self.search_has_next_page = next_cursor.is_some();
-                if let Some(cursor) = next_cursor {
-                    self.next_cursors.push(cursor);
-                }
-                self.contract_search_status = ContractSearchStatus::Complete;
-                self.refreshing_status = RefreshingStatus::NotRefreshing;
-            }
-            BackendTaskSuccessResult::ContractsWithDescriptions(contracts_with_descriptions) => {
-                let default_info = (None, vec![]);
-                let info = contracts_with_descriptions
-                    .get(&self.selected_contract_id.unwrap())
-                    .unwrap_or(&default_info);
-
-                self.selected_contract_description = info.0.clone();
-                self.selected_token_infos = info.1.clone();
-                self.refreshing_status = RefreshingStatus::NotRefreshing;
-            }
-            BackendTaskSuccessResult::TokenEstimatedNonClaimedPerpetualDistributionAmount(
-                identity_token_id,
-                amount,
-            ) => {
-                self.refreshing_status = RefreshingStatus::NotRefreshing;
-                if let Some(itb) = self.my_tokens.get_mut(&identity_token_id) {
-                    itb.estimated_unclaimed_rewards = Some(amount)
-                }
-            }
-            _ => {}
-        }
-    }
-
     fn ui(&mut self, ctx: &Context) -> AppAction {
         let mut action = AppAction::None;
 
@@ -5806,6 +5717,80 @@ impl ScreenLike for TokensScreen {
         }
         action
     }
+
+    fn display_message(&mut self, msg: &str, msg_type: MessageType) {
+        match self.tokens_subscreen {
+            TokensSubscreen::TokenCreator => {
+                if msg.contains("Successfully registered token contract") {
+                    self.token_creator_status = TokenCreatorStatus::Complete;
+                } else if msg.contains("Failed to register token contract")
+                    | msg.contains("Error building contract V1")
+                {
+                    self.token_creator_status = TokenCreatorStatus::ErrorMessage(msg.to_string());
+                    self.token_creator_error_message = Some(msg.to_string());
+                } else {
+                    return;
+                }
+            }
+            TokensSubscreen::MyTokens => {
+                if msg.contains("Successfully fetched token balances")
+                    | msg.contains("Failed to fetch token balances")
+                    | msg.contains("Failed to get estimated rewards")
+                {
+                    self.backend_message = Some((msg.to_string(), msg_type, Utc::now()));
+                    self.refreshing_status = RefreshingStatus::NotRefreshing;
+                } else {
+                    return;
+                }
+            }
+            TokensSubscreen::SearchTokens => {
+                if msg.contains("Error fetching tokens") {
+                    self.contract_search_status =
+                        ContractSearchStatus::ErrorMessage(msg.to_string());
+                    self.backend_message = Some((msg.to_string(), msg_type, Utc::now()));
+                } else if msg.contains("Added token") | msg.contains("Token already added") {
+                    self.backend_message = Some((msg.to_string(), msg_type, Utc::now()));
+                } else {
+                    return;
+                }
+            }
+        }
+    }
+
+    fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
+        match backend_task_success_result {
+            BackendTaskSuccessResult::DescriptionsByKeyword(descriptions, next_cursor) => {
+                let mut sr = self.search_results.lock().unwrap();
+                *sr = descriptions;
+                self.search_has_next_page = next_cursor.is_some();
+                if let Some(cursor) = next_cursor {
+                    self.next_cursors.push(cursor);
+                }
+                self.contract_search_status = ContractSearchStatus::Complete;
+                self.refreshing_status = RefreshingStatus::NotRefreshing;
+            }
+            BackendTaskSuccessResult::ContractsWithDescriptions(contracts_with_descriptions) => {
+                let default_info = (None, vec![]);
+                let info = contracts_with_descriptions
+                    .get(&self.selected_contract_id.unwrap())
+                    .unwrap_or(&default_info);
+
+                self.selected_contract_description = info.0.clone();
+                self.selected_token_infos = info.1.clone();
+                self.refreshing_status = RefreshingStatus::NotRefreshing;
+            }
+            BackendTaskSuccessResult::TokenEstimatedNonClaimedPerpetualDistributionAmount(
+                identity_token_id,
+                amount,
+            ) => {
+                self.refreshing_status = RefreshingStatus::NotRefreshing;
+                if let Some(itb) = self.my_tokens.get_mut(&identity_token_id) {
+                    itb.estimated_unclaimed_rewards = Some(amount)
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 impl ScreenWithWalletUnlock for TokensScreen {
@@ -5861,12 +5846,10 @@ mod tests {
                 AuthorizedActionTakers::Identity(Identifier::default());
             self.authorized_identity =
                 Some("ACMnPwQZcH3RP9atgkmvtmN45QrVcYvh5cmUYARHBTu9".to_owned());
-            self.authorized_group = None;
 
             self.rules.admin_action_takers =
                 AuthorizedActionTakers::Identity(Identifier::default());
             self.admin_identity = Some("CCMnPwQZcH3RP9atgkmvtmN45QrVcYvh5cmUYARHBTu9".to_owned());
-            self.admin_group = None;
 
             self.rules
                 .changing_authorized_action_takers_to_no_one_allowed = true;
@@ -5995,7 +5978,6 @@ mod tests {
         // We'll define 2 groups for testing: positions 2 (main) and 7
         token_creator_ui.groups_ui = vec![
             GroupConfigUI {
-                group_position_str: "2".to_string(),
                 required_power_str: "2".to_string(),
                 members: vec![
                     GroupMemberUI {
@@ -6009,7 +5991,6 @@ mod tests {
                 ],
             },
             GroupConfigUI {
-                group_position_str: "7".to_string(),
                 required_power_str: "1".to_string(),
                 members: vec![],
             },

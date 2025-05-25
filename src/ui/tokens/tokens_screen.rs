@@ -885,6 +885,17 @@ pub enum PerpetualDistributionIntervalTypeUI {
     EpochBased,
 }
 
+impl PerpetualDistributionIntervalTypeUI {
+    pub fn unit_as_string(&self) -> &str {
+        match self {
+            PerpetualDistributionIntervalTypeUI::None => "None",
+            PerpetualDistributionIntervalTypeUI::BlockBased => "blocks",
+            PerpetualDistributionIntervalTypeUI::TimeBased => "milliseconds",
+            PerpetualDistributionIntervalTypeUI::EpochBased => "epochs",
+        }
+    }
+}
+
 /// A lightweight enum for the user’s choice of distribution function
 #[derive(Debug, Clone, PartialEq, Ord, PartialOrd, Eq, Hash)]
 pub enum DistributionFunctionUI {
@@ -1314,6 +1325,42 @@ impl IntervalTimeUnit {
             (IntervalTimeUnit::Week, false) => "weeks",
             (IntervalTimeUnit::Year, true) => "year",
             (IntervalTimeUnit::Year, false) => "years",
+        }
+    }
+
+    pub fn label_for_num_amount(&self, amount: u64) -> &'static str {
+        let is_singular = amount == 1;
+        match (self, is_singular) {
+            (IntervalTimeUnit::Second, true) => "second",
+            (IntervalTimeUnit::Second, false) => "seconds",
+            (IntervalTimeUnit::Minute, true) => "minute",
+            (IntervalTimeUnit::Minute, false) => "minutes",
+            (IntervalTimeUnit::Hour, true) => "hour",
+            (IntervalTimeUnit::Hour, false) => "hours",
+            (IntervalTimeUnit::Day, true) => "day",
+            (IntervalTimeUnit::Day, false) => "days",
+            (IntervalTimeUnit::Week, true) => "week",
+            (IntervalTimeUnit::Week, false) => "weeks",
+            (IntervalTimeUnit::Year, true) => "year",
+            (IntervalTimeUnit::Year, false) => "years",
+        }
+    }
+
+    pub fn capitalized_label_for_num_amount(&self, amount: u64) -> &'static str {
+        let is_singular = amount == 1;
+        match (self, is_singular) {
+            (IntervalTimeUnit::Second, true) => "Second",
+            (IntervalTimeUnit::Second, false) => "Seconds",
+            (IntervalTimeUnit::Minute, true) => "Minute",
+            (IntervalTimeUnit::Minute, false) => "Minutes",
+            (IntervalTimeUnit::Hour, true) => "Hour",
+            (IntervalTimeUnit::Hour, false) => "Hours",
+            (IntervalTimeUnit::Day, true) => "Day",
+            (IntervalTimeUnit::Day, false) => "Days",
+            (IntervalTimeUnit::Week, true) => "Week",
+            (IntervalTimeUnit::Week, false) => "Weeks",
+            (IntervalTimeUnit::Year, true) => "Year",
+            (IntervalTimeUnit::Year, false) => "Years",
         }
     }
 }
@@ -3204,11 +3251,6 @@ impl TokensScreen {
                                         );
                                         ui.selectable_value(
                                             &mut self.perpetual_dist_function,
-                                            DistributionFunctionUI::Random,
-                                            "Random",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.perpetual_dist_function,
                                             DistributionFunctionUI::StepDecreasingAmount,
                                             "StepDecreasing",
                                         );
@@ -3434,36 +3476,109 @@ Emits tokens in fixed amounts for specific intervals.
 
                                 DistributionFunctionUI::StepDecreasingAmount => {
                                     ui.horizontal(|ui| {
-                                        ui.label("        - Step Count (u64):");
-                                        ui.text_edit_singleline(&mut self.step_count_input);
+                                        ui.label("        - Step Count:");
+                                        let response = ui.add(TextEdit::singleline(&mut self.step_count_input));
+                                        if response.changed() {
+                                            sanitize_u64(&mut self.step_count_input);
+                                        }
+                                        if !self.step_count_input.is_empty() {
+                                            if let Ok((perpetual_dist_interval_input, step_count_input)) = self.perpetual_dist_interval_input.parse::<u64>().and_then(|perpetual_dist_interval_input| self.step_count_input.parse::<u64>().map(|step_count_input| (perpetual_dist_interval_input, step_count_input))) {
+                                                let text = match self.perpetual_dist_type {
+                                                    PerpetualDistributionIntervalTypeUI::None => "".to_string(),
+                                                    PerpetualDistributionIntervalTypeUI::BlockBased => {
+                                                        let amount = perpetual_dist_interval_input * step_count_input;
+                                                        if amount == 1 {
+                                                            "Every Block".to_string()
+                                                        } else {
+                                                            format!("Every {} Blocks", amount)
+                                                        }
+                                                    }
+                                                    PerpetualDistributionIntervalTypeUI::TimeBased => {
+                                                        let amount = perpetual_dist_interval_input * step_count_input;
+                                                        format!("Every {} {}", amount, self.perpetual_dist_interval_unit.capitalized_label_for_num_amount(amount))
+                                                    }
+                                                    PerpetualDistributionIntervalTypeUI::EpochBased => {
+                                                        let amount = perpetual_dist_interval_input * step_count_input;
+                                                        if amount == 1 {
+                                                            "Every Epoch Change".to_string()
+                                                        } else {
+                                                            format!("Every {} Epochs", amount)
+                                                        }
+                                                    }
+                                                };
+
+                                                ui.label(RichText::new(text).color(Color32::GRAY));
+                                            }
+                                        }
                                     });
+
                                     ui.horizontal(|ui| {
-                                        ui.label("        - Decrease per Interval Numerator:");
-                                        ui.text_edit_singleline(&mut self.decrease_per_interval_numerator_input);
+                                        ui.label("        - Decrease per Interval Numerator (n < 65,536):");
+                                        let response = ui.add(TextEdit::singleline(&mut self.decrease_per_interval_numerator_input));
+                                        if response.changed() {
+                                            sanitize_u64(&mut self.decrease_per_interval_numerator_input);
+                                            self.decrease_per_interval_numerator_input.truncate(5);
+                                        }
                                     });
+
                                     ui.horizontal(|ui| {
-                                        ui.label("        - Decrease per Interval Denominator:");
-                                        ui.text_edit_singleline(&mut self.decrease_per_interval_denominator_input);
+                                        ui.label("        - Decrease per Interval Denominator (d < 65,536):");
+                                        let response = ui.add(TextEdit::singleline(&mut self.decrease_per_interval_denominator_input));
+                                        if response.changed() {
+                                            sanitize_u64(&mut self.decrease_per_interval_denominator_input);
+                                            self.decrease_per_interval_denominator_input.truncate(5);
+                                        }
                                     });
+
                                     ui.horizontal(|ui| {
-                                        ui.label("        - Start Period Offset (optional):");
-                                        ui.text_edit_singleline(&mut self.step_decreasing_start_period_offset_input);
+                                        ui.label("        - Start Period Offset (i64, optional):");
+                                        let response = ui.add(
+                                            TextEdit::singleline(&mut self.step_decreasing_start_period_offset_input)
+                                                .hint_text("None"),
+                                        );
+                                        if response.changed() {
+                                            sanitize_i64(&mut self.step_decreasing_start_period_offset_input);
+                                        }
                                     });
+
                                     ui.horizontal(|ui| {
-                                        ui.label("        - Initial Token Emission (n):");
-                                        ui.text_edit_singleline(&mut self.step_decreasing_initial_emission_input);
+                                        ui.label("        - Initial Token Emission Amount:");
+                                        let response = ui.add(TextEdit::singleline(&mut self.step_decreasing_initial_emission_input));
+                                        if response.changed() {
+                                            sanitize_u64(&mut self.step_decreasing_initial_emission_input);
+                                        }
                                     });
+
                                     ui.horizontal(|ui| {
                                         ui.label("        - Minimum Emission Value (optional):");
-                                        ui.text_edit_singleline(&mut self.step_decreasing_min_value_input);
+                                        let response = ui.add(
+                                            TextEdit::singleline(&mut self.step_decreasing_min_value_input)
+                                                .hint_text("None"),
+                                        );
+                                        if response.changed() {
+                                            sanitize_u64(&mut self.step_decreasing_min_value_input);
+                                        }
                                     });
+
                                     ui.horizontal(|ui| {
                                         ui.label("        - Maximum Interval Count (optional):");
-                                        ui.text_edit_singleline(&mut self.step_decreasing_max_interval_count_input);
+                                        let response = ui.add(
+                                            TextEdit::singleline(&mut self.step_decreasing_max_interval_count_input)
+                                                .hint_text("None"),
+                                        );
+                                        if response.changed() {
+                                            sanitize_u64(&mut self.step_decreasing_max_interval_count_input);
+                                        }
                                     });
+
                                     ui.horizontal(|ui| {
-                                        ui.label("        - Trailing Distribution Interval Amount:");
-                                        ui.text_edit_singleline(&mut self.step_decreasing_trailing_distribution_interval_amount_input);
+                                        ui.label("        - Trailing Distribution Interval Token Amount:");
+                                        let response = ui.add(
+                                            TextEdit::singleline(&mut self.step_decreasing_trailing_distribution_interval_amount_input),
+                                        );
+                                        if response.changed() {
+                                            sanitize_u64(&mut self.step_decreasing_trailing_distribution_interval_amount_input);
+                                        }
                                     });
                                 }
 
@@ -3473,15 +3588,102 @@ Emits tokens in fixed amounts for specific intervals.
                                     // You can show them in a loop and let users edit each pair.
                                     let mut i = 0;
                                     while i < self.stepwise_steps.len() {
-                                        let (mut block_str, mut amount_str) = self.stepwise_steps[i].clone();
+                                        let (mut steps_str, mut amount_str) = self.stepwise_steps[i].clone();
 
                                         ui.horizontal(|ui| {
                                             ui.label(format!("        - Step #{}:", i));
-                                            ui.label("Interval (u64):");
-                                            ui.text_edit_singleline(&mut block_str);
+                                            ui.label("Start Step:");
+                                            let response = ui.add(TextEdit::singleline(&mut steps_str).desired_width(50.0));
+                                            if response.changed() {
+                                                sanitize_u64(&mut steps_str);
+                                            }
 
-                                            ui.label("Amount (n):");
-                                            ui.text_edit_singleline(&mut amount_str);
+                                            ui.label("Amount:");
+                                            let response = ui.add(TextEdit::singleline(&mut amount_str).desired_width(50.0));
+                                            if response.changed() {
+                                                sanitize_u64(&mut amount_str);
+                                            }
+
+                                            if let Ok((perpetual_dist_interval_input, step_position)) = self.perpetual_dist_interval_input.parse::<u64>().and_then(|perpetual_dist_interval_input| steps_str.parse::<u64>().map(|step_count_input| (perpetual_dist_interval_input, step_count_input))) {
+                                                if let Ok(amount) = amount_str.parse::<u64>() {
+                                                    let every_text = match self.perpetual_dist_type {
+                                                        PerpetualDistributionIntervalTypeUI::None => "".to_string(),
+                                                        PerpetualDistributionIntervalTypeUI::BlockBased => {
+                                                            if perpetual_dist_interval_input == 1 {
+                                                                "every block".to_string()
+                                                            } else {
+                                                                format!("every {} blocks", perpetual_dist_interval_input)
+                                                            }
+                                                        }
+                                                        PerpetualDistributionIntervalTypeUI::TimeBased => {
+                                                            format!("every {} {}", perpetual_dist_interval_input, self.perpetual_dist_interval_unit.label_for_num_amount(perpetual_dist_interval_input))
+                                                        }
+                                                        PerpetualDistributionIntervalTypeUI::EpochBased => {
+                                                            if perpetual_dist_interval_input == 1 {
+                                                                "every epoch change".to_string()
+                                                            } else {
+                                                                format!("every {} epochs", perpetual_dist_interval_input)
+                                                            }
+                                                        }
+                                                    };
+
+                                                    let text = match self.perpetual_dist_type {
+                                                        PerpetualDistributionIntervalTypeUI::None => "".to_string(),
+                                                        PerpetualDistributionIntervalTypeUI::BlockBased => {
+                                                            let block = step_position * perpetual_dist_interval_input;
+                                                            if block == 0 {
+                                                                if amount == 0 {
+                                                                    "At start don't distribute tokens".to_string()
+                                                                } else {
+                                                                    format!("At start distribute {} tokens {}", amount, every_text)
+                                                                }
+                                                            } else {
+                                                                if amount == 0 {
+                                                                    format!("After block {} stop distributing tokens", block)
+                                                                } else {
+                                                                    format!("After block {} distribute {} tokens {}", block, amount, every_text)
+                                                                }
+                                                            }
+                                                        }
+                                                        PerpetualDistributionIntervalTypeUI::TimeBased => {
+                                                            let time = step_position * perpetual_dist_interval_input;
+                                                            if time == 0 {
+                                                                if amount == 0 {
+                                                                    "At start don't distribute tokens".to_string()
+                                                                } else {
+                                                                    format!("At start distribute {} tokens {}", amount, every_text)
+                                                                }
+                                                            } else {
+                                                                if amount == 0 {
+                                                                    format!("{} {} after the contract is registered stop distributing tokens", time, self.perpetual_dist_interval_unit.label_for_num_amount(perpetual_dist_interval_input))
+                                                                } else {
+                                                                    format!("{} {} after the contract is registered distribute {} tokens {}", time, self.perpetual_dist_interval_unit.label_for_num_amount(perpetual_dist_interval_input), amount, every_text)
+                                                                }
+                                                            }
+                                                        }
+                                                        PerpetualDistributionIntervalTypeUI::EpochBased => {
+                                                            let epoch = step_position * perpetual_dist_interval_input;
+                                                            if epoch == 0 {
+                                                                if amount == 0 {
+                                                                    "At start don't distribute tokens".to_string()
+                                                                } else {
+                                                                    format!("At start distribute {} tokens {}", amount, every_text)
+                                                                }
+                                                            } else {
+                                                                if amount == 0 {
+                                                                    format!("After epoch {} stop distributing tokens", epoch)
+                                                                } else {
+                                                                    format!("After epoch {} distribute {} tokens {}", epoch, amount, every_text)
+                                                                }
+                                                            }
+                                                        }
+                                                    };
+
+                                                    ui.label(RichText::new(text).color(Color32::GRAY));
+                                                }
+
+
+                                            }
 
                                             // If remove is clicked, remove the step at index i
                                             // and *do not* increment i, because the next element
@@ -3490,7 +3692,7 @@ Emits tokens in fixed amounts for specific intervals.
                                                 self.stepwise_steps.remove(i);
                                             } else {
                                                 // Otherwise, update the vector with any edits and move to the next step
-                                                self.stepwise_steps[i] = (block_str, amount_str);
+                                                self.stepwise_steps[i] = (steps_str, amount_str);
                                                 i += 1;
                                             }
                                         });

@@ -16,6 +16,7 @@ use dash_sdk::dpp::data_contract::document_type::{DocumentType, Index};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::prelude::TimestampMillis;
 use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::Start;
+use dash_sdk::platform::transition::purchase_document;
 use dash_sdk::platform::{Document, DocumentQuery, Identifier};
 use egui::{Color32, Context, Frame, Margin, ScrollArea, Ui};
 use std::collections::HashMap;
@@ -510,7 +511,30 @@ impl DocumentQueryScreen {
 }
 
 impl ScreenLike for DocumentQueryScreen {
-    fn refresh(&mut self) {}
+    fn refresh(&mut self) {
+        // Reset the screen state
+        self.error_message = None;
+        self.contract_search_term.clear();
+        self.document_search_term.clear();
+        self.document_query.clear();
+        self.document_query_status = DocumentQueryStatus::NotStarted;
+        self.matching_documents.clear();
+        self.current_page = 1;
+        self.next_cursors.clear();
+        self.has_next_page = false;
+        self.previous_cursors.clear();
+
+        // Reset the selected contract and document type
+        let dpns_contract = QualifiedContract {
+            contract: Arc::clone(&self.app_context.dpns_contract).as_ref().clone(),
+            alias: Some("dpns".to_string()),
+        };
+        self.selected_data_contract = dpns_contract.clone();
+        self.selected_document_type = dpns_contract
+            .contract
+            .document_type_cloned_for_name("domain")
+            .expect("Expected to find domain document type in DPNS contract");
+    }
 
     fn display_message(&mut self, message: &str, message_type: MessageType) {
         // Only display the error message resulting from FetchDocuments backend task
@@ -564,6 +588,18 @@ impl ScreenLike for DocumentQueryScreen {
             "Add Document",
             DesiredAppAction::AddScreenType(ScreenType::CreateDocument),
         );
+        let delete_document_button = (
+            "Delete Document",
+            DesiredAppAction::AddScreenType(ScreenType::DeleteDocument),
+        );
+        let purchase_document_button = (
+            "Purchase Document",
+            DesiredAppAction::AddScreenType(ScreenType::PurchaseDocument),
+        );
+        let set_document_price_button = (
+            "Set Document Price",
+            DesiredAppAction::AddScreenType(ScreenType::SetDocumentPrice),
+        );
         let group_actions_button = (
             "Group Actions",
             DesiredAppAction::AddScreenType(ScreenType::GroupActions),
@@ -577,6 +613,9 @@ impl ScreenLike for DocumentQueryScreen {
                 register_contract_button,
                 update_contract_button,
                 add_document_button,
+                delete_document_button,
+                purchase_document_button,
+                set_document_price_button,
                 group_actions_button,
             ],
         );

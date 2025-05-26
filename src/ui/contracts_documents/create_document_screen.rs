@@ -584,7 +584,7 @@ impl ScreenLike for CreateDocumentScreen {
             &self.app_context,
             vec![
                 ("Contracts", AppAction::GoToMainScreen),
-                ("Docs", AppAction::None),
+                ("Create Document", AppAction::None),
             ],
             vec![],
         );

@@ -359,7 +359,7 @@ impl Database {
 
         // Create indexes for the contracts table
         self.execute(
-            "CREATE INDEX IF NOT EXISTS idx_name_network ON contract (alias, network)",
+            "CREATE INDEX IF NOT EXISTS idx_alias_network ON contract (alias, network)",
             [],
         )?;
 

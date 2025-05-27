@@ -47,6 +47,15 @@ pub(crate) enum DocumentTask {
         IdentityPublicKey,
         Option<TokenPaymentInfo>,
     ),
+    TransferDocument(
+        Identifier, // Document ID
+        Identifier, // New owner ID
+        DocumentType,
+        DataContract,
+        QualifiedIdentity,
+        IdentityPublicKey,
+        Option<TokenPaymentInfo>,
+    ),
     PurchaseDocument(
         Credits,    // Price in credits
         Identifier, // Document ID
@@ -238,6 +247,69 @@ impl AppContext {
                     .map(|_| {
                         BackendTaskSuccessResult::Message(
                             "Document replaced successfully".to_string(),
+                        )
+                    })
+                    .map_err(|e| format!("Broadcasting error: {}", e.to_string()))
+            }
+            DocumentTask::TransferDocument(
+                document_id,
+                new_owner_id,
+                document_type,
+                data_contract,
+                qualified_identity,
+                identity_key,
+                token_payment_info,
+            ) => {
+                // ---------- 1. get & bump identity nonce ----------
+                let new_nonce = sdk
+                    .get_identity_contract_nonce(
+                        qualified_identity.identity.id(),
+                        data_contract.id(),
+                        true,
+                        None,
+                    )
+                    .await
+                    .map_err(|e| format!("Fetch nonce error: {e}"))?;
+
+                // ---------- 2. fetch document ----------
+                let document_query = DocumentQuery {
+                    data_contract: data_contract.into(),
+                    document_type_name: document_type.name().to_string(),
+                    where_clauses: vec![],
+                    order_by_clauses: vec![],
+                    limit: 1,
+                    start: None,
+                };
+                let query_with_id = DocumentQuery::with_document_id(document_query, &document_id);
+                let mut document = Document::fetch(sdk, query_with_id)
+                    .await
+                    .map_err(|e| format!("Error fetching document: {}", e))?
+                    .ok_or_else(|| "Document not found".to_string())?;
+                document.bump_revision();
+
+                // ---------- 3. create transfer transition ----------
+                let state_transition =
+                    BatchTransitionV0::new_document_transfer_transition_from_document(
+                        document,
+                        document_type.as_ref(),
+                        new_owner_id,
+                        &identity_key,
+                        new_nonce,
+                        UserFeeIncrease::default(),
+                        token_payment_info,
+                        &qualified_identity,
+                        sdk.version(),
+                        None, // options
+                    )
+                    .map_err(|e| format!("Error creating batch transition: {}", e))?;
+
+                // ---------- 4. broadcast ----------
+                state_transition
+                    .broadcast_and_wait::<StateTransitionProofResult>(sdk, None)
+                    .await
+                    .map(|_| {
+                        BackendTaskSuccessResult::Message(
+                            "Document transferred successfully".to_string(),
                         )
                     })
                     .map_err(|e| format!("Broadcasting error: {}", e.to_string()))

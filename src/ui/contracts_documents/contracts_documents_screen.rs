@@ -16,7 +16,6 @@ use dash_sdk::dpp::data_contract::document_type::{DocumentType, Index};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::prelude::TimestampMillis;
 use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::Start;
-use dash_sdk::platform::transition::purchase_document;
 use dash_sdk::platform::{Document, DocumentQuery, Identifier};
 use egui::{Color32, Context, Frame, Margin, ScrollArea, Ui};
 use std::collections::HashMap;
@@ -596,6 +595,10 @@ impl ScreenLike for DocumentQueryScreen {
             "Replace Document",
             DesiredAppAction::AddScreenType(ScreenType::ReplaceDocument),
         );
+        let transfer_document_button = (
+            "Transfer Document",
+            DesiredAppAction::AddScreenType(ScreenType::TransferDocument),
+        );
         let purchase_document_button = (
             "Purchase Document",
             DesiredAppAction::AddScreenType(ScreenType::PurchaseDocument),
@@ -619,6 +622,7 @@ impl ScreenLike for DocumentQueryScreen {
                 add_document_button,
                 delete_document_button,
                 replace_document_button,
+                transfer_document_button,
                 purchase_document_button,
                 set_document_price_button,
                 group_actions_button,

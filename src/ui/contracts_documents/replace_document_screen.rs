@@ -456,7 +456,28 @@ impl ScreenLike for ReplaceDocumentScreen {
                     self.field_inputs = document
                         .properties()
                         .iter()
-                        .map(|(k, v)| (k.clone(), v.to_string()))
+                        .map(|(k, v)| {
+                            let s = match v {
+                                Value::Text(text) => text.clone(),
+                                Value::Bytes(bytes) => hex::encode(bytes),
+                                Value::Bool(b) => b.to_string(),
+                                Value::U8(n) => n.to_string(),
+                                Value::U16(n) => n.to_string(),
+                                Value::U32(n) => n.to_string(),
+                                Value::U64(n) => n.to_string(),
+                                Value::I8(n) => n.to_string(),
+                                Value::I16(n) => n.to_string(),
+                                Value::I32(n) => n.to_string(),
+                                Value::I64(n) => n.to_string(),
+                                Value::Float(f) => f.to_string(),
+                                Value::Identifier(id) => match Identifier::from_bytes(id) {
+                                    Ok(identifier) => identifier.to_string(Encoding::Base58),
+                                    Err(_) => "<invalid identifier>".to_string(),
+                                },
+                                _ => v.to_string(), // fallback for arrays/objects
+                            };
+                            (k.clone(), s)
+                        })
                         .collect();
                     self.fetched = true;
                     self.backend_message =
@@ -517,7 +538,6 @@ impl ScreenLike for ReplaceDocumentScreen {
                         TextEdit::singleline(&mut self.document_id_input)
                             .hint_text("Document ID (base58)"),
                     );
-                    ui.add_space(5.0);
                     if ui.button("Fetch").clicked() {
                         match Identifier::from_string(&self.document_id_input, Encoding::Base58) {
                             Ok(id) => {

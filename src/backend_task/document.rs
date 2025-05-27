@@ -83,6 +83,7 @@ impl AppContext {
                     doc_type,
                     entropy,
                     identity_key,
+                    None,
                     &qualified_identity,
                     None,
                 )

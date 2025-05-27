@@ -286,7 +286,10 @@ impl ScreenLike for SetDocumentPriceScreen {
                 return;
             }
 
+            ui.add_space(10.0);
             ui.separator();
+            ui.add_space(10.0);
+
             ui.heading("2. Select an identity and key:");
             ui.add_space(10.0);
             self.ui_identity_picker(ui);
@@ -301,21 +304,26 @@ impl ScreenLike for SetDocumentPriceScreen {
                 }
             }
 
+            ui.add_space(10.0);
             ui.separator();
+            ui.add_space(10.0);
+
             ui.heading("3. Enter the Document ID to set price:");
             ui.add_space(10.0);
             ui.text_edit_singleline(&mut self.doc_id_input);
-            ui.add_space(20.0);
 
+            ui.add_space(10.0);
             ui.separator();
-            ui.heading("3. Enter the new price in Credits for the document:");
+            ui.add_space(10.0);
+
+            ui.heading("4. Enter the new price in Credits for the document:");
             ui.add_space(10.0);
             ui.text_edit_singleline(&mut self.price_input);
-            ui.add_space(20.0);
 
             // Display token costs if any
             if let Some(doc_type) = &self.selected_doc_type {
                 if let Some(token_creation_cost) = doc_type.document_update_price_token_cost() {
+                    ui.add_space(20.0);
                     let token_amount = token_creation_cost.token_amount;
                     let token_name = if let Some(contract_id) = token_creation_cost.contract_id {
                         if let Ok(Some(contract)) = self

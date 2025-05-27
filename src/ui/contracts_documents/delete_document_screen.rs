@@ -281,7 +281,10 @@ impl ScreenLike for DeleteDocumentScreen {
                 return;
             }
 
+            ui.add_space(10.0);
             ui.separator();
+            ui.add_space(10.0);
+
             ui.heading("2. Select an identity and key:");
             ui.add_space(10.0);
             self.ui_identity_picker(ui);
@@ -296,15 +299,18 @@ impl ScreenLike for DeleteDocumentScreen {
                 }
             }
 
+            ui.add_space(10.0);
             ui.separator();
+            ui.add_space(10.0);
+
             ui.heading("3. Enter the Document ID to delete:");
             ui.add_space(10.0);
             ui.text_edit_singleline(&mut self.doc_id_input);
-            ui.add_space(20.0);
 
             // Display token costs if any
             if let Some(doc_type) = &self.selected_doc_type {
                 if let Some(token_creation_cost) = doc_type.document_deletion_token_cost() {
+                    ui.add_space(20.0);
                     let token_amount = token_creation_cost.token_amount;
                     let token_name = if let Some(contract_id) = token_creation_cost.contract_id {
                         if let Ok(Some(contract)) = self
@@ -343,7 +349,7 @@ impl ScreenLike for DeleteDocumentScreen {
                 .fill(Color32::from_rgb(220, 30, 30))
                 .frame(true)
                 .corner_radius(3.0)
-                .min_size(egui::vec2(120.0, 30.0));
+                .min_size(egui::vec2(100.0, 30.0));
 
             ui.add_space(10.0);
             if ui.add(button).clicked() {

@@ -29,6 +29,7 @@ use contracts_documents::delete_document_screen::DeleteDocumentScreen;
 use contracts_documents::group_actions_screen::GroupActionsScreen;
 use contracts_documents::purchase_document_screen::PurchaseDocumentScreen;
 use contracts_documents::register_contract_screen::RegisterDataContractScreen;
+use contracts_documents::replace_document_screen::ReplaceDocumentScreen;
 use contracts_documents::set_document_price_screen::SetDocumentPriceScreen;
 use contracts_documents::update_contract_screen::UpdateDataContractScreen;
 use dash_sdk::dpp::identity::Identity;
@@ -194,6 +195,7 @@ pub enum ScreenType {
     DocumentsVisualizer,
     CreateDocument,
     DeleteDocument,
+    ReplaceDocument,
     PurchaseDocument,
     SetDocumentPrice,
     GroupActions,
@@ -306,6 +308,9 @@ impl ScreenType {
             ScreenType::DeleteDocument => {
                 Screen::DeleteDocumentScreen(DeleteDocumentScreen::new(app_context))
             }
+            ScreenType::ReplaceDocument => {
+                Screen::ReplaceDocumentScreen(ReplaceDocumentScreen::new(app_context))
+            }
             ScreenType::PurchaseDocument => {
                 Screen::PurchaseDocumentScreen(PurchaseDocumentScreen::new(app_context))
             }
@@ -399,6 +404,7 @@ pub enum Screen {
     UpdateDataContractScreen(UpdateDataContractScreen),
     CreateDocumentScreen(CreateDocumentScreen),
     DeleteDocumentScreen(DeleteDocumentScreen),
+    ReplaceDocumentScreen(ReplaceDocumentScreen),
     PurchaseDocumentScreen(PurchaseDocumentScreen),
     SetDocumentPriceScreen(SetDocumentPriceScreen),
     GroupActionsScreen(GroupActionsScreen),
@@ -451,6 +457,7 @@ impl Screen {
             Screen::UpdateDataContractScreen(screen) => screen.app_context = app_context,
             Screen::CreateDocumentScreen(screen) => screen.app_context = app_context,
             Screen::DeleteDocumentScreen(screen) => screen.app_context = app_context,
+            Screen::ReplaceDocumentScreen(screen) => screen.app_context = app_context,
             Screen::PurchaseDocumentScreen(screen) => screen.app_context = app_context,
             Screen::SetDocumentPriceScreen(screen) => screen.app_context = app_context,
             Screen::GroupActionsScreen(screen) => screen.app_context = app_context,
@@ -562,6 +569,7 @@ impl Screen {
             Screen::UpdateDataContractScreen(_) => ScreenType::UpdateContract,
             Screen::CreateDocumentScreen(_) => ScreenType::CreateDocument,
             Screen::DeleteDocumentScreen(_) => ScreenType::DeleteDocument,
+            Screen::ReplaceDocumentScreen(_) => ScreenType::ReplaceDocument,
             Screen::PurchaseDocumentScreen(_) => ScreenType::PurchaseDocument,
             Screen::SetDocumentPriceScreen(_) => ScreenType::SetDocumentPrice,
             Screen::GroupActionsScreen(_) => ScreenType::GroupActions,
@@ -649,6 +657,7 @@ impl ScreenLike for Screen {
             Screen::UpdateDataContractScreen(screen) => screen.refresh(),
             Screen::CreateDocumentScreen(screen) => screen.refresh(),
             Screen::DeleteDocumentScreen(screen) => screen.refresh(),
+            Screen::ReplaceDocumentScreen(screen) => screen.refresh(),
             Screen::PurchaseDocumentScreen(screen) => screen.refresh(),
             Screen::SetDocumentPriceScreen(screen) => screen.refresh(),
             Screen::GroupActionsScreen(screen) => screen.refresh(),
@@ -699,6 +708,7 @@ impl ScreenLike for Screen {
             Screen::UpdateDataContractScreen(screen) => screen.refresh_on_arrival(),
             Screen::CreateDocumentScreen(screen) => screen.refresh_on_arrival(),
             Screen::DeleteDocumentScreen(screen) => screen.refresh_on_arrival(),
+            Screen::ReplaceDocumentScreen(screen) => screen.refresh_on_arrival(),
             Screen::PurchaseDocumentScreen(screen) => screen.refresh_on_arrival(),
             Screen::SetDocumentPriceScreen(screen) => screen.refresh_on_arrival(),
             Screen::GroupActionsScreen(screen) => screen.refresh_on_arrival(),
@@ -749,6 +759,7 @@ impl ScreenLike for Screen {
             Screen::UpdateDataContractScreen(screen) => screen.ui(ctx),
             Screen::CreateDocumentScreen(screen) => screen.ui(ctx),
             Screen::DeleteDocumentScreen(screen) => screen.ui(ctx),
+            Screen::ReplaceDocumentScreen(screen) => screen.ui(ctx),
             Screen::PurchaseDocumentScreen(screen) => screen.ui(ctx),
             Screen::SetDocumentPriceScreen(screen) => screen.ui(ctx),
             Screen::GroupActionsScreen(screen) => screen.ui(ctx),
@@ -805,6 +816,7 @@ impl ScreenLike for Screen {
             }
             Screen::CreateDocumentScreen(screen) => screen.display_message(message, message_type),
             Screen::DeleteDocumentScreen(screen) => screen.display_message(message, message_type),
+            Screen::ReplaceDocumentScreen(screen) => screen.display_message(message, message_type),
             Screen::PurchaseDocumentScreen(screen) => screen.display_message(message, message_type),
             Screen::SetDocumentPriceScreen(screen) => screen.display_message(message, message_type),
             Screen::GroupActionsScreen(screen) => screen.display_message(message, message_type),
@@ -887,6 +899,9 @@ impl ScreenLike for Screen {
                 screen.display_task_result(backend_task_success_result)
             }
             Screen::DeleteDocumentScreen(screen) => {
+                screen.display_task_result(backend_task_success_result)
+            }
+            Screen::ReplaceDocumentScreen(screen) => {
                 screen.display_task_result(backend_task_success_result)
             }
             Screen::PurchaseDocumentScreen(screen) => {
@@ -989,6 +1004,7 @@ impl ScreenLike for Screen {
             Screen::UpdateDataContractScreen(screen) => screen.pop_on_success(),
             Screen::CreateDocumentScreen(screen) => screen.pop_on_success(),
             Screen::DeleteDocumentScreen(screen) => screen.pop_on_success(),
+            Screen::ReplaceDocumentScreen(screen) => screen.pop_on_success(),
             Screen::PurchaseDocumentScreen(screen) => screen.pop_on_success(),
             Screen::SetDocumentPriceScreen(screen) => screen.pop_on_success(),
             Screen::GroupActionsScreen(screen) => screen.pop_on_success(),

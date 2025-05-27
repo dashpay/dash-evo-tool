@@ -242,18 +242,13 @@ impl CreateDocumentScreen {
                 .striped(false)
                 .show(ui, |ui| {
                     for (prop_name, schema) in doc_type.properties() {
-                        // 1 get or create backing string
                         let val = self.field_inputs.entry(prop_name.clone()).or_default();
-
-                        // 2 one horizontal line per property
-                        // star for required fields
                         let label = if schema.required {
                             format!("{} *:", prop_name)
                         } else {
                             format!("{prop_name}:")
                         };
                         ui.label(label);
-
                         match &schema.property_type {
                             /* ---------- integers (all sizes) ---------- */
                             DocumentPropertyType::U128

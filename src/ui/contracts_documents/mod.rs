@@ -5,5 +5,6 @@ pub mod delete_document_screen;
 pub mod group_actions_screen;
 pub mod purchase_document_screen;
 pub mod register_contract_screen;
+pub mod replace_document_screen;
 pub mod set_document_price_screen;
 pub mod update_contract_screen;

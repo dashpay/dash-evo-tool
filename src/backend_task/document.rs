@@ -39,6 +39,14 @@ pub(crate) enum DocumentTask {
         IdentityPublicKey,
         Option<TokenPaymentInfo>,
     ),
+    ReplaceDocument(
+        Document,
+        DocumentType,
+        DataContract,
+        QualifiedIdentity,
+        IdentityPublicKey,
+        Option<TokenPaymentInfo>,
+    ),
     PurchaseDocument(
         Credits,    // Price in credits
         Identifier, // Document ID
@@ -186,6 +194,50 @@ impl AppContext {
                     .map(|_| {
                         BackendTaskSuccessResult::Message(
                             "Document deleted successfully".to_string(),
+                        )
+                    })
+                    .map_err(|e| format!("Broadcasting error: {}", e.to_string()))
+            }
+            DocumentTask::ReplaceDocument(
+                document,
+                document_type,
+                data_contract,
+                qualified_identity,
+                identity_key,
+                token_payment_info,
+            ) => {
+                // ---------- 1. get & bump identity nonce ----------
+                let new_nonce = sdk
+                    .get_identity_contract_nonce(
+                        qualified_identity.identity.id(),
+                        data_contract.id(),
+                        true,
+                        None,
+                    )
+                    .await
+                    .map_err(|e| format!("Fetch nonce error: {e}"))?;
+
+                let state_transition =
+                    BatchTransitionV0::new_document_replacement_transition_from_document(
+                        document,
+                        document_type.as_ref(),
+                        &identity_key,
+                        new_nonce,
+                        UserFeeIncrease::default(),
+                        token_payment_info,
+                        &qualified_identity,
+                        sdk.version(),
+                        None,
+                    )
+                    .map_err(|e| format!("Error creating batch transition: {}", e))?;
+
+                // ---------- 4. broadcast ----------
+                state_transition
+                    .broadcast_and_wait::<StateTransitionProofResult>(sdk, None)
+                    .await
+                    .map(|_| {
+                        BackendTaskSuccessResult::Message(
+                            "Document replaced successfully".to_string(),
                         )
                     })
                     .map_err(|e| format!("Broadcasting error: {}", e.to_string()))

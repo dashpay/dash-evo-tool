@@ -592,6 +592,10 @@ impl ScreenLike for DocumentQueryScreen {
             "Delete Document",
             DesiredAppAction::AddScreenType(ScreenType::DeleteDocument),
         );
+        let replace_document_button = (
+            "Replace Document",
+            DesiredAppAction::AddScreenType(ScreenType::ReplaceDocument),
+        );
         let purchase_document_button = (
             "Purchase Document",
             DesiredAppAction::AddScreenType(ScreenType::PurchaseDocument),
@@ -614,6 +618,7 @@ impl ScreenLike for DocumentQueryScreen {
                 update_contract_button,
                 add_document_button,
                 delete_document_button,
+                replace_document_button,
                 purchase_document_button,
                 set_document_price_button,
                 group_actions_button,

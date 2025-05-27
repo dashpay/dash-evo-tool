@@ -1,6 +1,21 @@
-use std::collections::HashSet;
-use std::sync::{Arc, RwLock};
+use super::tokens_screen::IdentityTokenInfo;
+use crate::app::AppAction;
+use crate::backend_task::tokens::TokenTask;
+use crate::backend_task::BackendTask;
+use crate::context::AppContext;
+use crate::model::qualified_contract::QualifiedContract;
+use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::wallet::Wallet;
+use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
+use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
 use crate::ui::contracts_documents::group_actions_screen::GroupActionsScreen;
+use crate::ui::helpers::render_group_action_text;
+use crate::ui::identities::get_selected_wallet;
+use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
+use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
+use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike};
 use chrono::{DateTime, Utc};
 use dash_sdk::dpp::balances::credits::TokenAmount;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
@@ -10,34 +25,19 @@ use dash_sdk::dpp::data_contract::associated_token::token_configuration_conventi
 use dash_sdk::dpp::data_contract::associated_token::token_configuration_item::TokenConfigurationChangeItem;
 use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::accessors::v0::TokenDistributionRulesV0Getters;
 use dash_sdk::dpp::data_contract::change_control_rules::authorized_action_takers::AuthorizedActionTakers;
+use dash_sdk::dpp::data_contract::group::accessors::v0::GroupV0Getters;
 use dash_sdk::dpp::data_contract::group::Group;
 use dash_sdk::dpp::data_contract::GroupContractPosition;
 use dash_sdk::dpp::group::{GroupStateTransitionInfo, GroupStateTransitionInfoStatus};
-use eframe::egui::{self, Color32, Context, Ui};
-use egui::RichText;
-use super::tokens_screen::IdentityTokenInfo;
-use crate::app::AppAction;
-use crate::backend_task::tokens::TokenTask;
-use crate::backend_task::BackendTask;
-use crate::context::AppContext;
-use crate::model::qualified_contract::QualifiedContract;
-use dash_sdk::dpp::data_contract::group::accessors::v0::GroupV0Getters;
-use crate::model::qualified_identity::QualifiedIdentity;
-use crate::model::wallet::Wallet;
-use crate::ui::components::left_panel::add_left_panel;
-use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
-use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
-use crate::ui::helpers::render_group_action_text;
-use crate::ui::identities::get_selected_wallet;
-use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
-use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
-use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
+use eframe::egui::{self, Color32, Context, Ui};
+use egui::RichText;
+use std::collections::HashSet;
+use std::sync::{Arc, RwLock};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum UpdateTokenConfigStatus {
@@ -277,6 +277,12 @@ impl UpdateTokenConfigScreen {
                     "Emergency Action Admin Group"
                 }
                 TokenConfigurationChangeItem::MainControlGroup(_) => "Main Control Group",
+
+                TokenConfigurationChangeItem::MarketplaceTradeMode(_)
+                | TokenConfigurationChangeItem::MarketplaceTradeModeControlGroup(_)
+                | TokenConfigurationChangeItem::MarketplaceTradeModeAdminGroup(_) => {
+                    unimplemented!("marketplace settings not implemented yet")
+                }
             };
 
             egui::ComboBox::from_id_salt("cfg_item_type".to_string())
@@ -641,6 +647,11 @@ impl UpdateTokenConfigScreen {
 
             TokenConfigurationChangeItem::TokenConfigurationNoChange => {
                 ui.label("No parameters to edit for this entry.");
+            }
+            TokenConfigurationChangeItem::MarketplaceTradeMode(_)
+            | TokenConfigurationChangeItem::MarketplaceTradeModeControlGroup(_)
+            | TokenConfigurationChangeItem::MarketplaceTradeModeAdminGroup(_) => {
+                unimplemented!("marketplace settings not implemented yet")
             }
         }
 

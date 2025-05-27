@@ -278,12 +278,11 @@ impl UpdateTokenConfigScreen {
                     "Emergency Action Admin Group"
                 }
                 TokenConfigurationChangeItem::MainControlGroup(_) => "Main Control Group",
-                TokenConfigurationChangeItem::MarketplaceTradeMode(_) => "Token Trade Mode",
-                TokenConfigurationChangeItem::MarketplaceTradeModeControlGroup(_) => {
-                    "Token Trade Mode Control Group"
-                }
-                TokenConfigurationChangeItem::MarketplaceTradeModeAdminGroup(_) => {
-                    "Token Trade Mode Admin Group"
+
+                TokenConfigurationChangeItem::MarketplaceTradeMode(_)
+                | TokenConfigurationChangeItem::MarketplaceTradeModeControlGroup(_)
+                | TokenConfigurationChangeItem::MarketplaceTradeModeAdminGroup(_) => {
+                    unimplemented!("marketplace settings not implemented yet")
                 }
             };
 
@@ -643,15 +642,10 @@ impl UpdateTokenConfigScreen {
             TokenConfigurationChangeItem::TokenConfigurationNoChange => {
                 ui.label("No parameters to edit for this entry.");
             }
-            TokenConfigurationChangeItem::MarketplaceTradeMode(token_trade_mode) => {
-                ui.horizontal(|ui| {
-                    ui.label("Token Trade Mode:");
-                    ui.selectable_value(
-                        token_trade_mode,
-                        TokenTradeMode::NotTradeable,
-                        "Not Tradeable",
-                    );
-                });
+            TokenConfigurationChangeItem::MarketplaceTradeMode(_)
+            | TokenConfigurationChangeItem::MarketplaceTradeModeControlGroup(_)
+            | TokenConfigurationChangeItem::MarketplaceTradeModeAdminGroup(_) => {
+                unimplemented!("marketplace settings not implemented yet")
             }
         }
 

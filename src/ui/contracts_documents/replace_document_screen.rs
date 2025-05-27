@@ -13,6 +13,9 @@ use crate::ui::{MessageType, ScreenLike};
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
+use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
+use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
+use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::accessors::v0::TokenConfigurationConventionV0Getters;
 use dash_sdk::dpp::data_contract::document_type::accessors::{
     DocumentTypeV0Getters, DocumentTypeV1Getters,
 };
@@ -21,6 +24,8 @@ use dash_sdk::dpp::document::{Document, DocumentV0, DocumentV0Getters};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::platform_value::Value;
+use dash_sdk::dpp::tokens::gas_fees_paid_by::GasFeesPaidBy;
+use dash_sdk::dpp::tokens::token_amount_on_contract_token::DocumentActionTokenEffect;
 use dash_sdk::dpp::tokens::token_payment_info::v0::TokenPaymentInfoV0;
 use dash_sdk::dpp::tokens::token_payment_info::TokenPaymentInfo;
 use dash_sdk::dpp::{
@@ -607,7 +612,47 @@ impl ScreenLike for ReplaceDocumentScreen {
                 .max_height(max_height)
                 .show(ui, |ui| {
                     self.ui_field_inputs(ui);
-                    ui.add_space(20.0);
+
+                                        // Display token costs if any
+                    if let Some(doc_type) = &self.selected_doc_type {
+                        ui.add_space(10.0);
+
+                        if let Some(token_creation_cost) = doc_type.document_creation_token_cost() {
+                            let token_amount = token_creation_cost.token_amount;
+                            let token_name = if let Some(contract_id) = token_creation_cost.contract_id {
+                                if let Ok(Some(contract)) = self
+                                    .app_context
+                                    .get_contract_by_id(&contract_id)
+                                    .map_err(|_| "Contract not found locally") {
+                                    contract
+                                        .contract.tokens().get(&token_creation_cost.token_contract_position)
+                                        .map(|t| t.conventions().singular_form_by_language_code_or_default("en").to_string())
+                                        .unwrap_or_else(|| format!(
+                                            "Token {}",
+                                            token_creation_cost.token_contract_position
+                                        ))
+                                } else {
+                                    "Unknown contract".to_string()
+                                }
+                            } else {
+                                "Unknown contract".to_string()
+                            };
+                            let token_effect_string = match token_creation_cost.effect {
+                                DocumentActionTokenEffect::TransferTokenToContractOwner => {
+                                    "transferred to the contract owner"
+                                }
+                                DocumentActionTokenEffect::BurnToken => "burned",
+                            };
+                            let gas_fees_paid_by_string = match token_creation_cost.gas_fees_paid_by {
+                                GasFeesPaidBy::DocumentOwner => "you",
+                                GasFeesPaidBy::ContractOwner => "the contract owner",
+                                GasFeesPaidBy::PreferContractOwner => "the contract owner unless their balance is insufficient, in which case you pay",
+                            };
+                            ui.label(format!("Creation cost: {} {} tokens. Tokens will be {}. Gas fees paid by {}.", token_amount, token_name, token_effect_string, gas_fees_paid_by_string));
+                        }
+                    }
+
+                    ui.add_space(10.0);
                     let btn =
                         egui::Button::new(RichText::new("Replace document").color(Color32::WHITE))
                             .fill(Color32::from_rgb(0, 128, 255))

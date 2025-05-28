@@ -26,7 +26,8 @@ use dash_sdk::dpp::tokens::token_payment_info::TokenPaymentInfo;
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
 
 use eframe::egui::{self, Color32, Context, Ui};
-use egui::RichText;
+use egui::{ComboBox, RichText};
+use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -45,6 +46,7 @@ pub struct TransferDocumentScreen {
 
     /* ---- identity & key ---- */
     qualified_identities: Vec<(QualifiedIdentity, Vec<IdentityPublicKey>)>,
+    identities_map: HashMap<Identifier, QualifiedIdentity>,
     selected_qid: Option<QualifiedIdentity>,
     selected_key: Option<IdentityPublicKey>,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
@@ -67,7 +69,7 @@ pub struct TransferDocumentScreen {
 
 impl TransferDocumentScreen {
     pub fn new(ctx: &Arc<AppContext>) -> Self {
-        let qids = ctx
+        let qids: Vec<(QualifiedIdentity, Vec<IdentityPublicKey>)> = ctx
             .load_local_qualified_identities()
             .unwrap_or_default()
             .into_iter()
@@ -86,10 +88,18 @@ impl TransferDocumentScreen {
             })
             .collect();
 
+        // Make an index map of Identifier to QualifiedIdentity
+        let identities_map = qids
+            .clone()
+            .iter()
+            .map(|(qi, _)| (qi.identity.id(), qi.clone()))
+            .collect::<std::collections::HashMap<_, _>>();
+
         Self {
             app_context: Arc::clone(ctx),
             backend_message: None,
             qualified_identities: qids,
+            identities_map,
             selected_qid: None,
             selected_key: None,
             selected_wallet: None,
@@ -325,7 +335,75 @@ impl ScreenLike for TransferDocumentScreen {
 
             ui.heading("4. Enter the Recipient ID:");
             ui.add_space(10.0);
-            ui.text_edit_singleline(&mut self.recipient_id_input);
+            ui.horizontal(|ui| {
+                ComboBox::from_id_salt("recipient_selector")
+                    .width(200.0)
+                    .selected_text({
+                        let trimmed = self.recipient_id_input.trim();
+                        if let Ok(id) = Identifier::from_string(trimmed, Encoding::Base58) {
+                            if let Some(qi) = self.identities_map.get(&id) {
+                                qi.alias
+                                    .as_ref()
+                                    .unwrap_or(&qi.identity.id().to_string(Encoding::Base58))
+                                    .clone()
+                            } else if !trimmed.is_empty() {
+                                "Custom".to_string()
+                            } else {
+                                "Select recipient…".to_string()
+                            }
+                        } else if !trimmed.is_empty() {
+                            "Custom".to_string()
+                        } else {
+                            "Select recipient…".to_string()
+                        }
+                    })
+                    .show_ui(ui, |ui| {
+                        for (id, qi) in &self.identities_map {
+                            // Omit the currently selected identity from the list
+                            if let Some(selected_qid) = &self.selected_qid {
+                                if id == &selected_qid.identity.id() {
+                                    continue;
+                                }
+                            }
+                            let label = qi
+                                .alias
+                                .as_ref()
+                                .unwrap_or(&id.to_string(Encoding::Base58))
+                                .clone();
+                            if ui
+                                .selectable_label(
+                                    self.recipient_id_input.trim()
+                                        == id.to_string(Encoding::Base58),
+                                    &label,
+                                )
+                                .clicked()
+                            {
+                                self.recipient_id_input = id.to_string(Encoding::Base58);
+                            }
+                        }
+                        // Always show "Custom" as a selectable option
+                        if ui
+                            .selectable_label(
+                                !self.recipient_id_input.trim().is_empty()
+                                    && self.identities_map
+                                        .get(
+                                            &Identifier::from_string(
+                                                self.recipient_id_input.trim(),
+                                                Encoding::Base58,
+                                            )
+                                            .unwrap_or_else(|_| Identifier::default()),
+                                        )
+                                        .is_none(),
+                                "Custom",
+                            )
+                            .clicked()
+                        {
+                            // Do nothing, just keep current input
+                        }
+                    });
+
+                ui.text_edit_singleline(&mut self.recipient_id_input);
+            });
 
             // Display token costs if any
             if let Some(doc_type) = &self.selected_doc_type {

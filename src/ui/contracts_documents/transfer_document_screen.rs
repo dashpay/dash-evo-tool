@@ -10,6 +10,7 @@ use crate::ui::helpers::add_contract_doc_type_chooser_with_filtering;
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::{BackendTaskSuccessResult, MessageType, ScreenLike};
 
+use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::accessors::v0::TokenConfigurationConventionV0Getters;
@@ -331,14 +332,25 @@ impl ScreenLike for TransferDocumentScreen {
                 if let Some(token_creation_cost) = doc_type.document_transfer_token_cost() {
                     ui.add_space(10.0);
                     let token_amount = token_creation_cost.token_amount;
-                    let token_name = token_creation_cost
-                        .contract_id
-                        .and_then(|cid| self
+                    let token_name = if let Some(contract) = &self.selected_contract {
+                        let contract_id = contract.contract.id();
+                        if let Ok(Some(contract)) = self
                             .app_context
-                            .get_contract_by_id(&cid).ok().flatten()
-                            .and_then(|c| c.contract.tokens().get(&token_creation_cost.token_contract_position)
-                                .map(|t| t.conventions().singular_form_by_language_code_or_default("en").to_string())))
-                        .unwrap_or_else(|| "Unknown contract".into());
+                            .get_contract_by_id(&contract_id)
+                            .map_err(|_| "Contract not found locally") {
+                            contract
+                                .contract.tokens().get(&token_creation_cost.token_contract_position)
+                                .map(|t| t.conventions().singular_form_by_language_code_or_default("en").to_string())
+                                .unwrap_or_else(|| format!(
+                                    "Token {}",
+                                    token_creation_cost.token_contract_position
+                                ))
+                        } else {
+                            "Unknown contract".to_string()
+                        }
+                    } else {
+                        "Unknown contract".to_string()
+                    };
                     let token_effect_string = match token_creation_cost.effect {
                         DocumentActionTokenEffect::TransferTokenToContractOwner => "transferred to the contract owner",
                         DocumentActionTokenEffect::BurnToken => "burned",

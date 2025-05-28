@@ -10,6 +10,7 @@ use crate::ui::helpers::add_contract_doc_type_chooser_with_filtering;
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::{MessageType, ScreenLike};
 
+use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::accessors::v0::TokenConfigurationConventionV0Getters;
@@ -325,7 +326,8 @@ impl ScreenLike for PurchaseDocumentScreen {
                 if let Some(token_creation_cost) = doc_type.document_purchase_token_cost() {
                     ui.add_space(20.0);
                     let token_amount = token_creation_cost.token_amount;
-                    let token_name = if let Some(contract_id) = token_creation_cost.contract_id {
+                    let token_name = if let Some(contract) = &self.selected_contract {
+                        let contract_id = contract.contract.id();
                         if let Ok(Some(contract)) = self
                             .app_context
                             .get_contract_by_id(&contract_id)

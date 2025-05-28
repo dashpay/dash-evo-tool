@@ -4,7 +4,7 @@ use rusqlite::{params, Connection};
 use std::fs;
 use std::path::Path;
 
-pub const DEFAULT_DB_VERSION: u16 = 7;
+pub const DEFAULT_DB_VERSION: u16 = 8;
 
 pub const DEFAULT_NETWORK: &str = "dash";
 
@@ -34,6 +34,9 @@ impl Database {
 
     fn apply_version_changes(&self, version: u16) -> rusqlite::Result<()> {
         match version {
+            8 => {
+                self.change_contract_name_to_alias()?;
+            }
             7 => {
                 self.migrate_asset_lock_fk_to_set_null()?;
             }
@@ -347,7 +350,7 @@ impl Database {
             "CREATE TABLE IF NOT EXISTS contract (
                         contract_id BLOB,
                         contract BLOB,
-                        name TEXT,
+                        alias TEXT,
                         network TEXT NOT NULL,
                         PRIMARY KEY (contract_id, network)
                     )",
@@ -356,7 +359,7 @@ impl Database {
 
         // Create indexes for the contracts table
         self.execute(
-            "CREATE INDEX IF NOT EXISTS idx_name_network ON contract (name, network)",
+            "CREATE INDEX IF NOT EXISTS idx_alias_network ON contract (alias, network)",
             [],
         )?;
 

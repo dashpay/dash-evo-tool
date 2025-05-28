@@ -242,7 +242,7 @@ impl IdentitiesScreen {
             } else {
                 identity_to_update.alias = Some(alias);
             }
-            match self.app_context.set_alias(
+            match self.app_context.set_identity_alias(
                 &identity_to_update.identity.id(),
                 identity_to_update.alias.as_ref().map(|s| s.as_str()),
             ) {

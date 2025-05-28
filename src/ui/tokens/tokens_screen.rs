@@ -885,22 +885,10 @@ pub enum PerpetualDistributionIntervalTypeUI {
     EpochBased,
 }
 
-impl PerpetualDistributionIntervalTypeUI {
-    pub fn unit_as_string(&self) -> &str {
-        match self {
-            PerpetualDistributionIntervalTypeUI::None => "None",
-            PerpetualDistributionIntervalTypeUI::BlockBased => "blocks",
-            PerpetualDistributionIntervalTypeUI::TimeBased => "milliseconds",
-            PerpetualDistributionIntervalTypeUI::EpochBased => "epochs",
-        }
-    }
-}
-
 /// A lightweight enum for the user’s choice of distribution function
 #[derive(Debug, Clone, PartialEq, Ord, PartialOrd, Eq, Hash)]
 pub enum DistributionFunctionUI {
     FixedAmount,
-    Random,
     StepDecreasingAmount,
     Stepwise,
     Linear,
@@ -914,7 +902,6 @@ impl DistributionFunctionUI {
     pub(crate) fn name(&self) -> &str {
         match self {
             DistributionFunctionUI::FixedAmount => "fixed_amount",
-            DistributionFunctionUI::Random => "random",
             DistributionFunctionUI::StepDecreasingAmount => "step_decreasing_amount",
             DistributionFunctionUI::Stepwise => "stepwise",
             DistributionFunctionUI::Linear => "linear",
@@ -3463,17 +3450,6 @@ Emits tokens in fixed amounts for specific intervals.
                                     });
                                 }
 
-                                DistributionFunctionUI::Random => {
-                                    ui.horizontal(|ui| {
-                                        ui.label("        - Min Amount (n):");
-                                        ui.text_edit_singleline(&mut self.random_min_input);
-                                    });
-                                    ui.horizontal(|ui| {
-                                        ui.label("        - Max Amount (n):");
-                                        ui.text_edit_singleline(&mut self.random_max_input);
-                                    });
-                                }
-
                                 DistributionFunctionUI::StepDecreasingAmount => {
                                     ui.horizontal(|ui| {
                                         ui.label("        - Step Count:");
@@ -4204,7 +4180,6 @@ Emits tokens in fixed amounts for specific intervals.
                                     ui.horizontal(|ui| {
                                         ui.label(format!("Member {}:", j + 1));
 
-
                                         ComboBox::from_id_salt(format!("member_identity_selector_{}", j))
                                             .width(200.0)
                                             .selected_text(
@@ -4895,10 +4870,6 @@ Emits tokens in fixed amounts for specific intervals.
         let distribution_function = match self.perpetual_dist_function {
             DistributionFunctionUI::FixedAmount => DistributionFunction::FixedAmount {
                 amount: self.fixed_amount_input.parse::<u64>().unwrap_or(0),
-            },
-            DistributionFunctionUI::Random => DistributionFunction::Random {
-                min: self.random_min_input.parse::<u64>().unwrap_or(0),
-                max: self.random_max_input.parse::<u64>().unwrap_or(0),
             },
             DistributionFunctionUI::StepDecreasingAmount => {
                 DistributionFunction::StepDecreasingAmount {
@@ -6406,7 +6377,6 @@ mod tests {
         token_creator_ui.enable_perpetual_distribution = true;
         token_creator_ui.perpetual_dist_type = PerpetualDistributionIntervalTypeUI::TimeBased;
         token_creator_ui.perpetual_dist_interval_input = "60000".to_string();
-        token_creator_ui.perpetual_dist_function = DistributionFunctionUI::Random;
         token_creator_ui.random_min_input = "100".to_string();
         token_creator_ui.random_max_input = "200".to_string();
 

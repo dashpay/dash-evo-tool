@@ -25,8 +25,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// A list of Dash-specific fields that do not appear in the
 /// normal document_type properties.
 pub const DOCUMENT_PRIVATE_FIELDS: &[&str] = &[
-    // "$id",
-    // "$ownerId", include these two by default
+    "$id",
+    "$ownerId",
     "$version",
     "$revision",
     "$createdAt",
@@ -95,7 +95,8 @@ impl DocumentQueryScreen {
             document_fields_selection.insert(field_name.clone(), true);
         }
         for dash_field in DOCUMENT_PRIVATE_FIELDS {
-            document_fields_selection.insert((*dash_field).to_string(), false);
+            let is_selected = *dash_field == "$ownerId" || *dash_field == "$id";
+            document_fields_selection.insert((*dash_field).to_string(), is_selected);
         }
 
         let pending_document_type = selected_document_type.clone();

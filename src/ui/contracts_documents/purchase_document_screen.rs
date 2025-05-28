@@ -14,16 +14,23 @@ use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::accessors::v0::TokenConfigurationConventionV0Getters;
-use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV1Getters;
+use dash_sdk::dpp::data_contract::document_type::accessors::{
+    DocumentTypeV0Getters, DocumentTypeV1Getters,
+};
 use dash_sdk::dpp::data_contract::document_type::DocumentType;
+use dash_sdk::dpp::document::property_names::PRICE;
+use dash_sdk::dpp::document::DocumentV0Getters;
+use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+use dash_sdk::dpp::platform_value::btreemap_extensions::BTreeValueMapHelper;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::tokens::gas_fees_paid_by::GasFeesPaidBy;
 use dash_sdk::dpp::tokens::token_amount_on_contract_token::DocumentActionTokenEffect;
 use dash_sdk::dpp::tokens::token_payment_info::v0::TokenPaymentInfoV0;
 use dash_sdk::dpp::tokens::token_payment_info::TokenPaymentInfo;
-use dash_sdk::platform::{Identifier, IdentityPublicKey};
+use dash_sdk::drive::query::WhereClause;
+use dash_sdk::platform::{DocumentQuery, Identifier, IdentityPublicKey};
 use eframe::egui::{self, Color32, Context, Ui};
 use egui::RichText;
 use std::sync::{Arc, RwLock};
@@ -33,6 +40,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 enum BroadcastStatus {
     Idle,
     MissingField(String),
+    FetchingDocuments(u64),
     Broadcasting(u64),
     Error(String),
     Complete,
@@ -60,7 +68,7 @@ pub struct PurchaseDocumentScreen {
     doc_id_input: String,
 
     /* ---- price input ---- */
-    price_input: String,
+    fetched_price: Option<Credits>,
 
     /* ---- status ---- */
     broadcast_status: BroadcastStatus,
@@ -97,7 +105,7 @@ impl PurchaseDocumentScreen {
             selected_contract: None,
             selected_doc_type: None,
             doc_id_input: String::new(),
-            price_input: String::new(),
+            fetched_price: None,
             broadcast_status: BroadcastStatus::Idle,
         }
     }
@@ -227,7 +235,7 @@ impl PurchaseDocumentScreen {
         self.selected_contract = None;
         self.selected_doc_type = None;
         self.doc_id_input.clear();
-        self.price_input.clear();
+        self.fetched_price = None;
         self.selected_qid = None;
         self.selected_key = None;
     }
@@ -248,8 +256,32 @@ impl ScreenLike for PurchaseDocumentScreen {
     }
 
     fn display_task_result(&mut self, task_result: crate::ui::BackendTaskSuccessResult) {
-        self.broadcast_status = BroadcastStatus::Complete;
-        self.display_message(&format!("{:?}", task_result), MessageType::Success);
+        match task_result {
+            crate::ui::BackendTaskSuccessResult::Documents(documents) => {
+                if documents.is_empty() {
+                    self.backend_message = Some("No document found".to_string());
+                } else {
+                    self.backend_message = None;
+                }
+                self.fetched_price = if let Some((_id, Some(doc))) = documents.first() {
+                    match doc.properties().get_optional_integer::<Credits>(PRICE) {
+                        Ok(Some(price)) => Some(price),
+                        Ok(None) => None,
+                        Err(_) => {
+                            self.backend_message = Some("Failed to get document price".to_string());
+                            None
+                        }
+                    }
+                } else {
+                    self.backend_message = Some("No document found".to_string());
+                    None
+                };
+                self.broadcast_status = BroadcastStatus::Idle;
+            }
+            _ => {
+                // Nothing
+            }
+        }
     }
 
     fn ui(&mut self, ctx: &Context) -> AppAction {
@@ -313,13 +345,56 @@ impl ScreenLike for PurchaseDocumentScreen {
             ui.add_space(10.0);
             ui.text_edit_singleline(&mut self.doc_id_input);
 
+            // Fetch the document and get the price, display it for the user to approve
+            let doc_type = self.selected_doc_type
+                .as_ref()
+                .expect("Document type should be selected");
+            let doc_type_name = doc_type.name();
+            let contract = self.selected_contract
+                .as_ref()
+                .expect("Contract should be selected")
+                .contract
+                .clone();
+            let mut query = DocumentQuery::new(
+                Arc::new(contract),
+                doc_type_name,
+            ).expect("Failed to create document query");
+            query = query.with_where(WhereClause {
+                field: "$ownerId".to_string(),
+                operator: dash_sdk::drive::query::WhereOperator::Equal,
+                value: dash_sdk::dpp::platform_value::Value::Identifier(self.selected_qid.clone().expect("QID should be selected").identity.id().into()),
+            });
             ui.add_space(10.0);
-            ui.separator();
-            ui.add_space(10.0);
+            if ui.button("Fetch Document Price").clicked() {
+                action |= AppAction::BackendTask(BackendTask::DocumentTask(
+                    DocumentTask::FetchDocuments(query),
+                ));
+                self.broadcast_status = BroadcastStatus::FetchingDocuments(
+                    SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs(),
+                );
+            }
 
-            ui.heading("4. Enter the price you want to pay:");
-            ui.add_space(10.0);
-            ui.text_edit_singleline(&mut self.price_input);
+            if let BroadcastStatus::FetchingDocuments(start) = &self.broadcast_status {
+                let elapsed = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs()
+                    - start;
+                ui.add_space(10.0);
+                ui.label(format!("Fetching document price... {elapsed}s"));
+            }
+
+            if let Some(price) = self.fetched_price {
+                ui.add_space(10.0);
+                ui.label(format!(
+                    "Document price: {} credits",
+                    price.to_string()
+                ));
+                ui.label("Note this is the listed price at the time of fetching, and pressing \"Purchase Document\" will attempt to purchase the document at this price.");
+            }
 
             ui.add_space(10.0);
             ui.separator();
@@ -403,10 +478,11 @@ impl ScreenLike for PurchaseDocumentScreen {
                                 None
                             };
 
-                        let price = match self.price_input.trim().parse::<u64>() {
-                            Ok(val) => val,
-                            Err(_) => {
-                                self.broadcast_status = BroadcastStatus::Error("Invalid price input".to_string());
+                        let price = match self.fetched_price {
+                            Some(price) => price,
+                            None => {
+                                self.broadcast_status =
+                                    BroadcastStatus::MissingField("Price not fetched".to_string());
                                 return;
                             }
                         };
@@ -445,6 +521,9 @@ impl ScreenLike for PurchaseDocumentScreen {
                     ui.label(format!("Broadcasting… {secs}s"));
                 }
                 BroadcastStatus::Complete => {}
+                BroadcastStatus::FetchingDocuments(_) => {
+                    // Handled above
+                }
             }
         });
 

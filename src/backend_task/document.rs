@@ -14,7 +14,10 @@ use dash_sdk::dpp::state_transition::proof_result::StateTransitionProofResult;
 use dash_sdk::dpp::tokens::token_payment_info::TokenPaymentInfo;
 use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::Start;
 use dash_sdk::platform::transition::broadcast::BroadcastStateTransition;
+use dash_sdk::platform::transition::purchase_document::PurchaseDocument;
 use dash_sdk::platform::transition::put_document::PutDocument;
+use dash_sdk::platform::transition::transfer_document::TransferDocument;
+use dash_sdk::platform::transition::update_price_of_document::UpdatePriceOfDocument;
 use dash_sdk::platform::{
     DataContract, Document, DocumentQuery, Fetch, FetchMany, Identifier, IdentityPublicKey,
 };
@@ -226,6 +229,7 @@ impl AppContext {
                     .await
                     .map_err(|e| format!("Fetch nonce error: {e}"))?;
 
+                // ---------- 2. build ----------
                 let state_transition =
                     BatchTransitionV0::new_document_replacement_transition_from_document(
                         document,
@@ -240,7 +244,7 @@ impl AppContext {
                     )
                     .map_err(|e| format!("Error creating batch transition: {}", e))?;
 
-                // ---------- 4. broadcast ----------
+                // ---------- 3. broadcast ----------
                 state_transition
                     .broadcast_and_wait::<StateTransitionProofResult>(sdk, None)
                     .await
@@ -260,18 +264,7 @@ impl AppContext {
                 identity_key,
                 token_payment_info,
             ) => {
-                // ---------- 1. get & bump identity nonce ----------
-                let new_nonce = sdk
-                    .get_identity_contract_nonce(
-                        qualified_identity.identity.id(),
-                        data_contract.id(),
-                        true,
-                        None,
-                    )
-                    .await
-                    .map_err(|e| format!("Fetch nonce error: {e}"))?;
-
-                // ---------- 2. fetch document ----------
+                // ---------- 1. fetch document ----------
                 let document_query = DocumentQuery {
                     data_contract: data_contract.into(),
                     document_type_name: document_type.name().to_string(),
@@ -287,25 +280,17 @@ impl AppContext {
                     .ok_or_else(|| "Document not found".to_string())?;
                 document.bump_revision();
 
-                // ---------- 3. create transfer transition ----------
-                let state_transition =
-                    BatchTransitionV0::new_document_transfer_transition_from_document(
-                        document,
-                        document_type.as_ref(),
+                // ---------- 2. create transfer transition ----------
+                document
+                    .transfer_document_to_identity_and_wait_for_response(
                         new_owner_id,
-                        &identity_key,
-                        new_nonce,
-                        UserFeeIncrease::default(),
+                        sdk,
+                        document_type,
+                        identity_key,
                         token_payment_info,
                         &qualified_identity,
-                        sdk.version(),
-                        None, // options
+                        None,
                     )
-                    .map_err(|e| format!("Error creating batch transition: {}", e))?;
-
-                // ---------- 4. broadcast ----------
-                state_transition
-                    .broadcast_and_wait::<StateTransitionProofResult>(sdk, None)
                     .await
                     .map(|_| {
                         BackendTaskSuccessResult::Message(
@@ -323,18 +308,7 @@ impl AppContext {
                 identity_key,
                 token_payment_info,
             ) => {
-                // ---------- 1. get & bump identity nonce ----------
-                let new_nonce = sdk
-                    .get_identity_contract_nonce(
-                        qualified_identity.identity.id(),
-                        data_contract.id(),
-                        true,
-                        None,
-                    )
-                    .await
-                    .map_err(|e| format!("Fetch nonce error: {e}"))?;
-
-                // ---------- 2. fetch document ----------
+                // ---------- 1. fetch document ----------
                 let document_query = DocumentQuery {
                     data_contract: data_contract.into(),
                     document_type_name: document_type.name().to_string(), // Not needed for purchase
@@ -348,28 +322,22 @@ impl AppContext {
                     .await
                     .map_err(|e| format!("Error fetching document: {}", e))?
                     .ok_or_else(|| "Document not found".to_string())?;
+
+                // Bump the document revision
                 document.bump_revision();
 
-                // ---------- 3. create purchase transition ----------
-                let state_transition =
-                    BatchTransitionV0::new_document_purchase_transition_from_document(
-                        document,
-                        document_type.as_ref(),
-                        qualified_identity.identity.id(),
+                // ---------- 2. purchase document and wait for response ----------
+                document
+                    .purchase_document_and_wait_for_response(
                         price,
-                        &identity_key,
-                        new_nonce,
-                        UserFeeIncrease::default(),
+                        sdk,
+                        document_type,
+                        qualified_identity.identity.id(),
+                        identity_key,
                         token_payment_info,
                         &qualified_identity,
-                        sdk.version(),
-                        None, // options
+                        None,
                     )
-                    .map_err(|e| format!("Error creating batch transition: {}", e))?;
-
-                // ---------- 4. broadcast ----------
-                state_transition
-                    .broadcast_and_wait::<StateTransitionProofResult>(sdk, None)
                     .await
                     .map(|_| {
                         BackendTaskSuccessResult::Message(
@@ -387,18 +355,7 @@ impl AppContext {
                 identity_key,
                 token_payment_info,
             ) => {
-                // ---------- 1. get & bump identity nonce ----------
-                let new_nonce = sdk
-                    .get_identity_contract_nonce(
-                        qualified_identity.identity.id(),
-                        data_contract.id(),
-                        true,
-                        None,
-                    )
-                    .await
-                    .map_err(|e| format!("Fetch nonce error: {e}"))?;
-
-                // ---------- 2. fetch document ----------
+                // ---------- 1. fetch document ----------
                 let document_query = DocumentQuery {
                     data_contract: data_contract.into(),
                     document_type_name: document_type.name().to_string(),
@@ -412,27 +369,21 @@ impl AppContext {
                     .await
                     .map_err(|e| format!("Error fetching document: {}", e))?
                     .ok_or_else(|| "Document not found".to_string())?;
+
+                // Bump the document revision
                 document.bump_revision();
 
-                // ---------- 3. create set price transition ----------
-                let state_transition =
-                    BatchTransitionV0::new_document_update_price_transition_from_document(
-                        document,
-                        document_type.as_ref(),
+                // ---------- 2. create set price transition ----------
+                document
+                    .update_price_of_document_and_wait_for_response(
                         price,
-                        &identity_key,
-                        new_nonce,
-                        UserFeeIncrease::default(),
+                        sdk,
+                        document_type,
+                        identity_key,
                         token_payment_info,
                         &qualified_identity,
-                        sdk.version(),
-                        None, // options
+                        None,
                     )
-                    .map_err(|e| format!("Error creating batch transition: {}", e))?;
-
-                // ---------- 4. broadcast ----------
-                state_transition
-                    .broadcast_and_wait::<StateTransitionProofResult>(sdk, None)
                     .await
                     .map(|_| {
                         BackendTaskSuccessResult::Message(

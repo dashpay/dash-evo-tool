@@ -25,8 +25,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// A list of Dash-specific fields that do not appear in the
 /// normal document_type properties.
 pub const DOCUMENT_PRIVATE_FIELDS: &[&str] = &[
-    "$id",
-    "$ownerId",
+    // "$id",
+    // "$ownerId", include these two by default
     "$version",
     "$revision",
     "$createdAt",

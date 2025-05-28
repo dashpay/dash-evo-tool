@@ -661,7 +661,8 @@ impl ScreenLike for CreateDocumentScreen {
                     if let Some(doc_type) = &self.selected_doc_type {
                         if let Some(token_creation_cost) = doc_type.document_creation_token_cost() {
                             let token_amount = token_creation_cost.token_amount;
-                            let token_name = if let Some(contract_id) = token_creation_cost.contract_id {
+                            let token_name = if let Some(contract) = &self.selected_contract {
+                                let contract_id = contract.contract.id();
                                 if let Ok(Some(contract)) = self
                                     .app_context
                                     .get_contract_by_id(&contract_id)

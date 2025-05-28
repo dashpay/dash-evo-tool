@@ -584,7 +584,7 @@ impl ScreenLike for DocumentQueryScreen {
             DesiredAppAction::AddScreenType(ScreenType::UpdateContract),
         );
         let add_document_button = (
-            "Add Document",
+            "Create Document",
             DesiredAppAction::AddScreenType(ScreenType::CreateDocument),
         );
         let delete_document_button = (

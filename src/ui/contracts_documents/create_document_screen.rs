@@ -655,6 +655,9 @@ impl ScreenLike for CreateDocumentScreen {
                 .max_height(max_scroll_height)
                 .show(ui, |ui| {
                     self.ui_field_inputs(ui);
+
+                    ui.add_space(10.0);
+                    ui.separator();
                     ui.add_space(10.0);
 
                     // Display token costs if any
@@ -691,7 +694,13 @@ impl ScreenLike for CreateDocumentScreen {
                                 GasFeesPaidBy::ContractOwner => "the contract owner",
                                 GasFeesPaidBy::PreferContractOwner => "the contract owner unless their balance is insufficient, in which case you pay",
                             };
-                            ui.label(format!("Creation cost: {} {} tokens. Tokens will be {}. Gas fees paid by {}.", token_amount, token_name, token_effect_string, gas_fees_paid_by_string));
+                            ui.label(
+                                RichText::new(format!(
+                                    "Creation cost: {} \"{}\" tokens.\nTokens will be {}.\nGas fees will be paid by {}.",
+                                    token_amount, token_name, token_effect_string, gas_fees_paid_by_string
+                                ))
+                                .color(Color32::DARK_RED),
+                            );
                         }
                     }
 

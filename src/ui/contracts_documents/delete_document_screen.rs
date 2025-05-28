@@ -14,8 +14,11 @@ use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::accessors::v0::TokenConfigurationConventionV0Getters;
-use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV1Getters;
+use dash_sdk::dpp::data_contract::document_type::accessors::{
+    DocumentTypeV0Getters, DocumentTypeV1Getters,
+};
 use dash_sdk::dpp::data_contract::document_type::DocumentType;
+use dash_sdk::dpp::document::DocumentV0Getters;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
@@ -23,9 +26,11 @@ use dash_sdk::dpp::tokens::gas_fees_paid_by::GasFeesPaidBy;
 use dash_sdk::dpp::tokens::token_amount_on_contract_token::DocumentActionTokenEffect;
 use dash_sdk::dpp::tokens::token_payment_info::v0::TokenPaymentInfoV0;
 use dash_sdk::dpp::tokens::token_payment_info::TokenPaymentInfo;
-use dash_sdk::platform::{Identifier, IdentityPublicKey};
+use dash_sdk::drive::query::WhereClause;
+use dash_sdk::platform::{Document, DocumentQuery, Identifier, IdentityPublicKey};
+use dash_sdk::query_types::IndexMap;
 use eframe::egui::{self, Color32, Context, Ui};
-use egui::RichText;
+use egui::{PopupCloseBehavior, RichText};
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -33,6 +38,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 enum BroadcastStatus {
     Idle,
     MissingField(String),
+    FetchingDocuments(u64),
     Broadcasting(u64),
     Error(String),
     Complete,
@@ -58,6 +64,9 @@ pub struct DeleteDocumentScreen {
 
     /* ---- doc-id ---- */
     doc_id_input: String,
+
+    /* ---- fetched documents ---- */
+    fetched_documents: IndexMap<Identifier, Option<Document>>,
 
     /* ---- status ---- */
     broadcast_status: BroadcastStatus,
@@ -94,6 +103,7 @@ impl DeleteDocumentScreen {
             selected_contract: None,
             selected_doc_type: None,
             doc_id_input: String::new(),
+            fetched_documents: IndexMap::new(),
             broadcast_status: BroadcastStatus::Idle,
         }
     }
@@ -243,8 +253,20 @@ impl ScreenLike for DeleteDocumentScreen {
     }
 
     fn display_task_result(&mut self, task_result: crate::ui::BackendTaskSuccessResult) {
-        self.broadcast_status = BroadcastStatus::Complete;
-        self.display_message(&format!("{:?}", task_result), MessageType::Success);
+        match task_result {
+            crate::ui::BackendTaskSuccessResult::Documents(documents) => {
+                if documents.is_empty() {
+                    self.backend_message = Some("No owned documents found".to_string());
+                } else {
+                    self.backend_message = None;
+                }
+                self.fetched_documents = documents;
+                self.broadcast_status = BroadcastStatus::Idle;
+            }
+            _ => {
+                // Nothing
+            }
+        }
     }
 
     fn ui(&mut self, ctx: &Context) -> AppAction {
@@ -307,11 +329,130 @@ impl ScreenLike for DeleteDocumentScreen {
             ui.heading("3. Enter the Document ID to delete:");
             ui.add_space(10.0);
             ui.text_edit_singleline(&mut self.doc_id_input);
+            ui.add_space(10.0);
+            if self.fetched_documents.is_empty() {
+                if let Some(qid) = &self.selected_qid {
+                    let doc_type = self.selected_doc_type
+                        .as_ref()
+                        .expect("Document type should be selected");
+                    let doc_type_name = doc_type.name();
+                    if doc_type.indexes().iter().any(|i| i.1.properties.first().expect("Expected at least one property").name == "$ownerId") {
+                        let contract = self.selected_contract
+                            .as_ref()
+                            .expect("Contract should be selected")
+                            .contract
+                            .clone();
+                        let mut query = DocumentQuery::new(
+                            Arc::new(contract),
+                            doc_type_name,
+                        ).expect("Failed to create document query");
+                        query = query.with_where(WhereClause {
+                            field: "$ownerId".to_string(),
+                            operator: dash_sdk::drive::query::WhereOperator::Equal,
+                            value: dash_sdk::dpp::platform_value::Value::Identifier(qid.identity.id().into()),
+                        });
+                        ui.label("This document type has an index on $ownerId, so you can fetch owned documents to view and select.");
+                        ui.add_space(10.0);
+                        if ui.button("Fetch Owned Documents").clicked() {
+                            action |= AppAction::BackendTask(BackendTask::DocumentTask(
+                                DocumentTask::FetchDocuments(query),
+                            ));
+                            self.broadcast_status = BroadcastStatus::FetchingDocuments(
+                                SystemTime::now()
+                                    .duration_since(UNIX_EPOCH)
+                                    .unwrap()
+                                    .as_secs(),
+                            );
+                        }
+                    } else {
+                        ui.label("(Cannot use the Fetch Owned Documents feature as this document type does not have an index on $ownerId)");
+                    }
+                } else {
+                    self.broadcast_status =
+                        BroadcastStatus::MissingField("No identity selected".to_string());
+                }
+            } else {
+                ui.add_space(10.0);
+                ui.separator();
+                ui.add_space(10.0);
+
+                ui.heading("Fetched documents:");
+                ui.add_space(10.0);
+                for document in self.fetched_documents.values() {
+                    if let Some(doc) = document {
+                        let doc_id_str = doc.id().to_string(Encoding::Base58);
+
+                        ui.horizontal(|ui| {
+                            ui.label(&doc_id_str);
+
+                            let view_button_response = ui.button("View");
+                            if view_button_response.clicked() {
+                                ui.memory_mut(|mem| mem.open_popup(egui::Id::new(format!("popup_{}", doc_id_str))));
+                            }
+                            if ui.button("Select").clicked() {
+                                self.doc_id_input = doc_id_str.clone();
+                            }
+
+                            egui::popup::popup_above_or_below_widget(
+                                ui,
+                                egui::Id::new(format!("popup_{}", doc_id_str)),
+                                &view_button_response,
+                                egui::AboveOrBelow::Below,
+                                PopupCloseBehavior::CloseOnClickOutside,
+                                |ui| {
+                                    ui.set_min_width(400.0);
+                                    ui.label("Document JSON:");
+                                    if let Ok(json) = serde_json::to_string_pretty(doc) {
+                                        ui.add(
+                                            egui::TextEdit::multiline(&mut json.clone())
+                                                .font(egui::TextStyle::Monospace)
+                                                .desired_rows(10)
+                                                .desired_width(380.0)
+                                                .interactive(false),
+                                        );
+                                    } else {
+                                        ui.label("Failed to serialize document.");
+                                    }
+                                    if ui.button("Close").clicked() {
+                                        ui.memory_mut(|mem| mem.close_popup());
+                                    }
+                                }
+                            );
+                        });
+                    } else {
+                        ui.label("Document not found");
+                    }
+                }
+            }
+            if let Some(backend_message) = &self.backend_message {
+                if backend_message.contains("No owned documents found") {
+                    ui.add_space(10.0);
+                    ui.label("No owned documents found.");
+                }
+            }
+
+            match self.broadcast_status {
+                BroadcastStatus::FetchingDocuments(start) => {
+                    let secs = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs()
+                        - start;
+                    ui.add_space(10.0);
+                    ui.label(format!("Fetching documents… {secs}s"));
+                }
+                _ => {
+                    // Nothing here
+                }
+            }
+
+            ui.add_space(10.0);
+            ui.separator();
+            ui.add_space(10.0);
 
             // Display token costs if any
             if let Some(doc_type) = &self.selected_doc_type {
                 if let Some(token_creation_cost) = doc_type.document_deletion_token_cost() {
-                    ui.add_space(20.0);
                     let token_amount = token_creation_cost.token_amount;
                     let token_name = if let Some(contract) = &self.selected_contract {
                         let contract_id = contract.contract.id();
@@ -343,7 +484,13 @@ impl ScreenLike for DeleteDocumentScreen {
                         GasFeesPaidBy::ContractOwner => "the contract owner",
                         GasFeesPaidBy::PreferContractOwner => "the contract owner unless their balance is insufficient, in which case you pay",
                     };
-                    ui.label(format!("Deletion cost: {} {} tokens. Tokens will be {}. Gas fees paid by {}.", token_amount, token_name, token_effect_string, gas_fees_paid_by_string));
+                    ui.label(
+                        RichText::new(format!(
+                            "Deletion cost: {} \"{}\" tokens.\nTokens will be {}.\nGas fees will be paid by {}.",
+                            token_amount, token_name, token_effect_string, gas_fees_paid_by_string
+                        ))
+                        .color(Color32::DARK_RED),
+                    );
                 }
             }
 
@@ -414,6 +561,9 @@ impl ScreenLike for DeleteDocumentScreen {
                     ui.label(format!("Broadcasting… {secs}s"));
                 }
                 BroadcastStatus::Complete => {}
+                BroadcastStatus::FetchingDocuments(_) => {
+                    // Already handled above
+                }
             }
         });
 

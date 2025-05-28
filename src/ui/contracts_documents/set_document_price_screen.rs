@@ -321,10 +321,13 @@ impl ScreenLike for SetDocumentPriceScreen {
             ui.add_space(10.0);
             ui.text_edit_singleline(&mut self.price_input);
 
+            ui.add_space(10.0);
+            ui.separator();
+            ui.add_space(10.0);
+
             // Display token costs if any
             if let Some(doc_type) = &self.selected_doc_type {
                 if let Some(token_creation_cost) = doc_type.document_update_price_token_cost() {
-                    ui.add_space(20.0);
                     let token_amount = token_creation_cost.token_amount;
                     let token_name = if let Some(contract) = &self.selected_contract {
                         let contract_id = contract.contract.id();
@@ -356,7 +359,13 @@ impl ScreenLike for SetDocumentPriceScreen {
                         GasFeesPaidBy::ContractOwner => "the contract owner",
                         GasFeesPaidBy::PreferContractOwner => "the contract owner unless their balance is insufficient, in which case you pay",
                     };
-                    ui.label(format!("Set Price cost: {} {} tokens. Tokens will be {}. Gas fees paid by {}.", token_amount, token_name, token_effect_string, gas_fees_paid_by_string));
+                    ui.label(
+                        RichText::new(format!(
+                            "Set Price cost: {} \"{}\" tokens.\nTokens will be {}.\nGas fees will be paid by {}.",
+                            token_amount, token_name, token_effect_string, gas_fees_paid_by_string
+                        ))
+                        .color(Color32::DARK_RED),
+                    );
                 }
             }
 

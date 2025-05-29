@@ -43,7 +43,7 @@ use image::ImageReader;
 use crate::app::BackendTasksExecutionMode;
 use crate::backend_task::contract::ContractTask;
 use crate::backend_task::tokens::TokenTask;
-use crate::backend_task::BackendTask;
+use crate::backend_task::{BackendTask, NO_IDENTITIES_FOUND};
 
 use crate::app::{AppAction, DesiredAppAction};
 use crate::context::AppContext;
@@ -5880,7 +5880,10 @@ impl ScreenLike for TokensScreen {
             AppAction::Custom(ref s) if s == "Back to tokens from contract" => {
                 self.selected_contract_id = None;
             }
-            _ => {}
+            AppAction::None => {}
+            ref a => {
+                tracing::trace!(action=?a, "tokens screen unsupported action");
+            }
         }
 
         if action == AppAction::None {
@@ -5907,12 +5910,18 @@ impl ScreenLike for TokensScreen {
             }
             TokensSubscreen::MyTokens => {
                 if msg.contains("Successfully fetched token balances")
-                    | msg.contains("Failed to fetch token balances")
-                    | msg.contains("Failed to get estimated rewards")
+                    || msg.contains("Failed to fetch token balances")
+                    || msg.contains("Failed to get estimated rewards")
+                    || msg.eq(NO_IDENTITIES_FOUND)
                 {
                     self.backend_message = Some((msg.to_string(), msg_type, Utc::now()));
                     self.refreshing_status = RefreshingStatus::NotRefreshing;
                 } else {
+                    tracing::debug!(
+                        ?msg,
+                        ?msg_type,
+                        "unsupported message received in token screen"
+                    );
                     return;
                 }
             }

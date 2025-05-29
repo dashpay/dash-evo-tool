@@ -88,6 +88,18 @@ impl NetworkChooserScreen {
         self.context_for_network(self.current_network)
     }
 
+    /// Save the current settings to the database
+    ///
+    /// TODO: doesn't save local network settings like password yet.
+    fn save(&self) -> Result<(), String> {
+        self.current_app_context()
+            .db
+            .update_dash_core_execution_settings(
+                self.custom_dash_qt_path.clone(),
+                self.overwrite_dash_conf,
+            )
+            .map_err(|e| e.to_string())
+    }
     /// Render the network selection table
     fn render_network_table(&mut self, ui: &mut Ui) -> AppAction {
         let mut app_action = AppAction::None;
@@ -149,7 +161,7 @@ impl NetworkChooserScreen {
                                         if file_name.ends_with(required_file_name.as_str()) {
                                             self.custom_dash_qt_path = Some(path.display().to_string());
                                             self.custom_dash_qt_error_message = None;
-                                            self.current_app_context().db.update_dash_core_execution_settings(self.custom_dash_qt_path.clone(), self.overwrite_dash_conf).expect("Expected to save db settings");
+                                            self.save().expect("Expected to save db settings");
                                         } else {
                                             self.custom_dash_qt_error_message = Some(format!("Invalid file: Please select a valid '{}'.", required_file_name));
                                         }
@@ -169,12 +181,13 @@ impl NetworkChooserScreen {
                             if ui.button("clear").clicked() {
                                 self.custom_dash_qt_path = None;
                                 self.custom_dash_qt_error_message = None;
+                                self.save().expect("Expected to save db settings");                                
                             }
                         }
                         ui.end_row();
 
                         if ui.checkbox(&mut self.overwrite_dash_conf, "Overwrite dash.conf").clicked() {
-                            self.current_app_context().db.update_dash_core_execution_settings(self.custom_dash_qt_path.clone(), self.overwrite_dash_conf).expect("Expected to save db settings");
+                            self.save().expect("Expected to save db settings");
                         }
                         if !self.overwrite_dash_conf {
                             ui.end_row();

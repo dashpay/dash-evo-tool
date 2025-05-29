@@ -52,6 +52,7 @@ aes-gcm = "0.10" # For AES-256-GCM encryption
 crossbeam-channel = "0.5.13"
 regex = "1.11"
 humantime = "2.2.0"
+which = { version = "7.0.3" }
 
 [target.'cfg(not(target_os = "windows"))'.dependencies]
 zmq = "0.10"

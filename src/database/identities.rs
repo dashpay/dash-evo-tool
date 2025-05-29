@@ -516,15 +516,37 @@ impl Database {
     /// Fixes bug in identity table where network name for devnet was stored as `devnet:` instead of `devnet`.
     pub fn fix_identity_devnet_network_name(&self) -> rusqlite::Result<()> {
         let conn = self.conn.lock().unwrap();
+        const TABLES: [&str; 11] = [
+            "asset_lock_transaction",
+            "contestant",
+            "contestent_name",
+            "contract",
+            "identity",
+            "identity_token_balances",
+            "scheduled_votes",
+            "settings",
+            "token",
+            "utxos",
+            "wallet",
+        ];
 
-        conn.execute(
-            "UPDATE identity SET network = 'devnet' WHERE network = 'devnet:'",
-            [],
-        )?;
-        conn.execute(
-            "UPDATE identity SET network = 'regtest' WHERE network = 'local'",
-            [],
-        )?;
+        for t in TABLES {
+            conn.execute(
+                &format!(
+                    "UPDATE {} SET network = 'devnet' WHERE network = 'devnet:'",
+                    t
+                ),
+                [],
+            )?;
+
+            conn.execute(
+                &format!(
+                    "UPDATE {} SET network = 'regtest' WHERE network = 'local'",
+                    t
+                ),
+                [],
+            )?;
+        }
 
         Ok(())
     }

@@ -285,7 +285,7 @@ impl ScreenLike for TransferScreen {
         egui::CentralPanel::default().show(ctx, |ui| {
             // Show the success screen if the transfer was successful
             if self.transfer_credits_status == TransferCreditsStatus::Complete {
-                action = self.show_success(ui);
+                action |= self.show_success(ui);
                 return;
             }
 

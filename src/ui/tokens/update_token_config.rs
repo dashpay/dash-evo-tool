@@ -813,7 +813,7 @@ impl UpdateTokenConfigScreen {
                 }
 
                 self.update_status = UpdateTokenConfigStatus::Updating(Utc::now());
-                action =
+                action |=
                     AppAction::BackendTask(BackendTask::TokenTask(TokenTask::UpdateTokenConfig {
                         identity_token_info: self.identity_token_info.clone(),
                         change_item: self.change_item.clone(),
@@ -965,21 +965,21 @@ impl UpdateTokenConfigScreen {
 
             if self.group_action_id.is_some() {
                 if ui.button("Back to Group Actions").clicked() {
-                    action = AppAction::PopScreenAndRefresh;
+                    action |= AppAction::PopScreenAndRefresh;
                 }
                 if ui.button("Back to Tokens").clicked() {
-                    action = AppAction::SetMainScreenThenGoToMainScreen(
+                    action |= AppAction::SetMainScreenThenGoToMainScreen(
                         RootScreenType::RootScreenMyTokenBalances,
                     );
                 }
             } else {
                 if ui.button("Back to Tokens").clicked() {
-                    action = AppAction::PopScreenAndRefresh;
+                    action |= AppAction::PopScreenAndRefresh;
                 }
 
                 if !self.is_unilateral_group_member {
                     if ui.button("Go to Group Actions").clicked() {
-                        action = AppAction::PopThenAddScreenToMainScreen(
+                        action |= AppAction::PopThenAddScreenToMainScreen(
                             RootScreenType::RootScreenDocumentQuery,
                             Screen::GroupActionsScreen(GroupActionsScreen::new(
                                 &self.app_context.clone(),

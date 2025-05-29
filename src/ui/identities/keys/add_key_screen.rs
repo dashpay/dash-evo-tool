@@ -227,7 +227,7 @@ impl ScreenLike for AddKeyScreen {
         egui::CentralPanel::default().show(ctx, |ui| {
             // Show the success screen if the key was added successfully
             if self.add_key_status == AddKeyStatus::Complete {
-                action = self.show_success(ui);
+                action |= self.show_success(ui);
                 return;
             }
 

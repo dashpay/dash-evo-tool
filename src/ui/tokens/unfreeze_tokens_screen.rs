@@ -326,7 +326,7 @@ impl UnfreezeTokensScreen {
                     }
 
                     // Dispatch to backend
-                    action =
+                    action |=
                         AppAction::BackendTask(BackendTask::TokenTask(TokenTask::UnfreezeTokens {
                             actor_identity: self.identity.clone(),
                             data_contract,
@@ -375,21 +375,21 @@ impl UnfreezeTokensScreen {
 
             if self.group_action_id.is_some() {
                 if ui.button("Back to Group Actions").clicked() {
-                    action = AppAction::PopScreenAndRefresh;
+                    action |= AppAction::PopScreenAndRefresh;
                 }
                 if ui.button("Back to Tokens").clicked() {
-                    action = AppAction::SetMainScreenThenGoToMainScreen(
+                    action |= AppAction::SetMainScreenThenGoToMainScreen(
                         RootScreenType::RootScreenMyTokenBalances,
                     );
                 }
             } else {
                 if ui.button("Back to Tokens").clicked() {
-                    action = AppAction::PopScreenAndRefresh;
+                    action |= AppAction::PopScreenAndRefresh;
                 }
 
                 if !self.is_unilateral_group_member {
                     if ui.button("Go to Group Actions").clicked() {
-                        action = AppAction::PopThenAddScreenToMainScreen(
+                        action |= AppAction::PopThenAddScreenToMainScreen(
                             RootScreenType::RootScreenDocumentQuery,
                             Screen::GroupActionsScreen(GroupActionsScreen::new(
                                 &self.app_context.clone(),

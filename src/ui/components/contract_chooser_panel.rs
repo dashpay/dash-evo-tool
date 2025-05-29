@@ -244,10 +244,15 @@ pub fn add_contract_chooser_panel(
                                                         pending_fields_selection
                                                             .insert(field_name.clone(), true);
                                                     }
-                                                    // Show "internal" fields as unchecked by default
+                                                    // Show "internal" fields as unchecked by default,
+                                                    // except for $ownerId and $id, which are checked
                                                     for dash_field in DOCUMENT_PRIVATE_FIELDS {
-                                                        pending_fields_selection
-                                                            .insert(dash_field.to_string(), false);
+                                                        let checked = *dash_field == "$ownerId"
+                                                            || *dash_field == "$id";
+                                                        pending_fields_selection.insert(
+                                                            dash_field.to_string(),
+                                                            checked,
+                                                        );
                                                     }
                                                 }
                                             }

@@ -45,14 +45,14 @@ pub fn add_left_panel(
     // Define the button details directly in this function
     let buttons = [
         ("I", RootScreenType::RootScreenIdentities, "identity.png"),
+        ("Q", RootScreenType::RootScreenDocumentQuery, "doc.png"),
+        ("O", RootScreenType::RootScreenMyTokenBalances, "tokens.png"),
         (
             "C",
             RootScreenType::RootScreenDPNSActiveContests,
             "voting.png",
         ),
-        ("Q", RootScreenType::RootScreenDocumentQuery, "doc.png"),
         ("W", RootScreenType::RootScreenWalletsBalances, "wallet.png"),
-        ("O", RootScreenType::RootScreenMyTokenBalances, "tokens.png"),
         (
             "T",
             RootScreenType::RootScreenToolsProofLogScreen,

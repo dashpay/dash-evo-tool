@@ -24,6 +24,7 @@ use dash_sdk::dpp::data_contract::associated_token::token_configuration::accesso
 use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::TokenConfigurationConvention;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration_item::TokenConfigurationChangeItem;
 use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::accessors::v0::TokenDistributionRulesV0Getters;
+use dash_sdk::dpp::data_contract::associated_token::token_marketplace_rules::v0::TokenTradeMode;
 use dash_sdk::dpp::data_contract::change_control_rules::authorized_action_takers::AuthorizedActionTakers;
 use dash_sdk::dpp::data_contract::group::accessors::v0::GroupV0Getters;
 use dash_sdk::dpp::data_contract::group::Group;
@@ -532,7 +533,6 @@ impl UpdateTokenConfigScreen {
 
         /* ========== PER‑VARIANT EDITING ========== */
         match item {
-            /* -------- simple value items -------- */
             TokenConfigurationChangeItem::Conventions(conv) => {
                 ui.label("Update the JSON formatted text below to change the token conventions.");
                 ui.add_space(5.0);
@@ -563,18 +563,15 @@ impl UpdateTokenConfigScreen {
                     }
                 });
             }
-
             TokenConfigurationChangeItem::MaxSupply(opt_amt) => {
                 let mut txt = opt_amt.map(|a| a.to_string()).unwrap_or_default();
                 if ui.text_edit_singleline(&mut txt).changed() {
                     *opt_amt = txt.parse::<u64>().ok().map(TokenAmount::from);
                 }
             }
-
             TokenConfigurationChangeItem::MintingAllowChoosingDestination(b) => {
                 ui.checkbox(b, "Allow user to choose destination when minting");
             }
-
             TokenConfigurationChangeItem::NewTokensDestinationIdentity(opt_id) => {
                 let mut txt = opt_id
                     .map(|id| id.to_string(Encoding::Base58))
@@ -583,7 +580,6 @@ impl UpdateTokenConfigScreen {
                     *opt_id = Identifier::from_string(&txt, Encoding::Base58).ok();
                 }
             }
-
             TokenConfigurationChangeItem::PerpetualDistribution(opt_json) => {
                 ui.add_space(5.0);
 
@@ -603,7 +599,6 @@ impl UpdateTokenConfigScreen {
                     }
                 });
             }
-
             TokenConfigurationChangeItem::MainControlGroup(opt_grp) => {
                 let mut grp_txt = opt_grp.map(|g| g).unwrap_or_default();
                 let mut grp_txt_str = grp_txt.to_string();
@@ -612,8 +607,6 @@ impl UpdateTokenConfigScreen {
                 }
                 *opt_grp = Some(grp_txt);
             }
-
-            /* -------- all AuthorizedActionTakers variants -------- */
             TokenConfigurationChangeItem::ManualMinting(t)
             | TokenConfigurationChangeItem::ManualMintingAdminGroup(t)
             | TokenConfigurationChangeItem::ManualBurning(t)
@@ -635,7 +628,9 @@ impl UpdateTokenConfigScreen {
             | TokenConfigurationChangeItem::NewTokensDestinationIdentityControlGroup(t)
             | TokenConfigurationChangeItem::NewTokensDestinationIdentityAdminGroup(t)
             | TokenConfigurationChangeItem::MintingAllowChoosingDestinationControlGroup(t)
-            | TokenConfigurationChangeItem::MintingAllowChoosingDestinationAdminGroup(t) => {
+            | TokenConfigurationChangeItem::MintingAllowChoosingDestinationAdminGroup(t)
+            | TokenConfigurationChangeItem::MarketplaceTradeModeControlGroup(t)
+            | TokenConfigurationChangeItem::MarketplaceTradeModeAdminGroup(t) => {
                 Self::render_authorized_action_takers_editor(
                     ui,
                     t,
@@ -644,7 +639,6 @@ impl UpdateTokenConfigScreen {
                     &self.data_contract_option,
                 );
             }
-
             TokenConfigurationChangeItem::TokenConfigurationNoChange => {
                 ui.label("No parameters to edit for this entry.");
             }

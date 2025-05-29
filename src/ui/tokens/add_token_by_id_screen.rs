@@ -184,6 +184,10 @@ impl ScreenLike for AddTokenByIdScreen {
             MessageType::Success => {
                 if msg.contains("DataContract successfully saved") {
                     self.status = AddTokenStatus::Complete;
+                } else if msg.contains("Contract not found") {
+                    self.status = AddTokenStatus::Error("Contract not found".into());
+                } else if msg.contains("Error fetching contracts") {
+                    self.status = AddTokenStatus::Error(msg.to_owned());
                 }
             }
             MessageType::Error => {

@@ -520,7 +520,7 @@ impl Database {
         const TABLES: [&str; 11] = [
             "asset_lock_transaction",
             "contestant",
-            "contestant_name",
+            "contested_name",
             "contract",
             "identity",
             "identity_token_balances",

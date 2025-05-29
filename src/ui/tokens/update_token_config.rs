@@ -33,7 +33,7 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
-use dash_sdk::platform::{Identifier, IdentityPublicKey};
+use dash_sdk::platform::{DataContract, Identifier, IdentityPublicKey};
 use eframe::egui::{self, Color32, Context, Ui};
 use egui::RichText;
 use std::collections::HashSet;
@@ -47,7 +47,6 @@ pub enum UpdateTokenConfigStatus {
 
 pub struct UpdateTokenConfigScreen {
     pub identity_token_info: IdentityTokenInfo,
-    data_contract_option: Option<QualifiedContract>,
     backend_message: Option<(String, MessageType, DateTime<Utc>)>,
     update_status: UpdateTokenConfigStatus,
     pub app_context: Arc<AppContext>,
@@ -100,13 +99,8 @@ impl UpdateTokenConfigScreen {
             &mut error_message,
         );
 
-        let data_contract_option = app_context
-            .get_contract_by_id(&identity_token_info.data_contract.contract.id())
-            .unwrap_or_default();
-
         Self {
             identity_token_info: identity_token_info.clone(),
-            data_contract_option,
             backend_message: None,
             update_status: UpdateTokenConfigStatus::NotUpdating,
             app_context: app_context.clone(),
@@ -131,148 +125,21 @@ impl UpdateTokenConfigScreen {
         }
     }
 
-    fn determine_group_for_change_item(
-        change_item: &TokenConfigurationChangeItem,
-        identity_token_info: &IdentityTokenInfo,
-    ) -> (Option<(GroupContractPosition, Group)>, Option<String>) {
+    fn update_group_based_on_change_item(&mut self) {
+        let authorized_action_takers = self
+            .identity_token_info
+            .token_config
+            .authorized_action_takers_for_configuration_item(&self.change_item);
+
         let mut error_message = None;
-
-        let authorized_action_takers = match change_item {
-            TokenConfigurationChangeItem::Conventions(_) => identity_token_info
-                .token_config
-                .conventions_change_rules()
-                .authorized_to_make_change_action_takers(),
-            TokenConfigurationChangeItem::ConventionsControlGroup(_)
-            | TokenConfigurationChangeItem::ConventionsAdminGroup(_) => identity_token_info
-                .token_config
-                .conventions_change_rules()
-                .authorized_to_make_change_action_takers(),
-            TokenConfigurationChangeItem::MaxSupply(_) => identity_token_info
-                .token_config
-                .max_supply_change_rules()
-                .authorized_to_make_change_action_takers(),
-            TokenConfigurationChangeItem::MaxSupplyControlGroup(_)
-            | TokenConfigurationChangeItem::MaxSupplyAdminGroup(_) => identity_token_info
-                .token_config
-                .max_supply_change_rules()
-                .authorized_to_make_change_action_takers(),
-            TokenConfigurationChangeItem::PerpetualDistribution(_) => identity_token_info
-                .token_config
-                .distribution_rules()
-                .perpetual_distribution_rules()
-                .authorized_to_make_change_action_takers(),
-            TokenConfigurationChangeItem::PerpetualDistributionControlGroup(_)
-            | TokenConfigurationChangeItem::PerpetualDistributionAdminGroup(_) => {
-                identity_token_info
-                    .token_config
-                    .distribution_rules()
-                    .perpetual_distribution_rules()
-                    .authorized_to_make_change_action_takers()
-            }
-            TokenConfigurationChangeItem::NewTokensDestinationIdentity(_) => identity_token_info
-                .token_config
-                .distribution_rules()
-                .new_tokens_destination_identity_rules()
-                .authorized_to_make_change_action_takers(),
-            TokenConfigurationChangeItem::NewTokensDestinationIdentityControlGroup(_)
-            | TokenConfigurationChangeItem::NewTokensDestinationIdentityAdminGroup(_) => {
-                identity_token_info
-                    .token_config
-                    .distribution_rules()
-                    .new_tokens_destination_identity_rules()
-                    .authorized_to_make_change_action_takers()
-            }
-            TokenConfigurationChangeItem::MintingAllowChoosingDestination(_) => identity_token_info
-                .token_config
-                .distribution_rules()
-                .minting_allow_choosing_destination_rules()
-                .authorized_to_make_change_action_takers(),
-            TokenConfigurationChangeItem::MintingAllowChoosingDestinationControlGroup(_)
-            | TokenConfigurationChangeItem::MintingAllowChoosingDestinationAdminGroup(_) => {
-                identity_token_info
-                    .token_config
-                    .distribution_rules()
-                    .minting_allow_choosing_destination_rules()
-                    .authorized_to_make_change_action_takers()
-            }
-            TokenConfigurationChangeItem::ManualMinting(_) => identity_token_info
-                .token_config
-                .manual_minting_rules()
-                .authorized_to_make_change_action_takers(),
-            TokenConfigurationChangeItem::ManualMintingAdminGroup(_) => identity_token_info
-                .token_config
-                .manual_minting_rules()
-                .authorized_to_make_change_action_takers(),
-            TokenConfigurationChangeItem::ManualBurning(_) => identity_token_info
-                .token_config
-                .manual_burning_rules()
-                .authorized_to_make_change_action_takers(),
-            TokenConfigurationChangeItem::ManualBurningAdminGroup(_) => identity_token_info
-                .token_config
-                .manual_burning_rules()
-                .authorized_to_make_change_action_takers(),
-            TokenConfigurationChangeItem::Freeze(_) => identity_token_info
-                .token_config
-                .freeze_rules()
-                .authorized_to_make_change_action_takers(),
-            TokenConfigurationChangeItem::FreezeAdminGroup(_) => identity_token_info
-                .token_config
-                .freeze_rules()
-                .authorized_to_make_change_action_takers(),
-            TokenConfigurationChangeItem::Unfreeze(_) => identity_token_info
-                .token_config
-                .unfreeze_rules()
-                .authorized_to_make_change_action_takers(),
-            TokenConfigurationChangeItem::UnfreezeAdminGroup(_) => identity_token_info
-                .token_config
-                .unfreeze_rules()
-                .authorized_to_make_change_action_takers(),
-            TokenConfigurationChangeItem::DestroyFrozenFunds(_) => identity_token_info
-                .token_config
-                .destroy_frozen_funds_rules()
-                .authorized_to_make_change_action_takers(),
-            TokenConfigurationChangeItem::DestroyFrozenFundsAdminGroup(_) => identity_token_info
-                .token_config
-                .destroy_frozen_funds_rules()
-                .authorized_to_make_change_action_takers(),
-            TokenConfigurationChangeItem::EmergencyAction(_) => identity_token_info
-                .token_config
-                .emergency_action_rules()
-                .authorized_to_make_change_action_takers(),
-            TokenConfigurationChangeItem::EmergencyActionAdminGroup(_) => identity_token_info
-                .token_config
-                .emergency_action_rules()
-                .authorized_to_make_change_action_takers(),
-            TokenConfigurationChangeItem::MainControlGroup(_) => {
-                // For main control group changes, use main control group authorization
-                if let Some(main_group_pos) = identity_token_info.token_config.main_control_group()
-                {
-                    &AuthorizedActionTakers::Group(main_group_pos)
-                } else {
-                    &AuthorizedActionTakers::ContractOwner
-                }
-            }
-            TokenConfigurationChangeItem::MarketplaceTradeMode(_)
-            | TokenConfigurationChangeItem::MarketplaceTradeModeControlGroup(_)
-            | TokenConfigurationChangeItem::MarketplaceTradeModeAdminGroup(_) => {
-                return (
-                    None,
-                    Some("Marketplace settings not implemented yet".to_string()),
-                );
-            }
-            TokenConfigurationChangeItem::TokenConfigurationNoChange => {
-                return (None, None);
-            }
-        };
-
         let group = match authorized_action_takers {
             AuthorizedActionTakers::NoOne => {
                 error_message = Some("This action is not allowed on this token".to_string());
                 None
             }
             AuthorizedActionTakers::ContractOwner => {
-                if identity_token_info.data_contract.contract.owner_id()
-                    != &identity_token_info.identity.identity.id()
+                if self.identity_token_info.data_contract.contract.owner_id()
+                    != &self.identity_token_info.identity.identity.id()
                 {
                     error_message = Some(
                         "You are not allowed to perform this action. Only the contract owner is."
@@ -282,13 +149,13 @@ impl UpdateTokenConfigScreen {
                 None
             }
             AuthorizedActionTakers::Identity(identifier) => {
-                if identifier != &identity_token_info.identity.identity.id() {
+                if identifier != &self.identity_token_info.identity.identity.id() {
                     error_message = Some("You are not allowed to perform this action".to_string());
                 }
                 None
             }
             AuthorizedActionTakers::MainGroup => {
-                match identity_token_info.token_config.main_control_group() {
+                match self.identity_token_info.token_config.main_control_group() {
                     None => {
                         error_message = Some(
                             "Invalid contract: No main control group, though one should exist"
@@ -297,7 +164,8 @@ impl UpdateTokenConfigScreen {
                         None
                     }
                     Some(group_pos) => {
-                        match identity_token_info
+                        match self
+                            .identity_token_info
                             .data_contract
                             .contract
                             .expected_group(group_pos)
@@ -312,12 +180,13 @@ impl UpdateTokenConfigScreen {
                 }
             }
             AuthorizedActionTakers::Group(group_pos) => {
-                match identity_token_info
+                match self
+                    .identity_token_info
                     .data_contract
                     .contract
-                    .expected_group(*group_pos)
+                    .expected_group(group_pos)
                 {
-                    Ok(group) => Some((*group_pos, group.clone())),
+                    Ok(group) => Some((group_pos, group.clone())),
                     Err(e) => {
                         error_message = Some(format!("Invalid contract: {}", e));
                         None
@@ -325,13 +194,6 @@ impl UpdateTokenConfigScreen {
                 }
             }
         };
-
-        (group, error_message)
-    }
-
-    fn update_group_based_on_change_item(&mut self) {
-        let (group, error_message) =
-            Self::determine_group_for_change_item(&self.change_item, &self.identity_token_info);
 
         self.group = group;
         if let Some(error) = error_message {
@@ -426,10 +288,13 @@ impl UpdateTokenConfigScreen {
                     "Emergency Action Admin Group"
                 }
                 TokenConfigurationChangeItem::MainControlGroup(_) => "Main Control Group",
-
-                TokenConfigurationChangeItem::MarketplaceTradeMode(_)
-                | TokenConfigurationChangeItem::MarketplaceTradeModeControlGroup(_)
-                | TokenConfigurationChangeItem::MarketplaceTradeModeAdminGroup(_) => {
+                TokenConfigurationChangeItem::MarketplaceTradeModeControlGroup(_) => {
+                    "Marketplace Trade Mode Control Group"
+                }
+                TokenConfigurationChangeItem::MarketplaceTradeModeAdminGroup(_) => {
+                    "Marketplace Trade Mode Admin Group"
+                }
+                TokenConfigurationChangeItem::MarketplaceTradeMode(_) => {
                     unimplemented!("marketplace settings not implemented yet")
                 }
             };
@@ -744,6 +609,11 @@ impl UpdateTokenConfigScreen {
 
                     ui.separator();
 
+                    aat_item!(MarketplaceTradeModeControlGroup, "Marketplace Trade Mode Management");
+                    aat_item!(MarketplaceTradeModeAdminGroup, "Marketplace Trade Mode Admin");
+
+                    ui.separator();
+
                     if ui
                         .selectable_value(
                             &mut self.change_item,
@@ -866,15 +736,13 @@ impl UpdateTokenConfigScreen {
                     t,
                     &mut self.authorized_identity_input,
                     &mut self.authorized_group_input,
-                    &self.data_contract_option,
+                    &self.identity_token_info.data_contract.contract,
                 );
             }
             TokenConfigurationChangeItem::TokenConfigurationNoChange => {
                 ui.label("No parameters to edit for this entry.");
             }
-            TokenConfigurationChangeItem::MarketplaceTradeMode(_)
-            | TokenConfigurationChangeItem::MarketplaceTradeModeControlGroup(_)
-            | TokenConfigurationChangeItem::MarketplaceTradeModeAdminGroup(_) => {
+            TokenConfigurationChangeItem::MarketplaceTradeMode(_) => {
                 unimplemented!("marketplace settings not implemented yet")
             }
         }
@@ -922,7 +790,9 @@ impl UpdateTokenConfigScreen {
             .frame(true)
             .corner_radius(3.0);
 
-        if self.app_context.developer_mode || !button_text.contains("Test") {
+        if (self.app_context.developer_mode || !button_text.contains("Test"))
+            && self.change_item != TokenConfigurationChangeItem::TokenConfigurationNoChange
+        {
             ui.add_space(20.0);
             if ui.add(button).clicked() {
                 let group_info;
@@ -965,11 +835,11 @@ impl UpdateTokenConfigScreen {
     /* Helper: render AuthorizedActionTakers editor                          */
     /* ===================================================================== */
     pub fn render_authorized_action_takers_editor(
-        ui: &mut egui::Ui,
+        ui: &mut Ui,
         takers: &mut AuthorizedActionTakers,
         authorized_identity_input: &mut Option<String>,
         authorized_group_input: &mut Option<String>,
-        data_contract_option: &Option<QualifiedContract>,
+        data_contract: &DataContract,
     ) {
         ui.horizontal(|ui| {
             // Display label
@@ -1051,40 +921,25 @@ impl UpdateTokenConfigScreen {
                 }
             }
 
-            // Render input for Group
-            if let Some(data_contract) = data_contract_option {
-                let contract_group_positions: Vec<u16> =
-                    data_contract.contract.groups().keys().cloned().collect();
-                if let AuthorizedActionTakers::Group(g) = takers {
-                    authorized_group_input.get_or_insert_with(|| g.to_string());
-                    egui::ComboBox::from_id_salt("group_position_selector")
-                        .selected_text(format!(
-                            "Group Position: {}",
-                            authorized_group_input.as_deref().unwrap_or(&g.to_string())
-                        ))
-                        .show_ui(ui, |ui| {
-                            for position in &contract_group_positions {
-                                if ui
-                                    .selectable_value(g, *position, format!("Group {}", position))
-                                    .clicked()
-                                {
-                                    *authorized_group_input = Some(position.to_string());
-                                }
+            let contract_group_positions: Vec<u16> =
+                data_contract.groups().keys().cloned().collect();
+            if let AuthorizedActionTakers::Group(g) = takers {
+                authorized_group_input.get_or_insert_with(|| g.to_string());
+                egui::ComboBox::from_id_salt("group_position_selector")
+                    .selected_text(format!(
+                        "Group Position: {}",
+                        authorized_group_input.as_deref().unwrap_or(&g.to_string())
+                    ))
+                    .show_ui(ui, |ui| {
+                        for position in &contract_group_positions {
+                            if ui
+                                .selectable_value(g, *position, format!("Group {}", position))
+                                .clicked()
+                            {
+                                *authorized_group_input = Some(position.to_string());
                             }
-                        });
-                }
-            } else {
-                if let AuthorizedActionTakers::Group(g) = takers {
-                    authorized_group_input.get_or_insert_with(|| g.to_string());
-                    if let Some(ref mut group_str) = authorized_group_input {
-                        ui.add(
-                            egui::TextEdit::singleline(group_str).hint_text("Enter group position"),
-                        );
-                        if let Ok(parsed) = group_str.parse::<u16>() {
-                            *g = parsed;
                         }
-                    }
-                }
+                    });
             }
         });
     }

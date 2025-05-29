@@ -1,49 +1,44 @@
-use std::collections::{BTreeMap, HashSet};
-use std::sync::{Arc, RwLock};
-use crate::ui::contracts_documents::group_actions_screen::GroupActionsScreen;
-use chrono::{DateTime, Utc};
-use dash_sdk::dpp::balances::credits::TokenAmount;
-use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
-use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
-use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
-use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::v0::TokenConfigurationConventionV0;
-use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::TokenConfigurationConvention;
-use dash_sdk::dpp::data_contract::associated_token::token_configuration_item::TokenConfigurationChangeItem;
-use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::accessors::v0::TokenDistributionRulesV0Getters;
-use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::distribution_function::DistributionFunction;
-use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::distribution_recipient::TokenDistributionRecipient;
-use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::reward_distribution_type::RewardDistributionType;
-use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::v0::TokenPerpetualDistributionV0;
-use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::TokenPerpetualDistribution;
-use dash_sdk::dpp::data_contract::change_control_rules::authorized_action_takers::AuthorizedActionTakers;
-use dash_sdk::dpp::data_contract::group::Group;
-use dash_sdk::dpp::data_contract::GroupContractPosition;
-use dash_sdk::dpp::group::{GroupStateTransitionInfo, GroupStateTransitionInfoStatus};
-use eframe::egui::{self, Color32, Context, Ui};
-use egui::RichText;
 use super::tokens_screen::IdentityTokenInfo;
 use crate::app::AppAction;
 use crate::backend_task::tokens::TokenTask;
 use crate::backend_task::BackendTask;
 use crate::context::AppContext;
 use crate::model::qualified_contract::QualifiedContract;
-use dash_sdk::dpp::data_contract::group::accessors::v0::GroupV0Getters;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
+use crate::ui::contracts_documents::group_actions_screen::GroupActionsScreen;
 use crate::ui::helpers::render_group_action_text;
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
 use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike};
+use chrono::{DateTime, Utc};
+use dash_sdk::dpp::balances::credits::TokenAmount;
+use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
+use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
+use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::TokenConfigurationConvention;
+use dash_sdk::dpp::data_contract::associated_token::token_configuration_item::TokenConfigurationChangeItem;
+use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::accessors::v0::TokenDistributionRulesV0Getters;
+use dash_sdk::dpp::data_contract::associated_token::token_marketplace_rules::v0::TokenTradeMode;
+use dash_sdk::dpp::data_contract::change_control_rules::authorized_action_takers::AuthorizedActionTakers;
+use dash_sdk::dpp::data_contract::group::accessors::v0::GroupV0Getters;
+use dash_sdk::dpp::data_contract::group::Group;
+use dash_sdk::dpp::data_contract::GroupContractPosition;
+use dash_sdk::dpp::group::{GroupStateTransitionInfo, GroupStateTransitionInfoStatus};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
+use eframe::egui::{self, Color32, Context, Ui};
+use egui::RichText;
+use std::collections::HashSet;
+use std::sync::{Arc, RwLock};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum UpdateTokenConfigStatus {
@@ -283,6 +278,12 @@ impl UpdateTokenConfigScreen {
                     "Emergency Action Admin Group"
                 }
                 TokenConfigurationChangeItem::MainControlGroup(_) => "Main Control Group",
+
+                TokenConfigurationChangeItem::MarketplaceTradeMode(_)
+                | TokenConfigurationChangeItem::MarketplaceTradeModeControlGroup(_)
+                | TokenConfigurationChangeItem::MarketplaceTradeModeAdminGroup(_) => {
+                    unimplemented!("marketplace settings not implemented yet")
+                }
             };
 
             egui::ComboBox::from_id_salt("cfg_item_type".to_string())
@@ -532,7 +533,6 @@ impl UpdateTokenConfigScreen {
 
         /* ========== PER‑VARIANT EDITING ========== */
         match item {
-            /* -------- simple value items -------- */
             TokenConfigurationChangeItem::Conventions(conv) => {
                 ui.label("Update the JSON formatted text below to change the token conventions.");
                 ui.add_space(5.0);
@@ -563,18 +563,15 @@ impl UpdateTokenConfigScreen {
                     }
                 });
             }
-
             TokenConfigurationChangeItem::MaxSupply(opt_amt) => {
                 let mut txt = opt_amt.map(|a| a.to_string()).unwrap_or_default();
                 if ui.text_edit_singleline(&mut txt).changed() {
                     *opt_amt = txt.parse::<u64>().ok().map(TokenAmount::from);
                 }
             }
-
             TokenConfigurationChangeItem::MintingAllowChoosingDestination(b) => {
                 ui.checkbox(b, "Allow user to choose destination when minting");
             }
-
             TokenConfigurationChangeItem::NewTokensDestinationIdentity(opt_id) => {
                 let mut txt = opt_id
                     .map(|id| id.to_string(Encoding::Base58))
@@ -583,7 +580,6 @@ impl UpdateTokenConfigScreen {
                     *opt_id = Identifier::from_string(&txt, Encoding::Base58).ok();
                 }
             }
-
             TokenConfigurationChangeItem::PerpetualDistribution(opt_json) => {
                 ui.add_space(5.0);
 
@@ -603,7 +599,6 @@ impl UpdateTokenConfigScreen {
                     }
                 });
             }
-
             TokenConfigurationChangeItem::MainControlGroup(opt_grp) => {
                 let mut grp_txt = opt_grp.map(|g| g).unwrap_or_default();
                 let mut grp_txt_str = grp_txt.to_string();
@@ -612,8 +607,6 @@ impl UpdateTokenConfigScreen {
                 }
                 *opt_grp = Some(grp_txt);
             }
-
-            /* -------- all AuthorizedActionTakers variants -------- */
             TokenConfigurationChangeItem::ManualMinting(t)
             | TokenConfigurationChangeItem::ManualMintingAdminGroup(t)
             | TokenConfigurationChangeItem::ManualBurning(t)
@@ -635,7 +628,9 @@ impl UpdateTokenConfigScreen {
             | TokenConfigurationChangeItem::NewTokensDestinationIdentityControlGroup(t)
             | TokenConfigurationChangeItem::NewTokensDestinationIdentityAdminGroup(t)
             | TokenConfigurationChangeItem::MintingAllowChoosingDestinationControlGroup(t)
-            | TokenConfigurationChangeItem::MintingAllowChoosingDestinationAdminGroup(t) => {
+            | TokenConfigurationChangeItem::MintingAllowChoosingDestinationAdminGroup(t)
+            | TokenConfigurationChangeItem::MarketplaceTradeModeControlGroup(t)
+            | TokenConfigurationChangeItem::MarketplaceTradeModeAdminGroup(t) => {
                 Self::render_authorized_action_takers_editor(
                     ui,
                     t,
@@ -644,9 +639,13 @@ impl UpdateTokenConfigScreen {
                     &self.data_contract_option,
                 );
             }
-
             TokenConfigurationChangeItem::TokenConfigurationNoChange => {
                 ui.label("No parameters to edit for this entry.");
+            }
+            TokenConfigurationChangeItem::MarketplaceTradeMode(_)
+            | TokenConfigurationChangeItem::MarketplaceTradeModeControlGroup(_)
+            | TokenConfigurationChangeItem::MarketplaceTradeModeAdminGroup(_) => {
+                unimplemented!("marketplace settings not implemented yet")
             }
         }
 

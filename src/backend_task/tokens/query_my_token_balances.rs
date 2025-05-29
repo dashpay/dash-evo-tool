@@ -1,6 +1,6 @@
 //! Query token balances from Platform
 
-use crate::backend_task::BackendTaskSuccessResult;
+use crate::backend_task::{BackendTaskSuccessResult, NO_IDENTITIES_FOUND};
 use crate::context::AppContext;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::platform::tokens::identity_token_balances::{
@@ -11,6 +11,7 @@ use dash_sdk::{dpp::balances::credits::TokenAmount, Sdk};
 use tokio::sync::mpsc;
 
 use crate::app::TaskResult;
+
 impl AppContext {
     pub async fn query_my_token_balances(
         &self,
@@ -22,9 +23,7 @@ impl AppContext {
             .map_err(|e| format!("Failed to load identities: {e}"))?;
 
         if identities.is_empty() {
-            return Ok(BackendTaskSuccessResult::Message(
-                "No identities found".to_string(),
-            ));
+            return Err(NO_IDENTITIES_FOUND.to_string());
         }
 
         for identity in identities {

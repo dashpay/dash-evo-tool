@@ -37,6 +37,9 @@ pub mod system_task;
 pub mod tokens;
 pub mod update_data_contract;
 
+// TODO: Refactor how we handle errors and messages, and remove it from here
+pub(crate) const NO_IDENTITIES_FOUND: &str = "No identities found";
+
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum BackendTask {
     IdentityTask(IdentityTask),

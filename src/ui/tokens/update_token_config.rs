@@ -24,7 +24,6 @@ use dash_sdk::dpp::data_contract::associated_token::token_configuration::accesso
 use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::TokenConfigurationConvention;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration_item::TokenConfigurationChangeItem;
 use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::accessors::v0::TokenDistributionRulesV0Getters;
-use dash_sdk::dpp::data_contract::associated_token::token_marketplace_rules::v0::TokenTradeMode;
 use dash_sdk::dpp::data_contract::change_control_rules::authorized_action_takers::AuthorizedActionTakers;
 use dash_sdk::dpp::data_contract::group::accessors::v0::GroupV0Getters;
 use dash_sdk::dpp::data_contract::group::Group;
@@ -87,13 +86,188 @@ impl UpdateTokenConfigScreen {
 
         let mut error_message = None;
 
-        let group = match identity_token_info
-            .token_config
-            .manual_minting_rules()
-            .authorized_to_make_change_action_takers()
-        {
+        // Initialize with no group - will be set when user selects a change item
+        let group = None;
+
+        // Initialize as false - will be updated when group is determined
+        let is_unilateral_group_member = false;
+
+        // Attempt to get an unlocked wallet reference
+        let selected_wallet = get_selected_wallet(
+            &identity_token_info.identity,
+            None,
+            possible_key.as_ref(),
+            &mut error_message,
+        );
+
+        let data_contract_option = app_context
+            .get_contract_by_id(&identity_token_info.data_contract.contract.id())
+            .unwrap_or_default();
+
+        Self {
+            identity_token_info: identity_token_info.clone(),
+            data_contract_option,
+            backend_message: None,
+            update_status: UpdateTokenConfigStatus::NotUpdating,
+            app_context: app_context.clone(),
+            change_item: TokenConfigurationChangeItem::TokenConfigurationNoChange,
+            update_text: "".to_string(),
+            text_input_error: "".to_string(),
+            signing_key: possible_key,
+            public_note: None,
+
+            authorized_identity_input: None,
+            authorized_group_input: None,
+
+            selected_wallet,
+            wallet_password: String::new(),
+            show_password: false,
+            error_message,
+
+            identity: identity_token_info.identity,
+            group,
+            is_unilateral_group_member,
+            group_action_id: None,
+        }
+    }
+
+    fn determine_group_for_change_item(
+        change_item: &TokenConfigurationChangeItem,
+        identity_token_info: &IdentityTokenInfo,
+    ) -> (Option<(GroupContractPosition, Group)>, Option<String>) {
+        let mut error_message = None;
+
+        let authorized_action_takers = match change_item {
+            TokenConfigurationChangeItem::Conventions(_) => identity_token_info
+                .token_config
+                .conventions_change_rules()
+                .authorized_to_make_change_action_takers(),
+            TokenConfigurationChangeItem::ConventionsControlGroup(_)
+            | TokenConfigurationChangeItem::ConventionsAdminGroup(_) => identity_token_info
+                .token_config
+                .conventions_change_rules()
+                .authorized_to_make_change_action_takers(),
+            TokenConfigurationChangeItem::MaxSupply(_) => identity_token_info
+                .token_config
+                .max_supply_change_rules()
+                .authorized_to_make_change_action_takers(),
+            TokenConfigurationChangeItem::MaxSupplyControlGroup(_)
+            | TokenConfigurationChangeItem::MaxSupplyAdminGroup(_) => identity_token_info
+                .token_config
+                .max_supply_change_rules()
+                .authorized_to_make_change_action_takers(),
+            TokenConfigurationChangeItem::PerpetualDistribution(_) => identity_token_info
+                .token_config
+                .distribution_rules()
+                .perpetual_distribution_rules()
+                .authorized_to_make_change_action_takers(),
+            TokenConfigurationChangeItem::PerpetualDistributionControlGroup(_)
+            | TokenConfigurationChangeItem::PerpetualDistributionAdminGroup(_) => {
+                identity_token_info
+                    .token_config
+                    .distribution_rules()
+                    .perpetual_distribution_rules()
+                    .authorized_to_make_change_action_takers()
+            }
+            TokenConfigurationChangeItem::NewTokensDestinationIdentity(_) => identity_token_info
+                .token_config
+                .distribution_rules()
+                .new_tokens_destination_identity_rules()
+                .authorized_to_make_change_action_takers(),
+            TokenConfigurationChangeItem::NewTokensDestinationIdentityControlGroup(_)
+            | TokenConfigurationChangeItem::NewTokensDestinationIdentityAdminGroup(_) => {
+                identity_token_info
+                    .token_config
+                    .distribution_rules()
+                    .new_tokens_destination_identity_rules()
+                    .authorized_to_make_change_action_takers()
+            }
+            TokenConfigurationChangeItem::MintingAllowChoosingDestination(_) => identity_token_info
+                .token_config
+                .distribution_rules()
+                .minting_allow_choosing_destination_rules()
+                .authorized_to_make_change_action_takers(),
+            TokenConfigurationChangeItem::MintingAllowChoosingDestinationControlGroup(_)
+            | TokenConfigurationChangeItem::MintingAllowChoosingDestinationAdminGroup(_) => {
+                identity_token_info
+                    .token_config
+                    .distribution_rules()
+                    .minting_allow_choosing_destination_rules()
+                    .authorized_to_make_change_action_takers()
+            }
+            TokenConfigurationChangeItem::ManualMinting(_) => identity_token_info
+                .token_config
+                .manual_minting_rules()
+                .authorized_to_make_change_action_takers(),
+            TokenConfigurationChangeItem::ManualMintingAdminGroup(_) => identity_token_info
+                .token_config
+                .manual_minting_rules()
+                .authorized_to_make_change_action_takers(),
+            TokenConfigurationChangeItem::ManualBurning(_) => identity_token_info
+                .token_config
+                .manual_burning_rules()
+                .authorized_to_make_change_action_takers(),
+            TokenConfigurationChangeItem::ManualBurningAdminGroup(_) => identity_token_info
+                .token_config
+                .manual_burning_rules()
+                .authorized_to_make_change_action_takers(),
+            TokenConfigurationChangeItem::Freeze(_) => identity_token_info
+                .token_config
+                .freeze_rules()
+                .authorized_to_make_change_action_takers(),
+            TokenConfigurationChangeItem::FreezeAdminGroup(_) => identity_token_info
+                .token_config
+                .freeze_rules()
+                .authorized_to_make_change_action_takers(),
+            TokenConfigurationChangeItem::Unfreeze(_) => identity_token_info
+                .token_config
+                .unfreeze_rules()
+                .authorized_to_make_change_action_takers(),
+            TokenConfigurationChangeItem::UnfreezeAdminGroup(_) => identity_token_info
+                .token_config
+                .unfreeze_rules()
+                .authorized_to_make_change_action_takers(),
+            TokenConfigurationChangeItem::DestroyFrozenFunds(_) => identity_token_info
+                .token_config
+                .destroy_frozen_funds_rules()
+                .authorized_to_make_change_action_takers(),
+            TokenConfigurationChangeItem::DestroyFrozenFundsAdminGroup(_) => identity_token_info
+                .token_config
+                .destroy_frozen_funds_rules()
+                .authorized_to_make_change_action_takers(),
+            TokenConfigurationChangeItem::EmergencyAction(_) => identity_token_info
+                .token_config
+                .emergency_action_rules()
+                .authorized_to_make_change_action_takers(),
+            TokenConfigurationChangeItem::EmergencyActionAdminGroup(_) => identity_token_info
+                .token_config
+                .emergency_action_rules()
+                .authorized_to_make_change_action_takers(),
+            TokenConfigurationChangeItem::MainControlGroup(_) => {
+                // For main control group changes, use main control group authorization
+                if let Some(main_group_pos) = identity_token_info.token_config.main_control_group()
+                {
+                    &AuthorizedActionTakers::Group(main_group_pos)
+                } else {
+                    &AuthorizedActionTakers::ContractOwner
+                }
+            }
+            TokenConfigurationChangeItem::MarketplaceTradeMode(_)
+            | TokenConfigurationChangeItem::MarketplaceTradeModeControlGroup(_)
+            | TokenConfigurationChangeItem::MarketplaceTradeModeAdminGroup(_) => {
+                return (
+                    None,
+                    Some("Marketplace settings not implemented yet".to_string()),
+                );
+            }
+            TokenConfigurationChangeItem::TokenConfigurationNoChange => {
+                return (None, None);
+            }
+        };
+
+        let group = match authorized_action_takers {
             AuthorizedActionTakers::NoOne => {
-                error_message = Some("Minting is not allowed on this token".to_string());
+                error_message = Some("This action is not allowed on this token".to_string());
                 None
             }
             AuthorizedActionTakers::ContractOwner => {
@@ -101,7 +275,7 @@ impl UpdateTokenConfigScreen {
                     != &identity_token_info.identity.identity.id()
                 {
                     error_message = Some(
-                        "You are not allowed to mint this token. Only the contract owner is."
+                        "You are not allowed to perform this action. Only the contract owner is."
                             .to_string(),
                     );
                 }
@@ -109,7 +283,7 @@ impl UpdateTokenConfigScreen {
             }
             AuthorizedActionTakers::Identity(identifier) => {
                 if identifier != &identity_token_info.identity.identity.id() {
-                    error_message = Some("You are not allowed to mint this token".to_string());
+                    error_message = Some("You are not allowed to perform this action".to_string());
                 }
                 None
             }
@@ -152,57 +326,32 @@ impl UpdateTokenConfigScreen {
             }
         };
 
-        let mut is_unilateral_group_member = false;
-        if group.is_some() {
-            if let Some((_, group)) = group.clone() {
-                let your_power = group
-                    .members()
-                    .get(&identity_token_info.identity.identity.id());
+        (group, error_message)
+    }
 
-                if let Some(your_power) = your_power {
-                    if your_power >= &group.required_power() {
-                        is_unilateral_group_member = true;
-                    }
+    fn update_group_based_on_change_item(&mut self) {
+        let (group, error_message) =
+            Self::determine_group_for_change_item(&self.change_item, &self.identity_token_info);
+
+        self.group = group;
+        if let Some(error) = error_message {
+            self.error_message = Some(error);
+        } else {
+            self.error_message = None;
+        }
+
+        // Update is_unilateral_group_member based on new group
+        self.is_unilateral_group_member = false;
+        if let Some((_, group)) = &self.group {
+            let your_power = group
+                .members()
+                .get(&self.identity_token_info.identity.identity.id());
+
+            if let Some(your_power) = your_power {
+                if your_power >= &group.required_power() {
+                    self.is_unilateral_group_member = true;
                 }
             }
-        };
-
-        // Attempt to get an unlocked wallet reference
-        let selected_wallet = get_selected_wallet(
-            &identity_token_info.identity,
-            None,
-            possible_key.as_ref(),
-            &mut error_message,
-        );
-
-        let data_contract_option = app_context
-            .get_contract_by_id(&identity_token_info.data_contract.contract.id())
-            .unwrap_or_default();
-
-        Self {
-            identity_token_info: identity_token_info.clone(),
-            data_contract_option,
-            backend_message: None,
-            update_status: UpdateTokenConfigStatus::NotUpdating,
-            app_context: app_context.clone(),
-            change_item: TokenConfigurationChangeItem::TokenConfigurationNoChange,
-            update_text: "".to_string(),
-            text_input_error: "".to_string(),
-            signing_key: possible_key,
-            public_note: None,
-
-            authorized_identity_input: None,
-            authorized_group_input: None,
-
-            selected_wallet,
-            wallet_password: String::new(),
-            show_password: false,
-            error_message,
-
-            identity: identity_token_info.identity,
-            group,
-            is_unilateral_group_member,
-            group_action_id: None,
         }
     }
 
@@ -215,12 +364,11 @@ impl UpdateTokenConfigScreen {
             ui.label("You are signing an existing group action. Make sure you construct the exact same item as the one in the group action, details of which can be found on the previous screen.");
         }
 
-        let item = &mut self.change_item;
-
-        let default_token_configuration = &self.identity_token_info.token_config;
+        // Clone the token configuration to avoid borrowing issues
+        let default_token_configuration = self.identity_token_info.token_config.clone();
 
         ui.horizontal(|ui| {
-            let label = match item {
+            let label = match &self.change_item {
                 TokenConfigurationChangeItem::TokenConfigurationNoChange => "No Change",
                 TokenConfigurationChangeItem::Conventions(_) => "Conventions",
                 TokenConfigurationChangeItem::ConventionsControlGroup(_) => {
@@ -291,18 +439,23 @@ impl UpdateTokenConfigScreen {
                 .width(270.0)
                 .show_ui(ui, |ui| {
                     /* ───────── “No change” ───────── */
-                    ui.selectable_value(
-                        item,
-                        TokenConfigurationChangeItem::TokenConfigurationNoChange,
-                        "No Change",
-                    );
+                    if ui
+                        .selectable_value(
+                            &mut self.change_item,
+                            TokenConfigurationChangeItem::TokenConfigurationNoChange,
+                            "No Change",
+                        )
+                        .clicked()
+                    {
+                        self.update_group_based_on_change_item();
+                    }
 
                     ui.separator();
 
                     /* ───────── Conventions + groups ───────── */
                     if ui
                         .selectable_value(
-                            item,
+                            &mut self.change_item,
                             TokenConfigurationChangeItem::Conventions(
                                 default_token_configuration.conventions().clone(),
                             ),
@@ -314,65 +467,91 @@ impl UpdateTokenConfigScreen {
                             serde_json::to_string_pretty(default_token_configuration.conventions())
                                 .unwrap_or_default();
                         self.text_input_error = "".to_string();
+                        self.update_group_based_on_change_item();
                     };
-                    ui.selectable_value(
-                        item,
-                        TokenConfigurationChangeItem::ConventionsControlGroup(
-                            default_token_configuration
-                                .conventions_change_rules()
-                                .authorized_to_make_change_action_takers()
-                                .clone(),
-                        ),
-                        "Conventions Control Group",
-                    );
-                    ui.selectable_value(
-                        item,
-                        TokenConfigurationChangeItem::ConventionsAdminGroup(
-                            default_token_configuration
-                                .conventions_change_rules()
-                                .admin_action_takers()
-                                .clone(),
-                        ),
-                        "Conventions Admin Group",
-                    );
+                    if ui
+                        .selectable_value(
+                            &mut self.change_item,
+                            TokenConfigurationChangeItem::ConventionsControlGroup(
+                                default_token_configuration
+                                    .conventions_change_rules()
+                                    .authorized_to_make_change_action_takers()
+                                    .clone(),
+                            ),
+                            "Conventions Control Group",
+                        )
+                        .clicked()
+                    {
+                        self.update_group_based_on_change_item();
+                    }
+                    if ui
+                        .selectable_value(
+                            &mut self.change_item,
+                            TokenConfigurationChangeItem::ConventionsAdminGroup(
+                                default_token_configuration
+                                    .conventions_change_rules()
+                                    .admin_action_takers()
+                                    .clone(),
+                            ),
+                            "Conventions Admin Group",
+                        )
+                        .clicked()
+                    {
+                        self.update_group_based_on_change_item();
+                    }
 
                     ui.separator();
 
                     /* ───────── Max‑supply + groups ───────── */
-                    ui.selectable_value(
-                        item,
-                        TokenConfigurationChangeItem::MaxSupply(
-                            default_token_configuration.max_supply(),
-                        ),
-                        "Max Supply",
-                    );
-                    ui.selectable_value(
-                        item,
-                        TokenConfigurationChangeItem::MaxSupplyControlGroup(
-                            default_token_configuration
-                                .max_supply_change_rules()
-                                .authorized_to_make_change_action_takers()
-                                .clone(),
-                        ),
-                        "Max Supply Control Group",
-                    );
-                    ui.selectable_value(
-                        item,
-                        TokenConfigurationChangeItem::MaxSupplyAdminGroup(
-                            default_token_configuration
-                                .max_supply_change_rules()
-                                .admin_action_takers()
-                                .clone(),
-                        ),
-                        "Max Supply Admin Group",
-                    );
+                    if ui
+                        .selectable_value(
+                            &mut self.change_item,
+                            TokenConfigurationChangeItem::MaxSupply(
+                                default_token_configuration.max_supply(),
+                            ),
+                            "Max Supply",
+                        )
+                        .clicked()
+                    {
+                        self.update_group_based_on_change_item();
+                    }
+                    if ui
+                        .selectable_value(
+                            &mut self.change_item,
+                            TokenConfigurationChangeItem::MaxSupplyControlGroup(
+                                default_token_configuration
+                                    .max_supply_change_rules()
+                                    .authorized_to_make_change_action_takers()
+                                    .clone(),
+                            ),
+                            "Max Supply Control Group",
+                        )
+                        .clicked()
+                    {
+                        self.update_group_based_on_change_item();
+                    }
+                    if ui
+                        .selectable_value(
+                            &mut self.change_item,
+                            TokenConfigurationChangeItem::MaxSupplyAdminGroup(
+                                default_token_configuration
+                                    .max_supply_change_rules()
+                                    .admin_action_takers()
+                                    .clone(),
+                            ),
+                            "Max Supply Admin Group",
+                        )
+                        .clicked()
+                    {
+                        self.update_group_based_on_change_item();
+                    }
 
                     ui.separator();
 
                     /* ───────── Perpetual‑dist + groups ───────── */
                     if ui
                         .selectable_value(
-                            item,
+                            &mut self.change_item,
                             TokenConfigurationChangeItem::PerpetualDistribution(
                                 default_token_configuration
                                     .distribution_rules()
@@ -386,113 +565,159 @@ impl UpdateTokenConfigScreen {
                         self.update_text = "".to_string();
                         self.text_input_error =
                             "The perpetual distribution can not be modified".to_string();
+                        self.update_group_based_on_change_item();
                     };
-                    ui.selectable_value(
-                        item,
-                        TokenConfigurationChangeItem::PerpetualDistributionControlGroup(
-                            default_token_configuration
-                                .distribution_rules()
-                                .perpetual_distribution_rules()
-                                .authorized_to_make_change_action_takers()
-                                .clone(),
-                        ),
-                        "Perpetual Distribution Control Group",
-                    );
-                    ui.selectable_value(
-                        item,
-                        TokenConfigurationChangeItem::PerpetualDistributionAdminGroup(
-                            default_token_configuration
-                                .distribution_rules()
-                                .perpetual_distribution_rules()
-                                .admin_action_takers()
-                                .clone(),
-                        ),
-                        "Perpetual Distribution Admin Group",
-                    );
+                    if ui
+                        .selectable_value(
+                            &mut self.change_item,
+                            TokenConfigurationChangeItem::PerpetualDistributionControlGroup(
+                                default_token_configuration
+                                    .distribution_rules()
+                                    .perpetual_distribution_rules()
+                                    .authorized_to_make_change_action_takers()
+                                    .clone(),
+                            ),
+                            "Perpetual Distribution Control Group",
+                        )
+                        .clicked()
+                    {
+                        self.update_group_based_on_change_item();
+                    }
+                    if ui
+                        .selectable_value(
+                            &mut self.change_item,
+                            TokenConfigurationChangeItem::PerpetualDistributionAdminGroup(
+                                default_token_configuration
+                                    .distribution_rules()
+                                    .perpetual_distribution_rules()
+                                    .admin_action_takers()
+                                    .clone(),
+                            ),
+                            "Perpetual Distribution Admin Group",
+                        )
+                        .clicked()
+                    {
+                        self.update_group_based_on_change_item();
+                    }
 
                     ui.separator();
 
                     /* ───────── New‑tokens destination + groups ───────── */
-                    ui.selectable_value(
-                        item,
-                        TokenConfigurationChangeItem::NewTokensDestinationIdentity(
-                            default_token_configuration
-                                .distribution_rules()
-                                .new_tokens_destination_identity()
-                                .copied(),
-                        ),
-                        "New‑Tokens Destination",
-                    );
-                    ui.selectable_value(
-                        item,
-                        TokenConfigurationChangeItem::NewTokensDestinationIdentityControlGroup(
-                            default_token_configuration
-                                .distribution_rules()
-                                .new_tokens_destination_identity_rules()
-                                .authorized_to_make_change_action_takers()
-                                .clone(),
-                        ),
-                        "New‑Tokens Destination Control Group",
-                    );
-                    ui.selectable_value(
-                        item,
-                        TokenConfigurationChangeItem::NewTokensDestinationIdentityAdminGroup(
-                            default_token_configuration
-                                .distribution_rules()
-                                .new_tokens_destination_identity_rules()
-                                .admin_action_takers()
-                                .clone(),
-                        ),
-                        "New‑Tokens Destination Admin Group",
-                    );
+                    if ui
+                        .selectable_value(
+                            &mut self.change_item,
+                            TokenConfigurationChangeItem::NewTokensDestinationIdentity(
+                                default_token_configuration
+                                    .distribution_rules()
+                                    .new_tokens_destination_identity()
+                                    .copied(),
+                            ),
+                            "New‑Tokens Destination",
+                        )
+                        .clicked()
+                    {
+                        self.update_group_based_on_change_item();
+                    }
+                    if ui
+                        .selectable_value(
+                            &mut self.change_item,
+                            TokenConfigurationChangeItem::NewTokensDestinationIdentityControlGroup(
+                                default_token_configuration
+                                    .distribution_rules()
+                                    .new_tokens_destination_identity_rules()
+                                    .authorized_to_make_change_action_takers()
+                                    .clone(),
+                            ),
+                            "New‑Tokens Destination Control Group",
+                        )
+                        .clicked()
+                    {
+                        self.update_group_based_on_change_item();
+                    }
+                    if ui
+                        .selectable_value(
+                            &mut self.change_item,
+                            TokenConfigurationChangeItem::NewTokensDestinationIdentityAdminGroup(
+                                default_token_configuration
+                                    .distribution_rules()
+                                    .new_tokens_destination_identity_rules()
+                                    .admin_action_takers()
+                                    .clone(),
+                            ),
+                            "New‑Tokens Destination Admin Group",
+                        )
+                        .clicked()
+                    {
+                        self.update_group_based_on_change_item();
+                    }
 
                     ui.separator();
 
                     /* ───────── Mint‑dest‑choice + groups ───────── */
-                    ui.selectable_value(
-                        item,
-                        TokenConfigurationChangeItem::MintingAllowChoosingDestination(
-                            default_token_configuration
-                                .distribution_rules()
-                                .minting_allow_choosing_destination(),
-                        ),
-                        "Minting Allow Choosing Destination",
-                    );
-                    ui.selectable_value(
-                        item,
-                        TokenConfigurationChangeItem::MintingAllowChoosingDestinationControlGroup(
-                            default_token_configuration
-                                .distribution_rules()
-                                .minting_allow_choosing_destination_rules()
-                                .authorized_to_make_change_action_takers()
-                                .clone(),
-                        ),
-                        "Minting Allow Choosing Destination Control Group",
-                    );
-                    ui.selectable_value(
-                        item,
-                        TokenConfigurationChangeItem::MintingAllowChoosingDestinationAdminGroup(
-                            default_token_configuration
-                                .distribution_rules()
-                                .minting_allow_choosing_destination_rules()
-                                .admin_action_takers()
-                                .clone(),
-                        ),
-                        "Minting Allow Choosing Destination Admin Group",
-                    );
+                    if ui
+                        .selectable_value(
+                            &mut self.change_item,
+                            TokenConfigurationChangeItem::MintingAllowChoosingDestination(
+                                default_token_configuration
+                                    .distribution_rules()
+                                    .minting_allow_choosing_destination(),
+                            ),
+                            "Minting Allow Choosing Destination",
+                        )
+                        .clicked()
+                    {
+                        self.update_group_based_on_change_item();
+                    }
+                    if ui
+                        .selectable_value(
+                            &mut self.change_item,
+                            TokenConfigurationChangeItem::MintingAllowChoosingDestinationControlGroup(
+                                default_token_configuration
+                                    .distribution_rules()
+                                    .minting_allow_choosing_destination_rules()
+                                    .authorized_to_make_change_action_takers()
+                                    .clone(),
+                            ),
+                            "Minting Allow Choosing Destination Control Group",
+                        )
+                        .clicked()
+                    {
+                        self.update_group_based_on_change_item();
+                    }
+                    if ui
+                        .selectable_value(
+                            &mut self.change_item,
+                            TokenConfigurationChangeItem::MintingAllowChoosingDestinationAdminGroup(
+                                default_token_configuration
+                                    .distribution_rules()
+                                    .minting_allow_choosing_destination_rules()
+                                    .admin_action_takers()
+                                    .clone(),
+                            ),
+                            "Minting Allow Choosing Destination Admin Group",
+                        )
+                        .clicked()
+                    {
+                        self.update_group_based_on_change_item();
+                    }
 
                     ui.separator();
 
                     /* ───────── Remaining AuthorizedActionTakers variants ───────── */
                     macro_rules! aat_item {
                         ($variant:ident, $label:expr) => {
-                            ui.selectable_value(
-                                item,
-                                TokenConfigurationChangeItem::$variant(
-                                    AuthorizedActionTakers::ContractOwner,
-                                ),
-                                $label,
-                            );
+                            if ui
+                                .selectable_value(
+                                    &mut self.change_item,
+                                    TokenConfigurationChangeItem::$variant(
+                                        AuthorizedActionTakers::ContractOwner,
+                                    ),
+                                    $label,
+                                )
+                                .clicked()
+                            {
+                                self.update_group_based_on_change_item();
+                            }
                         };
                     }
 
@@ -519,20 +744,25 @@ impl UpdateTokenConfigScreen {
 
                     ui.separator();
 
-                    ui.selectable_value(
-                        item,
-                        TokenConfigurationChangeItem::MainControlGroup(
-                            default_token_configuration.main_control_group(),
-                        ),
-                        "Main Control Group",
-                    );
+                    if ui
+                        .selectable_value(
+                            &mut self.change_item,
+                            TokenConfigurationChangeItem::MainControlGroup(
+                                default_token_configuration.main_control_group(),
+                            ),
+                            "Main Control Group",
+                        )
+                        .clicked()
+                    {
+                        self.update_group_based_on_change_item();
+                    }
                 });
         });
 
         ui.add_space(10.0);
 
         /* ========== PER‑VARIANT EDITING ========== */
-        match item {
+        match &mut self.change_item {
             TokenConfigurationChangeItem::Conventions(conv) => {
                 ui.label("Update the JSON formatted text below to change the token conventions.");
                 ui.add_space(5.0);

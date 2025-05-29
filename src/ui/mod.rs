@@ -36,7 +36,7 @@ use contracts_documents::update_contract_screen::UpdateDataContractScreen;
 use dash_sdk::dpp::identity::Identity;
 use dash_sdk::dpp::prelude::IdentityPublicKey;
 use dpns::dpns_contested_names_screen::DPNSSubscreen;
-use egui::Context;
+use egui::{Context, Widget};
 use identities::add_existing_identity_screen::AddExistingIdentityScreen;
 use identities::add_new_identity_screen::AddNewIdentityScreen;
 use identities::identities_screen::IdentitiesScreen;
@@ -58,6 +58,7 @@ use tokens::unfreeze_tokens_screen::UnfreezeTokensScreen;
 use tokens::update_token_config::UpdateTokenConfigScreen;
 use tools::transition_visualizer_screen::TransitionVisualizerScreen;
 use wallets::add_new_wallet_screen::AddNewWalletScreen;
+use crate::ui::tools::contract_visualizer_screen::ContractVisualizerScreen;
 
 pub mod components;
 pub mod contracts_documents;
@@ -86,6 +87,7 @@ pub enum RootScreenType {
     RootScreenMyTokenBalances,
     RootScreenTokenSearch,
     RootScreenTokenCreator,
+    RootScreenToolsContractVisualizerScreen,
 }
 
 impl RootScreenType {
@@ -108,6 +110,7 @@ impl RootScreenType {
             RootScreenType::RootScreenTokenSearch => 13,
             RootScreenType::RootScreenTokenCreator => 14,
             RootScreenType::RootScreenToolsDocumentVisualizerScreen => 15,
+            RootScreenType::RootScreenToolsContractVisualizerScreen => 16,
         }
     }
 
@@ -130,6 +133,7 @@ impl RootScreenType {
             13 => Some(RootScreenType::RootScreenTokenSearch),
             14 => Some(RootScreenType::RootScreenTokenCreator),
             15 => Some(RootScreenType::RootScreenToolsDocumentVisualizerScreen),
+            16 => Some(RootScreenType::RootScreenToolsContractVisualizerScreen),
             _ => None,
         }
     }
@@ -156,6 +160,9 @@ impl From<RootScreenType> for ScreenType {
             RootScreenType::RootScreenTokenCreator => ScreenType::TokenCreator,
             RootScreenType::RootScreenToolsDocumentVisualizerScreen => {
                 ScreenType::DocumentsVisualizer
+            }
+            RootScreenType::RootScreenToolsContractVisualizerScreen => {
+                ScreenType::ContractsVisualizer
             }
         }
     }
@@ -194,6 +201,7 @@ pub enum ScreenType {
     AddContracts,
     ProofVisualizer,
     DocumentsVisualizer,
+    ContractsVisualizer,
     CreateDocument,
     DeleteDocument,
     ReplaceDocument,
@@ -303,6 +311,9 @@ impl ScreenType {
             }
             ScreenType::DocumentsVisualizer => {
                 Screen::DocumentVisualizerScreen(DocumentVisualizerScreen::new(app_context))
+            }
+            ScreenType::ContractsVisualizer => {
+                Screen::ContractVisualizerScreen(ContractVisualizerScreen::new(app_context))
             }
             ScreenType::CreateDocument => {
                 Screen::CreateDocumentScreen(CreateDocumentScreen::new(app_context))
@@ -421,6 +432,7 @@ pub enum Screen {
     ProofLogScreen(ProofLogScreen),
     TransitionVisualizerScreen(TransitionVisualizerScreen),
     DocumentVisualizerScreen(DocumentVisualizerScreen),
+    ContractVisualizerScreen(ContractVisualizerScreen),
     NetworkChooserScreen(NetworkChooserScreen),
     WalletsBalancesScreen(WalletsBalancesScreen),
     AddContractsScreen(AddContractsScreen),
@@ -454,6 +466,7 @@ impl Screen {
             Screen::KeysScreen(screen) => screen.app_context = app_context,
             Screen::WithdrawalScreen(screen) => screen.app_context = app_context,
             Screen::TransitionVisualizerScreen(screen) => screen.app_context = app_context,
+            Screen::ContractVisualizerScreen(screen) => screen.app_context = app_context,
             Screen::NetworkChooserScreen(screen) => screen.current_network = app_context.network,
             Screen::AddKeyScreen(screen) => screen.app_context = app_context,
             Screen::DocumentQueryScreen(screen) => screen.app_context = app_context,
@@ -561,6 +574,7 @@ impl Screen {
                 ..
             }) => ScreenType::ScheduledVotes,
             Screen::TransitionVisualizerScreen(_) => ScreenType::TransitionVisualizer,
+            Screen::ContractVisualizerScreen(_) => ScreenType::ContractsVisualizer,
             Screen::WithdrawalScreen(screen) => {
                 ScreenType::WithdrawalScreen(screen.identity.clone())
             }
@@ -680,6 +694,7 @@ impl ScreenLike for Screen {
             Screen::AddContractsScreen(screen) => screen.refresh(),
             Screen::ProofVisualizerScreen(screen) => screen.refresh(),
             Screen::DocumentVisualizerScreen(screen) => screen.refresh(),
+            Screen::ContractVisualizerScreen(screen) => screen.refresh(),
 
             // Token Screens
             Screen::TokensScreen(screen) => screen.refresh(),
@@ -732,6 +747,7 @@ impl ScreenLike for Screen {
             Screen::AddContractsScreen(screen) => screen.refresh_on_arrival(),
             Screen::ProofVisualizerScreen(screen) => screen.refresh_on_arrival(),
             Screen::DocumentVisualizerScreen(screen) => screen.refresh_on_arrival(),
+            Screen::ContractVisualizerScreen(screen) => screen.refresh_on_arrival(),
 
             // Token Screens
             Screen::TokensScreen(screen) => screen.refresh_on_arrival(),
@@ -784,6 +800,7 @@ impl ScreenLike for Screen {
             Screen::AddContractsScreen(screen) => screen.ui(ctx),
             Screen::ProofVisualizerScreen(screen) => screen.ui(ctx),
             Screen::DocumentVisualizerScreen(screen) => screen.ui(ctx),
+            Screen::ContractVisualizerScreen(screen) => screen.ui(ctx),
 
             // Token Screens
             Screen::TokensScreen(screen) => screen.ui(ctx),
@@ -844,6 +861,9 @@ impl ScreenLike for Screen {
             Screen::AddContractsScreen(screen) => screen.display_message(message, message_type),
             Screen::ProofVisualizerScreen(screen) => screen.display_message(message, message_type),
             Screen::DocumentVisualizerScreen(screen) => {
+                screen.display_message(message, message_type)
+            }
+            Screen::ContractVisualizerScreen(screen) => {
                 screen.display_message(message, message_type)
             }
 
@@ -956,6 +976,9 @@ impl ScreenLike for Screen {
             Screen::ProofVisualizerScreen(screen) => {
                 screen.display_task_result(backend_task_success_result)
             }
+            Screen::ContractVisualizerScreen(screen) => {
+                screen.display_task_result(backend_task_success_result)
+            }
 
             // Token Screens
             Screen::TokensScreen(screen) => screen.display_task_result(backend_task_success_result),
@@ -1034,6 +1057,7 @@ impl ScreenLike for Screen {
             Screen::AddContractsScreen(screen) => screen.pop_on_success(),
             Screen::ProofVisualizerScreen(screen) => screen.pop_on_success(),
             Screen::DocumentVisualizerScreen(screen) => screen.pop_on_success(),
+            Screen::ContractVisualizerScreen(screen) => screen.pop_on_success(),
 
             // Token Screens
             Screen::TokensScreen(screen) => screen.pop_on_success(),

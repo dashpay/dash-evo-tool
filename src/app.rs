@@ -32,6 +32,7 @@ use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant, SystemTime};
 use std::vec;
 use tokio::sync::mpsc as tokiompsc;
+use crate::ui::tools::contract_visualizer_screen::ContractVisualizerScreen;
 
 #[derive(Debug, From)]
 pub enum TaskResult {
@@ -178,6 +179,7 @@ impl AppState {
             TransitionVisualizerScreen::new(&mainnet_app_context);
         let mut proof_visualizer_screen = ProofVisualizerScreen::new(&mainnet_app_context);
         let mut document_visualizer_screen = DocumentVisualizerScreen::new(&mainnet_app_context);
+        let mut contract_visualizer_screen = ContractVisualizerScreen::new(&mainnet_app_context);
         let mut proof_log_screen = ProofLogScreen::new(&mainnet_app_context);
         let mut document_query_screen = DocumentQueryScreen::new(&mainnet_app_context);
         let mut tokens_balances_screen =
@@ -232,6 +234,7 @@ impl AppState {
                 transition_visualizer_screen = TransitionVisualizerScreen::new(testnet_app_context);
                 proof_visualizer_screen = ProofVisualizerScreen::new(testnet_app_context);
                 document_visualizer_screen = DocumentVisualizerScreen::new(&testnet_app_context);
+                contract_visualizer_screen = ContractVisualizerScreen::new(&testnet_app_context);
                 document_query_screen = DocumentQueryScreen::new(testnet_app_context);
                 wallets_balances_screen = WalletsBalancesScreen::new(testnet_app_context);
                 proof_log_screen = ProofLogScreen::new(testnet_app_context);
@@ -256,6 +259,7 @@ impl AppState {
                 proof_visualizer_screen = ProofVisualizerScreen::new(devnet_app_context);
                 document_visualizer_screen = DocumentVisualizerScreen::new(&devnet_app_context);
                 document_query_screen = DocumentQueryScreen::new(devnet_app_context);
+                contract_visualizer_screen = ContractVisualizerScreen::new(&devnet_app_context);
                 wallets_balances_screen = WalletsBalancesScreen::new(devnet_app_context);
                 proof_log_screen = ProofLogScreen::new(devnet_app_context);
                 tokens_balances_screen =
@@ -278,6 +282,7 @@ impl AppState {
                 transition_visualizer_screen = TransitionVisualizerScreen::new(local_app_context);
                 proof_visualizer_screen = ProofVisualizerScreen::new(local_app_context);
                 document_visualizer_screen = DocumentVisualizerScreen::new(&local_app_context);
+                contract_visualizer_screen = ContractVisualizerScreen::new(&local_app_context);
                 document_query_screen = DocumentQueryScreen::new(local_app_context);
                 wallets_balances_screen = WalletsBalancesScreen::new(local_app_context);
                 proof_log_screen = ProofLogScreen::new(local_app_context);
@@ -380,6 +385,10 @@ impl AppState {
                 (
                     RootScreenType::RootScreenToolsDocumentVisualizerScreen,
                     Screen::DocumentVisualizerScreen(document_visualizer_screen),
+                ),
+                (
+                    RootScreenType::RootScreenToolsContractVisualizerScreen,
+                    Screen::ContractVisualizerScreen(contract_visualizer_screen),
                 ),
                 (
                     RootScreenType::RootScreenToolsProofLogScreen,

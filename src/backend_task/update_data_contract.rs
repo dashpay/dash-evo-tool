@@ -28,6 +28,25 @@ use dash_sdk::{
 use std::time::Duration;
 use tokio::{sync::mpsc, time::sleep};
 
+/// Extracts the contract ID from a formatted error message string that contains:
+/// "... with id <contract_id>: ..."
+pub fn extract_contract_id_from_error(error: &str) -> Result<Identifier, String> {
+    // Find the start of "with id "
+    let prefix = "with id ";
+    let start_index = error.find(prefix)
+        .ok_or("Missing 'with id ' prefix in error message")? + prefix.len();
+
+    // Slice from after "with id " and find the next colon
+    let rest = &error[start_index..];
+    let end_index = rest.find(':').ok_or("Missing ':' after contract ID")?;
+
+    let id_str = &rest[..end_index].trim();
+
+    Identifier::from_string(id_str, Encoding::Base58).map_err(|e| {
+        format!("Failed to convert contract ID from string to Identifier: {}", e)
+    })
+}
+
 impl AppContext {
     pub async fn update_data_contract(
         &self,
@@ -107,17 +126,15 @@ impl AppContext {
                         Network::Regtest => sleep(Duration::from_secs(3)).await,
                         _ => sleep(Duration::from_secs(10)).await,
                     }
-                    let error_string = format!("{}", proof_error);
-                    let id_str = error_string
-                        .split(" ")
-                        .last()
-                        .ok_or("Failed to get contract ID from proof error")?;
-                    let id = Identifier::from_string(id_str, Encoding::Base58).map_err(|e| {
-                        format!(
-                            "Failed to convert contract ID from string to Identifier: {}",
+
+                    let id =  match extract_contract_id_from_error(proof_error.to_string().as_str()) {
+                        Ok(id) => id,
+                        Err(e) => return Err(format!(
+                            "Failed to extract id from error message: {}",
                             e.to_string()
-                        )
-                    })?;
+                        )),
+                    };
+
                     let maybe_contract = match DataContract::fetch(sdk, id).await {
                         Ok(contract) => contract,
                         Err(e) => {
@@ -148,13 +165,13 @@ impl AppContext {
                             error: Some(proof_error.to_string()),
                         })
                         .ok();
-                    return Err(format!(
+                    Err(format!(
                         "Error broadcasting Contract Update transition: {}, proof error logged, contract inserted into the database",
                         proof_error
-                    ));
+                    ))
                 }
                 e => {
-                    return Err(format!(
+                    Err(format!(
                         "Error broadcasting Contract Update transition: {}",
                         e
                     ))

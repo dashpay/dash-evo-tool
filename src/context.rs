@@ -218,6 +218,17 @@ impl AppContext {
         Ok(())
     }
 
+    /// Returns the old network name as a string
+    pub(crate) fn old_network_string(&self) -> String {
+        match self.network {
+            Network::Dash => "dash".to_string(),
+            Network::Testnet => "testnet".to_string(),
+            Network::Devnet => format!("devnet:{}", self.devnet_name.clone().unwrap_or_default()),
+            Network::Regtest => "local".to_string(),
+            _ => "unknown".to_string(),
+        }
+    }
+
     /// Returns the network name as a string
     #[deprecated(
         since = "0.9.0",

@@ -13,6 +13,7 @@ use dash_sdk::{
 use tokio::{sync::mpsc, time::sleep};
 
 use super::BackendTaskSuccessResult;
+use crate::backend_task::update_data_contract::extract_contract_id_from_error;
 use crate::{
     app::TaskResult,
     context::AppContext,
@@ -22,7 +23,6 @@ use crate::{
     database::contracts::InsertTokensToo::AllTokensShouldBeAdded,
     model::proof_log_item::ProofLogItem,
 };
-use crate::backend_task::update_data_contract::extract_contract_id_from_error;
 
 impl AppContext {
     pub async fn register_data_contract(
@@ -72,12 +72,15 @@ impl AppContext {
                         Network::Regtest => sleep(Duration::from_secs(3)).await,
                         _ => sleep(Duration::from_secs(10)).await,
                     }
-                    let id =  match extract_contract_id_from_error(proof_error.to_string().as_str()) {
+                    let id = match extract_contract_id_from_error(proof_error.to_string().as_str())
+                    {
                         Ok(id) => id,
-                        Err(e) => return Err(format!(
-                            "Failed to extract id from error message: {}",
-                            e.to_string()
-                        )),
+                        Err(e) => {
+                            return Err(format!(
+                                "Failed to extract id from error message: {}",
+                                e.to_string()
+                            ))
+                        }
                     };
                     let maybe_contract = match DataContract::fetch(sdk, id).await {
                         Ok(contract) => contract,

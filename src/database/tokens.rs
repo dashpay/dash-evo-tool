@@ -443,6 +443,18 @@ impl Database {
         Ok(result)
     }
 
+    /// Deletes all local tokens in Devnet variants and Regtest.
+    pub fn delete_all_local_tokens_in_all_devnets_and_regtest(&self) -> rusqlite::Result<()> {
+        let conn = self.conn.lock().unwrap();
+
+        conn.execute(
+            "DELETE FROM token WHERE network LIKE 'devnet%' OR network = 'regtest'",
+            [],
+        )?;
+
+        Ok(())
+    }
+
     /// Deletes all local tokens and related entries (identity_token_balances, token_order) in Devnet.
     pub fn delete_all_local_tokens_in_devnet(
         &self,

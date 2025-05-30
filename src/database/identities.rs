@@ -71,6 +71,7 @@ impl Database {
                 ],
             )?;
         } else {
+            tracing::warn!(identity_id=?id, alias, network, "saving identity without wallet; this needs investigating");
             // If wallet information is not provided, insert without wallet and wallet_index
             self.execute(
                 "INSERT OR REPLACE INTO identity
@@ -510,5 +511,47 @@ impl Database {
         }
 
         Ok(final_list)
+    }
+
+    /// Fixes bug in identity table where network name for devnet was stored as `devnet:` instead of `devnet`.
+    pub fn fix_identity_devnet_network_name(&self) -> rusqlite::Result<()> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        const TABLES: [&str; 11] = [
+            "asset_lock_transaction",
+            "contestant",
+            "contested_name",
+            "contract",
+            "identity",
+            "identity_token_balances",
+            "scheduled_votes",
+            "settings",
+            "token",
+            "utxos",
+            "wallet",
+        ];
+
+        for t in TABLES {
+            tx.execute(
+                &format!(
+                    "UPDATE {} SET network = 'devnet' WHERE network = 'devnet:'",
+                    t
+                ),
+                [],
+            )?;
+
+            tx.execute(
+                &format!(
+                    "UPDATE {} SET network = 'regtest' WHERE network = 'local'",
+                    t
+                ),
+                [],
+            )?;
+        }
+
+        tx.commit()?;
+        tracing::debug!("Updated network names in database");
+
+        Ok(())
     }
 }

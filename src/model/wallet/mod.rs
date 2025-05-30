@@ -231,7 +231,9 @@ impl WalletSeed {
 impl Drop for WalletSeed {
     fn drop(&mut self) {
         // Securely erase sensitive data
-        self.close();
+        if let WalletSeed::Open(open_seed) = self {
+            open_seed.seed.zeroize();
+        }
     }
 }
 
@@ -659,6 +661,7 @@ impl Wallet {
         Ok(private_key)
     }
 
+    /// Generate Core key for identity registration
     pub fn identity_registration_ecdsa_private_key(
         &mut self,
         network: Network,

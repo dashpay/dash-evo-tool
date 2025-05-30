@@ -18,6 +18,7 @@ use crate::ui::{MessageType, ScreenLike};
 use dash_sdk::dashcore_rpc::dashcore::transaction::special_transaction::TransactionPayload;
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dpp::balances::credits::Duffs;
+use dash_sdk::dpp::dashcore::secp256k1::hashes::hex::DisplayHex;
 use dash_sdk::dpp::dashcore::{OutPoint, PrivateKey, Transaction, TxOut};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
@@ -77,88 +78,20 @@ pub struct AddNewIdentityScreen {
 impl AddNewIdentityScreen {
     pub fn new(app_context: &Arc<AppContext>) -> Self {
         let mut selected_wallet = None;
-        let mut identity_id_number = 0;
-        let mut identity_keys = None;
+
         if app_context.has_wallet.load(Ordering::Relaxed) {
             let wallets = &app_context.wallets.read().unwrap();
             if let Some(wallet) = wallets.values().next() {
                 // Automatically select the only available wallet
                 selected_wallet = Some(wallet.clone());
-                identity_id_number = wallet
-                    .read()
-                    .unwrap()
-                    .identities
-                    .keys()
-                    .copied()
-                    .max()
-                    .map(|a| a + 1)
-                    .unwrap_or_default();
-                let mut wallet = wallet.write().unwrap();
-
-                if wallet.is_open() {
-                    identity_keys = Some(IdentityKeys {
-                        master_private_key: Some(
-                            wallet
-                                .identity_authentication_ecdsa_private_key(
-                                    app_context.network,
-                                    0,
-                                    0,
-                                    Some(&app_context),
-                                )
-                                .expect("expected to have decrypted wallet"),
-                        ),
-                        master_private_key_type: KeyType::ECDSA_HASH160,
-                        keys_input: vec![
-                            (
-                                wallet
-                                    .identity_authentication_ecdsa_private_key(
-                                        app_context.network,
-                                        0,
-                                        1,
-                                        Some(&app_context),
-                                    )
-                                    .expect("expected to have decrypted wallet"),
-                                KeyType::ECDSA_HASH160,
-                                Purpose::AUTHENTICATION,
-                                SecurityLevel::CRITICAL,
-                            ),
-                            (
-                                wallet
-                                    .identity_authentication_ecdsa_private_key(
-                                        app_context.network,
-                                        0,
-                                        2,
-                                        Some(&app_context),
-                                    )
-                                    .expect("expected to have decrypted wallet"),
-                                KeyType::ECDSA_HASH160,
-                                Purpose::AUTHENTICATION,
-                                SecurityLevel::HIGH,
-                            ),
-                            (
-                                wallet
-                                    .identity_authentication_ecdsa_private_key(
-                                        app_context.network,
-                                        0,
-                                        3,
-                                        Some(&app_context),
-                                    )
-                                    .expect("expected to have decrypted wallet"),
-                                KeyType::ECDSA_HASH160,
-                                Purpose::TRANSFER,
-                                SecurityLevel::CRITICAL,
-                            ),
-                        ],
-                    });
-                }
             }
         }
 
-        Self {
-            identity_id_number,
+        let mut created = Self {
+            identity_id_number: 0, // updated later
             step: Arc::new(RwLock::new(WalletFundedScreenStep::ChooseFundingMethod)),
             funding_asset_lock: None,
-            selected_wallet,
+            selected_wallet: None, // updated later
             core_has_funding_address: None,
             funding_address: None,
             funding_method: Arc::new(RwLock::new(FundingMethod::NoSelection)),
@@ -167,11 +100,12 @@ impl AddNewIdentityScreen {
             funding_utxo: None,
             alias_input: String::new(),
             copied_to_clipboard: None,
-            identity_keys: identity_keys.unwrap_or(IdentityKeys {
+            // updated later
+            identity_keys: IdentityKeys {
                 master_private_key: None,
                 master_private_key_type: KeyType::ECDSA_HASH160,
                 keys_input: vec![],
-            }),
+            },
             error_message: None,
             show_password: false,
             wallet_password: "".to_string(),
@@ -179,6 +113,103 @@ impl AddNewIdentityScreen {
             in_key_selection_advanced_mode: false,
             app_context: app_context.clone(),
             successful_qualified_identity_id: None,
+        };
+
+        if let Some(wallet) = selected_wallet {
+            created.update_wallet(wallet);
+        };
+
+        created
+    }
+
+    /// Ensure that identity keys are correctly set up and generated.
+    ///
+    /// If the master key is not set, it generates a new master key and derives other keys from it.
+    /// Otherwise, it updates the existing keys based on the current wallet and identity index.
+    ///
+    /// ## Return value
+    ///
+    /// * Ok(()) when the keys are correctly set up.
+    /// * Err(String) if there was an error during the process, e.g. wallet not open
+    pub fn ensure_correct_identity_keys(&mut self) -> Result<(), String> {
+        if self.identity_keys.master_private_key.is_some() {
+            return match self.update_identity_key() {
+                Ok(true) => Ok(()),
+                Ok(false) => Err("failed to update identity keys".to_string()),
+                Err(e) => Err(format!("failed to update identity keys: {}", e)),
+            };
+        }
+
+        if let Some(wallet_lock) = &self.selected_wallet {
+            // sanity checks
+            {
+                let wallet = wallet_lock.read().unwrap();
+                if !wallet.is_open() {
+                    return Err(format!(
+                        "wallet {} is not open",
+                        wallet
+                            .alias
+                            .as_ref()
+                            .unwrap_or(&wallet.seed_hash().to_lower_hex_string())
+                    ));
+                }
+            }
+
+            let app_context = &self.app_context;
+            let identity_id_number = self.next_identity_id(); // note: this grabs rlock on the wallet
+
+            const DEFAULT_KEY_TYPES: [(KeyType, Purpose, SecurityLevel); 3] = [
+                (
+                    KeyType::ECDSA_HASH160,
+                    Purpose::AUTHENTICATION,
+                    SecurityLevel::CRITICAL,
+                ),
+                (
+                    KeyType::ECDSA_HASH160,
+                    Purpose::AUTHENTICATION,
+                    SecurityLevel::HIGH,
+                ),
+                (
+                    KeyType::ECDSA_HASH160,
+                    Purpose::TRANSFER,
+                    SecurityLevel::CRITICAL,
+                ),
+            ];
+            let mut wallet = wallet_lock.write().expect("wallet lock failed");
+            let master_key = wallet.identity_authentication_ecdsa_private_key(
+                app_context.network,
+                identity_id_number,
+                0,
+                Some(&app_context),
+            )?;
+
+            let other_keys = DEFAULT_KEY_TYPES
+                .into_iter()
+                .enumerate()
+                .map(|(i, (key_type, purpose, security_level))| {
+                    Ok((
+                        wallet.identity_authentication_ecdsa_private_key(
+                            app_context.network,
+                            identity_id_number,
+                            (i + 1).try_into().expect("key index must fit u32"), // key index 0 is the master key
+                            Some(&app_context),
+                        )?,
+                        key_type,
+                        purpose,
+                        security_level,
+                    ))
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+
+            self.identity_keys = IdentityKeys {
+                master_private_key: Some(master_key),
+                master_private_key_type: KeyType::ECDSA_HASH160,
+                keys_input: other_keys,
+            };
+
+            Ok(())
+        } else {
+            Err("no wallet selected".to_string())
         }
     }
 
@@ -241,7 +272,8 @@ impl AddNewIdentityScreen {
 
         // If the index has changed, update the identity key
         if index_changed {
-            self.update_identity_key();
+            self.ensure_correct_identity_keys()
+                .expect("failed to update identity key");
         }
     }
 
@@ -305,7 +337,8 @@ impl AddNewIdentityScreen {
     // }
 
     fn render_wallet_selection(&mut self, ui: &mut Ui) -> bool {
-        if self.app_context.has_wallet.load(Ordering::Relaxed) {
+        let mut selected_wallet = None;
+        let rendered = if self.app_context.has_wallet.load(Ordering::Relaxed) {
             let wallets = &self.app_context.wallets.read().unwrap();
             if wallets.len() > 1 {
                 // Retrieve the alias of the currently selected wallet, if any
@@ -336,13 +369,8 @@ impl AddNewIdentityScreen {
                                 .map_or(false, |selected| Arc::ptr_eq(selected, wallet));
 
                             if ui.selectable_label(is_selected, wallet_alias).clicked() {
-                                {
-                                    let wallet = wallet.read().unwrap();
-                                    self.identity_id_number =
-                                        wallet.identities.keys().copied().max().unwrap_or_default();
-                                }
                                 // Update the selected wallet
-                                self.selected_wallet = Some(wallet.clone());
+                                selected_wallet = Some(wallet.clone());
                             }
                         }
                     });
@@ -350,7 +378,7 @@ impl AddNewIdentityScreen {
             } else if let Some(wallet) = wallets.values().next() {
                 if self.selected_wallet.is_none() {
                     // Automatically select the only available wallet
-                    self.selected_wallet = Some(wallet.clone());
+                    selected_wallet = Some(wallet.clone());
                 }
                 false
             } else {
@@ -358,7 +386,48 @@ impl AddNewIdentityScreen {
             }
         } else {
             false
+        };
+
+        if let Some(wallet) = selected_wallet {
+            self.update_wallet(wallet);
         }
+
+        rendered
+    }
+
+    /// Update selected wallet and trigger all dependent actions, like updating identity keys
+    /// and identity index.
+    ///
+    /// This function is called whenever a wallet was changed in the UI or unlocked
+    fn update_wallet(&mut self, wallet: Arc<RwLock<Wallet>>) {
+        let is_open = wallet.read().expect("wallet lock poisoned").is_open();
+
+        self.selected_wallet = Some(wallet);
+        self.identity_id_number = self.next_identity_id();
+
+        if is_open {
+            self.ensure_correct_identity_keys()
+                .expect("failed to initialize keys")
+        }
+    }
+
+    /// Generate next identity ID that can be used for the new identity.
+    ///
+    /// TODO: This function is not working in a reliable way, because it relies on the
+    /// `identities` map in the wallet, which may not be up to date (user can remove
+    /// identities from the wallet while they still are stored on the Platform).
+    fn next_identity_id(&self) -> u32 {
+        self.selected_wallet
+            .as_ref()
+            .unwrap()
+            .read()
+            .unwrap()
+            .identities
+            .keys()
+            .copied()
+            .max()
+            .map(|max| max + 1)
+            .unwrap_or_default()
     }
 
     fn render_funding_method(&mut self, ui: &mut egui::Ui) {
@@ -398,7 +467,8 @@ impl AddNewIdentityScreen {
                         )
                         .changed()
                     {
-                        self.update_identity_key();
+                        self.ensure_correct_identity_keys()
+                            .expect("failed to initialize keys");
                         let mut step = self.step.write().unwrap();
                         *step = WalletFundedScreenStep::ReadyToCreate;
                         self.funding_amount = "0.5".to_string();
@@ -551,7 +621,11 @@ impl AddNewIdentityScreen {
         // Add new key input entry
         ui.add_space(15.0);
         if ui.button("+ Add Key").clicked() {
-            self.add_identity_key();
+            self.add_identity_key(
+                KeyType::ECDSA_HASH160,  // Default key type
+                Purpose::AUTHENTICATION, // Default purpose
+                SecurityLevel::HIGH,     // Default security level
+            );
         }
     }
 
@@ -596,6 +670,9 @@ impl AddNewIdentityScreen {
                 if amount == 0 {
                     return AppAction::None;
                 }
+
+                let seed = selected_wallet.read().unwrap().wallet_seed.clone();
+                tracing::debug!(selected_wallet = ?selected_wallet,?seed, "funding with wallet balance");
                 let identity_input = IdentityRegistrationInfo {
                     alias_input: self.alias_input.clone(),
                     keys: self.identity_keys.clone(),
@@ -666,22 +743,25 @@ impl AddNewIdentityScreen {
         ui.add_space(10.0);
     }
 
-    fn update_identity_key(&mut self) {
+    /// Update existing identity keys based on the current wallet and identity index.
+    ///
+    /// When the wallet is updated, we need to ensure that all the private keys are
+    /// generated with the correct parameters (seed, derivation path, etc.).
+    ///
+    /// If the master key is not set, this function is a no-op and returns Ok(false).
+    fn update_identity_key(&mut self) -> Result<bool, String> {
         if let Some(wallet_guard) = self.selected_wallet.as_ref() {
             let mut wallet = wallet_guard.write().unwrap();
             let identity_index = self.identity_id_number;
 
             // Update the master private key and keys input from the wallet
-            self.identity_keys.master_private_key = Some(
-                wallet
-                    .identity_authentication_ecdsa_private_key(
-                        self.app_context.network,
-                        identity_index,
-                        0,
-                        Some(&self.app_context),
-                    )
-                    .expect("expected to have decrypted wallet"),
-            );
+            self.identity_keys.master_private_key =
+                Some(wallet.identity_authentication_ecdsa_private_key(
+                    self.app_context.network,
+                    identity_index,
+                    0,
+                    Some(&self.app_context),
+                )?);
 
             // Update the additional keys input
             self.identity_keys.keys_input = self
@@ -690,25 +770,32 @@ impl AddNewIdentityScreen {
                 .iter()
                 .enumerate()
                 .map(|(key_index, (_, key_type, purpose, security_level))| {
-                    (
-                        wallet
-                            .identity_authentication_ecdsa_private_key(
-                                self.app_context.network,
-                                identity_index,
-                                key_index as u32 + 1,
-                                Some(&self.app_context),
-                            )
-                            .expect("expected to have decrypted wallet"),
+                    Ok((
+                        wallet.identity_authentication_ecdsa_private_key(
+                            self.app_context.network,
+                            identity_index,
+                            key_index as u32 + 1,
+                            Some(&self.app_context),
+                        )?,
                         *key_type,
                         *purpose,
                         *security_level,
-                    )
+                    ))
                 })
-                .collect();
+                .collect::<Result<_, String>>()?;
+
+            Ok(true)
+        } else {
+            Ok(false)
         }
     }
 
-    fn add_identity_key(&mut self) {
+    fn add_identity_key(
+        &mut self,
+        key_type: KeyType,
+        purpose: Purpose,
+        security_level: SecurityLevel,
+    ) {
         if let Some(wallet_guard) = self.selected_wallet.as_ref() {
             let mut wallet = wallet_guard.write().unwrap();
             let new_key_index = self.identity_keys.keys_input.len() as u32 + 1;
@@ -723,9 +810,9 @@ impl AddNewIdentityScreen {
                         Some(&self.app_context),
                     )
                     .expect("expected to have decrypted wallet"),
-                KeyType::ECDSA_HASH160,  // Default key type
-                Purpose::AUTHENTICATION, // Default purpose
-                SecurityLevel::HIGH,     // Default security level
+                key_type, // Default key type
+                purpose,
+                security_level,
             ));
         }
     }
@@ -892,64 +979,8 @@ impl ScreenLike for AddNewIdentityScreen {
 
                 if needed_unlock {
                     if just_unlocked {
-                        let wallet_guard = self.selected_wallet.as_ref().unwrap();
-                        let mut wallet = wallet_guard.write().unwrap();
-
-                        self.identity_id_number =
-                            wallet.identities.keys().copied().max().map(|max| max + 1).unwrap_or_default();
-
-                        self.identity_keys.master_private_key = Some(
-                            wallet
-                                .identity_authentication_ecdsa_private_key(
-                                    self.app_context.network,
-                                    self.identity_id_number,
-                                    0,
-                                    Some(&self.app_context),
-                                )
-                                .expect("expected to have decrypted wallet"),
-                        );
-                        // Update the additional keys input
-                        self.identity_keys.keys_input = vec![
-                            (
-                                wallet
-                                    .identity_authentication_ecdsa_private_key(
-                                        self.app_context.network,
-                                        self.identity_id_number,
-                                        1,
-                                        Some(&self.app_context),
-                                    )
-                                    .expect("expected to have decrypted wallet"),
-                                KeyType::ECDSA_HASH160,
-                                Purpose::AUTHENTICATION,
-                                SecurityLevel::CRITICAL,
-                            ),
-                            (
-                                wallet
-                                    .identity_authentication_ecdsa_private_key(
-                                        self.app_context.network,
-                                        self.identity_id_number,
-                                        2,
-                                        Some(&self.app_context),
-                                    )
-                                    .expect("expected to have decrypted wallet"),
-                                KeyType::ECDSA_HASH160,
-                                Purpose::AUTHENTICATION,
-                                SecurityLevel::HIGH,
-                            ),
-                            (
-                                wallet
-                                    .identity_authentication_ecdsa_private_key(
-                                        self.app_context.network,
-                                        self.identity_id_number,
-                                        3,
-                                        Some(&self.app_context),
-                                    )
-                                    .expect("expected to have decrypted wallet"),
-                                KeyType::ECDSA_HASH160,
-                                Purpose::TRANSFER,
-                                SecurityLevel::CRITICAL,
-                            ),
-                        ];
+                        // Select wallet will properly update all dependencies
+                        self.update_wallet(self.selected_wallet.clone().expect("we just checked selected_wallet set above"));
                     } else {
                         return;
                     }
@@ -972,7 +1003,7 @@ impl ScreenLike for AddNewIdentityScreen {
                         ui.heading(format!(
                             "{}. Choose an identity index. Leaving this {} is recommended.",
                             step_number,
-                            wallet.identities.keys().cloned().max().map(|max| max + 1).unwrap_or_default()
+                            self.next_identity_id(),
                         ));
                     }
 

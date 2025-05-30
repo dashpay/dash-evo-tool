@@ -14,8 +14,10 @@ use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::{
     self, InstantLock, Network, OutPoint, ScriptBuf, Transaction, TxOut, Txid,
 };
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::state_transition::asset_lock_proof::chain::ChainAssetLockProof;
 use dash_sdk::dpp::identity::state_transition::asset_lock_proof::InstantAssetLockProof;
+use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::prelude::{AssetLockProof, CoreBlockHeight};
 use rusqlite::params;
 use std::collections::{BTreeMap, HashMap};
@@ -171,7 +173,7 @@ impl Database {
         let network_str = network.to_string();
         let conn = self.conn.lock().unwrap();
 
-        // Step 1: Retrieve all wallets for the given network.
+        tracing::trace!("step 1: retrieve all wallets for the given network");
         let mut stmt = conn.prepare(
             "SELECT seed_hash, encrypted_seed, salt, nonce, master_ecdsa_bip44_account_0_epk, alias, is_main, uses_password, password_hint FROM wallet WHERE network = ?",
         )?;
@@ -214,6 +216,13 @@ impl Database {
                 })
             };
 
+            tracing::trace!(
+                alias = ?alias,
+                wallet_seed = ?seed_hash_array,
+                network = network_str,
+                "new wallet loaded from database"
+            );
+
             // Insert a new Wallet into the map
             wallets_map.insert(
                 seed_hash_array,
@@ -231,6 +240,7 @@ impl Database {
                     is_main,
                 },
             );
+
             Ok(())
         })?;
 
@@ -239,7 +249,7 @@ impl Database {
             wallet?;
         }
 
-        // Step 2: Retrieve all addresses, balances, and derivation paths associated with the wallets.
+        tracing::trace!("step 2: retrieve all addresses, balances, and derivation paths associated with the wallets");
         let mut address_stmt = conn.prepare(
             "SELECT seed_hash, address, derivation_path, balance, path_reference, path_type FROM wallet_addresses WHERE seed_hash IN (SELECT seed_hash FROM wallet WHERE network = ?)",
         )?;
@@ -282,7 +292,7 @@ impl Database {
             ))
         })?;
 
-        // Step 3: Add addresses, balances, and known addresses to the corresponding wallets.
+        tracing::trace!("step 3: add addresses, balances, and known addresses to wallets");
         for row in address_rows {
             if row.is_err() {
                 continue;
@@ -316,7 +326,7 @@ impl Database {
             }
         }
 
-        // Step 4: Retrieve UTXOs for each wallet and add them to the wallets.
+        tracing::trace!("step 4: retrieve UTXOs for each wallet and add them to the wallets");
         let mut utxo_stmt = conn.prepare(
             "SELECT txid, vout, address, value, script_pubkey FROM utxos WHERE network = ?",
         )?;
@@ -343,7 +353,7 @@ impl Database {
             Ok((address, outpoint, tx_out))
         })?;
 
-        // Step 5: Add the UTXOs to the corresponding wallets.
+        tracing::trace!("step 5: add the UTXOs to the corresponding wallets.");
         for row in utxo_rows {
             let (address, outpoint, tx_out) = row?;
 
@@ -357,8 +367,7 @@ impl Database {
                 }
             }
         }
-
-        // Step 6: Retrieve asset lock transactions for each wallet and add them to the wallets.
+        tracing::trace!("step 6: load asset lock transactions for each wallet");
         let mut asset_lock_stmt = conn.prepare(
             "SELECT wallet, amount, transaction_data, instant_lock_data, chain_locked_height FROM asset_lock_transaction where identity_id IS NULL AND network = ?",
         )?;
@@ -417,7 +426,7 @@ impl Database {
             Ok((wallet_seed_hash_array, tx, address, amount, islock, proof))
         })?;
 
-        // Step 7: Add the asset lock transactions to the corresponding wallets.
+        tracing::trace!("step 7: add the asset lock transactions to the wallet");
         for row in asset_lock_rows {
             let (wallet_seed, tx, address, amount, islock, proof) = row?;
 
@@ -428,7 +437,10 @@ impl Database {
             }
         }
 
-        // Step 8: Retrieve identities for each wallet and add them to the wallets.
+        tracing::trace!(
+            network = network_str,
+            "step 8: retrieve identities for wallets"
+        );
         let mut identity_stmt = conn.prepare(
             "SELECT data, wallet, wallet_index FROM identity WHERE network = ? AND wallet IS NOT NULL AND wallet_index IS NOT NULL",
         )?;
@@ -444,7 +456,6 @@ impl Database {
 
             Ok((data, wallet_seed_hash_array, wallet_index))
         })?;
-
         // Process the identities and add them to the corresponding wallets.
         for row in identity_rows {
             let (identity_data, wallet_seed_hash_array, wallet_index) = row?;
@@ -453,6 +464,14 @@ impl Database {
                 let mut identity: QualifiedIdentity = QualifiedIdentity::from_bytes(&identity_data);
                 identity.wallet_index = Some(wallet_index);
 
+                tracing::trace!(
+                    wallet_seed = ?wallet_seed_hash_array,
+                    wallet_alias = ?wallet.alias,
+                    identity = ?identity.identity.id().to_string(Encoding::Base58),
+                    identity_alias = ?identity.alias,
+                    wallet_index = wallet_index,
+                    "adding identity to wallet"
+                );
                 // Insert the identity into the wallet's identities HashMap with wallet_index as the key
                 wallet.identities.insert(wallet_index, identity.identity);
             }

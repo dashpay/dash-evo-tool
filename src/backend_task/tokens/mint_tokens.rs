@@ -56,7 +56,7 @@ impl AppContext {
                 sdk,
                 &signing_key,
                 sending_identity,
-                self.platform_version,
+                self.platform_version(),
                 options,
             )
             .await

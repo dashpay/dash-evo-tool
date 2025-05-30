@@ -399,7 +399,7 @@ impl AppContext {
                                     &qualified_identity,
                                     &NativeBlsModule,
                                     0,
-                                    PlatformVersion::latest(),
+                                    self.platform_version(),
                                 )
                                 .expect("expected to make transition");
                             format!(

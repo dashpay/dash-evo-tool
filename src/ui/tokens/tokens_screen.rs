@@ -4348,7 +4348,7 @@ Emits tokens in fixed amounts for specific intervals.
                                         }
                                     };
 
-                                    let data_contract_json = data_contract.to_json(self.app_context.platform_version).expect("Expected to map contract to json");
+                                    let data_contract_json = data_contract.to_json(self.app_context.platform_version()).expect("Expected to map contract to json");
                                     self.show_json_popup = true;
                                     self.json_popup_text = serde_json::to_string_pretty(&data_contract_json).expect("Expected to serialize json");
                                 },
@@ -4443,7 +4443,7 @@ Emits tokens in fixed amounts for specific intervals.
     fn estimate_registration_cost(&self) -> Credits {
         let registration_fees = &self
             .app_context
-            .platform_version
+            .platform_version()
             .fee_version
             .data_contract_registration;
         let mut fee = registration_fees.base_contract_registration_fee;
@@ -6056,8 +6056,9 @@ mod tests {
             Encoding::Base58,
         )
         .unwrap();
-        let mock = Identity::create_basic_identity(test_identity_id, app_context.platform_version)
-            .expect("Expected to create Identity");
+        let mock =
+            Identity::create_basic_identity(test_identity_id, app_context.platform_version())
+                .expect("Expected to create Identity");
         let mock_identity = QualifiedIdentity {
             identity: mock,
             associated_voter_identity: None,
@@ -6077,7 +6078,7 @@ mod tests {
         token_creator_ui.selected_identity = Some(mock_identity);
 
         // Key selection
-        let mock_key = IdentityPublicKey::random_key(0, None, app_context.platform_version);
+        let mock_key = IdentityPublicKey::random_key(0, None, app_context.platform_version());
         token_creator_ui.selected_key = Some(mock_key);
 
         // Basic token info
@@ -6351,8 +6352,9 @@ mod tests {
             Encoding::Base58,
         )
         .unwrap();
-        let mock = Identity::create_basic_identity(test_identity_id, app_context.platform_version)
-            .expect("Expected to create Identity");
+        let mock =
+            Identity::create_basic_identity(test_identity_id, app_context.platform_version())
+                .expect("Expected to create Identity");
         let mock_identity = QualifiedIdentity {
             identity: mock,
             associated_voter_identity: None,
@@ -6372,7 +6374,7 @@ mod tests {
         token_creator_ui.selected_identity = Some(mock_identity);
 
         // Key selection
-        let mock_key = IdentityPublicKey::random_key(0, None, app_context.platform_version);
+        let mock_key = IdentityPublicKey::random_key(0, None, app_context.platform_version());
         token_creator_ui.selected_key = Some(mock_key);
 
         token_creator_ui.token_names_input = vec![(
@@ -6460,8 +6462,9 @@ mod tests {
             Encoding::Base58,
         )
         .unwrap();
-        let mock = Identity::create_basic_identity(test_identity_id, app_context.platform_version)
-            .expect("Expected to create Identity");
+        let mock =
+            Identity::create_basic_identity(test_identity_id, app_context.platform_version())
+                .expect("Expected to create Identity");
         let mock_identity = QualifiedIdentity {
             identity: mock,
             associated_voter_identity: None,
@@ -6481,7 +6484,7 @@ mod tests {
         token_creator_ui.selected_identity = Some(mock_identity);
 
         // Key selection
-        let mock_key = IdentityPublicKey::random_key(0, None, app_context.platform_version);
+        let mock_key = IdentityPublicKey::random_key(0, None, app_context.platform_version());
         token_creator_ui.selected_key = Some(mock_key);
 
         // Intentionally leave token_name_input empty

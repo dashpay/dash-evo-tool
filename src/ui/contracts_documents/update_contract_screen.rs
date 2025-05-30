@@ -290,7 +290,7 @@ impl UpdateDataContractScreen {
 
         match json_result {
             Ok(json_val) => {
-                let platform_version = PlatformVersion::latest();
+                let platform_version = self.app_context.platform_version();
                 match DataContract::from_json(json_val, true, platform_version) {
                     Ok(mut contract) => {
                         // ------------------------------------------
@@ -594,7 +594,7 @@ impl ScreenLike for UpdateDataContractScreen {
                                 )
                                 .clicked()
                             {
-                                let platform_version = PlatformVersion::latest();
+                                let platform_version = self.app_context.platform_version();
                                 self.selected_contract = Some(display_text.to_string());
                                 self.contract_json_input =
                                     match contract.contract.to_json(platform_version) {

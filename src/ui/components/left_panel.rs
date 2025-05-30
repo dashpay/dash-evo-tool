@@ -129,7 +129,7 @@ pub fn add_left_panel(
 
 /// Checks if the user has access to the button based on the screen type.
 fn check_root_screen_access(app_context: &Arc<AppContext>, screen_type: &RootScreenType) -> bool {
-    let protocol_version = app_context.platform_version.protocol_version;
+    let protocol_version = app_context.platform_version().protocol_version;
 
     // For RootScreenMyTokenBalances
     match screen_type {

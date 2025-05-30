@@ -287,7 +287,7 @@ impl AppContext {
                                     asset_lock_proof,
                                     asset_lock_proof_private_key.inner.as_ref(),
                                     0,
-                                    PlatformVersion::latest(),
+                                    self.platform_version(),
                                     None,
                                 )
                                 .expect("expected to make transition");

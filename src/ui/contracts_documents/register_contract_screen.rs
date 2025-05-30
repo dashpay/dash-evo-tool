@@ -262,7 +262,7 @@ impl RegisterDataContractScreen {
 
         match json_result {
             Ok(json_val) => {
-                let platform_version = PlatformVersion::latest();
+                let platform_version = self.app_context.platform_version();
                 match DataContract::from_json(json_val, true, platform_version) {
                     Ok(mut contract) => {
                         // ------------------------------------------

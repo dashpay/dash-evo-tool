@@ -4,10 +4,10 @@ use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::tools_subscreen_chooser_panel::add_tools_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::BackendTaskSuccessResult;
-use eframe::egui::{self, Color32, Context, ScrollArea, TextEdit, Ui};
-use std::sync::Arc;
 use dash_sdk::dpp::serialization::PlatformDeserializableWithPotentialValidationFromVersionedStructure;
 use dash_sdk::platform::DataContract;
+use eframe::egui::{self, Color32, Context, ScrollArea, TextEdit, Ui};
+use std::sync::Arc;
 // ======================= 1.  Data & helpers =======================
 
 #[derive(PartialEq)]
@@ -62,7 +62,7 @@ impl ContractVisualizerScreen {
         match DataContract::versioned_deserialize(
             &bytes,
             false,
-            self.app_context.platform_version,
+            self.app_context.platform_version(),
         ) {
             Ok(data_contract) => match serde_json::to_string_pretty(&data_contract) {
                 Ok(json) => {

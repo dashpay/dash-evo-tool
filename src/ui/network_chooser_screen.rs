@@ -11,6 +11,7 @@ use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::TimestampMillis;
 use eframe::egui::{self, Color32, Context, Ui};
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub struct NetworkChooserScreen {
@@ -28,6 +29,7 @@ pub struct NetworkChooserScreen {
     custom_dash_qt_path: Option<String>,
     custom_dash_qt_error_message: Option<String>,
     overwrite_dash_conf: bool,
+    developer_mode: bool,
 }
 
 impl NetworkChooserScreen {
@@ -50,6 +52,15 @@ impl NetworkChooserScreen {
             "".to_string()
         };
 
+        let current_context = match current_network {
+            Network::Dash => mainnet_app_context,
+            Network::Testnet => testnet_app_context.unwrap_or(mainnet_app_context),
+            Network::Devnet => devnet_app_context.unwrap_or(mainnet_app_context),
+            Network::Regtest => local_app_context.unwrap_or(mainnet_app_context),
+            _ => mainnet_app_context,
+        };
+        let developer_mode = current_context.developer_mode.load(Ordering::Relaxed);
+
         Self {
             mainnet_app_context: mainnet_app_context.clone(),
             testnet_app_context: testnet_app_context.cloned(),
@@ -65,6 +76,7 @@ impl NetworkChooserScreen {
             custom_dash_qt_path,
             custom_dash_qt_error_message: None,
             overwrite_dash_conf,
+            developer_mode,
         }
     }
 
@@ -189,6 +201,38 @@ impl NetworkChooserScreen {
                         if ui.checkbox(&mut self.overwrite_dash_conf, "Overwrite dash.conf").clicked() {
                             self.save().expect("Expected to save db settings");
                         }
+                        ui.end_row();
+
+                        ui.label("Developer mode:");
+                        if ui.checkbox(&mut self.developer_mode, "Enable developer mode").clicked() {
+                            // Update the config for the current network
+                            if let Ok(mut config) = Config::load() {
+                                let current_config = config.config_for_network(self.current_network).clone();
+                                if let Some(mut network_config) = current_config {
+                                    network_config.developer_mode = Some(self.developer_mode);
+                                    config.update_config_for_network(self.current_network, network_config.clone());
+                                    if let Err(e) = config.save() {
+                                        eprintln!("Failed to save config to .env: {e}");
+                                    }
+
+                                    // Update the current app context's config
+                                    let current_app_context = self.current_app_context();
+                                    {
+                                        let mut cfg_lock = current_app_context.config.write().unwrap();
+                                        *cfg_lock = network_config;
+                                    }
+
+                                    // Update the developer_mode in the context
+                                    current_app_context.developer_mode.store(self.developer_mode, Ordering::Relaxed);
+                                    
+                                    // Re-init the client & sdk with the updated config
+                                    if let Err(e) = Arc::clone(current_app_context).reinit_core_client_and_sdk() {
+                                        eprintln!("Failed to re-init RPC client and sdk: {}", e);
+                                    }
+                                }
+                            }
+                        }
+                        ui.label("Enables advanced features and less strict validation");
                         if !self.overwrite_dash_conf {
                             ui.end_row();
                             if self.current_network == Network::Dash {
@@ -268,6 +312,12 @@ impl NetworkChooserScreen {
         }
 
         // Add a button to start the network
+        // Update developer mode state when switching networks
+        if is_selected && network != self.current_network {
+            let context = self.context_for_network(network);
+            self.developer_mode = context.developer_mode.load(Ordering::Relaxed);
+        }
+
         if !(network == Network::Regtest) {
             if ui.button("Start").clicked() {
                 app_action = AppAction::BackendTask(BackendTask::CoreTask(CoreTask::StartDashQT(

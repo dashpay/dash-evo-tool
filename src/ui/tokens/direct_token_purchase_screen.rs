@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
+use std::sync::atomic::Ordering;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use dash_sdk::dpp::fee::Credits;
@@ -105,7 +106,7 @@ impl PurchaseTokenScreen {
                     None => "Select a key".to_string(),
                 })
                 .show_ui(ui, |ui| {
-                    if self.app_context.developer_mode {
+                    if self.app_context.developer_mode.load(Ordering::Relaxed) {
                         // Show all loaded public keys
                         for key in self
                             .identity_token_info
@@ -328,7 +329,7 @@ impl ScreenLike for PurchaseTokenScreen {
             ui.add_space(10.0);
 
             // Check if user has any auth keys
-            let has_keys = if self.app_context.developer_mode {
+            let has_keys = if self.app_context.developer_mode.load(Ordering::Relaxed) {
                 !self
                     .identity_token_info
                     .identity

@@ -34,13 +34,13 @@ use dash_sdk::query_types::IndexMap;
 use dash_sdk::Sdk;
 use rusqlite::Result;
 use std::collections::{BTreeMap, HashMap};
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
 #[derive(Debug)]
 pub struct AppContext {
     pub(crate) network: Network,
-    pub(crate) developer_mode: bool,
+    pub(crate) developer_mode: AtomicBool,
     pub(crate) devnet_name: Option<String>,
     pub(crate) db: Arc<Database>,
     pub(crate) sdk: RwLock<Sdk>,
@@ -135,7 +135,7 @@ impl AppContext {
 
         let app_context = AppContext {
             network,
-            developer_mode: network_config.developer_mode.unwrap_or(false),
+            developer_mode: AtomicBool::new(network_config.developer_mode.unwrap_or(false)),
             devnet_name: None,
             db,
             sdk: sdk.into(),
@@ -162,7 +162,7 @@ impl AppContext {
     }
 
     pub fn state_transition_options(&self) -> Option<StateTransitionCreationOptions> {
-        if self.developer_mode {
+        if self.developer_mode.load(Ordering::Relaxed) {
             Some(StateTransitionCreationOptions {
                 signing_options: StateTransitionSigningOptions {
                     allow_signing_with_any_security_level: true,
@@ -185,6 +185,10 @@ impl AppContext {
             let cfg_lock = self.config.read().unwrap();
             cfg_lock.clone()
         };
+
+        // Update the developer_mode from the config
+        self.developer_mode
+            .store(cfg.developer_mode.unwrap_or(false), Ordering::Relaxed);
 
         // 2. Rebuild the RPC client with the new password
         let addr = format!("http://{}:{}", cfg.core_host, cfg.core_rpc_port);

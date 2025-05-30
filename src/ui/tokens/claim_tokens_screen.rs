@@ -1,8 +1,8 @@
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
 use std::collections::HashSet;
-use std::sync::{Arc, RwLock};
 use std::sync::atomic::Ordering;
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;

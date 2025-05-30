@@ -18,11 +18,11 @@ use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicK
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::prelude::TimestampMillis;
-use std::sync::atomic::Ordering;
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
 use eframe::egui::{self, Context, Ui};
 use egui::{Color32, RichText};
 use std::collections::HashSet;
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 

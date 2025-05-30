@@ -144,7 +144,7 @@ impl AddNewIdentityScreen {
             return AppAction::None;
         }
 
-        ui.with_layout(
+        let response = ui.with_layout(
             egui::Layout::top_down(egui::Align::Min).with_cross_align(egui::Align::Center),
             |ui| {
                 if let Err(e) = self.render_qr_code(ui, amount_dash) {
@@ -209,6 +209,7 @@ impl AddNewIdentityScreen {
         });
 
         ui.add_space(40.0);
-        AppAction::None
+
+        response.inner
     }
 }

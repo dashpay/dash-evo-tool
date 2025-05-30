@@ -18,7 +18,6 @@ use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike};
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
-use std::sync::atomic::Ordering;
 use dash_sdk::dpp::data_contract::change_control_rules::authorized_action_takers::AuthorizedActionTakers;
 use dash_sdk::dpp::data_contract::group::accessors::v0::GroupV0Getters;
 use dash_sdk::dpp::data_contract::group::Group;
@@ -33,6 +32,7 @@ use dash_sdk::platform::{Identifier, IdentityPublicKey};
 use eframe::egui::{self, Color32, Context, Ui};
 use egui::RichText;
 use std::collections::HashSet;
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 

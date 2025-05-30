@@ -16,8 +16,8 @@ use dash_sdk::dpp::prelude::TimestampMillis;
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
 use eframe::egui::{self, Context, Ui};
 use egui::{Color32, RichText};
-use std::sync::{Arc, RwLock};
 use std::sync::atomic::Ordering;
+use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;

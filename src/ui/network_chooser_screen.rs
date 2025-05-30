@@ -10,8 +10,8 @@ use crate::ui::{RootScreenType, ScreenLike};
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::TimestampMillis;
 use eframe::egui::{self, Color32, Context, Ui};
-use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub struct NetworkChooserScreen {
@@ -224,7 +224,7 @@ impl NetworkChooserScreen {
 
                                     // Update the developer_mode in the context
                                     current_app_context.developer_mode.store(self.developer_mode, Ordering::Relaxed);
-                                    
+
                                     // Re-init the client & sdk with the updated config
                                     if let Err(e) = Arc::clone(current_app_context).reinit_core_client_and_sdk() {
                                         eprintln!("Failed to re-init RPC client and sdk: {}", e);

@@ -19,6 +19,7 @@ use crate::ui::tokens::add_token_by_id_screen::AddTokenByIdScreen;
 use crate::ui::tokens::tokens_screen::IdentityTokenInfo;
 use crate::ui::tokens::transfer_tokens_screen::TransferTokensScreen;
 use crate::ui::tokens::view_token_claims_screen::ViewTokenClaimsScreen;
+use crate::ui::tools::contract_visualizer_screen::ContractVisualizerScreen;
 use crate::ui::tools::document_visualizer_screen::DocumentVisualizerScreen;
 use crate::ui::tools::proof_log_screen::ProofLogScreen;
 use crate::ui::tools::proof_visualizer_screen::ProofVisualizerScreen;
@@ -58,7 +59,6 @@ use tokens::unfreeze_tokens_screen::UnfreezeTokensScreen;
 use tokens::update_token_config::UpdateTokenConfigScreen;
 use tools::transition_visualizer_screen::TransitionVisualizerScreen;
 use wallets::add_new_wallet_screen::AddNewWalletScreen;
-use crate::ui::tools::contract_visualizer_screen::ContractVisualizerScreen;
 
 pub mod components;
 pub mod contracts_documents;

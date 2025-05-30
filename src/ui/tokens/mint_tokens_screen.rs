@@ -405,7 +405,7 @@ impl MintTokensScreen {
                 // This mint is already initiated by the group, we are just signing it
                 ui.heading("Group Mint Signing Successful.");
             } else {
-                if !self.is_unilateral_group_member {
+                if !self.is_unilateral_group_member && self.group.is_some() {
                     ui.heading("Group Mint Initiated.");
                 } else {
                     ui.heading("Mint Successful.");

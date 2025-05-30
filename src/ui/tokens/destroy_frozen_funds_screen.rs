@@ -381,12 +381,12 @@ impl DestroyFrozenFundsScreen {
             ui.heading("🎉");
             if self.group_action_id.is_some() {
                 // This destroy is already initiated by the group, we are just signing it
-                ui.heading("Group Destroy Signing Successful.");
+                ui.heading("Group Destroy Frozen Funds Signing Successful.");
             } else {
-                if !self.is_unilateral_group_member {
-                    ui.heading("Group Destroy Initiated.");
+                if !self.is_unilateral_group_member && self.group.is_some() {
+                    ui.heading("Group Action to Destroy Frozen Funds Initiated.");
                 } else {
-                    ui.heading("Destroy Successful.");
+                    ui.heading("Frozen Funds Destroyed Successfully.");
                 }
             }
 

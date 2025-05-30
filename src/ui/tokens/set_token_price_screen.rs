@@ -401,12 +401,12 @@ impl SetTokenPriceScreen {
             ui.heading("🎉");
             if self.group_action_id.is_some() {
                 // This is already initiated by the group, we are just signing it
-                ui.heading("Group SetPrice Signing Successful.");
+                ui.heading("Group Action to Set Price Signed Successfully.");
             } else {
-                if !self.is_unilateral_group_member {
-                    ui.heading("Group SetPrice Initiated.");
+                if !self.is_unilateral_group_member && self.group.is_some() {
+                    ui.heading("Group Action to Set Price Initiated.");
                 } else {
-                    ui.heading("SetPrice Successful.");
+                    ui.heading("Set Price of Token Successfully.");
                 }
             }
 

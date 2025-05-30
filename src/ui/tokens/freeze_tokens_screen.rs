@@ -365,12 +365,12 @@ impl FreezeTokensScreen {
             ui.heading("🎉");
             if self.group_action_id.is_some() {
                 // This freeze is already initiated by the group, we are just signing it
-                ui.heading("Group Freeze Signing Successful.");
+                ui.heading("Group Freeze of Identity Signing Successful.");
             } else {
-                if !self.is_unilateral_group_member {
-                    ui.heading("Group Freeze Initiated.");
+                if !self.is_unilateral_group_member && self.group.is_some() {
+                    ui.heading("Group Freeze of Identity Initiated.");
                 } else {
-                    ui.heading("Freeze Successful.");
+                    ui.heading("Freeze of Identity Successful.");
                 }
             }
 

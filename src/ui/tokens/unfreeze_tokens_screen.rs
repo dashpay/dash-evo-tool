@@ -364,10 +364,10 @@ impl UnfreezeTokensScreen {
                 // This is already initiated by the group, we are just signing it
                 ui.heading("Group Unfreeze Signing Successful.");
             } else {
-                if !self.is_unilateral_group_member {
+                if !self.is_unilateral_group_member && self.group.is_some() {
                     ui.heading("Group Unfreeze Initiated.");
                 } else {
-                    ui.heading("Unfreeze Successful.");
+                    ui.heading("Unfroze Identity Successfully.");
                 }
             }
 

@@ -372,7 +372,7 @@ impl BurnTokensScreen {
                 // This burn is already initiated by the group, we are just signing it
                 ui.heading("Group Burn Signing Successful.");
             } else {
-                if !self.is_unilateral_group_member {
+                if !self.is_unilateral_group_member && self.group.is_some() {
                     ui.heading("Group Burn Initiated.");
                 } else {
                     ui.heading("Burn Successful.");

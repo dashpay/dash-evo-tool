@@ -327,7 +327,7 @@ impl ResumeTokensScreen {
                 // This resume is already initiated by the group, we are just signing it
                 ui.heading("Group Resume Signing Successful.");
             } else {
-                if !self.is_unilateral_group_member {
+                if !self.is_unilateral_group_member && self.group.is_some() {
                     ui.heading("Group Resume Initiated.");
                 } else {
                     ui.heading("Resume Successful.");

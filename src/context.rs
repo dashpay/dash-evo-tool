@@ -161,6 +161,11 @@ impl AppContext {
         Some(app_context)
     }
 
+    pub fn platform_version(&self) -> &'static PlatformVersion {
+        let v = self.sdk.read().unwrap().version();
+        v
+    }
+
     pub fn state_transition_options(&self) -> Option<StateTransitionCreationOptions> {
         if self.developer_mode {
             Some(StateTransitionCreationOptions {

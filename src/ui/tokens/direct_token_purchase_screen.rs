@@ -1,6 +1,6 @@
 use std::collections::HashSet;
-use std::sync::{Arc, RwLock};
 use std::sync::atomic::Ordering;
+use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use dash_sdk::dpp::fee::Credits;

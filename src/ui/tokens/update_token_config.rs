@@ -18,7 +18,6 @@ use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
 use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike};
 use chrono::{DateTime, Utc};
 use dash_sdk::dpp::balances::credits::TokenAmount;
-use std::sync::atomic::Ordering;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
@@ -38,6 +37,7 @@ use dash_sdk::platform::{DataContract, Identifier, IdentityPublicKey};
 use eframe::egui::{self, Color32, Context, Ui};
 use egui::RichText;
 use std::collections::HashSet;
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -791,7 +791,8 @@ impl UpdateTokenConfigScreen {
             .frame(true)
             .corner_radius(3.0);
 
-        if (self.app_context.developer_mode.load(Ordering::Relaxed) || !button_text.contains("Test"))
+        if (self.app_context.developer_mode.load(Ordering::Relaxed)
+            || !button_text.contains("Test"))
             && self.change_item != TokenConfigurationChangeItem::TokenConfigurationNoChange
         {
             ui.add_space(20.0);

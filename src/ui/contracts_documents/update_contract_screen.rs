@@ -18,9 +18,9 @@ use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::platform::{DataContract, IdentityPublicKey};
 use eframe::egui::{self, Color32, Context, TextEdit};
-use std::sync::atomic::Ordering;
 use egui::{RichText, ScrollArea, Ui};
 use std::collections::HashSet;
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 

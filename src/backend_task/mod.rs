@@ -56,6 +56,7 @@ pub(crate) enum BackendTaskSuccessResult {
     Message(String),
     Document(Document),
     Documents(Documents),
+    BroadcastedDocument(Document),
     CoreItem(CoreItem),
     RegisteredIdentity(QualifiedIdentity),
     ToppedUpIdentity(QualifiedIdentity),

@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use crate::{
+    app::AppAction,
     context::AppContext,
     model::{qualified_contract::QualifiedContract, qualified_identity::QualifiedIdentity},
 };
@@ -74,26 +75,28 @@ pub fn render_key_selector(
 ) -> Option<IdentityPublicKey> {
     let mut new_selected_key = selected_key.clone();
 
-    ui.label("Key:");
-    ComboBox::from_id_salt("key_selector")
-        .selected_text(
-            selected_key
-                .as_ref()
-                .map(|k| format!("Key {} Security {}", k.id(), k.security_level()))
-                .unwrap_or_else(|| "Choose key…".into()),
-        )
-        .show_ui(ui, |cb| {
-            for key_ref in selected_identity.available_authentication_keys_non_master() {
-                let key = &key_ref.identity_public_key;
-                let label = format!("Key {} Security {}", key.id(), key.security_level());
-                if cb
-                    .selectable_label(Some(key) == selected_key.as_ref(), label)
-                    .clicked()
-                {
-                    new_selected_key = Some(key.clone());
+    ui.horizontal(|ui| {
+        ui.label("Key:");
+        ComboBox::from_id_salt("key_selector")
+            .selected_text(
+                selected_key
+                    .as_ref()
+                    .map(|k| format!("Key {} Security {}", k.id(), k.security_level()))
+                    .unwrap_or_else(|| "Choose key…".into()),
+            )
+            .show_ui(ui, |cb| {
+                for key_ref in selected_identity.available_authentication_keys_non_master() {
+                    let key = &key_ref.identity_public_key;
+                    let label = format!("Key {} Security {}", key.id(), key.security_level());
+                    if cb
+                        .selectable_label(Some(key) == selected_key.as_ref(), label)
+                        .clicked()
+                    {
+                        new_selected_key = Some(key.clone());
+                    }
                 }
-            }
-        });
+            });
+    });
 
     new_selected_key
 }
@@ -336,4 +339,134 @@ pub fn render_group_action_text(
     } else {
         format!("{}", group_action_type_str)
     }
+}
+
+pub fn add_identity_key_chooser_with_filtering(
+    ui: &mut Ui,
+    search_term: &mut String,
+    app_context: &Arc<AppContext>,
+    selected_identity: &mut Option<QualifiedIdentity>,
+    selected_key: &mut Option<IdentityPublicKey>,
+) {
+    let identities = app_context.load_local_qualified_identities().unwrap_or_default();
+    let search_term_lowercase = search_term.to_lowercase();
+    let filtered = identities.iter().filter(|qi| {
+        let key = qi
+            .alias
+            .clone()
+            .unwrap_or_else(|| qi.identity.id().to_string(Encoding::Base58));
+        key.to_lowercase().contains(&search_term_lowercase)
+    });
+
+    add_identity_key_chooser_pre_filtered(
+        ui,
+        search_term,
+        filtered,
+        selected_identity,
+        selected_key,
+    );
+}
+
+/// Extremely compact chooser: just two combo-boxes (Identity ▸ Key)
+///
+/// * No collapsible tree.
+/// * Optional search box on top.
+/// * Follows the same pattern as contract/doc-type chooser.
+pub fn add_identity_key_chooser_pre_filtered<'a, T>(
+    ui: &mut Ui,
+    search_term: &mut String,
+    filtered_identities: T,
+    selected_identity: &mut Option<QualifiedIdentity>,
+    selected_key: &mut Option<IdentityPublicKey>,
+) where
+    T: Iterator<Item = &'a QualifiedIdentity>,
+{
+    egui::Grid::new("identity_key_chooser_grid")
+        .num_columns(2)
+        .spacing([10.0, 5.0])
+        .striped(false)
+        .show(ui, |ui| {
+            ui.label("Filter identities:");
+            ui.text_edit_singleline(search_term);
+            ui.end_row();
+
+            ui.label("Identity:");
+            ComboBox::from_id_salt("identity_combo")
+                .width(220.0)
+                .selected_text(match selected_identity {
+                    Some(qi) => qi
+                        .alias
+                        .clone()
+                        .unwrap_or_else(|| qi.identity.id().to_string(Encoding::Base58)),
+                    None => "Select Identity…".into(),
+                })
+                .show_ui(ui, |iui| {
+                    for qi in filtered_identities {
+                        let label = qi
+                            .alias
+                            .clone()
+                            .unwrap_or_else(|| qi.identity.id().to_string(Encoding::Base58));
+                        if iui
+                            .selectable_label(selected_identity.as_ref() == Some(qi), label.clone())
+                            .clicked()
+                        {
+                            *selected_identity = Some(qi.clone());
+                            *selected_key = None; // Clear key selection when identity changes
+                        }
+                    }
+                });
+
+            ui.end_row();
+
+            ui.label("Key:");
+            ComboBox::from_id_salt("key_combo")
+                .width(220.0)
+                .selected_text(
+                    selected_key
+                        .as_ref()
+                        .map(|k| format!("Key {} Security {}", k.id(), k.security_level()))
+                        .unwrap_or_else(|| "Select Key…".into()),
+                )
+                .show_ui(ui, |kui| {
+                    if let Some(qi) = selected_identity {
+                        for key_ref in qi.available_authentication_keys_non_master() {
+                            let key = &key_ref.identity_public_key;
+                            let label = format!("Key {} Security {}", key.id(), key.security_level());
+                            if kui
+                                .selectable_label(
+                                    selected_key.as_ref() == Some(key),
+                                    label,
+                                )
+                                .clicked()
+                            {
+                                *selected_key = Some(key.clone());
+                            }
+                        }
+                    } else {
+                        kui.label("Pick an identity first");
+                    }
+                });
+            ui.end_row();
+        });
+}
+
+pub fn show_success_screen(
+    ui: &mut Ui,
+    success_message: String,
+    action_buttons: Vec<(String, AppAction)>,
+) -> AppAction {
+    let mut action = AppAction::None;
+    ui.vertical_centered(|ui| {
+        ui.add_space(100.0);
+        ui.heading("🎉");
+        ui.heading(success_message);
+
+        ui.add_space(20.0);
+        for button in action_buttons {
+            if ui.button(button.0).clicked() {
+                action = button.1;
+            }
+        }
+    });
+    action
 }

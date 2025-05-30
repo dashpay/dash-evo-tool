@@ -149,7 +149,7 @@ impl AppContext {
                     None,
                 )
                 .await
-                .map(BackendTaskSuccessResult::Document)
+                .map(BackendTaskSuccessResult::BroadcastedDocument)
                 .map_err(|e| format!("Error broadcasting document: {}", e.to_string())),
             DocumentTask::DeleteDocument(
                 document_id,

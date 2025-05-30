@@ -1,7 +1,5 @@
-use std::collections::{BTreeMap, HashMap};
-use std::sync::{Arc, RwLock};
-
 use crate::app::AppAction;
+use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::{document::DocumentTask, BackendTask};
 use crate::context::AppContext;
 use crate::model::qualified_contract::QualifiedContract;
@@ -12,9 +10,9 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
 use crate::ui::helpers::{
     add_contract_doc_type_chooser_with_filtering, render_identity_selector, render_key_selector,
+    show_success_screen,
 };
 use crate::ui::ScreenLike;
-
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use dash_sdk::dpp::balances::credits::Credits;
@@ -40,6 +38,9 @@ use eframe::epaint::Color32;
 use egui::{Context, RichText, Ui};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
+use std::collections::{BTreeMap, HashMap};
+use std::sync::{Arc, RwLock};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum DocumentActionType {
@@ -67,7 +68,7 @@ impl DocumentActionType {
 #[derive(Clone, PartialEq)]
 pub enum BroadcastStatus {
     NotBroadcasted,
-    Broadcasting,
+    Broadcasting(u64),
     Broadcasted,
 }
 
@@ -156,6 +157,26 @@ impl DocumentActionScreen {
         }
     }
 
+    fn reset_screen(&mut self) {
+        self.backend_message = None;
+        self.selected_identity = None;
+        self.selected_key = None;
+        self.wallet = None;
+        self.wallet_password.clear();
+        self.wallet_failure = None;
+        self.show_password = false;
+        self.broadcast_status = BroadcastStatus::NotBroadcasted;
+        self.selected_contract = None;
+        self.selected_document_type = None;
+        self.contract_search.clear();
+        self.document_id_input.clear();
+        self.field_inputs.clear();
+        self.fetched_price = None;
+        self.original_doc = None;
+        self.price_input.clear();
+        self.recipient_id_input.clear();
+    }
+
     fn render_contract_and_type_selection(&mut self, ui: &mut Ui) {
         ui.heading("1. Select a contract and document type:");
         ui.add_space(10.0);
@@ -175,12 +196,19 @@ impl DocumentActionScreen {
         ui.add_space(10.0);
 
         let identities_vec: Vec<_> = self.identities_map.values().cloned().collect();
-        self.selected_identity =
-            render_identity_selector(ui, &identities_vec, &self.selected_identity);
+        egui::Grid::new("identity_key_selector_grid")
+            .num_columns(2)
+            .spacing([10.0, 5.0])
+            .striped(false)
+            .show(ui, |ui| {
+                self.selected_identity =
+                    render_identity_selector(ui, &identities_vec, &self.selected_identity);
+                ui.end_row();
 
-        if let Some(ref identity) = self.selected_identity {
-            self.selected_key = render_key_selector(ui, identity, &self.selected_key);
-        }
+                if let Some(ref identity) = self.selected_identity {
+                    self.selected_key = render_key_selector(ui, identity, &self.selected_key);
+                }
+            });
         ui.add_space(10.0);
     }
 
@@ -475,15 +503,26 @@ impl DocumentActionScreen {
 
         if ui.add(button).clicked() && self.can_broadcast() {
             self.wallet_password.clear();
-            self.broadcast_status = BroadcastStatus::Broadcasting;
+            self.broadcast_status = BroadcastStatus::Broadcasting(
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs(),
+            );
             let task = self.create_document_action();
             action = AppAction::BackendTask(task);
         }
 
         // Status display
         match &self.broadcast_status {
-            BroadcastStatus::Broadcasting => {
-                ui.label("Broadcasting...");
+            BroadcastStatus::Broadcasting(start_time) => {
+                ui.add_space(10.0);
+                let elapsed = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs()
+                    - start_time;
+                ui.label(format!("Broadcasting... {}s", elapsed));
             }
             _ => {}
         }
@@ -1013,10 +1052,6 @@ impl DocumentActionScreen {
             }
         }
     }
-
-    fn get_payment_info(&self) -> Option<String> {
-        None
-    }
 }
 
 impl ScreenLike for DocumentActionScreen {
@@ -1039,11 +1074,17 @@ impl ScreenLike for DocumentActionScreen {
 
         egui::CentralPanel::default().show(ctx, |ui| match &self.broadcast_status {
             BroadcastStatus::Broadcasted => {
-                ui.heading("Success!");
-                ui.label(format!("{} successful!", self.action_type.display_name()));
+                let success_message = format!("{} successful!", self.action_type.display_name());
+                let back_button = ("Back to Contracts".to_string(), AppAction::GoToMainScreen);
+                let reset_button = (
+                    format!("Back to {}", self.action_type.display_name().to_string()),
+                    AppAction::Custom("Reset".to_string()),
+                );
 
-                if ui.button("Back to Contracts").clicked() {
-                    action = AppAction::GoToMainScreen;
+                action |= show_success_screen(ui, success_message, vec![back_button, reset_button]);
+
+                if action == AppAction::Custom("Reset".to_string()) {
+                    self.reset_screen();
                 }
             }
             _ => {
@@ -1060,20 +1101,34 @@ impl ScreenLike for DocumentActionScreen {
 
     fn display_message(&mut self, message: &str, _message_type: crate::ui::MessageType) {
         self.backend_message = Some(message.to_string());
+        self.broadcast_status = BroadcastStatus::NotBroadcasted;
     }
 
-    fn display_task_result(&mut self, _result: crate::ui::BackendTaskSuccessResult) {
-        self.broadcast_status = BroadcastStatus::Broadcasted;
+    fn display_task_result(&mut self, result: crate::ui::BackendTaskSuccessResult) {
+        match result {
+            BackendTaskSuccessResult::Message(msg) => {
+                if msg.contains("Document deleted successfully")
+                    || msg.contains("Document replaced successfully")
+                    || msg.contains("Document transferred successfully")
+                    || msg.contains("Document purchased successfully")
+                    || msg.contains("Document price set successfully")
+                {
+                    self.broadcast_status = BroadcastStatus::Broadcasted;
+                };
+            }
+            BackendTaskSuccessResult::BroadcastedDocument(_) => {
+                self.broadcast_status = BroadcastStatus::Broadcasted;
+            }
+            _ => {
+                // Nothing
+            }
+        }
     }
 }
 
 impl DocumentActionScreen {
     fn render_main_content(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
-
-        if let Some(ref msg) = self.backend_message {
-            ui.label(msg);
-        }
 
         // Step 1: Contract and Document Type Selection
         self.render_contract_and_type_selection(ui);
@@ -1100,6 +1155,11 @@ impl DocumentActionScreen {
             DocumentActionType::Create => self.render_create_inputs(ui),
             _ => self.render_action_specific_inputs(ui),
         };
+
+        if let Some(ref msg) = self.backend_message {
+            ui.add_space(10.0);
+            ui.colored_label(Color32::DARK_RED, msg);
+        }
 
         action
     }

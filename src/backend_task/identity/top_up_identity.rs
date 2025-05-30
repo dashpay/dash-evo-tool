@@ -11,7 +11,6 @@ use dash_sdk::dpp::identity::state_transition::asset_lock_proof::chain::ChainAss
 use dash_sdk::dpp::prelude::AssetLockProof;
 use dash_sdk::dpp::state_transition::identity_topup_transition::methods::IdentityTopUpTransitionMethodsV0;
 use dash_sdk::dpp::state_transition::identity_topup_transition::IdentityTopUpTransition;
-use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::dpp::ProtocolError;
 use dash_sdk::platform::transition::top_up_identity::TopUpIdentity;
 use dash_sdk::platform::Fetch;

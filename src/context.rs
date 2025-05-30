@@ -709,16 +709,13 @@ impl AppContext {
 }
 
 /// Returns the default platform version for the given network.
-pub(crate) fn default_platform_version(network: &Network) -> &'static PlatformVersion {
+pub(crate) const fn default_platform_version(network: &Network) -> &'static PlatformVersion {
     // TODO: Use self.sdk.read().unwrap().version() instead of hardcoding
     match network {
         Network::Dash => &PLATFORM_V8,
         Network::Testnet => &PLATFORM_V9,
         Network::Devnet => &PLATFORM_V9,
         Network::Regtest => &PLATFORM_V9,
-        other => unimplemented!(
-            "Platform version for network {:?} is not implemented",
-            other
-        ),
+        _ => panic!("unsupported network"),
     }
 }

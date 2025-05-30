@@ -81,7 +81,11 @@ impl DocumentVisualizerScreen {
         };
 
         // deserialise
-        match Document::from_bytes(&bytes, doc_type.as_ref(), self.app_context.platform_version) {
+        match Document::from_bytes(
+            &bytes,
+            doc_type.as_ref(),
+            self.app_context.platform_version(),
+        ) {
             Ok(doc) => match serde_json::to_string_pretty(&doc) {
                 Ok(json) => {
                     self.parsed_json = Some(json);

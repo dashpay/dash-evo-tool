@@ -59,8 +59,11 @@ impl ContractVisualizerScreen {
             return;
         };
 
-        match DataContract::versioned_deserialize(&bytes, false, self.app_context.platform_version)
-        {
+        match DataContract::versioned_deserialize(
+            &bytes,
+            false,
+            self.app_context.platform_version(),
+        ) {
             Ok(data_contract) => match serde_json::to_string_pretty(&data_contract) {
                 Ok(json) => {
                     self.parsed_json = Some(json);

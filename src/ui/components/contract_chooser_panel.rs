@@ -306,7 +306,7 @@ pub fn add_contract_chooser_panel(
                                     ui.collapsing("Contract JSON", |ui| {
                                         match contract
                                             .contract
-                                            .to_json(app_context.platform_version)
+                                            .to_json(app_context.platform_version())
                                         {
                                             Ok(json_value) => {
                                                 let pretty_str =

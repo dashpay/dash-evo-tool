@@ -442,7 +442,7 @@ impl Database {
 
             // Serialize the document if available
             let deserialized_contender = contender
-                .try_to_contender(dpns_domain_document_type, app_context.platform_version)
+                .try_to_contender(dpns_domain_document_type, app_context.platform_version())
                 .expect("expect a contender document deserialization");
 
             let document = deserialized_contender.document().as_ref().unwrap().clone();

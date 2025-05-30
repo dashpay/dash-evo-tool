@@ -636,7 +636,7 @@ impl AppContext {
             version: 1,
             owner_id,
             document_types: BTreeMap::new(),
-            config: DataContractConfig::default_for_version(self.platform_version)?,
+            config: DataContractConfig::default_for_version(self.platform_version())?,
             schema_defs: None,
             groups,
             tokens: BTreeMap::new(),

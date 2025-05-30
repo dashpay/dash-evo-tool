@@ -28,13 +28,15 @@ use dash_sdk::dpp::prelude::{AssetLockProof, CoreBlockHeight};
 use dash_sdk::dpp::state_transition::batch_transition::methods::StateTransitionCreationOptions;
 use dash_sdk::dpp::state_transition::StateTransitionSigningOptions;
 use dash_sdk::dpp::system_data_contracts::{load_system_data_contract, SystemDataContract};
+use dash_sdk::dpp::version::v8::PLATFORM_V8;
+use dash_sdk::dpp::version::v9::PLATFORM_V9;
 use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::platform::{DataContract, Identifier};
 use dash_sdk::query_types::IndexMap;
 use dash_sdk::Sdk;
 use rusqlite::Result;
 use std::collections::{BTreeMap, HashMap};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
 #[derive(Debug)]
@@ -57,7 +59,8 @@ pub struct AppContext {
     pub(crate) wallets: RwLock<BTreeMap<WalletSeedHash, Arc<RwLock<Wallet>>>>,
     pub(crate) password_info: Option<PasswordInfo>,
     pub(crate) transactions_waiting_for_finality: Mutex<BTreeMap<Txid, Option<AssetLockProof>>>,
-    pub(crate) platform_version: &'static PlatformVersion,
+    /// Protocol version retrieved from the node; only used to initialize the SDK.
+    detected_protocol_version: AtomicU32,
 }
 
 impl AppContext {
@@ -81,22 +84,22 @@ impl AppContext {
         let provider =
             Provider::new(db.clone(), network, &network_config).expect("Failed to initialize SDK");
 
-        let sdk = initialize_sdk(&network_config, network, provider.clone());
+        let sdk = initialize_sdk(&network_config, network, provider.clone(), None);
+        let platform_version = sdk.version();
 
-        let dpns_contract =
-            load_system_data_contract(SystemDataContract::DPNS, PlatformVersion::latest())
-                .expect("expected to load dpns contract");
+        let dpns_contract = load_system_data_contract(SystemDataContract::DPNS, platform_version)
+            .expect("expected to load dpns contract");
 
         let withdrawal_contract =
-            load_system_data_contract(SystemDataContract::Withdrawals, PlatformVersion::latest())
+            load_system_data_contract(SystemDataContract::Withdrawals, platform_version)
                 .expect("expected to get withdrawal contract");
 
         let token_history_contract =
-            load_system_data_contract(SystemDataContract::TokenHistory, PlatformVersion::latest())
+            load_system_data_contract(SystemDataContract::TokenHistory, platform_version)
                 .expect("expected to get token history contract");
 
         let keyword_search_contract =
-            load_system_data_contract(SystemDataContract::KeywordSearch, PlatformVersion::latest())
+            load_system_data_contract(SystemDataContract::KeywordSearch, platform_version)
                 .expect("expected to get keyword search contract");
 
         let addr = format!(
@@ -151,14 +154,19 @@ impl AppContext {
             wallets: RwLock::new(wallets),
             password_info,
             transactions_waiting_for_finality: Mutex::new(BTreeMap::new()),
-            platform_version: PlatformVersion::latest(),
             zmq_connection_status: Mutex::new(ZMQConnectionEvent::Disconnected),
+            detected_protocol_version: AtomicU32::new(0),
         };
 
         let app_context = Arc::new(app_context);
         provider.bind_app_context(app_context.clone());
 
         Some(app_context)
+    }
+
+    pub fn platform_version(&self) -> &'static PlatformVersion {
+        // TODO: Use self.sdk.read().unwrap().version() instead of hardcoding
+        default_platform_version(&self.network)
     }
 
     pub fn state_transition_options(&self) -> Option<StateTransitionCreationOptions> {
@@ -201,7 +209,10 @@ impl AppContext {
         // 3. Rebuild the Sdk with the updated config
         let provider = Provider::new(self.db.clone(), self.network, &cfg)
             .map_err(|e| format!("Failed to init provider: {e}"))?;
-        let new_sdk = initialize_sdk(&cfg, self.network, provider.clone());
+        let platform_version =
+            PlatformVersion::get_optional(self.detected_protocol_version.load(Ordering::Relaxed));
+
+        let new_sdk = initialize_sdk(&cfg, self.network, provider.clone(), platform_version);
 
         // 4. Swap them in
         {
@@ -705,5 +716,16 @@ impl AppContext {
             .get_contract_id_by_token_id(token_id, self)?
             .ok_or(rusqlite::Error::QueryReturnedNoRows)?;
         self.db.get_contract_by_id(contract_id, self)
+    }
+}
+
+/// Returns the default platform version for the given network.
+pub(crate) const fn default_platform_version(network: &Network) -> &'static PlatformVersion {
+    match network {
+        Network::Dash => &PLATFORM_V8,
+        Network::Testnet => &PLATFORM_V9,
+        Network::Devnet => &PLATFORM_V9,
+        Network::Regtest => &PLATFORM_V9,
+        _ => panic!("unsupported network"),
     }
 }

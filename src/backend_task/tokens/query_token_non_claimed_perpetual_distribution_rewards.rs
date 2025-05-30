@@ -126,7 +126,7 @@ impl AppContext {
 
         // We need to get the max cycles allowed
         let max_cycles = self
-            .platform_version
+            .platform_version()
             .system_limits
             .max_token_redemption_cycles;
         let max_cycle_moment = perpetual_distribution

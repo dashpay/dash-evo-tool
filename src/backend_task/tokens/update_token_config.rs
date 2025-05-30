@@ -82,7 +82,13 @@ impl AppContext {
 
         // Sign the state transition
         let state_transition = builder
-            .sign(sdk, &signing_key, &identity, self.platform_version, options)
+            .sign(
+                sdk,
+                &signing_key,
+                &identity,
+                self.platform_version(),
+                options,
+            )
             .await
             .map_err(|e| {
                 format!(

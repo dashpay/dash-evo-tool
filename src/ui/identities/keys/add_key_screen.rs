@@ -143,7 +143,7 @@ impl AddKeyScreen {
         // Generate a random private key based on the selected key type
         if let Ok((_, private_key_bytes)) = self
             .key_type
-            .random_public_and_private_key_data(&mut rng, self.app_context.platform_version)
+            .random_public_and_private_key_data(&mut rng, self.app_context.platform_version())
         {
             self.private_key_input = hex::encode(private_key_bytes);
         } else {

@@ -692,7 +692,7 @@ impl DocumentActionScreen {
                         self.selected_contract.as_ref().unwrap().contract.clone(),
                         self.selected_identity.as_ref().unwrap().clone(),
                         self.selected_key.as_ref().unwrap().clone(),
-                        None,
+                        token_payment_info,
                     ))
                 }
             }
@@ -718,7 +718,7 @@ impl DocumentActionScreen {
                 self.selected_contract.as_ref().unwrap().contract.clone(),
                 self.selected_identity.as_ref().unwrap().clone(),
                 self.selected_key.as_ref().unwrap().clone(),
-                None,
+                token_payment_info,
             ))
         }
     }

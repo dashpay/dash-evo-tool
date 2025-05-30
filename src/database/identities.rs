@@ -398,6 +398,18 @@ impl Database {
         Ok(())
     }
 
+    /// Deletes all local qualified identities in Devnet variants and Regtest.
+    pub fn delete_all_identities_in_all_devnets_and_regtest(&self) -> rusqlite::Result<()> {
+        let conn = self.conn.lock().unwrap();
+
+        conn.execute(
+            "DELETE FROM identity WHERE (network LIKE 'devnet%' OR network = 'regtest')",
+            [],
+        )?;
+
+        Ok(())
+    }
+
     /// Deletes a local qualified identity with the given identifier from the database.
     pub fn delete_all_local_qualified_identities_in_devnet(
         &self,

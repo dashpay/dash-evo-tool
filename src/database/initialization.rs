@@ -19,12 +19,7 @@ impl Database {
             if let Some(current_version) = self.is_outdated()? {
                 self.backup_db(db_file_path)?;
                 if let Err(e) = self.try_perform_migration(current_version, DEFAULT_DB_VERSION) {
-                    // The migration failed
-                    println!("Migration failed: {:?}", e);
-                    self.recreate_db(db_file_path)?;
-                    self.create_tables()?;
-                    self.set_default_version()?;
-                    println!("Database reinitialized with default settings.");
+                    panic!("Migration failed: {:?}", e);
                 }
             }
         }
@@ -35,6 +30,10 @@ impl Database {
     fn apply_version_changes(&self, version: u16) -> rusqlite::Result<()> {
         match version {
             9 => {
+                self.delete_all_identities_in_all_devnets_and_regtest()?;
+                self.delete_all_local_tokens_in_all_devnets_and_regtest()?;
+                self.remove_all_asset_locks_identity_id_for_all_devnets_and_regtest()?;
+                self.remove_all_contracts_in_all_devnets_and_regtest()?;
                 self.fix_identity_devnet_network_name()?;
             }
             8 => {

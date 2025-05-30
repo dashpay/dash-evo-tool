@@ -244,7 +244,6 @@ impl DocumentActionScreen {
                     ui.separator();
                     ui.add_space(10.0);
 
-                    self.render_token_cost_info(ui, &doc_type);
                     action |= self.render_broadcast_button(ui);
                 });
         }
@@ -261,6 +260,9 @@ impl DocumentActionScreen {
         });
 
         ui.add_space(10.0);
+        if let Some(doc_type) = &self.selected_document_type {
+            self.render_token_cost_info(ui, &doc_type.clone());
+        }
         self.render_broadcast_button(ui)
     }
 
@@ -279,6 +281,9 @@ impl DocumentActionScreen {
         }
 
         ui.add_space(10.0);
+        if let Some(doc_type) = &self.selected_document_type {
+            self.render_token_cost_info(ui, &doc_type.clone());
+        }
         self.render_broadcast_button(ui)
     }
 
@@ -308,11 +313,17 @@ impl DocumentActionScreen {
                         self.ui_field_inputs(ui, &doc_type, contract_id);
 
                         ui.add_space(10.0);
+                        if let Some(doc_type) = &self.selected_document_type {
+                            self.render_token_cost_info(ui, &doc_type.clone());
+                        }
                         action |= self.render_broadcast_button(ui);
                     });
             }
         } else {
             ui.add_space(10.0);
+            if let Some(doc_type) = &self.selected_document_type {
+                self.render_token_cost_info(ui, &doc_type.clone());
+            }
             action |= self.render_broadcast_button(ui);
         }
         action
@@ -333,6 +344,9 @@ impl DocumentActionScreen {
         });
 
         ui.add_space(10.0);
+        if let Some(doc_type) = &self.selected_document_type {
+            self.render_token_cost_info(ui, &doc_type.clone());
+        }
         self.render_broadcast_button(ui)
     }
 
@@ -351,6 +365,9 @@ impl DocumentActionScreen {
         });
 
         ui.add_space(10.0);
+        if let Some(doc_type) = &self.selected_document_type {
+            self.render_token_cost_info(ui, &doc_type.clone());
+        }
         self.render_broadcast_button(ui)
     }
 

@@ -11,9 +11,12 @@ use dash_sdk::{
 use rusqlite::params;
 
 impl Database {
-    pub fn initialize_scheduled_votes_table(&self) -> rusqlite::Result<()> {
+    pub fn initialize_scheduled_votes_table(
+        &self,
+        conn: &rusqlite::Connection,
+    ) -> rusqlite::Result<()> {
         // Create the scheduled_votes table
-        self.execute(
+        conn.execute(
             "CREATE TABLE IF NOT EXISTS scheduled_votes (
                 identity_id BLOB NOT NULL,
                 contested_name TEXT NOT NULL,
@@ -29,9 +32,10 @@ impl Database {
         Ok(())
     }
 
-    pub fn update_scheduled_votes_table(&self) -> rusqlite::Result<()> {
-        let mut conn = self.conn.lock().unwrap();
-
+    pub fn update_scheduled_votes_table(
+        &self,
+        conn: &rusqlite::Connection,
+    ) -> rusqlite::Result<()> {
         {
             // Check if the foreign key already exists
             let mut stmt = conn.prepare("PRAGMA foreign_key_list('scheduled_votes')")?;
@@ -50,17 +54,14 @@ impl Database {
 
         conn.execute("PRAGMA foreign_keys = OFF", [])?;
 
-        // Start a transaction to ensure atomicity
-        let tx = conn.transaction()?;
-
         // Rename existing table
-        tx.execute(
+        conn.execute(
             "ALTER TABLE scheduled_votes RENAME TO scheduled_votes_old",
             [],
         )?;
 
         // Create the new table with the foreign key constraint
-        tx.execute(
+        conn.execute(
             "CREATE TABLE scheduled_votes (
             identity_id BLOB NOT NULL,
             contested_name TEXT NOT NULL,
@@ -75,7 +76,7 @@ impl Database {
         )?;
 
         // Copy data from old to new table
-        tx.execute(
+        conn.execute(
             "INSERT INTO scheduled_votes (identity_id, contested_name, vote_choice, time, executed, network)
          SELECT identity_id, contested_name, vote_choice, time, executed, network
          FROM scheduled_votes_old",
@@ -83,10 +84,7 @@ impl Database {
         )?;
 
         // Drop the old table
-        tx.execute("DROP TABLE scheduled_votes_old", [])?;
-
-        // Commit the transaction
-        tx.commit()?;
+        conn.execute("DROP TABLE scheduled_votes_old", [])?;
 
         conn.execute("PRAGMA foreign_keys = ON", [])?;
 

@@ -5,6 +5,7 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::platform::Identifier;
 use dash_sdk::query_types::IndexMap;
 use rusqlite::params;
+use rusqlite::Connection;
 use rusqlite::OptionalExtension;
 
 use super::Database;
@@ -12,9 +13,9 @@ use crate::ui::tokens::tokens_screen::{IdentityTokenIdentifier, TokenInfo};
 use crate::{context::AppContext, ui::tokens::tokens_screen::IdentityTokenBalance};
 
 impl Database {
-    pub fn initialize_token_table(&self) -> rusqlite::Result<()> {
+    pub fn initialize_token_table(&self, conn: &rusqlite::Connection) -> rusqlite::Result<()> {
         // Create the token table
-        self.execute(
+        conn.execute(
             "CREATE TABLE IF NOT EXISTS token (
                 id BLOB PRIMARY KEY,
                 token_alias TEXT NOT NULL,
@@ -133,15 +134,21 @@ impl Database {
     }
 
     /// Drops the identity_token_balances table (if necessary to enforce schema update)
-    pub fn drop_identity_token_balances_table(&self) -> rusqlite::Result<()> {
-        self.execute("DROP TABLE IF EXISTS identity_token_balances", [])?;
+    pub fn drop_identity_token_balances_table(
+        &self,
+        conn: &rusqlite::Connection,
+    ) -> rusqlite::Result<()> {
+        conn.execute("DROP TABLE IF EXISTS identity_token_balances", [])?;
 
         Ok(())
     }
 
     /// Creates the identity_token_balances table if it doesn't already exist
-    pub fn initialize_identity_token_balances_table(&self) -> rusqlite::Result<()> {
-        self.execute(
+    pub fn initialize_identity_token_balances_table(
+        &self,
+        conn: &rusqlite::Connection,
+    ) -> rusqlite::Result<()> {
+        conn.execute(
             "CREATE TABLE IF NOT EXISTS identity_token_balances (
                 token_id BLOB NOT NULL,
                 identity_id BLOB NOT NULL,
@@ -365,9 +372,10 @@ impl Database {
     }
 
     /// (Re)creates the `token_order` table with proper foreign keys.
-    pub fn initialize_token_order_table(&self) -> rusqlite::Result<()> {
-        let conn = self.conn.lock().unwrap();
-
+    pub fn initialize_token_order_table(
+        &self,
+        conn: &rusqlite::Connection,
+    ) -> rusqlite::Result<()> {
         // Drop the table if it already exists
         conn.execute("DROP TABLE IF EXISTS token_order", [])?;
 
@@ -444,9 +452,10 @@ impl Database {
     }
 
     /// Deletes all local tokens in Devnet variants and Regtest.
-    pub fn delete_all_local_tokens_in_all_devnets_and_regtest(&self) -> rusqlite::Result<()> {
-        let conn = self.conn.lock().unwrap();
-
+    pub fn delete_all_local_tokens_in_all_devnets_and_regtest(
+        &self,
+        conn: &Connection,
+    ) -> rusqlite::Result<()> {
         conn.execute(
             "DELETE FROM token WHERE network LIKE 'devnet%' OR network = 'regtest'",
             [],

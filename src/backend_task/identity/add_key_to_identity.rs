@@ -34,7 +34,7 @@ impl AppContext {
         let identity = Identity::fetch_by_identifier(sdk, qualified_identity.identity.id())
             .await
             .map_err(|e| format!("Fetch nonce error: {}", e))?
-            .unwrap();
+            .ok_or("Identity not found".to_string())?;
         qualified_identity.identity = identity;
         qualified_identity.identity.bump_revision();
         public_key_to_add

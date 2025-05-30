@@ -9,6 +9,7 @@ pub enum ToolsSubscreen {
     TransactionViewer,
     DocumentViewer,
     ProofViewer,
+    ContractViewer,
 }
 
 impl ToolsSubscreen {
@@ -18,6 +19,7 @@ impl ToolsSubscreen {
             Self::TransactionViewer => "Transaction deserializer",
             Self::ProofViewer => "Proof deserializer",
             Self::DocumentViewer => "Document deserializer",
+            Self::ContractViewer => "Contract deserializer",
         }
     }
 }
@@ -30,6 +32,7 @@ pub fn add_tools_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext
         ToolsSubscreen::ProofViewer,
         ToolsSubscreen::TransactionViewer,
         ToolsSubscreen::DocumentViewer,
+        ToolsSubscreen::ContractViewer,
     ];
 
     let active_screen = match app_context.get_settings() {
@@ -41,6 +44,9 @@ pub fn add_tools_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext
             ui::RootScreenType::RootScreenToolsProofVisualizerScreen => ToolsSubscreen::ProofViewer,
             ui::RootScreenType::RootScreenToolsDocumentVisualizerScreen => {
                 ToolsSubscreen::DocumentViewer
+            }
+            ui::RootScreenType::RootScreenToolsContractVisualizerScreen => {
+                ToolsSubscreen::ContractViewer
             }
             _ => ToolsSubscreen::ProofLog,
         },
@@ -93,6 +99,11 @@ pub fn add_tools_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext
                             ToolsSubscreen::DocumentViewer => {
                                 action = AppAction::SetMainScreen(
                                     RootScreenType::RootScreenToolsDocumentVisualizerScreen,
+                                )
+                            }
+                            ToolsSubscreen::ContractViewer => {
+                                action = AppAction::SetMainScreen(
+                                    RootScreenType::RootScreenToolsContractVisualizerScreen,
                                 )
                             }
                         }

@@ -271,7 +271,7 @@ impl ScreenLike for AddTokenByIdScreen {
         egui::CentralPanel::default().show(ctx, |ui| {
             // If we are in the "Complete" status, just show success screen
             if self.status == AddTokenStatus::Complete {
-                action = self.show_success_screen(ui);
+                action |= self.show_success_screen(ui);
                 return;
             }
 

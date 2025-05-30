@@ -317,7 +317,7 @@ impl ScreenLike for WithdrawalScreen {
         egui::CentralPanel::default().show(ctx, |ui| {
             // Show the success screen if the withdrawal was successful
             if self.withdraw_from_identity_status == WithdrawFromIdentityStatus::Complete {
-                action = self.show_success(ui);
+                action |= self.show_success(ui);
                 return;
             }
 

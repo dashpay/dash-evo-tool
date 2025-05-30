@@ -371,7 +371,7 @@ impl ScreenLike for AddContractsScreen {
                     ));
                 }
                 AddContractsStatus::Complete(_) => {
-                    action = self.show_success_screen(ui);
+                    action |= self.show_success_screen(ui);
                 }
             }
         });

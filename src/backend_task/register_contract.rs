@@ -22,6 +22,7 @@ use crate::{
     database::contracts::InsertTokensToo::AllTokensShouldBeAdded,
     model::proof_log_item::ProofLogItem,
 };
+use crate::backend_task::update_data_contract::extract_contract_id_from_error;
 
 impl AppContext {
     pub async fn register_data_contract(
@@ -71,17 +72,13 @@ impl AppContext {
                         Network::Regtest => sleep(Duration::from_secs(3)).await,
                         _ => sleep(Duration::from_secs(10)).await,
                     }
-                    let error_string = format!("{}", proof_error);
-                    let id_str = error_string
-                        .split(" ")
-                        .last()
-                        .ok_or("Failed to get contract ID from proof error")?;
-                    let id = Identifier::from_string(id_str, Encoding::Base58).map_err(|e| {
-                        format!(
-                            "Failed to convert contract ID from string to Identifier: {}",
+                    let id =  match extract_contract_id_from_error(proof_error.to_string().as_str()) {
+                        Ok(id) => id,
+                        Err(e) => return Err(format!(
+                            "Failed to extract id from error message: {}",
                             e.to_string()
-                        )
-                    })?;
+                        )),
+                    };
                     let maybe_contract = match DataContract::fetch(sdk, id).await {
                         Ok(contract) => contract,
                         Err(e) => {

@@ -350,7 +350,7 @@ impl ScreenLike for ClaimTokensScreen {
 
         egui::CentralPanel::default().show(ctx, |ui| {
             if self.status == ClaimTokensStatus::Complete {
-                action = self.show_success_screen(ui);
+                action |= self.show_success_screen(ui);
                 return;
             }
 

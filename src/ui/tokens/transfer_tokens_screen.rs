@@ -283,7 +283,7 @@ impl TransferTokensScreen {
                         .expect("Data contract not found")
                         .contract
                         .clone();
-                    app_action = AppAction::BackendTasks(
+                    app_action |= AppAction::BackendTasks(
                         vec![
                             BackendTask::TokenTask(TokenTask::TransferTokens {
                                 sending_identity: self.identity.clone(),
@@ -324,7 +324,7 @@ impl TransferTokensScreen {
             // Display the "Back to Identities" button
             if ui.button("Back to Tokens").clicked() {
                 // Handle navigation back to the identities screen
-                action = AppAction::PopScreenAndRefresh;
+                action |= AppAction::PopScreenAndRefresh;
             }
         });
 
@@ -399,7 +399,7 @@ impl ScreenLike for TransferTokensScreen {
         egui::CentralPanel::default().show(ctx, |ui| {
             // Show the success screen if the transfer was successful
             if self.transfer_tokens_status == TransferTokensStatus::Complete {
-                action = self.show_success(ui);
+                action |= self.show_success(ui);
                 return;
             }
 

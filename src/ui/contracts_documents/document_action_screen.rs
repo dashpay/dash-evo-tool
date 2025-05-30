@@ -9,8 +9,7 @@ use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
 use crate::ui::helpers::{
-    add_contract_doc_type_chooser_with_filtering, render_identity_selector, render_key_selector,
-    show_success_screen,
+    add_contract_doc_type_chooser_with_filtering, add_identity_key_chooser, show_success_screen,
 };
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::ScreenLike;
@@ -36,9 +35,11 @@ use dash_sdk::dpp::tokens::gas_fees_paid_by::GasFeesPaidBy;
 use dash_sdk::dpp::tokens::token_amount_on_contract_token::DocumentActionTokenEffect;
 use dash_sdk::dpp::tokens::token_payment_info::v0::TokenPaymentInfoV0;
 use dash_sdk::dpp::tokens::token_payment_info::TokenPaymentInfo;
+use dash_sdk::drive::query::WhereClause;
 use dash_sdk::platform::{DocumentQuery, Identifier, IdentityPublicKey};
+use dash_sdk::query_types::IndexMap;
 use eframe::epaint::Color32;
-use egui::{Context, RichText, Ui};
+use egui::{Context, PopupCloseBehavior, RichText, Ui};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use std::collections::{BTreeMap, HashMap};
@@ -112,6 +113,9 @@ pub struct DocumentActionScreen {
     // Transfer-specific
     pub identities_map: HashMap<Identifier, QualifiedIdentity>,
     pub recipient_id_input: String,
+
+    // Delete-specific
+    pub fetched_documents: IndexMap<Identifier, Option<Document>>,
 }
 
 impl DocumentActionScreen {
@@ -159,6 +163,7 @@ impl DocumentActionScreen {
             price_input: String::new(),
             identities_map,
             recipient_id_input: String::new(),
+            fetched_documents: IndexMap::new(),
         }
     }
 
@@ -180,6 +185,7 @@ impl DocumentActionScreen {
         self.original_doc = None;
         self.price_input.clear();
         self.recipient_id_input.clear();
+        self.fetched_documents.clear();
     }
 
     fn render_contract_and_type_selection(&mut self, ui: &mut Ui) {
@@ -201,19 +207,12 @@ impl DocumentActionScreen {
         ui.add_space(10.0);
 
         let identities_vec: Vec<_> = self.identities_map.values().cloned().collect();
-        egui::Grid::new("identity_key_selector_grid")
-            .num_columns(2)
-            .spacing([10.0, 5.0])
-            .striped(false)
-            .show(ui, |ui| {
-                self.selected_identity =
-                    render_identity_selector(ui, &identities_vec, &self.selected_identity);
-                ui.end_row();
-
-                if let Some(ref identity) = self.selected_identity {
-                    self.selected_key = render_key_selector(ui, identity, &self.selected_key);
-                }
-            });
+        add_identity_key_chooser(
+            ui,
+            identities_vec.iter(),
+            &mut self.selected_identity,
+            &mut self.selected_key,
+        );
         ui.add_space(10.0);
     }
 
@@ -256,6 +255,7 @@ impl DocumentActionScreen {
     }
 
     fn render_delete_inputs(&mut self, ui: &mut Ui) -> AppAction {
+        let mut action = AppAction::None;
         ui.heading("3. Enter document ID to delete:");
         ui.add_space(10.0);
 
@@ -265,10 +265,135 @@ impl DocumentActionScreen {
         });
 
         ui.add_space(10.0);
+
+        // Check if we can fetch owned documents
+        if self.fetched_documents.is_empty() {
+            if let Some(qid) = &self.selected_identity {
+                let doc_type = self
+                    .selected_document_type
+                    .as_ref()
+                    .expect("Document type should be selected");
+                let doc_type_name = doc_type.name();
+                if doc_type.indexes().iter().any(|i| {
+                    i.1.properties
+                        .first()
+                        .expect("Expected at least one property")
+                        .name
+                        == "$ownerId"
+                }) {
+                    let contract = self
+                        .selected_contract
+                        .as_ref()
+                        .expect("Contract should be selected")
+                        .contract
+                        .clone();
+                    let mut query = DocumentQuery::new(contract, doc_type_name)
+                        .expect("Failed to create document query");
+                    query = query.with_where(WhereClause {
+                        field: "$ownerId".to_string(),
+                        operator: dash_sdk::drive::query::WhereOperator::Equal,
+                        value: dash_sdk::dpp::platform_value::Value::Identifier(
+                            qid.identity.id().into(),
+                        ),
+                    });
+                    ui.label("This document type has an index on $ownerId, so you can fetch owned documents to view and select.");
+                    ui.add_space(10.0);
+                    if ui.button("Fetch Owned Documents").clicked() {
+                        self.broadcast_status = BroadcastStatus::Fetching(
+                            SystemTime::now()
+                                .duration_since(UNIX_EPOCH)
+                                .unwrap()
+                                .as_secs(),
+                        );
+                        action = AppAction::BackendTask(BackendTask::DocumentTask(
+                            DocumentTask::FetchDocuments(query),
+                        ));
+                    }
+                } else {
+                    ui.label("(Cannot use the Fetch Owned Documents feature as this document type does not have an index on $ownerId)");
+                }
+            }
+        } else {
+            // Show fetched documents
+            ui.add_space(10.0);
+            ui.separator();
+            ui.add_space(10.0);
+
+            ui.heading("Fetched documents:");
+            ui.add_space(10.0);
+            for document in self.fetched_documents.values() {
+                if let Some(doc) = document {
+                    let doc_id_str = doc.id().to_string(Encoding::Base58);
+
+                    ui.horizontal(|ui| {
+                        ui.label(&doc_id_str);
+
+                        let view_button_response = ui.button("View");
+                        if view_button_response.clicked() {
+                            ui.memory_mut(|mem| {
+                                mem.open_popup(egui::Id::new(format!("popup_{}", doc_id_str)))
+                            });
+                        }
+                        if ui.button("Select").clicked() {
+                            self.document_id_input = doc_id_str.clone();
+                        }
+
+                        egui::popup::popup_above_or_below_widget(
+                            ui,
+                            egui::Id::new(format!("popup_{}", doc_id_str)),
+                            &view_button_response,
+                            egui::AboveOrBelow::Below,
+                            PopupCloseBehavior::CloseOnClickOutside,
+                            |ui| {
+                                ui.set_min_width(400.0);
+                                ui.label("Document JSON:");
+                                if let Ok(json) = serde_json::to_string_pretty(doc) {
+                                    ui.add(
+                                        egui::TextEdit::multiline(&mut json.clone())
+                                            .font(egui::TextStyle::Monospace)
+                                            .desired_rows(10)
+                                            .desired_width(380.0)
+                                            .interactive(false),
+                                    );
+                                } else {
+                                    ui.label("Failed to serialize document.");
+                                }
+                                if ui.button("Close").clicked() {
+                                    ui.memory_mut(|mem| mem.close_popup());
+                                }
+                            },
+                        );
+                    });
+                } else {
+                    ui.label("Document not found");
+                }
+            }
+        }
+
+        if let Some(backend_message) = &self.backend_message {
+            if backend_message.contains("No owned documents found") {
+                ui.add_space(10.0);
+                ui.label("No owned documents found.");
+            }
+        }
+
+        // Show fetching status
+        if let BroadcastStatus::Fetching(start) = &self.broadcast_status {
+            let elapsed = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+                - start;
+            ui.add_space(10.0);
+            ui.label(format!("Fetching documents... {}s", elapsed));
+        }
+
+        ui.add_space(10.0);
         if let Some(doc_type) = &self.selected_document_type {
             self.render_token_cost_info(ui, &doc_type.clone());
         }
-        self.render_broadcast_button(ui)
+        action |= self.render_broadcast_button(ui);
+        action
     }
 
     fn render_purchase_inputs(&mut self, ui: &mut Ui) -> AppAction {
@@ -1377,6 +1502,15 @@ impl ScreenLike for DocumentActionScreen {
                             self.backend_message = Some("No document found".to_string());
                             self.fetched_price = None;
                         }
+                    }
+                    DocumentActionType::Delete => {
+                        // For delete, store the fetched documents
+                        if documents.is_empty() {
+                            self.backend_message = Some("No owned documents found".to_string());
+                        } else {
+                            self.backend_message = None;
+                        }
+                        self.fetched_documents = documents;
                     }
                     _ => {}
                 }

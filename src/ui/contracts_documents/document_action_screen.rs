@@ -12,6 +12,7 @@ use crate::ui::helpers::{
     add_contract_doc_type_chooser_with_filtering, render_identity_selector, render_key_selector,
     show_success_screen,
 };
+use crate::ui::identities::get_selected_wallet;
 use crate::ui::ScreenLike;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
@@ -502,6 +503,7 @@ impl DocumentActionScreen {
             .min_size(egui::vec2(100.0, 30.0));
 
         if ui.add(button).clicked() && self.can_broadcast() {
+            self.backend_message = None;
             self.wallet_password.clear();
             self.broadcast_status = BroadcastStatus::Broadcasting(
                 SystemTime::now()
@@ -585,13 +587,26 @@ impl DocumentActionScreen {
 
         let doc_type = self.selected_document_type.as_ref().unwrap();
 
+        let token_payment_info =
+            if let Some(token_creation_cost) = doc_type.document_deletion_token_cost() {
+                Some(TokenPaymentInfo::V0(TokenPaymentInfoV0 {
+                    payment_token_contract_id: token_creation_cost.contract_id,
+                    token_contract_position: token_creation_cost.token_contract_position,
+                    gas_fees_paid_by: token_creation_cost.gas_fees_paid_by,
+                    minimum_token_cost: None,
+                    maximum_token_cost: Some(token_creation_cost.token_amount),
+                }))
+            } else {
+                None
+            };
+
         BackendTask::DocumentTask(DocumentTask::DeleteDocument(
             document_id,
             doc_type.clone(),
             self.selected_contract.as_ref().unwrap().contract.clone(),
             self.selected_identity.as_ref().unwrap().clone(),
             self.selected_key.as_ref().unwrap().clone(),
-            None,
+            token_payment_info,
         ))
     }
 
@@ -601,6 +616,19 @@ impl DocumentActionScreen {
 
         let doc_type = self.selected_document_type.as_ref().unwrap();
 
+        let token_payment_info =
+            if let Some(token_creation_cost) = doc_type.document_purchase_token_cost() {
+                Some(TokenPaymentInfo::V0(TokenPaymentInfoV0 {
+                    payment_token_contract_id: token_creation_cost.contract_id,
+                    token_contract_position: token_creation_cost.token_contract_position,
+                    gas_fees_paid_by: token_creation_cost.gas_fees_paid_by,
+                    minimum_token_cost: None,
+                    maximum_token_cost: Some(token_creation_cost.token_amount),
+                }))
+            } else {
+                None
+            };
+
         BackendTask::DocumentTask(DocumentTask::PurchaseDocument(
             self.fetched_price.unwrap_or(0),
             document_id,
@@ -608,7 +636,7 @@ impl DocumentActionScreen {
             self.selected_contract.as_ref().unwrap().contract.clone(),
             self.selected_identity.as_ref().unwrap().clone(),
             self.selected_key.as_ref().unwrap().clone(),
-            None,
+            token_payment_info,
         ))
     }
 
@@ -618,17 +646,45 @@ impl DocumentActionScreen {
                 Ok((updated_doc, _entropy)) => {
                     let doc_type = self.selected_document_type.as_ref().unwrap();
 
+                    let token_payment_info = if let Some(token_creation_cost) =
+                        doc_type.document_replacement_token_cost()
+                    {
+                        Some(TokenPaymentInfo::V0(TokenPaymentInfoV0 {
+                            payment_token_contract_id: token_creation_cost.contract_id,
+                            token_contract_position: token_creation_cost.token_contract_position,
+                            gas_fees_paid_by: token_creation_cost.gas_fees_paid_by,
+                            minimum_token_cost: None,
+                            maximum_token_cost: Some(token_creation_cost.token_amount),
+                        }))
+                    } else {
+                        None
+                    };
+
                     BackendTask::DocumentTask(DocumentTask::ReplaceDocument(
                         updated_doc,
                         doc_type.clone(),
                         self.selected_contract.as_ref().unwrap().contract.clone(),
                         self.selected_identity.as_ref().unwrap().clone(),
                         self.selected_key.as_ref().unwrap().clone(),
-                        None,
+                        token_payment_info,
                     ))
                 }
                 Err(_) => {
                     let doc_type = self.selected_document_type.as_ref().unwrap();
+
+                    let token_payment_info = if let Some(token_creation_cost) =
+                        doc_type.document_replacement_token_cost()
+                    {
+                        Some(TokenPaymentInfo::V0(TokenPaymentInfoV0 {
+                            payment_token_contract_id: token_creation_cost.contract_id,
+                            token_contract_position: token_creation_cost.token_contract_position,
+                            gas_fees_paid_by: token_creation_cost.gas_fees_paid_by,
+                            minimum_token_cost: None,
+                            maximum_token_cost: Some(token_creation_cost.token_amount),
+                        }))
+                    } else {
+                        None
+                    };
 
                     BackendTask::DocumentTask(DocumentTask::ReplaceDocument(
                         DocumentV0::default().into(),
@@ -642,6 +698,19 @@ impl DocumentActionScreen {
             }
         } else {
             let doc_type = self.selected_document_type.as_ref().unwrap();
+
+            let token_payment_info =
+                if let Some(token_creation_cost) = doc_type.document_replacement_token_cost() {
+                    Some(TokenPaymentInfo::V0(TokenPaymentInfoV0 {
+                        payment_token_contract_id: token_creation_cost.contract_id,
+                        token_contract_position: token_creation_cost.token_contract_position,
+                        gas_fees_paid_by: token_creation_cost.gas_fees_paid_by,
+                        minimum_token_cost: None,
+                        maximum_token_cost: Some(token_creation_cost.token_amount),
+                    }))
+                } else {
+                    None
+                };
 
             BackendTask::DocumentTask(DocumentTask::ReplaceDocument(
                 DocumentV0::default().into(),
@@ -661,6 +730,19 @@ impl DocumentActionScreen {
 
         let doc_type = self.selected_document_type.as_ref().unwrap();
 
+        let token_payment_info =
+            if let Some(token_creation_cost) = doc_type.document_update_price_token_cost() {
+                Some(TokenPaymentInfo::V0(TokenPaymentInfoV0 {
+                    payment_token_contract_id: token_creation_cost.contract_id,
+                    token_contract_position: token_creation_cost.token_contract_position,
+                    gas_fees_paid_by: token_creation_cost.gas_fees_paid_by,
+                    minimum_token_cost: None,
+                    maximum_token_cost: Some(token_creation_cost.token_amount),
+                }))
+            } else {
+                None
+            };
+
         BackendTask::DocumentTask(DocumentTask::SetDocumentPrice(
             price,
             document_id,
@@ -668,7 +750,7 @@ impl DocumentActionScreen {
             self.selected_contract.as_ref().unwrap().contract.clone(),
             self.selected_identity.as_ref().unwrap().clone(),
             self.selected_key.as_ref().unwrap().clone(),
-            None,
+            token_payment_info,
         ))
     }
 
@@ -680,6 +762,19 @@ impl DocumentActionScreen {
 
         let doc_type = self.selected_document_type.as_ref().unwrap();
 
+        let token_payment_info =
+            if let Some(token_creation_cost) = doc_type.document_transfer_token_cost() {
+                Some(TokenPaymentInfo::V0(TokenPaymentInfoV0 {
+                    payment_token_contract_id: token_creation_cost.contract_id,
+                    token_contract_position: token_creation_cost.token_contract_position,
+                    gas_fees_paid_by: token_creation_cost.gas_fees_paid_by,
+                    minimum_token_cost: None,
+                    maximum_token_cost: Some(token_creation_cost.token_amount),
+                }))
+            } else {
+                None
+            };
+
         BackendTask::DocumentTask(DocumentTask::TransferDocument(
             document_id,
             recipient_id,
@@ -687,7 +782,7 @@ impl DocumentActionScreen {
             self.selected_contract.as_ref().unwrap().contract.clone(),
             self.selected_identity.as_ref().unwrap().clone(),
             self.selected_key.as_ref().unwrap().clone(),
-            None,
+            token_payment_info,
         ))
     }
 
@@ -1145,6 +1240,22 @@ impl DocumentActionScreen {
 
         if self.selected_identity.is_none() || self.selected_key.is_none() {
             return action;
+        }
+
+        // Wallet unlock
+        if let Some(selected_identity) = &self.selected_identity {
+            self.wallet = get_selected_wallet(
+                &selected_identity,
+                Some(&self.app_context),
+                None,
+                &mut self.backend_message,
+            );
+        }
+        if self.wallet.is_some() {
+            let (needed_unlock, just_unlocked) = self.render_wallet_unlock_if_needed(ui);
+            if needed_unlock && !just_unlocked {
+                return action;
+            }
         }
 
         ui.separator();

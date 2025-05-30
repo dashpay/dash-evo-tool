@@ -292,6 +292,18 @@ impl Database {
         Ok(())
     }
 
+    /// Deletes all contracts in Devnet variants and Regtest.
+    pub fn remove_all_contracts_in_all_devnets_and_regtest(&self) -> rusqlite::Result<()> {
+        let conn = self.conn.lock().unwrap();
+
+        conn.execute(
+            "DELETE FROM contract WHERE network LIKE 'devnet%' OR network = 'regtest'",
+            [],
+        )?;
+
+        Ok(())
+    }
+
     /// Deletes all local tokens and related entries (identity_token_balances, token_order) in Devnet.
     pub fn remove_all_contracts_in_devnet(&self, app_context: &AppContext) -> rusqlite::Result<()> {
         if app_context.network != Network::Devnet {

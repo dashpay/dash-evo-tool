@@ -10,6 +10,7 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::{BackendTaskSuccessResult, MessageType, RootScreenType, ScreenLike, ScreenType};
 use crate::utils::parsers::{DocumentQueryTextInputParser, TextInputParser};
 use chrono::{DateTime, Utc};
+use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
 use dash_sdk::dpp::data_contract::document_type::{DocumentType, Index};
@@ -612,23 +613,43 @@ impl ScreenLike for DocumentQueryScreen {
             "Group Actions",
             DesiredAppAction::AddScreenType(ScreenType::GroupActions),
         );
-        let mut action = add_top_panel(
-            ctx,
-            &self.app_context,
-            vec![("Contracts", AppAction::None)],
-            vec![
-                load_contract_button,
-                register_contract_button,
-                update_contract_button,
-                add_document_button,
-                delete_document_button,
-                replace_document_button,
-                transfer_document_button,
-                purchase_document_button,
-                set_document_price_button,
-                group_actions_button,
-            ],
-        );
+        let mut action = AppAction::None;
+        if self.app_context.network == Network::Dash {
+            action |= add_top_panel(
+                ctx,
+                &self.app_context,
+                vec![("Contracts", AppAction::None)],
+                vec![
+                    load_contract_button,
+                    register_contract_button,
+                    update_contract_button,
+                    add_document_button,
+                    delete_document_button,
+                    replace_document_button,
+                    transfer_document_button,
+                    purchase_document_button,
+                    set_document_price_button,
+                ],
+            );
+        } else {
+            action |= add_top_panel(
+                ctx,
+                &self.app_context,
+                vec![("Contracts", AppAction::None)],
+                vec![
+                    load_contract_button,
+                    register_contract_button,
+                    update_contract_button,
+                    add_document_button,
+                    delete_document_button,
+                    replace_document_button,
+                    transfer_document_button,
+                    purchase_document_button,
+                    set_document_price_button,
+                    group_actions_button,
+                ],
+            );
+        }
 
         action |= add_left_panel(
             ctx,

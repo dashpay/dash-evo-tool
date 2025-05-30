@@ -37,6 +37,7 @@ use dash_sdk::platform::{DataContract, Identifier, IdentityPublicKey};
 use eframe::egui::{self, Color32, Context, Ui};
 use egui::RichText;
 use std::collections::HashSet;
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -790,7 +791,8 @@ impl UpdateTokenConfigScreen {
             .frame(true)
             .corner_radius(3.0);
 
-        if (self.app_context.developer_mode || !button_text.contains("Test"))
+        if (self.app_context.developer_mode.load(Ordering::Relaxed)
+            || !button_text.contains("Test"))
             && self.change_item != TokenConfigurationChangeItem::TokenConfigurationNoChange
         {
             ui.add_space(20.0);
@@ -1002,7 +1004,7 @@ impl UpdateTokenConfigScreen {
                     None => "Select a key".to_string(),
                 })
                 .show_ui(ui, |ui| {
-                    if self.app_context.developer_mode {
+                    if self.app_context.developer_mode.load(Ordering::Relaxed) {
                         // Show all loaded public keys
                         for key in self.identity.identity.public_keys().values() {
                             let is_valid = key.purpose() == Purpose::AUTHENTICATION
@@ -1122,7 +1124,7 @@ impl ScreenLike for UpdateTokenConfigScreen {
             ui.add_space(10.0);
 
             // Check if user has any auth keys
-            let has_keys = if self.app_context.developer_mode {
+            let has_keys = if self.app_context.developer_mode.load(Ordering::Relaxed) {
                 !self.identity.identity.public_keys().is_empty()
             } else {
                 !self

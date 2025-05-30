@@ -22,6 +22,7 @@ use dash_sdk::platform::{Identifier, IdentityPublicKey};
 use eframe::egui::{self, Context, Ui};
 use egui::{Color32, RichText};
 use std::collections::HashSet;
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -130,7 +131,7 @@ impl TransferTokensScreen {
                     None => "Select a key".to_string(),
                 })
                 .show_ui(ui, |ui| {
-                    if self.app_context.developer_mode {
+                    if self.app_context.developer_mode.load(Ordering::Relaxed) {
                         // Show all loaded public keys
                         for key in self.identity.identity.public_keys().values() {
                             let is_valid = key.purpose() == Purpose::AUTHENTICATION
@@ -409,7 +410,7 @@ impl ScreenLike for TransferTokensScreen {
             ));
             ui.add_space(10.0);
 
-            let has_keys = if self.app_context.developer_mode {
+            let has_keys = if self.app_context.developer_mode.load(Ordering::Relaxed) {
                 !self.identity.identity.public_keys().is_empty()
             } else {
                 !self

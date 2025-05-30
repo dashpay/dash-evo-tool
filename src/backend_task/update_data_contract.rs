@@ -33,8 +33,10 @@ use tokio::{sync::mpsc, time::sleep};
 pub fn extract_contract_id_from_error(error: &str) -> Result<Identifier, String> {
     // Find the start of "with id "
     let prefix = "with id ";
-    let start_index = error.find(prefix)
-        .ok_or("Missing 'with id ' prefix in error message")? + prefix.len();
+    let start_index = error
+        .find(prefix)
+        .ok_or("Missing 'with id ' prefix in error message")?
+        + prefix.len();
 
     // Slice from after "with id " and find the next colon
     let rest = &error[start_index..];
@@ -43,7 +45,10 @@ pub fn extract_contract_id_from_error(error: &str) -> Result<Identifier, String>
     let id_str = &rest[..end_index].trim();
 
     Identifier::from_string(id_str, Encoding::Base58).map_err(|e| {
-        format!("Failed to convert contract ID from string to Identifier: {}", e)
+        format!(
+            "Failed to convert contract ID from string to Identifier: {}",
+            e
+        )
     })
 }
 
@@ -127,12 +132,15 @@ impl AppContext {
                         _ => sleep(Duration::from_secs(10)).await,
                     }
 
-                    let id =  match extract_contract_id_from_error(proof_error.to_string().as_str()) {
+                    let id = match extract_contract_id_from_error(proof_error.to_string().as_str())
+                    {
                         Ok(id) => id,
-                        Err(e) => return Err(format!(
-                            "Failed to extract id from error message: {}",
-                            e.to_string()
-                        )),
+                        Err(e) => {
+                            return Err(format!(
+                                "Failed to extract id from error message: {}",
+                                e.to_string()
+                            ))
+                        }
                     };
 
                     let maybe_contract = match DataContract::fetch(sdk, id).await {
@@ -170,12 +178,10 @@ impl AppContext {
                         proof_error
                     ))
                 }
-                e => {
-                    Err(format!(
-                        "Error broadcasting Contract Update transition: {}",
-                        e
-                    ))
-                }
+                e => Err(format!(
+                    "Error broadcasting Contract Update transition: {}",
+                    e
+                )),
             },
         }
     }

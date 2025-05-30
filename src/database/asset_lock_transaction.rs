@@ -132,6 +132,21 @@ impl Database {
         Ok(())
     }
 
+    /// Deletes all asset lock transactions in Devnet variants and Regtest.
+    pub fn remove_all_asset_locks_identity_id_for_all_devnets_and_regtest(
+        &self,
+    ) -> rusqlite::Result<()> {
+        let conn = self.conn.lock().unwrap();
+
+        conn.execute(
+            "DELETE FROM asset_lock_transaction
+         WHERE network LIKE 'devnet%' OR network = 'regtest'",
+            [],
+        )?;
+
+        Ok(())
+    }
+
     /// Removes the identity ID and identity_id_potentially_in_creation for all asset lock transactions in Devnet.
     pub fn remove_all_asset_locks_identity_id_for_devnet(
         &self,

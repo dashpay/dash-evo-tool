@@ -19,6 +19,7 @@ use dash_sdk::platform::{DataContract, IdentityPublicKey};
 use eframe::egui::{self, Color32, Context, TextEdit};
 use egui::{RichText, ScrollArea, Ui};
 use std::collections::HashSet;
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -209,7 +210,7 @@ impl UpdateDataContractScreen {
         // Key selection
         if let Some(ref qid) = self.selected_qualified_identity {
             // Attempt to list available keys (only auth keys in normal mode)
-            let keys = if self.app_context.developer_mode {
+            let keys = if self.app_context.developer_mode.load(Ordering::Relaxed) {
                 qid.0
                     .identity
                     .public_keys()

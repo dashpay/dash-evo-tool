@@ -31,6 +31,7 @@ use dash_sdk::platform::{Identifier, IdentityPublicKey};
 use eframe::egui::{self, Color32, Context, Ui};
 use egui::RichText;
 use std::collections::HashSet;
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -201,7 +202,7 @@ impl SetTokenPriceScreen {
                     None => "Select a key".to_string(),
                 })
                 .show_ui(ui, |ui| {
-                    if self.app_context.developer_mode {
+                    if self.app_context.developer_mode.load(Ordering::Relaxed) {
                         // Show all loaded public keys
                         for key in self
                             .identity_token_info
@@ -523,7 +524,7 @@ impl ScreenLike for SetTokenPriceScreen {
             ui.add_space(10.0);
 
             // Check if user has any auth keys
-            let has_keys = if self.app_context.developer_mode {
+            let has_keys = if self.app_context.developer_mode.load(Ordering::Relaxed) {
                 !self.identity_token_info.identity.identity.public_keys().is_empty()
             } else {
                 !self.identity_token_info.identity.available_authentication_keys_with_critical_security_level().is_empty()

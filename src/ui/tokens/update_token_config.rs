@@ -18,6 +18,7 @@ use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
 use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike};
 use chrono::{DateTime, Utc};
 use dash_sdk::dpp::balances::credits::TokenAmount;
+use std::sync::atomic::Ordering;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
@@ -790,7 +791,7 @@ impl UpdateTokenConfigScreen {
             .frame(true)
             .corner_radius(3.0);
 
-        if (self.app_context.developer_mode || !button_text.contains("Test"))
+        if (self.app_context.developer_mode.load(Ordering::Relaxed) || !button_text.contains("Test"))
             && self.change_item != TokenConfigurationChangeItem::TokenConfigurationNoChange
         {
             ui.add_space(20.0);
@@ -1002,7 +1003,7 @@ impl UpdateTokenConfigScreen {
                     None => "Select a key".to_string(),
                 })
                 .show_ui(ui, |ui| {
-                    if self.app_context.developer_mode {
+                    if self.app_context.developer_mode.load(Ordering::Relaxed) {
                         // Show all loaded public keys
                         for key in self.identity.identity.public_keys().values() {
                             let is_valid = key.purpose() == Purpose::AUTHENTICATION
@@ -1122,7 +1123,7 @@ impl ScreenLike for UpdateTokenConfigScreen {
             ui.add_space(10.0);
 
             // Check if user has any auth keys
-            let has_keys = if self.app_context.developer_mode {
+            let has_keys = if self.app_context.developer_mode.load(Ordering::Relaxed) {
                 !self.identity.identity.public_keys().is_empty()
             } else {
                 !self

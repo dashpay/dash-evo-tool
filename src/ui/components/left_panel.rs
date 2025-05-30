@@ -4,6 +4,7 @@ use crate::ui::RootScreenType;
 use eframe::epaint::{Color32, Margin};
 use egui::{Context, Frame, ImageButton, SidePanel, TextureHandle};
 use rust_embed::RustEmbed;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 #[derive(RustEmbed)]
@@ -112,9 +113,13 @@ pub fn add_left_panel(
 
                 // Push content to the top and dev label to the bottom
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
-                    if app_context.developer_mode {
+                    if app_context.developer_mode.load(Ordering::Relaxed) {
                         ui.add_space(10.0);
-                        ui.label("Dev mode");
+                        if ui.label("Dev mode").clicked() {
+                            action = AppAction::SetMainScreenThenGoToMainScreen(
+                                RootScreenType::RootScreenNetworkChooser,
+                            );
+                        };
                     }
                 });
             });

@@ -1,8 +1,10 @@
 use std::collections::{BTreeMap, HashSet};
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, RwLock};
 
 use chrono::{DateTime, Duration, Utc};
 use dash_sdk::dpp::balances::credits::TokenAmount;
+use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::{TokenConfigurationPreset, TokenConfigurationPresetFeatures, TokenConfigurationV0};
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationPresetFeatures::{MostRestrictive, WithAllAdvancedActions, WithExtremeActions, WithMintingAndBurningActions, WithOnlyEmergencyAction};
@@ -1962,7 +1964,7 @@ impl TokensScreen {
                                                     }
 
                                                     // Claim
-                                                    if token_configuration.distribution_rules().perpetual_distribution().is_some() || token_configuration.distribution_rules().pre_programmed_distribution().is_some() || self.app_context.developer_mode {
+                                                    if token_configuration.distribution_rules().perpetual_distribution().is_some() || token_configuration.distribution_rules().pre_programmed_distribution().is_some() || self.app_context.developer_mode.load(Ordering::Relaxed) {
                                                         if ui.button("Claim").clicked() {
                                                             let token_contract = match self.app_context.get_contract_by_token_id(&itb.token_id) {
                                                                 Ok(Some(contract)) => contract,
@@ -2627,7 +2629,7 @@ impl TokensScreen {
                     ui.add_space(3.0);
                     if let Some(ref qid) = self.selected_identity {
                         // Attempt to list available keys (only auth keys in normal mode)
-                        let keys = if self.app_context.developer_mode {
+                        let keys = if self.app_context.developer_mode.load(Ordering::Relaxed) {
                             qid.identity
                                 .public_keys()
                                 .values()
@@ -4193,7 +4195,7 @@ Emits tokens in fixed amounts for specific intervals.
                                                     let id_str = identifier.to_string(Encoding::Base58);
 
                                                     // Prevent duplicates unless in developer mode
-                                                    if !self.app_context.developer_mode
+                                                    if !self.app_context.developer_mode.load(Ordering::Relaxed)
                                                         && group_ui
                                                         .members
                                                         .iter()
@@ -4217,7 +4219,7 @@ Emits tokens in fixed amounts for specific intervals.
                                         ui.text_edit_singleline(&mut member.power_str);
 
                                         // Show red warning if someone else already used this identity
-                                        if self.app_context.developer_mode
+                                        if self.app_context.developer_mode.load(Ordering::Relaxed)
                                             && group_ui.members[j].identity_str != ""
                                             && group_ui.members.iter().enumerate().any(|(i, m)| {
                                             i > j && m.identity_str == group_ui.members[j].identity_str
@@ -5667,22 +5669,27 @@ impl ScreenLike for TokensScreen {
         self.check_error_expiration();
 
         // Build top-right buttons
-        let right_buttons = match self.tokens_subscreen {
-            TokensSubscreen::MyTokens => vec![
-                (
-                    "Add Token",
-                    DesiredAppAction::AddScreenType(ScreenType::AddTokenById),
-                ),
-                (
-                    "Refresh",
-                    DesiredAppAction::BackendTask(BackendTask::TokenTask(
-                        TokenTask::QueryMyTokenBalances,
-                    )),
-                ),
-            ],
-            TokensSubscreen::SearchTokens => vec![],
-            TokensSubscreen::TokenCreator => vec![],
-        };
+        let right_buttons;
+        if self.app_context.network != Network::Dash {
+            right_buttons = match self.tokens_subscreen {
+                TokensSubscreen::MyTokens => vec![
+                    (
+                        "Add Token",
+                        DesiredAppAction::AddScreenType(ScreenType::AddTokenById),
+                    ),
+                    (
+                        "Refresh",
+                        DesiredAppAction::BackendTask(BackendTask::TokenTask(
+                            TokenTask::QueryMyTokenBalances,
+                        )),
+                    ),
+                ],
+                TokensSubscreen::SearchTokens => vec![],
+                TokensSubscreen::TokenCreator => vec![],
+            };
+        } else {
+            right_buttons = vec![];
+        }
 
         // Top panel
         if let Some(token_id) = self.selected_token_id {
@@ -5762,6 +5769,17 @@ impl ScreenLike for TokensScreen {
 
         // Main panel
         CentralPanel::default().show(ctx, |ui| {
+            if self.app_context.network == Network::Dash {
+                ui.add_space(50.0);
+                ui.vertical_centered(|ui| {
+                    ui.heading(
+                        RichText::new("Tokens not supported on Mainnet yet. Testnet only.")
+                            .strong(),
+                    );
+                });
+                return;
+            }
+
             match self.tokens_subscreen {
                 TokensSubscreen::MyTokens => {
                     if self.all_known_tokens.is_empty() {

@@ -1,7 +1,7 @@
-use std::collections::HashSet;
-use std::sync::{Arc, RwLock};
-use std::time::{SystemTime, UNIX_EPOCH};
-
+use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
+use crate::ui::contracts_documents::group_actions_screen::GroupActionsScreen;
+use crate::ui::helpers::render_group_action_text;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
@@ -10,18 +10,17 @@ use dash_sdk::dpp::data_contract::group::accessors::v0::GroupV0Getters;
 use dash_sdk::dpp::data_contract::group::Group;
 use dash_sdk::dpp::data_contract::GroupContractPosition;
 use dash_sdk::dpp::group::{GroupStateTransitionInfo, GroupStateTransitionInfoStatus};
-use dash_sdk::dpp::platform_value::string_encoding::Encoding;
-use eframe::egui::{self, Color32, Context, Ui};
-use egui::RichText;
-
-use crate::ui::components::left_panel::add_left_panel;
-use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
-use crate::ui::contracts_documents::group_actions_screen::GroupActionsScreen;
-use crate::ui::helpers::render_group_action_text;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
+use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
+use eframe::egui::{self, Color32, Context, Ui};
+use egui::RichText;
+use std::collections::HashSet;
+use std::sync::atomic::Ordering;
+use std::sync::{Arc, RwLock};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::app::{AppAction, BackendTasksExecutionMode};
 use crate::backend_task::tokens::TokenTask;
@@ -203,7 +202,7 @@ impl BurnTokensScreen {
                     None => "Select a key".to_string(),
                 })
                 .show_ui(ui, |ui| {
-                    if self.app_context.developer_mode {
+                    if self.app_context.developer_mode.load(Ordering::Relaxed) {
                         // Show all loaded public keys
                         for key in self
                             .identity_token_info
@@ -490,7 +489,7 @@ impl ScreenLike for BurnTokensScreen {
             ui.add_space(10.0);
 
             // Check if user has any auth keys
-            let has_keys = if self.app_context.developer_mode {
+            let has_keys = if self.app_context.developer_mode.load(Ordering::Relaxed) {
                 !self
                     .identity_token_info
                     .identity
@@ -640,7 +639,7 @@ impl ScreenLike for BurnTokensScreen {
                     render_group_action_text(ui, &self.group, &self.identity_token_info, "Burn", &self.group_action_id);
 
                 // Burn button
-                if self.app_context.developer_mode || !button_text.contains("Test") {
+                if self.app_context.developer_mode.load(Ordering::Relaxed) || !button_text.contains("Test") {
                     ui.add_space(10.0);
                     let button =
                         egui::Button::new(RichText::new(button_text).color(Color32::WHITE))

@@ -31,6 +31,7 @@ use dash_sdk::platform::{Identifier, IdentityPublicKey};
 use eframe::egui::{self, Color32, Context, Ui};
 use egui::RichText;
 use std::collections::HashSet;
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -202,7 +203,7 @@ impl MintTokensScreen {
                     None => "Select a key".to_string(),
                 })
                 .show_ui(ui, |ui| {
-                    if self.app_context.developer_mode {
+                    if self.app_context.developer_mode.load(Ordering::Relaxed) {
                         // Show all loaded public keys
                         for key in self
                             .identity_token_info
@@ -523,7 +524,7 @@ impl ScreenLike for MintTokensScreen {
             ui.add_space(10.0);
 
             // Check if user has any auth keys
-            let has_keys = if self.app_context.developer_mode {
+            let has_keys = if self.app_context.developer_mode.load(Ordering::Relaxed) {
                 !self
                     .identity_token_info
                     .identity
@@ -629,7 +630,7 @@ impl ScreenLike for MintTokensScreen {
                     .token_config
                     .distribution_rules()
                     .minting_allow_choosing_destination()
-                    || self.app_context.developer_mode
+                    || self.app_context.developer_mode.load(Ordering::Relaxed)
                 {
                     ui.add_space(10.0);
                     ui.separator();
@@ -691,7 +692,7 @@ impl ScreenLike for MintTokensScreen {
                     render_group_action_text(ui, &self.group, &self.identity_token_info, "Mint", &self.group_action_id);
 
                 // Mint button
-                if self.app_context.developer_mode || !button_text.contains("Test") {
+                if self.app_context.developer_mode.load(Ordering::Relaxed) || !button_text.contains("Test") {
                     ui.add_space(10.0);
                     let button =
                         egui::Button::new(RichText::new(button_text).color(Color32::WHITE))

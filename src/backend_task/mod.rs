@@ -47,6 +47,7 @@ pub(crate) enum BackendTask {
     BroadcastStateTransition(StateTransition),
     TokenTask(TokenTask),
     SystemTask(SystemTask),
+    None,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -145,6 +146,7 @@ impl AppContext {
                 self.run_token_task(token_task, &sdk, sender).await
             }
             BackendTask::SystemTask(system_task) => self.run_system_task(system_task, sender).await,
+            BackendTask::None => Ok(BackendTaskSuccessResult::None),
         }
     }
 }

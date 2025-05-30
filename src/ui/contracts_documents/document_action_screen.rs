@@ -26,15 +26,17 @@ use dash_sdk::dpp::data_contract::document_type::accessors::{
 };
 use dash_sdk::dpp::data_contract::document_type::methods::DocumentTypeBasicMethods;
 use dash_sdk::dpp::data_contract::document_type::{DocumentPropertyType, DocumentType};
+use dash_sdk::dpp::document::property_names::PRICE;
 use dash_sdk::dpp::document::{Document, DocumentV0, DocumentV0Getters};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::dpp::platform_value::btreemap_extensions::BTreeValueMapHelper;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::platform_value::Value;
 use dash_sdk::dpp::tokens::gas_fees_paid_by::GasFeesPaidBy;
 use dash_sdk::dpp::tokens::token_amount_on_contract_token::DocumentActionTokenEffect;
 use dash_sdk::dpp::tokens::token_payment_info::v0::TokenPaymentInfoV0;
 use dash_sdk::dpp::tokens::token_payment_info::TokenPaymentInfo;
-use dash_sdk::platform::{Identifier, IdentityPublicKey};
+use dash_sdk::platform::{DocumentQuery, Identifier, IdentityPublicKey};
 use eframe::epaint::Color32;
 use egui::{Context, RichText, Ui};
 use rand::rngs::StdRng;
@@ -69,6 +71,8 @@ impl DocumentActionType {
 #[derive(Clone, PartialEq)]
 pub enum BroadcastStatus {
     NotBroadcasted,
+    Fetching(u64),
+    Fetched,
     Broadcasting(u64),
     Broadcasted,
 }
@@ -244,6 +248,7 @@ impl DocumentActionScreen {
                     ui.separator();
                     ui.add_space(10.0);
 
+                    self.render_token_cost_info(ui, &doc_type);
                     action |= self.render_broadcast_button(ui);
                 });
         }
@@ -267,6 +272,7 @@ impl DocumentActionScreen {
     }
 
     fn render_purchase_inputs(&mut self, ui: &mut Ui) -> AppAction {
+        let mut action = AppAction::None;
         ui.heading("3. Enter document ID to purchase:");
         ui.add_space(10.0);
 
@@ -275,31 +281,110 @@ impl DocumentActionScreen {
             ui.text_edit_singleline(&mut self.document_id_input);
         });
 
+        // Add fetch button
+        ui.add_space(10.0);
+        if ui.button("Fetch Document Price").clicked() && !self.document_id_input.is_empty() {
+            if let Ok(doc_id) = Identifier::from_string(&self.document_id_input, Encoding::Base58) {
+                if let (Some(contract), Some(doc_type)) =
+                    (&self.selected_contract, &self.selected_document_type)
+                {
+                    let mut query = DocumentQuery::new(contract.contract.clone(), doc_type.name())
+                        .expect("Failed to create document query");
+                    query = query.with_document_id(&doc_id);
+
+                    self.broadcast_status = BroadcastStatus::Fetching(
+                        SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap()
+                            .as_secs(),
+                    );
+                    action = AppAction::BackendTask(BackendTask::DocumentTask(
+                        DocumentTask::FetchDocuments(query),
+                    ));
+                }
+            } else {
+                self.backend_message = Some("Invalid Document ID format".to_string());
+            }
+        }
+
+        // Show fetching status
+        if let BroadcastStatus::Fetching(start) = &self.broadcast_status {
+            let elapsed = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+                - start;
+            ui.add_space(10.0);
+            ui.label(format!("Fetching document price... {}s", elapsed));
+        }
+
         if let Some(price) = self.fetched_price {
             ui.add_space(10.0);
             ui.label(format!("Document price: {} credits", price));
+            ui.label("Note: This is the listed price at the time of fetching. If you press the broadcast button, you will attempt to purchase the document at this price.");
         }
 
         ui.add_space(10.0);
         if let Some(doc_type) = &self.selected_document_type {
             self.render_token_cost_info(ui, &doc_type.clone());
         }
-        self.render_broadcast_button(ui)
+        action |= self.render_broadcast_button(ui);
+        action
     }
 
     fn render_replace_inputs(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
-        ui.heading("3. Enter document ID and updated fields:");
+        ui.heading("3. Enter document ID and fetch existing document:");
         ui.add_space(10.0);
 
         ui.horizontal(|ui| {
             ui.label("Document ID:");
             ui.text_edit_singleline(&mut self.document_id_input);
+
+            if ui.button("Fetch").clicked() && !self.document_id_input.is_empty() {
+                if let Ok(doc_id) =
+                    Identifier::from_string(&self.document_id_input, Encoding::Base58)
+                {
+                    if let (Some(contract), Some(doc_type)) =
+                        (&self.selected_contract, &self.selected_document_type)
+                    {
+                        let mut query =
+                            DocumentQuery::new(contract.contract.clone(), doc_type.name())
+                                .expect("Failed to create document query");
+                        query = query.with_document_id(&doc_id);
+
+                        self.broadcast_status = BroadcastStatus::Fetching(
+                            SystemTime::now()
+                                .duration_since(UNIX_EPOCH)
+                                .unwrap()
+                                .as_secs(),
+                        );
+                        action = AppAction::BackendTask(BackendTask::DocumentTask(
+                            DocumentTask::FetchDocuments(query),
+                        ));
+                    }
+                } else {
+                    self.backend_message = Some("Invalid Document ID format".to_string());
+                }
+            }
         });
+
+        // Show fetching status
+        if let BroadcastStatus::Fetching(start) = &self.broadcast_status {
+            let elapsed = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+                - start;
+            ui.add_space(10.0);
+            ui.label(format!("Fetching document... {}s", elapsed));
+        }
 
         if let Some(_original_doc) = &self.original_doc {
             ui.add_space(10.0);
-            ui.label("Update document fields:");
+            ui.label(RichText::new("Document fetched successfully.").color(Color32::DARK_GREEN));
+            ui.add_space(10.0);
+            ui.heading("4. Update document fields:");
 
             if let (Some(contract), Some(doc_type)) =
                 (&self.selected_contract, &self.selected_document_type)
@@ -319,12 +404,9 @@ impl DocumentActionScreen {
                         action |= self.render_broadcast_button(ui);
                     });
             }
-        } else {
+        } else if self.broadcast_status == BroadcastStatus::Fetched {
             ui.add_space(10.0);
-            if let Some(doc_type) = &self.selected_document_type {
-                self.render_token_cost_info(ui, &doc_type.clone());
-            }
-            action |= self.render_broadcast_button(ui);
+            ui.colored_label(Color32::DARK_RED, "No document found with the provided ID");
         }
         action
     }
@@ -450,7 +532,15 @@ impl DocumentActionScreen {
         ui: &mut Ui,
         doc_type: &dash_sdk::dpp::data_contract::document_type::DocumentType,
     ) {
-        if let Some(token_creation_cost) = doc_type.document_creation_token_cost() {
+        let cost = match self.action_type {
+            DocumentActionType::Create => doc_type.document_creation_token_cost(),
+            DocumentActionType::Delete => doc_type.document_deletion_token_cost(),
+            DocumentActionType::Purchase => doc_type.document_purchase_token_cost(),
+            DocumentActionType::Replace => doc_type.document_replacement_token_cost(),
+            DocumentActionType::SetPrice => doc_type.document_update_price_token_cost(),
+            DocumentActionType::Transfer => doc_type.document_transfer_token_cost(),
+        };
+        if let Some(token_creation_cost) = cost {
             let token_amount = token_creation_cost.token_amount;
             let token_name = if let Some(contract) = &self.selected_contract {
                 let contract_id = contract.contract.id();
@@ -492,7 +582,7 @@ impl DocumentActionScreen {
             };
             ui.label(
                 RichText::new(format!(
-                    "Creation cost: {} \"{}\" tokens.\nTokens will be {}.\nGas fees will be paid by {}.",
+                    "Token cost: {} \"{}\" tokens.\nTokens will be {}.\nGas fees will be paid by {}.",
                     token_amount, token_name, token_effect_string, gas_fees_paid_by_string
                 ))
                 .color(Color32::DARK_RED),
@@ -521,15 +611,16 @@ impl DocumentActionScreen {
 
         if ui.add(button).clicked() && self.can_broadcast() {
             self.backend_message = None;
-            self.wallet_password.clear();
-            self.broadcast_status = BroadcastStatus::Broadcasting(
-                SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs(),
-            );
             let task = self.create_document_action();
-            action = AppAction::BackendTask(task);
+            if task != BackendTask::None {
+                self.broadcast_status = BroadcastStatus::Broadcasting(
+                    SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs(),
+                );
+                action = AppAction::BackendTask(task);
+            }
         }
 
         // Status display
@@ -543,13 +634,22 @@ impl DocumentActionScreen {
                     - start_time;
                 ui.label(format!("Broadcasting... {}s", elapsed));
             }
+            BroadcastStatus::Fetching(start_time) => {
+                ui.add_space(10.0);
+                let elapsed = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs()
+                    - start_time;
+                ui.label(format!("Fetching... {}s", elapsed));
+            }
             _ => {}
         }
 
         action
     }
 
-    fn create_document_action(&self) -> BackendTask {
+    fn create_document_action(&mut self) -> BackendTask {
         match self.action_type {
             DocumentActionType::Create => self.create_document_task(),
             DocumentActionType::Delete => self.create_delete_task(),
@@ -560,7 +660,7 @@ impl DocumentActionScreen {
         }
     }
 
-    fn create_document_task(&self) -> BackendTask {
+    fn create_document_task(&mut self) -> BackendTask {
         match self.try_build_document() {
             Ok((doc, entropy)) => {
                 let doc_type = self.selected_document_type.as_ref().unwrap();
@@ -587,14 +687,10 @@ impl DocumentActionScreen {
                     self.selected_key.as_ref().unwrap().clone(),
                 ))
             }
-            Err(_) => BackendTask::DocumentTask(DocumentTask::BroadcastDocument(
-                DocumentV0::default().into(),
-                None,
-                [0; 32],
-                self.selected_document_type.as_ref().unwrap().clone(),
-                self.selected_identity.as_ref().unwrap().clone(),
-                self.selected_key.as_ref().unwrap().clone(),
-            )),
+            Err(e) => {
+                self.backend_message = Some(format!("Failed to build document: {}", e));
+                BackendTask::None
+            }
         }
     }
 
@@ -657,7 +753,7 @@ impl DocumentActionScreen {
         ))
     }
 
-    fn create_replace_task(&self) -> BackendTask {
+    fn create_replace_task(&mut self) -> BackendTask {
         if let Some(_original_doc) = &self.original_doc {
             match self.try_build_document_from_original() {
                 Ok((updated_doc, _entropy)) => {
@@ -686,31 +782,9 @@ impl DocumentActionScreen {
                         token_payment_info,
                     ))
                 }
-                Err(_) => {
-                    let doc_type = self.selected_document_type.as_ref().unwrap();
-
-                    let token_payment_info = if let Some(token_creation_cost) =
-                        doc_type.document_replacement_token_cost()
-                    {
-                        Some(TokenPaymentInfo::V0(TokenPaymentInfoV0 {
-                            payment_token_contract_id: token_creation_cost.contract_id,
-                            token_contract_position: token_creation_cost.token_contract_position,
-                            gas_fees_paid_by: token_creation_cost.gas_fees_paid_by,
-                            minimum_token_cost: None,
-                            maximum_token_cost: Some(token_creation_cost.token_amount),
-                        }))
-                    } else {
-                        None
-                    };
-
-                    BackendTask::DocumentTask(DocumentTask::ReplaceDocument(
-                        DocumentV0::default().into(),
-                        doc_type.clone(),
-                        self.selected_contract.as_ref().unwrap().contract.clone(),
-                        self.selected_identity.as_ref().unwrap().clone(),
-                        self.selected_key.as_ref().unwrap().clone(),
-                        token_payment_info,
-                    ))
+                Err(e) => {
+                    self.backend_message = Some(format!("Failed to build updated document: {}", e));
+                    BackendTask::None
                 }
             }
         } else {
@@ -983,10 +1057,6 @@ impl DocumentActionScreen {
 
     fn try_build_document_from_original(&self) -> Result<(Document, [u8; 32]), String> {
         let original_doc = self.original_doc.as_ref().ok_or("No original document")?;
-        let _contract = self
-            .selected_contract
-            .as_ref()
-            .ok_or("No contract selected")?;
         let doc_type = self
             .selected_document_type
             .as_ref()
@@ -1134,15 +1204,15 @@ impl DocumentActionScreen {
             properties,
             owner_id: original_doc.owner_id(),
             revision: new_revision,
-            created_at: original_doc.created_at(),
+            created_at: None,
             updated_at: None,
-            transferred_at: original_doc.transferred_at(),
-            created_at_block_height: original_doc.created_at_block_height(),
+            transferred_at: None,
+            created_at_block_height: None,
             updated_at_block_height: None,
-            transferred_at_block_height: original_doc.transferred_at_block_height(),
-            created_at_core_block_height: original_doc.created_at_core_block_height(),
+            transferred_at_block_height: None,
+            created_at_core_block_height: None,
             updated_at_core_block_height: None,
-            transferred_at_core_block_height: original_doc.transferred_at_core_block_height(),
+            transferred_at_core_block_height: None,
         };
 
         Ok((updated_doc.into(), entropy))
@@ -1153,9 +1223,16 @@ impl DocumentActionScreen {
             DocumentActionType::Create => !self.field_inputs.is_empty(),
             DocumentActionType::Delete => !self.document_id_input.is_empty(),
             DocumentActionType::Purchase => {
-                !self.document_id_input.is_empty() && self.fetched_price.is_some()
+                !self.document_id_input.is_empty()
+                    && self.fetched_price.is_some()
+                    && (self.broadcast_status == BroadcastStatus::Fetched
+                        || self.broadcast_status == BroadcastStatus::NotBroadcasted)
             }
-            DocumentActionType::Replace => self.original_doc.is_some(),
+            DocumentActionType::Replace => {
+                self.original_doc.is_some()
+                    && (self.broadcast_status == BroadcastStatus::Fetched
+                        || self.broadcast_status == BroadcastStatus::NotBroadcasted)
+            }
             DocumentActionType::SetPrice => {
                 !self.document_id_input.is_empty() && !self.price_input.is_empty()
             }
@@ -1212,24 +1289,97 @@ impl ScreenLike for DocumentActionScreen {
     }
 
     fn display_message(&mut self, message: &str, _message_type: crate::ui::MessageType) {
-        self.backend_message = Some(message.to_string());
-        self.broadcast_status = BroadcastStatus::NotBroadcasted;
+        if message.contains("Document deleted successfully")
+            || message.contains("Document replaced successfully")
+            || message.contains("Document transferred successfully")
+            || message.contains("Document purchased successfully")
+            || message.contains("Document price set successfully")
+        {
+            self.broadcast_status = BroadcastStatus::Broadcasted;
+        } else {
+            self.backend_message = Some(message.to_string());
+            self.broadcast_status = BroadcastStatus::NotBroadcasted;
+        }
     }
 
     fn display_task_result(&mut self, result: crate::ui::BackendTaskSuccessResult) {
         match result {
-            BackendTaskSuccessResult::Message(msg) => {
-                if msg.contains("Document deleted successfully")
-                    || msg.contains("Document replaced successfully")
-                    || msg.contains("Document transferred successfully")
-                    || msg.contains("Document purchased successfully")
-                    || msg.contains("Document price set successfully")
-                {
-                    self.broadcast_status = BroadcastStatus::Broadcasted;
-                };
-            }
             BackendTaskSuccessResult::BroadcastedDocument(_) => {
                 self.broadcast_status = BroadcastStatus::Broadcasted;
+            }
+            BackendTaskSuccessResult::Documents(documents) => {
+                self.broadcast_status = BroadcastStatus::Fetched;
+
+                match self.action_type {
+                    DocumentActionType::Replace => {
+                        // For replace, we need to fetch the original document and populate fields
+                        if let Some((_id, Some(doc))) = documents.first() {
+                            self.original_doc = Some(doc.clone());
+                            // Populate field inputs with existing values
+                            // Only include properties that are defined in the document type schema
+                            let doc_type_properties =
+                                self.selected_document_type.as_ref().unwrap().properties();
+                            self.field_inputs = doc
+                                .properties()
+                                .iter()
+                                .filter(|(k, _)| doc_type_properties.contains_key(k.as_str()))
+                                .map(|(k, v)| {
+                                    let s = match v {
+                                        Value::Text(text) => text.clone(),
+                                        Value::Bytes(bytes) => hex::encode(bytes),
+                                        Value::Bool(b) => b.to_string(),
+                                        Value::U8(n) => n.to_string(),
+                                        Value::U16(n) => n.to_string(),
+                                        Value::U32(n) => n.to_string(),
+                                        Value::U64(n) => n.to_string(),
+                                        Value::U128(n) => n.to_string(),
+                                        Value::I8(n) => n.to_string(),
+                                        Value::I16(n) => n.to_string(),
+                                        Value::I32(n) => n.to_string(),
+                                        Value::I64(n) => n.to_string(),
+                                        Value::I128(n) => n.to_string(),
+                                        Value::Float(f) => f.to_string(),
+                                        Value::Identifier(id) => match Identifier::from_bytes(id) {
+                                            Ok(identifier) => {
+                                                identifier.to_string(Encoding::Base58)
+                                            }
+                                            Err(_) => "<invalid identifier>".to_string(),
+                                        },
+                                        _ => v.to_string(), // fallback for arrays/objects
+                                    };
+                                    (k.clone(), s)
+                                })
+                                .collect();
+                        } else {
+                            self.original_doc = None;
+                            self.field_inputs.clear();
+                        }
+                    }
+                    DocumentActionType::Purchase => {
+                        // For purchase, we need to extract the price
+                        if let Some((_id, Some(doc))) = documents.first() {
+                            match doc.properties().get_optional_integer::<Credits>(PRICE) {
+                                Ok(Some(price)) => {
+                                    self.fetched_price = Some(price);
+                                }
+                                Ok(None) => {
+                                    self.backend_message =
+                                        Some("Document has no price set".to_string());
+                                    self.fetched_price = None;
+                                }
+                                Err(_) => {
+                                    self.backend_message =
+                                        Some("Failed to get document price".to_string());
+                                    self.fetched_price = None;
+                                }
+                            }
+                        } else {
+                            self.backend_message = Some("No document found".to_string());
+                            self.fetched_price = None;
+                        }
+                    }
+                    _ => {}
+                }
             }
             _ => {
                 // Nothing

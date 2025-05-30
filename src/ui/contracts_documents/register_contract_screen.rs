@@ -180,7 +180,7 @@ impl RegisterDataContractScreen {
 
         // Key selection
         if let Some(ref qid) = self.selected_qualified_identity {
-            // Attempt to self.app_context.developer_mode.load(Ordering::Relaxed) eys in normal mode)
+            // Attempt to list available keys (only auth keys in normal mode)
             let keys = if self.app_context.developer_mode.load(Ordering::Relaxed) {
                 qid.0
                     .identity

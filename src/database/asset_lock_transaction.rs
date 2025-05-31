@@ -5,7 +5,7 @@ use dash_sdk::dpp::dashcore::{
     consensus::{deserialize, serialize},
     InstantLock, Network, Transaction,
 };
-use rusqlite::params;
+use rusqlite::{params, Connection};
 
 impl Database {
     /// Stores an asset lock transaction and optional InstantLock into the database.
@@ -135,9 +135,8 @@ impl Database {
     /// Deletes all asset lock transactions in Devnet variants and Regtest.
     pub fn remove_all_asset_locks_identity_id_for_all_devnets_and_regtest(
         &self,
+        conn: &Connection,
     ) -> rusqlite::Result<()> {
-        let conn = self.conn.lock().unwrap();
-
         conn.execute(
             "DELETE FROM asset_lock_transaction
          WHERE network LIKE 'devnet%' OR network = 'regtest'",
@@ -317,9 +316,10 @@ impl Database {
     ///
     /// Safe to run multiple times: if the table already has the correct FKs it
     /// exits early.
-    pub fn migrate_asset_lock_fk_to_set_null(&self) -> rusqlite::Result<()> {
-        let mut conn = self.conn.lock().unwrap();
-
+    pub fn migrate_asset_lock_fk_to_set_null(
+        &self,
+        conn: &rusqlite::Connection,
+    ) -> rusqlite::Result<()> {
         {
             // ── 1. Detect whether migration is needed ───────────────────────────────
             let mut pragma = conn.prepare("PRAGMA foreign_key_list('asset_lock_transaction')")?;
@@ -345,14 +345,13 @@ impl Database {
 
         // ── 2. Recreate table with correct FK actions inside a transaction ─────
         conn.execute("PRAGMA foreign_keys = OFF", [])?;
-        let tx = conn.transaction()?;
 
-        tx.execute(
+        conn.execute(
             "ALTER TABLE asset_lock_transaction RENAME TO asset_lock_transaction_old",
             [],
         )?;
 
-        tx.execute(
+        conn.execute(
             "CREATE TABLE asset_lock_transaction (
                 tx_id BLOB PRIMARY KEY,
                 transaction_data BLOB NOT NULL,
@@ -373,7 +372,7 @@ impl Database {
             [],
         )?;
 
-        tx.execute(
+        conn.execute(
             "INSERT INTO asset_lock_transaction
               (tx_id, transaction_data, amount, instant_lock_data,
                chain_locked_height, identity_id, identity_id_potentially_in_creation,
@@ -385,8 +384,8 @@ impl Database {
             [],
         )?;
 
-        tx.execute("DROP TABLE asset_lock_transaction_old", [])?;
-        tx.commit()?;
+        conn.execute("DROP TABLE asset_lock_transaction_old", [])?;
+
         conn.execute("PRAGMA foreign_keys = ON", [])?;
 
         Ok(())

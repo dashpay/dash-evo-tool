@@ -13,7 +13,7 @@ use dash_sdk::dpp::serialization::{
     PlatformDeserializableWithPotentialValidationFromVersionedStructure,
     PlatformSerializableWithPlatformVersion,
 };
-use rusqlite::{params, params_from_iter, Result};
+use rusqlite::{params, params_from_iter, Connection, Result};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InsertTokensToo {
@@ -293,9 +293,10 @@ impl Database {
     }
 
     /// Deletes all contracts in Devnet variants and Regtest.
-    pub fn remove_all_contracts_in_all_devnets_and_regtest(&self) -> rusqlite::Result<()> {
-        let conn = self.conn.lock().unwrap();
-
+    pub fn remove_all_contracts_in_all_devnets_and_regtest(
+        &self,
+        conn: &Connection,
+    ) -> rusqlite::Result<()> {
         conn.execute(
             "DELETE FROM contract WHERE network LIKE 'devnet%' OR network = 'regtest'",
             [],
@@ -351,9 +352,7 @@ impl Database {
     }
 
     /// Perform the database migration to change the field "name" to "alias" in the contract table.
-    pub fn change_contract_name_to_alias(&self) -> rusqlite::Result<()> {
-        let conn = self.conn.lock().unwrap();
-
+    pub fn change_contract_name_to_alias(&self, conn: &Connection) -> rusqlite::Result<()> {
         // Check if the column "name" exists
         let mut stmt = conn.prepare("PRAGMA table_info(contract)")?;
         let mut columns = stmt.query([])?;

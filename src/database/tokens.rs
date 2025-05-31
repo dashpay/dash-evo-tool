@@ -9,7 +9,9 @@ use rusqlite::params;
 use rusqlite::OptionalExtension;
 
 use super::Database;
-use crate::ui::tokens::tokens_screen::{IdentityTokenIdentifier, TokenInfo, TokenInfoWithDataContract};
+use crate::ui::tokens::tokens_screen::{
+    IdentityTokenIdentifier, TokenInfo, TokenInfoWithDataContract,
+};
 use crate::{context::AppContext, ui::tokens::tokens_screen::IdentityTokenBalance};
 
 impl Database {
@@ -215,8 +217,8 @@ impl Database {
                 &token_config_bytes,
                 standard(),
             )
-                .map(|(cfg, _)| cfg)
-                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+            .map(|(cfg, _)| cfg)
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
 
             // Deserialize DataContract using versioned_deserialize
             let data_contract = DataContract::versioned_deserialize(
@@ -224,10 +226,10 @@ impl Database {
                 false,
                 app_context.platform_version,
             )
-                .map_err(|e| {
-                    eprintln!("Failed to deserialize DataContract: {}", e);
-                    rusqlite::Error::ToSqlConversionFailure(Box::new(e))
-                })?;
+            .map_err(|e| {
+                eprintln!("Failed to deserialize DataContract: {}", e);
+                rusqlite::Error::ToSqlConversionFailure(Box::new(e))
+            })?;
 
             Ok((
                 Identifier::from_vec(row.get(0)?).expect("Failed to parse token ID"),

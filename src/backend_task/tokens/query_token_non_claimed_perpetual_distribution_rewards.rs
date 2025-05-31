@@ -19,10 +19,13 @@ use dash_sdk::platform::Fetch;
 use dash_sdk::platform::fetch_current_no_parameters::FetchCurrent;
 use dash_sdk::platform::query::TokenLastClaimQuery;
 
-
-
 impl AppContext {
-    fn validate_perpetual_distribution_recipient(&self, contract_owner_id: Identifier, recipient: TokenDistributionRecipient, identity_id: Identifier) -> Result<(), String> {
+    fn validate_perpetual_distribution_recipient(
+        &self,
+        contract_owner_id: Identifier,
+        recipient: TokenDistributionRecipient,
+        identity_id: Identifier,
+    ) -> Result<(), String> {
         match recipient {
             TokenDistributionRecipient::ContractOwner => {
                 if contract_owner_id != identity_id {
@@ -84,7 +87,11 @@ impl AppContext {
             .ok_or("Corrupted DET state: Data contract not found in database")?;
 
         let recipient = perpetual_distribution.distribution_recipient();
-        self.validate_perpetual_distribution_recipient(data_contract.contract.owner_id(), recipient, identity_id)?;
+        self.validate_perpetual_distribution_recipient(
+            data_contract.contract.owner_id(),
+            recipient,
+            identity_id,
+        )?;
 
         let reward_distribution_type = perpetual_distribution.distribution_type();
 

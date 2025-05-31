@@ -164,30 +164,27 @@ impl ClaimTokensScreen {
                                     .available_authentication_keys_with_critical_security_level()
                                 {
                                     let key = &key_wrapper.identity_public_key;
-                                    let label = format!(
-                                        "Key ID: {}",
-                                        key.id()
+                                    let label = format!("Key ID: {}", key.id());
+                                    ui.selectable_value(
+                                        &mut self.selected_key,
+                                        Some(key.clone()),
+                                        label,
                                     );
-                                    ui.selectable_value(&mut self.selected_key, Some(key.clone()), label);
                                 }
                             }
-                            IdentityType::Masternode
-                            | IdentityType::Evonode => {
+                            IdentityType::Masternode | IdentityType::Evonode => {
                                 // Show only "available" auth keys
-                                for key_wrapper in self
-                                    .identity
-                                    .available_transfer_keys()
-                                {
+                                for key_wrapper in self.identity.available_transfer_keys() {
                                     let key = &key_wrapper.identity_public_key;
-                                    let label = format!(
-                                        "Key ID: {}",
-                                        key.id()
+                                    let label = format!("Key ID: {}", key.id());
+                                    ui.selectable_value(
+                                        &mut self.selected_key,
+                                        Some(key.clone()),
+                                        label,
                                     );
-                                    ui.selectable_value(&mut self.selected_key, Some(key.clone()), label);
                                 }
                             }
                         }
-
                     }
                 });
         });

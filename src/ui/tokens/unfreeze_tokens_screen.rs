@@ -297,17 +297,8 @@ impl UnfreezeTokensScreen {
                         .as_secs();
                     self.status = UnfreezeTokensStatus::WaitingForResult(now);
 
-                    let data_contract = self
-                        .app_context
-                        .get_contracts(None, None)
-                        .expect("Contracts not loaded")
-                        .iter()
-                        .find(|c| {
-                            c.contract.id() == self.identity_token_info.data_contract.contract.id()
-                        })
-                        .expect("Data contract not found")
-                        .contract
-                        .clone();
+                    // Grab the data contract for this token from the app context
+                    let data_contract = self.identity_token_info.data_contract.contract.clone();
 
                     let group_info;
                     if self.group_action_id.is_some() {

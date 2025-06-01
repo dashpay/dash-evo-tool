@@ -254,7 +254,6 @@ impl IdentityTokenInfo {
 pub struct IdentityTokenMaybeBalanceWithActions {
     pub token_id: Identifier,
     pub token_alias: String,
-    pub token_name: String,
     pub token_config: TokenConfiguration,
     pub identity_id: Identifier,
     pub identity_alias: Option<String>,
@@ -292,7 +291,7 @@ impl IdentityTokenMaybeBalanceWithActions {
     pub fn to_token_balance(&self, balance: TokenAmount) -> IdentityTokenBalance {
         IdentityTokenBalance {
             token_id: self.token_id,
-            token_alias: self.token_name.clone(),
+            token_alias: self.token_alias.clone(),
             token_config: self.token_config.clone(),
             identity_id: self.identity_id,
             balance,
@@ -343,6 +342,7 @@ impl IdentityTokenBalance {
         in_dev_mode: bool,
     ) -> IdentityTokenBalanceWithActions {
         let available_actions = get_available_token_actions_for_identity(
+            Some(self.balance),
             identity,
             &self.token_config,
             contract,
@@ -389,9 +389,55 @@ pub struct IdentityTokenAvailableActions {
     pub can_do_emergency_action: bool,
     pub can_maybe_purchase: bool,
     pub can_set_price: bool,
+    pub can_transfer: bool,
+    pub can_update_config: bool,
+}
+
+impl IdentityTokenAvailableActions {
+    pub fn shown_buttons(&self) -> usize {
+        let mut count = 0;
+
+        if self.can_claim {
+            count += 1;
+        }
+        if self.can_estimate {
+            count += 1;
+        }
+        if self.can_mint {
+            count += 1;
+        }
+        if self.can_burn {
+            count += 1;
+        }
+        if self.can_freeze {
+            count += 1;
+        }
+        if self.can_unfreeze {
+            count += 1;
+        }
+        if self.can_destroy {
+            count += 1;
+        }
+        if self.can_do_emergency_action {
+            count += 2;
+        } // counts twice
+        if self.can_maybe_purchase {
+            count += 1;
+        }
+        if self.can_set_price {
+            count += 1;
+        }
+        // self.can_transfer is intentionally excluded
+        if self.can_update_config {
+            count += 1;
+        }
+
+        count
+    }
 }
 
 pub fn get_available_token_actions_for_identity(
+    known_balance: Option<TokenAmount>,
     identity: &QualifiedIdentity,
     token_configuration: &TokenConfiguration,
     contract: &DataContract,
@@ -402,6 +448,8 @@ pub fn get_available_token_actions_for_identity(
     let contract_owner_id = contract.owner_id();
     let identity_id = identity.identity.id();
     let solo_action_taker = ActionTaker::SingleIdentity(identity_id);
+
+    let can_transfer = known_balance.is_some() && known_balance.unwrap() > 0;
 
     let is_authorized = |takers: &AuthorizedActionTakers| {
         takers.allowed_for_action_taker(
@@ -468,6 +516,12 @@ pub fn get_available_token_actions_for_identity(
             .authorized_to_make_change_action_takers()
             != &AuthorizedActionTakers::NoOne;
 
+    let can_update_config = in_dev_mode
+        || token_configuration
+            .all_change_control_rules()
+            .iter()
+            .any(|(_, rule)| is_authorized(rule.admin_action_takers()));
+
     IdentityTokenAvailableActions {
         can_claim,
         can_estimate,
@@ -515,5 +569,7 @@ pub fn get_available_token_actions_for_identity(
                     .change_direct_purchase_pricing_rules()
                     .authorized_to_make_change_action_takers(),
             ),
+        can_transfer,
+        can_update_config,
     }
 }

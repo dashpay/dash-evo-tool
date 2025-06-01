@@ -25,14 +25,42 @@ jobs:
     strategy:
       matrix:
         include:
+          # Linux x86_64 - Modern build (Ubuntu 24.04, GLIBC 2.39)
           - name: "linux-x86_64"
             runs-on: "ubuntu-24.04"
             target: "x86_64-unknown-linux-gnu"
             platform: "x86_64-linux"
+            build-type: "modern"
+          
+          # Linux x86_64 - Compatible build (Ubuntu 20.04, GLIBC 2.31)
+          - name: "linux-x86_64-compat"
+            runs-on: "ubuntu-20.04"
+            target: "x86_64-unknown-linux-gnu"
+            platform: "x86_64-linux-compat"
+            build-type: "compat"
+          
+          # Linux ARM64 - Modern build
           - name: "linux-arm64"
             runs-on: "ubuntu-22.04-arm"
             target: "aarch64-unknown-linux-gnu"
             platform: "arm64-linux"
+            build-type: "modern"
+          
+          # Linux ARM64 - Compatible build
+          - name: "linux-arm64-compat"
+            runs-on: "ubuntu-20.04-arm"
+            target: "aarch64-unknown-linux-gnu"
+            platform: "arm64-linux-compat"
+            build-type: "compat"
+          
+          # AppImage x86_64 build
+          - name: "linux-x86_64-appimage"
+            runs-on: "ubuntu-20.04"
+            target: "x86_64-unknown-linux-gnu"
+            platform: "x86_64-linux-appimage"
+            build-type: "appimage"
+          
+          # macOS builds
           - name: "macos-x86_64"
             runs-on: "macos-13"
             target: "x86_64-apple-darwin"
@@ -41,6 +69,8 @@ jobs:
             runs-on: "macos-latest"
             target: "aarch64-apple-darwin"
             platform: "arm64-mac"
+          
+          # Windows build
           - name: "Windows"
             runs-on: "ubuntu-24.04"
             target: "x86_64-pc-windows-gnu"
@@ -64,7 +94,6 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-
       - name: Setup prerequisites
         run: |
           mkdir -p dash-evo-tool/
@@ -80,16 +109,35 @@ jobs:
 
       - name: Install essentials
         if: ${{ runner.os == 'Linux' }}
-        run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config clang cmake unzip libsqlite3-dev gcc-mingw-w64 mingw-w64 libsqlite3-dev mingw-w64-x86-64-dev gcc-aarch64-linux-gnu zip && uname -a && cargo clean
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config clang cmake unzip libsqlite3-dev zip
+          if [ "${{ matrix.target }}" = "x86_64-pc-windows-gnu" ]; then
+            sudo apt-get install -y gcc-mingw-w64 mingw-w64 mingw-w64-x86-64-dev
+          fi
+          if [ "${{ matrix.target }}" = "aarch64-unknown-linux-gnu" ] && [ "${{ runner.arch }}" != "ARM64" ]; then
+            sudo apt-get install -y gcc-aarch64-linux-gnu
+          fi
+          uname -a && cargo clean
+
+      # Install AppImage tools for AppImage builds
+      - name: Install AppImage tools
+        if: ${{ matrix.build-type == 'appimage' }}
+        run: |
+          wget -q https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          chmod +x linuxdeploy-x86_64.AppImage
+          sudo mv linuxdeploy-x86_64.AppImage /usr/local/bin/linuxdeploy
+          # Install additional dependencies that might be needed at runtime
+          sudo apt-get install -y libxcb-xfixes0-dev libxcb-shape0-dev libxcb-randr0-dev libxcb-xkb-dev libxkbcommon-x11-dev
 
       - name: Install protoc (ARM)
-        if: ${{ matrix.platform == 'arm64-linux' }}
+        if: ${{ matrix.platform == 'arm64-linux' || matrix.platform == 'arm64-linux-compat' }}
         run: curl -OL https://github.com/protocolbuffers/protobuf/releases/download/v25.2/protoc-25.2-linux-aarch_64.zip && sudo unzip -o protoc-25.2-linux-aarch_64.zip -d /usr/local bin/protoc && sudo unzip -o protoc-25.2-linux-aarch_64.zip -d /usr/local 'include/*' && rm -f protoc-25.2-linux-aarch_64.zip
         env:
           PROTOC: /usr/local/bin/protoc
 
-      - name: Install protoc (AMD)
-        if: ${{ matrix.target == 'x86_64-unknown-linux-gnu' }}
+      - name: Install protoc (AMD/AppImage)
+        if: ${{ matrix.target == 'x86_64-unknown-linux-gnu' || matrix.build-type == 'appimage' }}
         run: curl -OL https://github.com/protocolbuffers/protobuf/releases/download/v25.2/protoc-25.2-linux-x86_64.zip && sudo unzip -o protoc-25.2-linux-x86_64.zip -d /usr/local bin/protoc && sudo unzip -o protoc-25.2-linux-x86_64.zip -d /usr/local 'include/*' && rm -f protoc-25.2-linux-x86_64.zip
         env:
           PROTOC: /usr/local/bin/protoc
@@ -125,9 +173,62 @@ jobs:
           AR_x86_64_pc_windows_gnu: x86_64-w64-mingw32-ar
           CFLAGS_x86_64_pc_windows_gnu: "-O2"
 
+      # Create AppImage
+      - name: Create AppImage
+        if: ${{ matrix.build-type == 'appimage' }}
+        run: |
+          # Create AppDir structure
+          mkdir -p AppDir/usr/bin
+          mkdir -p AppDir/usr/share/applications
+          mkdir -p AppDir/usr/share/icons/hicolor/256x256/apps
+          
+          # Copy binary and resources
+          cp dash-evo-tool/dash-evo-tool AppDir/usr/bin/
+          cp -r dash-evo-tool/dash_core_configs AppDir/usr/bin/
+          cp dash-evo-tool/.env AppDir/usr/bin/
+          
+          # Create desktop file
+          cat > AppDir/usr/share/applications/dash-evo-tool.desktop << EOF
+          [Desktop Entry]
+          Name=Dash Evo Tool
+          Exec=dash-evo-tool
+          Icon=dash-evo-tool
+          Type=Application
+          Categories=Utility;
+          X-AppImage-Version=${{ github.ref_name }}
+          EOF
+          
+          # Copy the app icon
+          cp mac_os/AppIcons/Assets.xcassets/AppIcon.appiconset/256.png AppDir/usr/share/icons/hicolor/256x256/apps/dash-evo-tool.png
+          
+          # Create AppRun script
+          cat > AppDir/AppRun << 'EOF'
+          #!/bin/bash
+          SELF=$(readlink -f "$0")
+          HERE=${SELF%/*}
+          export PATH="${HERE}/usr/bin:${PATH}"
+          export LD_LIBRARY_PATH="${HERE}/usr/lib:${LD_LIBRARY_PATH}"
+          cd "${HERE}/usr/bin"
+          exec "${HERE}/usr/bin/dash-evo-tool" "$@"
+          EOF
+          chmod +x AppDir/AppRun
+          
+          # Use linuxdeploy to create AppImage
+          linuxdeploy --appdir AppDir --output appimage
+          
+          # Move the generated AppImage
+          mv Dash_Evo_Tool*.AppImage dash-evo-tool.AppImage
+
       - name: Package release
+        if: ${{ matrix.build-type != 'appimage' }}
         run: |
           zip -r dash-evo-tool-${{ matrix.platform }}.zip dash-evo-tool/
+
+      - name: Package AppImage
+        if: ${{ matrix.build-type == 'appimage' }}
+        run: |
+          # AppImage is already a single file, just create a zip for consistency
+          zip dash-evo-tool-${{ matrix.platform }}.zip dash-evo-tool.AppImage
 
       - name: Attest
         uses: actions/attest-build-provenance@v1
@@ -145,14 +246,29 @@ jobs:
     needs: build-and-release
     runs-on: ubuntu-latest
     steps:
-      - name: Download Linux AMD64 Artifact
+      # Download all Linux variants
+      - name: Download Linux AMD64 Modern
         uses: actions/download-artifact@v4
         with:
           name: dash-evo-tool-x86_64-linux.zip
-      - name: Download Linux Arm64 Artifact
+      - name: Download Linux AMD64 Compatible
+        uses: actions/download-artifact@v4
+        with:
+          name: dash-evo-tool-x86_64-linux-compat.zip
+      - name: Download Linux AMD64 AppImage
+        uses: actions/download-artifact@v4
+        with:
+          name: dash-evo-tool-x86_64-linux-appimage.zip
+      - name: Download Linux ARM64 Modern
         uses: actions/download-artifact@v4
         with:
           name: dash-evo-tool-arm64-linux.zip
+      - name: Download Linux ARM64 Compatible
+        uses: actions/download-artifact@v4
+        with:
+          name: dash-evo-tool-arm64-linux-compat.zip
+      
+      # Download macOS and Windows
       - name: Download MacOS AMD64 Artifact
         uses: actions/download-artifact@v4
         with:
@@ -174,9 +290,32 @@ jobs:
           tag_name: ${{ github.event.inputs.tag }}
           files: |
             ./dash-evo-tool-x86_64-linux.zip
+            ./dash-evo-tool-x86_64-linux-compat.zip
+            ./dash-evo-tool-x86_64-linux-appimage.zip
             ./dash-evo-tool-arm64-linux.zip
+            ./dash-evo-tool-arm64-linux-compat.zip
             ./dash-evo-tool-x86_64-mac.zip
             ./dash-evo-tool-arm64-mac.zip
             ./dash-evo-tool-windows.zip
           draft: false
           prerelease: true
+          body: |
+            ## Linux Build Variants
+            
+            This release includes multiple Linux build variants to ensure compatibility:
+            
+            ### Standard Builds
+            - **x86_64-linux**: Built on Ubuntu 24.04 (requires GLIBC 2.39+)
+            - **arm64-linux**: Built on Ubuntu 22.04 ARM
+            
+            ### Compatible Builds (Recommended for older systems)
+            - **x86_64-linux-compat**: Built on Ubuntu 20.04 (requires GLIBC 2.31+, compatible with most distributions from 2020+)
+            - **arm64-linux-compat**: Built on Ubuntu 20.04 ARM
+            
+            ### AppImage (Most Compatible)
+            - **x86_64-linux-appimage**: Self-contained AppImage with all dependencies bundled. Works on most Linux distributions.
+              
+            **Which version should I use?**
+            - Try the **-compat** version first if you're on an older Linux distribution
+            - Use the **AppImage** if you encounter any dependency issues
+            - The standard builds offer the best performance on modern systems

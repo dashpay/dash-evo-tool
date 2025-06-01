@@ -1,6 +1,6 @@
 //! Execute token query by keyword on Platform
 
-use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
+use crate::model::qualified_identity::IdentityType;
 use crate::ui::tokens::tokens_screen::IdentityTokenIdentifier;
 use crate::{backend_task::BackendTaskSuccessResult, context::AppContext};
 use dash_sdk::{platform::Identifier, Sdk};

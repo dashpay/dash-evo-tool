@@ -1,13 +1,8 @@
 use std::time::Duration;
 
 use dash_sdk::{
-    dpp::{
-        dashcore::Network, data_contract::accessors::v0::DataContractV0Getters,
-        platform_value::string_encoding::Encoding,
-    },
-    platform::{
-        transition::put_contract::PutContract, DataContract, Fetch, Identifier, IdentityPublicKey,
-    },
+    dpp::{dashcore::Network, data_contract::accessors::v0::DataContractV0Getters},
+    platform::{transition::put_contract::PutContract, DataContract, Fetch, IdentityPublicKey},
     Error, Sdk,
 };
 use tokio::{sync::mpsc, time::sleep};

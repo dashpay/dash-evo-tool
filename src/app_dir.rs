@@ -1,5 +1,6 @@
 use dash_sdk::dpp::dashcore::Network;
 use directories::ProjectDirs;
+#[cfg(target_os = "linux")]
 use directories::UserDirs;
 use std::fs;
 use std::path::PathBuf;

@@ -1,7 +1,6 @@
 use crate::app::AppAction;
 use crate::backend_task::tokens::TokenTask;
 use crate::backend_task::BackendTask;
-use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
 use crate::ui::tokens::burn_tokens_screen::BurnTokensScreen;
 use crate::ui::tokens::claim_tokens_screen::ClaimTokensScreen;
@@ -13,9 +12,8 @@ use crate::ui::tokens::pause_tokens_screen::PauseTokensScreen;
 use crate::ui::tokens::resume_tokens_screen::ResumeTokensScreen;
 use crate::ui::tokens::set_token_price_screen::SetTokenPriceScreen;
 use crate::ui::tokens::tokens_screen::{
-    validate_perpetual_distribution_recipient, IdentityTokenIdentifier, IdentityTokenInfo,
-    IdentityTokenMaybeBalance, RefreshingStatus, SortColumn, TokenInfoWithDataContract,
-    TokensScreen, TokensSubscreen,
+    IdentityTokenIdentifier, IdentityTokenInfo, IdentityTokenMaybeBalanceWithActions,
+    RefreshingStatus, SortColumn, TokenInfoWithDataContract, TokensScreen, TokensSubscreen,
 };
 use crate::ui::tokens::transfer_tokens_screen::TransferTokensScreen;
 use crate::ui::tokens::unfreeze_tokens_screen::UnfreezeTokensScreen;
@@ -27,11 +25,7 @@ use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::accessors::v0::TokenDistributionRulesV0Getters;
-use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::methods::v0::TokenPerpetualDistributionV0Accessors;
-use dash_sdk::dpp::data_contract::change_control_rules::authorized_action_takers::AuthorizedActionTakers;
-use dash_sdk::dpp::group::action_taker::{ActionGoal, ActionTaker};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
-use dash_sdk::platform::Identifier;
 use eframe::emath::Align;
 use eframe::epaint::{Color32, Margin};
 use egui::{Frame, RichText, Ui};
@@ -122,56 +116,56 @@ impl TokensScreen {
     fn render_token_details(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
 
-        let Some((token_id, contract, token_configuration)) = self.selected_token.as_ref() else {
+        let Some((token_id, contract, token_contract_position, token_configuration)) =
+            self.selected_token.clone()
+        else {
             return action;
         };
 
-        //todo remove clones
-        let contract = contract.clone();
-        let token_configuration = token_configuration.clone();
-
-        let Some(token_info) = self.all_known_tokens.get(token_id) else {
+        let Some(token_info) = self.all_known_tokens.get(&token_id) else {
             return action;
         };
 
         let identities = &self.identities;
 
-        let mut detail_list: Vec<(IdentityTokenMaybeBalance, QualifiedIdentity)> = vec![];
+        let mut detail_list: Vec<IdentityTokenMaybeBalanceWithActions> = vec![];
 
         for (identity_id, identity) in identities {
             let record = if let Some(known_token_balance) =
                 self.my_tokens.get(&IdentityTokenIdentifier {
                     identity_id: *identity_id,
-                    token_id: *token_id,
+                    token_id,
                 }) {
-                (
-                    IdentityTokenMaybeBalance {
-                        token_id: *token_id,
-                        token_name: token_info.token_name.clone(),
-                        identity_id: *identity_id,
-                        identity_alias: identity.alias.clone(),
-                        balance: Some(known_token_balance.clone()),
-                    },
-                    identity.clone(),
-                )
+                IdentityTokenMaybeBalanceWithActions {
+                    token_id,
+                    token_alias: known_token_balance.token_alias.clone(),
+                    token_name: token_info.token_name.clone(),
+                    token_config: known_token_balance.token_config.clone(),
+                    identity_id: *identity_id,
+                    identity_alias: identity.alias.clone(),
+                    balance: Some(known_token_balance.balance),
+                    estimated_unclaimed_rewards: known_token_balance.estimated_unclaimed_rewards,
+                    data_contract_id: known_token_balance.data_contract_id,
+                    token_position: known_token_balance.token_position,
+                    available_actions: known_token_balance.available_actions,
+                }
             } else {
-                (
-                    IdentityTokenMaybeBalance {
-                        token_id: *token_id,
-                        token_name: token_info.token_name.clone(),
-                        identity_id: *identity_id,
-                        identity_alias: identity.alias.clone(),
-                        balance: None,
-                    },
-                    identity.clone(),
-                )
+                IdentityTokenMaybeBalanceWithActions {
+                    token_id,
+                    token_alias: "".to_string(),
+                    token_name: token_info.token_name.clone(),
+                    token_config: token_configuration.clone(),
+                    identity_id: *identity_id,
+                    identity_alias: identity.alias.clone(),
+                    balance: None,
+                    estimated_unclaimed_rewards: None,
+                    data_contract_id: contract.id(),
+                    token_position: token_contract_position,
+                    available_actions: todo!(),
+                }
             };
             detail_list.push(record);
         }
-
-        // if !self.use_custom_order {
-        //     self.sort_vec(&mut detail_list);
-        // }
 
         // Allocate space for refreshing indicator
         let refreshing_height = 33.0;
@@ -190,238 +184,11 @@ impl TokensScreen {
 
         let in_dev_mode = self.app_context.developer_mode.load(Ordering::Relaxed);
 
-        let main_group = token_configuration.main_control_group();
-        let groups = contract.groups();
-        let contract_owner_id = contract.owner_id();
-
         let shows_estimation_column = in_dev_mode
             || token_configuration
                 .distribution_rules()
                 .perpetual_distribution()
                 .is_some();
-        let can_claim = |identity: &QualifiedIdentity| {
-            if let Some(distribution) = token_configuration
-                .distribution_rules()
-                .perpetual_distribution()
-            {
-                in_dev_mode
-                    || validate_perpetual_distribution_recipient(
-                        contract_owner_id,
-                        distribution.distribution_recipient(),
-                        identity,
-                    )
-                    .is_ok()
-                    || token_configuration
-                        .distribution_rules()
-                        .pre_programmed_distribution()
-                        .is_some()
-            } else {
-                in_dev_mode
-                    || token_configuration
-                        .distribution_rules()
-                        .pre_programmed_distribution()
-                        .is_some()
-            }
-        };
-        let can_estimate = |identity: &QualifiedIdentity| {
-            if let Some(distribution) = token_configuration
-                .distribution_rules()
-                .perpetual_distribution()
-            {
-                in_dev_mode
-                    || validate_perpetual_distribution_recipient(
-                        contract_owner_id,
-                        distribution.distribution_recipient(),
-                        identity,
-                    )
-                    .is_ok()
-            } else {
-                in_dev_mode
-            }
-        };
-        let can_mint = |identity_id: Identifier| {
-            let solo_action_taker = ActionTaker::SingleIdentity(identity_id);
-            let authorized = token_configuration
-                .manual_minting_rules()
-                .authorized_to_make_change_action_takers()
-                .allowed_for_action_taker(
-                    &contract_owner_id,
-                    main_group,
-                    groups,
-                    &solo_action_taker,
-                    ActionGoal::ActionCompletion,
-                );
-            let authorized_in_group = token_configuration
-                .manual_minting_rules()
-                .authorized_to_make_change_action_takers()
-                .allowed_for_action_taker(
-                    &contract_owner_id,
-                    main_group,
-                    groups,
-                    &solo_action_taker,
-                    ActionGoal::ActionParticipation,
-                );
-            in_dev_mode || authorized || authorized_in_group
-        };
-
-        let can_burn = |identity_id: Identifier| {
-            let solo_action_taker = ActionTaker::SingleIdentity(identity_id);
-            let authorized = token_configuration
-                .manual_burning_rules()
-                .authorized_to_make_change_action_takers()
-                .allowed_for_action_taker(
-                    &contract_owner_id,
-                    main_group,
-                    groups,
-                    &solo_action_taker,
-                    ActionGoal::ActionCompletion,
-                );
-            let authorized_in_group = token_configuration
-                .manual_burning_rules()
-                .authorized_to_make_change_action_takers()
-                .allowed_for_action_taker(
-                    &contract_owner_id,
-                    main_group,
-                    groups,
-                    &solo_action_taker,
-                    ActionGoal::ActionParticipation,
-                );
-            in_dev_mode || authorized || authorized_in_group
-        };
-
-        let can_freeze = |identity_id: Identifier| {
-            let solo_action_taker = ActionTaker::SingleIdentity(identity_id);
-            let authorized = token_configuration
-                .freeze_rules()
-                .authorized_to_make_change_action_takers()
-                .allowed_for_action_taker(
-                    &contract_owner_id,
-                    main_group,
-                    groups,
-                    &solo_action_taker,
-                    ActionGoal::ActionCompletion,
-                );
-            let authorized_in_group = token_configuration
-                .freeze_rules()
-                .authorized_to_make_change_action_takers()
-                .allowed_for_action_taker(
-                    &contract_owner_id,
-                    main_group,
-                    groups,
-                    &solo_action_taker,
-                    ActionGoal::ActionParticipation,
-                );
-            in_dev_mode || authorized || authorized_in_group
-        };
-
-        let can_unfreeze = |identity_id: Identifier| {
-            let solo_action_taker = ActionTaker::SingleIdentity(identity_id);
-            let authorized = token_configuration
-                .unfreeze_rules()
-                .authorized_to_make_change_action_takers()
-                .allowed_for_action_taker(
-                    &contract_owner_id,
-                    main_group,
-                    groups,
-                    &solo_action_taker,
-                    ActionGoal::ActionCompletion,
-                );
-            let authorized_in_group = token_configuration
-                .unfreeze_rules()
-                .authorized_to_make_change_action_takers()
-                .allowed_for_action_taker(
-                    &contract_owner_id,
-                    main_group,
-                    groups,
-                    &solo_action_taker,
-                    ActionGoal::ActionParticipation,
-                );
-            in_dev_mode || authorized || authorized_in_group
-        };
-
-        let can_destroy = |identity_id: Identifier| {
-            let solo_action_taker = ActionTaker::SingleIdentity(identity_id);
-            let authorized = token_configuration
-                .destroy_frozen_funds_rules()
-                .authorized_to_make_change_action_takers()
-                .allowed_for_action_taker(
-                    &contract_owner_id,
-                    main_group,
-                    groups,
-                    &solo_action_taker,
-                    ActionGoal::ActionCompletion,
-                );
-            let authorized_in_group = token_configuration
-                .destroy_frozen_funds_rules()
-                .authorized_to_make_change_action_takers()
-                .allowed_for_action_taker(
-                    &contract_owner_id,
-                    main_group,
-                    groups,
-                    &solo_action_taker,
-                    ActionGoal::ActionParticipation,
-                );
-            in_dev_mode || authorized || authorized_in_group
-        };
-
-        let can_do_emergency_action = |identity_id: Identifier| {
-            let solo_action_taker = ActionTaker::SingleIdentity(identity_id);
-            let authorized = token_configuration
-                .emergency_action_rules()
-                .authorized_to_make_change_action_takers()
-                .allowed_for_action_taker(
-                    &contract_owner_id,
-                    main_group,
-                    groups,
-                    &solo_action_taker,
-                    ActionGoal::ActionCompletion,
-                );
-            let authorized_in_group = token_configuration
-                .emergency_action_rules()
-                .authorized_to_make_change_action_takers()
-                .allowed_for_action_taker(
-                    &contract_owner_id,
-                    main_group,
-                    groups,
-                    &solo_action_taker,
-                    ActionGoal::ActionParticipation,
-                );
-            in_dev_mode || authorized || authorized_in_group
-        };
-
-        let can_maybe_purchase = in_dev_mode
-            || token_configuration
-                .distribution_rules()
-                .change_direct_purchase_pricing_rules()
-                .authorized_to_make_change_action_takers()
-                != &AuthorizedActionTakers::NoOne;
-
-        let can_set_price = |identity_id: Identifier| {
-            let solo_action_taker = ActionTaker::SingleIdentity(identity_id);
-            let authorized = token_configuration
-                .distribution_rules()
-                .change_direct_purchase_pricing_rules()
-                .authorized_to_make_change_action_takers()
-                .allowed_for_action_taker(
-                    &contract_owner_id,
-                    main_group,
-                    groups,
-                    &solo_action_taker,
-                    ActionGoal::ActionCompletion,
-                );
-            let authorized_in_group = token_configuration
-                .distribution_rules()
-                .change_direct_purchase_pricing_rules()
-                .authorized_to_make_change_action_takers()
-                .allowed_for_action_taker(
-                    &contract_owner_id,
-                    main_group,
-                    groups,
-                    &solo_action_taker,
-                    ActionGoal::ActionParticipation,
-                );
-            in_dev_mode || authorized || authorized_in_group
-        };
 
         // A simple table with columns: [Token Name | Token ID | Total Balance]
         egui::ScrollArea::vertical()
@@ -475,7 +242,7 @@ impl TokensScreen {
                             });
                         })
                             .body(|mut body| {
-                                for (itb, qi) in &detail_list {
+                                for itb in &detail_list {
                                     body.row(25.0, |mut row| {
                                         row.col(|ui| {
                                             // Show identity alias or ID
@@ -493,7 +260,7 @@ impl TokensScreen {
                                             ui.label(itb.identity_id.to_string(Encoding::Base58));
                                         });
                                         row.col(|ui| {
-                                            if let Some(balance) = itb.balance.as_ref().map(|balance| balance.balance.to_string()) {
+                                            if let Some(balance) = itb.balance.as_ref().map(|balance| balance.to_string()) {
                                                 ui.label(balance);
                                             } else {
                                                 if ui.button("Check").clicked() {
@@ -503,9 +270,8 @@ impl TokensScreen {
                                         });
                                         if shows_estimation_column {
                                             row.col(|ui| {
-                                                if can_estimate(qi) {
-                                                    if let Some(known_rewards) = itb.balance.as_ref().map(|itb| itb.estimated_unclaimed_rewards) {
-                                                        if let Some(known_rewards) = known_rewards {
+                                                if itb.available_actions.can_estimate {
+                                                        if let Some(known_rewards) = itb.estimated_unclaimed_rewards  {
                                                             ui.horizontal(|ui| {
                                                                 ui.label(known_rewards.to_string());
                                                                 if ui.button("Estimate").clicked() {
@@ -525,7 +291,6 @@ impl TokensScreen {
                                                                 self.refreshing_status = RefreshingStatus::Refreshing(Utc::now().timestamp() as u64);
                                                             }
                                                         }
-                                                    }
                                                 }
                                             });
                                         }
@@ -533,21 +298,23 @@ impl TokensScreen {
                                             ui.horizontal(|ui| {
                                                 ui.spacing_mut().item_spacing.x = 3.0;
 
-                                                if let Some(itb) = itb.balance.as_ref() {
+                                                if let Some(balance) = itb.balance {
                                                     // Transfer
                                                     if ui.button("Transfer").clicked() {
                                                         action = AppAction::AddScreen(
                                                             Screen::TransferTokensScreen(
                                                                 TransferTokensScreen::new(
-                                                                    itb.clone(),
+                                                                    itb.to_token_balance(balance),
                                                                     &self.app_context,
                                                                 ),
                                                             ),
                                                         );
                                                     }
+                                                }
+
 
                                                     // Claim
-                                                    if can_claim(qi) {
+                                                    if itb.available_actions.can_claim {
                                                         if ui.button("Claim").clicked() {
                                                             let token_contract = match self.app_context.get_contract_by_token_id(&itb.token_id) {
                                                                 Ok(Some(contract)) => contract,
@@ -564,7 +331,7 @@ impl TokensScreen {
                                                             action = AppAction::AddScreen(
                                                                 Screen::ClaimTokensScreen(
                                                                     ClaimTokensScreen::new(
-                                                                        itb.clone(),
+                                                                        itb.into(),
                                                                         token_contract,
                                                                         token_configuration.clone(),
                                                                         &self.app_context,
@@ -577,9 +344,9 @@ impl TokensScreen {
 
                                                     // Expandable advanced actions menu
                                                     ui.menu_button("...", |ui| {
-                                                        if can_mint(itb.identity_id) {
+                                                        if itb.available_actions.can_mint {
                                                             if ui.button("Mint").clicked() {
-                                                                match IdentityTokenInfo::try_from_identity_token_balance_with_lookup(itb, &self.app_context) {
+                                                                match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
                                                                     Ok(info) => {
                                                                         action = AppAction::AddScreen(
                                                                             Screen::MintTokensScreen(
@@ -598,9 +365,9 @@ impl TokensScreen {
                                                                 ui.close_menu();
                                                             }
                                                         }
-                                                        if can_burn(itb.identity_id) {
+                                                        if itb.available_actions.can_burn {
                                                             if ui.button("Burn").clicked() {
-                                                                match IdentityTokenInfo::try_from_identity_token_balance_with_lookup(itb, &self.app_context) {
+                                                                match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
                                                                     Ok(info) => {
                                                                         action = AppAction::AddScreen(
                                                                             Screen::BurnTokensScreen(
@@ -618,9 +385,9 @@ impl TokensScreen {
                                                                 ui.close_menu();
                                                             }
                                                         }
-                                                        if can_freeze(itb.identity_id) {
+                                                        if itb.available_actions.can_freeze {
                                                             if ui.button("Freeze").clicked() {
-                                                                match IdentityTokenInfo::try_from_identity_token_balance_with_lookup(itb, &self.app_context) {
+                                                                match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
                                                                     Ok(info) => {
                                                                         action = AppAction::AddScreen(
                                                                             Screen::FreezeTokensScreen(
@@ -638,9 +405,9 @@ impl TokensScreen {
                                                                 ui.close_menu();
                                                             }
                                                         }
-                                                        if can_destroy(itb.identity_id) {
-                                                            if ui.button("Destroy").clicked() {
-                                                                match IdentityTokenInfo::try_from_identity_token_balance_with_lookup(itb, &self.app_context) {
+                                                        if itb.available_actions.can_destroy {
+                                                            if ui.button("Destroy Target Identity Tokens").clicked() {
+                                                                match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
                                                                     Ok(info) => {
                                                                         action = AppAction::AddScreen(
                                                                             Screen::DestroyFrozenFundsScreen(
@@ -658,9 +425,9 @@ impl TokensScreen {
                                                                 ui.close_menu();
                                                             }
                                                         }
-                                                        if can_unfreeze(itb.identity_id) {
+                                                        if itb.available_actions.can_unfreeze {
                                                             if ui.button("Unfreeze").clicked() {
-                                                                match IdentityTokenInfo::try_from_identity_token_balance_with_lookup(itb, &self.app_context) {
+                                                                match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
                                                                     Ok(info) => {
                                                                         action = AppAction::AddScreen(
                                                                             Screen::UnfreezeTokensScreen(
@@ -678,9 +445,9 @@ impl TokensScreen {
                                                                 ui.close_menu();
                                                             }
                                                         }
-                                                        if can_do_emergency_action(itb.identity_id) {
+                                                        if itb.available_actions.can_do_emergency_action {
                                                             if ui.button("Pause").clicked() {
-                                                                match IdentityTokenInfo::try_from_identity_token_balance_with_lookup(itb, &self.app_context) {
+                                                                match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
                                                                     Ok(info) => {
                                                                         action = AppAction::AddScreen(
                                                                             Screen::PauseTokensScreen(
@@ -699,7 +466,7 @@ impl TokensScreen {
                                                             }
 
                                                             if ui.button("Resume").clicked() {
-                                                                match IdentityTokenInfo::try_from_identity_token_balance_with_lookup(itb, &self.app_context) {
+                                                                match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
                                                                     Ok(info) => {
                                                                         action = AppAction::AddScreen(
                                                                             Screen::ResumeTokensScreen(
@@ -717,12 +484,12 @@ impl TokensScreen {
                                                                 ui.close_menu();
                                                             }
                                                         }
-                                                        if can_claim(qi) {
+                                                        if itb.available_actions.can_claim {
                                                             if ui.button("View Claims").clicked() {
                                                                 action = AppAction::AddScreen(
                                                                     Screen::ViewTokenClaimsScreen(
                                                                         ViewTokenClaimsScreen::new(
-                                                                            itb.clone(),
+                                                                            itb.into(),
                                                                             &self.app_context,
                                                                         ),
                                                                     ),
@@ -731,7 +498,7 @@ impl TokensScreen {
                                                             }
                                                         }
                                                         if ui.button("Update Config").clicked() {
-                                                            match IdentityTokenInfo::try_from_identity_token_balance_with_lookup(itb, &self.app_context) {
+                                                            match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
                                                                 Ok(info) => {
                                                                     action = AppAction::AddScreen(
                                                                         Screen::UpdateTokenConfigScreen(
@@ -748,10 +515,10 @@ impl TokensScreen {
                                                             };
                                                             ui.close_menu();
                                                         }
-                                                        if can_maybe_purchase {
+                                                        if itb.available_actions.can_maybe_purchase {
                                                             // Purchase
                                                             if ui.button("Purchase").clicked() {
-                                                                match IdentityTokenInfo::try_from_identity_token_balance_with_lookup(itb, &self.app_context) {
+                                                                match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
                                                                     Ok(info) => {
                                                                         action = AppAction::AddScreen(
                                                                             Screen::PurchaseTokenScreen(
@@ -770,10 +537,10 @@ impl TokensScreen {
                                                                 ui.close_menu();
                                                             }
                                                         }
-                                                        if can_set_price(itb.identity_id) {
+                                                        if itb.available_actions.can_set_price {
                                                             // Set Price
                                                             if ui.button("Set Price").clicked() {
-                                                                match IdentityTokenInfo::try_from_identity_token_balance_with_lookup(itb, &self.app_context) {
+                                                                match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
                                                                     Ok(info) => {
                                                                         action = AppAction::AddScreen(
                                                                             Screen::SetTokenPriceScreen(
@@ -803,9 +570,8 @@ impl TokensScreen {
                                                         .clicked()
                                                     {
                                                         self.confirm_remove_identity_token_balance_popup = true;
-                                                        self.identity_token_balance_to_remove = Some(itb.clone());
+                                                        self.identity_token_balance_to_remove = Some(itb.into());
                                                     }
-                                                }
                                             });
                                         });
                                     });
@@ -875,6 +641,7 @@ impl TokensScreen {
                                     token_id,
                                     token_name,
                                     description,
+                                    token_position,
                                     token_configuration,
                                     data_contract,
                                     ..
@@ -888,6 +655,7 @@ impl TokensScreen {
                                                 self.selected_token = Some((
                                                     token_id.clone(),
                                                     data_contract.clone(),
+                                                    *token_position,
                                                     token_configuration.clone(),
                                                 ));
                                             }

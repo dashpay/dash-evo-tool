@@ -155,7 +155,7 @@ impl Database {
         if app_context.network != Network::Devnet {
             return Ok(());
         }
-        let network = app_context.network_string();
+        let network = app_context.network.to_string();
 
         let conn = self.conn.lock().unwrap();
 

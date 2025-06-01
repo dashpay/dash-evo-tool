@@ -11,7 +11,7 @@ pub use structs::*;
 
 pub use groups::*;
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -19,9 +19,7 @@ use chrono::{DateTime, Duration, Utc};
 use dash_sdk::dpp::balances::credits::TokenAmount;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
-use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::{TokenConfigurationPreset, TokenConfigurationPresetFeatures, TokenConfigurationV0};
-use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationPresetFeatures::{MostRestrictive, WithAllAdvancedActions, WithExtremeActions, WithMintingAndBurningActions, WithOnlyEmergencyAction};
-use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::accessors::v0::TokenDistributionRulesV0Getters;
+use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::{TokenConfigurationPresetFeatures, TokenConfigurationV0};
 use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::v0::TokenDistributionRulesV0;
 use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::TokenDistributionRules;
 use dash_sdk::dpp::data_contract::associated_token::token_keeps_history_rules::TokenKeepsHistoryRules;
@@ -36,35 +34,26 @@ use dash_sdk::dpp::data_contract::associated_token::token_pre_programmed_distrib
 use dash_sdk::dpp::data_contract::change_control_rules::authorized_action_takers::AuthorizedActionTakers;
 use dash_sdk::dpp::data_contract::change_control_rules::v0::ChangeControlRulesV0;
 use dash_sdk::dpp::data_contract::change_control_rules::ChangeControlRules;
-use dash_sdk::dpp::data_contract::conversion::json::DataContractJsonConversionMethodsV0;
-use dash_sdk::dpp::data_contract::group::v0::GroupV0;
-use dash_sdk::dpp::data_contract::group::{Group, GroupMemberPower, GroupRequiredPower};
-use dash_sdk::dpp::data_contract::{GroupContractPosition, TokenConfiguration};
-use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
-use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
+use dash_sdk::dpp::data_contract::group::Group;
+use dash_sdk::dpp::data_contract::{GroupContractPosition, TokenConfiguration, TokenContractPosition};
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
-use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::prelude::TimestampMillisInterval;
 use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::Start;
 use dash_sdk::platform::{DataContract, Identifier, IdentityPublicKey};
 use dash_sdk::query_types::IndexMap;
-use eframe::egui::{self, CentralPanel, Color32, Context, Frame, Margin, Ui};
-use egui::{Align, Checkbox, ColorImage, ComboBox, Label, Response, RichText, Sense, TextEdit, TextureHandle};
+use eframe::egui::{self, CentralPanel, Color32, Context, Ui};
+use egui::{Checkbox, ColorImage, ComboBox, Response, RichText, TextEdit, TextureHandle};
 use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
-use egui_extras::{Column, TableBuilder};
 use enum_iterator::Sequence;
 use image::ImageReader;
 use crate::app::BackendTasksExecutionMode;
-use crate::backend_task::contract::ContractTask;
 use crate::backend_task::tokens::TokenTask;
 use crate::backend_task::{BackendTask, NO_IDENTITIES_FOUND};
 
 use crate::app::{AppAction, DesiredAppAction};
 use crate::context::AppContext;
-use crate::model::qualified_contract::QualifiedContract;
 use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
 use crate::model::wallet::Wallet;
 use crate::ui::components::left_panel::add_left_panel;
@@ -958,8 +947,13 @@ pub struct TokensScreen {
     pub tokens_subscreen: TokensSubscreen,
     all_known_tokens: IndexMap<Identifier, TokenInfoWithDataContract>,
     identities: IndexMap<Identifier, QualifiedIdentity>,
-    my_tokens: IndexMap<IdentityTokenIdentifier, IdentityTokenBalance>,
-    pub selected_token: Option<(Identifier, DataContract, TokenConfiguration)>,
+    my_tokens: IndexMap<IdentityTokenIdentifier, IdentityTokenBalanceWithActions>,
+    pub selected_token: Option<(
+        Identifier,
+        DataContract,
+        TokenContractPosition,
+        TokenConfiguration,
+    )>,
     backend_message: Option<(String, MessageType, DateTime<Utc>)>,
     pending_backend_task: Option<BackendTask>,
     refreshing_status: RefreshingStatus,
@@ -985,7 +979,7 @@ pub struct TokensScreen {
 
     // Remove token
     confirm_remove_identity_token_balance_popup: bool,
-    identity_token_balance_to_remove: Option<IdentityTokenBalance>,
+    identity_token_balance_to_remove: Option<IdentityTokenBasicInfo>,
     confirm_remove_token_popup: bool,
     token_to_remove: Option<Identifier>,
 
@@ -1210,6 +1204,32 @@ impl IntervalTimeUnit {
     }
 }
 
+fn my_tokens(
+    app_context: &Arc<AppContext>,
+    identities: &IndexMap<Identifier, QualifiedIdentity>,
+    all_known_tokens: &IndexMap<Identifier, TokenInfoWithDataContract>,
+) -> IndexMap<IdentityTokenIdentifier, IdentityTokenBalanceWithActions> {
+    let in_dev_mode = app_context.developer_mode.load(Ordering::Relaxed);
+
+    app_context
+        .identity_token_balances()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|(id_token_identifier, token_balance)| {
+            // Lookup identity
+            let identity = identities.get(&token_balance.identity_id)?;
+            // Lookup contract
+            let contract = all_known_tokens
+                .get(&token_balance.token_id)
+                .map(|info| &info.data_contract)?;
+
+            let token_with_actions =
+                token_balance.into_with_actions(identity, contract, in_dev_mode);
+            Some((id_token_identifier, token_with_actions))
+        })
+        .collect()
+}
+
 impl TokensScreen {
     pub fn new(app_context: &Arc<AppContext>, tokens_subscreen: TokensSubscreen) -> Self {
         let identities = app_context
@@ -1223,7 +1243,7 @@ impl TokensScreen {
             .get_all_known_tokens_with_data_contract(&app_context)
             .unwrap_or_default();
 
-        let my_tokens = app_context.identity_token_balances().unwrap_or_default();
+        let my_tokens = my_tokens(app_context, &identities, &all_known_tokens);
 
         let mut function_images = BTreeMap::new();
 
@@ -2330,11 +2350,6 @@ impl TokensScreen {
 // ─────────────────────────────────────────────────────────────────
 impl ScreenLike for TokensScreen {
     fn refresh(&mut self) {
-        self.my_tokens = self
-            .app_context
-            .identity_token_balances()
-            .unwrap_or_default();
-
         self.all_known_tokens = self
             .app_context
             .db
@@ -2348,6 +2363,8 @@ impl ScreenLike for TokensScreen {
             .into_iter()
             .map(|qi| (qi.identity.id(), qi))
             .collect();
+
+        self.my_tokens = my_tokens(&self.app_context, &self.identities, &self.all_known_tokens);
 
         match self.app_context.db.load_token_order() {
             Ok(saved_ids) => {
@@ -2363,10 +2380,6 @@ impl ScreenLike for TokensScreen {
 
     fn refresh_on_arrival(&mut self) {
         self.selected_token = None;
-        self.my_tokens = self
-            .app_context
-            .identity_token_balances()
-            .unwrap_or_default();
 
         self.all_known_tokens = self
             .app_context
@@ -2380,6 +2393,8 @@ impl ScreenLike for TokensScreen {
             .into_iter()
             .map(|qi| (qi.identity.id(), qi))
             .collect();
+
+        self.my_tokens = my_tokens(&self.app_context, &self.identities, &self.all_known_tokens);
     }
 
     fn ui(&mut self, ctx: &Context) -> AppAction {
@@ -2411,7 +2426,7 @@ impl ScreenLike for TokensScreen {
         }
 
         // Top panel
-        if let Some((token_id, _, _)) = self.selected_token {
+        if let Some((token_id, _, _, _)) = self.selected_token {
             let token_name: String = self
                 .all_known_tokens
                 .get(&token_id)

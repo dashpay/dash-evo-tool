@@ -16,7 +16,7 @@ use crate::ui::identities::transfer_screen::TransferScreen;
 use crate::ui::identities::withdraw_screen::WithdrawalScreen;
 use crate::ui::network_chooser_screen::NetworkChooserScreen;
 use crate::ui::tokens::add_token_by_id_screen::AddTokenByIdScreen;
-use crate::ui::tokens::tokens_screen::IdentityTokenInfo;
+use crate::ui::tokens::tokens_screen::{IdentityTokenBasicInfo, IdentityTokenInfo};
 use crate::ui::tokens::transfer_tokens_screen::TransferTokensScreen;
 use crate::ui::tokens::view_token_claims_screen::ViewTokenClaimsScreen;
 use crate::ui::tools::contract_visualizer_screen::ContractVisualizerScreen;
@@ -37,7 +37,7 @@ use contracts_documents::update_contract_screen::UpdateDataContractScreen;
 use dash_sdk::dpp::identity::Identity;
 use dash_sdk::dpp::prelude::IdentityPublicKey;
 use dpns::dpns_contested_names_screen::DPNSSubscreen;
-use egui::{Context, Widget};
+use egui::Context;
 use identities::add_existing_identity_screen::AddExistingIdentityScreen;
 use identities::add_new_identity_screen::AddNewIdentityScreen;
 use identities::identities_screen::IdentitiesScreen;
@@ -223,8 +223,8 @@ pub enum ScreenType {
     UnfreezeTokensScreen(IdentityTokenInfo),
     PauseTokensScreen(IdentityTokenInfo),
     ResumeTokensScreen(IdentityTokenInfo),
-    ClaimTokensScreen(IdentityTokenBalance),
-    ViewTokenClaimsScreen(IdentityTokenBalance),
+    ClaimTokensScreen(IdentityTokenBasicInfo),
+    ViewTokenClaimsScreen(IdentityTokenBasicInfo),
     UpdateTokenConfigScreen(IdentityTokenInfo),
     PurchaseTokenScreen(IdentityTokenInfo),
     SetTokenPriceScreen(IdentityTokenInfo),
@@ -382,11 +382,8 @@ impl ScreenType {
             ScreenType::ClaimTokensScreen(_) => {
                 unreachable!()
             }
-            ScreenType::ViewTokenClaimsScreen(identity_token_balance) => {
-                Screen::ViewTokenClaimsScreen(ViewTokenClaimsScreen::new(
-                    identity_token_balance.clone(),
-                    app_context,
-                ))
+            ScreenType::ViewTokenClaimsScreen(_) => {
+                unreachable!()
             }
             ScreenType::UpdateTokenConfigScreen(identity_token_info) => {
                 Screen::UpdateTokenConfigScreen(UpdateTokenConfigScreen::new(
@@ -642,10 +639,10 @@ impl Screen {
                 ScreenType::ResumeTokensScreen(screen.identity_token_info.clone())
             }
             Screen::ClaimTokensScreen(screen) => {
-                ScreenType::ClaimTokensScreen(screen.identity_token_balance.clone())
+                ScreenType::ClaimTokensScreen(screen.identity_token_basic_info.clone())
             }
             Screen::ViewTokenClaimsScreen(screen) => {
-                ScreenType::ViewTokenClaimsScreen(screen.identity_token_balance.clone())
+                ScreenType::ViewTokenClaimsScreen(screen.identity_token_basic_info.clone())
             }
             Screen::UpdateTokenConfigScreen(screen) => {
                 ScreenType::UpdateTokenConfigScreen(screen.identity_token_info.clone())

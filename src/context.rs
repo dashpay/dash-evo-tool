@@ -222,15 +222,6 @@ impl AppContext {
         Ok(())
     }
 
-    /// Returns the network name as a string
-    #[deprecated(
-        since = "0.9.0",
-        note = "Replace with `Network::to_string()` to avoid confusion"
-    )]
-    pub(crate) fn network_string(&self) -> String {
-        self.network.to_string()
-    }
-
     pub fn insert_local_identity(&self, identity: &Identity) -> Result<()> {
         self.db
             .insert_local_qualified_identity(&identity.clone().into(), None, self)

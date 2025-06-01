@@ -33,7 +33,7 @@ use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
-use super::tokens_screen::IdentityTokenBalance;
+use super::tokens_screen::IdentityTokenBasicInfo;
 
 /// States for the claim flow
 #[derive(PartialEq)]
@@ -46,7 +46,7 @@ pub enum ClaimTokensStatus {
 
 pub struct ClaimTokensScreen {
     pub identity: QualifiedIdentity,
-    pub identity_token_balance: IdentityTokenBalance,
+    pub identity_token_basic_info: IdentityTokenBasicInfo,
     selected_key: Option<dash_sdk::platform::IdentityPublicKey>,
     pub public_note: Option<String>,
     token_contract: QualifiedContract,
@@ -63,7 +63,7 @@ pub struct ClaimTokensScreen {
 
 impl ClaimTokensScreen {
     pub fn new(
-        identity_token_balance: IdentityTokenBalance,
+        identity_token_basic_info: IdentityTokenBasicInfo,
         token_contract: QualifiedContract,
         token_configuration: TokenConfiguration,
         app_context: &Arc<AppContext>,
@@ -72,7 +72,7 @@ impl ClaimTokensScreen {
             .load_local_qualified_identities()
             .unwrap_or_default()
             .into_iter()
-            .find(|id| id.identity.id() == identity_token_balance.identity_id)
+            .find(|id| id.identity.id() == identity_token_basic_info.identity_id)
             .expect("No local qualified identity found for this token’s identity.");
 
         let identity_clone = identity.identity.clone();
@@ -105,7 +105,7 @@ impl ClaimTokensScreen {
 
         Self {
             identity,
-            identity_token_balance,
+            identity_token_basic_info,
             selected_key: possible_key.cloned(),
             public_note: None,
             token_contract,
@@ -268,7 +268,7 @@ impl ClaimTokensScreen {
                         vec![
                             BackendTask::TokenTask(TokenTask::ClaimTokens {
                                 data_contract: self.token_contract.contract.clone(),
-                                token_position: self.identity_token_balance.token_position,
+                                token_position: self.identity_token_basic_info.token_position,
                                 actor_identity: self.identity.clone(),
                                 distribution_type,
                                 signing_key: self.selected_key.clone().expect("No key selected"),
@@ -345,7 +345,7 @@ impl ScreenLike for ClaimTokensScreen {
             vec![
                 ("Tokens", AppAction::GoToMainScreen),
                 (
-                    &self.identity_token_balance.token_alias,
+                    &self.identity_token_basic_info.token_alias,
                     AppAction::PopScreen,
                 ),
                 ("Claim", AppAction::None),

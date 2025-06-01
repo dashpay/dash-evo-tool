@@ -35,13 +35,13 @@ use dash_sdk::dpp::data_contract::change_control_rules::authorized_action_takers
 use dash_sdk::dpp::data_contract::change_control_rules::v0::ChangeControlRulesV0;
 use dash_sdk::dpp::data_contract::change_control_rules::ChangeControlRules;
 use dash_sdk::dpp::data_contract::group::Group;
-use dash_sdk::dpp::data_contract::{GroupContractPosition, TokenConfiguration, TokenContractPosition};
+use dash_sdk::dpp::data_contract::GroupContractPosition;
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::prelude::TimestampMillisInterval;
 use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::Start;
-use dash_sdk::platform::{DataContract, Identifier, IdentityPublicKey};
+use dash_sdk::platform::{Identifier, IdentityPublicKey};
 use dash_sdk::query_types::IndexMap;
 use eframe::egui::{self, CentralPanel, Color32, Context, Ui};
 use egui::{Checkbox, ColorImage, ComboBox, Response, RichText, TextEdit, TextureHandle};
@@ -948,12 +948,7 @@ pub struct TokensScreen {
     all_known_tokens: IndexMap<Identifier, TokenInfoWithDataContract>,
     identities: IndexMap<Identifier, QualifiedIdentity>,
     my_tokens: IndexMap<IdentityTokenIdentifier, IdentityTokenBalanceWithActions>,
-    pub selected_token: Option<(
-        Identifier,
-        DataContract,
-        TokenContractPosition,
-        TokenConfiguration,
-    )>,
+    pub selected_token: Option<Identifier>,
     backend_message: Option<(String, MessageType, DateTime<Utc>)>,
     pending_backend_task: Option<BackendTask>,
     refreshing_status: RefreshingStatus,
@@ -2426,7 +2421,7 @@ impl ScreenLike for TokensScreen {
         }
 
         // Top panel
-        if let Some((token_id, _, _, _)) = self.selected_token {
+        if let Some(token_id) = self.selected_token {
             let token_name: String = self
                 .all_known_tokens
                 .get(&token_id)

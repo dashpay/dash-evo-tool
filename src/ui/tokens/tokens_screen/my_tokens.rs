@@ -12,8 +12,9 @@ use crate::ui::tokens::pause_tokens_screen::PauseTokensScreen;
 use crate::ui::tokens::resume_tokens_screen::ResumeTokensScreen;
 use crate::ui::tokens::set_token_price_screen::SetTokenPriceScreen;
 use crate::ui::tokens::tokens_screen::{
-    IdentityTokenIdentifier, IdentityTokenInfo, IdentityTokenMaybeBalanceWithActions,
-    RefreshingStatus, SortColumn, TokenInfoWithDataContract, TokensScreen, TokensSubscreen,
+    get_available_token_actions_for_identity, IdentityTokenIdentifier, IdentityTokenInfo,
+    IdentityTokenMaybeBalanceWithActions, RefreshingStatus, SortColumn, TokenInfoWithDataContract,
+    TokensScreen, TokensSubscreen,
 };
 use crate::ui::tokens::transfer_tokens_screen::TransferTokensScreen;
 use crate::ui::tokens::unfreeze_tokens_screen::UnfreezeTokensScreen;
@@ -22,7 +23,6 @@ use crate::ui::tokens::view_token_claims_screen::ViewTokenClaimsScreen;
 use crate::ui::Screen;
 use chrono::Utc;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
-use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::accessors::v0::TokenDistributionRulesV0Getters;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
@@ -30,6 +30,7 @@ use eframe::emath::Align;
 use eframe::epaint::{Color32, Margin};
 use egui::{Frame, RichText, Ui};
 use egui_extras::{Column, TableBuilder};
+use std::ops::Range;
 use std::sync::atomic::Ordering;
 
 impl TokensScreen {
@@ -116,19 +117,19 @@ impl TokensScreen {
     fn render_token_details(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
 
-        let Some((token_id, contract, token_contract_position, token_configuration)) =
-            self.selected_token.clone()
-        else {
+        let Some(token_id) = self.selected_token.clone() else {
             return action;
         };
 
-        let Some(token_info) = self.all_known_tokens.get(&token_id) else {
+        let Some(token_info) = self.all_known_tokens.get(&token_id).cloned() else {
             return action;
         };
 
         let identities = &self.identities;
 
         let mut detail_list: Vec<IdentityTokenMaybeBalanceWithActions> = vec![];
+
+        let in_dev_mode = self.app_context.developer_mode.load(Ordering::Relaxed);
 
         for (identity_id, identity) in identities {
             let record = if let Some(known_token_balance) =
@@ -139,7 +140,6 @@ impl TokensScreen {
                 IdentityTokenMaybeBalanceWithActions {
                     token_id,
                     token_alias: known_token_balance.token_alias.clone(),
-                    token_name: token_info.token_name.clone(),
                     token_config: known_token_balance.token_config.clone(),
                     identity_id: *identity_id,
                     identity_alias: identity.alias.clone(),
@@ -152,16 +152,21 @@ impl TokensScreen {
             } else {
                 IdentityTokenMaybeBalanceWithActions {
                     token_id,
-                    token_alias: "".to_string(),
-                    token_name: token_info.token_name.clone(),
-                    token_config: token_configuration.clone(),
+                    token_alias: token_info.token_name.clone(),
+                    token_config: token_info.token_configuration.clone(),
                     identity_id: *identity_id,
                     identity_alias: identity.alias.clone(),
                     balance: None,
                     estimated_unclaimed_rewards: None,
-                    data_contract_id: contract.id(),
-                    token_position: token_contract_position,
-                    available_actions: todo!(),
+                    data_contract_id: token_info.data_contract.id(),
+                    token_position: token_info.token_position,
+                    available_actions: get_available_token_actions_for_identity(
+                        None,
+                        identity,
+                        &token_info.token_configuration,
+                        &token_info.data_contract,
+                        in_dev_mode,
+                    ),
                 }
             };
             detail_list.push(record);
@@ -185,7 +190,8 @@ impl TokensScreen {
         let in_dev_mode = self.app_context.developer_mode.load(Ordering::Relaxed);
 
         let shows_estimation_column = in_dev_mode
-            || token_configuration
+            || token_info
+                .token_configuration
                 .distribution_rules()
                 .perpetual_distribution()
                 .is_some();
@@ -257,7 +263,14 @@ impl TokensScreen {
                                             }
                                         });
                                         row.col(|ui| {
-                                            ui.label(itb.identity_id.to_string(Encoding::Base58));
+                                            if itb.identity_id == token_info.data_contract.owner_id() {
+                                                ui.label(
+                                                    RichText::new(itb.identity_id.to_string(Encoding::Base58))
+                                                        .color(Color32::from_rgb(0, 100, 0)) // Dark green
+                                                ).on_hover_text("Owner of the contract");
+                                            } else {
+                                                ui.label(itb.identity_id.to_string(Encoding::Base58));
+                                            }
                                         });
                                         row.col(|ui| {
                                             if let Some(balance) = itb.balance.as_ref().map(|balance| balance.to_string()) {
@@ -296,282 +309,27 @@ impl TokensScreen {
                                         }
                                         row.col(|ui| {
                                             ui.horizontal(|ui| {
-                                                ui.spacing_mut().item_spacing.x = 3.0;
-
-                                                if let Some(balance) = itb.balance {
-                                                    // Transfer
-                                                    if ui.button("Transfer").clicked() {
-                                                        action = AppAction::AddScreen(
-                                                            Screen::TransferTokensScreen(
-                                                                TransferTokensScreen::new(
-                                                                    itb.to_token_balance(balance),
-                                                                    &self.app_context,
-                                                                ),
-                                                            ),
-                                                        );
-                                                    }
-                                                }
-
-
-                                                    // Claim
-                                                    if itb.available_actions.can_claim {
-                                                        if ui.button("Claim").clicked() {
-                                                            let token_contract = match self.app_context.get_contract_by_token_id(&itb.token_id) {
-                                                                Ok(Some(contract)) => contract,
-                                                                Ok(None) => {
-                                                                    self.set_error_message(Some("Token contract not found".to_string()));
-                                                                    return;
-                                                                }
-                                                                Err(e) => {
-                                                                    self.set_error_message(Some(format!("Error fetching token contract: {e}")));
-                                                                    return;
-                                                                }
-                                                            };
-
-                                                            action = AppAction::AddScreen(
-                                                                Screen::ClaimTokensScreen(
-                                                                    ClaimTokensScreen::new(
-                                                                        itb.into(),
-                                                                        token_contract,
-                                                                        token_configuration.clone(),
-                                                                        &self.app_context,
-                                                                    ),
-                                                                ),
-                                                            );
-                                                            ui.close_menu();
-                                                        }
-                                                    }
-
+                                                if itb.available_actions.shown_buttons() < 6 {
+                                                    action |= self.render_actions(itb, &token_info, 0..10, ui);
+                                                } else {
+                                                    action |= self.render_actions(itb, &token_info, 0..3, ui);
                                                     // Expandable advanced actions menu
                                                     ui.menu_button("...", |ui| {
-                                                        if itb.available_actions.can_mint {
-                                                            if ui.button("Mint").clicked() {
-                                                                match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
-                                                                    Ok(info) => {
-                                                                        action = AppAction::AddScreen(
-                                                                            Screen::MintTokensScreen(
-                                                                                MintTokensScreen::new(
-                                                                                    info,
-                                                                                    &self.app_context,
-                                                                                ),
-                                                                            ),
-                                                                        );
-                                                                    }
-                                                                    Err(e) => {
-                                                                        self.set_error_message(Some(e));
-                                                                    }
-                                                                };
-
-                                                                ui.close_menu();
-                                                            }
-                                                        }
-                                                        if itb.available_actions.can_burn {
-                                                            if ui.button("Burn").clicked() {
-                                                                match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
-                                                                    Ok(info) => {
-                                                                        action = AppAction::AddScreen(
-                                                                            Screen::BurnTokensScreen(
-                                                                                BurnTokensScreen::new(
-                                                                                    info,
-                                                                                    &self.app_context,
-                                                                                ),
-                                                                            ),
-                                                                        );
-                                                                    }
-                                                                    Err(e) => {
-                                                                        self.set_error_message(Some(e));
-                                                                    }
-                                                                };
-                                                                ui.close_menu();
-                                                            }
-                                                        }
-                                                        if itb.available_actions.can_freeze {
-                                                            if ui.button("Freeze").clicked() {
-                                                                match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
-                                                                    Ok(info) => {
-                                                                        action = AppAction::AddScreen(
-                                                                            Screen::FreezeTokensScreen(
-                                                                                FreezeTokensScreen::new(
-                                                                                    info,
-                                                                                    &self.app_context,
-                                                                                ),
-                                                                            ),
-                                                                        );
-                                                                    }
-                                                                    Err(e) => {
-                                                                        self.set_error_message(Some(e));
-                                                                    }
-                                                                };
-                                                                ui.close_menu();
-                                                            }
-                                                        }
-                                                        if itb.available_actions.can_destroy {
-                                                            if ui.button("Destroy Target Identity Tokens").clicked() {
-                                                                match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
-                                                                    Ok(info) => {
-                                                                        action = AppAction::AddScreen(
-                                                                            Screen::DestroyFrozenFundsScreen(
-                                                                                DestroyFrozenFundsScreen::new(
-                                                                                    info,
-                                                                                    &self.app_context,
-                                                                                ),
-                                                                            ),
-                                                                        );
-                                                                    }
-                                                                    Err(e) => {
-                                                                        self.set_error_message(Some(e));
-                                                                    }
-                                                                };
-                                                                ui.close_menu();
-                                                            }
-                                                        }
-                                                        if itb.available_actions.can_unfreeze {
-                                                            if ui.button("Unfreeze").clicked() {
-                                                                match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
-                                                                    Ok(info) => {
-                                                                        action = AppAction::AddScreen(
-                                                                            Screen::UnfreezeTokensScreen(
-                                                                                UnfreezeTokensScreen::new(
-                                                                                    info,
-                                                                                    &self.app_context,
-                                                                                ),
-                                                                            ),
-                                                                        );
-                                                                    }
-                                                                    Err(e) => {
-                                                                        self.set_error_message(Some(e));
-                                                                    }
-                                                                };
-                                                                ui.close_menu();
-                                                            }
-                                                        }
-                                                        if itb.available_actions.can_do_emergency_action {
-                                                            if ui.button("Pause").clicked() {
-                                                                match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
-                                                                    Ok(info) => {
-                                                                        action = AppAction::AddScreen(
-                                                                            Screen::PauseTokensScreen(
-                                                                                PauseTokensScreen::new(
-                                                                                    info,
-                                                                                    &self.app_context,
-                                                                                ),
-                                                                            ),
-                                                                        );
-                                                                    }
-                                                                    Err(e) => {
-                                                                        self.set_error_message(Some(e));
-                                                                    }
-                                                                };
-                                                                ui.close_menu();
-                                                            }
-
-                                                            if ui.button("Resume").clicked() {
-                                                                match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
-                                                                    Ok(info) => {
-                                                                        action = AppAction::AddScreen(
-                                                                            Screen::ResumeTokensScreen(
-                                                                                ResumeTokensScreen::new(
-                                                                                    info,
-                                                                                    &self.app_context,
-                                                                                ),
-                                                                            ),
-                                                                        );
-                                                                    }
-                                                                    Err(e) => {
-                                                                        self.set_error_message(Some(e));
-                                                                    }
-                                                                };
-                                                                ui.close_menu();
-                                                            }
-                                                        }
-                                                        if itb.available_actions.can_claim {
-                                                            if ui.button("View Claims").clicked() {
-                                                                action = AppAction::AddScreen(
-                                                                    Screen::ViewTokenClaimsScreen(
-                                                                        ViewTokenClaimsScreen::new(
-                                                                            itb.into(),
-                                                                            &self.app_context,
-                                                                        ),
-                                                                    ),
-                                                                );
-                                                                ui.close_menu();
-                                                            }
-                                                        }
-                                                        if ui.button("Update Config").clicked() {
-                                                            match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
-                                                                Ok(info) => {
-                                                                    action = AppAction::AddScreen(
-                                                                        Screen::UpdateTokenConfigScreen(
-                                                                            UpdateTokenConfigScreen::new(
-                                                                                info,
-                                                                                &self.app_context,
-                                                                            ),
-                                                                        ),
-                                                                    );
-                                                                }
-                                                                Err(e) => {
-                                                                    self.set_error_message(Some(e));
-                                                                }
-                                                            };
-                                                            ui.close_menu();
-                                                        }
-                                                        if itb.available_actions.can_maybe_purchase {
-                                                            // Purchase
-                                                            if ui.button("Purchase").clicked() {
-                                                                match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
-                                                                    Ok(info) => {
-                                                                        action = AppAction::AddScreen(
-                                                                            Screen::PurchaseTokenScreen(
-                                                                                PurchaseTokenScreen::new(
-                                                                                    info,
-                                                                                    &self.app_context,
-                                                                                ),
-                                                                            ),
-                                                                        );
-                                                                    }
-                                                                    Err(e) => {
-                                                                        self.set_error_message(Some(e));
-                                                                    }
-                                                                };
-
-                                                                ui.close_menu();
-                                                            }
-                                                        }
-                                                        if itb.available_actions.can_set_price {
-                                                            // Set Price
-                                                            if ui.button("Set Price").clicked() {
-                                                                match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
-                                                                    Ok(info) => {
-                                                                        action = AppAction::AddScreen(
-                                                                            Screen::SetTokenPriceScreen(
-                                                                                SetTokenPriceScreen::new(
-                                                                                    info,
-                                                                                    &self.app_context,
-                                                                                ),
-                                                                            ),
-                                                                        );
-                                                                    }
-                                                                    Err(e) => {
-                                                                        self.set_error_message(Some(e));
-                                                                    }
-                                                                };
-
-                                                                ui.close_menu();
-                                                            }
-                                                        }
+                                                        action |= self.render_actions(itb, &token_info, 3..128, ui);
                                                     });
+                                                }
 
-                                                    // Remove
-                                                    if ui
-                                                        .button("X")
-                                                        .on_hover_text(
-                                                            "Remove identity token balance from DET",
-                                                        )
-                                                        .clicked()
-                                                    {
-                                                        self.confirm_remove_identity_token_balance_popup = true;
-                                                        self.identity_token_balance_to_remove = Some(itb.into());
-                                                    }
+                                                // Remove
+                                                if ui
+                                                    .button("X")
+                                                    .on_hover_text(
+                                                        "Remove identity token balance from DET",
+                                                    )
+                                                    .clicked()
+                                                {
+                                                    self.confirm_remove_identity_token_balance_popup = true;
+                                                    self.identity_token_balance_to_remove = Some(itb.into());
+                                                }
                                             });
                                         });
                                     });
@@ -580,6 +338,324 @@ impl TokensScreen {
                     });
             });
 
+        action
+    }
+
+    fn render_actions(
+        &mut self,
+        itb: &IdentityTokenMaybeBalanceWithActions,
+        token_info: &TokenInfoWithDataContract,
+        range: Range<usize>,
+        ui: &mut Ui,
+    ) -> AppAction {
+        let mut pos = 0;
+        let mut action = AppAction::None;
+        ui.spacing_mut().item_spacing.x = 3.0;
+
+        if range.contains(&pos) {
+            if itb.available_actions.can_transfer {
+                if let Some(balance) = itb.balance {
+                    // Transfer
+                    if ui.button("Transfer").clicked() {
+                        action = AppAction::AddScreen(Screen::TransferTokensScreen(
+                            TransferTokensScreen::new(
+                                itb.to_token_balance(balance),
+                                &self.app_context,
+                            ),
+                        ));
+                    }
+                }
+            } else {
+                // Disabled, grayed-out Transfer button
+                ui.add_enabled(
+                    false,
+                    egui::Button::new(RichText::new("Transfer").color(egui::Color32::GRAY)),
+                )
+                .on_hover_text("Transfer not available");
+            }
+        }
+
+        pos += 1;
+
+        // Claim
+        if itb.available_actions.can_claim {
+            if range.contains(&pos) {
+                if ui.button("Claim").clicked() {
+                    let token_contract = match self
+                        .app_context
+                        .get_contract_by_token_id(&itb.token_id)
+                    {
+                        Ok(Some(contract)) => contract,
+                        Ok(None) => {
+                            self.set_error_message(Some("Token contract not found".to_string()));
+                            return action;
+                        }
+                        Err(e) => {
+                            self.set_error_message(Some(format!(
+                                "Error fetching token contract: {e}"
+                            )));
+                            return action;
+                        }
+                    };
+
+                    action =
+                        AppAction::AddScreen(Screen::ClaimTokensScreen(ClaimTokensScreen::new(
+                            itb.into(),
+                            token_contract,
+                            token_info.token_configuration.clone(),
+                            &self.app_context,
+                        )));
+                    ui.close_menu();
+                }
+            }
+            pos += 1;
+        }
+
+        if itb.available_actions.can_mint {
+            if range.contains(&pos) {
+                if ui.button("Mint").clicked() {
+                    match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
+                                Ok(info) => {
+                                    action = AppAction::AddScreen(
+                                        Screen::MintTokensScreen(
+                                            MintTokensScreen::new(
+                                                info,
+                                                &self.app_context,
+                                            ),
+                                        ),
+                                    );
+                                }
+                                Err(e) => {
+                                    self.set_error_message(Some(e));
+                                }
+                            };
+
+                    ui.close_menu();
+                }
+            }
+            pos += 1;
+        }
+        if itb.available_actions.can_burn {
+            if range.contains(&pos) {
+                if ui.button("Burn").clicked() {
+                    match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
+                                Ok(info) => {
+                                    action = AppAction::AddScreen(
+                                        Screen::BurnTokensScreen(
+                                            BurnTokensScreen::new(
+                                                info,
+                                                &self.app_context,
+                                            ),
+                                        ),
+                                    );
+                                }
+                                Err(e) => {
+                                    self.set_error_message(Some(e));
+                                }
+                            };
+                    ui.close_menu();
+                }
+            }
+            pos += 1;
+        }
+        if itb.available_actions.can_freeze {
+            if range.contains(&pos) {
+                if ui.button("Freeze").clicked() {
+                    match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
+                                Ok(info) => {
+                                    action = AppAction::AddScreen(
+                                        Screen::FreezeTokensScreen(
+                                            FreezeTokensScreen::new(
+                                                info,
+                                                &self.app_context,
+                                            ),
+                                        ),
+                                    );
+                                }
+                                Err(e) => {
+                                    self.set_error_message(Some(e));
+                                }
+                            };
+                    ui.close_menu();
+                }
+            }
+            pos += 1;
+        }
+        if itb.available_actions.can_destroy {
+            if range.contains(&pos) {
+                if ui.button("Destroy Target Identity Tokens").clicked() {
+                    match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
+                                Ok(info) => {
+                                    action = AppAction::AddScreen(
+                                        Screen::DestroyFrozenFundsScreen(
+                                            DestroyFrozenFundsScreen::new(
+                                                info,
+                                                &self.app_context,
+                                            ),
+                                        ),
+                                    );
+                                }
+                                Err(e) => {
+                                    self.set_error_message(Some(e));
+                                }
+                            };
+                    ui.close_menu();
+                }
+            }
+            pos += 1;
+        }
+        if itb.available_actions.can_unfreeze {
+            if range.contains(&pos) {
+                if ui.button("Unfreeze").clicked() {
+                    match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
+                                Ok(info) => {
+                                    action = AppAction::AddScreen(
+                                        Screen::UnfreezeTokensScreen(
+                                            UnfreezeTokensScreen::new(
+                                                info,
+                                                &self.app_context,
+                                            ),
+                                        ),
+                                    );
+                                }
+                                Err(e) => {
+                                    self.set_error_message(Some(e));
+                                }
+                            };
+                    ui.close_menu();
+                }
+            }
+            pos += 1;
+        }
+        if itb.available_actions.can_do_emergency_action {
+            if range.contains(&pos) {
+                if ui.button("Pause").clicked() {
+                    match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
+                                Ok(info) => {
+                                    action = AppAction::AddScreen(
+                                        Screen::PauseTokensScreen(
+                                            PauseTokensScreen::new(
+                                                info,
+                                                &self.app_context,
+                                            ),
+                                        ),
+                                    );
+                                }
+                                Err(e) => {
+                                    self.set_error_message(Some(e));
+                                }
+                            };
+                    ui.close_menu();
+                }
+                pos += 1;
+            }
+
+            if range.contains(&pos) {
+                if ui.button("Resume").clicked() {
+                    match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
+                                Ok(info) => {
+                                    action = AppAction::AddScreen(
+                                        Screen::ResumeTokensScreen(
+                                            ResumeTokensScreen::new(
+                                                info,
+                                                &self.app_context,
+                                            ),
+                                        ),
+                                    );
+                                }
+                                Err(e) => {
+                                    self.set_error_message(Some(e));
+                                }
+                            };
+                    ui.close_menu();
+                }
+                pos += 1;
+            }
+        }
+        if itb.available_actions.can_claim {
+            if range.contains(&pos) {
+                if ui.button("View Claims").clicked() {
+                    action = AppAction::AddScreen(Screen::ViewTokenClaimsScreen(
+                        ViewTokenClaimsScreen::new(itb.into(), &self.app_context),
+                    ));
+                    ui.close_menu();
+                }
+            }
+            pos += 1;
+        }
+        if itb.available_actions.can_update_config {
+            if range.contains(&pos) {
+                if ui.button("Update Config").clicked() {
+                    match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
+                                Ok(info) => {
+                                    action = AppAction::AddScreen(
+                                        Screen::UpdateTokenConfigScreen(
+                                            UpdateTokenConfigScreen::new(
+                                                info,
+                                                &self.app_context,
+                                            ),
+                                        ),
+                                    );
+                                }
+                                Err(e) => {
+                                    self.set_error_message(Some(e));
+                                }
+                            };
+                    ui.close_menu();
+                }
+            }
+            pos += 1;
+        }
+        if itb.available_actions.can_maybe_purchase {
+            if range.contains(&pos) {
+                // Purchase
+                if ui.button("Purchase").clicked() {
+                    match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
+                                Ok(info) => {
+                                    action = AppAction::AddScreen(
+                                        Screen::PurchaseTokenScreen(
+                                            PurchaseTokenScreen::new(
+                                                info,
+                                                &self.app_context,
+                                            ),
+                                        ),
+                                    );
+                                }
+                                Err(e) => {
+                                    self.set_error_message(Some(e));
+                                }
+                            };
+
+                    ui.close_menu();
+                }
+            }
+            pos += 1;
+        }
+        if itb.available_actions.can_set_price {
+            if range.contains(&pos) {
+                // Set Price
+                if ui.button("Set Price").clicked() {
+                    match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
+                                Ok(info) => {
+                                    action = AppAction::AddScreen(
+                                        Screen::SetTokenPriceScreen(
+                                            SetTokenPriceScreen::new(
+                                                info,
+                                                &self.app_context,
+                                            ),
+                                        ),
+                                    );
+                                }
+                                Err(e) => {
+                                    self.set_error_message(Some(e));
+                                }
+                            };
+
+                    ui.close_menu();
+                }
+            }
+            pos += 1;
+        }
         action
     }
 
@@ -637,27 +713,19 @@ impl TokensScreen {
                                 });
                             })
                             .body(|mut body| {
-                                for TokenInfoWithDataContract {
-                                    token_id,
-                                    token_name,
-                                    description,
-                                    token_position,
-                                    token_configuration,
-                                    data_contract,
-                                    ..
-                                } in self.all_known_tokens.values()
-                                {
+                                for token_info in self.all_known_tokens.values() {
+                                    let TokenInfoWithDataContract {
+                                        token_id,
+                                        token_name,
+                                        description,
+                                        ..
+                                    } = token_info;
                                     body.row(25.0, |mut row| {
                                         row.col(|ui| {
                                             // By making the label into a button or using `ui.selectable_label`,
                                             // we can respond to clicks.
                                             if ui.button(token_name).clicked() {
-                                                self.selected_token = Some((
-                                                    token_id.clone(),
-                                                    data_contract.clone(),
-                                                    *token_position,
-                                                    token_configuration.clone(),
-                                                ));
+                                                self.selected_token = Some(*token_id);
                                             }
                                         });
                                         row.col(|ui| {

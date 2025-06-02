@@ -5,7 +5,7 @@ use crate::model::wallet::{Wallet, WalletSeedHash};
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::platform::Identifier;
-use rusqlite::params;
+use rusqlite::{params, Connection};
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
@@ -399,9 +399,10 @@ impl Database {
     }
 
     /// Deletes all local qualified identities in Devnet variants and Regtest.
-    pub fn delete_all_identities_in_all_devnets_and_regtest(&self) -> rusqlite::Result<()> {
-        let conn = self.conn.lock().unwrap();
-
+    pub fn delete_all_identities_in_all_devnets_and_regtest(
+        &self,
+        conn: &Connection,
+    ) -> rusqlite::Result<()> {
         conn.execute(
             "DELETE FROM identity WHERE (network LIKE 'devnet%' OR network = 'regtest')",
             [],
@@ -434,9 +435,10 @@ impl Database {
     /// Creates the identity_order table if it doesn't already exist
     /// with two columns: `pos` (int) and `identity_id` (blob).
     /// pos is the "position" in the custom ordering.
-    pub fn initialize_identity_order_table(&self) -> rusqlite::Result<()> {
-        let conn = self.conn.lock().unwrap();
-
+    pub fn initialize_identity_order_table(
+        &self,
+        conn: &rusqlite::Connection,
+    ) -> rusqlite::Result<()> {
         // Drop the table if it already exists
         conn.execute("DROP TABLE IF EXISTS identity_order", [])?;
 
@@ -526,9 +528,7 @@ impl Database {
     }
 
     /// Fixes bug in identity table where network name for devnet was stored as `devnet:` instead of `devnet`.
-    pub fn fix_identity_devnet_network_name(&self) -> rusqlite::Result<()> {
-        let mut conn = self.conn.lock().unwrap();
-        let tx = conn.transaction()?;
+    pub fn fix_identity_devnet_network_name(&self, conn: &Connection) -> rusqlite::Result<()> {
         const TABLES: [&str; 11] = [
             "asset_lock_transaction",
             "contestant",
@@ -544,7 +544,7 @@ impl Database {
         ];
 
         for t in TABLES {
-            tx.execute(
+            conn.execute(
                 &format!(
                     "UPDATE {} SET network = 'devnet' WHERE network = 'devnet:'",
                     t
@@ -552,7 +552,7 @@ impl Database {
                 [],
             )?;
 
-            tx.execute(
+            conn.execute(
                 &format!(
                     "UPDATE {} SET network = 'regtest' WHERE network = 'local'",
                     t
@@ -561,7 +561,6 @@ impl Database {
             )?;
         }
 
-        tx.commit()?;
         tracing::debug!("Updated network names in database");
 
         Ok(())

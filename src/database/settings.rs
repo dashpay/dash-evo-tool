@@ -2,7 +2,7 @@ use crate::database::Database;
 use crate::model::password_info::PasswordInfo;
 use crate::ui::RootScreenType;
 use dash_sdk::dpp::dashcore::Network;
-use rusqlite::{params, Result};
+use rusqlite::{params, Connection, Result};
 use std::str::FromStr;
 
 impl Database {
@@ -60,12 +60,12 @@ impl Database {
         Ok(())
     }
 
-    pub fn add_custom_dash_qt_columns(&self) -> Result<()> {
-        self.execute(
+    pub fn add_custom_dash_qt_columns(&self, conn: &rusqlite::Connection) -> Result<()> {
+        conn.execute(
             "ALTER TABLE settings ADD COLUMN custom_dash_qt_path TEXT DEFAULT NULL;",
             (),
         )?;
-        self.execute(
+        conn.execute(
             "ALTER TABLE settings ADD COLUMN overwrite_dash_conf INTEGER DEFAULT NULL;",
             (),
         )?;
@@ -74,9 +74,9 @@ impl Database {
     }
 
     /// Updates the database version in the settings table.
-    pub fn update_database_version(&self, new_version: u16) -> Result<()> {
+    pub fn update_database_version(&self, new_version: u16, conn: &Connection) -> Result<()> {
         // Ensure the database version is updated
-        self.execute(
+        conn.execute(
             "UPDATE settings
              SET database_version = ?
              WHERE id = 1",

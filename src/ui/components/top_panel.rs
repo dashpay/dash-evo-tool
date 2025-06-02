@@ -128,7 +128,7 @@ pub fn add_top_panel(
                             )
                         });
 
-                    // Grouped Documents menu (render last, so it's flush right)
+                    // Grouped Documents menu
                     if !doc_actions.is_empty() {
                         ui.add_space(3.0);
 
@@ -166,7 +166,7 @@ pub fn add_top_panel(
                         );
                     }
 
-                    // Render other buttons normally (first, so Documents is flush right)
+                    // Render other buttons normally
                     for (text, btn_act) in other_actions.into_iter().rev() {
                         ui.add_space(3.0);
                         let font = egui::FontId::proportional(16.0);

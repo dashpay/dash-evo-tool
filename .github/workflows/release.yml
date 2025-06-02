@@ -147,8 +147,8 @@ jobs:
         if: ${{ matrix.build-type == 'appimage' && matrix.target == 'aarch64-unknown-linux-gnu' }}
         run: |
           wget -q https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-aarch64.AppImage
-          chmod +x linuxdeploy-x86_64.AppImage
-          sudo mv linuxdeploy-x86_64.AppImage /usr/local/bin/linuxdeploy
+          chmod +x linuxdeploy-aarch64.AppImage
+          sudo mv linuxdeploy-aarch64.AppImage /usr/local/bin/linuxdeploy
           # Install additional dependencies that might be needed at runtime
           sudo apt-get install -y libxcb-xfixes0-dev libxcb-shape0-dev libxcb-randr0-dev libxcb-xkb-dev libxkbcommon-x11-dev
 

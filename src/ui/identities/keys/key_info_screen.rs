@@ -5,6 +5,7 @@ use crate::model::qualified_identity::encrypted_key_storage::{
 };
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
+use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
 use crate::ui::ScreenLike;
@@ -63,7 +64,7 @@ impl ScreenLike for KeyInfoScreen {
     fn refresh(&mut self) {}
 
     fn ui(&mut self, ctx: &Context) -> AppAction {
-        let action = add_top_panel(
+        let mut action = add_top_panel(
             ctx,
             &self.app_context,
             vec![
@@ -71,6 +72,12 @@ impl ScreenLike for KeyInfoScreen {
                 ("Key Info", AppAction::None),
             ],
             vec![],
+        );
+
+        action |= add_left_panel(
+            ctx,
+            &self.app_context,
+            crate::ui::RootScreenType::RootScreenIdentities,
         );
 
         egui::CentralPanel::default().show(ctx, |ui| {

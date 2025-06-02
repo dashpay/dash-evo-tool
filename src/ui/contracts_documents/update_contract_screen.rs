@@ -14,7 +14,6 @@ use crate::ui::{BackendTaskSuccessResult, MessageType, ScreenLike};
 use dash_sdk::dpp::data_contract::accessors::v0::{DataContractV0Getters, DataContractV0Setters};
 use dash_sdk::dpp::data_contract::conversion::json::DataContractJsonConversionMethodsV0;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::{DataContract, IdentityPublicKey};
@@ -43,8 +42,8 @@ pub struct UpdateDataContractScreen {
     known_contracts: Vec<QualifiedContract>,
     selected_contract: Option<String>,
 
-    pub qualified_identities: Vec<(QualifiedIdentity, Vec<IdentityPublicKey>)>,
-    pub selected_qualified_identity: Option<(QualifiedIdentity, Vec<IdentityPublicKey>)>,
+    pub qualified_identities: Vec<QualifiedIdentity>,
+    pub selected_qualified_identity: Option<QualifiedIdentity>,
     pub selected_key: Option<IdentityPublicKey>,
 
     pub selected_wallet: Option<Arc<RwLock<Wallet>>>,
@@ -55,36 +54,14 @@ pub struct UpdateDataContractScreen {
 
 impl UpdateDataContractScreen {
     pub fn new(app_context: &Arc<AppContext>) -> Self {
-        let security_level_requirements = vec![SecurityLevel::HIGH, SecurityLevel::CRITICAL];
-
         let qualified_identities: Vec<_> = app_context
             .load_local_qualified_identities()
-            .unwrap_or_default()
-            .into_iter()
-            .filter_map(|e| {
-                let keys = e
-                    .identity
-                    .public_keys()
-                    .values()
-                    .filter(|key| {
-                        key.purpose() == Purpose::AUTHENTICATION
-                            && security_level_requirements.contains(&SecurityLevel::CRITICAL)
-                            && !key.is_disabled()
-                    })
-                    .cloned()
-                    .collect::<Vec<_>>();
-                if keys.is_empty() {
-                    None
-                } else {
-                    Some((e, keys))
-                }
-            })
-            .collect();
+            .unwrap_or_default();
         let selected_qualified_identity = qualified_identities.first().cloned();
 
         let mut error_message: Option<String> = None;
         let selected_wallet = if let Some(ref identity) = selected_qualified_identity {
-            get_selected_wallet(&identity.0, Some(app_context), None, &mut error_message)
+            get_selected_wallet(&identity, Some(app_context), None, &mut error_message)
         } else {
             None
         };
@@ -103,7 +80,6 @@ impl UpdateDataContractScreen {
         let mut selected_key = None;
         if let Some(identity) = &selected_qualified_identity {
             selected_key = identity
-                .0
                 .identity
                 .get_first_public_key_matching(
                     Purpose::AUTHENTICATION,
@@ -153,8 +129,7 @@ impl UpdateDataContractScreen {
                         // ------------------------------------------
                         // 1) Overwrite the contract’s ownerId
                         // ------------------------------------------
-                        if let Some((qualified_identity, _keys)) = &self.selected_qualified_identity
-                        {
+                        if let Some(qualified_identity) = &self.selected_qualified_identity {
                             let new_owner_id = qualified_identity.identity.id();
                             contract.set_owner_id(new_owner_id);
                         }
@@ -217,7 +192,7 @@ impl UpdateDataContractScreen {
                     app_action = AppAction::BackendTask(BackendTask::ContractTask(
                         ContractTask::UpdateDataContract(
                             contract.clone(),
-                            self.selected_qualified_identity.clone().unwrap().0, // unwrap should be safe here
+                            self.selected_qualified_identity.clone().unwrap(), // unwrap should be safe here
                             self.selected_key.clone().unwrap(), // unwrap should be safe here
                         ),
                     ));
@@ -412,36 +387,19 @@ impl ScreenLike for UpdateDataContractScreen {
             // Select the identity to update the name for
             ui.heading("1. Select Identity");
             ui.add_space(5.0);
-            // Convert to the format expected by add_identity_key_chooser
-            let mut selected_identity = self
-                .selected_qualified_identity
-                .as_ref()
-                .map(|(identity, _)| identity.clone());
             add_identity_key_chooser(
                 ui,
                 &self.app_context,
-                self.qualified_identities
-                    .iter()
-                    .map(|(identity, _)| identity),
-                &mut selected_identity,
+                self.qualified_identities.iter(),
+                &mut self.selected_qualified_identity,
                 &mut self.selected_key,
                 TransactionType::UpdateContract,
             );
-            // Update the selected_qualified_identity based on the helper's output
-            if let Some(selected) = selected_identity {
-                if let Some(entry) = self
-                    .qualified_identities
-                    .iter()
-                    .find(|(identity, _)| identity.identity.id() == selected.identity.id())
-                {
-                    self.selected_qualified_identity = Some(entry.clone());
-                }
-            }
             ui.add_space(5.0);
             if let Some(identity) = &self.selected_qualified_identity {
                 ui.label(format!(
                     "Identity balance: {:.6}",
-                    identity.0.identity.balance() as f64 * 1e-11
+                    identity.identity.balance() as f64 * 1e-11
                 ));
             }
 

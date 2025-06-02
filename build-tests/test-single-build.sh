@@ -20,7 +20,7 @@ docker run --rm -it \
     "$DISTRO" \
     /bin/bash -c "
         cd /test
-        apt-get update && apt-get install -y unzip ldd || yum install -y unzip
+        apt-get update && apt-get install -y unzip libc-bin || yum install -y unzip
         unzip -q $BUILD_FILE
         cd dash-evo-tool
         chmod +x dash-evo-tool

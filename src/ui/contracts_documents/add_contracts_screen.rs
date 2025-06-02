@@ -2,6 +2,7 @@ use crate::app::AppAction;
 use crate::backend_task::contract::ContractTask;
 use crate::backend_task::BackendTask;
 use crate::context::AppContext;
+use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::{BackendTaskSuccessResult, MessageType, ScreenLike};
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
@@ -313,6 +314,12 @@ impl ScreenLike for AddContractsScreen {
                 ("Add Contracts", AppAction::None),
             ],
             vec![],
+        );
+
+        action |= add_left_panel(
+            ctx,
+            &self.app_context,
+            crate::ui::RootScreenType::RootScreenDocumentQuery,
         );
 
         egui::CentralPanel::default().show(ctx, |ui| {

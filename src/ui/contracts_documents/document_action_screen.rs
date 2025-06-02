@@ -9,7 +9,7 @@ use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
 use crate::ui::helpers::{
-    add_contract_doc_type_chooser_with_filtering, add_identity_key_chooser, show_success_screen,
+    add_contract_doc_type_chooser_with_filtering, add_identity_key_chooser_with_doc_type, show_success_screen,
     TransactionType,
 };
 use crate::ui::identities::get_selected_wallet;
@@ -208,13 +208,14 @@ impl DocumentActionScreen {
         ui.add_space(10.0);
 
         let identities_vec: Vec<_> = self.identities_map.values().cloned().collect();
-        add_identity_key_chooser(
+        add_identity_key_chooser_with_doc_type(
             ui,
             &self.app_context,
             identities_vec.iter(),
             &mut self.selected_identity,
             &mut self.selected_key,
             TransactionType::DocumentAction,
+            self.selected_document_type.as_ref(),
         );
         ui.add_space(10.0);
     }

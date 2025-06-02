@@ -7,8 +7,9 @@ use crate::model::wallet::Wallet;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
-use crate::ui::helpers::{add_identity_key_chooser, TransactionType};
+use crate::ui::helpers::{add_identity_key_chooser_with_doc_type, TransactionType};
 use crate::ui::{MessageType, ScreenLike};
+use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::TimestampMillis;
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
@@ -95,13 +96,18 @@ impl RegisterDpnsNameScreen {
     }
 
     fn render_identity_id_selection(&mut self, ui: &mut egui::Ui) {
-        add_identity_key_chooser(
+        add_identity_key_chooser_with_doc_type(
             ui,
             &self.app_context,
             self.qualified_identities.iter(),
             &mut self.selected_qualified_identity,
             &mut self.selected_key,
             TransactionType::DocumentAction,
+            self.app_context
+                .dpns_contract
+                .document_type_cloned_for_name("domain")
+                .ok()
+                .as_ref(),
         );
     }
 

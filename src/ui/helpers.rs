@@ -172,6 +172,29 @@ pub fn add_identity_key_chooser<'a, T>(
 ) where
     T: Iterator<Item = &'a QualifiedIdentity>,
 {
+    add_identity_key_chooser_with_doc_type(
+        ui,
+        app_context,
+        identities,
+        selected_identity,
+        selected_key,
+        transaction_type,
+        None,
+    )
+}
+
+/// Identity key chooser that filters keys based on transaction type, document type and dev mode
+pub fn add_identity_key_chooser_with_doc_type<'a, T>(
+    ui: &mut Ui,
+    app_context: &AppContext,
+    identities: T,
+    selected_identity: &mut Option<QualifiedIdentity>,
+    selected_key: &mut Option<IdentityPublicKey>,
+    transaction_type: TransactionType,
+    document_type: Option<&DocumentType>,
+) where
+    T: Iterator<Item = &'a QualifiedIdentity>,
+{
     let is_dev_mode = app_context
         .developer_mode
         .load(std::sync::atomic::Ordering::Relaxed);
@@ -228,7 +251,28 @@ pub fn add_identity_key_chooser<'a, T>(
                 .show_ui(ui, |kui| {
                     if let Some(qi) = selected_identity {
                         let allowed_purposes = transaction_type.allowed_purposes();
-                        let allowed_security_levels = transaction_type.allowed_security_levels();
+                        let allowed_security_levels = if transaction_type
+                            == TransactionType::DocumentAction
+                            && document_type.is_some()
+                        {
+                            // For document actions with a specific document type, use its security requirement
+                            let required_level =
+                                document_type.unwrap().security_level_requirement();
+                            let allowed_levels =
+                                SecurityLevel::CRITICAL as u8..=required_level as u8;
+                            let allowed_levels: Vec<SecurityLevel> = [
+                                SecurityLevel::CRITICAL,
+                                SecurityLevel::HIGH,
+                                SecurityLevel::MEDIUM,
+                            ]
+                            .iter()
+                            .cloned()
+                            .filter(|level| allowed_levels.contains(&(*level as u8)))
+                            .collect();
+                            allowed_levels
+                        } else {
+                            transaction_type.allowed_security_levels()
+                        };
 
                         for key_ref in qi.private_keys.identity_public_keys() {
                             let key = &key_ref.1.identity_public_key;

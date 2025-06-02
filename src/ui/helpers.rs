@@ -124,7 +124,7 @@ impl TransactionType {
                 vec![Purpose::AUTHENTICATION]
             }
             TransactionType::Transfer => vec![Purpose::TRANSFER],
-            TransactionType::Withdraw => vec![Purpose::TRANSFER], // Owner keys handled separately
+            TransactionType::Withdraw => vec![Purpose::TRANSFER, Purpose::OWNER], // Owner keys handled separately
             TransactionType::DocumentAction => vec![Purpose::AUTHENTICATION],
         }
     }
@@ -132,18 +132,10 @@ impl TransactionType {
     /// Returns the allowed security levels for this transaction type
     pub fn allowed_security_levels(&self) -> Vec<SecurityLevel> {
         match self {
-            TransactionType::RegisterContract => vec![
-                SecurityLevel::CRITICAL,
-                SecurityLevel::HIGH,
-                SecurityLevel::MEDIUM,
-            ],
+            TransactionType::RegisterContract => vec![SecurityLevel::CRITICAL, SecurityLevel::HIGH],
             TransactionType::UpdateContract => vec![SecurityLevel::CRITICAL],
-            TransactionType::Transfer | TransactionType::Withdraw => vec![
-                SecurityLevel::MASTER,
-                SecurityLevel::CRITICAL,
-                SecurityLevel::HIGH,
-                SecurityLevel::MEDIUM,
-            ],
+            TransactionType::Transfer => vec![SecurityLevel::CRITICAL],
+            TransactionType::Withdraw => vec![SecurityLevel::CRITICAL],
             TransactionType::DocumentAction => vec![
                 SecurityLevel::CRITICAL,
                 SecurityLevel::HIGH,

@@ -36,7 +36,7 @@ use dash_sdk::query_types::IndexMap;
 use dash_sdk::Sdk;
 use rusqlite::Result;
 use std::collections::{BTreeMap, HashMap};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
 #[derive(Debug)]
@@ -59,8 +59,6 @@ pub struct AppContext {
     pub(crate) wallets: RwLock<BTreeMap<WalletSeedHash, Arc<RwLock<Wallet>>>>,
     pub(crate) password_info: Option<PasswordInfo>,
     pub(crate) transactions_waiting_for_finality: Mutex<BTreeMap<Txid, Option<AssetLockProof>>>,
-    /// Protocol version retrieved from the node; only used to initialize the SDK.
-    detected_protocol_version: AtomicU32,
 }
 
 impl AppContext {
@@ -84,7 +82,7 @@ impl AppContext {
         let provider =
             Provider::new(db.clone(), network, &network_config).expect("Failed to initialize SDK");
 
-        let sdk = initialize_sdk(&network_config, network, provider.clone(), None);
+        let sdk = initialize_sdk(&network_config, network, provider.clone());
         let platform_version = sdk.version();
 
         let dpns_contract = load_system_data_contract(SystemDataContract::DPNS, platform_version)
@@ -155,7 +153,6 @@ impl AppContext {
             password_info,
             transactions_waiting_for_finality: Mutex::new(BTreeMap::new()),
             zmq_connection_status: Mutex::new(ZMQConnectionEvent::Disconnected),
-            detected_protocol_version: AtomicU32::new(0),
         };
 
         let app_context = Arc::new(app_context);
@@ -165,7 +162,6 @@ impl AppContext {
     }
 
     pub fn platform_version(&self) -> &'static PlatformVersion {
-        // TODO: Use self.sdk.read().unwrap().version() instead of hardcoding
         default_platform_version(&self.network)
     }
 
@@ -209,10 +205,7 @@ impl AppContext {
         // 3. Rebuild the Sdk with the updated config
         let provider = Provider::new(self.db.clone(), self.network, &cfg)
             .map_err(|e| format!("Failed to init provider: {e}"))?;
-        let platform_version =
-            PlatformVersion::get_optional(self.detected_protocol_version.load(Ordering::Relaxed));
-
-        let new_sdk = initialize_sdk(&cfg, self.network, provider.clone(), platform_version);
+        let new_sdk = initialize_sdk(&cfg, self.network, provider.clone());
 
         // 4. Swap them in
         {
@@ -712,6 +705,7 @@ impl AppContext {
 
 /// Returns the default platform version for the given network.
 pub(crate) const fn default_platform_version(network: &Network) -> &'static PlatformVersion {
+    // TODO: Use self.sdk.read().unwrap().version() instead of hardcoding
     match network {
         Network::Dash => &PLATFORM_V8,
         Network::Testnet => &PLATFORM_V9,

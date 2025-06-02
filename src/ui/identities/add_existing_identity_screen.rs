@@ -4,6 +4,7 @@ use crate::backend_task::BackendTask;
 use crate::context::AppContext;
 use crate::model::qualified_identity::IdentityType;
 use crate::model::wallet::Wallet;
+use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
 use crate::ui::{MessageType, ScreenLike};
@@ -502,6 +503,12 @@ impl ScreenLike for AddExistingIdentityScreen {
                 ("Load Identity", AppAction::None),
             ],
             vec![],
+        );
+
+        action |= add_left_panel(
+            ctx,
+            &self.app_context,
+            crate::ui::RootScreenType::RootScreenIdentities,
         );
 
         egui::CentralPanel::default().show(ctx, |ui| {

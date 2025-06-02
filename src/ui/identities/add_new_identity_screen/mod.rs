@@ -11,6 +11,7 @@ use crate::backend_task::identity::{
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::wallet::Wallet;
+use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
 use crate::ui::identities::funding_common::WalletFundedScreenStep;
@@ -951,6 +952,12 @@ impl ScreenLike for AddNewIdentityScreen {
                 ("Create Identity", AppAction::None),
             ],
             vec![],
+        );
+
+        action |= add_left_panel(
+            ctx,
+            &self.app_context,
+            crate::ui::RootScreenType::RootScreenIdentities,
         );
 
         egui::CentralPanel::default().show(ctx, |ui| {

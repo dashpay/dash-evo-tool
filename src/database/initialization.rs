@@ -391,12 +391,100 @@ impl Database {
         // we don't change `create_tables`, we just add migrations
         // and rely on it to bring the database to the latest version.
         // It means that we put `1` in the `settings` table as the initial version
+        self.set_db_version(DEFAULT_DB_VERSION)
+    }
+    fn set_db_version(&self, version: u16) -> rusqlite::Result<()> {
         self.execute(
             "INSERT INTO settings (id, network, start_root_screen, database_version)
              VALUES (1, ?, 0, ?)
              ON CONFLICT(id) DO UPDATE SET database_version = excluded.database_version",
-            params![DEFAULT_NETWORK, DEFAULT_DB_VERSION],
+            params![DEFAULT_NETWORK, version],
         )?;
         Ok(())
+    }
+}
+
+mod test {
+    use rusqlite::params;
+
+    use crate::database::initialization::{DEFAULT_DB_VERSION, DEFAULT_NETWORK};
+
+    #[test]
+    /// Given a new database file,
+    /// when `initialize` is called,
+    /// then it should create the settings table with the default version.
+    fn test_initialize_database() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db_file_path = temp_dir.path().join("test_data.db");
+        let db = super::Database::new(&db_file_path).unwrap();
+        db.initialize(&db_file_path).unwrap();
+
+        // Check if the settings table is created and has the default version
+        let conn = db.conn.lock().unwrap();
+        let version: u16 = conn
+            .query_row(
+                "SELECT database_version FROM settings WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(version, super::DEFAULT_DB_VERSION);
+    }
+
+    // Given a database with a missing `asset_lock_transaction` table,
+    // when I run the migration number 9,
+    // then it fails and reverts the database schema to the previous version,
+    #[test]
+    fn test_migration_failure_rolls_back() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db_file_path = temp_dir.path().join("test_data.db");
+        let db = super::Database::new(&db_file_path).unwrap();
+
+        db.create_tables().unwrap();
+        db.set_default_version().unwrap();
+
+        // drop the `asset_lock_transaction` table to simulate a migration failure
+        let conn = db.conn.lock().unwrap();
+        conn.execute("DROP TABLE asset_lock_transaction", [])
+            .expect("Failed to drop asset_lock_transaction table");
+        // check that we don't have any identities yet
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM identity", [], |row| row.get(0))
+            .expect("Failed to count identities");
+        assert_eq!(count, 0);
+
+        // add some identity to ensure the database is not empty
+        conn.execute(
+            "INSERT INTO identity (id, is_local, alias, network) VALUES (?, ?, ?, ?)",
+            rusqlite::params![vec![1u8; 32], 1, "test_identity", DEFAULT_NETWORK],
+        )
+        .expect("Failed to insert test identity");
+        drop(conn);
+
+        // change version to 8 to force migration number 9
+        const START_VERSION: u16 = 8;
+        db.set_db_version(START_VERSION).unwrap();
+
+        // Simulate a migration failure by trying to apply an invalid change
+        let result = db.try_perform_migration(START_VERSION, DEFAULT_DB_VERSION);
+        assert!(result.is_err());
+
+        // Check that the database version has not changed
+        let version: u16 = db.db_schema_version().unwrap();
+        assert_eq!(version, START_VERSION);
+
+        // check that the identity was not deleted
+        let conn = db.conn.lock().unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM identity WHERE network = ?",
+                params![DEFAULT_NETWORK],
+                |row| row.get(0),
+            )
+            .expect("Failed to count identities");
+        assert_eq!(
+            count, 1,
+            "Identity should not be deleted during migration failure"
+        );
     }
 }

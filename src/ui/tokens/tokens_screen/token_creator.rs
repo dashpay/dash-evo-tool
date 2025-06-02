@@ -685,7 +685,7 @@ impl TokensScreen {
                                             }
                                         };
 
-                                        let data_contract_json = data_contract.to_json(self.app_context.platform_version).expect("Expected to map contract to json");
+                                        let data_contract_json = data_contract.to_json(self.app_context.platform_version()).expect("Expected to map contract to json");
                                         self.show_json_popup = true;
                                         self.json_popup_text = serde_json::to_string_pretty(&data_contract_json).expect("Expected to serialize json");
                                     },

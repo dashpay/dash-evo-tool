@@ -12,7 +12,6 @@ use dash_sdk::dpp::native_bls::NativeBlsModule;
 use dash_sdk::dpp::prelude::AssetLockProof;
 use dash_sdk::dpp::state_transition::identity_create_transition::methods::IdentityCreateTransitionMethodsV0;
 use dash_sdk::dpp::state_transition::identity_create_transition::IdentityCreateTransition;
-use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::dpp::ProtocolError;
 use dash_sdk::platform::transition::put_identity::PutIdentity;
 use dash_sdk::platform::{Fetch, Identity};
@@ -399,7 +398,7 @@ impl AppContext {
                                     &qualified_identity,
                                     &NativeBlsModule,
                                     0,
-                                    PlatformVersion::latest(),
+                                    self.platform_version(),
                                 )
                                 .expect("expected to make transition");
                             format!(

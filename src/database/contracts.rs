@@ -32,7 +32,7 @@ impl Database {
     ) -> Result<()> {
         // Serialize the contract
         let contract_bytes = data_contract
-            .serialize_to_bytes_with_platform_version(app_context.platform_version)
+            .serialize_to_bytes_with_platform_version(app_context.platform_version())
             .expect("expected to serialize contract");
         let contract_id = data_contract.id().to_vec();
         let network = app_context.network.to_string();
@@ -111,7 +111,7 @@ impl Database {
                 match DataContract::versioned_deserialize(
                     &bytes,
                     false,
-                    app_context.platform_version,
+                    app_context.platform_version(),
                 ) {
                     Ok(contract) => {
                         // Construct the QualifiedContract
@@ -137,7 +137,7 @@ impl Database {
         app_context: &AppContext,
     ) -> Result<()> {
         let contract_bytes = data_contract
-            .serialize_to_bytes_with_platform_version(app_context.platform_version)
+            .serialize_to_bytes_with_platform_version(app_context.platform_version())
             .expect("expected to serialize contract");
         let network = app_context.network.to_string();
 
@@ -193,7 +193,7 @@ impl Database {
                 match DataContract::versioned_deserialize(
                     &bytes,
                     false,
-                    app_context.platform_version,
+                    app_context.platform_version(),
                 ) {
                     Ok(contract) => {
                         // Construct the QualifiedContract
@@ -259,7 +259,7 @@ impl Database {
             match DataContract::versioned_deserialize(
                 &contract_bytes,
                 false,
-                app_context.platform_version,
+                app_context.platform_version(),
             ) {
                 Ok(contract) => {
                     contracts.push(QualifiedContract { contract, alias });

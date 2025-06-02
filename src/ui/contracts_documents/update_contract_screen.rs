@@ -16,7 +16,6 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
-use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::platform::{DataContract, IdentityPublicKey};
 use eframe::egui::{self, Color32, Context, TextEdit};
 use egui::{RichText, ScrollArea, Ui};
@@ -292,7 +291,7 @@ impl UpdateDataContractScreen {
 
         match json_result {
             Ok(json_val) => {
-                let platform_version = PlatformVersion::latest();
+                let platform_version = self.app_context.platform_version();
                 match DataContract::from_json(json_val, true, platform_version) {
                     Ok(mut contract) => {
                         // ------------------------------------------
@@ -602,7 +601,7 @@ impl ScreenLike for UpdateDataContractScreen {
                                 )
                                 .clicked()
                             {
-                                let platform_version = PlatformVersion::latest();
+                                let platform_version = self.app_context.platform_version();
                                 self.selected_contract = Some(display_text.to_string());
                                 self.contract_json_input =
                                     match contract.contract.to_json(platform_version) {

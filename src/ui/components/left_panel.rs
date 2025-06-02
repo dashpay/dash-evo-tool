@@ -1,6 +1,7 @@
 use crate::app::AppAction;
 use crate::context::AppContext;
 use crate::ui::RootScreenType;
+use dash_sdk::dpp::version::v9::PROTOCOL_VERSION_9;
 use eframe::epaint::{Color32, Margin};
 use egui::{Context, Frame, ImageButton, SidePanel, TextureHandle};
 use rust_embed::RustEmbed;
@@ -79,6 +80,9 @@ pub fn add_left_panel(
         .show(ctx, |ui| {
             ui.vertical_centered(|ui| {
                 for (label, screen_type, icon_path) in buttons.iter() {
+                    if check_root_screen_access(app_context, screen_type) == false {
+                        continue; // Skip this button if access is denied
+                    }
                     let texture: Option<TextureHandle> = load_icon(ctx, icon_path);
                     let is_selected = selected_screen == *screen_type;
 
@@ -126,4 +130,15 @@ pub fn add_left_panel(
         });
 
     action
+}
+
+/// Checks if the user has access to the button based on the screen type.
+fn check_root_screen_access(app_context: &Arc<AppContext>, screen_type: &RootScreenType) -> bool {
+    let protocol_version = app_context.platform_version().protocol_version;
+
+    // For RootScreenMyTokenBalances
+    match screen_type {
+        RootScreenType::RootScreenMyTokenBalances if protocol_version < PROTOCOL_VERSION_9 => false,
+        _ => true,
+    }
 }

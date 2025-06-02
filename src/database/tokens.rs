@@ -224,7 +224,7 @@ impl Database {
             let data_contract = DataContract::versioned_deserialize(
                 &raw_contract_bytes,
                 false,
-                app_context.platform_version,
+                app_context.platform_version(),
             )
             .map_err(|e| {
                 eprintln!("Failed to deserialize DataContract: {}", e);

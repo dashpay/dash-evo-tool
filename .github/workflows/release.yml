@@ -3,8 +3,8 @@ name: Release Dash Evo Tool
 on:
   push:
     tags:
-      - 'v*'
-      - 'v*-dev.*'
+      - "v*"
+      - "v*-dev.*"
   release:
     types:
       - published
@@ -13,6 +13,11 @@ on:
       tag:
         description: "Version (i.e. v0.1.0)"
         required: true
+      create_release:
+        description: "Create GitHub Release (check to publish release)"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   id-token: write
@@ -31,35 +36,35 @@ jobs:
             target: "x86_64-unknown-linux-gnu"
             platform: "x86_64-linux"
             build-type: "modern"
-          
+
           # Linux x86_64 - Compatible build (Ubuntu 20.04, GLIBC 2.31)
           - name: "linux-x86_64-compat"
             runs-on: "ubuntu-20.04"
             target: "x86_64-unknown-linux-gnu"
             platform: "x86_64-linux-compat"
             build-type: "compat"
-          
+
           # Linux ARM64 - Modern build
           - name: "linux-arm64"
             runs-on: "ubuntu-22.04-arm"
             target: "aarch64-unknown-linux-gnu"
             platform: "arm64-linux"
             build-type: "modern"
-          
+
           # Linux ARM64 - Compatible build
           - name: "linux-arm64-compat"
             runs-on: "ubuntu-20.04-arm"
             target: "aarch64-unknown-linux-gnu"
             platform: "arm64-linux-compat"
             build-type: "compat"
-          
+
           # AppImage x86_64 build
           - name: "linux-x86_64-appimage"
             runs-on: "ubuntu-20.04"
             target: "x86_64-unknown-linux-gnu"
             platform: "x86_64-linux-appimage"
             build-type: "appimage"
-          
+
           # macOS builds
           - name: "macos-x86_64"
             runs-on: "macos-13"
@@ -69,7 +74,7 @@ jobs:
             runs-on: "macos-latest"
             target: "aarch64-apple-darwin"
             platform: "arm64-mac"
-          
+
           # Windows build
           - name: "Windows"
             runs-on: "ubuntu-24.04"
@@ -181,12 +186,12 @@ jobs:
           mkdir -p AppDir/usr/bin
           mkdir -p AppDir/usr/share/applications
           mkdir -p AppDir/usr/share/icons/hicolor/256x256/apps
-          
+
           # Copy binary and resources
           cp dash-evo-tool/dash-evo-tool AppDir/usr/bin/
           cp -r dash-evo-tool/dash_core_configs AppDir/usr/bin/
           cp dash-evo-tool/.env AppDir/usr/bin/
-          
+
           # Create desktop file
           cat > AppDir/usr/share/applications/dash-evo-tool.desktop << EOF
           [Desktop Entry]
@@ -197,10 +202,10 @@ jobs:
           Categories=Utility;
           X-AppImage-Version=${{ github.ref_name }}
           EOF
-          
+
           # Copy the app icon
           cp mac_os/AppIcons/Assets.xcassets/AppIcon.appiconset/256.png AppDir/usr/share/icons/hicolor/256x256/apps/dash-evo-tool.png
-          
+
           # Create AppRun script
           cat > AppDir/AppRun << 'EOF'
           #!/bin/bash
@@ -212,10 +217,10 @@ jobs:
           exec "${HERE}/usr/bin/dash-evo-tool" "$@"
           EOF
           chmod +x AppDir/AppRun
-          
+
           # Use linuxdeploy to create AppImage
           linuxdeploy --appdir AppDir --output appimage
-          
+
           # Move the generated AppImage
           mv Dash_Evo_Tool*.AppImage dash-evo-tool.AppImage
 
@@ -233,7 +238,7 @@ jobs:
       - name: Attest
         uses: actions/attest-build-provenance@v1
         with:
-          subject-path: 'dash-evo-tool-${{ matrix.platform }}.zip'
+          subject-path: "dash-evo-tool-${{ matrix.platform }}.zip"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
@@ -245,6 +250,9 @@ jobs:
     name: Create GitHub Release
     needs: build-and-release
     runs-on: ubuntu-latest
+    if: |
+      github.event_name != 'workflow_dispatch' ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.create_release == 'true')
     steps:
       # Download all Linux variants
       - name: Download Linux AMD64 Modern
@@ -267,7 +275,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: dash-evo-tool-arm64-linux-compat.zip
-      
+
       # Download macOS and Windows
       - name: Download MacOS AMD64 Artifact
         uses: actions/download-artifact@v4
@@ -301,17 +309,17 @@ jobs:
           prerelease: true
           body: |
             ## Linux Build Variants
-            
+
             This release includes multiple Linux build variants to ensure compatibility:
-            
+
             ### Standard Builds
             - **x86_64-linux**: Built on Ubuntu 24.04 (requires GLIBC 2.39+)
             - **arm64-linux**: Built on Ubuntu 22.04 ARM
-            
+
             ### Compatible Builds (Recommended for older systems)
             - **x86_64-linux-compat**: Built on Ubuntu 20.04 (requires GLIBC 2.31+, compatible with most distributions from 2020+)
             - **arm64-linux-compat**: Built on Ubuntu 20.04 ARM
-            
+
             ### AppImage (Most Compatible)
             - **x86_64-linux-appimage**: Self-contained AppImage with all dependencies bundled. Works on most Linux distributions.
               

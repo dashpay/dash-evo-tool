@@ -8,6 +8,7 @@ use crate::model::wallet::Wallet;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
+use crate::ui::helpers::{add_identity_key_chooser, TransactionType};
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::{BackendTaskSuccessResult, MessageType, ScreenLike};
 use dash_sdk::dpp::data_contract::accessors::v0::{DataContractV0Getters, DataContractV0Setters};
@@ -20,7 +21,6 @@ use dash_sdk::platform::{DataContract, IdentityPublicKey};
 use eframe::egui::{self, Color32, Context, TextEdit};
 use egui::{RichText, ScrollArea, Ui};
 use std::collections::HashSet;
-use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -43,7 +43,6 @@ pub struct UpdateDataContractScreen {
     known_contracts: Vec<QualifiedContract>,
     selected_contract: Option<String>,
 
-    pub show_key_selector: bool,
     pub qualified_identities: Vec<(QualifiedIdentity, Vec<IdentityPublicKey>)>,
     pub selected_qualified_identity: Option<(QualifiedIdentity, Vec<IdentityPublicKey>)>,
     pub selected_key: Option<IdentityPublicKey>,
@@ -90,8 +89,6 @@ impl UpdateDataContractScreen {
             None
         };
 
-        let show_key_selector = selected_qualified_identity.is_some();
-
         let excluded_aliases = ["dpns", "keyword_search", "token_history", "withdrawals"];
         let known_contracts = app_context
             .get_contracts(None, None)
@@ -124,7 +121,6 @@ impl UpdateDataContractScreen {
             known_contracts,
             selected_contract: None,
 
-            show_key_selector,
             qualified_identities,
             selected_qualified_identity,
             selected_key,
@@ -133,146 +129,6 @@ impl UpdateDataContractScreen {
             wallet_password: String::new(),
             show_password: false,
             error_message: None,
-        }
-    }
-
-    fn render_identity_id_and_key_selection(&mut self, ui: &mut egui::Ui) {
-        if self.qualified_identities.len() == 1 {
-            // Only one identity, display it directly
-            let qualified_identity = &self.qualified_identities[0];
-            ui.horizontal(|ui| {
-                ui.label("Identity ID:");
-                ui.label(
-                    qualified_identity
-                        .0
-                        .alias
-                        .as_ref()
-                        .unwrap_or(
-                            &qualified_identity
-                                .0
-                                .identity
-                                .id()
-                                .to_string(Encoding::Base58),
-                        )
-                        .clone(),
-                );
-            });
-            self.selected_qualified_identity = Some(qualified_identity.clone());
-        } else {
-            // Multiple identities, display ComboBox
-            ui.horizontal(|ui| {
-                ui.label("Identity ID:");
-
-                // Create a ComboBox for selecting a Qualified Identity
-                egui::ComboBox::from_id_salt("identity")
-                    .selected_text(
-                        self.selected_qualified_identity
-                            .as_ref()
-                            .map(|qi| {
-                                qi.0.alias
-                                    .as_ref()
-                                    .unwrap_or(&qi.0.identity.id().to_string(Encoding::Base58))
-                                    .clone()
-                            })
-                            .unwrap_or_else(|| "Select an identity".to_string()),
-                    )
-                    .show_ui(ui, |ui| {
-                        // Loop through the qualified identities and display each as selectable
-                        for qualified_identity in &self.qualified_identities {
-                            // Display each QualifiedIdentity as a selectable item
-                            if ui
-                                .selectable_value(
-                                    &mut self.selected_qualified_identity,
-                                    Some(qualified_identity.clone()),
-                                    qualified_identity.0.alias.as_ref().unwrap_or(
-                                        &qualified_identity
-                                            .0
-                                            .identity
-                                            .id()
-                                            .to_string(Encoding::Base58),
-                                    ),
-                                )
-                                .clicked()
-                            {
-                                self.selected_qualified_identity = Some(qualified_identity.clone());
-                                self.selected_wallet = get_selected_wallet(
-                                    &qualified_identity.0,
-                                    Some(&self.app_context),
-                                    None,
-                                    &mut self.error_message,
-                                );
-                                self.show_key_selector = true;
-                            }
-                        }
-                    });
-            });
-        }
-
-        // Key selection
-        if let Some(ref qid) = self.selected_qualified_identity {
-            // Attempt to list available keys (only auth keys in normal mode)
-            let keys = if self.app_context.developer_mode.load(Ordering::Relaxed) {
-                qid.0
-                    .identity
-                    .public_keys()
-                    .values()
-                    .cloned()
-                    .collect::<Vec<_>>()
-            } else {
-                qid.0
-                    .available_authentication_keys()
-                    .into_iter()
-                    .filter_map(|k| {
-                        if k.identity_public_key.security_level() == SecurityLevel::CRITICAL {
-                            Some(k.identity_public_key.clone())
-                        } else {
-                            None
-                        }
-                    })
-                    .collect()
-            };
-
-            ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                ui.label("Key:");
-                egui::ComboBox::from_id_salt("contract_creator_key_selector")
-                    .selected_text(match &self.selected_key {
-                        Some(k) => format!(
-                            "Key {} (Purpose: {:?}, Security Level: {:?})",
-                            k.id(),
-                            k.purpose(),
-                            k.security_level()
-                        ),
-                        None => "Select Key".to_owned(),
-                    })
-                    .show_ui(ui, |ui| {
-                        for k in keys {
-                            let label = format!(
-                                "Key {} (Purpose: {:?}, Security Level: {:?})",
-                                k.id(),
-                                k.purpose(),
-                                k.security_level()
-                            );
-                            if ui
-                                .selectable_label(
-                                    Some(k.id()) == self.selected_key.as_ref().map(|kk| kk.id()),
-                                    label,
-                                )
-                                .clicked()
-                            {
-                                self.selected_key = Some(k.clone());
-
-                                // If the key belongs to a wallet, set that wallet reference:
-                                self.selected_wallet = crate::ui::identities::get_selected_wallet(
-                                    &qid.0,
-                                    None,
-                                    Some(&k),
-                                    &mut self.error_message,
-                                );
-                            }
-                        }
-                    });
-            });
         }
     }
 
@@ -556,7 +412,31 @@ impl ScreenLike for UpdateDataContractScreen {
             // Select the identity to update the name for
             ui.heading("1. Select Identity");
             ui.add_space(5.0);
-            self.render_identity_id_and_key_selection(ui);
+            // Convert to the format expected by add_identity_key_chooser
+            let mut selected_identity = self
+                .selected_qualified_identity
+                .as_ref()
+                .map(|(identity, _)| identity.clone());
+            add_identity_key_chooser(
+                ui,
+                &self.app_context,
+                self.qualified_identities
+                    .iter()
+                    .map(|(identity, _)| identity),
+                &mut selected_identity,
+                &mut self.selected_key,
+                TransactionType::UpdateContract,
+            );
+            // Update the selected_qualified_identity based on the helper's output
+            if let Some(selected) = selected_identity {
+                if let Some(entry) = self
+                    .qualified_identities
+                    .iter()
+                    .find(|(identity, _)| identity.identity.id() == selected.identity.id())
+                {
+                    self.selected_qualified_identity = Some(entry.clone());
+                }
+            }
             ui.add_space(5.0);
             if let Some(identity) = &self.selected_qualified_identity {
                 ui.label(format!(
@@ -573,6 +453,14 @@ impl ScreenLike for UpdateDataContractScreen {
             ui.add_space(10.0);
             ui.separator();
             ui.add_space(10.0);
+
+            // Render the wallet unlock if needed
+            if self.selected_wallet.is_some() {
+                let (needed_unlock, just_unlocked) = self.render_wallet_unlock_if_needed(ui);
+                if needed_unlock && !just_unlocked {
+                    return;
+                }
+            }
 
             // Select the contract to update
             ui.heading("2. Select contract to update");
@@ -617,14 +505,6 @@ impl ScreenLike for UpdateDataContractScreen {
             ui.add_space(10.0);
             ui.separator();
             ui.add_space(10.0);
-
-            if self.selected_wallet.is_some() {
-                let (needed_unlock, just_unlocked) = self.render_wallet_unlock_if_needed(ui);
-
-                if needed_unlock && !just_unlocked {
-                    return;
-                }
-            }
 
             // Input for the contract
             ui.heading("2. Edit the contract JSON below or paste a new one");

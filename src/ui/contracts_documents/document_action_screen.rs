@@ -10,6 +10,7 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
 use crate::ui::helpers::{
     add_contract_doc_type_chooser_with_filtering, add_identity_key_chooser, show_success_screen,
+    TransactionType,
 };
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::ScreenLike;
@@ -209,9 +210,11 @@ impl DocumentActionScreen {
         let identities_vec: Vec<_> = self.identities_map.values().cloned().collect();
         add_identity_key_chooser(
             ui,
+            &self.app_context,
             identities_vec.iter(),
             &mut self.selected_identity,
             &mut self.selected_key,
+            TransactionType::DocumentAction,
         );
         ui.add_space(10.0);
     }
@@ -1543,6 +1546,9 @@ impl DocumentActionScreen {
             return action;
         }
 
+        ui.separator();
+        ui.add_space(10.0);
+
         // Wallet unlock
         if let Some(selected_identity) = &self.selected_identity {
             self.wallet = get_selected_wallet(
@@ -1558,9 +1564,6 @@ impl DocumentActionScreen {
                 return action;
             }
         }
-
-        ui.separator();
-        ui.add_space(10.0);
 
         // Step 3: Action-specific inputs and broadcast
         action |= match self.action_type {

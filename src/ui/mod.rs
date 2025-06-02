@@ -6,7 +6,9 @@ use crate::model::qualified_identity::encrypted_key_storage::{
 };
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::contracts_documents::contracts_documents_screen::DocumentQueryScreen;
-use crate::ui::contracts_documents::document_action_screen::{DocumentActionScreen, DocumentActionType};
+use crate::ui::contracts_documents::document_action_screen::{
+    DocumentActionScreen, DocumentActionType,
+};
 use crate::ui::dpns::dpns_contested_names_screen::DPNSScreen;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
@@ -310,24 +312,30 @@ impl ScreenType {
             ScreenType::ContractsVisualizer => {
                 Screen::ContractVisualizerScreen(ContractVisualizerScreen::new(app_context))
             }
-            ScreenType::CreateDocument => {
-                Screen::DocumentActionScreen(DocumentActionScreen::new(app_context.clone(), None, DocumentActionType::Create))
-            }
-            ScreenType::DeleteDocument => {
-                Screen::DocumentActionScreen(DocumentActionScreen::new(app_context.clone(), None, DocumentActionType::Delete))
-            }
-            ScreenType::ReplaceDocument => {
-                Screen::DocumentActionScreen(DocumentActionScreen::new(app_context.clone(), None, DocumentActionType::Replace))
-            }
-            ScreenType::TransferDocument => {
-                Screen::DocumentActionScreen(DocumentActionScreen::new(app_context.clone(), None, DocumentActionType::Transfer))
-            }
-            ScreenType::PurchaseDocument => {
-                Screen::DocumentActionScreen(DocumentActionScreen::new(app_context.clone(), None, DocumentActionType::Purchase))
-            }
-            ScreenType::SetDocumentPrice => {
-                Screen::DocumentActionScreen(DocumentActionScreen::new(app_context.clone(), None, DocumentActionType::SetPrice))
-            }
+            ScreenType::CreateDocument => Screen::DocumentActionScreen(DocumentActionScreen::new(
+                app_context.clone(),
+                None,
+                DocumentActionType::Create,
+            )),
+            ScreenType::DeleteDocument => Screen::DocumentActionScreen(DocumentActionScreen::new(
+                app_context.clone(),
+                None,
+                DocumentActionType::Delete,
+            )),
+            ScreenType::ReplaceDocument => Screen::DocumentActionScreen(DocumentActionScreen::new(
+                app_context.clone(),
+                None,
+                DocumentActionType::Replace,
+            )),
+            ScreenType::TransferDocument => Screen::DocumentActionScreen(
+                DocumentActionScreen::new(app_context.clone(), None, DocumentActionType::Transfer),
+            ),
+            ScreenType::PurchaseDocument => Screen::DocumentActionScreen(
+                DocumentActionScreen::new(app_context.clone(), None, DocumentActionType::Purchase),
+            ),
+            ScreenType::SetDocumentPrice => Screen::DocumentActionScreen(
+                DocumentActionScreen::new(app_context.clone(), None, DocumentActionType::SetPrice),
+            ),
             ScreenType::GroupActions => {
                 Screen::GroupActionsScreen(GroupActionsScreen::new(app_context))
             }

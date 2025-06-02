@@ -10,7 +10,7 @@ use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
 use crate::ui::contracts_documents::group_actions_screen::GroupActionsScreen;
-use crate::ui::helpers::render_group_action_text;
+use crate::ui::helpers::{add_identity_key_chooser, render_group_action_text, TransactionType};
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
@@ -24,9 +24,7 @@ use dash_sdk::dpp::data_contract::group::Group;
 use dash_sdk::dpp::data_contract::GroupContractPosition;
 use dash_sdk::dpp::group::{GroupStateTransitionInfo, GroupStateTransitionInfoStatus};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
-use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
 use eframe::egui::{self, Color32, Context, Ui};
 use egui::RichText;
@@ -193,62 +191,6 @@ impl FreezeTokensScreen {
             wallet_password: String::new(),
             show_password: false,
         }
-    }
-
-    /// Renders a ComboBox or similar for selecting an authentication key
-    fn render_key_selection(&mut self, ui: &mut Ui) {
-        ui.horizontal(|ui| {
-            ui.label("Select Key:");
-            egui::ComboBox::from_id_salt("freeze_key_selector")
-                .selected_text(match &self.selected_key {
-                    Some(key) => format!("Key ID: {}", key.id()),
-                    None => "Select a key".to_string(),
-                })
-                .show_ui(ui, |ui| {
-                    if self.app_context.developer_mode.load(Ordering::Relaxed) {
-                        // Show all loaded public keys
-                        for key in self.identity.identity.public_keys().values() {
-                            let is_valid = key.purpose() == Purpose::AUTHENTICATION
-                                && key.security_level() == SecurityLevel::CRITICAL;
-
-                            let label = format!(
-                                "Key ID: {} (Info: {}/{}/{})",
-                                key.id(),
-                                key.purpose(),
-                                key.security_level(),
-                                key.key_type()
-                            );
-                            let styled_label = if is_valid {
-                                RichText::new(label.clone())
-                            } else {
-                                RichText::new(label.clone()).color(Color32::RED)
-                            };
-
-                            ui.selectable_value(
-                                &mut self.selected_key,
-                                Some(key.clone()),
-                                styled_label,
-                            );
-                        }
-                    } else {
-                        // Show only "available" auth keys
-                        for key_wrapper in self
-                            .identity
-                            .available_authentication_keys_with_critical_security_level()
-                        {
-                            let key = &key_wrapper.identity_public_key;
-                            let label = format!(
-                                "Key ID: {} (Info: {}/{}/{})",
-                                key.id(),
-                                key.purpose(),
-                                key.security_level(),
-                                key.key_type()
-                            );
-                            ui.selectable_value(&mut self.selected_key, Some(key.clone()), label);
-                        }
-                    }
-                });
-        });
     }
 
     /// Renders text input for the identity to freeze
@@ -533,18 +475,16 @@ impl ScreenLike for FreezeTokensScreen {
                 // 1) Key selection
                 ui.heading("1. Select the key to sign the Freeze transition");
                 ui.add_space(10.0);
-                ui.horizontal(|ui| {
-                    self.render_key_selection(ui);
-                    ui.add_space(5.0);
-                    let identity_id_string =
-                        self.identity.identity.id().to_string(Encoding::Base58);
-                    let identity_display = self
-                        .identity
-                        .alias
-                        .as_deref()
-                        .unwrap_or_else(|| &identity_id_string);
-                    ui.label(format!("Identity: {}", identity_display));
-                });
+
+                let mut selected_identity = Some(self.identity.clone());
+                add_identity_key_chooser(
+                    ui,
+                    &self.app_context,
+                    std::iter::once(&self.identity),
+                    &mut selected_identity,
+                    &mut self.selected_key,
+                    TransactionType::DocumentAction,
+                );
 
                 ui.add_space(10.0);
                 ui.separator();

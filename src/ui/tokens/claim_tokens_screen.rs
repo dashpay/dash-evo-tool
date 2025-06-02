@@ -1,5 +1,6 @@
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
+use crate::ui::helpers::{add_identity_key_chooser, TransactionType};
 use std::collections::HashSet;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
@@ -16,8 +17,6 @@ use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution
 use dash_sdk::dpp::data_contract::TokenConfiguration;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
-use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
-use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use eframe::egui::{self, Color32, Context, Ui};
 use egui::RichText;
 use crate::app::{AppAction, BackendTasksExecutionMode};
@@ -119,75 +118,6 @@ impl ClaimTokensScreen {
             wallet_password: String::new(),
             show_password: false,
         }
-    }
-
-    fn render_key_selection(&mut self, ui: &mut Ui, identity_type: IdentityType) {
-        ui.horizontal(|ui| {
-            ui.label("Select Key:");
-            egui::ComboBox::from_id_salt("claim_key_selector")
-                .selected_text(match &self.selected_key {
-                    Some(key) => format!("Key ID: {}", key.id()),
-                    None => "Select a key".to_string(),
-                })
-                .show_ui(ui, |ui| {
-                    if self.app_context.developer_mode.load(Ordering::Relaxed) {
-                        // Show all loaded public keys
-                        for key in self.identity.identity.public_keys().values() {
-                            let is_valid = key.purpose() == Purpose::AUTHENTICATION
-                                && key.security_level() == SecurityLevel::CRITICAL;
-
-                            let label = format!(
-                                "Key ID: {} (Info: {}/{}/{})",
-                                key.id(),
-                                key.purpose(),
-                                key.security_level(),
-                                key.key_type()
-                            );
-                            let styled_label = if is_valid {
-                                RichText::new(label.clone())
-                            } else {
-                                RichText::new(label.clone()).color(Color32::RED)
-                            };
-
-                            ui.selectable_value(
-                                &mut self.selected_key,
-                                Some(key.clone()),
-                                styled_label,
-                            );
-                        }
-                    } else {
-                        match identity_type {
-                            IdentityType::User => {
-                                // Show only "available" auth keys
-                                for key_wrapper in self
-                                    .identity
-                                    .available_authentication_keys_with_critical_security_level()
-                                {
-                                    let key = &key_wrapper.identity_public_key;
-                                    let label = format!("Key ID: {}", key.id());
-                                    ui.selectable_value(
-                                        &mut self.selected_key,
-                                        Some(key.clone()),
-                                        label,
-                                    );
-                                }
-                            }
-                            IdentityType::Masternode | IdentityType::Evonode => {
-                                // Show only "available" auth keys
-                                for key_wrapper in self.identity.available_transfer_keys() {
-                                    let key = &key_wrapper.identity_public_key;
-                                    let label = format!("Key ID: {}", key.id());
-                                    ui.selectable_value(
-                                        &mut self.selected_key,
-                                        Some(key.clone()),
-                                        label,
-                                    );
-                                }
-                            }
-                        }
-                    }
-                });
-        });
     }
 
     fn render_token_distribution_type_selector(&mut self, ui: &mut Ui) {
@@ -436,18 +366,16 @@ impl ScreenLike for ClaimTokensScreen {
 
                 ui.heading("1. Select the key to sign the Claim transition");
                 ui.add_space(10.0);
-                ui.horizontal(|ui| {
-                    self.render_key_selection(ui, self.identity.identity_type);
-                    ui.add_space(5.0);
-                    let identity_id_string =
-                        self.identity.identity.id().to_string(Encoding::Base58);
-                    let identity_display = self
-                        .identity
-                        .alias
-                        .as_deref()
-                        .unwrap_or_else(|| &identity_id_string);
-                    ui.label(format!("Identity: {}", identity_display));
-                });
+
+                let mut selected_identity = Some(self.identity.clone());
+                add_identity_key_chooser(
+                    ui,
+                    &self.app_context,
+                    std::iter::once(&self.identity),
+                    &mut selected_identity,
+                    &mut self.selected_key,
+                    TransactionType::DocumentAction,
+                );
                 ui.add_space(10.0);
 
                 self.render_token_distribution_type_selector(ui);

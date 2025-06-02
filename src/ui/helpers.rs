@@ -14,7 +14,7 @@ use dash_sdk::{
         },
         identity::{
             accessors::IdentityGettersV0,
-            identity_public_key::accessors::v0::IdentityPublicKeyGettersV0,
+            identity_public_key::accessors::v0::IdentityPublicKeyGettersV0, Purpose, SecurityLevel,
         },
         platform_value::string_encoding::Encoding,
     },
@@ -101,14 +101,84 @@ pub fn render_key_selector(
     new_selected_key
 }
 
+/// Transaction types that require specific key filtering
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum TransactionType {
+    /// Register a new data contract - requires Authentication keys with any non-master security level
+    RegisterContract,
+    /// Update an existing data contract - requires Authentication keys with Critical security level only
+    UpdateContract,
+    /// Transfer credits - requires Transfer purpose keys
+    Transfer,
+    /// Withdraw from identity - requires Transfer or Owner purpose keys
+    Withdraw,
+    /// Generic document creation/update - security level depends on document type
+    DocumentAction,
+}
+
+impl TransactionType {
+    /// Returns the allowed purposes for this transaction type
+    pub fn allowed_purposes(&self) -> Vec<Purpose> {
+        match self {
+            TransactionType::RegisterContract | TransactionType::UpdateContract => {
+                vec![Purpose::AUTHENTICATION]
+            }
+            TransactionType::Transfer => vec![Purpose::TRANSFER],
+            TransactionType::Withdraw => vec![Purpose::TRANSFER], // Owner keys handled separately
+            TransactionType::DocumentAction => vec![Purpose::AUTHENTICATION],
+        }
+    }
+
+    /// Returns the allowed security levels for this transaction type
+    pub fn allowed_security_levels(&self) -> Vec<SecurityLevel> {
+        match self {
+            TransactionType::RegisterContract => vec![
+                SecurityLevel::CRITICAL,
+                SecurityLevel::HIGH,
+                SecurityLevel::MEDIUM,
+            ],
+            TransactionType::UpdateContract => vec![SecurityLevel::CRITICAL],
+            TransactionType::Transfer | TransactionType::Withdraw => vec![
+                SecurityLevel::MASTER,
+                SecurityLevel::CRITICAL,
+                SecurityLevel::HIGH,
+                SecurityLevel::MEDIUM,
+            ],
+            TransactionType::DocumentAction => vec![
+                SecurityLevel::CRITICAL,
+                SecurityLevel::HIGH,
+                SecurityLevel::MEDIUM,
+            ],
+        }
+    }
+
+    /// Returns a descriptive label for the transaction type
+    pub fn label(&self) -> &'static str {
+        match self {
+            TransactionType::RegisterContract => "Register Contract",
+            TransactionType::UpdateContract => "Update Contract",
+            TransactionType::Transfer => "Transfer",
+            TransactionType::Withdraw => "Withdraw",
+            TransactionType::DocumentAction => "Document Action",
+        }
+    }
+}
+
+/// Identity key chooser that filters keys based on transaction type and dev mode
 pub fn add_identity_key_chooser<'a, T>(
     ui: &mut Ui,
+    app_context: &AppContext,
     identities: T,
     selected_identity: &mut Option<QualifiedIdentity>,
     selected_key: &mut Option<IdentityPublicKey>,
+    transaction_type: TransactionType,
 ) where
     T: Iterator<Item = &'a QualifiedIdentity>,
 {
+    let is_dev_mode = app_context
+        .developer_mode
+        .load(std::sync::atomic::Ordering::Relaxed);
+
     egui::Grid::new("identity_key_chooser_grid")
         .num_columns(2)
         .spacing([10.0, 5.0])
@@ -148,27 +218,98 @@ pub fn add_identity_key_chooser<'a, T>(
                 .selected_text(
                     selected_key
                         .as_ref()
-                        .map(|k| format!("Key {} Security {}", k.id(), k.security_level()))
+                        .map(|k| {
+                            format!(
+                                "Key {} Type {} Security {}",
+                                k.id(),
+                                k.key_type(),
+                                k.security_level()
+                            )
+                        })
                         .unwrap_or_else(|| "Select Key…".into()),
                 )
                 .show_ui(ui, |kui| {
                     if let Some(qi) = selected_identity {
-                        for key_ref in qi.available_authentication_keys_non_master() {
-                            let key = &key_ref.identity_public_key;
-                            let label =
-                                format!("Key {} Security {}", key.id(), key.security_level());
-                            if kui
-                                .selectable_label(selected_key.as_ref() == Some(key), label)
-                                .clicked()
-                            {
-                                *selected_key = Some(key.clone());
+                        let allowed_purposes = transaction_type.allowed_purposes();
+                        let allowed_security_levels = transaction_type.allowed_security_levels();
+
+                        for key_ref in qi.private_keys.identity_public_keys() {
+                            let key = &key_ref.1.identity_public_key;
+
+                            // In dev mode, show all keys
+                            // In production mode, filter by transaction requirements
+                            let is_allowed = if is_dev_mode {
+                                true
+                            } else {
+                                allowed_purposes.contains(&key.purpose())
+                                    && allowed_security_levels.contains(&key.security_level())
+                            };
+
+                            if is_allowed {
+                                let label = if is_dev_mode
+                                    && (!allowed_purposes.contains(&key.purpose())
+                                        || !allowed_security_levels.contains(&key.security_level()))
+                                {
+                                    // In dev mode, mark keys that wouldn't normally be allowed
+                                    format!(
+                                        "Key {} Security {} [DEV]",
+                                        key.id(),
+                                        key.security_level()
+                                    )
+                                } else {
+                                    format!("Key {} Security {}", key.id(), key.security_level())
+                                };
+
+                                if kui
+                                    .selectable_label(selected_key.as_ref() == Some(key), label)
+                                    .clicked()
+                                {
+                                    *selected_key = Some(key.clone());
+                                }
                             }
+                        }
+
+                        if !is_dev_mode
+                            && qi
+                                .private_keys
+                                .identity_public_keys()
+                                .iter()
+                                .all(|key_ref| {
+                                    let key = &key_ref.1.identity_public_key;
+                                    !allowed_purposes.contains(&key.purpose())
+                                        || !allowed_security_levels.contains(&key.security_level())
+                                })
+                        {
+                            kui.label(format!("No suitable keys for {}", transaction_type.label()));
                         }
                     } else {
                         kui.label("Pick an identity first");
                     }
                 });
             ui.end_row();
+
+            // Show info about requirements in production mode
+            if !is_dev_mode && selected_identity.is_some() {
+                ui.label("");
+                ui.label(
+                    egui::RichText::new(format!(
+                        "Requires {} key with {} security",
+                        match transaction_type.allowed_purposes().first() {
+                            Some(Purpose::AUTHENTICATION) => "Authentication",
+                            Some(Purpose::TRANSFER) => "Transfer",
+                            _ => "Unknown",
+                        },
+                        match transaction_type {
+                            TransactionType::UpdateContract => "Critical",
+                            TransactionType::RegisterContract => "High or Critical",
+                            _ => "any",
+                        }
+                    ))
+                    .small()
+                    .color(Color32::GRAY),
+                );
+                ui.end_row();
+            }
         });
 }
 

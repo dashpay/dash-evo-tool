@@ -112,6 +112,8 @@ pub fn add_top_panel(
                 action |= add_location_view(ui, location);
 
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.add_space(10.0);
+
                     // Separate document-related actions into dropdown
                     let (doc_actions, other_actions): (Vec<_>, Vec<_>) =
                         right_buttons.into_iter().partition(|(_, act)| {
@@ -126,9 +128,10 @@ pub fn add_top_panel(
                             )
                         });
 
-                    // Grouped Documents menu
+                    // Grouped Documents menu (render last, so it's flush right)
                     if !doc_actions.is_empty() {
-                        ui.add_space(10.0);
+                        ui.add_space(3.0);
+
                         // give it the same style as your other buttons
                         let docs_btn =
                             egui::Button::new(RichText::new("Documents").color(Color32::WHITE))
@@ -163,7 +166,7 @@ pub fn add_top_panel(
                         );
                     }
 
-                    // Render other buttons normally
+                    // Render other buttons normally (first, so Documents is flush right)
                     for (text, btn_act) in other_actions.into_iter().rev() {
                         ui.add_space(3.0);
                         let font = egui::FontId::proportional(16.0);

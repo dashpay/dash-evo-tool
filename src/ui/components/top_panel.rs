@@ -112,6 +112,8 @@ pub fn add_top_panel(
                 action |= add_location_view(ui, location);
 
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.add_space(10.0);
+
                     // Separate document-related actions into dropdown
                     let (doc_actions, other_actions): (Vec<_>, Vec<_>) =
                         right_buttons.into_iter().partition(|(_, act)| {
@@ -128,7 +130,8 @@ pub fn add_top_panel(
 
                     // Grouped Documents menu
                     if !doc_actions.is_empty() {
-                        ui.add_space(10.0);
+                        ui.add_space(3.0);
+
                         // give it the same style as your other buttons
                         let docs_btn =
                             egui::Button::new(RichText::new("Documents").color(Color32::WHITE))

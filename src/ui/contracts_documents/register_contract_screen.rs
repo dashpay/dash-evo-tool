@@ -4,6 +4,7 @@ use crate::backend_task::BackendTask;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
+use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
 use crate::ui::identities::get_selected_wallet;
@@ -488,6 +489,12 @@ impl ScreenLike for RegisterDataContractScreen {
             vec![],
         );
 
+        action |= add_left_panel(
+            ctx,
+            &self.app_context,
+            crate::ui::RootScreenType::RootScreenDocumentQuery,
+        );
+
         egui::CentralPanel::default().show(ctx, |ui| {
             if self.broadcast_status == BroadcastStatus::Done {
                 action |= self.show_success(ui);
@@ -519,7 +526,6 @@ impl ScreenLike for RegisterDataContractScreen {
             }
 
             if self.selected_key.is_none() {
-                action = AppAction::None;
                 return;
             }
 

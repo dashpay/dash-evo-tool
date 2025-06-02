@@ -58,7 +58,3 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           args: --all-features --all-targets -- -D warnings
           name: Clippy Report
-
-      - name: Run Clippy (verbose)
-        if: failure()
-        run: cargo clippy --all-features --all-targets --verbose -- -D warnings

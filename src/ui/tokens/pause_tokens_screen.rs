@@ -443,7 +443,7 @@ impl ScreenLike for PauseTokensScreen {
                     std::iter::once(&self.identity),
                     &mut selected_identity,
                     &mut self.selected_key,
-                    TransactionType::DocumentAction,
+                    TransactionType::TokenAction,
                 );
 
                 ui.add_space(10.0);

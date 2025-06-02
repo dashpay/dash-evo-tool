@@ -1133,7 +1133,7 @@ impl ScreenLike for UpdateTokenConfigScreen {
                     std::iter::once(&self.identity),
                     &mut selected_identity,
                     &mut self.signing_key,
-                    TransactionType::DocumentAction,
+                    TransactionType::TokenAction,
                 );
 
                 ui.add_space(10.0);

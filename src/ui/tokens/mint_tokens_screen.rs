@@ -531,7 +531,7 @@ impl ScreenLike for MintTokensScreen {
                     std::iter::once(&self.identity_token_info.identity),
                     &mut selected_identity,
                     &mut self.selected_key,
-                    TransactionType::DocumentAction,
+                    TransactionType::TokenAction,
                 );
 
                 ui.add_space(10.0);

@@ -104,7 +104,7 @@ pub fn render_key_selector(
 /// Transaction types that require specific key filtering
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum TransactionType {
-    /// Register a new data contract - requires Authentication keys with any non-master security level
+    /// Register a new data contract - requires Authentication keys with High or Critical security level
     RegisterContract,
     /// Update an existing data contract - requires Authentication keys with Critical security level only
     UpdateContract,
@@ -114,6 +114,8 @@ pub enum TransactionType {
     Withdraw,
     /// Generic document creation/update - security level depends on document type
     DocumentAction,
+    // Token actions such as minting - requires Critical Authentication keys
+    TokenAction,
 }
 
 impl TransactionType {
@@ -126,6 +128,7 @@ impl TransactionType {
             TransactionType::Transfer => vec![Purpose::TRANSFER],
             TransactionType::Withdraw => vec![Purpose::TRANSFER, Purpose::OWNER], // Owner keys handled separately
             TransactionType::DocumentAction => vec![Purpose::AUTHENTICATION],
+            TransactionType::TokenAction => vec![Purpose::AUTHENTICATION],
         }
     }
 
@@ -141,6 +144,7 @@ impl TransactionType {
                 SecurityLevel::HIGH,
                 SecurityLevel::MEDIUM,
             ],
+            TransactionType::TokenAction => vec![SecurityLevel::CRITICAL],
         }
     }
 
@@ -152,6 +156,7 @@ impl TransactionType {
             TransactionType::Transfer => "Transfer",
             TransactionType::Withdraw => "Withdraw",
             TransactionType::DocumentAction => "Document Action",
+            TransactionType::TokenAction => "Token Action",
         }
     }
 }
@@ -279,29 +284,6 @@ pub fn add_identity_key_chooser<'a, T>(
                     }
                 });
             ui.end_row();
-
-            // Show info about requirements in production mode
-            if !is_dev_mode && selected_identity.is_some() {
-                ui.label("");
-                ui.label(
-                    egui::RichText::new(format!(
-                        "Requires {} key with {} security",
-                        match transaction_type.allowed_purposes().first() {
-                            Some(Purpose::AUTHENTICATION) => "Authentication",
-                            Some(Purpose::TRANSFER) => "Transfer",
-                            _ => "Unknown",
-                        },
-                        match transaction_type {
-                            TransactionType::UpdateContract => "Critical",
-                            TransactionType::RegisterContract => "High or Critical",
-                            _ => "any",
-                        }
-                    ))
-                    .small()
-                    .color(Color32::GRAY),
-                );
-                ui.end_row();
-            }
         });
 }
 

@@ -404,10 +404,10 @@ impl Database {
     }
 }
 
+#[cfg(test)]
 mod test {
+    use crate::database::initialization::DEFAULT_DB_VERSION;
     use rusqlite::params;
-
-    use crate::database::initialization::{DEFAULT_DB_VERSION, DEFAULT_NETWORK};
 
     #[test]
     /// Given a new database file,
@@ -440,6 +440,9 @@ mod test {
         let db_file_path = temp_dir.path().join("test_data.db");
         let db = super::Database::new(&db_file_path).unwrap();
 
+        // Identities from regtest are deleted during migration 9
+        const NETWORK: &str = "regtest";
+
         db.create_tables().unwrap();
         db.set_default_version().unwrap();
 
@@ -456,7 +459,7 @@ mod test {
         // add some identity to ensure the database is not empty
         conn.execute(
             "INSERT INTO identity (id, is_local, alias, network) VALUES (?, ?, ?, ?)",
-            rusqlite::params![vec![1u8; 32], 1, "test_identity", DEFAULT_NETWORK],
+            rusqlite::params![vec![1u8; 32], 1, "test_identity", NETWORK],
         )
         .expect("Failed to insert test identity");
         drop(conn);
@@ -468,6 +471,7 @@ mod test {
         // Simulate a migration failure by trying to apply an invalid change
         let result = db.try_perform_migration(START_VERSION, DEFAULT_DB_VERSION);
         assert!(result.is_err());
+        println!("Migration failed as expected: {}", result.unwrap_err());
 
         // Check that the database version has not changed
         let version: u16 = db.db_schema_version().unwrap();
@@ -478,7 +482,7 @@ mod test {
         let count: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM identity WHERE network = ?",
-                params![DEFAULT_NETWORK],
+                params![NETWORK],
                 |row| row.get(0),
             )
             .expect("Failed to count identities");

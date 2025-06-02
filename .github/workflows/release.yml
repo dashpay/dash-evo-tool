@@ -143,13 +143,13 @@ jobs:
           sudo apt-get install -y libxcb-xfixes0-dev libxcb-shape0-dev libxcb-randr0-dev libxcb-xkb-dev libxkbcommon-x11-dev
 
       - name: Install protoc (ARM)
-        if: ${{ matrix.platform == 'arm64-linux' || matrix.platform == 'arm64-linux-compat' }}
+        if: ${{ matrix.platform == 'arm64-linux' || matrix.platform == 'arm64-linux-compat' || matrix.platform == 'arm64-linux-appimage' }}
         run: curl -OL https://github.com/protocolbuffers/protobuf/releases/download/v25.2/protoc-25.2-linux-aarch_64.zip && sudo unzip -o protoc-25.2-linux-aarch_64.zip -d /usr/local bin/protoc && sudo unzip -o protoc-25.2-linux-aarch_64.zip -d /usr/local 'include/*' && rm -f protoc-25.2-linux-aarch_64.zip
         env:
           PROTOC: /usr/local/bin/protoc
 
       - name: Install protoc (AMD/AppImage)
-        if: ${{ matrix.target == 'x86_64-unknown-linux-gnu' || matrix.build-type == 'appimage' }}
+        if: ${{ matrix.target == 'x86_64-unknown-linux-gnu' }}
         run: curl -OL https://github.com/protocolbuffers/protobuf/releases/download/v25.2/protoc-25.2-linux-x86_64.zip && sudo unzip -o protoc-25.2-linux-x86_64.zip -d /usr/local bin/protoc && sudo unzip -o protoc-25.2-linux-x86_64.zip -d /usr/local 'include/*' && rm -f protoc-25.2-linux-x86_64.zip
         env:
           PROTOC: /usr/local/bin/protoc

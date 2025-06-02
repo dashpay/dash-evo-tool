@@ -1,7 +1,6 @@
 use crate::database::Database;
 use chrono::Utc;
-use rusqlite::{params, Connection, Transaction};
-use std::collections::BTreeMap;
+use rusqlite::{params, Connection};
 use std::fs;
 use std::path::Path;
 
@@ -17,7 +16,8 @@ impl Database {
             self.set_default_version()?;
         } else {
             // If outdated, back up and either migrate or recreate the database.
-            if let Some(current_version) = self.is_outdated()? {
+            let current_version = self.db_schema_version()?;
+            if current_version != DEFAULT_DB_VERSION {
                 self.backup_db(db_file_path)?;
                 if let Err(e) = self.try_perform_migration(current_version, DEFAULT_DB_VERSION) {
                     panic!(
@@ -81,24 +81,46 @@ impl Database {
     /// It uses a transaction to ensure that system integrity is maintained during the migration process.
     /// If any migration step fails, the transaction will be rolled back, and the user can safely
     /// downgrade his app to the previous version.
+    ///
+    /// ## Returns
+    ///
+    /// `rusqlite::Result<()>` - Returns `Ok(true)` if the migration was successful, Ok(false) if no migration needed,
+    /// or an error if it failed.
     fn try_perform_migration(
         &self,
         original_version: u16,
         to_version: u16,
-    ) -> rusqlite::Result<()> {
-        let mut conn = self
-            .conn
-            .lock()
-            .expect("Failed to lock database connection");
+    ) -> Result<bool, String> {
+        match original_version.cmp(&to_version) {
+            std::cmp::Ordering::Equal => {
+                tracing::trace!(
+                    "No database migration needed, already at version {}",
+                    to_version
+                );
+                Ok(false)
+            }
+            std::cmp::Ordering::Greater => {
+                Err(
+                format!(
+                    "Database schema version {} is too new, max supported version: {}. Please update dash-evo-tool.",
+                    original_version, to_version
+                ))
+            }
+            std::cmp::Ordering::Less => {
+                let mut conn = self
+                    .conn
+                    .lock()
+                    .expect("Failed to lock database connection");
 
-        for version in (original_version + 1)..=to_version {
-            let tx = conn.transaction()?;
-            self.apply_version_changes(version, &tx)?;
-            self.update_database_version(version, &tx)?;
-            tx.commit()?;
+                for version in (original_version + 1)..=to_version {
+                    let tx = conn.transaction().map_err(|e|e.to_string())?;
+                    self.apply_version_changes(version, &tx).map_err(|e|e.to_string())?;
+                    self.update_database_version(version, &tx).map_err(|e|e.to_string())?;
+                    tx.commit().map_err(|e|e.to_string())?;
+                }
+                Ok(true)
+            }
         }
-
-        Ok(())
     }
 
     /// Checks if the `settings` table is empty or missing, indicating a first-time setup.
@@ -123,21 +145,27 @@ impl Database {
         }
     }
 
-    /// Checks if the version in the current database settings is below DEFAULT_DB_VERSION.
-    /// If outdated, returns the version in the current database settings
-    fn is_outdated(&self) -> rusqlite::Result<Option<u16>> {
+    /// Checks version of the database.
+    ///
+    /// Returns the current version as `Ok(Some(version))`.
+    ///
+    /// Note it returns Ok(Some(version)) even is the current database is above the default version.
+    /// This is to allow the app to detect when database version is too high and to prevent
+    /// the app from running with an unsupported database version.
+    fn db_schema_version(&self) -> rusqlite::Result<u16> {
         let conn = self.conn.lock().unwrap();
-        let version: u16 = conn
-            .query_row(
-                "SELECT database_version FROM settings WHERE id = 1",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap_or(0); // Default to version 0 if there's no version set
-        if version < DEFAULT_DB_VERSION {
-            Ok(Some(version))
-        } else {
-            Ok(None)
+        let result: rusqlite::Result<u16> = conn.query_row(
+            "SELECT database_version FROM settings WHERE id = 1",
+            [],
+            |row| row.get(0),
+        );
+
+        match result {
+            Err(rusqlite::Error::QueryReturnedNoRows) => {
+                tracing::debug!("No database version found, returning default version 0");
+                Ok(0)
+            }
+            x => x,
         }
     }
 
@@ -165,49 +193,6 @@ impl Database {
                 .map_err(|e| rusqlite::Error::ToSqlConversionFailure(e.into()))?;
             println!("Old database backed up to {:?}", backup_path);
         }
-
-        Ok(())
-    }
-
-    /// Recreates `data.db`, and refreshes the connection.
-    fn recreate_db(&self, db_file_path: &Path) -> rusqlite::Result<()> {
-        // Remove the existing database file if it exists
-        if db_file_path.exists() {
-            fs::remove_file(db_file_path).map_err(|e| {
-                rusqlite::Error::FromSqlConversionFailure(
-                    0,
-                    rusqlite::types::Type::Text,
-                    Box::new(e),
-                )
-            })?;
-        }
-        // Create a new empty `data.db` file and set up the initial schema
-        let new_conn = Connection::open(db_file_path)?;
-
-        // Initialize the `settings` table in the new database
-        new_conn.execute(
-            "CREATE TABLE IF NOT EXISTS settings (
-            id INTEGER PRIMARY KEY CHECK (id = 1),
-            password_check BLOB,
-            main_password_salt BLOB,
-            main_password_nonce BLOB,
-            network TEXT NOT NULL,
-            start_root_screen INTEGER NOT NULL,
-            database_version INTEGER NOT NULL
-        )",
-            [],
-        )?;
-
-        // Insert default settings for the new database
-        new_conn.execute(
-            "INSERT INTO settings (id, network, start_root_screen, database_version)
-         VALUES (1, ?, 0, ?)",
-            params![DEFAULT_NETWORK, DEFAULT_DB_VERSION],
-        )?;
-
-        // Update the connection in `self.conn` to use the new `data.db` file
-        let mut conn_lock = self.conn.lock().unwrap();
-        *conn_lock = new_conn;
 
         Ok(())
     }

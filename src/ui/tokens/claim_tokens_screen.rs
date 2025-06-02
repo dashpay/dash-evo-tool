@@ -25,7 +25,7 @@ use crate::backend_task::BackendTask;
 use crate::backend_task::tokens::TokenTask;
 use crate::context::AppContext;
 use crate::model::qualified_contract::QualifiedContract;
-use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
 use crate::model::wallet::Wallet;
 use crate::ui::{MessageType, Screen, ScreenLike};
 use crate::ui::components::top_panel::add_top_panel;
@@ -33,7 +33,7 @@ use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
-use super::tokens_screen::IdentityTokenBalance;
+use super::tokens_screen::IdentityTokenBasicInfo;
 
 /// States for the claim flow
 #[derive(PartialEq)]
@@ -46,7 +46,7 @@ pub enum ClaimTokensStatus {
 
 pub struct ClaimTokensScreen {
     pub identity: QualifiedIdentity,
-    pub identity_token_balance: IdentityTokenBalance,
+    pub identity_token_basic_info: IdentityTokenBasicInfo,
     selected_key: Option<dash_sdk::platform::IdentityPublicKey>,
     pub public_note: Option<String>,
     token_contract: QualifiedContract,
@@ -63,7 +63,7 @@ pub struct ClaimTokensScreen {
 
 impl ClaimTokensScreen {
     pub fn new(
-        identity_token_balance: IdentityTokenBalance,
+        identity_token_basic_info: IdentityTokenBasicInfo,
         token_contract: QualifiedContract,
         token_configuration: TokenConfiguration,
         app_context: &Arc<AppContext>,
@@ -72,7 +72,7 @@ impl ClaimTokensScreen {
             .load_local_qualified_identities()
             .unwrap_or_default()
             .into_iter()
-            .find(|id| id.identity.id() == identity_token_balance.identity_id)
+            .find(|id| id.identity.id() == identity_token_basic_info.identity_id)
             .expect("No local qualified identity found for this token’s identity.");
 
         let identity_clone = identity.identity.clone();
@@ -105,7 +105,7 @@ impl ClaimTokensScreen {
 
         Self {
             identity,
-            identity_token_balance,
+            identity_token_basic_info,
             selected_key: possible_key.cloned(),
             public_note: None,
             token_contract,
@@ -121,7 +121,7 @@ impl ClaimTokensScreen {
         }
     }
 
-    fn render_key_selection(&mut self, ui: &mut Ui) {
+    fn render_key_selection(&mut self, ui: &mut Ui, identity_type: IdentityType) {
         ui.horizontal(|ui| {
             ui.label("Select Key:");
             egui::ComboBox::from_id_salt("claim_key_selector")
@@ -156,20 +156,34 @@ impl ClaimTokensScreen {
                             );
                         }
                     } else {
-                        // Show only "available" auth keys
-                        for key_wrapper in self
-                            .identity
-                            .available_authentication_keys_with_critical_security_level()
-                        {
-                            let key = &key_wrapper.identity_public_key;
-                            let label = format!(
-                                "Key ID: {} (Info: {}/{}/{})",
-                                key.id(),
-                                key.purpose(),
-                                key.security_level(),
-                                key.key_type()
-                            );
-                            ui.selectable_value(&mut self.selected_key, Some(key.clone()), label);
+                        match identity_type {
+                            IdentityType::User => {
+                                // Show only "available" auth keys
+                                for key_wrapper in self
+                                    .identity
+                                    .available_authentication_keys_with_critical_security_level()
+                                {
+                                    let key = &key_wrapper.identity_public_key;
+                                    let label = format!("Key ID: {}", key.id());
+                                    ui.selectable_value(
+                                        &mut self.selected_key,
+                                        Some(key.clone()),
+                                        label,
+                                    );
+                                }
+                            }
+                            IdentityType::Masternode | IdentityType::Evonode => {
+                                // Show only "available" auth keys
+                                for key_wrapper in self.identity.available_transfer_keys() {
+                                    let key = &key_wrapper.identity_public_key;
+                                    let label = format!("Key ID: {}", key.id());
+                                    ui.selectable_value(
+                                        &mut self.selected_key,
+                                        Some(key.clone()),
+                                        label,
+                                    );
+                                }
+                            }
                         }
                     }
                 });
@@ -254,7 +268,7 @@ impl ClaimTokensScreen {
                         vec![
                             BackendTask::TokenTask(TokenTask::ClaimTokens {
                                 data_contract: self.token_contract.contract.clone(),
-                                token_position: self.identity_token_balance.token_position,
+                                token_position: self.identity_token_basic_info.token_position,
                                 actor_identity: self.identity.clone(),
                                 distribution_type,
                                 signing_key: self.selected_key.clone().expect("No key selected"),
@@ -331,7 +345,7 @@ impl ScreenLike for ClaimTokensScreen {
             vec![
                 ("Tokens", AppAction::GoToMainScreen),
                 (
-                    &self.identity_token_balance.token_alias,
+                    &self.identity_token_basic_info.token_alias,
                     AppAction::PopScreen,
                 ),
                 ("Claim", AppAction::None),
@@ -362,7 +376,15 @@ impl ScreenLike for ClaimTokensScreen {
             let has_keys = if self.app_context.developer_mode.load(Ordering::Relaxed) {
                 !self.identity.identity.public_keys().is_empty()
             } else {
-                !self.identity.available_authentication_keys_with_critical_security_level().is_empty()
+                match self.identity.identity_type {
+                    IdentityType::User => {
+                        !self.identity.available_authentication_keys_with_critical_security_level().is_empty()
+                    }
+                    IdentityType::Masternode |
+                    IdentityType::Evonode => {
+                        !self.identity.available_transfer_keys().is_empty()
+                    }
+                }
             };
 
             if !has_keys {
@@ -415,7 +437,7 @@ impl ScreenLike for ClaimTokensScreen {
                 ui.heading("1. Select the key to sign the Claim transition");
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {
-                    self.render_key_selection(ui);
+                    self.render_key_selection(ui, self.identity.identity_type);
                     ui.add_space(5.0);
                     let identity_id_string =
                         self.identity.identity.id().to_string(Encoding::Base58);

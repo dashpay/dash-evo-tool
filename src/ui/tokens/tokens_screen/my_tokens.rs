@@ -1,0 +1,757 @@
+use crate::app::AppAction;
+use crate::backend_task::tokens::TokenTask;
+use crate::backend_task::BackendTask;
+use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
+use crate::ui::tokens::burn_tokens_screen::BurnTokensScreen;
+use crate::ui::tokens::claim_tokens_screen::ClaimTokensScreen;
+use crate::ui::tokens::destroy_frozen_funds_screen::DestroyFrozenFundsScreen;
+use crate::ui::tokens::direct_token_purchase_screen::PurchaseTokenScreen;
+use crate::ui::tokens::freeze_tokens_screen::FreezeTokensScreen;
+use crate::ui::tokens::mint_tokens_screen::MintTokensScreen;
+use crate::ui::tokens::pause_tokens_screen::PauseTokensScreen;
+use crate::ui::tokens::resume_tokens_screen::ResumeTokensScreen;
+use crate::ui::tokens::set_token_price_screen::SetTokenPriceScreen;
+use crate::ui::tokens::tokens_screen::{
+    get_available_token_actions_for_identity, IdentityTokenIdentifier, IdentityTokenInfo,
+    IdentityTokenMaybeBalanceWithActions, RefreshingStatus, SortColumn, TokenInfoWithDataContract,
+    TokensScreen, TokensSubscreen,
+};
+use crate::ui::tokens::transfer_tokens_screen::TransferTokensScreen;
+use crate::ui::tokens::unfreeze_tokens_screen::UnfreezeTokensScreen;
+use crate::ui::tokens::update_token_config::UpdateTokenConfigScreen;
+use crate::ui::tokens::view_token_claims_screen::ViewTokenClaimsScreen;
+use crate::ui::Screen;
+use chrono::Utc;
+use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
+use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::accessors::v0::TokenDistributionRulesV0Getters;
+use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+use eframe::emath::Align;
+use eframe::epaint::{Color32, Margin};
+use egui::{Frame, RichText, Ui};
+use egui_extras::{Column, TableBuilder};
+use std::ops::Range;
+use std::sync::atomic::Ordering;
+
+impl TokensScreen {
+    pub(super) fn render_my_tokens_subscreen(&mut self, ui: &mut Ui) -> AppAction {
+        let mut action = AppAction::None;
+        if self.all_known_tokens.is_empty() {
+            // If no tokens, show a “no tokens found” message
+            action |= self.render_no_owned_tokens(ui);
+        } else {
+            // Are we showing details for a selected token?
+            if self.selected_token.is_some() {
+                // Render detail view for one token
+                action |= self.render_token_details(ui);
+            } else {
+                // Otherwise, show the list of all tokens
+                if let Err(e) = self.render_token_list(ui) {
+                    self.set_error_message(Some(e));
+                }
+            }
+        }
+        action
+    }
+    fn render_no_owned_tokens(&mut self, ui: &mut Ui) -> AppAction {
+        let mut app_action = AppAction::None;
+        ui.vertical_centered(|ui| {
+            ui.add_space(20.0);
+            match self.tokens_subscreen {
+                TokensSubscreen::MyTokens => {
+                    ui.label(
+                        RichText::new("No tracked tokens.")
+                            .heading()
+                            .strong()
+                            .color(Color32::GRAY),
+                    );
+                }
+                TokensSubscreen::SearchTokens => {
+                    ui.label(
+                        RichText::new("No matching tokens found.")
+                            .heading()
+                            .strong()
+                            .color(Color32::GRAY),
+                    );
+                }
+                TokensSubscreen::TokenCreator => {
+                    ui.label(
+                        RichText::new("Cannot render token creator for some reason")
+                            .heading()
+                            .strong()
+                            .color(Color32::GRAY),
+                    );
+                }
+            }
+            ui.add_space(10.0);
+
+            ui.label("Please check back later or try refreshing the list.");
+            ui.add_space(20.0);
+            if ui.button("Refresh").clicked() {
+                if let RefreshingStatus::Refreshing(_) = self.refreshing_status {
+                    app_action = AppAction::None;
+                } else {
+                    let now = Utc::now().timestamp() as u64;
+                    self.refreshing_status = RefreshingStatus::Refreshing(now);
+                    match self.tokens_subscreen {
+                        TokensSubscreen::MyTokens => {
+                            app_action = AppAction::BackendTask(BackendTask::TokenTask(
+                                TokenTask::QueryMyTokenBalances,
+                            ));
+                        }
+                        TokensSubscreen::SearchTokens => {
+                            app_action = AppAction::Refresh;
+                        }
+                        TokensSubscreen::TokenCreator => {
+                            app_action = AppAction::Refresh;
+                        }
+                    }
+                }
+            }
+        });
+
+        app_action
+    }
+
+    /// Renders details for the selected token_id: a row per identity that holds that token.
+    fn render_token_details(&mut self, ui: &mut Ui) -> AppAction {
+        let mut action = AppAction::None;
+
+        let Some(token_id) = self.selected_token.clone() else {
+            return action;
+        };
+
+        let Some(token_info) = self.all_known_tokens.get(&token_id).cloned() else {
+            return action;
+        };
+
+        let identities = &self.identities;
+
+        let mut detail_list: Vec<IdentityTokenMaybeBalanceWithActions> = vec![];
+
+        let in_dev_mode = self.app_context.developer_mode.load(Ordering::Relaxed);
+
+        for (identity_id, identity) in identities {
+            let record = if let Some(known_token_balance) =
+                self.my_tokens.get(&IdentityTokenIdentifier {
+                    identity_id: *identity_id,
+                    token_id,
+                }) {
+                IdentityTokenMaybeBalanceWithActions {
+                    token_id,
+                    token_alias: known_token_balance.token_alias.clone(),
+                    token_config: known_token_balance.token_config.clone(),
+                    identity_id: *identity_id,
+                    identity_alias: identity.alias.clone(),
+                    balance: Some(known_token_balance.balance),
+                    estimated_unclaimed_rewards: known_token_balance.estimated_unclaimed_rewards,
+                    data_contract_id: known_token_balance.data_contract_id,
+                    token_position: known_token_balance.token_position,
+                    available_actions: known_token_balance.available_actions,
+                }
+            } else {
+                IdentityTokenMaybeBalanceWithActions {
+                    token_id,
+                    token_alias: token_info.token_name.clone(),
+                    token_config: token_info.token_configuration.clone(),
+                    identity_id: *identity_id,
+                    identity_alias: identity.alias.clone(),
+                    balance: None,
+                    estimated_unclaimed_rewards: None,
+                    data_contract_id: token_info.data_contract.id(),
+                    token_position: token_info.token_position,
+                    available_actions: get_available_token_actions_for_identity(
+                        None,
+                        identity,
+                        &token_info.token_configuration,
+                        &token_info.data_contract,
+                        in_dev_mode,
+                    ),
+                }
+            };
+            detail_list.push(record);
+        }
+
+        // Allocate space for refreshing indicator
+        let refreshing_height = 33.0;
+        let mut max_scroll_height = if let RefreshingStatus::Refreshing(_) = self.refreshing_status
+        {
+            ui.available_height() - refreshing_height
+        } else {
+            ui.available_height()
+        };
+
+        // Allocate space for backend message
+        let backend_message_height = 40.0;
+        if let Some((_, _, _)) = self.backend_message.clone() {
+            max_scroll_height -= backend_message_height;
+        }
+
+        let in_dev_mode = self.app_context.developer_mode.load(Ordering::Relaxed);
+
+        let shows_estimation_column = in_dev_mode
+            || token_info
+                .token_configuration
+                .distribution_rules()
+                .perpetual_distribution()
+                .is_some();
+
+        // A simple table with columns: [Token Name | Token ID | Total Balance]
+        egui::ScrollArea::vertical()
+            .max_height(max_scroll_height)
+            .show(ui, |ui| {
+                Frame::group(ui.style())
+                    .fill(ui.visuals().panel_fill)
+                    .stroke(egui::Stroke::new(
+                        1.0,
+                        ui.visuals().widgets.inactive.bg_stroke.color,
+                    ))
+                    .inner_margin(Margin::same(8))
+                    .show(ui, |ui| {
+                        let mut table = TableBuilder::new(ui)
+                            .striped(true)
+                            .resizable(true)
+                            .cell_layout(egui::Layout::left_to_right(Align::Center))
+                            .column(Column::initial(60.0).resizable(true)) // Identity Alias
+                            .column(Column::initial(200.0).resizable(true)) // Identity ID
+                            .column(Column::initial(60.0).resizable(true)); // Balance
+
+
+                        if shows_estimation_column {
+                            table = table.column(Column::initial(60.0).resizable(true)); // Estimated Rewards
+                        }
+
+                        table = table.column(Column::initial(200.0).resizable(true));// Actions
+                        table.header(30.0, |mut header| {
+                            header.col(|ui| {
+                                if ui.button("Identity Alias").clicked() {
+                                    self.toggle_sort(SortColumn::OwnerIdentityAlias);
+                                }
+                            });
+                            header.col(|ui| {
+                                if ui.button("Identity ID").clicked() {
+                                    self.toggle_sort(SortColumn::OwnerIdentity);
+                                }
+                            });
+                            header.col(|ui| {
+                                if ui.button("Balance").clicked() {
+                                    self.toggle_sort(SortColumn::Balance);
+                                }
+                            });
+                            if shows_estimation_column {
+                                header.col(|ui| {
+                                    ui.label("Estimated Unclaimed Rewards");
+                                });
+                            }
+                            header.col(|ui| {
+                                ui.label("Actions");
+                            });
+                        })
+                            .body(|mut body| {
+                                for itb in &detail_list {
+                                    body.row(25.0, |mut row| {
+                                        row.col(|ui| {
+                                            // Show identity alias or ID
+                                            if let Some(alias) = self
+                                                .app_context
+                                                .get_identity_alias(&itb.identity_id)
+                                                .expect("Expected to get alias")
+                                            {
+                                                ui.label(alias);
+                                            } else {
+                                                ui.label("-");
+                                            }
+                                        });
+                                        row.col(|ui| {
+                                            if itb.identity_id == token_info.data_contract.owner_id() {
+                                                ui.label(
+                                                    RichText::new(itb.identity_id.to_string(Encoding::Base58))
+                                                        .color(Color32::from_rgb(0, 100, 0)) // Dark green
+                                                ).on_hover_text("Owner of the contract");
+                                            } else {
+                                                ui.label(itb.identity_id.to_string(Encoding::Base58));
+                                            }
+                                        });
+                                        row.col(|ui| {
+                                            if let Some(balance) = itb.balance.as_ref().map(|balance| balance.to_string()) {
+                                                ui.label(balance);
+                                            } else {
+                                                if ui.button("Check").clicked() {
+                                                    action = AppAction::BackendTask(BackendTask::TokenTask(TokenTask::QueryIdentityTokenBalance(itb.clone().into())));
+                                                }
+                                            }
+                                        });
+                                        if shows_estimation_column {
+                                            row.col(|ui| {
+                                                if itb.available_actions.can_estimate {
+                                                        if let Some(known_rewards) = itb.estimated_unclaimed_rewards  {
+                                                            ui.horizontal(|ui| {
+                                                                ui.label(known_rewards.to_string());
+                                                                if ui.button("Estimate").clicked() {
+                                                                    action = AppAction::BackendTask(BackendTask::TokenTask(TokenTask::EstimatePerpetualTokenRewards {
+                                                                        identity_id: itb.identity_id,
+                                                                        token_id: itb.token_id,
+                                                                    }));
+                                                                    self.refreshing_status = RefreshingStatus::Refreshing(Utc::now().timestamp() as u64);
+                                                                }
+                                                            });
+                                                        } else {
+                                                            if ui.button("Estimate").clicked() {
+                                                                action = AppAction::BackendTask(BackendTask::TokenTask(TokenTask::EstimatePerpetualTokenRewards {
+                                                                    identity_id: itb.identity_id,
+                                                                    token_id: itb.token_id,
+                                                                }));
+                                                                self.refreshing_status = RefreshingStatus::Refreshing(Utc::now().timestamp() as u64);
+                                                            }
+                                                        }
+                                                }
+                                            });
+                                        }
+                                        row.col(|ui| {
+                                            ui.horizontal(|ui| {
+                                                if itb.available_actions.shown_buttons() < 6 {
+                                                    action |= self.render_actions(itb, &token_info, 0..10, ui);
+                                                } else {
+                                                    action |= self.render_actions(itb, &token_info, 0..3, ui);
+                                                    // Expandable advanced actions menu
+                                                    ui.menu_button("...", |ui| {
+                                                        action |= self.render_actions(itb, &token_info, 3..128, ui);
+                                                    });
+                                                }
+
+                                                // Remove
+                                                if ui
+                                                    .button("X")
+                                                    .on_hover_text(
+                                                        "Remove identity token balance from DET",
+                                                    )
+                                                    .clicked()
+                                                {
+                                                    self.confirm_remove_identity_token_balance_popup = true;
+                                                    self.identity_token_balance_to_remove = Some(itb.into());
+                                                }
+                                            });
+                                        });
+                                    });
+                                }
+                            });
+                    });
+            });
+
+        action
+    }
+
+    fn render_actions(
+        &mut self,
+        itb: &IdentityTokenMaybeBalanceWithActions,
+        token_info: &TokenInfoWithDataContract,
+        range: Range<usize>,
+        ui: &mut Ui,
+    ) -> AppAction {
+        let mut pos = 0;
+        let mut action = AppAction::None;
+        ui.spacing_mut().item_spacing.x = 3.0;
+
+        if range.contains(&pos) {
+            if itb.available_actions.can_transfer {
+                if let Some(balance) = itb.balance {
+                    // Transfer
+                    if ui.button("Transfer").clicked() {
+                        action = AppAction::AddScreen(Screen::TransferTokensScreen(
+                            TransferTokensScreen::new(
+                                itb.to_token_balance(balance),
+                                &self.app_context,
+                            ),
+                        ));
+                    }
+                }
+            } else {
+                // Disabled, grayed-out Transfer button
+                ui.add_enabled(
+                    false,
+                    egui::Button::new(RichText::new("Transfer").color(egui::Color32::GRAY)),
+                )
+                .on_hover_text("Transfer not available");
+            }
+        }
+
+        pos += 1;
+
+        // Claim
+        if itb.available_actions.can_claim {
+            if range.contains(&pos) {
+                if ui.button("Claim").clicked() {
+                    let token_contract = match self
+                        .app_context
+                        .get_contract_by_token_id(&itb.token_id)
+                    {
+                        Ok(Some(contract)) => contract,
+                        Ok(None) => {
+                            self.set_error_message(Some("Token contract not found".to_string()));
+                            return action;
+                        }
+                        Err(e) => {
+                            self.set_error_message(Some(format!(
+                                "Error fetching token contract: {e}"
+                            )));
+                            return action;
+                        }
+                    };
+
+                    action =
+                        AppAction::AddScreen(Screen::ClaimTokensScreen(ClaimTokensScreen::new(
+                            itb.into(),
+                            token_contract,
+                            token_info.token_configuration.clone(),
+                            &self.app_context,
+                        )));
+                    ui.close_menu();
+                }
+            }
+            pos += 1;
+        }
+
+        if itb.available_actions.can_mint {
+            if range.contains(&pos) {
+                if ui.button("Mint").clicked() {
+                    match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
+                                Ok(info) => {
+                                    action = AppAction::AddScreen(
+                                        Screen::MintTokensScreen(
+                                            MintTokensScreen::new(
+                                                info,
+                                                &self.app_context,
+                                            ),
+                                        ),
+                                    );
+                                }
+                                Err(e) => {
+                                    self.set_error_message(Some(e));
+                                }
+                            };
+
+                    ui.close_menu();
+                }
+            }
+            pos += 1;
+        }
+        if itb.available_actions.can_burn {
+            if range.contains(&pos) {
+                if ui.button("Burn").clicked() {
+                    match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
+                                Ok(info) => {
+                                    action = AppAction::AddScreen(
+                                        Screen::BurnTokensScreen(
+                                            BurnTokensScreen::new(
+                                                info,
+                                                &self.app_context,
+                                            ),
+                                        ),
+                                    );
+                                }
+                                Err(e) => {
+                                    self.set_error_message(Some(e));
+                                }
+                            };
+                    ui.close_menu();
+                }
+            }
+            pos += 1;
+        }
+        if itb.available_actions.can_freeze {
+            if range.contains(&pos) {
+                if ui.button("Freeze").clicked() {
+                    match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
+                                Ok(info) => {
+                                    action = AppAction::AddScreen(
+                                        Screen::FreezeTokensScreen(
+                                            FreezeTokensScreen::new(
+                                                info,
+                                                &self.app_context,
+                                            ),
+                                        ),
+                                    );
+                                }
+                                Err(e) => {
+                                    self.set_error_message(Some(e));
+                                }
+                            };
+                    ui.close_menu();
+                }
+            }
+            pos += 1;
+        }
+        if itb.available_actions.can_destroy {
+            if range.contains(&pos) {
+                if ui.button("Destroy Target Identity Tokens").clicked() {
+                    match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
+                                Ok(info) => {
+                                    action = AppAction::AddScreen(
+                                        Screen::DestroyFrozenFundsScreen(
+                                            DestroyFrozenFundsScreen::new(
+                                                info,
+                                                &self.app_context,
+                                            ),
+                                        ),
+                                    );
+                                }
+                                Err(e) => {
+                                    self.set_error_message(Some(e));
+                                }
+                            };
+                    ui.close_menu();
+                }
+            }
+            pos += 1;
+        }
+        if itb.available_actions.can_unfreeze {
+            if range.contains(&pos) {
+                if ui.button("Unfreeze").clicked() {
+                    match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
+                                Ok(info) => {
+                                    action = AppAction::AddScreen(
+                                        Screen::UnfreezeTokensScreen(
+                                            UnfreezeTokensScreen::new(
+                                                info,
+                                                &self.app_context,
+                                            ),
+                                        ),
+                                    );
+                                }
+                                Err(e) => {
+                                    self.set_error_message(Some(e));
+                                }
+                            };
+                    ui.close_menu();
+                }
+            }
+            pos += 1;
+        }
+        if itb.available_actions.can_do_emergency_action {
+            if range.contains(&pos) {
+                if ui.button("Pause").clicked() {
+                    match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
+                                Ok(info) => {
+                                    action = AppAction::AddScreen(
+                                        Screen::PauseTokensScreen(
+                                            PauseTokensScreen::new(
+                                                info,
+                                                &self.app_context,
+                                            ),
+                                        ),
+                                    );
+                                }
+                                Err(e) => {
+                                    self.set_error_message(Some(e));
+                                }
+                            };
+                    ui.close_menu();
+                }
+                pos += 1;
+            }
+
+            if range.contains(&pos) {
+                if ui.button("Resume").clicked() {
+                    match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
+                                Ok(info) => {
+                                    action = AppAction::AddScreen(
+                                        Screen::ResumeTokensScreen(
+                                            ResumeTokensScreen::new(
+                                                info,
+                                                &self.app_context,
+                                            ),
+                                        ),
+                                    );
+                                }
+                                Err(e) => {
+                                    self.set_error_message(Some(e));
+                                }
+                            };
+                    ui.close_menu();
+                }
+                pos += 1;
+            }
+        }
+        if itb.available_actions.can_claim {
+            if range.contains(&pos) {
+                if ui.button("View Claims").clicked() {
+                    action = AppAction::AddScreen(Screen::ViewTokenClaimsScreen(
+                        ViewTokenClaimsScreen::new(itb.into(), &self.app_context),
+                    ));
+                    ui.close_menu();
+                }
+            }
+            pos += 1;
+        }
+        if itb.available_actions.can_update_config {
+            if range.contains(&pos) {
+                if ui.button("Update Config").clicked() {
+                    match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
+                                Ok(info) => {
+                                    action = AppAction::AddScreen(
+                                        Screen::UpdateTokenConfigScreen(
+                                            UpdateTokenConfigScreen::new(
+                                                info,
+                                                &self.app_context,
+                                            ),
+                                        ),
+                                    );
+                                }
+                                Err(e) => {
+                                    self.set_error_message(Some(e));
+                                }
+                            };
+                    ui.close_menu();
+                }
+            }
+            pos += 1;
+        }
+        if itb.available_actions.can_maybe_purchase {
+            if range.contains(&pos) {
+                // Purchase
+                if ui.button("Purchase").clicked() {
+                    match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
+                                Ok(info) => {
+                                    action = AppAction::AddScreen(
+                                        Screen::PurchaseTokenScreen(
+                                            PurchaseTokenScreen::new(
+                                                info,
+                                                &self.app_context,
+                                            ),
+                                        ),
+                                    );
+                                }
+                                Err(e) => {
+                                    self.set_error_message(Some(e));
+                                }
+                            };
+
+                    ui.close_menu();
+                }
+            }
+            pos += 1;
+        }
+        if itb.available_actions.can_set_price {
+            if range.contains(&pos) {
+                // Set Price
+                if ui.button("Set Price").clicked() {
+                    match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
+                                Ok(info) => {
+                                    action = AppAction::AddScreen(
+                                        Screen::SetTokenPriceScreen(
+                                            SetTokenPriceScreen::new(
+                                                info,
+                                                &self.app_context,
+                                            ),
+                                        ),
+                                    );
+                                }
+                                Err(e) => {
+                                    self.set_error_message(Some(e));
+                                }
+                            };
+
+                    ui.close_menu();
+                }
+            }
+            pos += 1;
+        }
+        action
+    }
+
+    /// Renders the top-level token list (one row per unique token).
+    /// When the user clicks on a token, we set `selected_token_id`.
+    fn render_token_list(&mut self, ui: &mut Ui) -> Result<(), String> {
+        // Allocate space for refreshing indicator
+        let refreshing_height = 33.0;
+        let mut max_scroll_height = if let RefreshingStatus::Refreshing(_) = self.refreshing_status
+        {
+            ui.available_height() - refreshing_height
+        } else {
+            ui.available_height()
+        };
+
+        // Allocate space for backend message
+        let backend_message_height = 40.0;
+        if let Some((_, _, _)) = self.backend_message.clone() {
+            max_scroll_height -= backend_message_height;
+        }
+
+        // A simple table with columns: [Token Name | Token ID | Total Balance]
+        egui::ScrollArea::vertical()
+            .max_height(max_scroll_height)
+            .show(ui, |ui| {
+                Frame::group(ui.style())
+                    .fill(ui.visuals().panel_fill)
+                    .stroke(egui::Stroke::new(
+                        1.0,
+                        ui.visuals().widgets.inactive.bg_stroke.color,
+                    ))
+                    .inner_margin(Margin::same(8))
+                    .show(ui, |ui| {
+                        TableBuilder::new(ui)
+                            .striped(true)
+                            .resizable(true)
+                            .cell_layout(egui::Layout::left_to_right(Align::Center))
+                            .column(Column::initial(150.0).resizable(true)) // Token Name
+                            .column(Column::initial(200.0).resizable(true)) // Token ID
+                            .column(Column::initial(80.0).resizable(true)) // Description
+                            .column(Column::initial(80.0).resizable(true)) // Actions
+                            // .column(Column::initial(80.0).resizable(true)) // Token Info
+                            .header(30.0, |mut header| {
+                                header.col(|ui| {
+                                    ui.label("Token Name");
+                                });
+                                header.col(|ui| {
+                                    ui.label("Token ID");
+                                });
+                                header.col(|ui| {
+                                    ui.label("Description");
+                                });
+                                header.col(|ui| {
+                                    ui.label("Actions");
+                                });
+                            })
+                            .body(|mut body| {
+                                for token_info in self.all_known_tokens.values() {
+                                    let TokenInfoWithDataContract {
+                                        token_id,
+                                        token_name,
+                                        description,
+                                        ..
+                                    } = token_info;
+                                    body.row(25.0, |mut row| {
+                                        row.col(|ui| {
+                                            // By making the label into a button or using `ui.selectable_label`,
+                                            // we can respond to clicks.
+                                            if ui.button(token_name).clicked() {
+                                                self.selected_token = Some(*token_id);
+                                            }
+                                        });
+                                        row.col(|ui| {
+                                            ui.label(token_id.to_string(Encoding::Base58));
+                                        });
+                                        row.col(|ui| {
+                                            ui.label(
+                                                description.as_ref().unwrap_or(&String::new()),
+                                            );
+                                        });
+                                        row.col(|ui| {
+                                            // Remove
+                                            if ui
+                                                .button("X")
+                                                .on_hover_text("Remove token from DET")
+                                                .clicked()
+                                            {
+                                                self.confirm_remove_token_popup = true;
+                                                self.token_to_remove = Some(token_id.clone());
+                                            }
+                                        });
+                                    });
+                                }
+                            });
+                    });
+            });
+        Ok(())
+    }
+}

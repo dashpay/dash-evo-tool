@@ -15,7 +15,7 @@ use egui::Context;
 use egui::{Color32, RichText};
 use std::sync::Arc;
 
-use super::tokens_screen::IdentityTokenBalance;
+use super::tokens_screen::IdentityTokenBasicInfo;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum FetchStatus {
@@ -24,7 +24,7 @@ pub enum FetchStatus {
 }
 
 pub struct ViewTokenClaimsScreen {
-    pub identity_token_balance: IdentityTokenBalance,
+    pub identity_token_basic_info: IdentityTokenBasicInfo,
     pub new_claims_query: DocumentQuery,
     message: Option<(String, MessageType, DateTime<Utc>)>,
     fetch_status: FetchStatus,
@@ -34,11 +34,11 @@ pub struct ViewTokenClaimsScreen {
 
 impl ViewTokenClaimsScreen {
     pub fn new(
-        identity_token_balance: IdentityTokenBalance,
+        identity_token_basic_info: IdentityTokenBasicInfo,
         app_context: &Arc<AppContext>,
     ) -> Self {
         Self {
-            identity_token_balance: identity_token_balance.clone(),
+            identity_token_basic_info: identity_token_basic_info.clone(),
             new_claims_query: DocumentQuery {
                 data_contract: app_context.token_history_contract.clone(),
                 document_type_name: "claim".to_string(),
@@ -46,12 +46,12 @@ impl ViewTokenClaimsScreen {
                     WhereClause {
                         field: "tokenId".to_string(),
                         operator: WhereOperator::Equal,
-                        value: Value::Identifier(identity_token_balance.token_id.into()),
+                        value: Value::Identifier(identity_token_basic_info.token_id.into()),
                     },
                     WhereClause {
                         field: "recipientId".to_string(),
                         operator: WhereOperator::Equal,
-                        value: Value::Identifier(identity_token_balance.identity_id.into()),
+                        value: Value::Identifier(identity_token_basic_info.identity_id.into()),
                     },
                 ],
                 order_by_clauses: vec![],
@@ -106,7 +106,7 @@ impl ScreenLike for ViewTokenClaimsScreen {
             vec![
                 ("Tokens", AppAction::GoToMainScreen),
                 (
-                    &self.identity_token_balance.token_alias,
+                    &self.identity_token_basic_info.token_alias,
                     AppAction::PopScreen,
                 ),
                 ("View Claims", AppAction::None),

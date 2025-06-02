@@ -6,7 +6,7 @@ use crate::model::qualified_identity::encrypted_key_storage::{
 };
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::contracts_documents::contracts_documents_screen::DocumentQueryScreen;
-use crate::ui::contracts_documents::create_document_screen::CreateDocumentScreen;
+use crate::ui::contracts_documents::document_action_screen::{DocumentActionScreen, DocumentActionType};
 use crate::ui::dpns::dpns_contested_names_screen::DPNSScreen;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
@@ -16,7 +16,7 @@ use crate::ui::identities::transfer_screen::TransferScreen;
 use crate::ui::identities::withdraw_screen::WithdrawalScreen;
 use crate::ui::network_chooser_screen::NetworkChooserScreen;
 use crate::ui::tokens::add_token_by_id_screen::AddTokenByIdScreen;
-use crate::ui::tokens::tokens_screen::IdentityTokenInfo;
+use crate::ui::tokens::tokens_screen::{IdentityTokenBasicInfo, IdentityTokenInfo};
 use crate::ui::tokens::transfer_tokens_screen::TransferTokensScreen;
 use crate::ui::tokens::view_token_claims_screen::ViewTokenClaimsScreen;
 use crate::ui::tools::contract_visualizer_screen::ContractVisualizerScreen;
@@ -26,13 +26,8 @@ use crate::ui::tools::proof_visualizer_screen::ProofVisualizerScreen;
 use crate::ui::wallets::import_wallet_screen::ImportWalletScreen;
 use crate::ui::wallets::wallets_screen::WalletsBalancesScreen;
 use contracts_documents::add_contracts_screen::AddContractsScreen;
-use contracts_documents::delete_document_screen::DeleteDocumentScreen;
 use contracts_documents::group_actions_screen::GroupActionsScreen;
-use contracts_documents::purchase_document_screen::PurchaseDocumentScreen;
 use contracts_documents::register_contract_screen::RegisterDataContractScreen;
-use contracts_documents::replace_document_screen::ReplaceDocumentScreen;
-use contracts_documents::set_document_price_screen::SetDocumentPriceScreen;
-use contracts_documents::transfer_document_screen::TransferDocumentScreen;
 use contracts_documents::update_contract_screen::UpdateDataContractScreen;
 use dash_sdk::dpp::identity::Identity;
 use dash_sdk::dpp::prelude::IdentityPublicKey;
@@ -223,8 +218,8 @@ pub enum ScreenType {
     UnfreezeTokensScreen(IdentityTokenInfo),
     PauseTokensScreen(IdentityTokenInfo),
     ResumeTokensScreen(IdentityTokenInfo),
-    ClaimTokensScreen(IdentityTokenBalance),
-    ViewTokenClaimsScreen(IdentityTokenBalance),
+    ClaimTokensScreen(IdentityTokenBasicInfo),
+    ViewTokenClaimsScreen(IdentityTokenBasicInfo),
     UpdateTokenConfigScreen(IdentityTokenInfo),
     PurchaseTokenScreen(IdentityTokenInfo),
     SetTokenPriceScreen(IdentityTokenInfo),
@@ -316,22 +311,22 @@ impl ScreenType {
                 Screen::ContractVisualizerScreen(ContractVisualizerScreen::new(app_context))
             }
             ScreenType::CreateDocument => {
-                Screen::CreateDocumentScreen(CreateDocumentScreen::new(app_context))
+                Screen::DocumentActionScreen(DocumentActionScreen::new(app_context.clone(), None, DocumentActionType::Create))
             }
             ScreenType::DeleteDocument => {
-                Screen::DeleteDocumentScreen(DeleteDocumentScreen::new(app_context))
+                Screen::DocumentActionScreen(DocumentActionScreen::new(app_context.clone(), None, DocumentActionType::Delete))
             }
             ScreenType::ReplaceDocument => {
-                Screen::ReplaceDocumentScreen(ReplaceDocumentScreen::new(app_context))
+                Screen::DocumentActionScreen(DocumentActionScreen::new(app_context.clone(), None, DocumentActionType::Replace))
             }
             ScreenType::TransferDocument => {
-                Screen::TransferDocumentScreen(TransferDocumentScreen::new(app_context))
+                Screen::DocumentActionScreen(DocumentActionScreen::new(app_context.clone(), None, DocumentActionType::Transfer))
             }
             ScreenType::PurchaseDocument => {
-                Screen::PurchaseDocumentScreen(PurchaseDocumentScreen::new(app_context))
+                Screen::DocumentActionScreen(DocumentActionScreen::new(app_context.clone(), None, DocumentActionType::Purchase))
             }
             ScreenType::SetDocumentPrice => {
-                Screen::SetDocumentPriceScreen(SetDocumentPriceScreen::new(app_context))
+                Screen::DocumentActionScreen(DocumentActionScreen::new(app_context.clone(), None, DocumentActionType::SetPrice))
             }
             ScreenType::GroupActions => {
                 Screen::GroupActionsScreen(GroupActionsScreen::new(app_context))
@@ -382,11 +377,8 @@ impl ScreenType {
             ScreenType::ClaimTokensScreen(_) => {
                 unreachable!()
             }
-            ScreenType::ViewTokenClaimsScreen(identity_token_balance) => {
-                Screen::ViewTokenClaimsScreen(ViewTokenClaimsScreen::new(
-                    identity_token_balance.clone(),
-                    app_context,
-                ))
+            ScreenType::ViewTokenClaimsScreen(_) => {
+                unreachable!()
             }
             ScreenType::UpdateTokenConfigScreen(identity_token_info) => {
                 Screen::UpdateTokenConfigScreen(UpdateTokenConfigScreen::new(
@@ -418,12 +410,7 @@ pub enum Screen {
     RegisterDpnsNameScreen(RegisterDpnsNameScreen),
     RegisterDataContractScreen(RegisterDataContractScreen),
     UpdateDataContractScreen(UpdateDataContractScreen),
-    CreateDocumentScreen(CreateDocumentScreen),
-    DeleteDocumentScreen(DeleteDocumentScreen),
-    ReplaceDocumentScreen(ReplaceDocumentScreen),
-    TransferDocumentScreen(TransferDocumentScreen),
-    PurchaseDocumentScreen(PurchaseDocumentScreen),
-    SetDocumentPriceScreen(SetDocumentPriceScreen),
+    DocumentActionScreen(DocumentActionScreen),
     GroupActionsScreen(GroupActionsScreen),
     WithdrawalScreen(WithdrawalScreen),
     TopUpIdentityScreen(TopUpIdentityScreen),
@@ -474,12 +461,7 @@ impl Screen {
             Screen::RegisterDpnsNameScreen(screen) => screen.app_context = app_context,
             Screen::RegisterDataContractScreen(screen) => screen.app_context = app_context,
             Screen::UpdateDataContractScreen(screen) => screen.app_context = app_context,
-            Screen::CreateDocumentScreen(screen) => screen.app_context = app_context,
-            Screen::DeleteDocumentScreen(screen) => screen.app_context = app_context,
-            Screen::ReplaceDocumentScreen(screen) => screen.app_context = app_context,
-            Screen::TransferDocumentScreen(screen) => screen.app_context = app_context,
-            Screen::PurchaseDocumentScreen(screen) => screen.app_context = app_context,
-            Screen::SetDocumentPriceScreen(screen) => screen.app_context = app_context,
+            Screen::DocumentActionScreen(screen) => screen.app_context = app_context,
             Screen::GroupActionsScreen(screen) => screen.app_context = app_context,
             Screen::AddNewWalletScreen(screen) => screen.app_context = app_context,
             Screen::TransferScreen(screen) => screen.app_context = app_context,
@@ -588,12 +570,14 @@ impl Screen {
             Screen::RegisterDpnsNameScreen(_) => ScreenType::RegisterDpnsName,
             Screen::RegisterDataContractScreen(_) => ScreenType::RegisterContract,
             Screen::UpdateDataContractScreen(_) => ScreenType::UpdateContract,
-            Screen::CreateDocumentScreen(_) => ScreenType::CreateDocument,
-            Screen::DeleteDocumentScreen(_) => ScreenType::DeleteDocument,
-            Screen::ReplaceDocumentScreen(_) => ScreenType::ReplaceDocument,
-            Screen::TransferDocumentScreen(_) => ScreenType::TransferDocument,
-            Screen::PurchaseDocumentScreen(_) => ScreenType::PurchaseDocument,
-            Screen::SetDocumentPriceScreen(_) => ScreenType::SetDocumentPrice,
+            Screen::DocumentActionScreen(screen) => match screen.action_type {
+                DocumentActionType::Create => ScreenType::CreateDocument,
+                DocumentActionType::Delete => ScreenType::DeleteDocument,
+                DocumentActionType::Replace => ScreenType::ReplaceDocument,
+                DocumentActionType::Transfer => ScreenType::TransferDocument,
+                DocumentActionType::Purchase => ScreenType::PurchaseDocument,
+                DocumentActionType::SetPrice => ScreenType::SetDocumentPrice,
+            },
             Screen::GroupActionsScreen(_) => ScreenType::GroupActions,
             Screen::AddNewWalletScreen(_) => ScreenType::AddNewWallet,
             Screen::WalletsBalancesScreen(_) => ScreenType::WalletsBalances,
@@ -642,10 +626,10 @@ impl Screen {
                 ScreenType::ResumeTokensScreen(screen.identity_token_info.clone())
             }
             Screen::ClaimTokensScreen(screen) => {
-                ScreenType::ClaimTokensScreen(screen.identity_token_balance.clone())
+                ScreenType::ClaimTokensScreen(screen.identity_token_basic_info.clone())
             }
             Screen::ViewTokenClaimsScreen(screen) => {
-                ScreenType::ViewTokenClaimsScreen(screen.identity_token_balance.clone())
+                ScreenType::ViewTokenClaimsScreen(screen.identity_token_basic_info.clone())
             }
             Screen::UpdateTokenConfigScreen(screen) => {
                 ScreenType::UpdateTokenConfigScreen(screen.identity_token_info.clone())
@@ -677,12 +661,7 @@ impl ScreenLike for Screen {
             Screen::RegisterDpnsNameScreen(screen) => screen.refresh(),
             Screen::RegisterDataContractScreen(screen) => screen.refresh(),
             Screen::UpdateDataContractScreen(screen) => screen.refresh(),
-            Screen::CreateDocumentScreen(screen) => screen.refresh(),
-            Screen::DeleteDocumentScreen(screen) => screen.refresh(),
-            Screen::ReplaceDocumentScreen(screen) => screen.refresh(),
-            Screen::TransferDocumentScreen(screen) => screen.refresh(),
-            Screen::PurchaseDocumentScreen(screen) => screen.refresh(),
-            Screen::SetDocumentPriceScreen(screen) => screen.refresh(),
+            Screen::DocumentActionScreen(screen) => screen.refresh(),
             Screen::GroupActionsScreen(screen) => screen.refresh(),
             Screen::WithdrawalScreen(screen) => screen.refresh(),
             Screen::TransferScreen(screen) => screen.refresh(),
@@ -730,12 +709,7 @@ impl ScreenLike for Screen {
             Screen::RegisterDpnsNameScreen(screen) => screen.refresh_on_arrival(),
             Screen::RegisterDataContractScreen(screen) => screen.refresh_on_arrival(),
             Screen::UpdateDataContractScreen(screen) => screen.refresh_on_arrival(),
-            Screen::CreateDocumentScreen(screen) => screen.refresh_on_arrival(),
-            Screen::DeleteDocumentScreen(screen) => screen.refresh_on_arrival(),
-            Screen::ReplaceDocumentScreen(screen) => screen.refresh_on_arrival(),
-            Screen::TransferDocumentScreen(screen) => screen.refresh_on_arrival(),
-            Screen::PurchaseDocumentScreen(screen) => screen.refresh_on_arrival(),
-            Screen::SetDocumentPriceScreen(screen) => screen.refresh_on_arrival(),
+            Screen::DocumentActionScreen(screen) => screen.refresh_on_arrival(),
             Screen::GroupActionsScreen(screen) => screen.refresh_on_arrival(),
             Screen::WithdrawalScreen(screen) => screen.refresh_on_arrival(),
             Screen::TransferScreen(screen) => screen.refresh_on_arrival(),
@@ -783,12 +757,7 @@ impl ScreenLike for Screen {
             Screen::RegisterDpnsNameScreen(screen) => screen.ui(ctx),
             Screen::RegisterDataContractScreen(screen) => screen.ui(ctx),
             Screen::UpdateDataContractScreen(screen) => screen.ui(ctx),
-            Screen::CreateDocumentScreen(screen) => screen.ui(ctx),
-            Screen::DeleteDocumentScreen(screen) => screen.ui(ctx),
-            Screen::ReplaceDocumentScreen(screen) => screen.ui(ctx),
-            Screen::TransferDocumentScreen(screen) => screen.ui(ctx),
-            Screen::PurchaseDocumentScreen(screen) => screen.ui(ctx),
-            Screen::SetDocumentPriceScreen(screen) => screen.ui(ctx),
+            Screen::DocumentActionScreen(screen) => screen.ui(ctx),
             Screen::GroupActionsScreen(screen) => screen.ui(ctx),
             Screen::WithdrawalScreen(screen) => screen.ui(ctx),
             Screen::TransferScreen(screen) => screen.ui(ctx),
@@ -842,12 +811,7 @@ impl ScreenLike for Screen {
             Screen::UpdateDataContractScreen(screen) => {
                 screen.display_message(message, message_type)
             }
-            Screen::CreateDocumentScreen(screen) => screen.display_message(message, message_type),
-            Screen::DeleteDocumentScreen(screen) => screen.display_message(message, message_type),
-            Screen::ReplaceDocumentScreen(screen) => screen.display_message(message, message_type),
-            Screen::TransferDocumentScreen(screen) => screen.display_message(message, message_type),
-            Screen::PurchaseDocumentScreen(screen) => screen.display_message(message, message_type),
-            Screen::SetDocumentPriceScreen(screen) => screen.display_message(message, message_type),
+            Screen::DocumentActionScreen(screen) => screen.display_message(message, message_type),
             Screen::GroupActionsScreen(screen) => screen.display_message(message, message_type),
             Screen::WithdrawalScreen(screen) => screen.display_message(message, message_type),
             Screen::TransferScreen(screen) => screen.display_message(message, message_type),
@@ -927,22 +891,7 @@ impl ScreenLike for Screen {
             Screen::UpdateDataContractScreen(screen) => {
                 screen.display_task_result(backend_task_success_result)
             }
-            Screen::CreateDocumentScreen(screen) => {
-                screen.display_task_result(backend_task_success_result)
-            }
-            Screen::DeleteDocumentScreen(screen) => {
-                screen.display_task_result(backend_task_success_result)
-            }
-            Screen::ReplaceDocumentScreen(screen) => {
-                screen.display_task_result(backend_task_success_result)
-            }
-            Screen::TransferDocumentScreen(screen) => {
-                screen.display_task_result(backend_task_success_result)
-            }
-            Screen::PurchaseDocumentScreen(screen) => {
-                screen.display_task_result(backend_task_success_result)
-            }
-            Screen::SetDocumentPriceScreen(screen) => {
+            Screen::DocumentActionScreen(screen) => {
                 screen.display_task_result(backend_task_success_result)
             }
             Screen::GroupActionsScreen(screen) => {
@@ -1040,12 +989,7 @@ impl ScreenLike for Screen {
             Screen::RegisterDpnsNameScreen(screen) => screen.pop_on_success(),
             Screen::RegisterDataContractScreen(screen) => screen.pop_on_success(),
             Screen::UpdateDataContractScreen(screen) => screen.pop_on_success(),
-            Screen::CreateDocumentScreen(screen) => screen.pop_on_success(),
-            Screen::DeleteDocumentScreen(screen) => screen.pop_on_success(),
-            Screen::ReplaceDocumentScreen(screen) => screen.pop_on_success(),
-            Screen::TransferDocumentScreen(screen) => screen.pop_on_success(),
-            Screen::PurchaseDocumentScreen(screen) => screen.pop_on_success(),
-            Screen::SetDocumentPriceScreen(screen) => screen.pop_on_success(),
+            Screen::DocumentActionScreen(screen) => screen.pop_on_success(),
             Screen::GroupActionsScreen(screen) => screen.pop_on_success(),
             Screen::WithdrawalScreen(screen) => screen.pop_on_success(),
             Screen::TransferScreen(screen) => screen.pop_on_success(),

@@ -35,7 +35,7 @@ impl Database {
             .serialize_to_bytes_with_platform_version(app_context.platform_version())
             .expect("expected to serialize contract");
         let contract_id = data_contract.id().to_vec();
-        let network = app_context.network_string();
+        let network = app_context.network.to_string();
 
         // Insert the contract if it does not exist
         self.execute(
@@ -91,7 +91,7 @@ impl Database {
         app_context: &AppContext,
     ) -> Result<Option<QualifiedContract>> {
         let contract_id_bytes = contract_id.to_vec();
-        let network = app_context.network_string();
+        let network = app_context.network.to_string();
 
         // Query the contract by ID
         let conn = self.conn.lock().unwrap();
@@ -139,7 +139,7 @@ impl Database {
         let contract_bytes = data_contract
             .serialize_to_bytes_with_platform_version(app_context.platform_version())
             .expect("expected to serialize contract");
-        let network = app_context.network_string();
+        let network = app_context.network.to_string();
 
         // Get the existing contract alias (if any)
         let existing_alias = {
@@ -174,7 +174,7 @@ impl Database {
         alias: &str,
         app_context: &AppContext,
     ) -> Result<Option<QualifiedContract>> {
-        let network = app_context.network_string();
+        let network = app_context.network.to_string();
 
         // Query the contract by alias and network
         let conn = self.conn.lock().unwrap();
@@ -218,7 +218,7 @@ impl Database {
         limit: Option<u32>,
         offset: Option<u32>,
     ) -> Result<Vec<QualifiedContract>> {
-        let network = app_context.network_string();
+        let network = app_context.network.to_string();
 
         // Build the SQL query with optional limit and offset
         let mut query = String::from("SELECT contract, alias FROM contract WHERE network = ?");
@@ -280,7 +280,7 @@ impl Database {
         contract_id: &[u8],
         app_context: &AppContext,
     ) -> rusqlite::Result<()> {
-        let network = app_context.network_string();
+        let network = app_context.network.to_string();
 
         // 1) remove the contract itself
         self.execute(
@@ -309,7 +309,7 @@ impl Database {
         if app_context.network != Network::Devnet {
             return Ok(());
         }
-        let network = app_context.network_string();
+        let network = app_context.network.to_string();
 
         let conn = self.conn.lock().unwrap();
 

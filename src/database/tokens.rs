@@ -2,13 +2,16 @@ use bincode::{self, config::standard};
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::data_contract::TokenConfiguration;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-use dash_sdk::platform::Identifier;
+use dash_sdk::dpp::serialization::PlatformDeserializableWithPotentialValidationFromVersionedStructure;
+use dash_sdk::platform::{DataContract, Identifier};
 use dash_sdk::query_types::IndexMap;
 use rusqlite::params;
 use rusqlite::OptionalExtension;
 
 use super::Database;
-use crate::ui::tokens::tokens_screen::{IdentityTokenIdentifier, TokenInfo};
+use crate::ui::tokens::tokens_screen::{
+    IdentityTokenIdentifier, TokenInfo, TokenInfoWithDataContract,
+};
 use crate::{context::AppContext, ui::tokens::tokens_screen::IdentityTokenBalance};
 
 impl Database {
@@ -36,7 +39,7 @@ impl Database {
         token_id: &Identifier,
         app_context: &AppContext,
     ) -> rusqlite::Result<Option<TokenConfiguration>> {
-        let network = app_context.network_string();
+        let network = app_context.network.to_string();
         let token_id_bytes = token_id.to_vec();
 
         let conn = self.conn.lock().unwrap();
@@ -66,7 +69,7 @@ impl Database {
         token_id: &Identifier,
         app_context: &AppContext,
     ) -> rusqlite::Result<Option<Identifier>> {
-        let network = app_context.network_string();
+        let network = app_context.network.to_string();
         let token_id_bytes = token_id.to_vec();
 
         let conn = self.conn.lock().unwrap();
@@ -99,7 +102,7 @@ impl Database {
         token_position: u16,
         app_context: &AppContext,
     ) -> rusqlite::Result<()> {
-        let network = app_context.network_string();
+        let network = app_context.network.to_string();
         let token_id_bytes = token_id.to_vec();
         let data_contract_bytes = data_contract_id.to_vec();
 
@@ -163,7 +166,7 @@ impl Database {
         balance: u64,
         app_context: &AppContext,
     ) -> rusqlite::Result<()> {
-        let network = app_context.network_string();
+        let network = app_context.network.to_string();
         let token_id_bytes = token_identifier.to_vec();
         let identity_id_bytes = identity_id.to_vec();
 
@@ -179,6 +182,84 @@ impl Database {
         Ok(())
     }
 
+    /// Retrieves all known tokens as a map from token ID to `TokenInfoWithDataContract`.
+    ///
+    /// This includes decoding the `token_config` and deserializing the `DataContract` using `versioned_deserialize`.
+    pub fn get_all_known_tokens_with_data_contract(
+        &self,
+        app_context: &AppContext,
+    ) -> rusqlite::Result<IndexMap<Identifier, TokenInfoWithDataContract>> {
+        let network = app_context.network.to_string();
+        let conn = self.conn.lock().unwrap();
+
+        let mut stmt = conn.prepare(
+            "SELECT
+            token.id,
+            token.token_alias,
+            token.token_config,
+            token.data_contract_id,
+            token.token_position,
+            contract.contract
+         FROM token
+         JOIN contract
+           ON token.data_contract_id = contract.contract_id
+          AND contract.network = token.network
+         WHERE token.network = ?
+         ORDER BY token.token_alias ASC",
+        )?;
+
+        let rows = stmt.query_map(params![network], |row| {
+            let token_config_bytes: Vec<u8> = row.get(2)?;
+            let raw_contract_bytes: Vec<u8> = row.get(5)?;
+
+            // Decode token config
+            let token_cfg = bincode::decode_from_slice::<TokenConfiguration, _>(
+                &token_config_bytes,
+                standard(),
+            )
+            .map(|(cfg, _)| cfg)
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+
+            // Deserialize DataContract using versioned_deserialize
+            let data_contract = DataContract::versioned_deserialize(
+                &raw_contract_bytes,
+                false,
+                app_context.platform_version(),
+            )
+            .map_err(|e| {
+                eprintln!("Failed to deserialize DataContract: {}", e);
+                rusqlite::Error::ToSqlConversionFailure(Box::new(e))
+            })?;
+
+            Ok((
+                Identifier::from_vec(row.get(0)?).expect("Failed to parse token ID"),
+                row.get::<_, String>(1)?,
+                token_cfg,
+                data_contract,
+                row.get::<_, u16>(4)?,
+            ))
+        })?;
+
+        let mut result = IndexMap::new();
+
+        for row in rows {
+            let (token_id, token_name, token_cfg, data_contract, token_position) = row?;
+            result.insert(
+                token_id,
+                TokenInfoWithDataContract {
+                    token_id,
+                    token_name,
+                    data_contract,
+                    token_position,
+                    token_configuration: token_cfg,
+                    description: None,
+                },
+            );
+        }
+
+        Ok(result)
+    }
+
     /// Retrieves all known tokens as a map from token ID to `TokenInfo`.
     ///
     /// Now also fetches and decodes the **`token_config`** blob.
@@ -186,7 +267,7 @@ impl Database {
         &self,
         app_context: &AppContext,
     ) -> rusqlite::Result<IndexMap<Identifier, TokenInfo>> {
-        let network = app_context.network_string();
+        let network = app_context.network.to_string();
         let conn = self.conn.lock().unwrap();
 
         // -- 1.  query id / alias / config / contract / position ────────────────
@@ -246,7 +327,7 @@ impl Database {
         &self,
         app_context: &AppContext,
     ) -> rusqlite::Result<IndexMap<IdentityTokenIdentifier, IdentityTokenBalance>> {
-        let network = app_context.network_string();
+        let network = app_context.network.to_string();
 
         let rows_data = {
             let conn = self.conn.lock().unwrap();
@@ -327,7 +408,7 @@ impl Database {
         token_id: &Identifier,
         app_context: &AppContext,
     ) -> rusqlite::Result<()> {
-        let network = app_context.network_string();
+        let network = app_context.network.to_string();
         let token_id_bytes = token_id.to_vec();
 
         self.execute(
@@ -344,7 +425,7 @@ impl Database {
         identity_id: &Identifier,
         app_context: &AppContext,
     ) -> rusqlite::Result<()> {
-        let network = app_context.network_string();
+        let network = app_context.network.to_string();
         let token_identifier_vec = token_identifier.to_vec();
         let identity_id_vec = identity_id.to_vec();
 
@@ -463,7 +544,7 @@ impl Database {
         if app_context.network != Network::Devnet {
             return Ok(());
         }
-        let network = app_context.network_string();
+        let network = app_context.network.to_string();
 
         let conn = self.conn.lock().unwrap();
 

@@ -17,7 +17,7 @@ use tracing::{error, info};
 
 impl Database {
     pub fn get_all_contested_names(&self, app_context: &AppContext) -> Result<Vec<ContestedName>> {
-        let network = app_context.network_string();
+        let network = app_context.network.to_string();
         let contest_duration = if app_context.network == Network::Dash {
             Duration::from_secs(60 * 60 * 24 * 14)
         } else {
@@ -149,7 +149,7 @@ impl Database {
         &self,
         app_context: &AppContext,
     ) -> Result<Vec<ContestedName>> {
-        let network = app_context.network_string();
+        let network = app_context.network.to_string();
         let contest_duration = if app_context.network == Network::Dash {
             Duration::from_secs(60 * 60 * 24 * 14)
         } else {
@@ -284,7 +284,7 @@ impl Database {
         contested_name: &ContestedName,
         app_context: &AppContext,
     ) -> Result<()> {
-        let network = app_context.network_string();
+        let network = app_context.network.to_string();
 
         // Check if the contested name already exists and get the current values if it does
         let conn = self.conn.lock().unwrap();
@@ -371,7 +371,7 @@ impl Database {
         dpns_domain_document_type: DocumentTypeRef,
         app_context: &AppContext,
     ) -> Result<()> {
-        let network = app_context.network_string();
+        let network = app_context.network.to_string();
         let last_updated = chrono::Utc::now().timestamp(); // Get the current timestamp
         if let Some((winner, block_info)) = contenders.winner {
             match winner {
@@ -528,7 +528,7 @@ impl Database {
         contestant: &Contestant,
         app_context: &AppContext,
     ) -> Result<()> {
-        let network = app_context.network_string();
+        let network = app_context.network.to_string();
         // Check if the contestant already exists and get the current values if it does
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
@@ -596,7 +596,7 @@ impl Database {
         name_contests: Vec<String>,
         app_context: &AppContext,
     ) -> Result<Vec<String>> {
-        let network = app_context.network_string();
+        let network = app_context.network.to_string();
         let conn = self.conn.lock().unwrap();
         let mut names_to_be_updated: Vec<(String, Option<i64>)> = Vec::new();
         let mut new_names: Vec<String> = Vec::new();
@@ -680,7 +680,7 @@ impl Database {
     where
         I: IntoIterator<Item = (String, TimestampMillis)>,
     {
-        let network = app_context.network_string();
+        let network = app_context.network.to_string();
         let conn = self.conn.lock().unwrap();
 
         // Prepare statement for selecting existing entries

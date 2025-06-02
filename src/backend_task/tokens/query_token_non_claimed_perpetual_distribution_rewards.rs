@@ -20,6 +20,47 @@ use dash_sdk::platform::fetch_current_no_parameters::FetchCurrent;
 use dash_sdk::platform::query::TokenLastClaimQuery;
 
 impl AppContext {
+    fn validate_perpetual_distribution_recipient(
+        &self,
+        contract_owner_id: Identifier,
+        recipient: TokenDistributionRecipient,
+        identity_id: Identifier,
+    ) -> Result<(), String> {
+        match recipient {
+            TokenDistributionRecipient::ContractOwner => {
+                if contract_owner_id != identity_id {
+                    Err("This token's distribution recipient is the contract owner, and this identity is not the contract owner".to_string())
+                } else {
+                    Ok(())
+                }
+            }
+            TokenDistributionRecipient::Identity(identifier) => {
+                if identifier != identity_id {
+                    Err(
+                        "This identity is not a valid distribution recipient for this token"
+                            .to_string(),
+                    )
+                } else {
+                    Ok(())
+                }
+            }
+            TokenDistributionRecipient::EvonodesByParticipation => {
+                // This validation method is not perfect because you can say an identity is an evonode even if it's not when loading identities
+                let qualified_identities = self
+                    .load_local_qualified_identities()
+                    .map_err(|e| format!("Failed to load local qualified identities: {e}"))?;
+                let qi = qualified_identities
+                    .iter()
+                    .find(|identity| identity.identity.id() == identity_id)
+                    .ok_or("Identity not found in local database")?;
+                if qi.identity_type != IdentityType::Evonode {
+                    Err("This token's distribution recipient is EvonodesByParticipation, and this identity is not an evonode".to_string())
+                } else {
+                    Ok(())
+                }
+            }
+        }
+    }
     pub async fn query_token_non_claimed_perpetual_distribution_rewards(
         &self,
         identity_id: Identifier,
@@ -46,34 +87,11 @@ impl AppContext {
             .ok_or("Corrupted DET state: Data contract not found in database")?;
 
         let recipient = perpetual_distribution.distribution_recipient();
-        match recipient {
-            TokenDistributionRecipient::ContractOwner => {
-                if data_contract.contract.owner_id() != identity_id {
-                    return Err("This token's distribution recipient is the contract owner, and this identity is not the contract owner".to_string());
-                }
-            }
-            TokenDistributionRecipient::Identity(identifier) => {
-                if identifier != identity_id {
-                    return Err(
-                        "This identity is not a valid distribution recipient for this token"
-                            .to_string(),
-                    );
-                }
-            }
-            TokenDistributionRecipient::EvonodesByParticipation => {
-                // This validation method is not perfect because you can say an identity is an evonode even if it's not when loading identities
-                let qualified_identities = self
-                    .load_local_qualified_identities()
-                    .map_err(|e| format!("Failed to load local qualified identities: {e}"))?;
-                let qi = qualified_identities
-                    .iter()
-                    .find(|identity| identity.identity.id() == identity_id)
-                    .ok_or("Identity not found in local database")?;
-                if qi.identity_type != IdentityType::Evonode {
-                    return Err("This token's distribution recipient is EvonodesByParticipation, and this identity is not an evonode".to_string());
-                }
-            }
-        }
+        self.validate_perpetual_distribution_recipient(
+            data_contract.contract.owner_id(),
+            recipient,
+            identity_id,
+        )?;
 
         let reward_distribution_type = perpetual_distribution.distribution_type();
 

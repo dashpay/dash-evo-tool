@@ -2622,9 +2622,8 @@ impl ScreenLike for TokensScreen {
             AppAction::Custom(ref s) if s == "Back to tokens from contract" => {
                 self.selected_contract_id = None;
             }
-            AppAction::None => {}
-            ref a => {
-                tracing::trace!(action=?a, "tokens screen unsupported action");
+            _ => {
+                // No extra processing needed
             }
         }
 

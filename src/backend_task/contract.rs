@@ -114,7 +114,7 @@ impl AppContext {
                                             }
                                         };
                                         conventions
-                                            .plural_form_by_language_code_or_default("en")
+                                            .singular_form_by_language_code_or_default("en")
                                             .to_string()
                                     };
 

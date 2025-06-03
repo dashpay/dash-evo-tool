@@ -959,6 +959,7 @@ pub struct TokensScreen {
     selected_token_infos: Vec<TokenInfo>,
     search_results: Arc<Mutex<Vec<ContractDescriptionInfo>>>,
     contract_search_status: ContractSearchStatus,
+    contract_details_loading: bool,
 
     // Token Search
     token_search_query: Option<String>,
@@ -1272,6 +1273,7 @@ impl TokensScreen {
             selected_contract_id: None,
             selected_contract_description: None,
             selected_token_infos: Vec::new(),
+            contract_details_loading: false,
             token_search_query: None,
             contract_search_status: ContractSearchStatus::NotStarted,
             search_current_page: 1,
@@ -2517,6 +2519,10 @@ impl ScreenLike for TokensScreen {
                     if self.selected_contract_id.is_some() {
                         action |=
                             self.render_contract_details(ui, &self.selected_contract_id.unwrap());
+                        // Render the JSON popup if needed
+                        if self.show_json_popup {
+                            self.render_data_contract_json_popup(ui);
+                        }
                     } else {
                         action |= self.render_keyword_search(ui);
                     }
@@ -2594,16 +2600,17 @@ impl ScreenLike for TokensScreen {
                 self.refreshing_status =
                     RefreshingStatus::Refreshing(Utc::now().timestamp() as u64);
             }
-            AppAction::SetMainScreen(_) => {
+            AppAction::SetMainScreenThenGoToMainScreen(_) => {
                 self.refreshing_status = RefreshingStatus::NotRefreshing;
 
                 // should put these in a fn
+                self.contract_search_status = ContractSearchStatus::NotStarted;
                 self.selected_token = None;
                 self.selected_contract_id = None;
                 self.token_search_query = None;
                 self.search_current_page = 1;
                 self.search_has_next_page = false;
-                self.search_results = Arc::new(Mutex::new(vec![]));
+                self.search_results = Arc::new(Mutex::new(Vec::new()));
                 self.selected_contract_id = None;
                 self.selected_contract_description = None;
 
@@ -2630,6 +2637,11 @@ impl ScreenLike for TokensScreen {
     }
 
     fn display_message(&mut self, msg: &str, msg_type: MessageType) {
+        // Reset contract details loading on any error
+        if msg_type == MessageType::Error && self.contract_details_loading {
+            self.contract_details_loading = false;
+        }
+
         match self.tokens_subscreen {
             TokensSubscreen::TokenCreator => {
                 if msg.contains("Successfully registered token contract") {
@@ -2695,6 +2707,7 @@ impl ScreenLike for TokensScreen {
                 self.selected_contract_description = info.0.clone();
                 self.selected_token_infos = info.1.clone();
                 self.refreshing_status = RefreshingStatus::NotRefreshing;
+                self.contract_details_loading = false;
             }
             BackendTaskSuccessResult::TokenEstimatedNonClaimedPerpetualDistributionAmount(
                 identity_token_id,

@@ -326,7 +326,7 @@ impl TokensScreen {
                                     ui.end_row();
 
                                     // Plural name
-                                    ui.label("Token Name (plural):");
+                                    ui.label("Token Name (plural)*:");
                                     ui.text_edit_singleline(&mut self.token_names_input[i].1);
                                     ui.end_row();
 

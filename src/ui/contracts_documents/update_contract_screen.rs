@@ -28,7 +28,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 enum BroadcastStatus {
     Idle,
     ParsingError(String),
-    ValidContract(DataContract),
+    ValidContract(Box<DataContract>),
     FetchingNonce(u64),
     Broadcasting(u64),
     ProofError(u64),
@@ -304,7 +304,7 @@ impl UpdateDataContractScreen {
                         }
 
                         // Mark it as a valid contract in our screen state
-                        self.broadcast_status = BroadcastStatus::ValidContract(contract);
+                        self.broadcast_status = BroadcastStatus::ValidContract(Box::new(contract));
                     }
                     Err(e) => {
                         self.broadcast_status =
@@ -360,7 +360,7 @@ impl UpdateDataContractScreen {
                     // Fire off a backend task
                     app_action = AppAction::BackendTask(BackendTask::ContractTask(
                         ContractTask::UpdateDataContract(
-                            contract.clone(),
+                            (**contract).clone(),
                             self.selected_qualified_identity.clone().unwrap().0, // unwrap should be safe here
                             self.selected_key.clone().unwrap(), // unwrap should be safe here
                         ),

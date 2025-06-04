@@ -2142,8 +2142,8 @@ impl TokensScreen {
 
         Ok(AppAction::BackendTasks(
             vec![
-                BackendTask::TokenTask(TokenTask::SaveTokenLocally(token_info)),
-                BackendTask::TokenTask(TokenTask::QueryMyTokenBalances),
+                BackendTask::TokenTask(Box::new(TokenTask::SaveTokenLocally(token_info))),
+                BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances)),
             ],
             BackendTasksExecutionMode::Sequential,
         ))
@@ -2165,9 +2165,9 @@ impl TokensScreen {
             // Dispatch
             let query_string = self.token_search_query.clone().unwrap_or_default();
 
-            return AppAction::BackendTask(BackendTask::TokenTask(
+            return AppAction::BackendTask(BackendTask::TokenTask(Box::new(
                 TokenTask::QueryDescriptionsByKeyword(query_string, Some(next_cursor)),
-            ));
+            )));
         }
         AppAction::None
     }
@@ -2184,9 +2184,9 @@ impl TokensScreen {
                 // Possibly pop from next_cursors if we want to re-insert it later
                 // self.next_cursors.truncate(self.search_current_page - 1);
                 let query_string = self.token_search_query.clone().unwrap_or_default();
-                return AppAction::BackendTask(BackendTask::TokenTask(
+                return AppAction::BackendTask(BackendTask::TokenTask(Box::new(
                     TokenTask::QueryDescriptionsByKeyword(query_string, Some(prev_cursor)),
-                ));
+                )));
             }
         }
         AppAction::None
@@ -2378,9 +2378,9 @@ impl ScreenLike for TokensScreen {
                     ),
                     (
                         "Refresh",
-                        DesiredAppAction::BackendTask(BackendTask::TokenTask(
+                        DesiredAppAction::BackendTask(Box::new(BackendTask::TokenTask(Box::new(
                             TokenTask::QueryMyTokenBalances,
-                        )),
+                        )))),
                     ),
                 ],
                 TokensSubscreen::SearchTokens => vec![],
@@ -2560,7 +2560,9 @@ impl ScreenLike for TokensScreen {
 
         // Post-processing on user actions
         match action {
-            AppAction::BackendTask(BackendTask::TokenTask(TokenTask::QueryMyTokenBalances)) => {
+            AppAction::BackendTask(BackendTask::TokenTask(ref token_task))
+                if matches!(token_task.as_ref(), TokenTask::QueryMyTokenBalances) =>
+            {
                 self.refreshing_status =
                     RefreshingStatus::Refreshing(Utc::now().timestamp() as u64);
             }

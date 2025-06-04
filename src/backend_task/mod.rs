@@ -48,7 +48,7 @@ pub(crate) enum BackendTask {
     ContestedResourceTask(ContestedResourceTask),
     CoreTask(CoreTask),
     BroadcastStateTransition(StateTransition),
-    TokenTask(TokenTask),
+    TokenTask(Box<TokenTask>),
     SystemTask(SystemTask),
     None,
 }
@@ -150,7 +150,7 @@ impl AppContext {
                     .await
             }
             BackendTask::TokenTask(token_task) => {
-                self.run_token_task(token_task, &sdk, sender).await
+                self.run_token_task(*token_task, &sdk, sender).await
             }
             BackendTask::SystemTask(system_task) => self.run_system_task(system_task, sender).await,
             BackendTask::None => Ok(BackendTaskSuccessResult::None),

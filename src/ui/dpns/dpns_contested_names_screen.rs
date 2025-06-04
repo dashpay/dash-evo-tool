@@ -1154,7 +1154,7 @@ impl DPNSScreen {
                                                     BackendTask::ContestedResourceTask(
                                                         ContestedResourceTask::CastScheduledVote(
                                                             vote.0.clone(),
-                                                            found.clone(),
+                                                            Box::new(found.clone()),
                                                         ),
                                                     ),
                                                 );
@@ -1880,9 +1880,9 @@ impl ScreenLike for DPNSScreen {
             DPNSSubscreen::Active => {
                 let refresh_button = (
                     "Refresh",
-                    DesiredAppAction::BackendTask(BackendTask::ContestedResourceTask(
+                    DesiredAppAction::BackendTask(Box::new(BackendTask::ContestedResourceTask(
                         ContestedResourceTask::QueryDPNSContests,
-                    )),
+                    ))),
                 );
                 if has_active_contests {
                     vec![
@@ -1899,18 +1899,18 @@ impl ScreenLike for DPNSScreen {
             DPNSSubscreen::Past => {
                 let refresh_button = (
                     "Refresh",
-                    DesiredAppAction::BackendTask(BackendTask::ContestedResourceTask(
+                    DesiredAppAction::BackendTask(Box::new(BackendTask::ContestedResourceTask(
                         ContestedResourceTask::QueryDPNSContests,
-                    )),
+                    ))),
                 );
                 vec![refresh_button]
             }
             DPNSSubscreen::Owned => {
                 let refresh_button = (
                     "Refresh",
-                    DesiredAppAction::BackendTask(BackendTask::IdentityTask(
+                    DesiredAppAction::BackendTask(Box::new(BackendTask::IdentityTask(
                         IdentityTask::RefreshLoadedIdentitiesOwnedDPNSNames,
-                    )),
+                    ))),
                 );
                 vec![refresh_button]
             }
@@ -1918,14 +1918,18 @@ impl ScreenLike for DPNSScreen {
                 vec![
                     (
                         "Clear All",
-                        DesiredAppAction::BackendTask(BackendTask::ContestedResourceTask(
-                            ContestedResourceTask::ClearAllScheduledVotes,
+                        DesiredAppAction::BackendTask(Box::new(
+                            BackendTask::ContestedResourceTask(
+                                ContestedResourceTask::ClearAllScheduledVotes,
+                            ),
                         )),
                     ),
                     (
                         "Clear Casted",
-                        DesiredAppAction::BackendTask(BackendTask::ContestedResourceTask(
-                            ContestedResourceTask::ClearExecutedScheduledVotes,
+                        DesiredAppAction::BackendTask(Box::new(
+                            BackendTask::ContestedResourceTask(
+                                ContestedResourceTask::ClearExecutedScheduledVotes,
+                            ),
                         )),
                     ),
                 ]

@@ -241,8 +241,10 @@ impl AppContext {
         }
 
         sender
-            .send(TaskResult::Success(BackendTaskSuccessResult::Message(
-                "Successfully refreshed DPNS contests".to_string(),
+            .send(TaskResult::Success(Box::new(
+                BackendTaskSuccessResult::Message(
+                    "Successfully refreshed DPNS contests".to_string(),
+                ),
             )))
             .await
             .map_err(|e| {

@@ -37,14 +37,14 @@ use tokio::sync::mpsc as tokiompsc;
 #[derive(Debug, From)]
 pub enum TaskResult {
     Refresh,
-    Success(BackendTaskSuccessResult),
+    Success(Box<BackendTaskSuccessResult>),
     Error(String),
 }
 
 impl From<Result<BackendTaskSuccessResult, String>> for TaskResult {
     fn from(value: Result<BackendTaskSuccessResult, String>) -> Self {
         match value {
-            Ok(value) => TaskResult::Success(value),
+            Ok(value) => TaskResult::Success(Box::new(value)),
             Err(e) => TaskResult::Error(e),
         }
     }
@@ -79,7 +79,7 @@ pub enum DesiredAppAction {
     #[allow(dead_code)] // May be used in future for explicit refresh actions
     Refresh,
     AddScreenType(ScreenType),
-    BackendTask(BackendTask),
+    BackendTask(Box<BackendTask>),
     BackendTasks(Vec<BackendTask>, BackendTasksExecutionMode),
     Custom(String),
 }
@@ -94,7 +94,7 @@ impl DesiredAppAction {
                 AppAction::AddScreen(screen_type.create_screen(app_context))
             }
             DesiredAppAction::BackendTask(backend_task) => {
-                AppAction::BackendTask(backend_task.clone())
+                AppAction::BackendTask((**backend_task).clone())
             }
             DesiredAppAction::BackendTasks(tasks, mode) => {
                 AppAction::BackendTasks(tasks.clone(), mode.clone())
@@ -407,15 +407,15 @@ impl AppState {
                 ),
                 (
                     RootScreenType::RootScreenMyTokenBalances,
-                    Screen::TokensScreen(tokens_balances_screen),
+                    Screen::TokensScreen(Box::new(tokens_balances_screen)),
                 ),
                 (
                     RootScreenType::RootScreenTokenSearch,
-                    Screen::TokensScreen(token_search_screen),
+                    Screen::TokensScreen(Box::new(token_search_screen)),
                 ),
                 (
                     RootScreenType::RootScreenTokenCreator,
-                    Screen::TokensScreen(token_creator_screen),
+                    Screen::TokensScreen(Box::new(token_creator_screen)),
                 ),
             ]
             .into(),
@@ -560,29 +560,34 @@ impl App for AppState {
         while let Ok(task_result) = self.task_result_receiver.try_recv() {
             // Handle the result on the main thread
             match task_result {
-                TaskResult::Success(message) => match message {
-                    BackendTaskSuccessResult::None => {}
-                    BackendTaskSuccessResult::Refresh => {
-                        self.visible_screen_mut().refresh();
+                TaskResult::Success(message) => {
+                    let unboxed_message = *message;
+                    match unboxed_message {
+                        BackendTaskSuccessResult::None => {}
+                        BackendTaskSuccessResult::Refresh => {
+                            self.visible_screen_mut().refresh();
+                        }
+                        BackendTaskSuccessResult::Message(ref msg) => {
+                            self.visible_screen_mut()
+                                .display_message(msg, MessageType::Success);
+                        }
+                        BackendTaskSuccessResult::CastScheduledVote(ref vote) => {
+                            let _ = self.current_app_context().mark_vote_executed(
+                                vote.voter_id.as_slice(),
+                                vote.contested_name.clone(),
+                            );
+                            self.visible_screen_mut().display_message(
+                                "Successfully cast scheduled vote",
+                                MessageType::Success,
+                            );
+                            self.visible_screen_mut().refresh();
+                        }
+                        _ => {
+                            self.visible_screen_mut()
+                                .display_task_result(unboxed_message);
+                        }
                     }
-                    BackendTaskSuccessResult::Message(message) => {
-                        self.visible_screen_mut()
-                            .display_message(&message, MessageType::Success);
-                    }
-                    BackendTaskSuccessResult::CastScheduledVote(vote) => {
-                        let _ = self
-                            .current_app_context()
-                            .mark_vote_executed(vote.voter_id.as_slice(), vote.contested_name);
-                        self.visible_screen_mut().display_message(
-                            "Successfully cast scheduled vote",
-                            MessageType::Success,
-                        );
-                        self.visible_screen_mut().refresh();
-                    }
-                    _ => {
-                        self.visible_screen_mut().display_task_result(message);
-                    }
-                },
+                }
                 TaskResult::Error(message) => {
                     self.visible_screen_mut()
                         .display_message(&message, MessageType::Error);
@@ -710,7 +715,7 @@ impl App for AppState {
                             }
                         }
                         let task = BackendTask::ContestedResourceTask(
-                            ContestedResourceTask::CastScheduledVote(vote, voter.clone()),
+                            ContestedResourceTask::CastScheduledVote(vote, Box::new(voter.clone())),
                         );
                         self.handle_backend_task(task);
                     } else {

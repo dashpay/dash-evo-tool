@@ -110,9 +110,9 @@ impl ScreenLike for ViewTokenClaimsScreen {
             ],
             vec![(
                 "Refresh",
-                DesiredAppAction::BackendTask(BackendTask::DocumentTask(
+                DesiredAppAction::BackendTask(Box::new(BackendTask::DocumentTask(
                     DocumentTask::FetchDocuments(self.new_claims_query.clone()),
-                )),
+                ))),
             )],
         );
 

@@ -1069,7 +1069,7 @@ impl TokensScreen {
 
                     // Now create your tasks
                     let tasks = vec![
-                        BackendTask::TokenTask(TokenTask::RegisterTokenContract {
+                        BackendTask::TokenTask(Box::new(TokenTask::RegisterTokenContract {
                             identity: self.selected_identity.clone().unwrap(),
                             signing_key: Box::new(self.selected_key.clone().unwrap()),
 
@@ -1098,8 +1098,8 @@ impl TokensScreen {
                                 .main_control_group_change_authorized,
                             distribution_rules: args.distribution_rules,
                             groups: args.groups,
-                        }),
-                        BackendTask::TokenTask(TokenTask::QueryMyTokenBalances),
+                        })),
+                        BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances)),
                     ];
 
                     action = AppAction::BackendTasks(tasks, BackendTasksExecutionMode::Sequential);

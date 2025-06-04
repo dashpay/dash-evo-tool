@@ -363,7 +363,7 @@ impl SetTokenPriceScreen {
                     };
 
                     // Dispatch the actual backend mint action
-                    action = AppAction::BackendTask(BackendTask::TokenTask(
+                    action = AppAction::BackendTask(BackendTask::TokenTask(Box::new(
                         TokenTask::SetDirectPurchasePrice {
                             identity: self.identity_token_info.identity.clone(),
                             data_contract: self.identity_token_info.data_contract.contract.clone(),
@@ -377,7 +377,7 @@ impl SetTokenPriceScreen {
                             token_pricing_schedule: token_pricing_schedule_opt,
                             group_info,
                         },
-                    ));
+                    )));
                 }
 
                 // Cancel button

@@ -358,7 +358,7 @@ impl MintTokensScreen {
                     // Dispatch the actual backend mint action
                     action = AppAction::BackendTasks(
                         vec![
-                            BackendTask::TokenTask(TokenTask::MintTokens {
+                            BackendTask::TokenTask(Box::new(TokenTask::MintTokens {
                                 sending_identity: self.identity_token_info.identity.clone(),
                                 data_contract: self
                                     .identity_token_info
@@ -375,8 +375,8 @@ impl MintTokensScreen {
                                 amount: amount_ok.unwrap(),
                                 recipient_id: maybe_identifier,
                                 group_info,
-                            }),
-                            BackendTask::TokenTask(TokenTask::QueryMyTokenBalances),
+                            })),
+                            BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances)),
                         ],
                         BackendTasksExecutionMode::Sequential,
                     );

@@ -22,7 +22,7 @@ pub fn check_cpu_compatibility() {
             }
             let avx2_supported = cpuid
                 .get_extended_feature_info()
-                .map_or(false, |ext_info| ext_info.has_avx2());
+                .is_some_and(|ext_info| ext_info.has_avx2());
             if !avx2_supported {
                 MessageDialog::new()
                     .set_type(native_dialog::MessageType::Error)

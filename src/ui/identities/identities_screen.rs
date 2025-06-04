@@ -899,7 +899,7 @@ impl ScreenLike for IdentitiesScreen {
             "Load Identity",
             DesiredAppAction::AddScreenType(ScreenType::AddExistingIdentity),
         ));
-        if self.identities.lock().unwrap().len() > 0 {
+        if !self.identities.lock().unwrap().is_empty() {
             // Create a vec of RefreshIdentity(identity) DesiredAppAction for each identity
             let backend_tasks: Vec<BackendTask> = self
                 .identities

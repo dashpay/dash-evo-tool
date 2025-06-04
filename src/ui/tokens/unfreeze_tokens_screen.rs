@@ -317,8 +317,8 @@ impl UnfreezeTokensScreen {
                     };
 
                     // Dispatch to backend
-                    action |=
-                        AppAction::BackendTask(BackendTask::TokenTask(TokenTask::UnfreezeTokens {
+                    action |= AppAction::BackendTask(BackendTask::TokenTask(Box::new(
+                        TokenTask::UnfreezeTokens {
                             actor_identity: self.identity.clone(),
                             data_contract,
                             token_position: self.identity_token_info.token_position,
@@ -330,7 +330,8 @@ impl UnfreezeTokensScreen {
                             },
                             unfreeze_identity: unfreeze_id,
                             group_info,
-                        }));
+                        },
+                    )));
                 }
 
                 // Cancel

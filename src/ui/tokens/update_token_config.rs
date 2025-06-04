@@ -802,9 +802,9 @@ impl UpdateTokenConfigScreen {
                 };
 
                 self.update_status = UpdateTokenConfigStatus::Updating(Utc::now());
-                action |=
-                    AppAction::BackendTask(BackendTask::TokenTask(TokenTask::UpdateTokenConfig {
-                        identity_token_info: self.identity_token_info.clone(),
+                action |= AppAction::BackendTask(BackendTask::TokenTask(Box::new(
+                    TokenTask::UpdateTokenConfig {
+                        identity_token_info: Box::new(self.identity_token_info.clone()),
                         change_item: self.change_item.clone(),
                         signing_key: self.signing_key.clone().expect("Signing key must be set"),
                         public_note: if self.group_action_id.is_some() {
@@ -813,7 +813,8 @@ impl UpdateTokenConfigScreen {
                             self.public_note.clone()
                         },
                         group_info,
-                    }));
+                    },
+                )));
             }
         }
 

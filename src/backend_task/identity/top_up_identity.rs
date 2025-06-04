@@ -333,7 +333,9 @@ impl AppContext {
         }
 
         sender
-            .send(TaskResult::Success(BackendTaskSuccessResult::None))
+            .send(TaskResult::Success(Box::new(
+                BackendTaskSuccessResult::None,
+            )))
             .await
             .map_err(|e| e.to_string())?;
 

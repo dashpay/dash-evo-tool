@@ -283,8 +283,8 @@ impl PauseTokensScreen {
                         })
                     };
 
-                    action =
-                        AppAction::BackendTask(BackendTask::TokenTask(TokenTask::PauseTokens {
+                    action = AppAction::BackendTask(BackendTask::TokenTask(Box::new(
+                        TokenTask::PauseTokens {
                             actor_identity: self.identity.clone(),
                             data_contract,
                             token_position: self.identity_token_info.token_position,
@@ -295,7 +295,8 @@ impl PauseTokensScreen {
                                 self.public_note.clone()
                             },
                             group_info,
-                        }));
+                        },
+                    )));
                 }
 
                 if ui.button("Cancel").clicked() {

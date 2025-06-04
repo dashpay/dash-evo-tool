@@ -43,9 +43,9 @@ impl TokensScreen {
 
                 // Dispatch a backend task to do the actual keyword => token retrieval
                 let keyword = query_ref.to_lowercase();
-                action = AppAction::BackendTask(BackendTask::TokenTask(
+                action = AppAction::BackendTask(BackendTask::TokenTask(Box::new(
                     TokenTask::QueryDescriptionsByKeyword(keyword, None),
-                ));
+                )));
             }
         });
 

@@ -28,7 +28,7 @@ use crate::{
 enum AddTokenStatus {
     Idle,
     Searching(u32),
-    FoundSingle(TokenInfo),
+    FoundSingle(Box<TokenInfo>),
     FoundMultiple(Vec<TokenInfo>),
     Error(String),
     Complete,
@@ -83,9 +83,9 @@ impl AddTokenByIdScreen {
                 if let Ok(contract_id) =
                     Identifier::from_string(&self.contract_id_input, Encoding::Base58)
                 {
-                    action = AppAction::BackendTask(BackendTask::TokenTask(
+                    action = AppAction::BackendTask(BackendTask::TokenTask(Box::new(
                         TokenTask::FetchTokenByContractId(contract_id),
-                    ));
+                    )));
                 } else {
                     self.status =
                         AddTokenStatus::Error("Invalid contract identifier format".into());
@@ -101,7 +101,7 @@ impl AddTokenByIdScreen {
             // clone → no borrow
             AddTokenStatus::FoundSingle(token) => {
                 ui.label(format!("Found token: {}", token.token_name));
-                self.selected_token = Some(token);
+                self.selected_token = Some(*token);
             }
             AddTokenStatus::FoundMultiple(tokens) => {
                 ui.label("Multiple tokens found, select one:");
@@ -116,7 +116,7 @@ impl AddTokenByIdScreen {
                         )
                         .clicked()
                     {
-                        self.status = AddTokenStatus::FoundSingle(tok.clone());
+                        self.status = AddTokenStatus::FoundSingle(Box::new(tok.clone()));
                     }
                 }
             }
@@ -144,7 +144,7 @@ impl AddTokenByIdScreen {
                             None,
                             insert_mode,
                         )),
-                        BackendTask::TokenTask(TokenTask::QueryMyTokenBalances),
+                        BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances)),
                     ],
                     crate::app::BackendTasksExecutionMode::Sequential,
                 );
@@ -231,7 +231,7 @@ impl ScreenLike for AddTokenByIdScreen {
 
             // 3. Decide which status to show
             if token_infos.len() == 1 {
-                self.status = AddTokenStatus::FoundSingle(token_infos.remove(0));
+                self.status = AddTokenStatus::FoundSingle(Box::new(token_infos.remove(0)));
             } else {
                 // Optionally keep list sorted by name
                 token_infos.sort_by(|a, b| a.token_name.cmp(&b.token_name));

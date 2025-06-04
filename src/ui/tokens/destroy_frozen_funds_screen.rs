@@ -331,7 +331,7 @@ impl DestroyFrozenFundsScreen {
                     // Dispatch the actual backend destroy action
                     action = AppAction::BackendTasks(
                         vec![
-                            BackendTask::TokenTask(TokenTask::DestroyFrozenFunds {
+                            BackendTask::TokenTask(Box::new(TokenTask::DestroyFrozenFunds {
                                 actor_identity: self.identity.clone(),
                                 data_contract,
                                 token_position: self.identity_token_info.token_position,
@@ -343,8 +343,8 @@ impl DestroyFrozenFundsScreen {
                                 },
                                 frozen_identity: frozen_id,
                                 group_info,
-                            }),
-                            BackendTask::TokenTask(TokenTask::QueryMyTokenBalances),
+                            })),
+                            BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances)),
                         ],
                         BackendTasksExecutionMode::Sequential,
                     );

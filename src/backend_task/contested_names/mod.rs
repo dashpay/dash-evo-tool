@@ -19,7 +19,7 @@ pub(crate) enum ContestedResourceTask {
     QueryDPNSContests,
     VoteOnDPNSNames(Vec<(String, ResourceVoteChoice)>, Vec<QualifiedIdentity>),
     ScheduleDPNSVotes(Vec<ScheduledDPNSVote>),
-    CastScheduledVote(ScheduledDPNSVote, QualifiedIdentity),
+    CastScheduledVote(ScheduledDPNSVote, Box<QualifiedIdentity>),
     ClearAllScheduledVotes,
     ClearExecutedScheduledVotes,
     DeleteScheduledVote(Identifier, String),
@@ -97,7 +97,7 @@ impl AppContext {
                 .vote_on_dpns_name(
                     &scheduled_vote.contested_name,
                     scheduled_vote.choice,
-                    &vec![voter.clone()],
+                    &vec![(**voter).clone()],
                     sdk,
                     sender,
                 )

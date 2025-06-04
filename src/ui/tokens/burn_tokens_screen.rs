@@ -318,7 +318,7 @@ impl BurnTokensScreen {
                     // Dispatch the actual backend burn action
                     action = AppAction::BackendTasks(
                         vec![
-                            BackendTask::TokenTask(TokenTask::BurnTokens {
+                            BackendTask::TokenTask(Box::new(TokenTask::BurnTokens {
                                 owner_identity: self.identity_token_info.identity.clone(),
                                 data_contract,
                                 token_position: self.identity_token_info.token_position,
@@ -330,8 +330,8 @@ impl BurnTokensScreen {
                                 },
                                 amount: amount_ok.unwrap(),
                                 group_info,
-                            }),
-                            BackendTask::TokenTask(TokenTask::QueryMyTokenBalances),
+                            })),
+                            BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances)),
                         ],
                         BackendTasksExecutionMode::Sequential,
                     );

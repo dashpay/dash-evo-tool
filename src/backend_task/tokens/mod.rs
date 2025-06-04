@@ -179,7 +179,7 @@ pub(crate) enum TokenTask {
         token_id: Identifier,
     },
     UpdateTokenConfig {
-        identity_token_info: IdentityTokenInfo,
+        identity_token_info: Box<IdentityTokenInfo>,
         change_item: TokenConfigurationChangeItem,
         signing_key: IdentityPublicKey,
         public_note: Option<String>,
@@ -544,7 +544,7 @@ impl AppContext {
                 group_info,
             } => self
                 .update_token_config(
-                    identity_token_info.clone(),
+                    *identity_token_info.clone(),
                     change_item.clone(),
                     signing_key,
                     public_note.clone(),
@@ -605,6 +605,7 @@ impl AppContext {
     /// - an empty set of documents, groups, schema_defs
     /// - a single token in tokens[0] with fields derived from your parameters.
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::result_large_err)]
     pub fn build_data_contract_v1_with_one_token(
         &self,
         owner_id: Identifier,

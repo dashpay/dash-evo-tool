@@ -720,9 +720,9 @@ impl ScreenLike for WalletsBalancesScreen {
                 false => vec![
                     (
                         "Refresh",
-                        DesiredAppAction::BackendTask(BackendTask::CoreTask(
+                        DesiredAppAction::BackendTask(Box::new(BackendTask::CoreTask(
                             CoreTask::RefreshWalletInfo(wallet.clone()),
-                        )),
+                        ))),
                     ),
                     (
                         "Import Wallet",

@@ -906,24 +906,20 @@ impl ScreenLike for AddNewIdentityScreen {
                     if let Some(TransactionPayload::AssetLockPayloadType(asset_lock_payload)) =
                         tx.special_transaction_payload
                     {
-                        if asset_lock_payload
-                            .credit_outputs
-                            .iter()
-                            .any(|tx_out| {
-                                let Ok(address) = Address::from_script(
-                                    &tx_out.script_pubkey,
-                                    self.app_context.network,
-                                ) else {
-                                    return false;
-                                };
-                                if let Some(wallet) = &self.selected_wallet {
-                                    let wallet = wallet.read().unwrap();
-                                    wallet.known_addresses.contains_key(&address)
-                                } else {
-                                    false
-                                }
-                            })
-                        {
+                        if asset_lock_payload.credit_outputs.iter().any(|tx_out| {
+                            let Ok(address) = Address::from_script(
+                                &tx_out.script_pubkey,
+                                self.app_context.network,
+                            ) else {
+                                return false;
+                            };
+                            if let Some(wallet) = &self.selected_wallet {
+                                let wallet = wallet.read().unwrap();
+                                wallet.known_addresses.contains_key(&address)
+                            } else {
+                                false
+                            }
+                        }) {
                             *step = WalletFundedScreenStep::WaitingForPlatformAcceptance;
                         }
                     }

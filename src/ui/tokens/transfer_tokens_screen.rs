@@ -286,7 +286,7 @@ impl TransferTokensScreen {
                         .clone();
                     app_action |= AppAction::BackendTasks(
                         vec![
-                            BackendTask::TokenTask(TokenTask::TransferTokens {
+                            BackendTask::TokenTask(Box::new(TokenTask::TransferTokens {
                                 sending_identity: self.identity.clone(),
                                 recipient_id: identifier,
                                 amount: self.amount.parse().unwrap(),
@@ -294,8 +294,8 @@ impl TransferTokensScreen {
                                 token_position: self.identity_token_balance.token_position,
                                 signing_key: self.selected_key.clone().expect("Expected a key"),
                                 public_note: self.public_note.clone(),
-                            }),
-                            BackendTask::TokenTask(TokenTask::QueryMyTokenBalances),
+                            })),
+                            BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances)),
                         ],
                         BackendTasksExecutionMode::Sequential,
                     );

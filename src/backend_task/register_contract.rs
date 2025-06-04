@@ -53,8 +53,10 @@ impl AppContext {
             Err(e) => match e {
                 Error::DriveProofError(proof_error, proof_bytes, block_info) => {
                     sender
-                        .send(TaskResult::Success(BackendTaskSuccessResult::Message(
-                            "Transaction returned proof error".to_string(),
+                        .send(TaskResult::Success(Box::new(
+                            BackendTaskSuccessResult::Message(
+                                "Transaction returned proof error".to_string(),
+                            ),
                         )))
                         .await
                         .map_err(|e| format!("Failed to send message: {}", e))?;

@@ -213,7 +213,7 @@ impl PurchaseTokenScreen {
                     // Dispatch the actual backend purchase action
                     action = AppAction::BackendTasks(
                         vec![
-                            BackendTask::TokenTask(TokenTask::PurchaseTokens {
+                            BackendTask::TokenTask(Box::new(TokenTask::PurchaseTokens {
                                 identity: self.identity_token_info.identity.clone(),
                                 data_contract: self
                                     .identity_token_info
@@ -225,8 +225,8 @@ impl PurchaseTokenScreen {
                                 amount: amount_ok.expect("Expected a valid amount"),
                                 total_agreed_price: total_agreed_price_ok
                                     .expect("Expected a valid total agreed price"),
-                            }),
-                            BackendTask::TokenTask(TokenTask::QueryMyTokenBalances),
+                            })),
+                            BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances)),
                         ],
                         BackendTasksExecutionMode::Sequential,
                     );

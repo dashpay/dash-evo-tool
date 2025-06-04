@@ -265,15 +265,15 @@ impl ClaimTokensScreen {
 
                     action = AppAction::BackendTasks(
                         vec![
-                            BackendTask::TokenTask(TokenTask::ClaimTokens {
+                            BackendTask::TokenTask(Box::new(TokenTask::ClaimTokens {
                                 data_contract: self.token_contract.contract.clone(),
                                 token_position: self.identity_token_basic_info.token_position,
                                 actor_identity: self.identity.clone(),
                                 distribution_type,
                                 signing_key: self.selected_key.clone().expect("No key selected"),
                                 public_note: self.public_note.clone(),
-                            }),
-                            BackendTask::TokenTask(TokenTask::QueryMyTokenBalances),
+                            })),
+                            BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances)),
                         ],
                         BackendTasksExecutionMode::Sequential,
                     );

@@ -95,9 +95,9 @@ impl TokensScreen {
                     self.refreshing_status = RefreshingStatus::Refreshing(now);
                     match self.tokens_subscreen {
                         TokensSubscreen::MyTokens => {
-                            app_action = AppAction::BackendTask(BackendTask::TokenTask(
+                            app_action = AppAction::BackendTask(BackendTask::TokenTask(Box::new(
                                 TokenTask::QueryMyTokenBalances,
-                            ));
+                            )));
                         }
                         TokensSubscreen::SearchTokens => {
                             app_action = AppAction::Refresh;
@@ -276,7 +276,7 @@ impl TokensScreen {
                                             if let Some(balance) = itb.balance.as_ref().map(|balance| balance.to_string()) {
                                                 ui.label(balance);
                                             } else if ui.button("Check").clicked() {
-                                                action = AppAction::BackendTask(BackendTask::TokenTask(TokenTask::QueryIdentityTokenBalance(itb.clone().into())));
+                                                action = AppAction::BackendTask(BackendTask::TokenTask(Box::new(TokenTask::QueryIdentityTokenBalance(itb.clone().into()))));
                                             }
                                         });
                                         if shows_estimation_column {
@@ -286,18 +286,18 @@ impl TokensScreen {
                                                             ui.horizontal(|ui| {
                                                                 ui.label(known_rewards.to_string());
                                                                 if ui.button("Estimate").clicked() {
-                                                                    action = AppAction::BackendTask(BackendTask::TokenTask(TokenTask::EstimatePerpetualTokenRewards {
+                                                                    action = AppAction::BackendTask(BackendTask::TokenTask(Box::new(TokenTask::EstimatePerpetualTokenRewards {
                                                                         identity_id: itb.identity_id,
                                                                         token_id: itb.token_id,
-                                                                    }));
+                                                                    })));
                                                                     self.refreshing_status = RefreshingStatus::Refreshing(Utc::now().timestamp() as u64);
                                                                 }
                                                             });
                                                         } else if ui.button("Estimate").clicked() {
-                                                            action = AppAction::BackendTask(BackendTask::TokenTask(TokenTask::EstimatePerpetualTokenRewards {
+                                                            action = AppAction::BackendTask(BackendTask::TokenTask(Box::new(TokenTask::EstimatePerpetualTokenRewards {
                                                                 identity_id: itb.identity_id,
                                                                 token_id: itb.token_id,
-                                                            }));
+                                                            })));
                                                             self.refreshing_status = RefreshingStatus::Refreshing(Utc::now().timestamp() as u64);
                                                         }
                                                 }

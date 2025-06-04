@@ -94,8 +94,7 @@ impl AppContext {
                                 Err(e) => return Err(e),
                             };
 
-                        self
-                            .db
+                        self.db
                             .insert_proof_log_item(ProofLogItem {
                                 request_type: RequestType::GetVotePollsByEndDate,
                                 request_bytes: encoded_query,

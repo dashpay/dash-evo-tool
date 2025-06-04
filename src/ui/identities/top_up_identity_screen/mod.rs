@@ -96,7 +96,8 @@ impl TopUpIdentityScreen {
 
                             let is_selected = self
                                 .wallet
-                                .as_ref().is_some_and(|selected| Arc::ptr_eq(selected, wallet));
+                                .as_ref()
+                                .is_some_and(|selected| Arc::ptr_eq(selected, wallet));
 
                             if ui.selectable_label(is_selected, wallet_alias).clicked() {
                                 // Update the selected wallet
@@ -140,24 +141,28 @@ impl TopUpIdentityScreen {
                     (wallet.has_unused_asset_lock(), wallet.has_balance())
                 };
 
-                if has_unused_asset_lock && ui
+                if has_unused_asset_lock
+                    && ui
                         .selectable_value(
                             &mut *funding_method,
                             FundingMethod::UseUnusedAssetLock,
                             "Use Unused Evo Funding Locks (recommended)",
                         )
-                        .changed() {
+                        .changed()
+                {
                     let mut step = self.step.write().unwrap(); // Write lock on step
                     *step = WalletFundedScreenStep::ReadyToCreate;
                 }
 
-                if has_balance && ui
+                if has_balance
+                    && ui
                         .selectable_value(
                             &mut *funding_method,
                             FundingMethod::UseWalletBalance,
                             "Use Wallet Balance",
                         )
-                        .changed() {
+                        .changed()
+                {
                     if let Some(wallet) = &self.wallet {
                         let wallet = wallet.read().unwrap();
                         let max_amount = wallet.max_balance();
@@ -195,8 +200,8 @@ impl TopUpIdentityScreen {
                         wallet: Arc::clone(selected_wallet),
                         identity_funding_method: TopUpIdentityFundingMethod::UseAssetLock(
                             address,
-                            funding_asset_lock,
-                            tx,
+                            Box::new(funding_asset_lock),
+                            Box::new(tx),
                         ),
                     };
 

@@ -414,8 +414,9 @@ impl UpdateDataContractScreen {
         }
 
         if let AppAction::BackendTask(BackendTask::ContractTask(
-                ContractTask::UpdateDataContract(_, _, _),
-            )) = app_action {
+            ContractTask::UpdateDataContract(_, _, _),
+        )) = app_action
+        {
             self.broadcast_status = BroadcastStatus::FetchingNonce(
                 SystemTime::now()
                     .duration_since(UNIX_EPOCH)

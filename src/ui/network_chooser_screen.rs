@@ -416,11 +416,12 @@ impl ScreenLike for NetworkChooserScreen {
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         if let BackendTaskSuccessResult::CoreItem(CoreItem::ChainLocks(
-                mainnet_chainlock,
-                testnet_chainlock,
-                devnet_chainlock,
-                local_chainlock,
-            )) = backend_task_success_result {
+            mainnet_chainlock,
+            testnet_chainlock,
+            devnet_chainlock,
+            local_chainlock,
+        )) = backend_task_success_result
+        {
             match mainnet_chainlock {
                 Some(_) => self.mainnet_core_status_online = true,
                 None => self.mainnet_core_status_online = false,

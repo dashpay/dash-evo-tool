@@ -20,13 +20,19 @@ pub(crate) enum CoreTask {
 }
 impl PartialEq for CoreTask {
     fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (CoreTask::GetBestChainLock, CoreTask::GetBestChainLock) => true,
-            (CoreTask::GetBestChainLocks, CoreTask::GetBestChainLocks) => true,
-            (CoreTask::RefreshWalletInfo(_), CoreTask::RefreshWalletInfo(_)) => true,
-            (CoreTask::StartDashQT(_, _, _), CoreTask::StartDashQT(_, _, _)) => true,
-            _ => false,
-        }
+        matches!(
+            (self, other),
+            (CoreTask::GetBestChainLock, CoreTask::GetBestChainLock)
+                | (CoreTask::GetBestChainLocks, CoreTask::GetBestChainLocks)
+                | (
+                    CoreTask::RefreshWalletInfo(_),
+                    CoreTask::RefreshWalletInfo(_)
+                )
+                | (
+                    CoreTask::StartDashQT(_, _, _),
+                    CoreTask::StartDashQT(_, _, _)
+                )
+        )
     }
 }
 
@@ -140,13 +146,9 @@ impl AppContext {
             }
                 .map_err(|_| format!("Failed to create {} client", network))?;
 
-            client.get_best_chain_lock().map_err(|e| {
-                format!(
-                    "Failed to get best chain lock for {}: {}",
-                    network,
-                    e
-                )
-            })
+            client
+                .get_best_chain_lock()
+                .map_err(|e| format!("Failed to get best chain lock for {}: {}", network, e))
         } else {
             Err(format!("{} config not found", network))
         }

@@ -1793,7 +1793,9 @@ impl ScreenLike for DPNSScreen {
             self.refreshing_status = RefreshingStatus::NotRefreshing;
         }
 
-        if message.contains("Votes scheduled") && self.bulk_vote_handling_status == VoteHandlingStatus::SchedulingVotes {
+        if message.contains("Votes scheduled")
+            && self.bulk_vote_handling_status == VoteHandlingStatus::SchedulingVotes
+        {
             self.bulk_vote_handling_status = VoteHandlingStatus::Completed;
         }
 

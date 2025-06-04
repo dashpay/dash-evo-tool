@@ -376,9 +376,7 @@ impl TokensScreen {
         // Claim
         if itb.available_actions.can_claim {
             if range.contains(&pos) && ui.button("Claim").clicked() {
-                let token_contract = match self
-                    .app_context
-                    .get_contract_by_token_id(&itb.token_id)
+                let token_contract = match self.app_context.get_contract_by_token_id(&itb.token_id)
                 {
                     Ok(Some(contract)) => contract,
                     Ok(None) => {
@@ -386,20 +384,17 @@ impl TokensScreen {
                         return action;
                     }
                     Err(e) => {
-                        self.set_error_message(Some(format!(
-                            "Error fetching token contract: {e}"
-                        )));
+                        self.set_error_message(Some(format!("Error fetching token contract: {e}")));
                         return action;
                     }
                 };
 
-                action =
-                    AppAction::AddScreen(Screen::ClaimTokensScreen(ClaimTokensScreen::new(
-                        itb.into(),
-                        token_contract,
-                        token_info.token_configuration.clone(),
-                        &self.app_context,
-                    )));
+                action = AppAction::AddScreen(Screen::ClaimTokensScreen(ClaimTokensScreen::new(
+                    itb.into(),
+                    token_contract,
+                    token_info.token_configuration.clone(),
+                    &self.app_context,
+                )));
                 ui.close_menu();
             }
             pos += 1;
@@ -611,30 +606,27 @@ impl TokensScreen {
             }
             pos += 1;
         }
-        if itb.available_actions.can_set_price {
-            if range.contains(&pos) {
-                // Set Price
-                if ui.button("Set Price").clicked() {
-                    match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
-                                Ok(info) => {
-                                    action = AppAction::AddScreen(
-                                        Screen::SetTokenPriceScreen(
-                                            SetTokenPriceScreen::new(
-                                                info,
-                                                &self.app_context,
-                                            ),
+        if itb.available_actions.can_set_price && range.contains(&pos) {
+            // Set Price
+            if ui.button("Set Price").clicked() {
+                match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
+                            Ok(info) => {
+                                action = AppAction::AddScreen(
+                                    Screen::SetTokenPriceScreen(
+                                        SetTokenPriceScreen::new(
+                                            info,
+                                            &self.app_context,
                                         ),
-                                    );
-                                }
-                                Err(e) => {
-                                    self.set_error_message(Some(e));
-                                }
-                            };
+                                    ),
+                                );
+                            }
+                            Err(e) => {
+                                self.set_error_message(Some(e));
+                            }
+                        };
 
-                    ui.close_menu();
-                }
+                ui.close_menu();
             }
-            pos += 1;
         }
         action
     }

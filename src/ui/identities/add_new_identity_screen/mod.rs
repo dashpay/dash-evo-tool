@@ -366,7 +366,8 @@ impl AddNewIdentityScreen {
 
                             let is_selected = self
                                 .selected_wallet
-                                .as_ref().is_some_and(|selected| Arc::ptr_eq(selected, wallet));
+                                .as_ref()
+                                .is_some_and(|selected| Arc::ptr_eq(selected, wallet));
 
                             if ui.selectable_label(is_selected, wallet_alias).clicked() {
                                 // Update the selected wallet
@@ -458,26 +459,30 @@ impl AddNewIdentityScreen {
                     (wallet.has_unused_asset_lock(), wallet.has_balance())
                 };
 
-                if has_unused_asset_lock && ui
+                if has_unused_asset_lock
+                    && ui
                         .selectable_value(
                             &mut *funding_method,
                             FundingMethod::UseUnusedAssetLock,
                             "Use Unused Evo Funding Locks (recommended)",
                         )
-                        .changed() {
+                        .changed()
+                {
                     self.ensure_correct_identity_keys()
                         .expect("failed to initialize keys");
                     let mut step = self.step.write().unwrap();
                     *step = WalletFundedScreenStep::ReadyToCreate;
                     self.funding_amount = "0.5".to_string();
                 }
-                if has_balance && ui
+                if has_balance
+                    && ui
                         .selectable_value(
                             &mut *funding_method,
                             FundingMethod::UseWalletBalance,
                             "Use Wallet Balance",
                         )
-                        .changed() {
+                        .changed()
+                {
                     if let Some(wallet) = &self.selected_wallet {
                         let wallet = wallet.read().unwrap();
                         let max_amount = wallet.max_balance();
@@ -640,8 +645,8 @@ impl AddNewIdentityScreen {
                         wallet_identity_index: self.identity_id_number,
                         identity_funding_method: RegisterIdentityFundingMethod::UseAssetLock(
                             address,
-                            funding_asset_lock,
-                            tx,
+                            Box::new(funding_asset_lock),
+                            Box::new(tx),
                         ),
                     };
 

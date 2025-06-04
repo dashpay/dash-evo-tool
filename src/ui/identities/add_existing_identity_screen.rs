@@ -290,7 +290,8 @@ impl AddExistingIdentityScreen {
 
                             let is_selected = self
                                 .selected_wallet
-                                .as_ref().is_some_and(|selected| Arc::ptr_eq(selected, wallet));
+                                .as_ref()
+                                .is_some_and(|selected| Arc::ptr_eq(selected, wallet));
 
                             if ui
                                 .selectable_label(is_selected, wallet_alias.clone())

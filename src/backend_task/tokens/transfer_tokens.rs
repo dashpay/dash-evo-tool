@@ -50,12 +50,7 @@ impl AppContext {
                 options,
             )
             .await
-            .map_err(|e| {
-                format!(
-                    "Error signing token transfer state transition: {}",
-                    e
-                )
-            })?;
+            .map_err(|e| format!("Error signing token transfer state transition: {}", e))?;
 
         let _ = state_transition
             .broadcast_and_wait::<StateTransitionProofResult>(sdk, None)

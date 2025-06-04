@@ -52,12 +52,7 @@ impl AppContext {
                 options,
             )
             .await
-            .map_err(|e| {
-                format!(
-                    "Error signing Unfreeze Tokens transition: {}",
-                    e
-                )
-            })?;
+            .map_err(|e| format!("Error signing Unfreeze Tokens transition: {}", e))?;
 
         // Broadcast
         let _proof_result = state_transition

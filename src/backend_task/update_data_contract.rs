@@ -109,12 +109,7 @@ impl AppContext {
             Ok(returned_contract) => {
                 self.db
                     .replace_contract(data_contract.id(), &returned_contract, self)
-                    .map_err(|e| {
-                        format!(
-                            "Error inserting contract into the database: {}",
-                            e
-                        )
-                    })?;
+                    .map_err(|e| format!("Error inserting contract into the database: {}", e))?;
                 Ok(BackendTaskSuccessResult::Message(
                     "DataContract successfully updated".to_string(),
                 ))
@@ -136,10 +131,7 @@ impl AppContext {
                     {
                         Ok(id) => id,
                         Err(e) => {
-                            return Err(format!(
-                                "Failed to extract id from error message: {}",
-                                e
-                            ))
+                            return Err(format!("Failed to extract id from error message: {}", e))
                         }
                     };
 
@@ -156,10 +148,7 @@ impl AppContext {
                         self.db
                             .replace_contract(contract.id(), &contract, self)
                             .map_err(|e| {
-                                format!(
-                                    "Error inserting contract into the database: {}",
-                                    e
-                                )
+                                format!("Error inserting contract into the database: {}", e)
                             })?;
                     }
                     self.db

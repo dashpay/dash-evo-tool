@@ -702,7 +702,7 @@ impl Database {
                 match select_stmt.query_row(params![network, name], |row| row.get(0)) {
                     Ok(ending_time) => ending_time,
                     Err(rusqlite::Error::QueryReturnedNoRows) => continue, // Handle no rows case gracefully
-                    Err(e) => return Err(e),                        // Propagate other errors
+                    Err(e) => return Err(e),                               // Propagate other errors
                 };
 
             if let Some(existing_ending_time) = existing_ending_time {

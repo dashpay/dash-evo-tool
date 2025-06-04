@@ -372,8 +372,9 @@ impl RegisterDataContractScreen {
         }
 
         if let AppAction::BackendTask(BackendTask::ContractTask(
-                ContractTask::RegisterDataContract(_, _, _, _),
-            )) = app_action {
+            ContractTask::RegisterDataContract(_, _, _, _),
+        )) = app_action
+        {
             self.broadcast_status = BroadcastStatus::Broadcasting(
                 SystemTime::now()
                     .duration_since(UNIX_EPOCH)

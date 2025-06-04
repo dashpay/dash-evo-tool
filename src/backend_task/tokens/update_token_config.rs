@@ -90,12 +90,7 @@ impl AppContext {
                 options,
             )
             .await
-            .map_err(|e| {
-                format!(
-                    "Error signing Token Config Update transition: {}",
-                    e
-                )
-            })?;
+            .map_err(|e| format!("Error signing Token Config Update transition: {}", e))?;
 
         // Broadcast the state transition
         let _proof_result = state_transition
@@ -153,12 +148,7 @@ impl AppContext {
         .map_err(|e| format!("Error replacing contract in local database: {}", e))?;
 
         self.remove_token(&identity_token_info.token_id)
-            .map_err(|e| {
-                format!(
-                    "Error removing token from local database: {}",
-                    e
-                )
-            })?;
+            .map_err(|e| format!("Error removing token from local database: {}", e))?;
 
         self.insert_token(
             &identity_token_info.token_id,
@@ -167,12 +157,7 @@ impl AppContext {
             &identity_token_info.data_contract.contract.id(),
             identity_token_info.token_position,
         )
-        .map_err(|e| {
-            format!(
-                "Error inserting token into local database: {}",
-                e
-            )
-        })?;
+        .map_err(|e| format!("Error inserting token into local database: {}", e))?;
 
         // Return success
         Ok(BackendTaskSuccessResult::Message(format!(

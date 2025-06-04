@@ -733,13 +733,12 @@ impl ChangeControlRulesUI {
         // 1) Update self.rules.authorized_to_make_change if it’s Identity or Group
         if let AuthorizedActionTakers::Identity(_) = self.rules.authorized_to_make_change {
             if let Some(ref id_str) = self.authorized_identity {
-                let parsed =
-                    Identifier::from_string(id_str, Encoding::Base58).map_err(|_| {
-                        format!(
-                            "Invalid base58 identifier for {} authorized identity",
-                            action_name
-                        )
-                    })?;
+                let parsed = Identifier::from_string(id_str, Encoding::Base58).map_err(|_| {
+                    format!(
+                        "Invalid base58 identifier for {} authorized identity",
+                        action_name
+                    )
+                })?;
                 self.rules.authorized_to_make_change = AuthorizedActionTakers::Identity(parsed);
             }
         }
@@ -747,13 +746,12 @@ impl ChangeControlRulesUI {
         // 2) Update self.rules.admin_action_takers if it’s Identity or Group
         if let AuthorizedActionTakers::Identity(_) = self.rules.admin_action_takers {
             if let Some(ref id_str) = self.admin_identity {
-                let parsed =
-                    Identifier::from_string(id_str, Encoding::Base58).map_err(|_| {
-                        format!(
-                            "Invalid base58 identifier for {} admin identity",
-                            action_name
-                        )
-                    })?;
+                let parsed = Identifier::from_string(id_str, Encoding::Base58).map_err(|_| {
+                    format!(
+                        "Invalid base58 identifier for {} admin identity",
+                        action_name
+                    )
+                })?;
                 self.rules.admin_action_takers = AuthorizedActionTakers::Identity(parsed);
             }
         }
@@ -2164,9 +2162,7 @@ impl TokensScreen {
             self.search_current_page += 1;
 
             // Dispatch
-            let query_string = self
-                .token_search_query.clone()
-                .unwrap_or_default();
+            let query_string = self.token_search_query.clone().unwrap_or_default();
 
             return AppAction::BackendTask(BackendTask::TokenTask(
                 TokenTask::QueryDescriptionsByKeyword(query_string, Some(next_cursor)),
@@ -2186,9 +2182,7 @@ impl TokensScreen {
             if let Some(prev_cursor) = self.previous_cursors.pop() {
                 // Possibly pop from next_cursors if we want to re-insert it later
                 // self.next_cursors.truncate(self.search_current_page - 1);
-                let query_string = self
-                    .token_search_query.clone()
-                    .unwrap_or_default();
+                let query_string = self.token_search_query.clone().unwrap_or_default();
                 return AppAction::BackendTask(BackendTask::TokenTask(
                     TokenTask::QueryDescriptionsByKeyword(query_string, Some(prev_cursor)),
                 ));
@@ -2221,10 +2215,10 @@ impl TokensScreen {
 
                 // Confirm button
                 if ui.button("Confirm").clicked() {
-                    if let Err(e) = self.app_context.remove_token_balance(
-                        token_to_remove.token_id,
-                        token_to_remove.identity_id,
-                    ) {
+                    if let Err(e) = self
+                        .app_context
+                        .remove_token_balance(token_to_remove.token_id, token_to_remove.identity_id)
+                    {
                         self.backend_message = Some((
                             format!("Error removing token balance: {}", e),
                             MessageType::Error,

@@ -197,12 +197,14 @@ impl ScreenLike for ViewTokenClaimsScreen {
                                     // Timestamp
                                     let timestamp = match claim.created_at() {
                                         Some(ts) => {
-                                            let dt = chrono::NaiveDateTime::from_timestamp_millis(
-                                                ts as i64,
-                                            )
-                                            .unwrap_or_else(|| {
-                                                chrono::NaiveDateTime::from_timestamp(0, 0)
-                                            });
+                                            let dt =
+                                                chrono::DateTime::from_timestamp_millis(ts as i64)
+                                                    .map(|d| d.naive_utc())
+                                                    .unwrap_or_else(|| {
+                                                        chrono::DateTime::from_timestamp(0, 0)
+                                                            .unwrap()
+                                                            .naive_utc()
+                                                    });
                                             dt.format("%Y-%m-%d %H:%M:%S").to_string()
                                         }
                                         None => "Unknown".to_string(),

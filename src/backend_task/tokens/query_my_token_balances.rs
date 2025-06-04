@@ -33,13 +33,7 @@ impl AppContext {
                 .map_err(|e| format!("Failed to load identity token balances: {e}"))?
                 .values()
                 .filter(|t| t.identity_id == identity_id)
-                .map(|t| {
-                    (
-                        t.token_id,
-                        t.data_contract_id,
-                        t.token_position,
-                    )
-                })
+                .map(|t| (t.token_id, t.data_contract_id, t.token_position))
                 .collect::<Vec<_>>();
 
             let token_ids: Vec<Identifier> = token_infos

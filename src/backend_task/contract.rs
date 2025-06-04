@@ -61,10 +61,7 @@ impl AppContext {
                                         self,
                                     )
                                     .map_err(|e| {
-                                        format!(
-                                            "Error inserting contract into the database: {}",
-                                            e
-                                        )
+                                        format!("Error inserting contract into the database: {}", e)
                                     })?;
                                 results.push(Some(contract.clone()));
                             } else {
@@ -108,7 +105,8 @@ impl AppContext {
                                         .expected_token_configuration(*token.0)
                                         .expect("Expected to get token configuration");
                                     let token_name = {
-                                        let TokenConfigurationConvention::V0(conventions) = &token_configuration.conventions();
+                                        let TokenConfigurationConvention::V0(conventions) =
+                                            &token_configuration.conventions();
                                         conventions
                                             .plural_form_by_language_code_or_default("en")
                                             .to_string()
@@ -227,12 +225,7 @@ impl AppContext {
                         insert_tokens_too,
                         self,
                     )
-                    .map_err(|e| {
-                        format!(
-                            "Error inserting contract into the database: {}",
-                            e
-                        )
-                    })?;
+                    .map_err(|e| format!("Error inserting contract into the database: {}", e))?;
                 Ok(BackendTaskSuccessResult::Message(
                     "DataContract successfully saved".to_string(),
                 ))

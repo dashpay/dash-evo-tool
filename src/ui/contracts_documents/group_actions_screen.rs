@@ -556,7 +556,9 @@ impl ScreenLike for GroupActionsScreen {
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
-        if let BackendTaskSuccessResult::ActiveGroupActions(actions_map) = backend_task_success_result {
+        if let BackendTaskSuccessResult::ActiveGroupActions(actions_map) =
+            backend_task_success_result
+        {
             self.fetch_group_actions_status =
                 FetchGroupActionsStatus::Complete(actions_map.clone());
         }

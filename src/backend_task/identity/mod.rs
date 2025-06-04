@@ -196,14 +196,14 @@ pub type IdentityIndex = u32;
 pub type TopUpIndex = u32;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RegisterIdentityFundingMethod {
-    UseAssetLock(Address, AssetLockProof, Transaction),
+    UseAssetLock(Address, Box<AssetLockProof>, Box<Transaction>),
     FundWithUtxo(OutPoint, TxOut, Address, IdentityIndex),
     FundWithWallet(Duffs, IdentityIndex),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TopUpIdentityFundingMethod {
-    UseAssetLock(Address, AssetLockProof, Transaction),
+    UseAssetLock(Address, Box<AssetLockProof>, Box<Transaction>),
     FundWithUtxo(OutPoint, TxOut, Address, IdentityIndex, TopUpIndex),
     FundWithWallet(Duffs, IdentityIndex, TopUpIndex),
 }

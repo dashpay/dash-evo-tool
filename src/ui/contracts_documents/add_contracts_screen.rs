@@ -106,7 +106,9 @@ impl AddContractsScreen {
             ui.add_space(5.0);
         }
 
-        if self.contract_ids_input.len() < MAX_CONTRACTS && ui.button("Add Another Contract Field").clicked() {
+        if self.contract_ids_input.len() < MAX_CONTRACTS
+            && ui.button("Add Another Contract Field").clicked()
+        {
             self.add_contract_field();
         }
     }

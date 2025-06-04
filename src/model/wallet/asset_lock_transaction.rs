@@ -137,7 +137,9 @@ impl Wallet {
         };
 
         // Collect inputs from UTXOs
-        let inputs = utxos.keys().map(|utxo| TxIn {
+        let inputs = utxos
+            .keys()
+            .map(|utxo| TxIn {
                 previous_output: *utxo,
                 ..Default::default()
             })

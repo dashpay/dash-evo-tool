@@ -45,12 +45,7 @@ impl AppContext {
                         AllTokensShouldBeAdded,
                         self,
                     )
-                    .map_err(|e| {
-                        format!(
-                            "Error inserting contract into the database: {}",
-                            e
-                        )
-                    })?;
+                    .map_err(|e| format!("Error inserting contract into the database: {}", e))?;
                 Ok(BackendTaskSuccessResult::Message(
                     "DataContract successfully registered".to_string(),
                 ))
@@ -71,10 +66,7 @@ impl AppContext {
                     {
                         Ok(id) => id,
                         Err(e) => {
-                            return Err(format!(
-                                "Failed to extract id from error message: {}",
-                                e
-                            ))
+                            return Err(format!("Failed to extract id from error message: {}", e))
                         }
                     };
                     let maybe_contract = match DataContract::fetch(sdk, id).await {
@@ -97,10 +89,7 @@ impl AppContext {
                                 }
                             })
                             .map_err(|e| {
-                                format!(
-                                    "Failed to get contract by ID from database: {}",
-                                    e
-                                )
+                                format!("Failed to get contract by ID from database: {}", e)
                             })?;
 
                         self.db
@@ -111,10 +100,7 @@ impl AppContext {
                                 self,
                             )
                             .map_err(|e| {
-                                format!(
-                                    "Error inserting contract into the database: {}",
-                                    e
-                                )
+                                format!("Error inserting contract into the database: {}", e)
                             })?;
                     }
                     self.db
@@ -133,12 +119,10 @@ impl AppContext {
                         proof_error
                     ))
                 }
-                e => {
-                    Err(format!(
-                        "Error broadcasting Register Contract transition: {}",
-                        e
-                    ))
-                }
+                e => Err(format!(
+                    "Error broadcasting Register Contract transition: {}",
+                    e
+                )),
             },
         }
     }

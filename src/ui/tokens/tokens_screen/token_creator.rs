@@ -1071,7 +1071,7 @@ impl TokensScreen {
                     let tasks = vec![
                         BackendTask::TokenTask(TokenTask::RegisterTokenContract {
                             identity: self.selected_identity.clone().unwrap(),
-                            signing_key: self.selected_key.clone().unwrap(),
+                            signing_key: Box::new(self.selected_key.clone().unwrap()),
 
                             token_names: args.token_names,
                             contract_keywords: args.contract_keywords,
@@ -1089,11 +1089,11 @@ impl TokensScreen {
                             manual_minting_rules: args.manual_minting_rules,
                             manual_burning_rules: args.manual_burning_rules,
                             freeze_rules: args.freeze_rules,
-                            unfreeze_rules: args.unfreeze_rules,
-                            destroy_frozen_funds_rules: args.destroy_frozen_funds_rules,
-                            emergency_action_rules: args.emergency_action_rules,
-                            max_supply_change_rules: args.max_supply_change_rules,
-                            conventions_change_rules: args.conventions_change_rules,
+                            unfreeze_rules: Box::new(args.unfreeze_rules),
+                            destroy_frozen_funds_rules: Box::new(args.destroy_frozen_funds_rules),
+                            emergency_action_rules: Box::new(args.emergency_action_rules),
+                            max_supply_change_rules: Box::new(args.max_supply_change_rules),
+                            conventions_change_rules: Box::new(args.conventions_change_rules),
                             main_control_group_change_authorized: args
                                 .main_control_group_change_authorized,
                             distribution_rules: args.distribution_rules,

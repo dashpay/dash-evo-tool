@@ -346,14 +346,16 @@ pub fn add_contract_chooser_panel(
                                     |ui| {
                                         if contract.alias != Some("dpns".to_string())
                                             && contract.alias != Some("token_history".to_string())
-                                            && contract.alias != Some("withdrawals".to_string()) && contract.alias != Some("keyword_search".to_string()) && ui.button("X").clicked() {
-                                            action |= AppAction::BackendTask(
-                                                BackendTask::ContractTask(
+                                            && contract.alias != Some("withdrawals".to_string())
+                                            && contract.alias != Some("keyword_search".to_string())
+                                            && ui.button("X").clicked()
+                                        {
+                                            action |=
+                                                AppAction::BackendTask(BackendTask::ContractTask(
                                                     ContractTask::RemoveContract(
                                                         contract.contract.id(),
                                                     ),
-                                                ),
-                                            );
+                                                ));
                                         }
                                     },
                                 );

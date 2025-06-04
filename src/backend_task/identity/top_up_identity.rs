@@ -79,7 +79,7 @@ impl AppContext {
                                 AssetLockProof::Instant(instant_asset_lock_proof.clone())
                             }
                         } else {
-                            asset_lock_proof
+                            asset_lock_proof.as_ref().clone()
                         };
                     (asset_lock_proof, private_key, tx_id, None)
                 }
@@ -292,8 +292,7 @@ impl AppContext {
                                 .expect("expected to make transition");
                             format!(
                                 "error: {}, transaction is {:?}",
-                                e,
-                                identity_create_transition
+                                e, identity_create_transition
                             )
                         })?
                 } else {

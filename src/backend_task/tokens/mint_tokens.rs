@@ -60,12 +60,7 @@ impl AppContext {
                 options,
             )
             .await
-            .map_err(|e| {
-                format!(
-                    "Error signing Mint Tokens state transition: {}",
-                    e
-                )
-            })?;
+            .map_err(|e| format!("Error signing Mint Tokens state transition: {}", e))?;
 
         // broadcast and wait
         let _proof_result = state_transition

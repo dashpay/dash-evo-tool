@@ -276,10 +276,8 @@ impl AppState {
                 identities_screen = IdentitiesScreen::new(local_app_context);
                 dpns_active_contests_screen =
                     DPNSScreen::new(local_app_context, DPNSSubscreen::Active);
-                dpns_past_contests_screen =
-                    DPNSScreen::new(local_app_context, DPNSSubscreen::Past);
-                dpns_my_usernames_screen =
-                    DPNSScreen::new(local_app_context, DPNSSubscreen::Owned);
+                dpns_past_contests_screen = DPNSScreen::new(local_app_context, DPNSSubscreen::Past);
+                dpns_my_usernames_screen = DPNSScreen::new(local_app_context, DPNSSubscreen::Owned);
                 dpns_scheduled_votes_screen =
                     DPNSScreen::new(local_app_context, DPNSSubscreen::ScheduledVotes);
                 transition_visualizer_screen = TransitionVisualizerScreen::new(local_app_context);
@@ -312,7 +310,9 @@ impl AppState {
         )
         .expect("Failed to create mainnet InstantSend listener");
 
-        let testnet_tx_zmq_status_option = testnet_app_context.as_ref().map(|context| context.sx_zmq_status.clone());
+        let testnet_tx_zmq_status_option = testnet_app_context
+            .as_ref()
+            .map(|context| context.sx_zmq_status.clone());
 
         let testnet_core_zmq_listener = CoreZMQListener::spawn_listener(
             Network::Testnet,
@@ -322,7 +322,9 @@ impl AppState {
         )
         .expect("Failed to create testnet InstantSend listener");
 
-        let devnet_tx_zmq_status_option = devnet_app_context.as_ref().map(|context| context.sx_zmq_status.clone());
+        let devnet_tx_zmq_status_option = devnet_app_context
+            .as_ref()
+            .map(|context| context.sx_zmq_status.clone());
 
         let devnet_core_zmq_listener = CoreZMQListener::spawn_listener(
             Network::Devnet,
@@ -332,7 +334,9 @@ impl AppState {
         )
         .expect("Failed to create devnet InstantSend listener");
 
-        let local_tx_zmq_status_option = local_app_context.as_ref().map(|context| context.sx_zmq_status.clone());
+        let local_tx_zmq_status_option = local_app_context
+            .as_ref()
+            .map(|context| context.sx_zmq_status.clone());
 
         let local_core_zmq_listener = CoreZMQListener::spawn_listener(
             Network::Regtest,
@@ -690,13 +694,15 @@ impl App for AppState {
                             .unwrap();
                         if let Screen::DPNSScreen(screen) = dpns_screen {
                             screen.scheduled_vote_cast_in_progress = true;
-                            screen
+                            if let Some((_, s)) = screen
                                 .scheduled_votes
                                 .lock()
                                 .unwrap()
                                 .iter_mut()
                                 .find(|(v, _)| v == &vote)
-                                .map(|(_, s)| *s = ScheduledVoteCastingStatus::InProgress);
+                            {
+                                *s = ScheduledVoteCastingStatus::InProgress;
+                            }
                         }
                         let task = BackendTask::ContestedResourceTask(
                             ContestedResourceTask::CastScheduledVote(vote, voter.clone()),

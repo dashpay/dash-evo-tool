@@ -2753,7 +2753,7 @@ mod tests {
     #[test]
     fn test_token_creator_ui_builds_correct_contract() {
         let db_file_path = "test_db";
-        let db = Arc::new(Database::new(&db_file_path).unwrap());
+        let db = Arc::new(Database::new(db_file_path).unwrap());
         db.initialize(Path::new(&db_file_path)).unwrap();
 
         let app_context =
@@ -2941,7 +2941,7 @@ mod tests {
 
         // B) Check the token config
         let (token_pos, token_config) = contract_v1.tokens.iter().next().unwrap();
-        assert_eq!(*token_pos as u16, 0, "Should be at position 0 by default");
+        assert_eq!({ *token_pos }, 0, "Should be at position 0 by default");
 
         let TokenConfiguration::V0(token_v0) = token_config;
         let TokenConfigurationConvention::V0(conv_v0) = &token_v0.conventions;
@@ -2959,11 +2959,11 @@ mod tests {
         );
         let keeps_history_rules = &token_v0.keeps_history;
         let TokenKeepsHistoryRules::V0(keeps_history_v0) = keeps_history_rules;
-        assert_eq!(keeps_history_v0.keeps_transfer_history, true);
-        assert_eq!(keeps_history_v0.keeps_freezing_history, true);
+        assert!(keeps_history_v0.keeps_transfer_history);
+        assert!(keeps_history_v0.keeps_freezing_history);
         assert_eq!(token_v0.base_supply, 5_000_000);
         assert_eq!(token_v0.max_supply, Some(10_000_000));
-        assert_eq!(token_v0.start_as_paused, true);
+        assert!(token_v0.start_as_paused);
         assert_eq!(
             token_v0.main_control_group,
             Some(2),
@@ -3027,7 +3027,7 @@ mod tests {
             new_dest_id.to_string(Encoding::Base58),
             "GCMnPwQZcH3RP9atgkmvtmN45QrVcYvh5cmUYARHBTu9"
         );
-        assert_eq!(dist_rules_v0.minting_allow_choosing_destination, true);
+        assert!(dist_rules_v0.minting_allow_choosing_destination);
 
         // F) Check the Groups
         //    (Positions 2 and 7, from above)
@@ -3049,7 +3049,7 @@ mod tests {
     #[test]
     fn test_distribution_function_random() {
         let db_file_path = "test_db";
-        let db = Arc::new(Database::new(&db_file_path).unwrap());
+        let db = Arc::new(Database::new(db_file_path).unwrap());
         db.initialize(Path::new(&db_file_path)).unwrap();
 
         let app_context =
@@ -3134,7 +3134,7 @@ mod tests {
             .expect("Should build successfully");
         let contract_v1 = data_contract.as_v1().expect("Expected DataContract::V1");
 
-        let TokenConfiguration::V0(ref token_v0) = contract_v1.tokens[&(0u16.into())];
+        let TokenConfiguration::V0(ref token_v0) = contract_v1.tokens[&0u16];
         let TokenDistributionRules::V0(dist_rules_v0) = &token_v0.distribution_rules;
         let Some(TokenPerpetualDistribution::V0(perp_v0)) = &dist_rules_v0.perpetual_distribution
         else {
@@ -3159,7 +3159,7 @@ mod tests {
     #[test]
     fn test_parse_token_build_args_fails_with_empty_token_name() {
         let db_file_path = "test_db";
-        let db = Arc::new(Database::new(&db_file_path).unwrap());
+        let db = Arc::new(Database::new(db_file_path).unwrap());
         db.initialize(Path::new(&db_file_path)).unwrap();
 
         let app_context =

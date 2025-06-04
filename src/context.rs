@@ -319,6 +319,11 @@ impl AppContext {
         self.db.get_local_voting_identities(self)
     }
 
+    /// Fetches all local user identities from the database
+    pub fn load_local_user_identities(&self) -> Result<Vec<QualifiedIdentity>> {
+        self.db.get_local_user_identities(self)
+    }
+
     /// Fetches all contested names from the database including past and active ones
     pub fn all_contested_names(&self) -> Result<Vec<ContestedName>> {
         self.db.get_all_contested_names(self)

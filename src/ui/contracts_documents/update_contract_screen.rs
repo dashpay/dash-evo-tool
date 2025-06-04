@@ -54,9 +54,8 @@ pub struct UpdateDataContractScreen {
 
 impl UpdateDataContractScreen {
     pub fn new(app_context: &Arc<AppContext>) -> Self {
-        let qualified_identities: Vec<_> = app_context
-            .load_local_qualified_identities()
-            .unwrap_or_default();
+        let qualified_identities: Vec<_> =
+            app_context.load_local_user_identities().unwrap_or_default();
         let selected_qualified_identity = qualified_identities.first().cloned();
 
         let mut error_message: Option<String> = None;

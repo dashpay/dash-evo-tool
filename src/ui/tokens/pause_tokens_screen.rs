@@ -321,7 +321,7 @@ impl ScreenLike for PauseTokensScreen {
     }
 
     fn refresh(&mut self) {
-        if let Ok(all) = self.app_context.load_local_qualified_identities() {
+        if let Ok(all) = self.app_context.load_local_user_identities() {
             if let Some(updated) = all
                 .into_iter()
                 .find(|id| id.identity.id() == self.identity.identity.id())

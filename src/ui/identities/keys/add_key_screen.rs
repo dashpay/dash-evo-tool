@@ -187,7 +187,7 @@ impl ScreenLike for AddKeyScreen {
     fn refresh(&mut self) {
         if let Some(refreshed_identity) = self
             .app_context
-            .load_local_qualified_identities()
+            .load_local_user_identities()
             .expect("Expected to load local identities")
             .iter()
             .find(|identity| identity.identity.id() == self.identity.identity.id())

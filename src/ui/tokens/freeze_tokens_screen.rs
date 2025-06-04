@@ -359,7 +359,7 @@ impl ScreenLike for FreezeTokensScreen {
 
     fn refresh(&mut self) {
         // Reload identity if needed
-        if let Ok(all_identities) = self.app_context.load_local_qualified_identities() {
+        if let Ok(all_identities) = self.app_context.load_local_user_identities() {
             if let Some(updated_identity) = all_identities
                 .into_iter()
                 .find(|id| id.identity.id() == self.identity.identity.id())

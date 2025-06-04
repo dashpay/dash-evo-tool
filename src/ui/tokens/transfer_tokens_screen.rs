@@ -77,9 +77,7 @@ impl TransferTokensScreen {
             })
             .collect();
 
-        let identity = app_context
-            .load_local_qualified_identities()
-            .expect("Identities not loaded")
+        let identity = all_identities
             .iter()
             .find(|identity| identity.identity.id() == identity_token_balance.identity_id)
             .expect("Identity not found")

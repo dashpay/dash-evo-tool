@@ -9,8 +9,8 @@ use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
 use crate::ui::helpers::{
-    add_contract_doc_type_chooser_with_filtering, add_identity_key_chooser_with_doc_type, show_success_screen,
-    TransactionType,
+    add_contract_doc_type_chooser_with_filtering, add_identity_key_chooser_with_doc_type,
+    show_success_screen, TransactionType,
 };
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::ScreenLike;
@@ -132,7 +132,7 @@ impl DocumentActionScreen {
                 Vec::new()
             };
 
-        let identities_map = if let Ok(identities) = app_context.load_local_qualified_identities() {
+        let identities_map = if let Ok(identities) = app_context.load_local_user_identities() {
             identities
                 .into_iter()
                 .map(|identity| (identity.identity.id(), identity))

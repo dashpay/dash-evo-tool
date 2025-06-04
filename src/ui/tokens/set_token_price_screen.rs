@@ -401,7 +401,7 @@ impl ScreenLike for SetTokenPriceScreen {
 
     fn refresh(&mut self) {
         // If you need to reload local identity data or re-check keys:
-        if let Ok(all_identities) = self.app_context.load_local_qualified_identities() {
+        if let Ok(all_identities) = self.app_context.load_local_user_identities() {
             if let Some(updated_identity) = all_identities
                 .into_iter()
                 .find(|id| id.identity.id() == self.identity_token_info.identity.identity.id())

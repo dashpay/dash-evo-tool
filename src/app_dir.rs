@@ -90,7 +90,7 @@ pub fn app_user_data_file_path(filename: &str) -> Result<PathBuf, std::io::Error
 pub fn copy_env_file_if_not_exists() {
     let app_data_dir =
         app_user_data_dir_path().expect("Failed to determine application data directory");
-    let env_file_in_app_dir = app_data_dir.join(".env".to_string());
+    let env_file_in_app_dir = app_data_dir.join(".env");
     if !env_file_in_app_dir.exists() || !env_file_in_app_dir.is_file() {
         let env_example_file_in_exe_dir = PathBuf::from(".env.example");
         if env_example_file_in_exe_dir.exists() && env_example_file_in_exe_dir.is_file() {

@@ -1097,7 +1097,7 @@ impl DPNSScreen {
                                             action = AppAction::BackendTask(
                                                 BackendTask::ContestedResourceTask(
                                                     ContestedResourceTask::DeleteScheduledVote(
-                                                        vote.0.voter_id.clone(),
+                                                        vote.0.voter_id,
                                                         vote.0.contested_name.clone(),
                                                     ),
                                                 ),
@@ -1248,12 +1248,9 @@ impl DPNSScreen {
         ui.add_space(10.0);
 
         // If self.bulk_vote_handling_status is Complete, show completed message
-        match self.bulk_vote_handling_status {
-            VoteHandlingStatus::Completed => {
-                action |= self.show_bulk_vote_handling_complete(ui);
-                return action;
-            }
-            _ => {}
+        if self.bulk_vote_handling_status == VoteHandlingStatus::Completed {
+            action |= self.show_bulk_vote_handling_complete(ui);
+            return action;
         }
 
         // If no voting identities are loaded, display a message and return
@@ -1586,8 +1583,8 @@ impl DPNSScreen {
                     for sv in &self.selected_votes {
                         let new_vote = ScheduledDPNSVote {
                             contested_name: sv.contested_name.clone(),
-                            voter_id: identity.identity.id().clone(),
-                            choice: sv.vote_choice.clone(),
+                            voter_id: identity.identity.id(),
+                            choice: sv.vote_choice,
                             unix_timestamp: scheduled_time,
                             executed_successfully: false,
                         };
@@ -1614,7 +1611,7 @@ impl DPNSScreen {
             let now = Utc::now().timestamp() as u64;
             self.bulk_vote_handling_status = VoteHandlingStatus::CastingVotes(now);
             if !scheduled_list.is_empty() {
-                return AppAction::BackendTasks(
+                AppAction::BackendTasks(
                     vec![
                         BackendTask::ContestedResourceTask(ContestedResourceTask::VoteOnDPNSNames(
                             votes_for_all,
@@ -1625,18 +1622,18 @@ impl DPNSScreen {
                         ),
                     ],
                     BackendTasksExecutionMode::Concurrent,
-                );
+                )
             } else {
-                return AppAction::BackendTask(BackendTask::ContestedResourceTask(
+                AppAction::BackendTask(BackendTask::ContestedResourceTask(
                     ContestedResourceTask::VoteOnDPNSNames(votes_for_all, immediate_list),
-                ));
+                ))
             }
         } else {
             // 2) Otherwise just schedule them
             self.bulk_vote_handling_status = VoteHandlingStatus::SchedulingVotes;
-            return AppAction::BackendTask(BackendTask::ContestedResourceTask(
+            AppAction::BackendTask(BackendTask::ContestedResourceTask(
                 ContestedResourceTask::ScheduleDPNSVotes(scheduled_list),
-            ));
+            ))
         }
     }
 
@@ -1796,10 +1793,8 @@ impl ScreenLike for DPNSScreen {
             self.refreshing_status = RefreshingStatus::NotRefreshing;
         }
 
-        if message.contains("Votes scheduled") {
-            if self.bulk_vote_handling_status == VoteHandlingStatus::SchedulingVotes {
-                self.bulk_vote_handling_status = VoteHandlingStatus::Completed;
-            }
+        if message.contains("Votes scheduled") && self.bulk_vote_handling_status == VoteHandlingStatus::SchedulingVotes {
+            self.bulk_vote_handling_status = VoteHandlingStatus::Completed;
         }
 
         // Save into general error_message for top-of-screen

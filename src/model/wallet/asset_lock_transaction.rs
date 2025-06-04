@@ -137,10 +137,8 @@ impl Wallet {
         };
 
         // Collect inputs from UTXOs
-        let inputs = utxos
-            .iter()
-            .map(|(utxo, _)| TxIn {
-                previous_output: utxo.clone(),
+        let inputs = utxos.keys().map(|utxo| TxIn {
+                previous_output: *utxo,
                 ..Default::default()
             })
             .collect();
@@ -307,7 +305,7 @@ impl Wallet {
         // we need to get all inputs from utxos to add them to the transaction
 
         let mut tx_in = TxIn::default();
-        tx_in.previous_output = utxo.clone();
+        tx_in.previous_output = utxo;
 
         let sighash_u32 = 1u32;
 

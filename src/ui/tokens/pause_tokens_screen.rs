@@ -319,12 +319,10 @@ impl PauseTokensScreen {
             if self.group_action_id.is_some() {
                 // This Pause is already initiated by the group, we are just signing it
                 ui.heading("Group Pause Signing Successful.");
+            } else if !self.is_unilateral_group_member && self.group.is_some() {
+                ui.heading("Group Pause Initiated.");
             } else {
-                if !self.is_unilateral_group_member && self.group.is_some() {
-                    ui.heading("Group Pause Initiated.");
-                } else {
-                    ui.heading("Pause Successful.");
-                }
+                ui.heading("Pause Successful.");
             }
 
             ui.add_space(20.0);
@@ -343,15 +341,13 @@ impl PauseTokensScreen {
                     action = AppAction::PopScreenAndRefresh;
                 }
 
-                if !self.is_unilateral_group_member {
-                    if ui.button("Go to Group Actions").clicked() {
-                        action = AppAction::PopThenAddScreenToMainScreen(
-                            RootScreenType::RootScreenDocumentQuery,
-                            Screen::GroupActionsScreen(GroupActionsScreen::new(
-                                &self.app_context.clone(),
-                            )),
-                        );
-                    }
+                if !self.is_unilateral_group_member && ui.button("Go to Group Actions").clicked() {
+                    action = AppAction::PopThenAddScreenToMainScreen(
+                        RootScreenType::RootScreenDocumentQuery,
+                        Screen::GroupActionsScreen(GroupActionsScreen::new(
+                            &self.app_context.clone(),
+                        )),
+                    );
                 }
             }
         });
@@ -533,7 +529,7 @@ impl ScreenLike for PauseTokensScreen {
                             )
                             .changed()
                         {
-                            self.public_note = if txt.len() > 0 {
+                            self.public_note = if !txt.is_empty() {
                                 Some(txt)
                             } else {
                                 None

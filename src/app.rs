@@ -147,8 +147,7 @@ impl AppState {
 
         let password_info = settings
             .clone()
-            .map(|(_, _, password_info, _, _)| password_info)
-            .flatten();
+            .and_then(|(_, _, password_info, _, _)| password_info);
 
         let mainnet_app_context =
             match AppContext::new(Network::Dash, db.clone(), password_info.clone()) {
@@ -228,17 +227,17 @@ impl AppState {
                 let testnet_app_context = testnet_app_context.as_ref().unwrap();
                 identities_screen = IdentitiesScreen::new(testnet_app_context);
                 dpns_active_contests_screen =
-                    DPNSScreen::new(&testnet_app_context, DPNSSubscreen::Active);
+                    DPNSScreen::new(testnet_app_context, DPNSSubscreen::Active);
                 dpns_past_contests_screen =
-                    DPNSScreen::new(&testnet_app_context, DPNSSubscreen::Past);
+                    DPNSScreen::new(testnet_app_context, DPNSSubscreen::Past);
                 dpns_my_usernames_screen =
-                    DPNSScreen::new(&testnet_app_context, DPNSSubscreen::Owned);
+                    DPNSScreen::new(testnet_app_context, DPNSSubscreen::Owned);
                 dpns_scheduled_votes_screen =
-                    DPNSScreen::new(&testnet_app_context, DPNSSubscreen::ScheduledVotes);
+                    DPNSScreen::new(testnet_app_context, DPNSSubscreen::ScheduledVotes);
                 transition_visualizer_screen = TransitionVisualizerScreen::new(testnet_app_context);
                 proof_visualizer_screen = ProofVisualizerScreen::new(testnet_app_context);
-                document_visualizer_screen = DocumentVisualizerScreen::new(&testnet_app_context);
-                contract_visualizer_screen = ContractVisualizerScreen::new(&testnet_app_context);
+                document_visualizer_screen = DocumentVisualizerScreen::new(testnet_app_context);
+                contract_visualizer_screen = ContractVisualizerScreen::new(testnet_app_context);
                 document_query_screen = DocumentQueryScreen::new(testnet_app_context);
                 wallets_balances_screen = WalletsBalancesScreen::new(testnet_app_context);
                 proof_log_screen = ProofLogScreen::new(testnet_app_context);
@@ -252,18 +251,18 @@ impl AppState {
                 let devnet_app_context = devnet_app_context.as_ref().unwrap();
                 identities_screen = IdentitiesScreen::new(devnet_app_context);
                 dpns_active_contests_screen =
-                    DPNSScreen::new(&devnet_app_context, DPNSSubscreen::Active);
+                    DPNSScreen::new(devnet_app_context, DPNSSubscreen::Active);
                 dpns_past_contests_screen =
-                    DPNSScreen::new(&devnet_app_context, DPNSSubscreen::Past);
+                    DPNSScreen::new(devnet_app_context, DPNSSubscreen::Past);
                 dpns_my_usernames_screen =
-                    DPNSScreen::new(&devnet_app_context, DPNSSubscreen::Owned);
+                    DPNSScreen::new(devnet_app_context, DPNSSubscreen::Owned);
                 dpns_scheduled_votes_screen =
-                    DPNSScreen::new(&devnet_app_context, DPNSSubscreen::ScheduledVotes);
+                    DPNSScreen::new(devnet_app_context, DPNSSubscreen::ScheduledVotes);
                 transition_visualizer_screen = TransitionVisualizerScreen::new(devnet_app_context);
                 proof_visualizer_screen = ProofVisualizerScreen::new(devnet_app_context);
-                document_visualizer_screen = DocumentVisualizerScreen::new(&devnet_app_context);
+                document_visualizer_screen = DocumentVisualizerScreen::new(devnet_app_context);
                 document_query_screen = DocumentQueryScreen::new(devnet_app_context);
-                contract_visualizer_screen = ContractVisualizerScreen::new(&devnet_app_context);
+                contract_visualizer_screen = ContractVisualizerScreen::new(devnet_app_context);
                 wallets_balances_screen = WalletsBalancesScreen::new(devnet_app_context);
                 proof_log_screen = ProofLogScreen::new(devnet_app_context);
                 tokens_balances_screen =
@@ -276,17 +275,17 @@ impl AppState {
                 let local_app_context = local_app_context.as_ref().unwrap();
                 identities_screen = IdentitiesScreen::new(local_app_context);
                 dpns_active_contests_screen =
-                    DPNSScreen::new(&local_app_context, DPNSSubscreen::Active);
+                    DPNSScreen::new(local_app_context, DPNSSubscreen::Active);
                 dpns_past_contests_screen =
-                    DPNSScreen::new(&local_app_context, DPNSSubscreen::Past);
+                    DPNSScreen::new(local_app_context, DPNSSubscreen::Past);
                 dpns_my_usernames_screen =
-                    DPNSScreen::new(&local_app_context, DPNSSubscreen::Owned);
+                    DPNSScreen::new(local_app_context, DPNSSubscreen::Owned);
                 dpns_scheduled_votes_screen =
-                    DPNSScreen::new(&local_app_context, DPNSSubscreen::ScheduledVotes);
+                    DPNSScreen::new(local_app_context, DPNSSubscreen::ScheduledVotes);
                 transition_visualizer_screen = TransitionVisualizerScreen::new(local_app_context);
                 proof_visualizer_screen = ProofVisualizerScreen::new(local_app_context);
-                document_visualizer_screen = DocumentVisualizerScreen::new(&local_app_context);
-                contract_visualizer_screen = ContractVisualizerScreen::new(&local_app_context);
+                document_visualizer_screen = DocumentVisualizerScreen::new(local_app_context);
+                contract_visualizer_screen = ContractVisualizerScreen::new(local_app_context);
                 document_query_screen = DocumentQueryScreen::new(local_app_context);
                 wallets_balances_screen = WalletsBalancesScreen::new(local_app_context);
                 proof_log_screen = ProofLogScreen::new(local_app_context);
@@ -313,10 +312,7 @@ impl AppState {
         )
         .expect("Failed to create mainnet InstantSend listener");
 
-        let testnet_tx_zmq_status_option = match testnet_app_context {
-            Some(ref context) => Some(context.sx_zmq_status.clone()),
-            None => None,
-        };
+        let testnet_tx_zmq_status_option = testnet_app_context.as_ref().map(|context| context.sx_zmq_status.clone());
 
         let testnet_core_zmq_listener = CoreZMQListener::spawn_listener(
             Network::Testnet,
@@ -326,10 +322,7 @@ impl AppState {
         )
         .expect("Failed to create testnet InstantSend listener");
 
-        let devnet_tx_zmq_status_option = match devnet_app_context {
-            Some(ref context) => Some(context.sx_zmq_status.clone()),
-            None => None,
-        };
+        let devnet_tx_zmq_status_option = devnet_app_context.as_ref().map(|context| context.sx_zmq_status.clone());
 
         let devnet_core_zmq_listener = CoreZMQListener::spawn_listener(
             Network::Devnet,
@@ -339,10 +332,7 @@ impl AppState {
         )
         .expect("Failed to create devnet InstantSend listener");
 
-        let local_tx_zmq_status_option = match local_app_context {
-            Some(ref context) => Some(context.sx_zmq_status.clone()),
-            None => None,
-        };
+        let local_tx_zmq_status_option = local_app_context.as_ref().map(|context| context.sx_zmq_status.clone());
 
         let local_core_zmq_listener = CoreZMQListener::spawn_listener(
             Network::Regtest,
@@ -675,7 +665,7 @@ impl App for AppState {
                 .filter(|v| {
                     v.unix_timestamp <= current_time
                         && !v.executed_successfully
-                        && !(v.unix_timestamp + 120000 < current_time) // Don't cast votes more than 2 minutes behind current time
+                        && (v.unix_timestamp + 120000 >= current_time) // Don't cast votes more than 2 minutes behind current time
                 })
                 .collect();
 

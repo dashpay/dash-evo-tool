@@ -61,7 +61,7 @@ impl Database {
                     {
                         let config = config::standard();
                         let Some(serialized_token_configuration) =
-                            bincode::encode_to_vec(&token_configuration, config).ok()
+                            bincode::encode_to_vec(token_configuration, config).ok()
                         else {
                             // We should always be able to serialize
                             return Ok(());
@@ -126,7 +126,7 @@ impl Database {
                 }
             }
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(e.into()),
+            Err(e) => Err(e),
         }
     }
 
@@ -151,7 +151,7 @@ impl Database {
             )
             .or_else(|e| match e {
                 rusqlite::Error::QueryReturnedNoRows => Ok::<Option<String>, rusqlite::Error>(None),
-                other => Err(other.into()),
+                other => Err(other),
             })?
         };
 
@@ -208,7 +208,7 @@ impl Database {
                 }
             }
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(e.into()),
+            Err(e) => Err(e),
         }
     }
 

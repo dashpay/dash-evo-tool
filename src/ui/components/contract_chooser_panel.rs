@@ -158,7 +158,7 @@ pub fn add_contract_chooser_panel(
                                                                 if let Ok(new_doc_type) = contract
                                                                     .contract
                                                                     .document_type_cloned_for_name(
-                                                                        &doc_name,
+                                                                        doc_name,
                                                                     )
                                                                 {
                                                                     *selected_document_type =
@@ -223,7 +223,7 @@ pub fn add_contract_chooser_panel(
                                                 // Expand doc type
                                                 if let Ok(new_doc_type) = contract
                                                     .contract
-                                                    .document_type_cloned_for_name(&doc_name)
+                                                    .document_type_cloned_for_name(doc_name)
                                                 {
                                                     *pending_document_type = new_doc_type.clone();
                                                     *selected_document_type = new_doc_type.clone();
@@ -346,18 +346,14 @@ pub fn add_contract_chooser_panel(
                                     |ui| {
                                         if contract.alias != Some("dpns".to_string())
                                             && contract.alias != Some("token_history".to_string())
-                                            && contract.alias != Some("withdrawals".to_string())
-                                            && contract.alias != Some("keyword_search".to_string())
-                                        {
-                                            if ui.button("X").clicked() {
-                                                action |= AppAction::BackendTask(
-                                                    BackendTask::ContractTask(
-                                                        ContractTask::RemoveContract(
-                                                            contract.contract.id().clone(),
-                                                        ),
+                                            && contract.alias != Some("withdrawals".to_string()) && contract.alias != Some("keyword_search".to_string()) && ui.button("X").clicked() {
+                                            action |= AppAction::BackendTask(
+                                                BackendTask::ContractTask(
+                                                    ContractTask::RemoveContract(
+                                                        contract.contract.id(),
                                                     ),
-                                                );
-                                            }
+                                                ),
+                                            );
                                         }
                                     },
                                 );

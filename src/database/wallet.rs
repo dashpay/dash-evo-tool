@@ -280,7 +280,7 @@ impl Database {
                     )
                 })?;
 
-            let path_type = DerivationPathType::from_bits_truncate(path_type as u32);
+            let path_type = DerivationPathType::from_bits_truncate(path_type);
 
             Ok((
                 seed_hash_array,

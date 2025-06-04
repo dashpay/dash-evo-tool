@@ -292,7 +292,7 @@ impl AppContext {
                                 .expect("expected to make transition");
                             format!(
                                 "error: {}, transaction is {:?}",
-                                e.to_string(),
+                                e,
                                 identity_create_transition
                             )
                         })?

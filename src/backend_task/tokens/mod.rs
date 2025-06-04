@@ -240,7 +240,7 @@ impl AppContext {
             } => {
                 let data_contract = self
                     .build_data_contract_v1_with_one_token(
-                        identity.identity.id().clone(),
+                        identity.identity.id(),
                         token_names.clone(),
                         contract_keywords.to_vec(),
                         token_description.clone(),
@@ -260,7 +260,7 @@ impl AppContext {
                         emergency_action_rules.clone(),
                         max_supply_change_rules.clone(),
                         conventions_change_rules.clone(),
-                        main_control_group_change_authorized.clone(),
+                        *main_control_group_change_authorized,
                         distribution_rules.clone(),
                         groups.clone(),
                     )
@@ -303,15 +303,15 @@ impl AppContext {
                     signing_key.clone(),
                     public_note.clone(),
                     *amount,
-                    recipient_id.clone(),
-                    group_info.clone(),
+                    *recipient_id,
+                    *group_info,
                     sdk,
                     sender,
                 )
                 .await
                 .map_err(|e| format!("Failed to mint tokens: {e}")),
             TokenTask::QueryDescriptionsByKeyword(keyword, cursor) => self
-                .query_descriptions_by_keyword(&keyword, cursor, sdk)
+                .query_descriptions_by_keyword(keyword, cursor, sdk)
                 .await
                 .map_err(|e| format!("Failed to query tokens by keyword: {e}")),
             TokenTask::TransferTokens {
@@ -324,7 +324,7 @@ impl AppContext {
                 public_note,
             } => self
                 .transfer_tokens(
-                    &sending_identity,
+                    sending_identity,
                     *recipient_id,
                     *amount,
                     data_contract,
@@ -352,7 +352,7 @@ impl AppContext {
                     signing_key.clone(),
                     public_note.clone(),
                     *amount,
-                    group_info.clone(),
+                    *group_info,
                     sdk,
                     sender,
                 )
@@ -373,8 +373,8 @@ impl AppContext {
                     *token_position,
                     signing_key.clone(),
                     public_note.clone(),
-                    frozen_identity.clone(),
-                    group_info.clone(),
+                    *frozen_identity,
+                    *group_info,
                     sdk,
                     sender,
                 )
@@ -395,8 +395,8 @@ impl AppContext {
                     *token_position,
                     signing_key.clone(),
                     public_note.clone(),
-                    freeze_identity.clone(),
-                    group_info.clone(),
+                    *freeze_identity,
+                    *group_info,
                     sdk,
                     sender,
                 )
@@ -417,8 +417,8 @@ impl AppContext {
                     *token_position,
                     signing_key.clone(),
                     public_note.clone(),
-                    unfreeze_identity.clone(),
-                    group_info.clone(),
+                    *unfreeze_identity,
+                    *group_info,
                     sdk,
                     sender,
                 )
@@ -438,7 +438,7 @@ impl AppContext {
                     *token_position,
                     signing_key.clone(),
                     public_note.clone(),
-                    group_info.clone(),
+                    *group_info,
                     sdk,
                     sender,
                 )
@@ -458,7 +458,7 @@ impl AppContext {
                     *token_position,
                     signing_key.clone(),
                     public_note.clone(),
-                    group_info.clone(),
+                    *group_info,
                     sdk,
                     sender,
                 )
@@ -511,7 +511,7 @@ impl AppContext {
                     Ok(None) => Ok(BackendTaskSuccessResult::Message(
                         "Contract not found".to_string(),
                     )),
-                    Err(e) => Err(format!("Error fetching contracts: {}", e.to_string())),
+                    Err(e) => Err(format!("Error fetching contracts: {}", e)),
                 }
             }
             TokenTask::SaveTokenLocally(token_info) => {
@@ -528,7 +528,7 @@ impl AppContext {
                         &token_config_bytes,
                         &token_info.data_contract_id,
                         token_info.token_position,
-                        &self,
+                        self,
                     )
                     .map_err(|e| format!("error saving token: {}", e))?;
 
@@ -548,7 +548,7 @@ impl AppContext {
                     change_item.clone(),
                     signing_key,
                     public_note.clone(),
-                    group_info.clone(),
+                    *group_info,
                     sdk,
                 )
                 .await
@@ -589,7 +589,7 @@ impl AppContext {
                     signing_key.clone(),
                     public_note.clone(),
                     token_pricing_schedule.clone(),
-                    group_info.clone(),
+                    *group_info,
                     sdk,
                     sender,
                 )

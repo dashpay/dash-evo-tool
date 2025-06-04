@@ -52,7 +52,7 @@ pub struct RegisterDataContractScreen {
 
 impl RegisterDataContractScreen {
     pub fn new(app_context: &Arc<AppContext>) -> Self {
-        let security_level_requirements = vec![SecurityLevel::HIGH, SecurityLevel::CRITICAL];
+        let security_level_requirements = [SecurityLevel::HIGH, SecurityLevel::CRITICAL];
 
         let qualified_identities: Vec<_> = app_context
             .load_local_qualified_identities()
@@ -371,18 +371,15 @@ impl RegisterDataContractScreen {
             }
         }
 
-        match app_action {
-            AppAction::BackendTask(BackendTask::ContractTask(
+        if let AppAction::BackendTask(BackendTask::ContractTask(
                 ContractTask::RegisterDataContract(_, _, _, _),
-            )) => {
-                self.broadcast_status = BroadcastStatus::Broadcasting(
-                    SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .unwrap()
-                        .as_secs(),
-                );
-            }
-            _ => {}
+            )) = app_action {
+            self.broadcast_status = BroadcastStatus::Broadcasting(
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs(),
+            );
         }
 
         app_action
@@ -469,11 +466,8 @@ impl ScreenLike for RegisterDataContractScreen {
     fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
         // If a separate result needs to be handled here, you can do so
         // For example, if success is a special message or we want to show it in the UI
-        match result {
-            BackendTaskSuccessResult::Message(_msg) => {
-                self.broadcast_status = BroadcastStatus::Done;
-            }
-            _ => {}
+        if let BackendTaskSuccessResult::Message(_msg) = result {
+            self.broadcast_status = BroadcastStatus::Done;
         }
     }
 

@@ -181,7 +181,7 @@ impl AddNewIdentityScreen {
                 app_context.network,
                 identity_id_number,
                 0,
-                Some(&app_context),
+                Some(app_context),
             )?;
 
             let other_keys = DEFAULT_KEY_TYPES
@@ -193,7 +193,7 @@ impl AddNewIdentityScreen {
                             app_context.network,
                             identity_id_number,
                             (i + 1).try_into().expect("key index must fit u32"), // key index 0 is the master key
-                            Some(&app_context),
+                            Some(app_context),
                         )?,
                         key_type,
                         purpose,
@@ -366,8 +366,7 @@ impl AddNewIdentityScreen {
 
                             let is_selected = self
                                 .selected_wallet
-                                .as_ref()
-                                .map_or(false, |selected| Arc::ptr_eq(selected, wallet));
+                                .as_ref().is_some_and(|selected| Arc::ptr_eq(selected, wallet));
 
                             if ui.selectable_label(is_selected, wallet_alias).clicked() {
                                 // Update the selected wallet
@@ -459,39 +458,33 @@ impl AddNewIdentityScreen {
                     (wallet.has_unused_asset_lock(), wallet.has_balance())
                 };
 
-                if has_unused_asset_lock {
-                    if ui
+                if has_unused_asset_lock && ui
                         .selectable_value(
                             &mut *funding_method,
                             FundingMethod::UseUnusedAssetLock,
                             "Use Unused Evo Funding Locks (recommended)",
                         )
-                        .changed()
-                    {
-                        self.ensure_correct_identity_keys()
-                            .expect("failed to initialize keys");
-                        let mut step = self.step.write().unwrap();
-                        *step = WalletFundedScreenStep::ReadyToCreate;
-                        self.funding_amount = "0.5".to_string();
-                    }
+                        .changed() {
+                    self.ensure_correct_identity_keys()
+                        .expect("failed to initialize keys");
+                    let mut step = self.step.write().unwrap();
+                    *step = WalletFundedScreenStep::ReadyToCreate;
+                    self.funding_amount = "0.5".to_string();
                 }
-                if has_balance {
-                    if ui
+                if has_balance && ui
                         .selectable_value(
                             &mut *funding_method,
                             FundingMethod::UseWalletBalance,
                             "Use Wallet Balance",
                         )
-                        .changed()
-                    {
-                        if let Some(wallet) = &self.selected_wallet {
-                            let wallet = wallet.read().unwrap();
-                            let max_amount = wallet.max_balance();
-                            self.funding_amount = format!("{:.4}", max_amount as f64 * 1e-8);
-                        }
-                        let mut step = self.step.write().unwrap(); // Write lock on step
-                        *step = WalletFundedScreenStep::ReadyToCreate;
+                        .changed() {
+                    if let Some(wallet) = &self.selected_wallet {
+                        let wallet = wallet.read().unwrap();
+                        let max_amount = wallet.max_balance();
+                        self.funding_amount = format!("{:.4}", max_amount as f64 * 1e-8);
                     }
+                    let mut step = self.step.write().unwrap(); // Write lock on step
+                    *step = WalletFundedScreenStep::ReadyToCreate;
                 }
                 if ui
                     .selectable_value(
@@ -665,7 +658,7 @@ impl AddNewIdentityScreen {
             FundingMethod::UseWalletBalance => {
                 // Parse the funding amount or fall back to the default value
                 let amount = self.funding_amount_exact.unwrap_or_else(|| {
-                    (self.funding_amount.parse::<f64>().unwrap_or_else(|_| 0.0) * 1e8) as u64
+                    (self.funding_amount.parse::<f64>().unwrap_or(0.0) * 1e8) as u64
                 });
 
                 if amount == 0 {
@@ -962,7 +955,7 @@ impl ScreenLike for AddNewIdentityScreen {
 
         egui::CentralPanel::default().show(ctx, |ui| {
             ScrollArea::vertical().show(ui, |ui| {
-                let step = {self.step.read().unwrap().clone()};
+                let step = {*self.step.read().unwrap()};
                 if step == WalletFundedScreenStep::Success {
                     action |= self.show_success(ui);
                     return;
@@ -1075,14 +1068,14 @@ impl ScreenLike for AddNewIdentityScreen {
                 ui.separator();
 
                 // Extract the funding method from the RwLock to minimize borrow scope
-                let funding_method = self.funding_method.read().unwrap().clone();
+                let funding_method = *self.funding_method.read().unwrap();
 
                 if funding_method == FundingMethod::NoSelection {
                     return;
                 }
 
                 match funding_method {
-                    FundingMethod::NoSelection => return,
+                    FundingMethod::NoSelection => (),
                     FundingMethod::UseUnusedAssetLock => {
                         action |= self.render_ui_by_using_unused_asset_lock(ui, step_number);
                     },

@@ -40,7 +40,7 @@ impl Database {
             // Check if the foreign key already exists
             let mut stmt = conn.prepare("PRAGMA foreign_key_list('scheduled_votes')")?;
             let fk_exists = stmt
-                .query_map([], |row| Ok(row.get::<_, String>(2)?))?
+                .query_map([], |row| row.get::<_, String>(2))?
                 .any(|table_name_result| table_name_result.ok().as_deref() == Some("identity"));
 
             if fk_exists {

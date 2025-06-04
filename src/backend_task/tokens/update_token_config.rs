@@ -84,7 +84,7 @@ impl AppContext {
         let state_transition = builder
             .sign(
                 sdk,
-                &signing_key,
+                signing_key,
                 &identity,
                 self.platform_version(),
                 options,
@@ -93,7 +93,7 @@ impl AppContext {
             .map_err(|e| {
                 format!(
                     "Error signing Token Config Update transition: {}",
-                    e.to_string()
+                    e
                 )
             })?;
 
@@ -127,7 +127,7 @@ impl AppContext {
         let data_contract =
             DataContract::fetch(sdk, identity_token_info.data_contract.contract.id())
                 .await
-                .map_err(|e| format!("Error fetching contract from platform: {}", e.to_string()))?
+                .map_err(|e| format!("Error fetching contract from platform: {}", e))?
                 .ok_or_else(|| {
                     format!(
                         "Contract with ID {} not found on platform",
@@ -156,7 +156,7 @@ impl AppContext {
             .map_err(|e| {
                 format!(
                     "Error removing token from local database: {}",
-                    e.to_string()
+                    e
                 )
             })?;
 
@@ -170,14 +170,14 @@ impl AppContext {
         .map_err(|e| {
             format!(
                 "Error inserting token into local database: {}",
-                e.to_string()
+                e
             )
         })?;
 
         // Return success
         Ok(BackendTaskSuccessResult::Message(format!(
             "Successfully updated token config item: {}",
-            change_item.to_string()
+            change_item
         )))
     }
 }

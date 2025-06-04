@@ -40,7 +40,7 @@ impl TokensScreen {
 
         // Allocate space for backend message
         let backend_message_height = 40.0;
-        if let Some(_) = self.token_creator_error_message.clone() {
+        if self.token_creator_error_message.clone().is_some() {
             max_scroll_height -= backend_message_height;
         }
 
@@ -232,7 +232,7 @@ impl TokensScreen {
                                         ComboBox::from_id_salt(format!("token_name_language_selector_{}", i))
                                             .selected_text(format!(
                                                 "{}",
-                                                self.token_names_input[i].2.to_string()
+                                                self.token_names_input[i].2
                                             ))
                                             .show_ui(ui, |ui| {
                                                 ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::English, "English");
@@ -241,7 +241,7 @@ impl TokensScreen {
                                         ComboBox::from_id_salt(format!("token_name_language_selector_{}", i))
                                             .selected_text(format!(
                                                 "{}",
-                                                self.token_names_input[i].2.to_string()
+                                                self.token_names_input[i].2
                                             ))
                                             .show_ui(ui, |ui| {
                                                 ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::English, "English");
@@ -308,10 +308,8 @@ impl TokensScreen {
                                             // Add a new token name input
                                             self.token_names_input.push((String::new(), String::new(), next_non_used_language, false));
                                         }
-                                        if i != 0 {
-                                            if ui.button("-").clicked() {
-                                                token_to_remove = Some(i.try_into().expect("Failed to convert index"));
-                                            }
+                                        if i != 0 && ui.button("-").clicked() {
+                                            token_to_remove = Some(i.try_into().expect("Failed to convert index"));
                                         }
 
                                         ui.checkbox(&mut self.token_names_input[i].3, "Add singular name to keywords");
@@ -359,19 +357,17 @@ impl TokensScreen {
                                 ui.text_edit_singleline(&mut self.contract_keywords_input);
 
                                 for name in self.token_names_input.iter() {
-                                    if name.0.len() > 0 {
-                                        if name.3 {
-                                            let contract_keywords = self.contract_keywords_input.split(',').map(|s| s.trim()).collect::<Vec<_>>();
+                                    if !name.0.is_empty() && name.3 {
+                                        let contract_keywords = self.contract_keywords_input.split(',').map(|s| s.trim()).collect::<Vec<_>>();
 
-                                            // If there are any duplicate keywords, show an error
-                                            let mut seen_keywords = HashSet::new();
-                                            seen_keywords.insert(name.0.clone());
-                                            for keyword in contract_keywords.iter() {
-                                                if seen_keywords.contains(*keyword) {
-                                                    ui.colored_label(Color32::DARK_RED, format!("Duplicate contract keyword: {}", keyword));
-                                                }
-                                                seen_keywords.insert(keyword.to_string());
+                                        // If there are any duplicate keywords, show an error
+                                        let mut seen_keywords = HashSet::new();
+                                        seen_keywords.insert(name.0.clone());
+                                        for keyword in contract_keywords.iter() {
+                                            if seen_keywords.contains(*keyword) {
+                                                ui.colored_label(Color32::DARK_RED, format!("Duplicate contract keyword: {}", keyword));
                                             }
+                                            seen_keywords.insert(keyword.to_string());
                                         }
                                     }
                                 }
@@ -558,7 +554,7 @@ impl TokensScreen {
                                     ComboBox::from_id_salt("main_control_group_change_selector")
                                         .selected_text(format!(
                                             "{}",
-                                            self.authorized_main_control_group_change.to_string()
+                                            self.authorized_main_control_group_change
                                         ))
                                         .show_ui(ui, |ui| {
                                             ui.selectable_value(
@@ -724,7 +720,7 @@ impl TokensScreen {
         // Show an error if we have one
         if let Some(err_msg) = &self.token_creator_error_message {
             ui.add_space(10.0);
-            ui.colored_label(Color32::RED, format!("{err_msg}"));
+            ui.colored_label(Color32::RED, err_msg.to_string());
             ui.add_space(10.0);
         }
 
@@ -740,7 +736,7 @@ impl TokensScreen {
             .selected_identity
             .clone()
             .ok_or_else(|| "Please select an identity".to_string())?;
-        let identity_id = identity.identity.id().clone();
+        let identity_id = identity.identity.id();
 
         // Remove whitespace and parse the comma separated string into a vec
         let mut contract_keywords = if self.contract_keywords_input.trim().is_empty() {
@@ -857,7 +853,7 @@ impl TokensScreen {
             }
         }
 
-        let token_description = if self.token_description_input.len() > 0 {
+        let token_description = if !self.token_description_input.is_empty() {
             Some(self.token_description_input.clone())
         } else {
             None
@@ -990,7 +986,7 @@ impl TokensScreen {
             }
             other => {
                 // For ContractOwner or NoOne, just return them as-is
-                Ok(other.clone())
+                Ok(*other)
             }
         }
     }
@@ -1034,7 +1030,7 @@ impl TokensScreen {
                 ui.label(
                     "Are you sure you want to register a new token contract with these settings?\n",
                 );
-                let max_supply_display = if self.max_supply_input.len() == 0 {
+                let max_supply_display = if self.max_supply_input.is_empty() {
                     "None".to_string()
                 } else {
                     self.max_supply_input.clone()

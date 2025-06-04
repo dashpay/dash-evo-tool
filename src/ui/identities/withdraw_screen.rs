@@ -499,7 +499,7 @@ impl ScreenLike for WithdrawalScreen {
                         ui.colored_label(egui::Color32::RED, format!("Error: {}", msg));
                     }
                     WithdrawFromIdentityStatus::Complete => {
-                        ui.colored_label(egui::Color32::DARK_GREEN, format!("Successfully withdrew from identity"));
+                        ui.colored_label(egui::Color32::DARK_GREEN, "Successfully withdrew from identity".to_string());
                     }
                 }
 

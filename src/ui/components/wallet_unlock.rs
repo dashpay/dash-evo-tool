@@ -22,11 +22,7 @@ pub trait ScreenWithWalletUnlock {
                     self.set_error_message(Some(e));
                 }
                 false
-            } else if wallet.is_open() {
-                false
-            } else {
-                true
-            }
+            } else { !wallet.is_open() }
         } else {
             true
         }

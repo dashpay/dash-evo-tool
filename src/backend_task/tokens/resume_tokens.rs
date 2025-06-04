@@ -51,7 +51,7 @@ impl AppContext {
                 options,
             )
             .await
-            .map_err(|e| format!("Error signing Resume Tokens transition: {}", e.to_string()))?;
+            .map_err(|e| format!("Error signing Resume Tokens transition: {}", e))?;
 
         // Broadcast
         let _proof_result = state_transition

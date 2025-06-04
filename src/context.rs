@@ -331,12 +331,12 @@ impl AppContext {
 
     /// Inserts scheduled votes into the database
     pub fn insert_scheduled_votes(&self, scheduled_votes: &Vec<ScheduledDPNSVote>) -> Result<()> {
-        self.db.insert_scheduled_votes(self, &scheduled_votes)
+        self.db.insert_scheduled_votes(self, scheduled_votes)
     }
 
     /// Fetches all scheduled votes from the database
     pub fn get_scheduled_votes(&self) -> Result<Vec<ScheduledDPNSVote>> {
-        self.db.get_scheduled_votes(&self)
+        self.db.get_scheduled_votes(self)
     }
 
     /// Clears all scheduled votes from the database
@@ -352,7 +352,7 @@ impl AppContext {
     /// Deletes a scheduled vote from the database
     pub fn delete_scheduled_vote(&self, identity_id: &[u8], contested_name: &String) -> Result<()> {
         self.db
-            .delete_scheduled_vote(self, identity_id, &contested_name)
+            .delete_scheduled_vote(self, identity_id, contested_name)
     }
 
     /// Marks a scheduled vote as executed in the database
@@ -472,7 +472,7 @@ impl AppContext {
 
     // Remove contract from the database by ID
     pub fn remove_contract(&self, contract_id: &Identifier) -> Result<()> {
-        self.db.remove_contract(contract_id.as_bytes(), &self)
+        self.db.remove_contract(contract_id.as_bytes(), self)
     }
 
     pub fn replace_contract(
@@ -525,10 +525,10 @@ impl AppContext {
                     .utxos
                     .entry(address.clone())
                     .or_insert_with(HashMap::new) // Initialize inner HashMap if needed
-                    .insert(out_point.clone(), tx_out.clone()); // Insert the TxOut at the OutPoint
+                    .insert(out_point, tx_out.clone()); // Insert the TxOut at the OutPoint
 
                 // Collect the outpoint
-                wallet_outpoints.push((out_point.clone(), tx_out.clone(), address.clone()));
+                wallet_outpoints.push((out_point, tx_out.clone(), address.clone()));
 
                 wallet
                     .address_balances
@@ -565,13 +565,13 @@ impl AppContext {
                 tx.clone(),
                 0,
             )))
-        } else if let Some(chain_locked_height) = chain_locked_height {
-            Some(AssetLockProof::Chain(ChainAssetLockProof {
-                core_chain_locked_height: chain_locked_height,
-                out_point: OutPoint::new(tx.txid(), 0),
-            }))
         } else {
-            None
+            chain_locked_height.map(|chain_locked_height| {
+                AssetLockProof::Chain(ChainAssetLockProof {
+                    core_chain_locked_height: chain_locked_height,
+                    out_point: OutPoint::new(tx.txid(), 0),
+                })
+            })
         };
 
         {

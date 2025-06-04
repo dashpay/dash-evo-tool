@@ -494,12 +494,10 @@ Emits tokens in fixed amounts for specific intervals.
                                                     } else {
                                                         format!("At start distribute {} tokens {}", amount, every_text)
                                                     }
+                                                } else if amount == 0 {
+                                                    format!("After block {} stop distributing tokens", block)
                                                 } else {
-                                                    if amount == 0 {
-                                                        format!("After block {} stop distributing tokens", block)
-                                                    } else {
-                                                        format!("After block {} distribute {} tokens {}", block, amount, every_text)
-                                                    }
+                                                    format!("After block {} distribute {} tokens {}", block, amount, every_text)
                                                 }
                                             }
                                             PerpetualDistributionIntervalTypeUI::TimeBased => {
@@ -510,12 +508,10 @@ Emits tokens in fixed amounts for specific intervals.
                                                     } else {
                                                         format!("At start distribute {} tokens {}", amount, every_text)
                                                     }
+                                                } else if amount == 0 {
+                                                    format!("{} {} after the contract is registered stop distributing tokens", time, self.perpetual_dist_interval_unit.label_for_num_amount(perpetual_dist_interval_input))
                                                 } else {
-                                                    if amount == 0 {
-                                                        format!("{} {} after the contract is registered stop distributing tokens", time, self.perpetual_dist_interval_unit.label_for_num_amount(perpetual_dist_interval_input))
-                                                    } else {
-                                                        format!("{} {} after the contract is registered distribute {} tokens {}", time, self.perpetual_dist_interval_unit.label_for_num_amount(perpetual_dist_interval_input), amount, every_text)
-                                                    }
+                                                    format!("{} {} after the contract is registered distribute {} tokens {}", time, self.perpetual_dist_interval_unit.label_for_num_amount(perpetual_dist_interval_input), amount, every_text)
                                                 }
                                             }
                                             PerpetualDistributionIntervalTypeUI::EpochBased => {
@@ -526,12 +522,10 @@ Emits tokens in fixed amounts for specific intervals.
                                                     } else {
                                                         format!("At start distribute {} tokens {}", amount, every_text)
                                                     }
+                                                } else if amount == 0 {
+                                                    format!("After epoch {} stop distributing tokens", epoch)
                                                 } else {
-                                                    if amount == 0 {
-                                                        format!("After epoch {} stop distributing tokens", epoch)
-                                                    } else {
-                                                        format!("After epoch {} distribute {} tokens {}", epoch, amount, every_text)
-                                                    }
+                                                    format!("After epoch {} distribute {} tokens {}", epoch, amount, every_text)
                                                 }
                                             }
                                         };
@@ -922,16 +916,13 @@ Emits tokens in fixed amounts for specific intervals.
                         });
 
                     // If user selected Identity or Group, show extra text edit
-                    match &mut self.perpetual_dist_recipient {
-                        TokenDistributionRecipientUI::Identity => {
-                            if self.perpetual_dist_recipient_identity_input.is_none() {
-                                self.perpetual_dist_recipient_identity_input = Some(String::new());
-                            }
-                            if let Some(ref mut id) = self.perpetual_dist_recipient_identity_input {
-                                ui.add(TextEdit::singleline(id).hint_text("Enter base58 id"));
-                            }
+                    if self.perpetual_dist_recipient == TokenDistributionRecipientUI::Identity {
+                        if self.perpetual_dist_recipient_identity_input.is_none() {
+                            self.perpetual_dist_recipient_identity_input = Some(String::new());
                         }
-                        _ => {}
+                        if let Some(ref mut id) = self.perpetual_dist_recipient_identity_input {
+                            ui.add(TextEdit::singleline(id).hint_text("Enter base58 id"));
+                        }
                     }
                 });
 

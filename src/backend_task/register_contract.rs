@@ -30,7 +30,7 @@ impl AppContext {
         sender: mpsc::Sender<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, String> {
         match data_contract
-            .put_to_platform_and_wait_for_response(&sdk, signing_key.clone(), &identity, None)
+            .put_to_platform_and_wait_for_response(sdk, signing_key.clone(), &identity, None)
             .await
         {
             Ok(returned_contract) => {
@@ -48,7 +48,7 @@ impl AppContext {
                     .map_err(|e| {
                         format!(
                             "Error inserting contract into the database: {}",
-                            e.to_string()
+                            e
                         )
                     })?;
                 Ok(BackendTaskSuccessResult::Message(
@@ -62,7 +62,7 @@ impl AppContext {
                             "Transaction returned proof error".to_string(),
                         )))
                         .await
-                        .map_err(|e| format!("Failed to send message: {}", e.to_string()))?;
+                        .map_err(|e| format!("Failed to send message: {}", e))?;
                     match self.network {
                         Network::Regtest => sleep(Duration::from_secs(3)).await,
                         _ => sleep(Duration::from_secs(10)).await,
@@ -73,7 +73,7 @@ impl AppContext {
                         Err(e) => {
                             return Err(format!(
                                 "Failed to extract id from error message: {}",
-                                e.to_string()
+                                e
                             ))
                         }
                     };
@@ -82,7 +82,7 @@ impl AppContext {
                         Err(e) => {
                             return Err(format!(
                                 "Failed to fetch contract from Platform state: {}",
-                                e.to_string()
+                                e
                             ))
                         }
                     };
@@ -99,7 +99,7 @@ impl AppContext {
                             .map_err(|e| {
                                 format!(
                                     "Failed to get contract by ID from database: {}",
-                                    e.to_string()
+                                    e
                                 )
                             })?;
 
@@ -113,7 +113,7 @@ impl AppContext {
                             .map_err(|e| {
                                 format!(
                                     "Error inserting contract into the database: {}",
-                                    e.to_string()
+                                    e
                                 )
                             })?;
                     }
@@ -128,13 +128,13 @@ impl AppContext {
                             error: Some(proof_error.to_string()),
                         })
                         .ok();
-                    return Err(format!(
+                    Err(format!(
                         "Error broadcasting Register Contract transition: {}, proof error logged, contract inserted into the database",
                         proof_error
-                    ));
+                    ))
                 }
                 e => {
-                    return Err(format!(
+                    Err(format!(
                         "Error broadcasting Register Contract transition: {}",
                         e
                     ))

@@ -63,7 +63,7 @@ impl AppContext {
                                     .map_err(|e| {
                                         format!(
                                             "Error inserting contract into the database: {}",
-                                            e.to_string()
+                                            e
                                         )
                                     })?;
                                 results.push(Some(contract.clone()));
@@ -73,7 +73,7 @@ impl AppContext {
                         }
                         Ok(BackendTaskSuccessResult::FetchedContracts(results))
                     }
-                    Err(e) => Err(format!("Error fetching contracts: {}", e.to_string())),
+                    Err(e) => Err(format!("Error fetching contracts: {}", e)),
                 }
             }
             ContractTask::FetchContractsWithDescriptions(identifiers) => {
@@ -108,11 +108,7 @@ impl AppContext {
                                         .expected_token_configuration(*token.0)
                                         .expect("Expected to get token configuration");
                                     let token_name = {
-                                        let conventions = match &token_configuration.conventions() {
-                                            TokenConfigurationConvention::V0(conventions) => {
-                                                conventions
-                                            }
-                                        };
+                                        let TokenConfigurationConvention::V0(conventions) = &token_configuration.conventions();
                                         conventions
                                             .plural_form_by_language_code_or_default("en")
                                             .to_string()
@@ -149,7 +145,7 @@ impl AppContext {
                         }
                         Ok(BackendTaskSuccessResult::ContractsWithDescriptions(results))
                     }
-                    Err(e) => Err(format!("Error fetching contracts: {}", e.to_string())),
+                    Err(e) => Err(format!("Error fetching contracts: {}", e)),
                 }
             }
             ContractTask::FetchActiveGroupActions(contract, identity) => {
@@ -173,7 +169,7 @@ impl AppContext {
 
                     let group_actions = GroupAction::fetch_many(sdk, query)
                         .await
-                        .map_err(|e| format!("Error fetching group actions: {}", e.to_string()))?;
+                        .map_err(|e| format!("Error fetching group actions: {}", e))?;
 
                     for group_action in group_actions {
                         if let Some(action) = &group_action.1 {
@@ -186,7 +182,7 @@ impl AppContext {
             }
             ContractTask::RegisterDataContract(data_contract, alias, identity, signing_key) => {
                 AppContext::register_data_contract(
-                    &self,
+                    self,
                     data_contract,
                     alias,
                     identity,
@@ -200,11 +196,11 @@ impl AppContext {
                         "Successfully registered contract".to_string(),
                     )
                 })
-                .map_err(|e| format!("Error registering contract: {}", e.to_string()))
+                .map_err(|e| format!("Error registering contract: {}", e))
             }
             ContractTask::UpdateDataContract(mut data_contract, identity, signing_key) => {
                 AppContext::update_data_contract(
-                    &self,
+                    self,
                     &mut data_contract,
                     identity,
                     signing_key,
@@ -215,14 +211,14 @@ impl AppContext {
                 .map(|_| {
                     BackendTaskSuccessResult::Message("Successfully updated contract".to_string())
                 })
-                .map_err(|e| format!("Error updating contract: {}", e.to_string()))
+                .map_err(|e| format!("Error updating contract: {}", e))
             }
             ContractTask::RemoveContract(identifier) => self
                 .remove_contract(&identifier)
                 .map(|_| {
                     BackendTaskSuccessResult::Message("Successfully removed contract".to_string())
                 })
-                .map_err(|e| format!("Error removing contract: {}", e.to_string())),
+                .map_err(|e| format!("Error removing contract: {}", e)),
             ContractTask::SaveDataContract(data_contract, alias, insert_tokens_too) => {
                 self.db
                     .insert_contract_if_not_exists(
@@ -234,7 +230,7 @@ impl AppContext {
                     .map_err(|e| {
                         format!(
                             "Error inserting contract into the database: {}",
-                            e.to_string()
+                            e
                         )
                     })?;
                 Ok(BackendTaskSuccessResult::Message(

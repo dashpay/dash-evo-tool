@@ -63,7 +63,7 @@ impl AppContext {
             .map_err(|e| {
                 format!(
                     "Error signing Mint Tokens state transition: {}",
-                    e.to_string()
+                    e
                 )
             })?;
 

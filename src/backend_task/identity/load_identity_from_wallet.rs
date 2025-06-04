@@ -34,7 +34,7 @@ impl AppContext {
         };
 
         let Some(identity) = Identity::fetch(
-            &sdk,
+            sdk,
             PublicKeyHash(public_key.pubkey_hash().to_byte_array()),
         )
         .await
@@ -90,7 +90,6 @@ impl AppContext {
                         })
                     })
                     .collect::<Vec<DPNSNameInfo>>()
-                    .into()
             })
             .map_err(|e| format!("Error fetching DPNS names: {}", e))?;
 

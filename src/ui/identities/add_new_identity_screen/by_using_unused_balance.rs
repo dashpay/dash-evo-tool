@@ -41,7 +41,7 @@ impl AddNewIdentityScreen {
         self.render_funding_amount_input(ui);
 
         // Extract the step from the RwLock to minimize borrow scope
-        let step = self.step.read().unwrap().clone();
+        let step = *self.step.read().unwrap();
 
         let Ok(_) = self.funding_amount.parse::<f64>() else {
             return action;

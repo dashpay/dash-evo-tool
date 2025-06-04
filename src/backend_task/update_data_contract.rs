@@ -68,7 +68,7 @@ impl AppContext {
         let identity_contract_nonce = sdk
             .get_identity_contract_nonce(identity.identity.id(), data_contract.id(), true, None)
             .await
-            .map_err(|_| format!("Failed to get nonce"))?;
+            .map_err(|_| "Failed to get nonce".to_string())?;
 
         // Update UI
         sender
@@ -76,7 +76,7 @@ impl AppContext {
                 "Nonce fetched successfully".to_string(),
             )))
             .await
-            .map_err(|e| format!("Failed to send message: {}", e.to_string()))?;
+            .map_err(|e| format!("Failed to send message: {}", e))?;
 
         let contract_update_transition: DataContractUpdateTransition =
             (data_contract.clone(), identity_contract_nonce)
@@ -84,7 +84,7 @@ impl AppContext {
                 .map_err(|e: dash_sdk::dpp::ProtocolError| {
                     format!(
                         "Failed to convert data contract to DataContractUpdateTransition: {}",
-                        e.to_string()
+                        e
                     )
                 })?;
 
@@ -101,7 +101,7 @@ impl AppContext {
         ).map_err(|e| {
             format!(
                 "Failed to sign state transition: {}",
-                e.to_string()
+                e
             )
         })?;
 
@@ -112,7 +112,7 @@ impl AppContext {
                     .map_err(|e| {
                         format!(
                             "Error inserting contract into the database: {}",
-                            e.to_string()
+                            e
                         )
                     })?;
                 Ok(BackendTaskSuccessResult::Message(
@@ -126,7 +126,7 @@ impl AppContext {
                             "Transaction returned proof error".to_string(),
                         )))
                         .await
-                        .map_err(|e| format!("Failed to send message: {}", e.to_string()))?;
+                        .map_err(|e| format!("Failed to send message: {}", e))?;
                     match self.network {
                         Network::Regtest => sleep(Duration::from_secs(3)).await,
                         _ => sleep(Duration::from_secs(10)).await,
@@ -138,7 +138,7 @@ impl AppContext {
                         Err(e) => {
                             return Err(format!(
                                 "Failed to extract id from error message: {}",
-                                e.to_string()
+                                e
                             ))
                         }
                     };
@@ -148,7 +148,7 @@ impl AppContext {
                         Err(e) => {
                             return Err(format!(
                                 "Failed to fetch contract from Platform state: {}",
-                                e.to_string()
+                                e
                             ))
                         }
                     };
@@ -158,7 +158,7 @@ impl AppContext {
                             .map_err(|e| {
                                 format!(
                                     "Error inserting contract into the database: {}",
-                                    e.to_string()
+                                    e
                                 )
                             })?;
                     }

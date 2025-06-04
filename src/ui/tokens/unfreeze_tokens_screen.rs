@@ -355,12 +355,10 @@ impl UnfreezeTokensScreen {
             if self.group_action_id.is_some() {
                 // This is already initiated by the group, we are just signing it
                 ui.heading("Group Unfreeze Signing Successful.");
+            } else if !self.is_unilateral_group_member && self.group.is_some() {
+                ui.heading("Group Unfreeze Initiated.");
             } else {
-                if !self.is_unilateral_group_member && self.group.is_some() {
-                    ui.heading("Group Unfreeze Initiated.");
-                } else {
-                    ui.heading("Unfroze Identity Successfully.");
-                }
+                ui.heading("Unfroze Identity Successfully.");
             }
 
             ui.add_space(20.0);
@@ -379,15 +377,13 @@ impl UnfreezeTokensScreen {
                     action |= AppAction::PopScreenAndRefresh;
                 }
 
-                if !self.is_unilateral_group_member {
-                    if ui.button("Go to Group Actions").clicked() {
-                        action |= AppAction::PopThenAddScreenToMainScreen(
-                            RootScreenType::RootScreenDocumentQuery,
-                            Screen::GroupActionsScreen(GroupActionsScreen::new(
-                                &self.app_context.clone(),
-                            )),
-                        );
-                    }
+                if !self.is_unilateral_group_member && ui.button("Go to Group Actions").clicked() {
+                    action |= AppAction::PopThenAddScreenToMainScreen(
+                        RootScreenType::RootScreenDocumentQuery,
+                        Screen::GroupActionsScreen(GroupActionsScreen::new(
+                            &self.app_context.clone(),
+                        )),
+                    );
                 }
             }
         });
@@ -591,7 +587,7 @@ impl ScreenLike for UnfreezeTokensScreen {
                             )
                             .changed()
                         {
-                            self.public_note = if txt.len() > 0 {
+                            self.public_note = if !txt.is_empty() {
                                 Some(txt)
                             } else {
                                 None

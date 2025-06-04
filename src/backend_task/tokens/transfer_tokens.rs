@@ -53,7 +53,7 @@ impl AppContext {
             .map_err(|e| {
                 format!(
                     "Error signing token transfer state transition: {}",
-                    e.to_string()
+                    e
                 )
             })?;
 

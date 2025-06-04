@@ -55,7 +55,7 @@ impl AppContext {
             .map_err(|e| {
                 format!(
                     "Error signing Unfreeze Tokens transition: {}",
-                    e.to_string()
+                    e
                 )
             })?;
 

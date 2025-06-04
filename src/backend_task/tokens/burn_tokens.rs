@@ -52,7 +52,7 @@ impl AppContext {
                 options,
             )
             .await
-            .map_err(|e| format!("Error signing Burn Tokens transition: {}", e.to_string()))?;
+            .map_err(|e| format!("Error signing Burn Tokens transition: {}", e))?;
 
         // Broadcast and wait
         let _proof_result = state_transition

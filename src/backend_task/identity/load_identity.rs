@@ -278,7 +278,6 @@ impl AppContext {
                         })
                     })
                     .collect::<Vec<DPNSNameInfo>>()
-                    .into()
             })
             .map_err(|e| format!("Error fetching DPNS names: {}", e))?;
 

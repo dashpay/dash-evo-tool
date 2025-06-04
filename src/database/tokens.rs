@@ -130,7 +130,7 @@ impl Database {
         // Insert an identity token balance of 0 for each identity for this token
         let wallets = app_context.wallets.read().unwrap();
         for identity in self.get_local_qualified_identities(app_context, &wallets)? {
-            self.insert_identity_token_balance(&token_id, &identity.identity.id(), 0, app_context)?;
+            self.insert_identity_token_balance(token_id, &identity.identity.id(), 0, app_context)?;
         }
 
         Ok(())

@@ -49,7 +49,7 @@ impl AppContext {
             .map_err(|e| {
                 format!(
                     "Error signing Purchase Tokens state transition: {}",
-                    e.to_string()
+                    e
                 )
             })?;
 

@@ -85,7 +85,7 @@ impl AppContext {
 
                         // Encode the path_query using bincode
                         let verification_path_query_bytes =
-                            match bincode::encode_to_vec(&path_query, bincode::config::standard())
+                            match bincode::encode_to_vec(path_query, bincode::config::standard())
                                 .map_err(|encode_err| {
                                     tracing::error!("Error encoding path_query: {}", encode_err);
                                     format!("Error encoding path_query: {}", encode_err)
@@ -94,7 +94,7 @@ impl AppContext {
                                 Err(e) => return Err(e),
                             };
 
-                        if let Err(e) = self
+                        self
                             .db
                             .insert_proof_log_item(ProofLogItem {
                                 request_type: RequestType::GetVotePollsByEndDate,
@@ -105,10 +105,7 @@ impl AppContext {
                                 proof_bytes: proof_bytes.clone(),
                                 error: Some(error.clone()),
                             })
-                            .map_err(|e| e.to_string())
-                        {
-                            return Err(e);
-                        }
+                            .map_err(|e| e.to_string())?
                     }
                     if e.to_string().contains("try another server")
                         || e.to_string().contains(
@@ -131,7 +128,7 @@ impl AppContext {
 
             contests_end_times.extend(new_end_times.clone());
 
-            if new_end_times.len() == 0 {
+            if new_end_times.is_empty() {
                 break;
             }
 

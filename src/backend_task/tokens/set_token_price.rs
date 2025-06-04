@@ -54,7 +54,7 @@ impl AppContext {
                 options,
             )
             .await
-            .map_err(|e| format!("Error signing SetPrice state transition: {}", e.to_string()))?;
+            .map_err(|e| format!("Error signing SetPrice state transition: {}", e))?;
 
         // broadcast and wait
         let _proof_result = state_transition

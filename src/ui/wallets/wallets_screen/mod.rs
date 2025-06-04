@@ -243,8 +243,7 @@ impl WalletsBalancesScreen {
 
                             let is_selected = self
                                 .selected_wallet
-                                .as_ref()
-                                .map_or(false, |selected| Arc::ptr_eq(selected, wallet));
+                                .as_ref().is_some_and(|selected| Arc::ptr_eq(selected, wallet));
 
                             if ui
                                 .selectable_label(is_selected, wallet_alias.clone())
@@ -822,11 +821,8 @@ impl ScreenLike for WalletsBalancesScreen {
             }
         });
 
-        match action {
-            AppAction::BackendTask(BackendTask::CoreTask(CoreTask::RefreshWalletInfo(_))) => {
-                self.refreshing = true;
-            }
-            _ => {}
+        if let AppAction::BackendTask(BackendTask::CoreTask(CoreTask::RefreshWalletInfo(_))) = action {
+            self.refreshing = true;
         }
 
         action

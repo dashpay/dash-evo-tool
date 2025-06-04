@@ -373,12 +373,10 @@ impl DestroyFrozenFundsScreen {
             if self.group_action_id.is_some() {
                 // This destroy is already initiated by the group, we are just signing it
                 ui.heading("Group Destroy Frozen Funds Signing Successful.");
+            } else if !self.is_unilateral_group_member && self.group.is_some() {
+                ui.heading("Group Action to Destroy Frozen Funds Initiated.");
             } else {
-                if !self.is_unilateral_group_member && self.group.is_some() {
-                    ui.heading("Group Action to Destroy Frozen Funds Initiated.");
-                } else {
-                    ui.heading("Frozen Funds Destroyed Successfully.");
-                }
+                ui.heading("Frozen Funds Destroyed Successfully.");
             }
 
             ui.add_space(20.0);
@@ -397,15 +395,13 @@ impl DestroyFrozenFundsScreen {
                     action = AppAction::PopScreenAndRefresh;
                 }
 
-                if !self.is_unilateral_group_member {
-                    if ui.button("Go to Group Actions").clicked() {
-                        action = AppAction::PopThenAddScreenToMainScreen(
-                            RootScreenType::RootScreenDocumentQuery,
-                            Screen::GroupActionsScreen(GroupActionsScreen::new(
-                                &self.app_context.clone(),
-                            )),
-                        );
-                    }
+                if !self.is_unilateral_group_member && ui.button("Go to Group Actions").clicked() {
+                    action = AppAction::PopThenAddScreenToMainScreen(
+                        RootScreenType::RootScreenDocumentQuery,
+                        Screen::GroupActionsScreen(GroupActionsScreen::new(
+                            &self.app_context.clone(),
+                        )),
+                    );
                 }
             }
         });
@@ -613,7 +609,7 @@ impl ScreenLike for DestroyFrozenFundsScreen {
                             )
                             .changed()
                         {
-                            self.public_note = if txt.len() > 0 {
+                            self.public_note = if !txt.is_empty() {
                                 Some(txt)
                             } else {
                                 None

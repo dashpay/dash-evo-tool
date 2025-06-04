@@ -16,7 +16,6 @@ use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
 use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike};
 use chrono::{DateTime, Utc};
-use dash_sdk::dpp::balances::credits::TokenAmount;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
@@ -338,10 +337,9 @@ impl UpdateTokenConfigScreen {
                         .selectable_value(
                             &mut self.change_item,
                             TokenConfigurationChangeItem::ConventionsControlGroup(
-                                default_token_configuration
+                                *default_token_configuration
                                     .conventions_change_rules()
-                                    .authorized_to_make_change_action_takers()
-                                    .clone(),
+                                    .authorized_to_make_change_action_takers(),
                             ),
                             "Conventions Control Group",
                         )
@@ -353,10 +351,9 @@ impl UpdateTokenConfigScreen {
                         .selectable_value(
                             &mut self.change_item,
                             TokenConfigurationChangeItem::ConventionsAdminGroup(
-                                default_token_configuration
+                                *default_token_configuration
                                     .conventions_change_rules()
-                                    .admin_action_takers()
-                                    .clone(),
+                                    .admin_action_takers(),
                             ),
                             "Conventions Admin Group",
                         )
@@ -384,10 +381,9 @@ impl UpdateTokenConfigScreen {
                         .selectable_value(
                             &mut self.change_item,
                             TokenConfigurationChangeItem::MaxSupplyControlGroup(
-                                default_token_configuration
+                                *default_token_configuration
                                     .max_supply_change_rules()
-                                    .authorized_to_make_change_action_takers()
-                                    .clone(),
+                                    .authorized_to_make_change_action_takers(),
                             ),
                             "Max Supply Control Group",
                         )
@@ -399,10 +395,9 @@ impl UpdateTokenConfigScreen {
                         .selectable_value(
                             &mut self.change_item,
                             TokenConfigurationChangeItem::MaxSupplyAdminGroup(
-                                default_token_configuration
+                                *default_token_configuration
                                     .max_supply_change_rules()
-                                    .admin_action_takers()
-                                    .clone(),
+                                    .admin_action_takers(),
                             ),
                             "Max Supply Admin Group",
                         )
@@ -436,11 +431,10 @@ impl UpdateTokenConfigScreen {
                         .selectable_value(
                             &mut self.change_item,
                             TokenConfigurationChangeItem::PerpetualDistributionControlGroup(
-                                default_token_configuration
+                                *default_token_configuration
                                     .distribution_rules()
                                     .perpetual_distribution_rules()
-                                    .authorized_to_make_change_action_takers()
-                                    .clone(),
+                                    .authorized_to_make_change_action_takers(),
                             ),
                             "Perpetual Distribution Control Group",
                         )
@@ -452,11 +446,10 @@ impl UpdateTokenConfigScreen {
                         .selectable_value(
                             &mut self.change_item,
                             TokenConfigurationChangeItem::PerpetualDistributionAdminGroup(
-                                default_token_configuration
+                                *default_token_configuration
                                     .distribution_rules()
                                     .perpetual_distribution_rules()
-                                    .admin_action_takers()
-                                    .clone(),
+                                    .admin_action_takers(),
                             ),
                             "Perpetual Distribution Admin Group",
                         )
@@ -487,11 +480,10 @@ impl UpdateTokenConfigScreen {
                         .selectable_value(
                             &mut self.change_item,
                             TokenConfigurationChangeItem::NewTokensDestinationIdentityControlGroup(
-                                default_token_configuration
+                                *default_token_configuration
                                     .distribution_rules()
                                     .new_tokens_destination_identity_rules()
-                                    .authorized_to_make_change_action_takers()
-                                    .clone(),
+                                    .authorized_to_make_change_action_takers(),
                             ),
                             "New‑Tokens Destination Control Group",
                         )
@@ -503,11 +495,10 @@ impl UpdateTokenConfigScreen {
                         .selectable_value(
                             &mut self.change_item,
                             TokenConfigurationChangeItem::NewTokensDestinationIdentityAdminGroup(
-                                default_token_configuration
+                                *default_token_configuration
                                     .distribution_rules()
                                     .new_tokens_destination_identity_rules()
-                                    .admin_action_takers()
-                                    .clone(),
+                                    .admin_action_takers(),
                             ),
                             "New‑Tokens Destination Admin Group",
                         )
@@ -537,11 +528,10 @@ impl UpdateTokenConfigScreen {
                         .selectable_value(
                             &mut self.change_item,
                             TokenConfigurationChangeItem::MintingAllowChoosingDestinationControlGroup(
-                                default_token_configuration
+                                *default_token_configuration
                                     .distribution_rules()
                                     .minting_allow_choosing_destination_rules()
-                                    .authorized_to_make_change_action_takers()
-                                    .clone(),
+                                    .authorized_to_make_change_action_takers(),
                             ),
                             "Minting Allow Choosing Destination Control Group",
                         )
@@ -553,11 +543,10 @@ impl UpdateTokenConfigScreen {
                         .selectable_value(
                             &mut self.change_item,
                             TokenConfigurationChangeItem::MintingAllowChoosingDestinationAdminGroup(
-                                default_token_configuration
+                                *default_token_configuration
                                     .distribution_rules()
                                     .minting_allow_choosing_destination_rules()
-                                    .admin_action_takers()
-                                    .clone(),
+                                    .admin_action_takers(),
                             ),
                             "Minting Allow Choosing Destination Admin Group",
                         )
@@ -666,7 +655,7 @@ impl UpdateTokenConfigScreen {
             TokenConfigurationChangeItem::MaxSupply(opt_amt) => {
                 let mut txt = opt_amt.map(|a| a.to_string()).unwrap_or_default();
                 if ui.text_edit_singleline(&mut txt).changed() {
-                    *opt_amt = txt.parse::<u64>().ok().map(TokenAmount::from);
+                    *opt_amt = txt.parse::<u64>().ok();
                 }
             }
             TokenConfigurationChangeItem::MintingAllowChoosingDestination(b) => {
@@ -772,7 +761,7 @@ impl UpdateTokenConfigScreen {
                     .on_hover_text("A note about the transaction that can be seen by the public.")
                     .changed()
                 {
-                    self.public_note = if txt.len() > 0 { Some(txt) } else { None };
+                    self.public_note = if !txt.is_empty() { Some(txt) } else { None };
                 }
             });
         }
@@ -859,7 +848,7 @@ impl UpdateTokenConfigScreen {
                             format!("Identity({})", id)
                         }
                     }
-                    AuthorizedActionTakers::Group(_) => format!("Group"),
+                    AuthorizedActionTakers::Group(_) => "Group".to_string(),
                 })
                 .show_ui(ui, |ui| {
                     ui.selectable_value(takers, AuthorizedActionTakers::NoOne, "No One");
@@ -954,12 +943,10 @@ impl UpdateTokenConfigScreen {
             if self.group_action_id.is_some() {
                 // This ConfigUpdate is already initiated by the group, we are just signing it
                 ui.heading("Group ConfigUpdate Signing Successful.");
+            } else if !self.is_unilateral_group_member {
+                ui.heading("Group ConfigUpdate Initiated.");
             } else {
-                if !self.is_unilateral_group_member {
-                    ui.heading("Group ConfigUpdate Initiated.");
-                } else {
-                    ui.heading("ConfigUpdate Successful.");
-                }
+                ui.heading("ConfigUpdate Successful.");
             }
 
             ui.add_space(20.0);
@@ -978,15 +965,13 @@ impl UpdateTokenConfigScreen {
                     action |= AppAction::PopScreenAndRefresh;
                 }
 
-                if !self.is_unilateral_group_member {
-                    if ui.button("Go to Group Actions").clicked() {
-                        action |= AppAction::PopThenAddScreenToMainScreen(
-                            RootScreenType::RootScreenDocumentQuery,
-                            Screen::GroupActionsScreen(GroupActionsScreen::new(
-                                &self.app_context.clone(),
-                            )),
-                        );
-                    }
+                if !self.is_unilateral_group_member && ui.button("Go to Group Actions").clicked() {
+                    action |= AppAction::PopThenAddScreenToMainScreen(
+                        RootScreenType::RootScreenDocumentQuery,
+                        Screen::GroupActionsScreen(GroupActionsScreen::new(
+                            &self.app_context.clone(),
+                        )),
+                    );
                 }
             }
         });
@@ -1218,12 +1203,9 @@ impl ScreenLike for UpdateTokenConfigScreen {
 
                 if self.update_status != UpdateTokenConfigStatus::NotUpdating {
                     ui.add_space(10.0);
-                    match &self.update_status {
-                        UpdateTokenConfigStatus::Updating(start_time) => {
-                            let elapsed = Utc::now().signed_duration_since(*start_time);
-                            ui.label(format!("Updating... ({} seconds)", elapsed.num_seconds()));
-                        }
-                        _ => {}
+                    if let UpdateTokenConfigStatus::Updating(start_time) = &self.update_status {
+                        let elapsed = Utc::now().signed_duration_since(*start_time);
+                        ui.label(format!("Updating... ({} seconds)", elapsed.num_seconds()));
                     }
                 }
             }

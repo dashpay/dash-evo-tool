@@ -200,22 +200,22 @@ impl GroupActionsScreen {
                                             TokenEvent::Mint(amount, identifier, note_opt) => (
                                                 "Mint",
                                                 format!("{} to {}", amount, identifier),
-                                                format!("{}", note_opt.clone().unwrap_or_default()),
+                                                note_opt.clone().unwrap_or_default().to_string(),
                                             ),
                                             TokenEvent::Burn(amount, burn_from, note_opt) => (
                                                 "Burn",
                                                 format!("{} from {}", amount, burn_from),
-                                                format!("{}", note_opt.clone().unwrap_or_default()),
+                                                note_opt.clone().unwrap_or_default().to_string(),
                                             ),
                                             TokenEvent::Freeze(identifier, note_opt) => (
                                                 "Freeze",
                                                 format!("{}", identifier),
-                                                format!("{}", note_opt.clone().unwrap_or_default()),
+                                                note_opt.clone().unwrap_or_default().to_string(),
                                             ),
                                             TokenEvent::Unfreeze(identifier, note_opt) => (
                                                 "Unfreeze",
                                                 format!("{}", identifier),
-                                                format!("{}", note_opt.clone().unwrap_or_default()),
+                                                note_opt.clone().unwrap_or_default().to_string(),
                                             ),
                                             TokenEvent::DestroyFrozenFunds(
                                                 identifier,
@@ -224,7 +224,7 @@ impl GroupActionsScreen {
                                             ) => (
                                                 "DestroyFrozenFunds",
                                                 format!("{} from {}", amount, identifier),
-                                                format!("{}", note_opt.clone().unwrap_or_default()),
+                                                note_opt.clone().unwrap_or_default().to_string(),
                                             ),
                                             TokenEvent::Transfer(
                                                 identifier,
@@ -235,25 +235,22 @@ impl GroupActionsScreen {
                                             ) => (
                                                 "Transfer",
                                                 format!("{} to {}", amount, identifier),
-                                                format!(
-                                                    "{}",
-                                                    public_note.clone().unwrap_or_default()
-                                                ),
+                                                public_note.clone().unwrap_or_default().to_string(),
                                             ),
                                             TokenEvent::Claim(dist_type, amount, note_opt) => (
                                                 "Claim",
                                                 format!("{} via {:?}", amount, dist_type),
-                                                format!("{}", note_opt.clone().unwrap_or_default()),
+                                                note_opt.clone().unwrap_or_default().to_string(),
                                             ),
                                             TokenEvent::EmergencyAction(action, note_opt) => (
                                                 "Emergency",
                                                 format!("{:?}", action),
-                                                format!("{}", note_opt.clone().unwrap_or_default()),
+                                                note_opt.clone().unwrap_or_default().to_string(),
                                             ),
                                             TokenEvent::ConfigUpdate(change_item, note_opt) => (
                                                 "ConfigUpdate",
                                                 format!("{:?}", change_item),
-                                                format!("{}", note_opt.clone().unwrap_or_default()),
+                                                note_opt.clone().unwrap_or_default().to_string(),
                                             ),
                                             TokenEvent::ChangePriceForDirectPurchase(
                                                 schedule,
@@ -261,7 +258,7 @@ impl GroupActionsScreen {
                                             ) => (
                                                 "ChangePrice",
                                                 format!("{:?}", schedule),
-                                                format!("{}", note_opt.clone().unwrap_or_default()),
+                                                note_opt.clone().unwrap_or_default().to_string(),
                                             ),
                                             TokenEvent::DirectPurchase(amount, credits) => (
                                                 "DirectPurchase",
@@ -318,8 +315,7 @@ impl GroupActionsScreen {
                                     {
                                         let token_contract_position = match group_action {
                                             GroupAction::V0(action_v0) => action_v0
-                                                .token_contract_position()
-                                                .clone(),
+                                                .token_contract_position(),
                                         };
                                         let token_id = self.selected_contract.clone().expect("No contract selected").contract.token_id(token_contract_position).expect("No token ID found at the given position");
                                         let identity_token_balance = match self
@@ -363,7 +359,7 @@ impl GroupActionsScreen {
                                                     .next()
                                                     .unwrap_or("0")
                                                     .to_string();
-                                                mint_screen.public_note = if note.len() > 0 {
+                                                mint_screen.public_note = if !note.is_empty() {
                                                     Some(note)
                                                 } else {
                                                     None
@@ -383,7 +379,7 @@ impl GroupActionsScreen {
                                                     .next()
                                                     .unwrap_or("0")
                                                     .to_string();
-                                                burn_screen.public_note = if note.len() > 0 {
+                                                burn_screen.public_note = if !note.is_empty() {
                                                     Some(note)
                                                 } else {
                                                     None
@@ -403,7 +399,7 @@ impl GroupActionsScreen {
                                                     .next()
                                                     .unwrap_or("")
                                                     .to_string();
-                                                freeze_screen.public_note = if note.len() > 0 {
+                                                freeze_screen.public_note = if !note.is_empty() {
                                                     Some(note)
                                                 } else {
                                                     None
@@ -423,7 +419,7 @@ impl GroupActionsScreen {
                                                     .next()
                                                     .unwrap_or("")
                                                     .to_string();
-                                                unfreeze_screen.public_note = if note.len() > 0 {
+                                                unfreeze_screen.public_note = if !note.is_empty() {
                                                     Some(note)
                                                 } else {
                                                     None
@@ -444,7 +440,7 @@ impl GroupActionsScreen {
                                                     .nth(2)
                                                     .unwrap_or("")
                                                     .to_string();
-                                                destroy_screen.public_note = if note.len() > 0 {
+                                                destroy_screen.public_note = if !note.is_empty() {
                                                     Some(note)
                                                 } else {
                                                     None
@@ -462,7 +458,7 @@ impl GroupActionsScreen {
                                                         identity_token_info, &self.app_context,
                                                     );
                                                     pause_screen.group_action_id = Some(*id);
-                                                    pause_screen.public_note = if note.len() > 0 {
+                                                    pause_screen.public_note = if !note.is_empty() {
                                                         Some(note)
                                                     } else {
                                                         None
@@ -476,7 +472,7 @@ impl GroupActionsScreen {
                                                         identity_token_info, &self.app_context,
                                                     );
                                                     resume_screen.group_action_id = Some(*id);
-                                                    resume_screen.public_note = if note.len() > 0 {
+                                                    resume_screen.public_note = if !note.is_empty() {
                                                         Some(note)
                                                     } else {
                                                         None
@@ -493,7 +489,7 @@ impl GroupActionsScreen {
                                                         identity_token_info, &self.app_context,
                                                     );
                                                 update_screen.group_action_id = Some(*id);
-                                                update_screen.public_note = if note.len() > 0 {
+                                                update_screen.public_note = if !note.is_empty() {
                                                     Some(note)
                                                 } else {
                                                     None
@@ -513,7 +509,7 @@ impl GroupActionsScreen {
                                                         .next()
                                                         .unwrap_or("")
                                                         .to_string();
-                                                change_price_screen.public_note = if note.len() > 0 {
+                                                change_price_screen.public_note = if !note.is_empty() {
                                                     Some(note)
                                                 } else {
                                                     None
@@ -560,12 +556,9 @@ impl ScreenLike for GroupActionsScreen {
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
-        match backend_task_success_result {
-            BackendTaskSuccessResult::ActiveGroupActions(actions_map) => {
-                self.fetch_group_actions_status =
-                    FetchGroupActionsStatus::Complete(actions_map.clone());
-            }
-            _ => {}
+        if let BackendTaskSuccessResult::ActiveGroupActions(actions_map) = backend_task_success_result {
+            self.fetch_group_actions_status =
+                FetchGroupActionsStatus::Complete(actions_map.clone());
         }
     }
 

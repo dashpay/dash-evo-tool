@@ -92,7 +92,7 @@ impl AppContext {
                 Document::fetch_many(sdk, document_query)
                     .await
                     .map(BackendTaskSuccessResult::Documents)
-                    .map_err(|e| format!("Error fetching documents: {}", e.to_string()))
+                    .map_err(|e| format!("Error fetching documents: {}", e))
             }
             DocumentTask::FetchDocumentsPage(mut document_query) => {
                 // Set the limit for each page
@@ -150,7 +150,7 @@ impl AppContext {
                 )
                 .await
                 .map(BackendTaskSuccessResult::BroadcastedDocument)
-                .map_err(|e| format!("Error broadcasting document: {}", e.to_string())),
+                .map_err(|e| format!("Error broadcasting document: {}", e)),
             DocumentTask::DeleteDocument(
                 document_id,
                 document_type,
@@ -208,7 +208,7 @@ impl AppContext {
                             "Document deleted successfully".to_string(),
                         )
                     })
-                    .map_err(|e| format!("Broadcasting error: {}", e.to_string()))
+                    .map_err(|e| format!("Broadcasting error: {}", e))
             }
             DocumentTask::ReplaceDocument(
                 document,
@@ -253,7 +253,7 @@ impl AppContext {
                             "Document replaced successfully".to_string(),
                         )
                     })
-                    .map_err(|e| format!("Broadcasting error: {}", e.to_string()))
+                    .map_err(|e| format!("Broadcasting error: {}", e))
             }
             DocumentTask::TransferDocument(
                 document_id,
@@ -297,7 +297,7 @@ impl AppContext {
                             "Document transferred successfully".to_string(),
                         )
                     })
-                    .map_err(|e| format!("Broadcasting error: {}", e.to_string()))
+                    .map_err(|e| format!("Broadcasting error: {}", e))
             }
             DocumentTask::PurchaseDocument(
                 price,
@@ -344,7 +344,7 @@ impl AppContext {
                             "Document purchased successfully".to_string(),
                         )
                     })
-                    .map_err(|e| format!("Broadcasting error: {}", e.to_string()))
+                    .map_err(|e| format!("Broadcasting error: {}", e))
             }
             DocumentTask::SetDocumentPrice(
                 price,
@@ -390,7 +390,7 @@ impl AppContext {
                             "Document price set successfully".to_string(),
                         )
                     })
-                    .map_err(|e| format!("Broadcasting error: {}", e.to_string()))
+                    .map_err(|e| format!("Broadcasting error: {}", e))
             }
         }
     }

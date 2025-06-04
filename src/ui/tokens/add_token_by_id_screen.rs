@@ -222,7 +222,7 @@ impl ScreenLike for AddTokenByIdScreen {
                             .expect("token_id must exist for position"),
                         token_name,
                         data_contract_id: contract.id(),
-                        token_position: *pos as u16,
+                        token_position: { *pos },
                         token_configuration: cfg.clone(),
                         description: cfg.description().clone(),
                     }

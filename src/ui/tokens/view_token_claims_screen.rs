@@ -85,16 +85,13 @@ impl ScreenLike for ViewTokenClaimsScreen {
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
-        match backend_task_success_result {
-            BackendTaskSuccessResult::Documents(documents) => {
-                self.fetch_status = FetchStatus::NotFetching;
-                self.claims = documents.into_iter().filter_map(|(_, doc)| doc).collect();
+        if let BackendTaskSuccessResult::Documents(documents) = backend_task_success_result {
+            self.fetch_status = FetchStatus::NotFetching;
+            self.claims = documents.into_iter().filter_map(|(_, doc)| doc).collect();
 
-                if self.claims.is_empty() {
-                    self.display_message("No claims found", MessageType::Info);
-                }
+            if self.claims.is_empty() {
+                self.display_message("No claims found", MessageType::Info);
             }
-            _ => {}
         }
     }
 
@@ -164,12 +161,9 @@ impl ScreenLike for ViewTokenClaimsScreen {
 
             if self.fetch_status != FetchStatus::NotFetching {
                 ui.add_space(10.0);
-                match &self.fetch_status {
-                    FetchStatus::Fetching(start_time) => {
-                        let elapsed = Utc::now().signed_duration_since(*start_time);
-                        ui.label(format!("Fetching... ({} seconds)", elapsed.num_seconds()));
-                    }
-                    _ => {}
+                if let FetchStatus::Fetching(start_time) = &self.fetch_status {
+                    let elapsed = Utc::now().signed_duration_since(*start_time);
+                    ui.label(format!("Fetching... ({} seconds)", elapsed.num_seconds()));
                 }
             }
 

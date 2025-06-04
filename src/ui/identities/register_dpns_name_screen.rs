@@ -473,10 +473,8 @@ pub fn is_contested_name(name: &str) -> bool {
         return false;
     }
     for c in name.chars() {
-        if c.is_digit(10) {
-            if c != '0' && c != '1' {
-                return false;
-            }
+        if c.is_ascii_digit() && c != '0' && c != '1' {
+            return false;
         }
     }
     true

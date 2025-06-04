@@ -80,7 +80,7 @@ pub fn add_left_panel(
         .show(ctx, |ui| {
             ui.vertical_centered(|ui| {
                 for (label, screen_type, icon_path) in buttons.iter() {
-                    if check_root_screen_access(app_context, screen_type) == false {
+                    if !check_root_screen_access(app_context, screen_type) {
                         continue; // Skip this button if access is denied
                     }
                     let texture: Option<TextureHandle> = load_icon(ctx, icon_path);

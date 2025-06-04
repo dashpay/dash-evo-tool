@@ -45,7 +45,7 @@ impl AppContext {
             // Initialize retry counter
             let mut retries = 0;
 
-            let contested_resources = match ContestedResource::fetch_many(&sdk, query.clone()).await
+            let contested_resources = match ContestedResource::fetch_many(sdk, query.clone()).await
             {
                 Ok(contested_resources) => contested_resources,
                 Err(e) => {
@@ -71,7 +71,7 @@ impl AppContext {
 
                         // Encode the path_query using bincode
                         let verification_path_query_bytes =
-                            match bincode::encode_to_vec(&path_query, bincode::config::standard())
+                            match bincode::encode_to_vec(path_query, bincode::config::standard())
                                 .map_err(|encode_err| {
                                     tracing::error!("Error encoding path_query: {}", encode_err);
                                     format!("Error encoding path_query: {}", encode_err)
@@ -141,15 +141,15 @@ impl AppContext {
 
             let new_names_to_be_updated = self
                 .db
-                .insert_name_contests_as_normalized_names(contested_resources_as_strings, &self)
-                .map_err(|e| format!("Contested resource query failed. Failed to insert name contests into database: {}", e.to_string()))?;
+                .insert_name_contests_as_normalized_names(contested_resources_as_strings, self)
+                .map_err(|e| format!("Contested resource query failed. Failed to insert name contests into database: {}", e))?;
 
             names_to_be_updated.extend(new_names_to_be_updated);
 
             sender.send(TaskResult::Refresh).await.map_err(|e| {
                 format!(
                     "Contested resource query failed. Sender failed to send TaskResult: {}",
-                    e.to_string()
+                    e
                 )
             })?;
 
@@ -248,7 +248,7 @@ impl AppContext {
             .map_err(|e| {
                 format!(
                     "Successfully refreshed DPNS contests but sender failed to send TaskResult: {}",
-                    e.to_string()
+                    e
                 )
             })?;
         Ok(())

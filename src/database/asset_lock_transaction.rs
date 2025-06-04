@@ -20,11 +20,7 @@ impl Database {
         let tx_bytes = serialize(tx);
         let txid = tx.txid().to_byte_array();
 
-        let islock_bytes = if let Some(islock) = islock {
-            Some(serialize(islock))
-        } else {
-            None
-        };
+        let islock_bytes = islock.map(serialize);
 
         let conn = self.conn.lock().unwrap();
 

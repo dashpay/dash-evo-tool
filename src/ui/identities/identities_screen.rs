@@ -244,7 +244,7 @@ impl IdentitiesScreen {
             }
             match self.app_context.set_identity_alias(
                 &identity_to_update.identity.id(),
-                identity_to_update.alias.as_ref().map(|s| s.as_str()),
+                identity_to_update.alias.as_deref(),
             ) {
                 Ok(_) => {}
                 Err(e) => {
@@ -586,7 +586,7 @@ impl IdentitiesScreen {
                                                     action |= self.show_public_key(
                                                         ui,
                                                         qualified_identity,
-                                                        *key,
+                                                        key,
                                                         holding_private_key,
                                                     );
                                                     total_keys_shown += 1;
@@ -613,7 +613,7 @@ impl IdentitiesScreen {
                                                             action |= self.show_public_key(
                                                                 ui,
                                                                 qualified_identity,
-                                                                *key,
+                                                                key,
                                                                 holding_private_key,
                                                             );
                                                             total_keys_shown += 1;
@@ -627,11 +627,9 @@ impl IdentitiesScreen {
                                                 }
                                             }
 
-                                            if more_keys_available {
-                                                if ui.button("...").on_hover_text("Show more keys").clicked() {
-                                                    self.show_more_keys_popup =
-                                                        Some(qualified_identity.clone());
-                                                }
+                                            if more_keys_available && ui.button("...").on_hover_text("Show more keys").clicked() {
+                                                self.show_more_keys_popup =
+                                                    Some(qualified_identity.clone());
                                             }
 
                                             if qualified_identity.can_sign_with_master_key().is_some()
@@ -796,7 +794,7 @@ impl IdentitiesScreen {
             let holding_private_key = qualified_identity
                 .private_keys
                 .get_cloned_private_key_data_and_wallet_info(&(PrivateKeyOnMainIdentity, **key_id));
-            action |= self.show_public_key(ui, qualified_identity, *key, holding_private_key);
+            action |= self.show_public_key(ui, qualified_identity, key, holding_private_key);
         }
 
         if let Some((voter_identity, _)) = qualified_identity.associated_voter_identity.as_ref() {
@@ -811,7 +809,7 @@ impl IdentitiesScreen {
                         PrivateKeyOnVoterIdentity,
                         **key_id,
                     ));
-                action |= self.show_public_key(ui, qualified_identity, *key, holding_private_key);
+                action |= self.show_public_key(ui, qualified_identity, key, holding_private_key);
             }
         }
 

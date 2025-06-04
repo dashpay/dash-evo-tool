@@ -75,22 +75,18 @@ impl TokensScreen {
 
                 // Pagination controls
                 ui.horizontal(|ui| {
-                    if self.search_current_page > 1 {
-                        if ui.button("Previous").clicked() {
-                            // Go to previous page
-                            action = self.goto_previous_search_page();
-                        }
+                    if self.search_current_page > 1 && ui.button("Previous").clicked() {
+                        // Go to previous page
+                        action = self.goto_previous_search_page();
                     }
 
                     if !(self.next_cursors.is_empty() && self.previous_cursors.is_empty()) {
                         ui.label(format!("Page {}", self.search_current_page));
                     }
 
-                    if self.search_has_next_page {
-                        if ui.button("Next").clicked() {
-                            // Go to next page
-                            action = self.goto_next_search_page();
-                        }
+                    if self.search_has_next_page && ui.button("Next").clicked() {
+                        // Go to next page
+                        action = self.goto_next_search_page();
                     }
                 });
             }
@@ -152,11 +148,11 @@ impl TokensScreen {
                                         if ui.button("More Info").clicked() {
                                             // Show more info about the token
                                             self.selected_contract_id =
-                                                Some(contract.data_contract_id.clone());
+                                                Some(contract.data_contract_id);
                                             action =
                                                 AppAction::BackendTask(BackendTask::ContractTask(
                                                     ContractTask::FetchContractsWithDescriptions(
-                                                        vec![contract.data_contract_id.clone()],
+                                                        vec![contract.data_contract_id],
                                                     ),
                                                 ));
 

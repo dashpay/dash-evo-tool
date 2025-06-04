@@ -301,31 +301,28 @@ impl ChangeControlRulesUI {
                             });
 
                         // If user selected Identity or Group, show text edit
-                        match &mut self.rules.authorized_to_make_change {
-                            AuthorizedActionTakers::Identity(_) => {
-                                self.authorized_identity.get_or_insert_with(String::new);
-                                if let Some(ref mut id_str) = self.authorized_identity {
-                                    ui.horizontal(|ui| {
-                                        ui.add_sized(
-                                            [300.0, 22.0],
-                                            TextEdit::singleline(id_str).hint_text("Enter base58 id"),
-                                        );
+                        if let AuthorizedActionTakers::Identity(_) = &mut self.rules.authorized_to_make_change {
+                            self.authorized_identity.get_or_insert_with(String::new);
+                            if let Some(ref mut id_str) = self.authorized_identity {
+                                ui.horizontal(|ui| {
+                                    ui.add_sized(
+                                        [300.0, 22.0],
+                                        TextEdit::singleline(id_str).hint_text("Enter base58 id"),
+                                    );
 
-                                        if !id_str.is_empty() {
-                                            let is_valid = Identifier::from_string(id_str.as_str(), Encoding::Base58).is_ok();
+                                    if !id_str.is_empty() {
+                                        let is_valid = Identifier::from_string(id_str.as_str(), Encoding::Base58).is_ok();
 
-                                            let (symbol, color) = if is_valid {
-                                                ("✔", Color32::GREEN)
-                                            } else {
-                                                ("×", Color32::RED)
-                                            };
+                                        let (symbol, color) = if is_valid {
+                                            ("✔", Color32::GREEN)
+                                        } else {
+                                            ("×", Color32::RED)
+                                        };
 
-                                            ui.label(RichText::new(symbol).color(color).strong());
-                                        }
-                                    });
-                                }
+                                        ui.label(RichText::new(symbol).color(color).strong());
+                                    }
+                                });
                             }
-                            _ => {}
                         }
                     });
                     ui.end_row();
@@ -383,31 +380,28 @@ impl ChangeControlRulesUI {
                                 }
                             });
 
-                        match &mut self.rules.admin_action_takers {
-                            AuthorizedActionTakers::Identity(_) => {
-                                self.admin_identity.get_or_insert_with(String::new);
-                                if let Some(ref mut id_str) = self.admin_identity {
-                                    ui.horizontal(|ui| {
-                                        ui.add_sized(
-                                            [300.0, 22.0],
-                                            TextEdit::singleline(id_str).hint_text("Enter base58 id"),
-                                        );
+                        if let AuthorizedActionTakers::Identity(_) = &mut self.rules.admin_action_takers {
+                            self.admin_identity.get_or_insert_with(String::new);
+                            if let Some(ref mut id_str) = self.admin_identity {
+                                ui.horizontal(|ui| {
+                                    ui.add_sized(
+                                        [300.0, 22.0],
+                                        TextEdit::singleline(id_str).hint_text("Enter base58 id"),
+                                    );
 
-                                        if !id_str.is_empty() {
-                                            let is_valid = Identifier::from_string(id_str.as_str(), Encoding::Base58).is_ok();
+                                    if !id_str.is_empty() {
+                                        let is_valid = Identifier::from_string(id_str.as_str(), Encoding::Base58).is_ok();
 
-                                            let (symbol, color) = if is_valid {
-                                                ("✔", Color32::GREEN)
-                                            } else {
-                                                ("×", Color32::RED)
-                                            };
+                                        let (symbol, color) = if is_valid {
+                                            ("✔", Color32::GREEN)
+                                        } else {
+                                            ("×", Color32::RED)
+                                        };
 
-                                            ui.label(RichText::new(symbol).color(color).strong());
-                                        }
-                                    });
-                                }
+                                        ui.label(RichText::new(symbol).color(color).strong());
+                                    }
+                                });
                             }
-                            _ => {}
                         }
                     });
                     ui.end_row();
@@ -434,23 +428,21 @@ impl ChangeControlRulesUI {
                     ui.end_row();
 
                     if let Some(special_case_option) = special_case_option {
-                        if action_name == "Freeze" {
-                            if self.rules.authorized_to_make_change != AuthorizedActionTakers::NoOne {
-                                ui.horizontal(|ui| {
-                                    ui.checkbox(
-                                        special_case_option,
-                                        "Allow transfers to frozen identities",
-                                    );
-                                    ui.add_space(4.0);
-                                    ui.label(
-                                        RichText::new("ℹ")
-                                            .monospace()
-                                            .color(Color32::LIGHT_BLUE),
-                                    )
-                                        .on_hover_text("Enabling this setting allows transfers to frozen identities, reducing gas usage by approximately 20% per transfer. Disable this if you want to make sure frozen identities can not receive transfers.");
-                                });
-                                ui.end_row();
-                            }
+                        if action_name == "Freeze" && self.rules.authorized_to_make_change != AuthorizedActionTakers::NoOne {
+                            ui.horizontal(|ui| {
+                                ui.checkbox(
+                                    special_case_option,
+                                    "Allow transfers to frozen identities",
+                                );
+                                ui.add_space(4.0);
+                                ui.label(
+                                    RichText::new("ℹ")
+                                        .monospace()
+                                        .color(Color32::LIGHT_BLUE),
+                                )
+                                    .on_hover_text("Enabling this setting allows transfers to frozen identities, reducing gas usage by approximately 20% per transfer. Disable this if you want to make sure frozen identities can not receive transfers.");
+                            });
+                            ui.end_row();
                         }
                     }
                 });
@@ -531,31 +523,28 @@ impl ChangeControlRulesUI {
                             });
 
                         // If user selected Identity or Group, show text edit
-                        match &mut self.rules.authorized_to_make_change {
-                            AuthorizedActionTakers::Identity(_) => {
-                                self.authorized_identity.get_or_insert_with(String::new);
-                                if let Some(ref mut id_str) = self.authorized_identity {
-                                    ui.horizontal(|ui| {
-                                        ui.add_sized(
-                                            [300.0, 22.0],
-                                            TextEdit::singleline(id_str).hint_text("Enter base58 id"),
-                                        );
+                        if let AuthorizedActionTakers::Identity(_) = &mut self.rules.authorized_to_make_change {
+                            self.authorized_identity.get_or_insert_with(String::new);
+                            if let Some(ref mut id_str) = self.authorized_identity {
+                                ui.horizontal(|ui| {
+                                    ui.add_sized(
+                                        [300.0, 22.0],
+                                        TextEdit::singleline(id_str).hint_text("Enter base58 id"),
+                                    );
 
-                                        if !id_str.is_empty() {
-                                            let is_valid = Identifier::from_string(id_str.as_str(), Encoding::Base58).is_ok();
+                                    if !id_str.is_empty() {
+                                        let is_valid = Identifier::from_string(id_str.as_str(), Encoding::Base58).is_ok();
 
-                                            let (symbol, color) = if is_valid {
-                                                ("✔", Color32::GREEN)
-                                            } else {
-                                                ("×", Color32::RED)
-                                            };
+                                        let (symbol, color) = if is_valid {
+                                            ("✔", Color32::GREEN)
+                                        } else {
+                                            ("×", Color32::RED)
+                                        };
 
-                                            ui.label(RichText::new(symbol).color(color).strong());
-                                        }
-                                    });
-                                }
+                                        ui.label(RichText::new(symbol).color(color).strong());
+                                    }
+                                });
                             }
-                            _ => {}
                         }
                     });
                     ui.end_row();
@@ -613,31 +602,28 @@ impl ChangeControlRulesUI {
                                 }
                             });
 
-                        match &mut self.rules.admin_action_takers {
-                            AuthorizedActionTakers::Identity(_) => {
-                                self.admin_identity.get_or_insert_with(String::new);
-                                if let Some(ref mut id_str) = self.admin_identity {
-                                    ui.horizontal(|ui| {
-                                        ui.add_sized(
-                                            [300.0, 22.0],
-                                            TextEdit::singleline(id_str).hint_text("Enter base58 id"),
-                                        );
+                        if let AuthorizedActionTakers::Identity(_) = &mut self.rules.admin_action_takers {
+                            self.admin_identity.get_or_insert_with(String::new);
+                            if let Some(ref mut id_str) = self.admin_identity {
+                                ui.horizontal(|ui| {
+                                    ui.add_sized(
+                                        [300.0, 22.0],
+                                        TextEdit::singleline(id_str).hint_text("Enter base58 id"),
+                                    );
 
-                                        if !id_str.is_empty() {
-                                            let is_valid = Identifier::from_string(id_str.as_str(), Encoding::Base58).is_ok();
+                                    if !id_str.is_empty() {
+                                        let is_valid = Identifier::from_string(id_str.as_str(), Encoding::Base58).is_ok();
 
-                                            let (symbol, color) = if is_valid {
-                                                ("✔", Color32::GREEN)
-                                            } else {
-                                                ("×", Color32::RED)
-                                            };
+                                        let (symbol, color) = if is_valid {
+                                            ("✔", Color32::GREEN)
+                                        } else {
+                                            ("×", Color32::RED)
+                                        };
 
-                                            ui.label(RichText::new(symbol).color(color).strong());
-                                        }
-                                    });
-                                }
+                                        ui.label(RichText::new(symbol).color(color).strong());
+                                    }
+                                });
                             }
-                            _ => {}
                         }
                     });
                     ui.end_row();
@@ -745,37 +731,31 @@ impl ChangeControlRulesUI {
         action_name: &str,
     ) -> Result<ChangeControlRules, String> {
         // 1) Update self.rules.authorized_to_make_change if it’s Identity or Group
-        match self.rules.authorized_to_make_change {
-            AuthorizedActionTakers::Identity(_) => {
-                if let Some(ref id_str) = self.authorized_identity {
-                    let parsed =
-                        Identifier::from_string(id_str, Encoding::Base58).map_err(|_| {
-                            format!(
-                                "Invalid base58 identifier for {} authorized identity",
-                                action_name
-                            )
-                        })?;
-                    self.rules.authorized_to_make_change = AuthorizedActionTakers::Identity(parsed);
-                }
+        if let AuthorizedActionTakers::Identity(_) = self.rules.authorized_to_make_change {
+            if let Some(ref id_str) = self.authorized_identity {
+                let parsed =
+                    Identifier::from_string(id_str, Encoding::Base58).map_err(|_| {
+                        format!(
+                            "Invalid base58 identifier for {} authorized identity",
+                            action_name
+                        )
+                    })?;
+                self.rules.authorized_to_make_change = AuthorizedActionTakers::Identity(parsed);
             }
-            _ => {}
         }
 
         // 2) Update self.rules.admin_action_takers if it’s Identity or Group
-        match self.rules.admin_action_takers {
-            AuthorizedActionTakers::Identity(_) => {
-                if let Some(ref id_str) = self.admin_identity {
-                    let parsed =
-                        Identifier::from_string(id_str, Encoding::Base58).map_err(|_| {
-                            format!(
-                                "Invalid base58 identifier for {} admin identity",
-                                action_name
-                            )
-                        })?;
-                    self.rules.admin_action_takers = AuthorizedActionTakers::Identity(parsed);
-                }
+        if let AuthorizedActionTakers::Identity(_) = self.rules.admin_action_takers {
+            if let Some(ref id_str) = self.admin_identity {
+                let parsed =
+                    Identifier::from_string(id_str, Encoding::Base58).map_err(|_| {
+                        format!(
+                            "Invalid base58 identifier for {} admin identity",
+                            action_name
+                        )
+                    })?;
+                self.rules.admin_action_takers = AuthorizedActionTakers::Identity(parsed);
             }
-            _ => {}
         }
 
         // 3) Construct the ChangeControlRules
@@ -1235,7 +1215,7 @@ impl TokensScreen {
             .collect();
         let all_known_tokens = app_context
             .db
-            .get_all_known_tokens_with_data_contract(&app_context)
+            .get_all_known_tokens_with_data_contract(app_context)
             .unwrap_or_default();
 
         let my_tokens = my_tokens(app_context, &identities, &all_known_tokens);
@@ -1473,15 +1453,15 @@ impl TokensScreen {
         let all_ids = self
             .my_tokens
             .iter()
-            .map(|(_, token)| (token.token_id.clone(), token.identity_id.clone()))
+            .map(|(_, token)| (token.token_id, token.identity_id))
             .collect::<Vec<_>>();
 
         self.app_context
             .db
             .save_token_order(all_ids)
-            .or_else(|e| {
+            .map_err(|e| {
                 eprintln!("Error saving token order: {}", e);
-                Err(e)
+                e
             })
             .ok();
     }
@@ -2185,9 +2165,7 @@ impl TokensScreen {
 
             // Dispatch
             let query_string = self
-                .token_search_query
-                .as_ref()
-                .map(|s| s.clone())
+                .token_search_query.clone()
                 .unwrap_or_default();
 
             return AppAction::BackendTask(BackendTask::TokenTask(
@@ -2209,9 +2187,7 @@ impl TokensScreen {
                 // Possibly pop from next_cursors if we want to re-insert it later
                 // self.next_cursors.truncate(self.search_current_page - 1);
                 let query_string = self
-                    .token_search_query
-                    .as_ref()
-                    .map(|s| s.clone())
+                    .token_search_query.clone()
                     .unwrap_or_default();
                 return AppAction::BackendTask(BackendTask::TokenTask(
                     TokenTask::QueryDescriptionsByKeyword(query_string, Some(prev_cursor)),
@@ -2247,7 +2223,7 @@ impl TokensScreen {
                 if ui.button("Confirm").clicked() {
                     if let Err(e) = self.app_context.remove_token_balance(
                         token_to_remove.token_id,
-                        token_to_remove.identity_id.clone(),
+                        token_to_remove.identity_id,
                     ) {
                         self.backend_message = Some((
                             format!("Error removing token balance: {}", e),
@@ -2280,7 +2256,7 @@ impl TokensScreen {
     fn show_remove_token_popup(&mut self, ui: &mut Ui) {
         // If no token is set, nothing to confirm
         let token_to_remove = match &self.token_to_remove {
-            Some(token) => token.clone(),
+            Some(token) => *token,
             None => {
                 self.confirm_remove_token_popup = false;
                 return;
@@ -2433,7 +2409,7 @@ impl ScreenLike for TokensScreen {
                 &self.app_context,
                 vec![
                     ("Tokens", AppAction::Custom("Back to tokens".to_string())),
-                    (&format!("{token_name}"), AppAction::None),
+                    (&token_name.to_string(), AppAction::None),
                 ],
                 right_buttons.clone(),
             );
@@ -2657,7 +2633,6 @@ impl ScreenLike for TokensScreen {
                         ?msg_type,
                         "unsupported message received in token screen"
                     );
-                    return;
                 }
             }
             TokensSubscreen::SearchTokens => {

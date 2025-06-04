@@ -484,9 +484,9 @@ impl DocumentQueryScreen {
 
                 // Confirm button
                 if ui.button("Confirm").clicked() {
-                    app_action = AppAction::BackendTask(BackendTask::ContractTask(
+                    app_action = AppAction::BackendTask(BackendTask::ContractTask(Box::new(
                         ContractTask::RemoveContract(contract_to_remove),
-                    ));
+                    )));
                     self.confirm_remove_contract_popup = false;
                     self.contract_to_remove = None;
                 }
@@ -665,13 +665,12 @@ impl ScreenLike for DocumentQueryScreen {
             &mut self.pending_fields_selection,
         );
 
-        if let AppAction::BackendTask(BackendTask::ContractTask(ContractTask::RemoveContract(
-            contract_id,
-        ))) = action
-        {
-            action = AppAction::None;
-            self.confirm_remove_contract_popup = true;
-            self.contract_to_remove = Some(contract_id);
+        if let AppAction::BackendTask(BackendTask::ContractTask(contract_task)) = &action {
+            if let ContractTask::RemoveContract(contract_id) = **contract_task {
+                action = AppAction::None;
+                self.confirm_remove_contract_popup = true;
+                self.contract_to_remove = Some(contract_id);
+            }
         }
 
         egui::CentralPanel::default()

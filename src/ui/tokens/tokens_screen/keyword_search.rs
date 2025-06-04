@@ -150,11 +150,11 @@ impl TokensScreen {
                                             self.selected_contract_id =
                                                 Some(contract.data_contract_id);
                                             action =
-                                                AppAction::BackendTask(BackendTask::ContractTask(
+                                                AppAction::BackendTask(BackendTask::ContractTask(Box::new(
                                                     ContractTask::FetchContractsWithDescriptions(
                                                         vec![contract.data_contract_id],
                                                     ),
-                                                ));
+                                                )));
 
                                             // // Add to MyTokens or do something with it
                                             // // Note this is implemented, but we will add it back later!

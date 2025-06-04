@@ -688,9 +688,9 @@ impl ScreenLike for GroupActionsScreen {
                     self.selected_contract.clone(),
                     self.selected_identity.clone(),
                 ) {
-                    action |= AppAction::BackendTask(BackendTask::ContractTask(
+                    action |= AppAction::BackendTask(BackendTask::ContractTask(Box::new(
                         ContractTask::FetchActiveGroupActions(contract, identity),
-                    ));
+                    )));
                 }
             }
 

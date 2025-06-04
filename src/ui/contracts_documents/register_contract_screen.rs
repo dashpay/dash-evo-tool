@@ -332,14 +332,14 @@ impl RegisterDataContractScreen {
                         .corner_radius(3.0);
                 if ui.add(button).clicked() {
                     // Fire off a backend task
-                    app_action = AppAction::BackendTask(BackendTask::ContractTask(
+                    app_action = AppAction::BackendTask(BackendTask::ContractTask(Box::new(
                         ContractTask::RegisterDataContract(
                             (**contract).clone(),
                             self.contract_alias_input.clone(),
                             self.selected_qualified_identity.clone().unwrap().0, // unwrap should be safe here
                             self.selected_key.clone().unwrap(), // unwrap should be safe here
                         ),
-                    ));
+                    )));
                 }
             }
             BroadcastStatus::Broadcasting(start_time) => {
@@ -371,16 +371,15 @@ impl RegisterDataContractScreen {
             }
         }
 
-        if let AppAction::BackendTask(BackendTask::ContractTask(
-            ContractTask::RegisterDataContract(_, _, _, _),
-        )) = app_action
-        {
-            self.broadcast_status = BroadcastStatus::Broadcasting(
-                SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs(),
-            );
+        if let AppAction::BackendTask(BackendTask::ContractTask(contract_task)) = &app_action {
+            if let ContractTask::RegisterDataContract(_, _, _, _) = **contract_task {
+                self.broadcast_status = BroadcastStatus::Broadcasting(
+                    SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs(),
+                );
+            }
         }
 
         app_action

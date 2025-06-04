@@ -352,11 +352,11 @@ pub fn add_contract_chooser_panel(
                                             && ui.button("X").clicked()
                                         {
                                             action |=
-                                                AppAction::BackendTask(BackendTask::ContractTask(
+                                                AppAction::BackendTask(BackendTask::ContractTask(Box::new(
                                                     ContractTask::RemoveContract(
                                                         contract.contract.id(),
                                                     ),
-                                                ));
+                                                )));
                                         }
                                     },
                                 );

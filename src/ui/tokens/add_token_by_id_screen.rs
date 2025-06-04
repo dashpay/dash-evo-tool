@@ -139,11 +139,11 @@ impl AddTokenByIdScreen {
                 // None for alias; change if you allow user alias input
                 return AppAction::BackendTasks(
                     vec![
-                        BackendTask::ContractTask(ContractTask::SaveDataContract(
+                        BackendTask::ContractTask(Box::new(ContractTask::SaveDataContract(
                             contract.clone(),
                             None,
                             insert_mode,
-                        )),
+                        ))),
                         BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances)),
                     ],
                     crate::app::BackendTasksExecutionMode::Sequential,

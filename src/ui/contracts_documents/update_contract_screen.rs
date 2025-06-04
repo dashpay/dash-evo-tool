@@ -358,13 +358,13 @@ impl UpdateDataContractScreen {
                         .corner_radius(3.0);
                 if ui.add(button).clicked() {
                     // Fire off a backend task
-                    app_action = AppAction::BackendTask(BackendTask::ContractTask(
+                    app_action = AppAction::BackendTask(BackendTask::ContractTask(Box::new(
                         ContractTask::UpdateDataContract(
                             (**contract).clone(),
                             self.selected_qualified_identity.clone().unwrap().0, // unwrap should be safe here
                             self.selected_key.clone().unwrap(), // unwrap should be safe here
                         ),
-                    ));
+                    )));
                 }
             }
             BroadcastStatus::FetchingNonce(start_time) => {
@@ -413,16 +413,15 @@ impl UpdateDataContractScreen {
             }
         }
 
-        if let AppAction::BackendTask(BackendTask::ContractTask(
-            ContractTask::UpdateDataContract(_, _, _),
-        )) = app_action
-        {
-            self.broadcast_status = BroadcastStatus::FetchingNonce(
-                SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs(),
-            );
+        if let AppAction::BackendTask(BackendTask::ContractTask(contract_task)) = &app_action {
+            if let ContractTask::UpdateDataContract(_, _, _) = **contract_task {
+                self.broadcast_status = BroadcastStatus::FetchingNonce(
+                    SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs(),
+                );
+            }
         }
 
         app_action

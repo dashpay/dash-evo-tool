@@ -14,6 +14,7 @@ use dash_sdk::{Error, Sdk};
 use tokio::sync::mpsc;
 
 impl AppContext {
+    #[allow(clippy::too_many_arguments)]
     pub async fn resume_tokens(
         &self,
         actor_identity: &QualifiedIdentity,

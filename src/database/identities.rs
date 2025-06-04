@@ -141,6 +141,7 @@ impl Database {
         Ok(())
     }
 
+    #[allow(dead_code)] // May be used for caching remote identities from network queries
     pub fn insert_remote_identity_if_not_exists(
         &self,
         identifier: &Identifier,
@@ -227,6 +228,7 @@ impl Database {
         identities
     }
 
+    #[allow(dead_code)] // May be used for filtering identities that belong to specific wallets
     pub fn get_local_qualified_identities_in_wallets(
         &self,
         app_context: &AppContext,

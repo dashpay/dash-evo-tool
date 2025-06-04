@@ -137,8 +137,5 @@ fn check_root_screen_access(app_context: &Arc<AppContext>, screen_type: &RootScr
     let protocol_version = app_context.platform_version().protocol_version;
 
     // For RootScreenMyTokenBalances
-    match screen_type {
-        RootScreenType::RootScreenMyTokenBalances if protocol_version < PROTOCOL_VERSION_9 => false,
-        _ => true,
-    }
+    !matches!(screen_type, RootScreenType::RootScreenMyTokenBalances if protocol_version < PROTOCOL_VERSION_9)
 }

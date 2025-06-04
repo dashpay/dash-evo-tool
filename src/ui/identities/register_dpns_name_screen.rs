@@ -105,7 +105,7 @@ impl RegisterDpnsNameScreen {
         if let Some(qi) = self
             .qualified_identities
             .iter()
-            .find(|(qi, _)| qi.identity.id() == &identity_id)
+            .find(|(qi, _)| qi.identity.id() == identity_id)
         {
             // Set the selected_qualified_identity to the found identity
             self.selected_qualified_identity = Some(qi.clone());

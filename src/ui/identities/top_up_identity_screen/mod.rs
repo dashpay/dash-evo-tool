@@ -368,7 +368,7 @@ impl ScreenLike for TopUpIdentityScreen {
                         if asset_lock_payload
                             .credit_outputs
                             .iter()
-                            .find(|tx_out| {
+                            .any(|tx_out| {
                                 let Ok(address) = Address::from_script(
                                     &tx_out.script_pubkey,
                                     self.app_context.network,
@@ -382,7 +382,6 @@ impl ScreenLike for TopUpIdentityScreen {
                                     false
                                 }
                             })
-                            .is_some()
                         {
                             *step = WalletFundedScreenStep::WaitingForPlatformAcceptance;
                         }

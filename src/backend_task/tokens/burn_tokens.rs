@@ -14,6 +14,7 @@ use dash_sdk::{Error, Sdk};
 use tokio::sync::mpsc;
 
 impl AppContext {
+    #[allow(clippy::too_many_arguments)]
     pub async fn burn_tokens(
         &self,
         owner_identity: &QualifiedIdentity,

@@ -29,6 +29,9 @@ pub struct ContractVisualizerScreen {
     parse_status: ContractParseStatus,
 
     // ---- helper for chooser search ----
+    // Allow dead_code: This field provides search functionality for contract selection,
+    // useful for filtering contracts in the visualizer interface
+    #[allow(dead_code)]
     contract_search_term: String,
 }
 

@@ -127,6 +127,7 @@ pub struct Wallet {
     pub address_balances: BTreeMap<Address, u64>,
     pub known_addresses: BTreeMap<Address, DerivationPath>,
     pub watched_addresses: BTreeMap<DerivationPath, AddressInfo>,
+    #[allow(clippy::type_complexity)]
     pub unused_asset_locks: Vec<(
         Transaction,
         Address,
@@ -212,6 +213,9 @@ impl WalletSeed {
     }
 
     /// Closes the wallet by securely erasing the seed and transitioning to Closed state.
+    // Allow dead_code: This method provides explicit wallet closure functionality,
+    // useful for security-conscious applications requiring manual wallet management
+    #[allow(dead_code)]
     pub fn close(&mut self) {
         match self {
             WalletSeed::Open(open_seed) => {
@@ -298,6 +302,9 @@ impl Wallet {
         }
     }
 
+    // Allow dead_code: This utility method finds wallets by seed hash in collections,
+    // useful for wallet lookup operations and multi-wallet management
+    #[allow(dead_code)]
     pub fn find_in_arc_rw_lock_slice(
         slice: &[Arc<RwLock<Wallet>>],
         wallet_seed_hash: WalletSeedHash,
@@ -479,6 +486,7 @@ impl Wallet {
         Ok(extended_public_key.to_pub())
     }
 
+    #[allow(clippy::type_complexity)]
     pub fn identity_authentication_ecdsa_public_keys_data_map(
         &mut self,
         network: Network,
@@ -704,6 +712,9 @@ impl Wallet {
         ))
     }
 
+    // Allow dead_code: This method provides receive addresses with derivation paths,
+    // useful for advanced address management and BIP44 path tracking
+    #[allow(dead_code)]
     pub fn receive_address_with_derivation_path(
         &mut self,
         network: Network,
@@ -730,6 +741,9 @@ impl Wallet {
         ))
     }
 
+    // Allow dead_code: This method provides change addresses with derivation paths,
+    // useful for advanced address management and BIP44 path tracking
+    #[allow(dead_code)]
     pub fn change_address_with_derivation_path(
         &mut self,
         network: Network,

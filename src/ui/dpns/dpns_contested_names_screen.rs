@@ -240,7 +240,7 @@ impl DPNSScreen {
         }
     }
 
-    fn sort_contested_names(&self, contested_names: &mut Vec<ContestedName>) {
+    fn sort_contested_names(&self, contested_names: &mut [ContestedName]) {
         contested_names.sort_by(|a, b| {
             let order = match self.sort_column {
                 SortColumn::ContestedName => a

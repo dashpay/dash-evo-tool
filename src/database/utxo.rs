@@ -42,6 +42,7 @@ impl Database {
         Ok(())
     }
 
+    #[allow(dead_code)] // May be used for address-specific UTXO queries
     fn get_utxos_by_address(
         &self,
         address: &str,

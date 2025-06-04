@@ -16,6 +16,7 @@ use dash_sdk::dpp::serialization::{
 use rusqlite::{params, params_from_iter, Connection, Result};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(clippy::enum_variant_names)]
 pub enum InsertTokensToo {
     AllTokensShouldBeAdded,
     NoTokensShouldBeAdded,
@@ -169,6 +170,7 @@ impl Database {
         Ok(())
     }
 
+    #[allow(dead_code)] // May be used for contract lookup by user-friendly names
     pub fn get_contract_by_alias(
         &self,
         alias: &str,
@@ -341,6 +343,7 @@ impl Database {
         Ok(())
     }
 
+    #[allow(dead_code)] // May be used for retrieving user-friendly contract names
     pub fn get_contract_alias(&self, identifier: &Identifier) -> rusqlite::Result<Option<String>> {
         let id = identifier.to_vec();
         let conn = self.conn.lock().unwrap();

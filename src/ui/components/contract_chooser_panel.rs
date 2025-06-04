@@ -17,6 +17,7 @@ use egui::{Color32, Context as EguiContext, Frame, Margin, RichText, SidePanel};
 use std::collections::HashMap;
 use std::sync::Arc;
 
+#[allow(clippy::too_many_arguments)]
 pub fn add_contract_chooser_panel(
     ctx: &EguiContext,
     current_search_term: &mut String,

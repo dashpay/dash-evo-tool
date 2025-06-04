@@ -64,6 +64,7 @@ enum FetchGroupActionsStatus {
 pub struct GroupActionsScreen {
     // Contract and identity selectors
     selected_contract: Option<QualifiedContract>,
+    #[allow(clippy::type_complexity)]
     contracts_with_group_actions: BTreeMap<
         Identifier,
         (
@@ -595,18 +596,17 @@ impl ScreenLike for GroupActionsScreen {
                 self.contracts_with_group_actions
                     .values()
                     .filter_map(|(contract, _)| {
-                        if contract_search_clone.is_empty() {
-                            Some(contract)
-                        } else if contract
-                            .alias
-                            .as_ref()
-                            .map(|alias| {
-                                alias.contains(&contract_search_clone)
-                                    || alias
-                                        .to_lowercase()
-                                        .contains(&contract_search_clone.to_lowercase())
-                            })
-                            .unwrap_or_default()
+                        if contract_search_clone.is_empty()
+                            || contract
+                                .alias
+                                .as_ref()
+                                .map(|alias| {
+                                    alias.contains(&contract_search_clone)
+                                        || alias
+                                            .to_lowercase()
+                                            .contains(&contract_search_clone.to_lowercase())
+                                })
+                                .unwrap_or_default()
                             || contract
                                 .contract
                                 .id()

@@ -36,6 +36,7 @@ pub enum IdentityType {
 }
 
 impl IdentityType {
+    #[allow(dead_code)] // May be used for voting calculations
     pub fn vote_strength(&self) -> u64 {
         match self {
             IdentityType::User => 1,
@@ -64,6 +65,7 @@ impl Display for IdentityType {
 }
 
 #[derive(Debug, Encode, Decode, Clone, Hash, Ord, PartialOrd, Eq, PartialEq)]
+#[allow(clippy::enum_variant_names)]
 pub enum PrivateKeyTarget {
     PrivateKeyOnMainIdentity,
     PrivateKeyOnVoterIdentity,
@@ -201,7 +203,9 @@ impl Signer for QualifiedIdentity {
                     .into())
             }
             KeyType::EDDSA_25519_HASH160 => {
+                #[allow(clippy::useless_conversion)]
                 let key: [u8; 32] = private_key.try_into().expect("expected 32 bytes");
+                #[allow(clippy::unnecessary_fallible_conversions)]
                 let pk = ed25519_dalek::SigningKey::try_from(&key).map_err(|_e| {
                     ProtocolError::Generic(
                         "eddsa 25519 private key from bytes isn't correct".to_string(),
@@ -246,6 +250,7 @@ impl QualifiedIdentity {
             .unwrap_or(self.identity.id().to_string(Encoding::Base58))
     }
 
+    #[allow(dead_code)] // May be used for compact UI displays
     pub fn display_short_string(&self) -> String {
         self.alias.clone().unwrap_or_else(|| {
             let id_str = self.identity.id().to_string(Encoding::Base58);
@@ -363,6 +368,7 @@ impl QualifiedIdentity {
         keys
     }
 
+    #[allow(dead_code)] // May be used for high-security operations
     pub fn available_authentication_keys_with_high_security_level(
         &self,
     ) -> Vec<&QualifiedIdentityPublicKey> {

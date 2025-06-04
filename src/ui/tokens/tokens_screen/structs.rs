@@ -186,6 +186,9 @@ impl IdentityTokenInfo {
             token_position: *token_position,
         })
     }
+    // Allow dead_code: This constructor creates token info from identity balances with lookup,
+    // useful for token management screens requiring detailed context resolution
+    #[allow(dead_code)]
     pub fn try_from_identity_token_balance_with_actions_with_lookup(
         identity_token_balance: &IdentityTokenBalanceWithActions,
         app_context: &AppContext,

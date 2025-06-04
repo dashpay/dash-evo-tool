@@ -26,13 +26,16 @@ use tokio::time::timeout;
 use zeromq::{Socket, SocketRecv, SubSocket};
 
 pub struct CoreZMQListener {
+    #[allow(dead_code)] // Used for stopping the listener
     should_stop: Arc<AtomicBool>,
+    #[allow(dead_code)] // Handle to the background thread
     handle: Option<thread::JoinHandle<()>>,
 }
 
 pub enum ZMQMessage {
     ISLockedTransaction(Transaction, InstantLock),
-    ChainLockedBlock(Block),
+    ChainLockedBlock(#[allow(dead_code)] Block),
+    #[allow(dead_code)] // May be used for chain-locked transactions
     ChainLockedLockedTransaction(Transaction, CoreBlockHeight),
 }
 
@@ -428,6 +431,7 @@ impl CoreZMQListener {
     }
 
     /// Stops the listener by signaling the thread and waiting for it to finish.
+    #[allow(dead_code)] // May be used for clean shutdown
     pub fn stop(&mut self) {
         self.should_stop.store(true, Ordering::SeqCst);
         if let Some(handle) = self.handle.take() {

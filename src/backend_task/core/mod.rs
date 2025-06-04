@@ -13,6 +13,7 @@ use std::sync::{Arc, RwLock};
 
 #[derive(Debug, Clone)]
 pub(crate) enum CoreTask {
+    #[allow(dead_code)] // May be used for getting single chain lock
     GetBestChainLock,
     GetBestChainLocks,
     RefreshWalletInfo(Arc<RwLock<Wallet>>),

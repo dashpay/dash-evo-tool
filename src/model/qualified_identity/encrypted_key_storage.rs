@@ -248,6 +248,9 @@ impl From<BTreeMap<(PrivateKeyTarget, KeyID), (QualifiedIdentityPublicKey, Walle
 }
 
 impl KeyStorage {
+    // Allow dead_code: This method provides direct key access without password resolution,
+    // useful for cases where keys are already decrypted or for debugging purposes
+    #[allow(dead_code)]
     pub fn get(
         &self,
         key: &(PrivateKeyTarget, KeyID),
@@ -315,12 +318,18 @@ impl KeyStorage {
             .transpose()
     }
 
+    // Allow dead_code: This method provides access to raw private key data,
+    // useful for inspecting key states and encryption status
+    #[allow(dead_code)]
     pub fn get_private_key_data(&self, key: &(PrivateKeyTarget, KeyID)) -> Option<&PrivateKeyData> {
         self.private_keys
             .get(key)
             .map(|(_, private_key_data)| private_key_data)
     }
 
+    // Allow dead_code: This method provides combined access to private key data and wallet info,
+    // useful for advanced key management and wallet integration scenarios
+    #[allow(dead_code)]
     pub fn get_private_key_data_and_wallet_info(
         &self,
         key: &(PrivateKeyTarget, KeyID),
@@ -365,6 +374,9 @@ impl KeyStorage {
         self.private_keys.contains_key(key)
     }
 
+    // Allow dead_code: This method returns all stored key identifiers,
+    // useful for key enumeration and management operations
+    #[allow(dead_code)]
     pub fn keys_set(&self) -> BTreeSet<(PrivateKeyTarget, KeyID)> {
         self.private_keys.keys().cloned().collect()
     }

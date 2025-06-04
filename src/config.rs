@@ -269,6 +269,7 @@ impl Config {
 
 impl NetworkConfig {
     /// Check if configuration is set
+    #[allow(dead_code)] // May be used for validation
     pub fn is_valid(&self) -> bool {
         !self.core_rpc_user.is_empty()
             && !self.core_rpc_password.is_empty()
@@ -283,6 +284,7 @@ impl NetworkConfig {
     }
 
     /// Insight API URI
+    #[allow(dead_code)] // May be used for insight API access
     pub fn insight_api_uri(&self) -> Uri {
         Uri::from_str(&self.insight_api_url).expect("invalid insight API URL")
     }

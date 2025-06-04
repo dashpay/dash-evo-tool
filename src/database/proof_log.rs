@@ -4,6 +4,7 @@ use rusqlite::params;
 use std::ops::Range;
 
 impl Database {
+    #[allow(dead_code)] // May be used for database migrations or testing cleanup
     pub fn drop_proof_log_table(&self, conn: &rusqlite::Connection) -> rusqlite::Result<()> {
         // Execute the SQL command to drop the proof_log table
         conn.execute("DROP TABLE IF EXISTS proof_log", [])?;

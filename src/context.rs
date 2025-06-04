@@ -43,6 +43,7 @@ use std::sync::{Arc, Mutex, RwLock};
 pub struct AppContext {
     pub(crate) network: Network,
     pub(crate) developer_mode: AtomicBool,
+    #[allow(dead_code)] // May be used for devnet identification
     pub(crate) devnet_name: Option<String>,
     pub(crate) db: Arc<Database>,
     pub(crate) sdk: RwLock<Sdk>,
@@ -57,6 +58,7 @@ pub struct AppContext {
     pub(crate) core_client: RwLock<Client>,
     pub(crate) has_wallet: AtomicBool,
     pub(crate) wallets: RwLock<BTreeMap<WalletSeedHash, Arc<RwLock<Wallet>>>>,
+    #[allow(dead_code)] // May be used for password validation
     pub(crate) password_info: Option<PasswordInfo>,
     pub(crate) transactions_waiting_for_finality: Mutex<BTreeMap<Txid, Option<AssetLockProof>>>,
 }
@@ -226,6 +228,7 @@ impl AppContext {
         Ok(())
     }
 
+    #[allow(dead_code)] // May be used for storing identities
     pub fn insert_local_identity(&self, identity: &Identity) -> Result<()> {
         self.db
             .insert_local_qualified_identity(&identity.clone().into(), None, self)
@@ -297,6 +300,7 @@ impl AppContext {
     }
 
     /// Fetches all local qualified identities from the database
+    #[allow(dead_code)] // May be used for loading identities in wallets
     pub fn load_local_qualified_identities_in_wallets(&self) -> Result<Vec<QualifiedIdentity>> {
         let wallets = self.wallets.read().unwrap();
         self.db
@@ -350,6 +354,7 @@ impl AppContext {
     }
 
     /// Deletes a scheduled vote from the database
+    #[allow(clippy::ptr_arg)]
     pub fn delete_scheduled_vote(&self, identity_id: &[u8], contested_name: &String) -> Result<()> {
         self.db
             .delete_scheduled_vote(self, identity_id, contested_name)
@@ -392,6 +397,7 @@ impl AppContext {
     }
 
     /// Retrieves the current `RootScreenType` from the settings
+    #[allow(clippy::type_complexity)]
     pub fn get_settings(
         &self,
     ) -> Result<
@@ -679,6 +685,7 @@ impl AppContext {
         self.db.remove_token(token_id, self)
     }
 
+    #[allow(dead_code)] // May be used for storing token balances
     pub fn insert_token_identity_balance(
         &self,
         token_id: &Identifier,

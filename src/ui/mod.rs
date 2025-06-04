@@ -68,6 +68,7 @@ pub mod tools;
 pub(crate) mod wallets;
 
 #[derive(Debug, Clone, Copy, Ord, PartialOrd, Eq, PartialEq, Hash)]
+#[allow(clippy::enum_variant_names)]
 pub enum RootScreenType {
     RootScreenIdentities,
     RootScreenDPNSActiveContests,
@@ -405,6 +406,7 @@ impl ScreenType {
     }
 }
 
+#[allow(clippy::enum_variant_names)]
 pub enum Screen {
     IdentitiesScreen(IdentitiesScreen),
     DPNSScreen(DPNSScreen),

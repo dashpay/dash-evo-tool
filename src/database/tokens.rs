@@ -270,6 +270,7 @@ impl Database {
     /// Retrieves all known tokens as a map from token ID to `TokenInfo`.
     ///
     /// Now also fetches and decodes the **`token_config`** blob.
+    #[allow(dead_code)] // May be used for token overview displays without contract data
     pub fn get_all_known_tokens(
         &self,
         app_context: &AppContext,

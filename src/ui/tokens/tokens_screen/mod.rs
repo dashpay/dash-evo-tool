@@ -236,7 +236,7 @@ impl ChangeControlRulesUI {
     pub fn render_control_change_rules_ui(
         &mut self,
         ui: &mut Ui,
-        current_groups: &Vec<GroupConfigUI>,
+        current_groups: &[GroupConfigUI],
         action_name: &str,
         special_case_option: Option<&mut bool>,
     ) {
@@ -451,10 +451,11 @@ impl ChangeControlRulesUI {
         });
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn render_mint_control_change_rules_ui(
         &mut self,
         ui: &mut Ui,
-        current_groups: &Vec<GroupConfigUI>,
+        current_groups: &[GroupConfigUI],
         new_tokens_destination_identity_should_default_to_contract_owner: &mut bool,
         new_tokens_destination_identity_enabled: &mut bool,
         minting_allow_choosing_destination: &mut bool,
@@ -2368,9 +2369,8 @@ impl ScreenLike for TokensScreen {
         self.check_error_expiration();
 
         // Build top-right buttons
-        let right_buttons;
-        if self.app_context.network != Network::Dash {
-            right_buttons = match self.tokens_subscreen {
+        let right_buttons = if self.app_context.network != Network::Dash {
+            match self.tokens_subscreen {
                 TokensSubscreen::MyTokens => vec![
                     (
                         "Add Token",
@@ -2385,10 +2385,10 @@ impl ScreenLike for TokensScreen {
                 ],
                 TokensSubscreen::SearchTokens => vec![],
                 TokensSubscreen::TokenCreator => vec![],
-            };
+            }
         } else {
-            right_buttons = vec![];
-        }
+            vec![]
+        };
 
         // Top panel
         if let Some(token_id) = self.selected_token {

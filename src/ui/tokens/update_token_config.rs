@@ -138,7 +138,7 @@ impl UpdateTokenConfigScreen {
             }
             AuthorizedActionTakers::ContractOwner => {
                 if self.identity_token_info.data_contract.contract.owner_id()
-                    != &self.identity_token_info.identity.identity.id()
+                    != self.identity_token_info.identity.identity.id()
                 {
                     error_message = Some(
                         "You are not allowed to perform this action. Only the contract owner is."
@@ -148,7 +148,7 @@ impl UpdateTokenConfigScreen {
                 None
             }
             AuthorizedActionTakers::Identity(identifier) => {
-                if identifier != &self.identity_token_info.identity.identity.id() {
+                if identifier != self.identity_token_info.identity.identity.id() {
                     error_message = Some("You are not allowed to perform this action".to_string());
                 }
                 None
@@ -785,9 +785,8 @@ impl UpdateTokenConfigScreen {
         {
             ui.add_space(20.0);
             if ui.add(button).clicked() {
-                let group_info;
-                if self.group_action_id.is_some() {
-                    group_info = self.group.as_ref().map(|(pos, _)| {
+                let group_info = if self.group_action_id.is_some() {
+                    self.group.as_ref().map(|(pos, _)| {
                         GroupStateTransitionInfoStatus::GroupStateTransitionInfoOtherSigner(
                             GroupStateTransitionInfo {
                                 group_contract_position: *pos,
@@ -795,12 +794,12 @@ impl UpdateTokenConfigScreen {
                                 action_is_proposer: false,
                             },
                         )
-                    });
+                    })
                 } else {
-                    group_info = self.group.as_ref().map(|(pos, _)| {
+                    self.group.as_ref().map(|(pos, _)| {
                         GroupStateTransitionInfoStatus::GroupStateTransitionInfoProposer(*pos)
-                    });
-                }
+                    })
+                };
 
                 self.update_status = UpdateTokenConfigStatus::Updating(Utc::now());
                 action |=

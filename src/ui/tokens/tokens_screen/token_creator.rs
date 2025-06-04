@@ -202,7 +202,7 @@ impl TokensScreen {
                         let mut need_unlock = false;
                         let mut just_unlocked = false;
 
-                        if let Some(_) = self.selected_wallet {
+                        if self.selected_wallet.is_some() {
                             let (n, j) = self.render_wallet_unlock_if_needed(ui);
                             need_unlock = n;
                             just_unlocked = j;

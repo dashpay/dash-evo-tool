@@ -12,6 +12,7 @@ use dash_sdk::platform::{DataContract, IdentityPublicKey};
 use dash_sdk::{Error, Sdk};
 
 impl AppContext {
+    #[allow(clippy::too_many_arguments)]
     pub async fn claim_tokens(
         &self,
         data_contract: &DataContract,

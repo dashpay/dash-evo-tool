@@ -5,6 +5,7 @@ use dash_sdk::dpp::dashcore::{Address, Network, OutPoint, TxOut};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 impl Wallet {
+    #[allow(clippy::type_complexity)]
     pub fn take_unspent_utxos_for(
         &mut self,
         amount: u64,

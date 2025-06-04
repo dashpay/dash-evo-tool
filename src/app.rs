@@ -59,9 +59,13 @@ pub struct AppState {
     pub testnet_app_context: Option<Arc<AppContext>>,
     pub devnet_app_context: Option<Arc<AppContext>>,
     pub local_app_context: Option<Arc<AppContext>>,
+    #[allow(dead_code)] // Kept alive for the lifetime of the app
     pub mainnet_core_zmq_listener: CoreZMQListener,
+    #[allow(dead_code)] // Kept alive for the lifetime of the app
     pub testnet_core_zmq_listener: CoreZMQListener,
+    #[allow(dead_code)] // Kept alive for the lifetime of the app
     pub devnet_core_zmq_listener: CoreZMQListener,
+    #[allow(dead_code)] // Kept alive for the lifetime of the app
     pub local_core_zmq_listener: CoreZMQListener,
     pub core_message_receiver: mpsc::Receiver<(ZMQMessage, Network)>,
     pub task_result_sender: tokiompsc::Sender<TaskResult>, // Channel sender for sending task results
@@ -72,6 +76,7 @@ pub struct AppState {
 #[derive(Debug, Clone, PartialEq)]
 pub enum DesiredAppAction {
     None,
+    #[allow(dead_code)] // May be used in future for explicit refresh actions
     Refresh,
     AddScreenType(ScreenType),
     BackendTask(BackendTask),

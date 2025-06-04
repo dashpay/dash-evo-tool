@@ -604,6 +604,7 @@ impl AppContext {
     /// - the specified owner_id
     /// - an empty set of documents, groups, schema_defs
     /// - a single token in tokens[0] with fields derived from your parameters.
+    #[allow(clippy::too_many_arguments)]
     pub fn build_data_contract_v1_with_one_token(
         &self,
         owner_id: Identifier,

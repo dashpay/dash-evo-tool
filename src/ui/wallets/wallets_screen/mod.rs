@@ -157,6 +157,7 @@ impl WalletsBalancesScreen {
         }
     }
 
+    #[allow(clippy::ptr_arg)]
     fn sort_address_data(&self, data: &mut Vec<AddressData>) {
         data.sort_by(|a, b| {
             let order = match self.sort_column {

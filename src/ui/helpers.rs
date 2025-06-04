@@ -68,6 +68,9 @@ pub fn render_identity_selector(
 }
 
 /// Returns the newly selected key (if changed), otherwise the existing one.
+// Allow dead_code: This function provides UI for key selection within identities,
+// useful for identity-based operations and key management interfaces
+#[allow(dead_code)]
 pub fn render_key_selector(
     ui: &mut Ui,
     selected_identity: &QualifiedIdentity,

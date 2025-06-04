@@ -16,6 +16,7 @@ use crate::model::proof_log_item::{ProofLogItem, RequestType};
 use tokio::sync::mpsc;
 
 impl AppContext {
+    #[allow(clippy::too_many_arguments)]
     pub async fn set_direct_purchase_price(
         &self,
         sending_identity: &QualifiedIdentity,

@@ -710,11 +710,11 @@ impl ScreenLike for WalletsBalancesScreen {
                     ("Refreshing...", DesiredAppAction::None),
                     (
                         "Import Wallet",
-                        DesiredAppAction::AddScreenType(ScreenType::ImportWallet),
+                        DesiredAppAction::AddScreenType(Box::new(ScreenType::ImportWallet)),
                     ),
                     (
                         "Create Wallet",
-                        DesiredAppAction::AddScreenType(ScreenType::AddNewWallet),
+                        DesiredAppAction::AddScreenType(Box::new(ScreenType::AddNewWallet)),
                     ),
                 ],
                 false => vec![
@@ -726,11 +726,11 @@ impl ScreenLike for WalletsBalancesScreen {
                     ),
                     (
                         "Import Wallet",
-                        DesiredAppAction::AddScreenType(ScreenType::ImportWallet),
+                        DesiredAppAction::AddScreenType(Box::new(ScreenType::ImportWallet)),
                     ),
                     (
                         "Create Wallet",
-                        DesiredAppAction::AddScreenType(ScreenType::AddNewWallet),
+                        DesiredAppAction::AddScreenType(Box::new(ScreenType::AddNewWallet)),
                     ),
                 ],
             }
@@ -738,11 +738,11 @@ impl ScreenLike for WalletsBalancesScreen {
             vec![
                 (
                     "Import Wallet",
-                    DesiredAppAction::AddScreenType(ScreenType::ImportWallet),
+                    DesiredAppAction::AddScreenType(Box::new(ScreenType::ImportWallet)),
                 ),
                 (
                     "Create Wallet",
-                    DesiredAppAction::AddScreenType(ScreenType::AddNewWallet),
+                    DesiredAppAction::AddScreenType(Box::new(ScreenType::AddNewWallet)),
                 ),
             ]
         };

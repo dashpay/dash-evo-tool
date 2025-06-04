@@ -496,7 +496,7 @@ impl GroupActionsScreen {
                                                     None
                                                 };
                                                 action |= AppAction::AddScreen(
-                                                    Screen::UpdateTokenConfigScreen(update_screen),
+                                                    Screen::UpdateTokenConfigScreen(Box::new(update_screen)),
                                                 );
                                             }
                                             "ChangePrice" => {

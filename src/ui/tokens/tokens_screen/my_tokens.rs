@@ -565,12 +565,12 @@ impl TokensScreen {
                 match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
                             Ok(info) => {
                                 action = AppAction::AddScreen(
-                                    Screen::UpdateTokenConfigScreen(
+                                    Screen::UpdateTokenConfigScreen(Box::new(
                                         UpdateTokenConfigScreen::new(
                                             info,
                                             &self.app_context,
                                         ),
-                                    ),
+                                    )),
                                 );
                             }
                             Err(e) => {

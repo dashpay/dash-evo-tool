@@ -110,9 +110,9 @@ impl ScreenLike for ViewTokenClaimsScreen {
             ],
             vec![(
                 "Refresh",
-                DesiredAppAction::BackendTask(Box::new(BackendTask::DocumentTask(
+                DesiredAppAction::BackendTask(Box::new(BackendTask::DocumentTask(Box::new(
                     DocumentTask::FetchDocuments(self.new_claims_query.clone()),
-                ))),
+                )))),
             )],
         );
 
@@ -138,9 +138,9 @@ impl ScreenLike for ViewTokenClaimsScreen {
                     .corner_radius(3.0);
 
             if ui.add(fetch_button).clicked() {
-                action |= AppAction::BackendTask(BackendTask::DocumentTask(
+                action |= AppAction::BackendTask(BackendTask::DocumentTask(Box::new(
                     DocumentTask::FetchDocuments(self.new_claims_query.clone()),
-                ));
+                )));
                 self.fetch_status = FetchStatus::Fetching(Utc::now())
             }
 

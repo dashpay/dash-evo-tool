@@ -198,9 +198,9 @@ impl DocumentQueryScreen {
                         self.current_page = 1; // Reset to first page
                         self.next_cursors = vec![]; // Reset cursor
                         self.previous_cursors.clear(); // Clear previous cursors
-                        action = AppAction::BackendTask(BackendTask::DocumentTask(
+                        action = AppAction::BackendTask(BackendTask::DocumentTask(Box::new(
                             FetchDocumentsPage(parsed_query),
-                        ));
+                        )));
                     }
                     Err(e) => {
                         self.document_query_status = DocumentQueryStatus::ErrorMessage(format!(
@@ -367,9 +367,9 @@ impl DocumentQueryScreen {
                         self.current_page -= 1;
                         self.next_cursors.pop();
                         let parsed_query = self.build_document_query_with_cursor(&prev_cursor);
-                        action = AppAction::BackendTask(BackendTask::DocumentTask(
+                        action = AppAction::BackendTask(BackendTask::DocumentTask(Box::new(
                             DocumentTask::FetchDocumentsPage(parsed_query),
-                        ));
+                        )));
                     } else {
                         self.document_query_status = DocumentQueryStatus::WaitingForResult(
                             SystemTime::now()
@@ -381,9 +381,9 @@ impl DocumentQueryScreen {
                         let next_cursor =
                             self.get_next_cursor().unwrap_or(Start::StartAfter(vec![])); // Doesn't matter what the value is
                         let parsed_query = self.build_document_query_with_cursor(&next_cursor);
-                        action = AppAction::BackendTask(BackendTask::DocumentTask(
+                        action = AppAction::BackendTask(BackendTask::DocumentTask(Box::new(
                             DocumentTask::FetchDocumentsPage(parsed_query),
-                        ));
+                        )));
                     }
                 }
 
@@ -408,9 +408,9 @@ impl DocumentQueryScreen {
                         }
                         self.current_page += 1;
                         let parsed_query = self.build_document_query_with_cursor(next_cursor);
-                        action = AppAction::BackendTask(BackendTask::DocumentTask(
+                        action = AppAction::BackendTask(BackendTask::DocumentTask(Box::new(
                             DocumentTask::FetchDocumentsPage(parsed_query),
-                        ));
+                        )));
                     }
                 }
             });
@@ -571,43 +571,43 @@ impl ScreenLike for DocumentQueryScreen {
         self.check_error_expiration();
         let load_contract_button = (
             "Load Contracts",
-            DesiredAppAction::AddScreenType(ScreenType::AddContracts),
+            DesiredAppAction::AddScreenType(Box::new(ScreenType::AddContracts)),
         );
         let register_contract_button = (
             "Register Contract",
-            DesiredAppAction::AddScreenType(ScreenType::RegisterContract),
+            DesiredAppAction::AddScreenType(Box::new(ScreenType::RegisterContract)),
         );
         let update_contract_button = (
             "Update Contract",
-            DesiredAppAction::AddScreenType(ScreenType::UpdateContract),
+            DesiredAppAction::AddScreenType(Box::new(ScreenType::UpdateContract)),
         );
         let add_document_button = (
             "Create Document",
-            DesiredAppAction::AddScreenType(ScreenType::CreateDocument),
+            DesiredAppAction::AddScreenType(Box::new(ScreenType::CreateDocument)),
         );
         let delete_document_button = (
             "Delete Document",
-            DesiredAppAction::AddScreenType(ScreenType::DeleteDocument),
+            DesiredAppAction::AddScreenType(Box::new(ScreenType::DeleteDocument)),
         );
         let replace_document_button = (
             "Replace Document",
-            DesiredAppAction::AddScreenType(ScreenType::ReplaceDocument),
+            DesiredAppAction::AddScreenType(Box::new(ScreenType::ReplaceDocument)),
         );
         let transfer_document_button = (
             "Transfer Document",
-            DesiredAppAction::AddScreenType(ScreenType::TransferDocument),
+            DesiredAppAction::AddScreenType(Box::new(ScreenType::TransferDocument)),
         );
         let purchase_document_button = (
             "Purchase Document",
-            DesiredAppAction::AddScreenType(ScreenType::PurchaseDocument),
+            DesiredAppAction::AddScreenType(Box::new(ScreenType::PurchaseDocument)),
         );
         let set_document_price_button = (
             "Set Document Price",
-            DesiredAppAction::AddScreenType(ScreenType::SetDocumentPrice),
+            DesiredAppAction::AddScreenType(Box::new(ScreenType::SetDocumentPrice)),
         );
         let group_actions_button = (
             "Group Actions",
-            DesiredAppAction::AddScreenType(ScreenType::GroupActions),
+            DesiredAppAction::AddScreenType(Box::new(ScreenType::GroupActions)),
         );
         let mut action = AppAction::None;
         if self.app_context.network == Network::Dash {

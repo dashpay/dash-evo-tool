@@ -1942,7 +1942,7 @@ impl ScreenLike for DPNSScreen {
                 0,
                 (
                     "Register Name",
-                    DesiredAppAction::AddScreenType(ScreenType::RegisterDpnsName),
+                    DesiredAppAction::AddScreenType(Box::new(ScreenType::RegisterDpnsName)),
                 ),
             );
         }

@@ -303,9 +303,9 @@ impl DocumentActionScreen {
                                 .unwrap()
                                 .as_secs(),
                         );
-                        action = AppAction::BackendTask(BackendTask::DocumentTask(
+                        action = AppAction::BackendTask(BackendTask::DocumentTask(Box::new(
                             DocumentTask::FetchDocuments(query),
-                        ));
+                        )));
                     }
                 } else {
                     ui.label("(Cannot use the Fetch Owned Documents feature as this document type does not have an index on $ownerId)");
@@ -421,9 +421,9 @@ impl DocumentActionScreen {
                             .unwrap()
                             .as_secs(),
                     );
-                    action = AppAction::BackendTask(BackendTask::DocumentTask(
+                    action = AppAction::BackendTask(BackendTask::DocumentTask(Box::new(
                         DocumentTask::FetchDocuments(query),
-                    ));
+                    )));
                 }
             } else {
                 self.backend_message = Some("Invalid Document ID format".to_string());
@@ -482,9 +482,9 @@ impl DocumentActionScreen {
                                 .unwrap()
                                 .as_secs(),
                         );
-                        action = AppAction::BackendTask(BackendTask::DocumentTask(
+                        action = AppAction::BackendTask(BackendTask::DocumentTask(Box::new(
                             DocumentTask::FetchDocuments(query),
-                        ));
+                        )));
                     }
                 } else {
                     self.backend_message = Some("Invalid Document ID format".to_string());
@@ -802,14 +802,14 @@ impl DocumentActionScreen {
                             })
                         });
 
-                BackendTask::DocumentTask(DocumentTask::BroadcastDocument(
+                BackendTask::DocumentTask(Box::new(DocumentTask::BroadcastDocument(
                     doc,
                     token_payment_info,
                     entropy,
                     doc_type.clone(),
                     self.selected_identity.as_ref().unwrap().clone(),
                     self.selected_key.as_ref().unwrap().clone(),
-                ))
+                )))
             }
             Err(e) => {
                 self.backend_message = Some(format!("Failed to build document: {}", e));
@@ -837,14 +837,14 @@ impl DocumentActionScreen {
                     })
                 });
 
-        BackendTask::DocumentTask(DocumentTask::DeleteDocument(
+        BackendTask::DocumentTask(Box::new(DocumentTask::DeleteDocument(
             document_id,
             doc_type.clone(),
             self.selected_contract.as_ref().unwrap().contract.clone(),
             self.selected_identity.as_ref().unwrap().clone(),
             self.selected_key.as_ref().unwrap().clone(),
             token_payment_info,
-        ))
+        )))
     }
 
     fn create_purchase_task(&self) -> BackendTask {
@@ -866,7 +866,7 @@ impl DocumentActionScreen {
                     })
                 });
 
-        BackendTask::DocumentTask(DocumentTask::PurchaseDocument(
+        BackendTask::DocumentTask(Box::new(DocumentTask::PurchaseDocument(
             self.fetched_price.unwrap_or(0),
             document_id,
             doc_type.clone(),
@@ -874,7 +874,7 @@ impl DocumentActionScreen {
             self.selected_identity.as_ref().unwrap().clone(),
             self.selected_key.as_ref().unwrap().clone(),
             token_payment_info,
-        ))
+        )))
     }
 
     fn create_replace_task(&mut self) -> BackendTask {
@@ -897,14 +897,14 @@ impl DocumentActionScreen {
                                 })
                             });
 
-                    BackendTask::DocumentTask(DocumentTask::ReplaceDocument(
+                    BackendTask::DocumentTask(Box::new(DocumentTask::ReplaceDocument(
                         updated_doc,
                         doc_type.clone(),
                         self.selected_contract.as_ref().unwrap().contract.clone(),
                         self.selected_identity.as_ref().unwrap().clone(),
                         self.selected_key.as_ref().unwrap().clone(),
                         token_payment_info,
-                    ))
+                    )))
                 }
                 Err(e) => {
                     self.backend_message = Some(format!("Failed to build updated document: {}", e));
@@ -927,14 +927,14 @@ impl DocumentActionScreen {
                         })
                     });
 
-            BackendTask::DocumentTask(DocumentTask::ReplaceDocument(
+            BackendTask::DocumentTask(Box::new(DocumentTask::ReplaceDocument(
                 DocumentV0::default().into(),
                 doc_type.clone(),
                 self.selected_contract.as_ref().unwrap().contract.clone(),
                 self.selected_identity.as_ref().unwrap().clone(),
                 self.selected_key.as_ref().unwrap().clone(),
                 token_payment_info,
-            ))
+            )))
         }
     }
 
@@ -958,7 +958,7 @@ impl DocumentActionScreen {
                     })
                 });
 
-        BackendTask::DocumentTask(DocumentTask::SetDocumentPrice(
+        BackendTask::DocumentTask(Box::new(DocumentTask::SetDocumentPrice(
             price,
             document_id,
             doc_type.clone(),
@@ -966,7 +966,7 @@ impl DocumentActionScreen {
             self.selected_identity.as_ref().unwrap().clone(),
             self.selected_key.as_ref().unwrap().clone(),
             token_payment_info,
-        ))
+        )))
     }
 
     fn create_transfer_task(&self) -> BackendTask {
@@ -990,7 +990,7 @@ impl DocumentActionScreen {
                     })
                 });
 
-        BackendTask::DocumentTask(DocumentTask::TransferDocument(
+        BackendTask::DocumentTask(Box::new(DocumentTask::TransferDocument(
             document_id,
             recipient_id,
             doc_type.clone(),
@@ -998,7 +998,7 @@ impl DocumentActionScreen {
             self.selected_identity.as_ref().unwrap().clone(),
             self.selected_key.as_ref().unwrap().clone(),
             token_payment_info,
-        ))
+        )))
     }
 
     fn try_build_document(&self) -> Result<(Document, [u8; 32]), String> {

@@ -391,10 +391,10 @@ impl ScreenType {
                 unreachable!()
             }
             ScreenType::UpdateTokenConfigScreen(identity_token_info) => {
-                Screen::UpdateTokenConfigScreen(UpdateTokenConfigScreen::new(
+                Screen::UpdateTokenConfigScreen(Box::new(UpdateTokenConfigScreen::new(
                     identity_token_info.clone(),
                     app_context,
-                ))
+                )))
             }
             ScreenType::AddTokenById => Screen::AddTokenById(AddTokenByIdScreen::new(app_context)),
             ScreenType::PurchaseTokenScreen(identity_token_info) => Screen::PurchaseTokenScreen(
@@ -448,7 +448,7 @@ pub enum Screen {
     ResumeTokensScreen(ResumeTokensScreen),
     ClaimTokensScreen(ClaimTokensScreen),
     ViewTokenClaimsScreen(ViewTokenClaimsScreen),
-    UpdateTokenConfigScreen(UpdateTokenConfigScreen),
+    UpdateTokenConfigScreen(Box<UpdateTokenConfigScreen>),
     AddTokenById(AddTokenByIdScreen),
     PurchaseTokenScreen(PurchaseTokenScreen),
     SetTokenPriceScreen(SetTokenPriceScreen),

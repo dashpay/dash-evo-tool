@@ -882,22 +882,22 @@ impl ScreenLike for IdentitiesScreen {
             vec![
                 (
                     "Import Wallet",
-                    DesiredAppAction::AddScreenType(ScreenType::ImportWallet),
+                    DesiredAppAction::AddScreenType(Box::new(ScreenType::ImportWallet)),
                 ),
                 (
                     "Create Wallet",
-                    DesiredAppAction::AddScreenType(ScreenType::AddNewWallet),
+                    DesiredAppAction::AddScreenType(Box::new(ScreenType::AddNewWallet)),
                 ),
             ]
         } else {
             vec![(
                 "Create Identity",
-                DesiredAppAction::AddScreenType(ScreenType::AddNewIdentity),
+                DesiredAppAction::AddScreenType(Box::new(ScreenType::AddNewIdentity)),
             )]
         };
         right_buttons.push((
             "Load Identity",
-            DesiredAppAction::AddScreenType(ScreenType::AddExistingIdentity),
+            DesiredAppAction::AddScreenType(Box::new(ScreenType::AddExistingIdentity)),
         ));
         if !self.identities.lock().unwrap().is_empty() {
             // Create a vec of RefreshIdentity(identity) DesiredAppAction for each identity

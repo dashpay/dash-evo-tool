@@ -2374,7 +2374,7 @@ impl ScreenLike for TokensScreen {
                 TokensSubscreen::MyTokens => vec![
                     (
                         "Add Token",
-                        DesiredAppAction::AddScreenType(ScreenType::AddTokenById),
+                        DesiredAppAction::AddScreenType(Box::new(ScreenType::AddTokenById)),
                     ),
                     (
                         "Refresh",

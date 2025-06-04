@@ -43,7 +43,7 @@ pub(crate) const NO_IDENTITIES_FOUND: &str = "No identities found";
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum BackendTask {
     IdentityTask(IdentityTask),
-    DocumentTask(DocumentTask),
+    DocumentTask(Box<DocumentTask>),
     ContractTask(ContractTask),
     ContestedResourceTask(ContestedResourceTask),
     CoreTask(CoreTask),
@@ -142,7 +142,7 @@ impl AppContext {
                 self.run_identity_task(identity_task, &sdk, sender).await
             }
             BackendTask::DocumentTask(document_task) => {
-                self.run_document_task(document_task, &sdk).await
+                self.run_document_task(*document_task, &sdk).await
             }
             BackendTask::CoreTask(core_task) => self.run_core_task(core_task).await,
             BackendTask::BroadcastStateTransition(state_transition) => {

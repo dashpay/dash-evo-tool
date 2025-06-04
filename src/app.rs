@@ -78,7 +78,7 @@ pub enum DesiredAppAction {
     None,
     #[allow(dead_code)] // May be used in future for explicit refresh actions
     Refresh,
-    AddScreenType(ScreenType),
+    AddScreenType(Box<ScreenType>),
     BackendTask(Box<BackendTask>),
     BackendTasks(Vec<BackendTask>, BackendTasksExecutionMode),
     Custom(String),

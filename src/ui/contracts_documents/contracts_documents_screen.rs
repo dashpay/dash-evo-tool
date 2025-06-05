@@ -198,9 +198,9 @@ impl DocumentQueryScreen {
                         self.current_page = 1; // Reset to first page
                         self.next_cursors = vec![]; // Reset cursor
                         self.previous_cursors.clear(); // Clear previous cursors
-                        action = AppAction::BackendTask(BackendTask::DocumentTask(
+                        action = AppAction::BackendTask(BackendTask::DocumentTask(Box::new(
                             FetchDocumentsPage(parsed_query),
-                        ));
+                        )));
                     }
                     Err(e) => {
                         self.document_query_status = DocumentQueryStatus::ErrorMessage(format!(
@@ -355,66 +355,62 @@ impl DocumentQueryScreen {
 
         if self.document_query_status == DocumentQueryStatus::Complete {
             ui.horizontal(|ui| {
-                if self.current_page > 1 {
-                    if ui.button("Previous Page").clicked() {
-                        // Handle Previous Page
-                        if let Some(prev_cursor) = self.get_previous_cursor() {
-                            self.document_query_status = DocumentQueryStatus::WaitingForResult(
-                                SystemTime::now()
-                                    .duration_since(UNIX_EPOCH)
-                                    .expect("Time went backwards")
-                                    .as_secs(),
-                            );
-                            self.current_page -= 1;
-                            self.next_cursors.pop();
-                            let parsed_query = self.build_document_query_with_cursor(&prev_cursor);
-                            action = AppAction::BackendTask(BackendTask::DocumentTask(
-                                DocumentTask::FetchDocumentsPage(parsed_query),
-                            ));
-                        } else {
-                            self.document_query_status = DocumentQueryStatus::WaitingForResult(
-                                SystemTime::now()
-                                    .duration_since(UNIX_EPOCH)
-                                    .expect("Time went backwards")
-                                    .as_secs(),
-                            );
-                            self.current_page = 1;
-                            let next_cursor =
-                                self.get_next_cursor().unwrap_or(Start::StartAfter(vec![])); // Doesn't matter what the value is
-                            let parsed_query = self.build_document_query_with_cursor(&next_cursor);
-                            action = AppAction::BackendTask(BackendTask::DocumentTask(
-                                DocumentTask::FetchDocumentsPage(parsed_query),
-                            ));
-                        }
+                if self.current_page > 1 && ui.button("Previous Page").clicked() {
+                    // Handle Previous Page
+                    if let Some(prev_cursor) = self.get_previous_cursor() {
+                        self.document_query_status = DocumentQueryStatus::WaitingForResult(
+                            SystemTime::now()
+                                .duration_since(UNIX_EPOCH)
+                                .expect("Time went backwards")
+                                .as_secs(),
+                        );
+                        self.current_page -= 1;
+                        self.next_cursors.pop();
+                        let parsed_query = self.build_document_query_with_cursor(&prev_cursor);
+                        action = AppAction::BackendTask(BackendTask::DocumentTask(Box::new(
+                            DocumentTask::FetchDocumentsPage(parsed_query),
+                        )));
+                    } else {
+                        self.document_query_status = DocumentQueryStatus::WaitingForResult(
+                            SystemTime::now()
+                                .duration_since(UNIX_EPOCH)
+                                .expect("Time went backwards")
+                                .as_secs(),
+                        );
+                        self.current_page = 1;
+                        let next_cursor =
+                            self.get_next_cursor().unwrap_or(Start::StartAfter(vec![])); // Doesn't matter what the value is
+                        let parsed_query = self.build_document_query_with_cursor(&next_cursor);
+                        action = AppAction::BackendTask(BackendTask::DocumentTask(Box::new(
+                            DocumentTask::FetchDocumentsPage(parsed_query),
+                        )));
                     }
                 }
 
                 ui.label(format!("Page {}", self.current_page));
 
-                if self.has_next_page {
-                    if ui.button("Next Page").clicked() {
-                        // Handle Next Page
-                        if let Some(next_cursor) = &self.get_next_cursor() {
-                            self.document_query_status = DocumentQueryStatus::WaitingForResult(
-                                SystemTime::now()
-                                    .duration_since(UNIX_EPOCH)
-                                    .expect("Time went backwards")
-                                    .as_secs(),
+                if self.has_next_page && ui.button("Next Page").clicked() {
+                    // Handle Next Page
+                    if let Some(next_cursor) = &self.get_next_cursor() {
+                        self.document_query_status = DocumentQueryStatus::WaitingForResult(
+                            SystemTime::now()
+                                .duration_since(UNIX_EPOCH)
+                                .expect("Time went backwards")
+                                .as_secs(),
+                        );
+                        if self.current_page > 1 {
+                            self.previous_cursors.push(
+                                self.next_cursors
+                                    .get(self.next_cursors.len() - 2)
+                                    .expect("Expected a previous cursor")
+                                    .clone(),
                             );
-                            if self.current_page > 1 {
-                                self.previous_cursors.push(
-                                    self.next_cursors
-                                        .get(self.next_cursors.len() - 2)
-                                        .expect("Expected a previous cursor")
-                                        .clone(),
-                                );
-                            }
-                            self.current_page += 1;
-                            let parsed_query = self.build_document_query_with_cursor(next_cursor);
-                            action = AppAction::BackendTask(BackendTask::DocumentTask(
-                                DocumentTask::FetchDocumentsPage(parsed_query),
-                            ));
                         }
+                        self.current_page += 1;
+                        let parsed_query = self.build_document_query_with_cursor(next_cursor);
+                        action = AppAction::BackendTask(BackendTask::DocumentTask(Box::new(
+                            DocumentTask::FetchDocumentsPage(parsed_query),
+                        )));
                     }
                 }
             });
@@ -459,7 +455,7 @@ impl DocumentQueryScreen {
     fn show_remove_contract_popup(&mut self, ui: &mut egui::Ui) -> AppAction {
         // If no contract is set, nothing to confirm
         let contract_to_remove = match &self.contract_to_remove {
-            Some(contract) => contract.clone(),
+            Some(contract) => *contract,
             None => {
                 self.confirm_remove_contract_popup = false;
                 return AppAction::None;
@@ -488,9 +484,9 @@ impl DocumentQueryScreen {
 
                 // Confirm button
                 if ui.button("Confirm").clicked() {
-                    app_action = AppAction::BackendTask(BackendTask::ContractTask(
+                    app_action = AppAction::BackendTask(BackendTask::ContractTask(Box::new(
                         ContractTask::RemoveContract(contract_to_remove),
-                    ));
+                    )));
                     self.confirm_remove_contract_popup = false;
                     self.contract_to_remove = None;
                 }
@@ -575,43 +571,43 @@ impl ScreenLike for DocumentQueryScreen {
         self.check_error_expiration();
         let load_contract_button = (
             "Load Contracts",
-            DesiredAppAction::AddScreenType(ScreenType::AddContracts),
+            DesiredAppAction::AddScreenType(Box::new(ScreenType::AddContracts)),
         );
         let register_contract_button = (
             "Register Contract",
-            DesiredAppAction::AddScreenType(ScreenType::RegisterContract),
+            DesiredAppAction::AddScreenType(Box::new(ScreenType::RegisterContract)),
         );
         let update_contract_button = (
             "Update Contract",
-            DesiredAppAction::AddScreenType(ScreenType::UpdateContract),
+            DesiredAppAction::AddScreenType(Box::new(ScreenType::UpdateContract)),
         );
         let add_document_button = (
             "Create Document",
-            DesiredAppAction::AddScreenType(ScreenType::CreateDocument),
+            DesiredAppAction::AddScreenType(Box::new(ScreenType::CreateDocument)),
         );
         let delete_document_button = (
             "Delete Document",
-            DesiredAppAction::AddScreenType(ScreenType::DeleteDocument),
+            DesiredAppAction::AddScreenType(Box::new(ScreenType::DeleteDocument)),
         );
         let replace_document_button = (
             "Replace Document",
-            DesiredAppAction::AddScreenType(ScreenType::ReplaceDocument),
+            DesiredAppAction::AddScreenType(Box::new(ScreenType::ReplaceDocument)),
         );
         let transfer_document_button = (
             "Transfer Document",
-            DesiredAppAction::AddScreenType(ScreenType::TransferDocument),
+            DesiredAppAction::AddScreenType(Box::new(ScreenType::TransferDocument)),
         );
         let purchase_document_button = (
             "Purchase Document",
-            DesiredAppAction::AddScreenType(ScreenType::PurchaseDocument),
+            DesiredAppAction::AddScreenType(Box::new(ScreenType::PurchaseDocument)),
         );
         let set_document_price_button = (
             "Set Document Price",
-            DesiredAppAction::AddScreenType(ScreenType::SetDocumentPrice),
+            DesiredAppAction::AddScreenType(Box::new(ScreenType::SetDocumentPrice)),
         );
         let group_actions_button = (
             "Group Actions",
-            DesiredAppAction::AddScreenType(ScreenType::GroupActions),
+            DesiredAppAction::AddScreenType(Box::new(ScreenType::GroupActions)),
         );
         let mut action = AppAction::None;
         if self.app_context.network == Network::Dash {
@@ -669,13 +665,12 @@ impl ScreenLike for DocumentQueryScreen {
             &mut self.pending_fields_selection,
         );
 
-        if let AppAction::BackendTask(BackendTask::ContractTask(ContractTask::RemoveContract(
-            contract_id,
-        ))) = action
-        {
-            action = AppAction::None;
-            self.confirm_remove_contract_popup = true;
-            self.contract_to_remove = Some(contract_id);
+        if let AppAction::BackendTask(BackendTask::ContractTask(contract_task)) = &action {
+            if let ContractTask::RemoveContract(contract_id) = **contract_task {
+                action = AppAction::None;
+                self.confirm_remove_contract_popup = true;
+                self.contract_to_remove = Some(contract_id);
+            }
         }
 
         egui::CentralPanel::default()

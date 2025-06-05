@@ -68,6 +68,9 @@ pub fn render_identity_selector(
 }
 
 /// Returns the newly selected key (if changed), otherwise the existing one.
+// Allow dead_code: This function provides UI for key selection within identities,
+// useful for identity-based operations and key management interfaces
+#[allow(dead_code)]
 pub fn render_key_selector(
     ui: &mut Ui,
     selected_identity: &QualifiedIdentity,
@@ -418,7 +421,7 @@ pub fn add_contract_doc_type_chooser_pre_filtered<'a, T>(
                 )
                 .show_ui(ui, |dui| {
                     if let Some(qc) = selected_contract {
-                        for (name, _dt) in qc.contract.document_types() {
+                        for name in qc.contract.document_types().keys() {
                             if dui
                                 .selectable_label(
                                     selected_doc_type
@@ -512,7 +515,7 @@ pub fn render_group_action_text(
             group_action_type_str,
             group_action_id.to_string(Encoding::Base58)
         ));
-        return format!("Sign {}", group_action_type_str);
+        format!("Sign {}", group_action_type_str)
     } else if let Some((_, group)) = group.as_ref() {
         let your_power = group
             .members()
@@ -540,8 +543,8 @@ pub fn render_group_action_text(
         ui.add_space(10.0);
         if let Some(your_power) = your_power {
             if *your_power >= group.required_power() {
-                ui.label(format!("You are a unilateral group member.\nYou do not need other group members to sign off on this action for it to process."));
-                format!("{}", group_action_type_str)
+                ui.label("You are a unilateral group member.\nYou do not need other group members to sign off on this action for it to process.".to_string());
+                group_action_type_str.to_string()
             } else {
                 ui.label(format!("You are not a unilateral group member.\nYou can initiate the {group_action_type_str} action but will need other group members to sign off on it for it to process.\nThis action requires a total power of {}.\nYour power is {your_power}.", group.required_power()));
 
@@ -567,7 +570,7 @@ pub fn render_group_action_text(
             format!("Test {} (It should fail)", group_action_type_str)
         }
     } else {
-        format!("{}", group_action_type_str)
+        group_action_type_str.to_string()
     }
 }
 

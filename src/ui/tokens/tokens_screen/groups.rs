@@ -178,7 +178,7 @@ impl TokensScreen {
 
                                 // Show red warning if someone else already used this identity
                                 if self.app_context.developer_mode.load(Ordering::Relaxed)
-                                    && group_ui.members[j].identity_str != ""
+                                    && !group_ui.members[j].identity_str.is_empty()
                                     && group_ui.members.iter().enumerate().any(|(i, m)| {
                                     i > j && m.identity_str == group_ui.members[j].identity_str
                                 })
@@ -191,8 +191,7 @@ impl TokensScreen {
 
 
                                 if ui.button("Remove Member").clicked() {
-                                    group_ui.members.remove(j);
-                                    return; // return so we skip the assignment at the end
+                                    group_ui.members.remove(j);// return so we skip the assignment at the end
                                 } else {
                                     // Only assign back if we didn’t remove
                                     group_ui.members[j] = member;
@@ -216,7 +215,6 @@ impl TokensScreen {
                             // A remove button for the entire group, only for last group
                             if ui.button("Remove This Group").clicked() {
                                 group_to_remove = Some(group_position);
-                                return;
                             }
                         }
                     });

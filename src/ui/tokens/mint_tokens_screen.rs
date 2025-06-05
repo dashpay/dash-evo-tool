@@ -96,7 +96,7 @@ impl MintTokensScreen {
             }
             AuthorizedActionTakers::ContractOwner => {
                 if identity_token_info.data_contract.contract.owner_id()
-                    != &identity_token_info.identity.identity.id()
+                    != identity_token_info.identity.identity.id()
                 {
                     error_message = Some(
                         "You are not allowed to mint this token. Only the contract owner is."
@@ -275,9 +275,8 @@ impl MintTokensScreen {
                         .as_secs();
                     self.status = MintTokensStatus::WaitingForResult(now);
 
-                    let group_info;
-                    if self.group_action_id.is_some() {
-                        group_info = self.group.as_ref().map(|(pos, _)| {
+                    let group_info = if self.group_action_id.is_some() {
+                        self.group.as_ref().map(|(pos, _)| {
                             GroupStateTransitionInfoStatus::GroupStateTransitionInfoOtherSigner(
                                 GroupStateTransitionInfo {
                                     group_contract_position: *pos,
@@ -285,17 +284,17 @@ impl MintTokensScreen {
                                     action_is_proposer: false,
                                 },
                             )
-                        });
+                        })
                     } else {
-                        group_info = self.group.as_ref().map(|(pos, _)| {
+                        self.group.as_ref().map(|(pos, _)| {
                             GroupStateTransitionInfoStatus::GroupStateTransitionInfoProposer(*pos)
-                        });
-                    }
+                        })
+                    };
 
                     // Dispatch the actual backend mint action
                     action = AppAction::BackendTasks(
                         vec![
-                            BackendTask::TokenTask(TokenTask::MintTokens {
+                            BackendTask::TokenTask(Box::new(TokenTask::MintTokens {
                                 sending_identity: self.identity_token_info.identity.clone(),
                                 data_contract: self
                                     .identity_token_info
@@ -312,8 +311,8 @@ impl MintTokensScreen {
                                 amount: amount_ok.unwrap(),
                                 recipient_id: maybe_identifier,
                                 group_info,
-                            }),
-                            BackendTask::TokenTask(TokenTask::QueryMyTokenBalances),
+                            })),
+                            BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances)),
                         ],
                         BackendTasksExecutionMode::Sequential,
                     );
@@ -341,12 +340,10 @@ impl MintTokensScreen {
             if self.group_action_id.is_some() {
                 // This mint is already initiated by the group, we are just signing it
                 ui.heading("Group Mint Signing Successful.");
+            } else if !self.is_unilateral_group_member && self.group.is_some() {
+                ui.heading("Group Mint Initiated.");
             } else {
-                if !self.is_unilateral_group_member && self.group.is_some() {
-                    ui.heading("Group Mint Initiated.");
-                } else {
-                    ui.heading("Mint Successful.");
-                }
+                ui.heading("Mint Successful.");
             }
 
             ui.add_space(20.0);
@@ -365,15 +362,13 @@ impl MintTokensScreen {
                     action = AppAction::PopScreenAndRefresh;
                 }
 
-                if !self.is_unilateral_group_member {
-                    if ui.button("Go to Group Actions").clicked() {
-                        action = AppAction::PopThenAddScreenToMainScreen(
-                            RootScreenType::RootScreenDocumentQuery,
-                            Screen::GroupActionsScreen(GroupActionsScreen::new(
-                                &self.app_context.clone(),
-                            )),
-                        );
-                    }
+                if !self.is_unilateral_group_member && ui.button("Go to Group Actions").clicked() {
+                    action = AppAction::PopThenAddScreenToMainScreen(
+                        RootScreenType::RootScreenDocumentQuery,
+                        Screen::GroupActionsScreen(GroupActionsScreen::new(
+                            &self.app_context.clone(),
+                        )),
+                    );
                 }
             }
         });
@@ -608,7 +603,7 @@ impl ScreenLike for MintTokensScreen {
                             )
                             .changed()
                         {
-                            self.public_note = if txt.len() > 0 {
+                            self.public_note = if !txt.is_empty() {
                                 Some(txt)
                             } else {
                                 None

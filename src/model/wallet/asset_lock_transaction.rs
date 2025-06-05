@@ -12,6 +12,7 @@ use dash_sdk::dpp::dashcore::{
 use std::collections::BTreeMap;
 
 impl Wallet {
+    #[allow(clippy::type_complexity)]
     pub fn registration_asset_lock_transaction(
         &mut self,
         network: Network,
@@ -42,6 +43,7 @@ impl Wallet {
         )
     }
 
+    #[allow(clippy::type_complexity)]
     pub fn top_up_asset_lock_transaction(
         &mut self,
         network: Network,
@@ -74,6 +76,7 @@ impl Wallet {
         )
     }
 
+    #[allow(clippy::type_complexity)]
     fn asset_lock_transaction_from_private_key(
         &mut self,
         network: Network,
@@ -138,9 +141,9 @@ impl Wallet {
 
         // Collect inputs from UTXOs
         let inputs = utxos
-            .iter()
-            .map(|(utxo, _)| TxIn {
-                previous_output: utxo.clone(),
+            .keys()
+            .map(|utxo| TxIn {
+                previous_output: *utxo,
                 ..Default::default()
             })
             .collect();
@@ -183,6 +186,7 @@ impl Wallet {
             .collect();
 
         // Now we can drop the cache to end the immutable borrow
+        #[allow(clippy::drop_non_drop)]
         drop(cache);
 
         let mut check_utxos = utxos.clone();
@@ -251,6 +255,7 @@ impl Wallet {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn top_up_asset_lock_transaction_for_utxo(
         &mut self,
         network: Network,
@@ -307,7 +312,10 @@ impl Wallet {
         // we need to get all inputs from utxos to add them to the transaction
 
         let mut tx_in = TxIn::default();
-        tx_in.previous_output = utxo.clone();
+        #[allow(clippy::field_reassign_with_default)]
+        {
+            tx_in.previous_output = utxo;
+        }
 
         let sighash_u32 = 1u32;
 
@@ -335,6 +343,7 @@ impl Wallet {
             .collect();
 
         // Now we can drop the cache to end the immutable borrow
+        #[allow(clippy::drop_non_drop)]
         drop(cache);
 
         tx.input

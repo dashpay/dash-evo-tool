@@ -14,6 +14,7 @@ use dash_sdk::{Error, Sdk};
 use tokio::sync::mpsc;
 
 impl AppContext {
+    #[allow(clippy::too_many_arguments)]
     pub async fn freeze_tokens(
         &self,
         actor_identity: &QualifiedIdentity,
@@ -52,7 +53,7 @@ impl AppContext {
                 options,
             )
             .await
-            .map_err(|e| format!("Error signing Freeze Tokens transition: {}", e.to_string()))?;
+            .map_err(|e| format!("Error signing Freeze Tokens transition: {}", e))?;
 
         // Broadcast
         let _proof_result = state_transition

@@ -5,6 +5,7 @@ use dash_sdk::dpp::dashcore::{Address, Network, OutPoint, TxOut};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 impl Wallet {
+    #[allow(clippy::type_complexity)]
     pub fn take_unspent_utxos_for(
         &mut self,
         amount: u64,
@@ -26,10 +27,10 @@ impl Wallet {
                 }
 
                 // Add the UTXO to the result
-                taken_utxos.insert(outpoint.clone(), (tx_out.clone(), address.clone()));
+                taken_utxos.insert(*outpoint, (tx_out.clone(), address.clone()));
 
                 required -= tx_out.value as i64;
-                utxos_to_remove.push((address.clone(), outpoint.clone()));
+                utxos_to_remove.push((address.clone(), *outpoint));
             }
         }
 
@@ -59,11 +60,11 @@ impl Wallet {
                     Some((taken_utxos, None))
                 } else {
                     // Not enough to cover amount even after adjusting
-                    return None;
+                    None
                 }
             } else {
                 // Not enough UTXOs and not allowed to take fee from amount
-                return None;
+                None
             }
         } else {
             // Remove the collected UTXOs from the wallet's UTXO map
@@ -117,7 +118,7 @@ impl Wallet {
                         value: utxo.amount.to_sat(),
                         script_pubkey: utxo.script_pub_key.clone(),
                     };
-                    new_utxo_map.insert(outpoint.clone(), tx_out);
+                    new_utxo_map.insert(outpoint, tx_out);
                     new_outpoints.insert(outpoint);
                 }
 
@@ -125,7 +126,7 @@ impl Wallet {
                 let mut old_outpoints = HashSet::new();
                 for (_address, utxos) in self.utxos.iter() {
                     for (outpoint, _tx_out) in utxos.iter() {
-                        old_outpoints.insert(outpoint.clone());
+                        old_outpoints.insert(*outpoint);
                     }
                 }
 
@@ -153,8 +154,8 @@ impl Wallet {
                     // Add or update the UTXO in the wallet
                     current_utxos
                         .entry(address.clone())
-                        .or_insert_with(HashMap::new)
-                        .insert(outpoint.clone(), tx_out.clone());
+                        .or_default()
+                        .insert(*outpoint, tx_out.clone());
                 }
 
                 // If save is Some, update the database

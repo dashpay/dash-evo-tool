@@ -51,7 +51,7 @@ impl RegisterDpnsNameScreen {
 
         let mut error_message: Option<String> = None;
         let selected_wallet = if let Some(ref identity) = selected_qualified_identity {
-            get_selected_wallet(&identity, Some(app_context), None, &mut error_message)
+            get_selected_wallet(identity, Some(app_context), None, &mut error_message)
         } else {
             None
         };
@@ -77,7 +77,7 @@ impl RegisterDpnsNameScreen {
         if let Some(qi) = self
             .qualified_identities
             .iter()
-            .find(|qi| qi.identity.id() == &identity_id)
+            .find(|qi| qi.identity.id() == identity_id)
         {
             // Set the selected_qualified_identity to the found identity
             self.selected_qualified_identity = Some(qi.clone());
@@ -391,10 +391,8 @@ pub fn is_contested_name(name: &str) -> bool {
         return false;
     }
     for c in name.chars() {
-        if c.is_digit(10) {
-            if c != '0' && c != '1' {
-                return false;
-            }
+        if c.is_ascii_digit() && c != '0' && c != '1' {
+            return false;
         }
     }
     true

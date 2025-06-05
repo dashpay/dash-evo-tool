@@ -61,7 +61,7 @@ mod update_token_config;
 pub(crate) enum TokenTask {
     RegisterTokenContract {
         identity: QualifiedIdentity,
-        signing_key: IdentityPublicKey,
+        signing_key: Box<IdentityPublicKey>,
         token_names: Vec<(String, String, String)>,
         contract_keywords: Vec<String>,
         token_description: Option<String>,
@@ -78,11 +78,11 @@ pub(crate) enum TokenTask {
         manual_minting_rules: ChangeControlRules,
         manual_burning_rules: ChangeControlRules,
         freeze_rules: ChangeControlRules,
-        unfreeze_rules: ChangeControlRules,
-        destroy_frozen_funds_rules: ChangeControlRules,
-        emergency_action_rules: ChangeControlRules,
-        max_supply_change_rules: ChangeControlRules,
-        conventions_change_rules: ChangeControlRules,
+        unfreeze_rules: Box<ChangeControlRules>,
+        destroy_frozen_funds_rules: Box<ChangeControlRules>,
+        emergency_action_rules: Box<ChangeControlRules>,
+        max_supply_change_rules: Box<ChangeControlRules>,
+        conventions_change_rules: Box<ChangeControlRules>,
 
         // Main Control Group Change
         main_control_group_change_authorized: AuthorizedActionTakers,
@@ -179,7 +179,7 @@ pub(crate) enum TokenTask {
         token_id: Identifier,
     },
     UpdateTokenConfig {
-        identity_token_info: IdentityTokenInfo,
+        identity_token_info: Box<IdentityTokenInfo>,
         change_item: TokenConfigurationChangeItem,
         signing_key: IdentityPublicKey,
         public_note: Option<String>,
@@ -240,7 +240,7 @@ impl AppContext {
             } => {
                 let data_contract = self
                     .build_data_contract_v1_with_one_token(
-                        identity.identity.id().clone(),
+                        identity.identity.id(),
                         token_names.clone(),
                         contract_keywords.to_vec(),
                         token_description.clone(),
@@ -255,12 +255,12 @@ impl AppContext {
                         manual_minting_rules.clone(),
                         manual_burning_rules.clone(),
                         freeze_rules.clone(),
-                        unfreeze_rules.clone(),
-                        destroy_frozen_funds_rules.clone(),
-                        emergency_action_rules.clone(),
-                        max_supply_change_rules.clone(),
-                        conventions_change_rules.clone(),
-                        main_control_group_change_authorized.clone(),
+                        unfreeze_rules.as_ref().clone(),
+                        destroy_frozen_funds_rules.as_ref().clone(),
+                        emergency_action_rules.as_ref().clone(),
+                        max_supply_change_rules.as_ref().clone(),
+                        conventions_change_rules.as_ref().clone(),
+                        *main_control_group_change_authorized,
                         distribution_rules.clone(),
                         groups.clone(),
                     )
@@ -270,7 +270,7 @@ impl AppContext {
                     data_contract,
                     token_names[0].0.clone(),
                     identity.clone(),
-                    signing_key.clone(),
+                    signing_key.as_ref().clone(),
                     sdk,
                     sender,
                 )
@@ -303,15 +303,15 @@ impl AppContext {
                     signing_key.clone(),
                     public_note.clone(),
                     *amount,
-                    recipient_id.clone(),
-                    group_info.clone(),
+                    *recipient_id,
+                    *group_info,
                     sdk,
                     sender,
                 )
                 .await
                 .map_err(|e| format!("Failed to mint tokens: {e}")),
             TokenTask::QueryDescriptionsByKeyword(keyword, cursor) => self
-                .query_descriptions_by_keyword(&keyword, cursor, sdk)
+                .query_descriptions_by_keyword(keyword, cursor, sdk)
                 .await
                 .map_err(|e| format!("Failed to query tokens by keyword: {e}")),
             TokenTask::TransferTokens {
@@ -324,7 +324,7 @@ impl AppContext {
                 public_note,
             } => self
                 .transfer_tokens(
-                    &sending_identity,
+                    sending_identity,
                     *recipient_id,
                     *amount,
                     data_contract,
@@ -352,7 +352,7 @@ impl AppContext {
                     signing_key.clone(),
                     public_note.clone(),
                     *amount,
-                    group_info.clone(),
+                    *group_info,
                     sdk,
                     sender,
                 )
@@ -373,8 +373,8 @@ impl AppContext {
                     *token_position,
                     signing_key.clone(),
                     public_note.clone(),
-                    frozen_identity.clone(),
-                    group_info.clone(),
+                    *frozen_identity,
+                    *group_info,
                     sdk,
                     sender,
                 )
@@ -395,8 +395,8 @@ impl AppContext {
                     *token_position,
                     signing_key.clone(),
                     public_note.clone(),
-                    freeze_identity.clone(),
-                    group_info.clone(),
+                    *freeze_identity,
+                    *group_info,
                     sdk,
                     sender,
                 )
@@ -417,8 +417,8 @@ impl AppContext {
                     *token_position,
                     signing_key.clone(),
                     public_note.clone(),
-                    unfreeze_identity.clone(),
-                    group_info.clone(),
+                    *unfreeze_identity,
+                    *group_info,
                     sdk,
                     sender,
                 )
@@ -438,7 +438,7 @@ impl AppContext {
                     *token_position,
                     signing_key.clone(),
                     public_note.clone(),
-                    group_info.clone(),
+                    *group_info,
                     sdk,
                     sender,
                 )
@@ -458,7 +458,7 @@ impl AppContext {
                     *token_position,
                     signing_key.clone(),
                     public_note.clone(),
-                    group_info.clone(),
+                    *group_info,
                     sdk,
                     sender,
                 )
@@ -511,7 +511,7 @@ impl AppContext {
                     Ok(None) => Ok(BackendTaskSuccessResult::Message(
                         "Contract not found".to_string(),
                     )),
-                    Err(e) => Err(format!("Error fetching contracts: {}", e.to_string())),
+                    Err(e) => Err(format!("Error fetching contracts: {}", e)),
                 }
             }
             TokenTask::SaveTokenLocally(token_info) => {
@@ -528,7 +528,7 @@ impl AppContext {
                         &token_config_bytes,
                         &token_info.data_contract_id,
                         token_info.token_position,
-                        &self,
+                        self,
                     )
                     .map_err(|e| format!("error saving token: {}", e))?;
 
@@ -544,11 +544,11 @@ impl AppContext {
                 group_info,
             } => self
                 .update_token_config(
-                    identity_token_info.clone(),
+                    *identity_token_info.clone(),
                     change_item.clone(),
                     signing_key,
                     public_note.clone(),
-                    group_info.clone(),
+                    *group_info,
                     sdk,
                 )
                 .await
@@ -589,7 +589,7 @@ impl AppContext {
                     signing_key.clone(),
                     public_note.clone(),
                     token_pricing_schedule.clone(),
-                    group_info.clone(),
+                    *group_info,
                     sdk,
                     sender,
                 )
@@ -604,6 +604,8 @@ impl AppContext {
     /// - the specified owner_id
     /// - an empty set of documents, groups, schema_defs
     /// - a single token in tokens[0] with fields derived from your parameters.
+    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::result_large_err)]
     pub fn build_data_contract_v1_with_one_token(
         &self,
         owner_id: Identifier,

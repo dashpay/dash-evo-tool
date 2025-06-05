@@ -33,12 +33,10 @@ impl AppContext {
             wallet.identity_authentication_ecdsa_public_key(self.network, identity_index, 0)?
         };
 
-        let Some(identity) = Identity::fetch(
-            &sdk,
-            PublicKeyHash(public_key.pubkey_hash().to_byte_array()),
-        )
-        .await
-        .map_err(|e| e.to_string())?
+        let Some(identity) =
+            Identity::fetch(sdk, PublicKeyHash(public_key.pubkey_hash().to_byte_array()))
+                .await
+                .map_err(|e| e.to_string())?
         else {
             return Ok(BackendTaskSuccessResult::None);
         };
@@ -90,7 +88,6 @@ impl AppContext {
                         })
                     })
                     .collect::<Vec<DPNSNameInfo>>()
-                    .into()
             })
             .map_err(|e| format!("Error fetching DPNS names: {}", e))?;
 

@@ -20,9 +20,9 @@ use tokio::sync::mpsc;
 impl AppContext {
     pub(super) async fn vote_on_dpns_name(
         self: &Arc<Self>,
-        name: &String,
+        name: &str,
         vote_choice: ResourceVoteChoice,
-        voters: &Vec<QualifiedIdentity>,
+        voters: &[QualifiedIdentity],
         sdk: &Sdk,
         sender: mpsc::Sender<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, String> {
@@ -31,7 +31,7 @@ impl AppContext {
         sender
             .send(TaskResult::Refresh)
             .await
-            .map_err(|e| format!("Error voting: {}", e.to_string()))?;
+            .map_err(|e| format!("Error voting: {}", e))?;
 
         // Fetch DPNS contract and document type information
         let data_contract = self.dpns_contract.as_ref();
@@ -44,7 +44,7 @@ impl AppContext {
         };
 
         // Hardcoded values for DPNS
-        let index_values = [Value::from("dash"), Value::Text(name.clone())];
+        let index_values = [Value::from("dash"), Value::Text(name.to_owned())];
 
         // Create the vote poll to use in the vote
         let vote_poll = ContestedDocumentResourceVotePoll {
@@ -71,7 +71,7 @@ impl AppContext {
                     .put_to_platform_and_wait_for_response(
                         qualified_identity.identity.id(),
                         public_key,
-                        &sdk,
+                        sdk,
                         qualified_identity,
                         None,
                     )
@@ -79,7 +79,7 @@ impl AppContext {
                     .map(|_| ())
                     .map_err(|e| format!("Error voting: {}", e));
 
-                vote_results.push((name.clone(), vote_choice, result));
+                vote_results.push((name.to_owned(), vote_choice, result));
             } else {
                 return Err(format!(
                     "Error voting: No associated voter identity for qualified identity: {}",

@@ -114,7 +114,7 @@ impl AddKeyScreen {
                         app_action = AppAction::BackendTask(BackendTask::IdentityTask(
                             IdentityTask::AddKeyToIdentity(
                                 self.identity.clone(),
-                                new_qualified_key.into(),
+                                new_qualified_key,
                                 private_key_bytes,
                             ),
                         ));

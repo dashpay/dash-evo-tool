@@ -13,6 +13,7 @@ use std::sync::{Arc, RwLock};
 
 #[derive(Debug, Clone)]
 pub(crate) enum CoreTask {
+    #[allow(dead_code)] // May be used for getting single chain lock
     GetBestChainLock,
     GetBestChainLocks,
     RefreshWalletInfo(Arc<RwLock<Wallet>>),
@@ -20,13 +21,19 @@ pub(crate) enum CoreTask {
 }
 impl PartialEq for CoreTask {
     fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (CoreTask::GetBestChainLock, CoreTask::GetBestChainLock) => true,
-            (CoreTask::GetBestChainLocks, CoreTask::GetBestChainLocks) => true,
-            (CoreTask::RefreshWalletInfo(_), CoreTask::RefreshWalletInfo(_)) => true,
-            (CoreTask::StartDashQT(_, _, _), CoreTask::StartDashQT(_, _, _)) => true,
-            _ => false,
-        }
+        matches!(
+            (self, other),
+            (CoreTask::GetBestChainLock, CoreTask::GetBestChainLock)
+                | (CoreTask::GetBestChainLocks, CoreTask::GetBestChainLocks)
+                | (
+                    CoreTask::RefreshWalletInfo(_),
+                    CoreTask::RefreshWalletInfo(_)
+                )
+                | (
+                    CoreTask::StartDashQT(_, _, _),
+                    CoreTask::StartDashQT(_, _, _)
+                )
+        )
     }
 }
 
@@ -100,7 +107,7 @@ impl AppContext {
             }
             CoreTask::RefreshWalletInfo(wallet) => self
                 .refresh_wallet_info(wallet)
-                .map_err(|e| format!("Error refreshing wallet: {}", e.to_string())),
+                .map_err(|e| format!("Error refreshing wallet: {}", e)),
             CoreTask::StartDashQT(network, custom_dash_qt, overwrite_dash_conf) => self
                 .start_dash_qt(network, custom_dash_qt, overwrite_dash_conf)
                 .map_err(|e| e.to_string())
@@ -138,17 +145,13 @@ impl AppContext {
                     )
                 }
             }
-                .map_err(|_| format!("Failed to create {} client", network.to_string()))?;
+                .map_err(|_| format!("Failed to create {} client", network))?;
 
-            client.get_best_chain_lock().map_err(|e| {
-                format!(
-                    "Failed to get best chain lock for {}: {}",
-                    network.to_string(),
-                    e.to_string()
-                )
-            })
+            client
+                .get_best_chain_lock()
+                .map_err(|e| format!("Failed to get best chain lock for {}: {}", network, e))
         } else {
-            Err(format!("{} config not found", network.to_string()))
+            Err(format!("{} config not found", network))
         }
     }
 }

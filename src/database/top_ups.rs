@@ -17,6 +17,7 @@ impl Database {
         Ok(())
     }
 
+    #[allow(dead_code)] // May be used for generating sequential top-up indices
     pub fn get_next_top_up_index(&self, identity_id: &[u8]) -> rusqlite::Result<u64> {
         let conn = self.conn.lock().unwrap();
         let max_index: Option<u64> = conn

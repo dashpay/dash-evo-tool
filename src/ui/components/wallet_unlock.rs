@@ -6,6 +6,9 @@ use zeroize::Zeroize;
 
 pub trait ScreenWithWalletUnlock {
     fn selected_wallet_ref(&self) -> &Option<Arc<RwLock<Wallet>>>;
+    // Allow dead_code: This method provides read-only access to wallet passwords,
+    // useful for password validation and UI state management
+    #[allow(dead_code)]
     fn wallet_password_ref(&self) -> &String;
     fn wallet_password_mut(&mut self) -> &mut String;
     fn show_password(&self) -> bool;
@@ -22,10 +25,8 @@ pub trait ScreenWithWalletUnlock {
                     self.set_error_message(Some(e));
                 }
                 false
-            } else if wallet.is_open() {
-                false
             } else {
-                true
+                !wallet.is_open()
             }
         } else {
             true

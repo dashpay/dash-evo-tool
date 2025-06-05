@@ -95,7 +95,7 @@ impl BurnTokensScreen {
             }
             AuthorizedActionTakers::ContractOwner => {
                 if identity_token_info.data_contract.contract.owner_id()
-                    != &identity_token_info.identity.identity.id()
+                    != identity_token_info.identity.identity.id()
                 {
                     error_message = Some(
                         "You are not allowed to burn this token. Only the contract owner is."
@@ -234,9 +234,8 @@ impl BurnTokensScreen {
                     // Grab the data contract for this token from the app context
                     let data_contract = self.identity_token_info.data_contract.contract.clone();
 
-                    let group_info;
-                    if self.group_action_id.is_some() {
-                        group_info = self.group.as_ref().map(|(pos, _)| {
+                    let group_info = if self.group_action_id.is_some() {
+                        self.group.as_ref().map(|(pos, _)| {
                             GroupStateTransitionInfoStatus::GroupStateTransitionInfoOtherSigner(
                                 GroupStateTransitionInfo {
                                     group_contract_position: *pos,
@@ -244,17 +243,17 @@ impl BurnTokensScreen {
                                     action_is_proposer: false,
                                 },
                             )
-                        });
+                        })
                     } else {
-                        group_info = self.group.as_ref().map(|(pos, _)| {
+                        self.group.as_ref().map(|(pos, _)| {
                             GroupStateTransitionInfoStatus::GroupStateTransitionInfoProposer(*pos)
-                        });
-                    }
+                        })
+                    };
 
                     // Dispatch the actual backend burn action
                     action = AppAction::BackendTasks(
                         vec![
-                            BackendTask::TokenTask(TokenTask::BurnTokens {
+                            BackendTask::TokenTask(Box::new(TokenTask::BurnTokens {
                                 owner_identity: self.identity_token_info.identity.clone(),
                                 data_contract,
                                 token_position: self.identity_token_info.token_position,
@@ -266,8 +265,8 @@ impl BurnTokensScreen {
                                 },
                                 amount: amount_ok.unwrap(),
                                 group_info,
-                            }),
-                            BackendTask::TokenTask(TokenTask::QueryMyTokenBalances),
+                            })),
+                            BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances)),
                         ],
                         BackendTasksExecutionMode::Sequential,
                     );
@@ -295,12 +294,10 @@ impl BurnTokensScreen {
             if self.group_action_id.is_some() {
                 // This burn is already initiated by the group, we are just signing it
                 ui.heading("Group Burn Signing Successful.");
+            } else if !self.is_unilateral_group_member && self.group.is_some() {
+                ui.heading("Group Burn Initiated.");
             } else {
-                if !self.is_unilateral_group_member && self.group.is_some() {
-                    ui.heading("Group Burn Initiated.");
-                } else {
-                    ui.heading("Burn Successful.");
-                }
+                ui.heading("Burn Successful.");
             }
 
             ui.add_space(20.0);
@@ -319,15 +316,13 @@ impl BurnTokensScreen {
                     action = AppAction::PopScreenAndRefresh;
                 }
 
-                if !self.is_unilateral_group_member {
-                    if ui.button("Go to Group Actions").clicked() {
-                        action = AppAction::PopThenAddScreenToMainScreen(
-                            RootScreenType::RootScreenDocumentQuery,
-                            Screen::GroupActionsScreen(GroupActionsScreen::new(
-                                &self.app_context.clone(),
-                            )),
-                        );
-                    }
+                if !self.is_unilateral_group_member && ui.button("Go to Group Actions").clicked() {
+                    action = AppAction::PopThenAddScreenToMainScreen(
+                        RootScreenType::RootScreenDocumentQuery,
+                        Screen::GroupActionsScreen(GroupActionsScreen::new(
+                            &self.app_context.clone(),
+                        )),
+                    );
                 }
             }
         });
@@ -544,7 +539,7 @@ impl ScreenLike for BurnTokensScreen {
                             )
                             .changed()
                         {
-                            self.public_note = if txt.len() > 0 {
+                            self.public_note = if !txt.is_empty() {
                                 Some(txt)
                             } else {
                                 None

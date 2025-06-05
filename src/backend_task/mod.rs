@@ -43,33 +43,37 @@ pub(crate) const NO_IDENTITIES_FOUND: &str = "No identities found";
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum BackendTask {
     IdentityTask(IdentityTask),
-    DocumentTask(DocumentTask),
-    ContractTask(ContractTask),
+    DocumentTask(Box<DocumentTask>),
+    ContractTask(Box<ContractTask>),
     ContestedResourceTask(ContestedResourceTask),
     CoreTask(CoreTask),
     BroadcastStateTransition(StateTransition),
-    TokenTask(TokenTask),
+    TokenTask(Box<TokenTask>),
     SystemTask(SystemTask),
     None,
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum BackendTaskSuccessResult {
     None,
     Refresh,
     Message(String),
+    #[allow(dead_code)] // May be used for individual document operations
     Document(Document),
     Documents(Documents),
     BroadcastedDocument(Document),
     CoreItem(CoreItem),
     RegisteredIdentity(QualifiedIdentity),
     ToppedUpIdentity(QualifiedIdentity),
+    #[allow(dead_code)] // May be used for reporting successful votes
     SuccessfulVotes(Vec<Vote>),
     DPNSVoteResults(Vec<(String, ResourceVoteChoice, Result<(), String>)>),
     CastScheduledVote(ScheduledDPNSVote),
     FetchedContract(DataContract),
     FetchedContracts(Vec<Option<DataContract>>),
     PageDocuments(IndexMap<Identifier, Option<Document>>, Option<Start>),
+    #[allow(dead_code)] // May be used for token search results
     TokensByKeyword(Vec<TokenInfo>, Option<Start>),
     DescriptionsByKeyword(Vec<ContractDescriptionInfo>, Option<Start>),
     TokenEstimatedNonClaimedPerpetualDistributionAmount(IdentityTokenIdentifier, TokenAmount),
@@ -128,7 +132,7 @@ impl AppContext {
         };
         match task {
             BackendTask::ContractTask(contract_task) => {
-                self.run_contract_task(contract_task, &sdk, sender).await
+                self.run_contract_task(*contract_task, &sdk, sender).await
             }
             BackendTask::ContestedResourceTask(contested_resource_task) => {
                 self.run_contested_resource_task(contested_resource_task, &sdk, sender)
@@ -138,7 +142,7 @@ impl AppContext {
                 self.run_identity_task(identity_task, &sdk, sender).await
             }
             BackendTask::DocumentTask(document_task) => {
-                self.run_document_task(document_task, &sdk).await
+                self.run_document_task(*document_task, &sdk).await
             }
             BackendTask::CoreTask(core_task) => self.run_core_task(core_task).await,
             BackendTask::BroadcastStateTransition(state_transition) => {
@@ -146,7 +150,7 @@ impl AppContext {
                     .await
             }
             BackendTask::TokenTask(token_task) => {
-                self.run_token_task(token_task, &sdk, sender).await
+                self.run_token_task(*token_task, &sdk, sender).await
             }
             BackendTask::SystemTask(system_task) => self.run_system_task(system_task, sender).await,
             BackendTask::None => Ok(BackendTaskSuccessResult::None),

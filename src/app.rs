@@ -37,14 +37,14 @@ use tokio::sync::mpsc as tokiompsc;
 #[derive(Debug, From)]
 pub enum TaskResult {
     Refresh,
-    Success(BackendTaskSuccessResult),
+    Success(Box<BackendTaskSuccessResult>),
     Error(String),
 }
 
 impl From<Result<BackendTaskSuccessResult, String>> for TaskResult {
     fn from(value: Result<BackendTaskSuccessResult, String>) -> Self {
         match value {
-            Ok(value) => TaskResult::Success(value),
+            Ok(value) => TaskResult::Success(Box::new(value)),
             Err(e) => TaskResult::Error(e),
         }
     }
@@ -59,9 +59,13 @@ pub struct AppState {
     pub testnet_app_context: Option<Arc<AppContext>>,
     pub devnet_app_context: Option<Arc<AppContext>>,
     pub local_app_context: Option<Arc<AppContext>>,
+    #[allow(dead_code)] // Kept alive for the lifetime of the app
     pub mainnet_core_zmq_listener: CoreZMQListener,
+    #[allow(dead_code)] // Kept alive for the lifetime of the app
     pub testnet_core_zmq_listener: CoreZMQListener,
+    #[allow(dead_code)] // Kept alive for the lifetime of the app
     pub devnet_core_zmq_listener: CoreZMQListener,
+    #[allow(dead_code)] // Kept alive for the lifetime of the app
     pub local_core_zmq_listener: CoreZMQListener,
     pub core_message_receiver: mpsc::Receiver<(ZMQMessage, Network)>,
     pub task_result_sender: tokiompsc::Sender<TaskResult>, // Channel sender for sending task results
@@ -72,9 +76,10 @@ pub struct AppState {
 #[derive(Debug, Clone, PartialEq)]
 pub enum DesiredAppAction {
     None,
+    #[allow(dead_code)] // May be used in future for explicit refresh actions
     Refresh,
-    AddScreenType(ScreenType),
-    BackendTask(BackendTask),
+    AddScreenType(Box<ScreenType>),
+    BackendTask(Box<BackendTask>),
     BackendTasks(Vec<BackendTask>, BackendTasksExecutionMode),
     Custom(String),
 }
@@ -89,7 +94,7 @@ impl DesiredAppAction {
                 AppAction::AddScreen(screen_type.create_screen(app_context))
             }
             DesiredAppAction::BackendTask(backend_task) => {
-                AppAction::BackendTask(backend_task.clone())
+                AppAction::BackendTask((**backend_task).clone())
             }
             DesiredAppAction::BackendTasks(tasks, mode) => {
                 AppAction::BackendTasks(tasks.clone(), mode.clone())
@@ -147,8 +152,7 @@ impl AppState {
 
         let password_info = settings
             .clone()
-            .map(|(_, _, password_info, _, _)| password_info)
-            .flatten();
+            .and_then(|(_, _, password_info, _, _)| password_info);
 
         let mainnet_app_context =
             match AppContext::new(Network::Dash, db.clone(), password_info.clone()) {
@@ -228,17 +232,17 @@ impl AppState {
                 let testnet_app_context = testnet_app_context.as_ref().unwrap();
                 identities_screen = IdentitiesScreen::new(testnet_app_context);
                 dpns_active_contests_screen =
-                    DPNSScreen::new(&testnet_app_context, DPNSSubscreen::Active);
+                    DPNSScreen::new(testnet_app_context, DPNSSubscreen::Active);
                 dpns_past_contests_screen =
-                    DPNSScreen::new(&testnet_app_context, DPNSSubscreen::Past);
+                    DPNSScreen::new(testnet_app_context, DPNSSubscreen::Past);
                 dpns_my_usernames_screen =
-                    DPNSScreen::new(&testnet_app_context, DPNSSubscreen::Owned);
+                    DPNSScreen::new(testnet_app_context, DPNSSubscreen::Owned);
                 dpns_scheduled_votes_screen =
-                    DPNSScreen::new(&testnet_app_context, DPNSSubscreen::ScheduledVotes);
+                    DPNSScreen::new(testnet_app_context, DPNSSubscreen::ScheduledVotes);
                 transition_visualizer_screen = TransitionVisualizerScreen::new(testnet_app_context);
                 proof_visualizer_screen = ProofVisualizerScreen::new(testnet_app_context);
-                document_visualizer_screen = DocumentVisualizerScreen::new(&testnet_app_context);
-                contract_visualizer_screen = ContractVisualizerScreen::new(&testnet_app_context);
+                document_visualizer_screen = DocumentVisualizerScreen::new(testnet_app_context);
+                contract_visualizer_screen = ContractVisualizerScreen::new(testnet_app_context);
                 document_query_screen = DocumentQueryScreen::new(testnet_app_context);
                 wallets_balances_screen = WalletsBalancesScreen::new(testnet_app_context);
                 proof_log_screen = ProofLogScreen::new(testnet_app_context);
@@ -252,18 +256,18 @@ impl AppState {
                 let devnet_app_context = devnet_app_context.as_ref().unwrap();
                 identities_screen = IdentitiesScreen::new(devnet_app_context);
                 dpns_active_contests_screen =
-                    DPNSScreen::new(&devnet_app_context, DPNSSubscreen::Active);
+                    DPNSScreen::new(devnet_app_context, DPNSSubscreen::Active);
                 dpns_past_contests_screen =
-                    DPNSScreen::new(&devnet_app_context, DPNSSubscreen::Past);
+                    DPNSScreen::new(devnet_app_context, DPNSSubscreen::Past);
                 dpns_my_usernames_screen =
-                    DPNSScreen::new(&devnet_app_context, DPNSSubscreen::Owned);
+                    DPNSScreen::new(devnet_app_context, DPNSSubscreen::Owned);
                 dpns_scheduled_votes_screen =
-                    DPNSScreen::new(&devnet_app_context, DPNSSubscreen::ScheduledVotes);
+                    DPNSScreen::new(devnet_app_context, DPNSSubscreen::ScheduledVotes);
                 transition_visualizer_screen = TransitionVisualizerScreen::new(devnet_app_context);
                 proof_visualizer_screen = ProofVisualizerScreen::new(devnet_app_context);
-                document_visualizer_screen = DocumentVisualizerScreen::new(&devnet_app_context);
+                document_visualizer_screen = DocumentVisualizerScreen::new(devnet_app_context);
                 document_query_screen = DocumentQueryScreen::new(devnet_app_context);
-                contract_visualizer_screen = ContractVisualizerScreen::new(&devnet_app_context);
+                contract_visualizer_screen = ContractVisualizerScreen::new(devnet_app_context);
                 wallets_balances_screen = WalletsBalancesScreen::new(devnet_app_context);
                 proof_log_screen = ProofLogScreen::new(devnet_app_context);
                 tokens_balances_screen =
@@ -276,17 +280,15 @@ impl AppState {
                 let local_app_context = local_app_context.as_ref().unwrap();
                 identities_screen = IdentitiesScreen::new(local_app_context);
                 dpns_active_contests_screen =
-                    DPNSScreen::new(&local_app_context, DPNSSubscreen::Active);
-                dpns_past_contests_screen =
-                    DPNSScreen::new(&local_app_context, DPNSSubscreen::Past);
-                dpns_my_usernames_screen =
-                    DPNSScreen::new(&local_app_context, DPNSSubscreen::Owned);
+                    DPNSScreen::new(local_app_context, DPNSSubscreen::Active);
+                dpns_past_contests_screen = DPNSScreen::new(local_app_context, DPNSSubscreen::Past);
+                dpns_my_usernames_screen = DPNSScreen::new(local_app_context, DPNSSubscreen::Owned);
                 dpns_scheduled_votes_screen =
-                    DPNSScreen::new(&local_app_context, DPNSSubscreen::ScheduledVotes);
+                    DPNSScreen::new(local_app_context, DPNSSubscreen::ScheduledVotes);
                 transition_visualizer_screen = TransitionVisualizerScreen::new(local_app_context);
                 proof_visualizer_screen = ProofVisualizerScreen::new(local_app_context);
-                document_visualizer_screen = DocumentVisualizerScreen::new(&local_app_context);
-                contract_visualizer_screen = ContractVisualizerScreen::new(&local_app_context);
+                document_visualizer_screen = DocumentVisualizerScreen::new(local_app_context);
+                contract_visualizer_screen = ContractVisualizerScreen::new(local_app_context);
                 document_query_screen = DocumentQueryScreen::new(local_app_context);
                 wallets_balances_screen = WalletsBalancesScreen::new(local_app_context);
                 proof_log_screen = ProofLogScreen::new(local_app_context);
@@ -313,10 +315,9 @@ impl AppState {
         )
         .expect("Failed to create mainnet InstantSend listener");
 
-        let testnet_tx_zmq_status_option = match testnet_app_context {
-            Some(ref context) => Some(context.sx_zmq_status.clone()),
-            None => None,
-        };
+        let testnet_tx_zmq_status_option = testnet_app_context
+            .as_ref()
+            .map(|context| context.sx_zmq_status.clone());
 
         let testnet_core_zmq_listener = CoreZMQListener::spawn_listener(
             Network::Testnet,
@@ -326,10 +327,9 @@ impl AppState {
         )
         .expect("Failed to create testnet InstantSend listener");
 
-        let devnet_tx_zmq_status_option = match devnet_app_context {
-            Some(ref context) => Some(context.sx_zmq_status.clone()),
-            None => None,
-        };
+        let devnet_tx_zmq_status_option = devnet_app_context
+            .as_ref()
+            .map(|context| context.sx_zmq_status.clone());
 
         let devnet_core_zmq_listener = CoreZMQListener::spawn_listener(
             Network::Devnet,
@@ -339,10 +339,9 @@ impl AppState {
         )
         .expect("Failed to create devnet InstantSend listener");
 
-        let local_tx_zmq_status_option = match local_app_context {
-            Some(ref context) => Some(context.sx_zmq_status.clone()),
-            None => None,
-        };
+        let local_tx_zmq_status_option = local_app_context
+            .as_ref()
+            .map(|context| context.sx_zmq_status.clone());
 
         let local_core_zmq_listener = CoreZMQListener::spawn_listener(
             Network::Regtest,
@@ -408,15 +407,15 @@ impl AppState {
                 ),
                 (
                     RootScreenType::RootScreenMyTokenBalances,
-                    Screen::TokensScreen(tokens_balances_screen),
+                    Screen::TokensScreen(Box::new(tokens_balances_screen)),
                 ),
                 (
                     RootScreenType::RootScreenTokenSearch,
-                    Screen::TokensScreen(token_search_screen),
+                    Screen::TokensScreen(Box::new(token_search_screen)),
                 ),
                 (
                     RootScreenType::RootScreenTokenCreator,
-                    Screen::TokensScreen(token_creator_screen),
+                    Screen::TokensScreen(Box::new(token_creator_screen)),
                 ),
             ]
             .into(),
@@ -561,29 +560,34 @@ impl App for AppState {
         while let Ok(task_result) = self.task_result_receiver.try_recv() {
             // Handle the result on the main thread
             match task_result {
-                TaskResult::Success(message) => match message {
-                    BackendTaskSuccessResult::None => {}
-                    BackendTaskSuccessResult::Refresh => {
-                        self.visible_screen_mut().refresh();
+                TaskResult::Success(message) => {
+                    let unboxed_message = *message;
+                    match unboxed_message {
+                        BackendTaskSuccessResult::None => {}
+                        BackendTaskSuccessResult::Refresh => {
+                            self.visible_screen_mut().refresh();
+                        }
+                        BackendTaskSuccessResult::Message(ref msg) => {
+                            self.visible_screen_mut()
+                                .display_message(msg, MessageType::Success);
+                        }
+                        BackendTaskSuccessResult::CastScheduledVote(ref vote) => {
+                            let _ = self.current_app_context().mark_vote_executed(
+                                vote.voter_id.as_slice(),
+                                vote.contested_name.clone(),
+                            );
+                            self.visible_screen_mut().display_message(
+                                "Successfully cast scheduled vote",
+                                MessageType::Success,
+                            );
+                            self.visible_screen_mut().refresh();
+                        }
+                        _ => {
+                            self.visible_screen_mut()
+                                .display_task_result(unboxed_message);
+                        }
                     }
-                    BackendTaskSuccessResult::Message(message) => {
-                        self.visible_screen_mut()
-                            .display_message(&message, MessageType::Success);
-                    }
-                    BackendTaskSuccessResult::CastScheduledVote(vote) => {
-                        let _ = self
-                            .current_app_context()
-                            .mark_vote_executed(vote.voter_id.as_slice(), vote.contested_name);
-                        self.visible_screen_mut().display_message(
-                            "Successfully cast scheduled vote",
-                            MessageType::Success,
-                        );
-                        self.visible_screen_mut().refresh();
-                    }
-                    _ => {
-                        self.visible_screen_mut().display_task_result(message);
-                    }
-                },
+                }
                 TaskResult::Error(message) => {
                     self.visible_screen_mut()
                         .display_message(&message, MessageType::Error);
@@ -675,7 +679,7 @@ impl App for AppState {
                 .filter(|v| {
                     v.unix_timestamp <= current_time
                         && !v.executed_successfully
-                        && !(v.unix_timestamp + 120000 < current_time) // Don't cast votes more than 2 minutes behind current time
+                        && (v.unix_timestamp + 120000 >= current_time) // Don't cast votes more than 2 minutes behind current time
                 })
                 .collect();
 
@@ -700,16 +704,18 @@ impl App for AppState {
                             .unwrap();
                         if let Screen::DPNSScreen(screen) = dpns_screen {
                             screen.scheduled_vote_cast_in_progress = true;
-                            screen
+                            if let Some((_, s)) = screen
                                 .scheduled_votes
                                 .lock()
                                 .unwrap()
                                 .iter_mut()
                                 .find(|(v, _)| v == &vote)
-                                .map(|(_, s)| *s = ScheduledVoteCastingStatus::InProgress);
+                            {
+                                *s = ScheduledVoteCastingStatus::InProgress;
+                            }
                         }
                         let task = BackendTask::ContestedResourceTask(
-                            ContestedResourceTask::CastScheduledVote(vote, voter.clone()),
+                            ContestedResourceTask::CastScheduledVote(vote, Box::new(voter.clone())),
                         );
                         self.handle_backend_task(task);
                     } else {

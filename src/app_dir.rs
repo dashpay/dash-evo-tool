@@ -9,6 +9,7 @@ const QUALIFIER: &str = ""; // Typically empty on macOS and Linux
 const ORGANIZATION: &str = "";
 const APPLICATION: &str = "Dash-Evo-Tool";
 
+#[allow(dead_code)]
 const CORE_APPLICATION: &str = "DashCore";
 
 fn user_data_dir_path(app: &str) -> Result<PathBuf, std::io::Error> {
@@ -68,10 +69,7 @@ pub fn create_app_user_data_directory_if_not_exists() -> Result<(), std::io::Err
     // Verify directory permissions
     let metadata = fs::metadata(&app_data_dir)?;
     if !metadata.is_dir() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            "Created path is not a directory",
-        ));
+        return Err(std::io::Error::other("Created path is not a directory"));
     }
     Ok(())
 }
@@ -90,7 +88,7 @@ pub fn app_user_data_file_path(filename: &str) -> Result<PathBuf, std::io::Error
 pub fn copy_env_file_if_not_exists() {
     let app_data_dir =
         app_user_data_dir_path().expect("Failed to determine application data directory");
-    let env_file_in_app_dir = app_data_dir.join(".env".to_string());
+    let env_file_in_app_dir = app_data_dir.join(".env");
     if !env_file_in_app_dir.exists() || !env_file_in_app_dir.is_file() {
         let env_example_file_in_exe_dir = PathBuf::from(".env.example");
         if env_example_file_in_exe_dir.exists() && env_example_file_in_exe_dir.is_file() {

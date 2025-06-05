@@ -173,6 +173,7 @@ impl AppContext {
                 .collect::<Result<Vec<PrivateKey>, String>>()?;
 
             let secp = Secp256k1::new();
+            #[allow(clippy::type_complexity)]
             let (public_key_lookup, public_key_hash_lookup): (
                 HashMap<Vec<u8>, [u8; 32]>,
                 HashMap<[u8; 20], [u8; 32]>,
@@ -278,7 +279,6 @@ impl AppContext {
                         })
                     })
                     .collect::<Vec<DPNSNameInfo>>()
-                    .into()
             })
             .map_err(|e| format!("Error fetching DPNS names: {}", e))?;
 

@@ -236,7 +236,7 @@ impl ChangeControlRulesUI {
     pub fn render_control_change_rules_ui(
         &mut self,
         ui: &mut Ui,
-        current_groups: &Vec<GroupConfigUI>,
+        current_groups: &[GroupConfigUI],
         action_name: &str,
         special_case_option: Option<&mut bool>,
     ) {
@@ -301,31 +301,28 @@ impl ChangeControlRulesUI {
                             });
 
                         // If user selected Identity or Group, show text edit
-                        match &mut self.rules.authorized_to_make_change {
-                            AuthorizedActionTakers::Identity(_) => {
-                                self.authorized_identity.get_or_insert_with(String::new);
-                                if let Some(ref mut id_str) = self.authorized_identity {
-                                    ui.horizontal(|ui| {
-                                        ui.add_sized(
-                                            [300.0, 22.0],
-                                            TextEdit::singleline(id_str).hint_text("Enter base58 id"),
-                                        );
+                        if let AuthorizedActionTakers::Identity(_) = &mut self.rules.authorized_to_make_change {
+                            self.authorized_identity.get_or_insert_with(String::new);
+                            if let Some(ref mut id_str) = self.authorized_identity {
+                                ui.horizontal(|ui| {
+                                    ui.add_sized(
+                                        [300.0, 22.0],
+                                        TextEdit::singleline(id_str).hint_text("Enter base58 id"),
+                                    );
 
-                                        if !id_str.is_empty() {
-                                            let is_valid = Identifier::from_string(id_str.as_str(), Encoding::Base58).is_ok();
+                                    if !id_str.is_empty() {
+                                        let is_valid = Identifier::from_string(id_str.as_str(), Encoding::Base58).is_ok();
 
-                                            let (symbol, color) = if is_valid {
-                                                ("✔", Color32::GREEN)
-                                            } else {
-                                                ("×", Color32::RED)
-                                            };
+                                        let (symbol, color) = if is_valid {
+                                            ("✔", Color32::GREEN)
+                                        } else {
+                                            ("×", Color32::RED)
+                                        };
 
-                                            ui.label(RichText::new(symbol).color(color).strong());
-                                        }
-                                    });
-                                }
+                                        ui.label(RichText::new(symbol).color(color).strong());
+                                    }
+                                });
                             }
-                            _ => {}
                         }
                     });
                     ui.end_row();
@@ -383,31 +380,28 @@ impl ChangeControlRulesUI {
                                 }
                             });
 
-                        match &mut self.rules.admin_action_takers {
-                            AuthorizedActionTakers::Identity(_) => {
-                                self.admin_identity.get_or_insert_with(String::new);
-                                if let Some(ref mut id_str) = self.admin_identity {
-                                    ui.horizontal(|ui| {
-                                        ui.add_sized(
-                                            [300.0, 22.0],
-                                            TextEdit::singleline(id_str).hint_text("Enter base58 id"),
-                                        );
+                        if let AuthorizedActionTakers::Identity(_) = &mut self.rules.admin_action_takers {
+                            self.admin_identity.get_or_insert_with(String::new);
+                            if let Some(ref mut id_str) = self.admin_identity {
+                                ui.horizontal(|ui| {
+                                    ui.add_sized(
+                                        [300.0, 22.0],
+                                        TextEdit::singleline(id_str).hint_text("Enter base58 id"),
+                                    );
 
-                                        if !id_str.is_empty() {
-                                            let is_valid = Identifier::from_string(id_str.as_str(), Encoding::Base58).is_ok();
+                                    if !id_str.is_empty() {
+                                        let is_valid = Identifier::from_string(id_str.as_str(), Encoding::Base58).is_ok();
 
-                                            let (symbol, color) = if is_valid {
-                                                ("✔", Color32::GREEN)
-                                            } else {
-                                                ("×", Color32::RED)
-                                            };
+                                        let (symbol, color) = if is_valid {
+                                            ("✔", Color32::GREEN)
+                                        } else {
+                                            ("×", Color32::RED)
+                                        };
 
-                                            ui.label(RichText::new(symbol).color(color).strong());
-                                        }
-                                    });
-                                }
+                                        ui.label(RichText::new(symbol).color(color).strong());
+                                    }
+                                });
                             }
-                            _ => {}
                         }
                     });
                     ui.end_row();
@@ -434,23 +428,21 @@ impl ChangeControlRulesUI {
                     ui.end_row();
 
                     if let Some(special_case_option) = special_case_option {
-                        if action_name == "Freeze" {
-                            if self.rules.authorized_to_make_change != AuthorizedActionTakers::NoOne {
-                                ui.horizontal(|ui| {
-                                    ui.checkbox(
-                                        special_case_option,
-                                        "Allow transfers to frozen identities",
-                                    );
-                                    ui.add_space(4.0);
-                                    ui.label(
-                                        RichText::new("ℹ")
-                                            .monospace()
-                                            .color(Color32::LIGHT_BLUE),
-                                    )
-                                        .on_hover_text("Enabling this setting allows transfers to frozen identities, reducing gas usage by approximately 20% per transfer. Disable this if you want to make sure frozen identities can not receive transfers.");
-                                });
-                                ui.end_row();
-                            }
+                        if action_name == "Freeze" && self.rules.authorized_to_make_change != AuthorizedActionTakers::NoOne {
+                            ui.horizontal(|ui| {
+                                ui.checkbox(
+                                    special_case_option,
+                                    "Allow transfers to frozen identities",
+                                );
+                                ui.add_space(4.0);
+                                ui.label(
+                                    RichText::new("ℹ")
+                                        .monospace()
+                                        .color(Color32::LIGHT_BLUE),
+                                )
+                                    .on_hover_text("Enabling this setting allows transfers to frozen identities, reducing gas usage by approximately 20% per transfer. Disable this if you want to make sure frozen identities can not receive transfers.");
+                            });
+                            ui.end_row();
                         }
                     }
                 });
@@ -459,10 +451,11 @@ impl ChangeControlRulesUI {
         });
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn render_mint_control_change_rules_ui(
         &mut self,
         ui: &mut Ui,
-        current_groups: &Vec<GroupConfigUI>,
+        current_groups: &[GroupConfigUI],
         new_tokens_destination_identity_should_default_to_contract_owner: &mut bool,
         new_tokens_destination_identity_enabled: &mut bool,
         minting_allow_choosing_destination: &mut bool,
@@ -531,31 +524,28 @@ impl ChangeControlRulesUI {
                             });
 
                         // If user selected Identity or Group, show text edit
-                        match &mut self.rules.authorized_to_make_change {
-                            AuthorizedActionTakers::Identity(_) => {
-                                self.authorized_identity.get_or_insert_with(String::new);
-                                if let Some(ref mut id_str) = self.authorized_identity {
-                                    ui.horizontal(|ui| {
-                                        ui.add_sized(
-                                            [300.0, 22.0],
-                                            TextEdit::singleline(id_str).hint_text("Enter base58 id"),
-                                        );
+                        if let AuthorizedActionTakers::Identity(_) = &mut self.rules.authorized_to_make_change {
+                            self.authorized_identity.get_or_insert_with(String::new);
+                            if let Some(ref mut id_str) = self.authorized_identity {
+                                ui.horizontal(|ui| {
+                                    ui.add_sized(
+                                        [300.0, 22.0],
+                                        TextEdit::singleline(id_str).hint_text("Enter base58 id"),
+                                    );
 
-                                        if !id_str.is_empty() {
-                                            let is_valid = Identifier::from_string(id_str.as_str(), Encoding::Base58).is_ok();
+                                    if !id_str.is_empty() {
+                                        let is_valid = Identifier::from_string(id_str.as_str(), Encoding::Base58).is_ok();
 
-                                            let (symbol, color) = if is_valid {
-                                                ("✔", Color32::GREEN)
-                                            } else {
-                                                ("×", Color32::RED)
-                                            };
+                                        let (symbol, color) = if is_valid {
+                                            ("✔", Color32::GREEN)
+                                        } else {
+                                            ("×", Color32::RED)
+                                        };
 
-                                            ui.label(RichText::new(symbol).color(color).strong());
-                                        }
-                                    });
-                                }
+                                        ui.label(RichText::new(symbol).color(color).strong());
+                                    }
+                                });
                             }
-                            _ => {}
                         }
                     });
                     ui.end_row();
@@ -613,31 +603,28 @@ impl ChangeControlRulesUI {
                                 }
                             });
 
-                        match &mut self.rules.admin_action_takers {
-                            AuthorizedActionTakers::Identity(_) => {
-                                self.admin_identity.get_or_insert_with(String::new);
-                                if let Some(ref mut id_str) = self.admin_identity {
-                                    ui.horizontal(|ui| {
-                                        ui.add_sized(
-                                            [300.0, 22.0],
-                                            TextEdit::singleline(id_str).hint_text("Enter base58 id"),
-                                        );
+                        if let AuthorizedActionTakers::Identity(_) = &mut self.rules.admin_action_takers {
+                            self.admin_identity.get_or_insert_with(String::new);
+                            if let Some(ref mut id_str) = self.admin_identity {
+                                ui.horizontal(|ui| {
+                                    ui.add_sized(
+                                        [300.0, 22.0],
+                                        TextEdit::singleline(id_str).hint_text("Enter base58 id"),
+                                    );
 
-                                        if !id_str.is_empty() {
-                                            let is_valid = Identifier::from_string(id_str.as_str(), Encoding::Base58).is_ok();
+                                    if !id_str.is_empty() {
+                                        let is_valid = Identifier::from_string(id_str.as_str(), Encoding::Base58).is_ok();
 
-                                            let (symbol, color) = if is_valid {
-                                                ("✔", Color32::GREEN)
-                                            } else {
-                                                ("×", Color32::RED)
-                                            };
+                                        let (symbol, color) = if is_valid {
+                                            ("✔", Color32::GREEN)
+                                        } else {
+                                            ("×", Color32::RED)
+                                        };
 
-                                            ui.label(RichText::new(symbol).color(color).strong());
-                                        }
-                                    });
-                                }
+                                        ui.label(RichText::new(symbol).color(color).strong());
+                                    }
+                                });
                             }
-                            _ => {}
                         }
                     });
                     ui.end_row();
@@ -745,37 +732,29 @@ impl ChangeControlRulesUI {
         action_name: &str,
     ) -> Result<ChangeControlRules, String> {
         // 1) Update self.rules.authorized_to_make_change if it’s Identity or Group
-        match self.rules.authorized_to_make_change {
-            AuthorizedActionTakers::Identity(_) => {
-                if let Some(ref id_str) = self.authorized_identity {
-                    let parsed =
-                        Identifier::from_string(id_str, Encoding::Base58).map_err(|_| {
-                            format!(
-                                "Invalid base58 identifier for {} authorized identity",
-                                action_name
-                            )
-                        })?;
-                    self.rules.authorized_to_make_change = AuthorizedActionTakers::Identity(parsed);
-                }
+        if let AuthorizedActionTakers::Identity(_) = self.rules.authorized_to_make_change {
+            if let Some(ref id_str) = self.authorized_identity {
+                let parsed = Identifier::from_string(id_str, Encoding::Base58).map_err(|_| {
+                    format!(
+                        "Invalid base58 identifier for {} authorized identity",
+                        action_name
+                    )
+                })?;
+                self.rules.authorized_to_make_change = AuthorizedActionTakers::Identity(parsed);
             }
-            _ => {}
         }
 
         // 2) Update self.rules.admin_action_takers if it’s Identity or Group
-        match self.rules.admin_action_takers {
-            AuthorizedActionTakers::Identity(_) => {
-                if let Some(ref id_str) = self.admin_identity {
-                    let parsed =
-                        Identifier::from_string(id_str, Encoding::Base58).map_err(|_| {
-                            format!(
-                                "Invalid base58 identifier for {} admin identity",
-                                action_name
-                            )
-                        })?;
-                    self.rules.admin_action_takers = AuthorizedActionTakers::Identity(parsed);
-                }
+        if let AuthorizedActionTakers::Identity(_) = self.rules.admin_action_takers {
+            if let Some(ref id_str) = self.admin_identity {
+                let parsed = Identifier::from_string(id_str, Encoding::Base58).map_err(|_| {
+                    format!(
+                        "Invalid base58 identifier for {} admin identity",
+                        action_name
+                    )
+                })?;
+                self.rules.admin_action_takers = AuthorizedActionTakers::Identity(parsed);
             }
-            _ => {}
         }
 
         // 3) Construct the ChangeControlRules
@@ -1236,7 +1215,7 @@ impl TokensScreen {
             .collect();
         let all_known_tokens = app_context
             .db
-            .get_all_known_tokens_with_data_contract(&app_context)
+            .get_all_known_tokens_with_data_contract(app_context)
             .unwrap_or_default();
 
         let my_tokens = my_tokens(app_context, &identities, &all_known_tokens);
@@ -1475,15 +1454,15 @@ impl TokensScreen {
         let all_ids = self
             .my_tokens
             .iter()
-            .map(|(_, token)| (token.token_id.clone(), token.identity_id.clone()))
+            .map(|(_, token)| (token.token_id, token.identity_id))
             .collect::<Vec<_>>();
 
         self.app_context
             .db
             .save_token_order(all_ids)
-            .or_else(|e| {
+            .map_err(|e| {
                 eprintln!("Error saving token order: {}", e);
-                Err(e)
+                e
             })
             .ok();
     }
@@ -2165,8 +2144,8 @@ impl TokensScreen {
 
         Ok(AppAction::BackendTasks(
             vec![
-                BackendTask::TokenTask(TokenTask::SaveTokenLocally(token_info)),
-                BackendTask::TokenTask(TokenTask::QueryMyTokenBalances),
+                BackendTask::TokenTask(Box::new(TokenTask::SaveTokenLocally(token_info))),
+                BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances)),
             ],
             BackendTasksExecutionMode::Sequential,
         ))
@@ -2186,15 +2165,11 @@ impl TokensScreen {
             self.search_current_page += 1;
 
             // Dispatch
-            let query_string = self
-                .token_search_query
-                .as_ref()
-                .map(|s| s.clone())
-                .unwrap_or_default();
+            let query_string = self.token_search_query.clone().unwrap_or_default();
 
-            return AppAction::BackendTask(BackendTask::TokenTask(
+            return AppAction::BackendTask(BackendTask::TokenTask(Box::new(
                 TokenTask::QueryDescriptionsByKeyword(query_string, Some(next_cursor)),
-            ));
+            )));
         }
         AppAction::None
     }
@@ -2210,14 +2185,10 @@ impl TokensScreen {
             if let Some(prev_cursor) = self.previous_cursors.pop() {
                 // Possibly pop from next_cursors if we want to re-insert it later
                 // self.next_cursors.truncate(self.search_current_page - 1);
-                let query_string = self
-                    .token_search_query
-                    .as_ref()
-                    .map(|s| s.clone())
-                    .unwrap_or_default();
-                return AppAction::BackendTask(BackendTask::TokenTask(
+                let query_string = self.token_search_query.clone().unwrap_or_default();
+                return AppAction::BackendTask(BackendTask::TokenTask(Box::new(
                     TokenTask::QueryDescriptionsByKeyword(query_string, Some(prev_cursor)),
-                ));
+                )));
             }
         }
         AppAction::None
@@ -2247,10 +2218,10 @@ impl TokensScreen {
 
                 // Confirm button
                 if ui.button("Confirm").clicked() {
-                    if let Err(e) = self.app_context.remove_token_balance(
-                        token_to_remove.token_id,
-                        token_to_remove.identity_id.clone(),
-                    ) {
+                    if let Err(e) = self
+                        .app_context
+                        .remove_token_balance(token_to_remove.token_id, token_to_remove.identity_id)
+                    {
                         self.backend_message = Some((
                             format!("Error removing token balance: {}", e),
                             MessageType::Error,
@@ -2282,7 +2253,7 @@ impl TokensScreen {
     fn show_remove_token_popup(&mut self, ui: &mut Ui) {
         // If no token is set, nothing to confirm
         let token_to_remove = match &self.token_to_remove {
-            Some(token) => token.clone(),
+            Some(token) => *token,
             None => {
                 self.confirm_remove_token_popup = false;
                 return;
@@ -2400,27 +2371,26 @@ impl ScreenLike for TokensScreen {
         self.check_error_expiration();
 
         // Build top-right buttons
-        let right_buttons;
-        if self.app_context.network != Network::Dash {
-            right_buttons = match self.tokens_subscreen {
+        let right_buttons = if self.app_context.network != Network::Dash {
+            match self.tokens_subscreen {
                 TokensSubscreen::MyTokens => vec![
                     (
                         "Add Token",
-                        DesiredAppAction::AddScreenType(ScreenType::AddTokenById),
+                        DesiredAppAction::AddScreenType(Box::new(ScreenType::AddTokenById)),
                     ),
                     (
                         "Refresh",
-                        DesiredAppAction::BackendTask(BackendTask::TokenTask(
+                        DesiredAppAction::BackendTask(Box::new(BackendTask::TokenTask(Box::new(
                             TokenTask::QueryMyTokenBalances,
-                        )),
+                        )))),
                     ),
                 ],
                 TokensSubscreen::SearchTokens => vec![],
                 TokensSubscreen::TokenCreator => vec![],
-            };
+            }
         } else {
-            right_buttons = vec![];
-        }
+            vec![]
+        };
 
         // Top panel
         if let Some(token_id) = self.selected_token {
@@ -2435,7 +2405,7 @@ impl ScreenLike for TokensScreen {
                 &self.app_context,
                 vec![
                     ("Tokens", AppAction::Custom("Back to tokens".to_string())),
-                    (&format!("{token_name}"), AppAction::None),
+                    (&token_name.to_string(), AppAction::None),
                 ],
                 right_buttons.clone(),
             );
@@ -2596,7 +2566,9 @@ impl ScreenLike for TokensScreen {
 
         // Post-processing on user actions
         match action {
-            AppAction::BackendTask(BackendTask::TokenTask(TokenTask::QueryMyTokenBalances)) => {
+            AppAction::BackendTask(BackendTask::TokenTask(ref token_task))
+                if matches!(token_task.as_ref(), TokenTask::QueryMyTokenBalances) =>
+            {
                 self.refreshing_status =
                     RefreshingStatus::Refreshing(Utc::now().timestamp() as u64);
             }
@@ -2668,7 +2640,6 @@ impl ScreenLike for TokensScreen {
                         ?msg_type,
                         "unsupported message received in token screen"
                     );
-                    return;
                 }
             }
             TokensSubscreen::SearchTokens => {
@@ -2790,7 +2761,7 @@ mod tests {
     #[test]
     fn test_token_creator_ui_builds_correct_contract() {
         let db_file_path = "test_db";
-        let db = Arc::new(Database::new(&db_file_path).unwrap());
+        let db = Arc::new(Database::new(db_file_path).unwrap());
         db.initialize(Path::new(&db_file_path)).unwrap();
 
         let app_context =
@@ -2978,7 +2949,7 @@ mod tests {
 
         // B) Check the token config
         let (token_pos, token_config) = contract_v1.tokens.iter().next().unwrap();
-        assert_eq!(*token_pos as u16, 0, "Should be at position 0 by default");
+        assert_eq!({ *token_pos }, 0, "Should be at position 0 by default");
 
         let TokenConfiguration::V0(token_v0) = token_config;
         let TokenConfigurationConvention::V0(conv_v0) = &token_v0.conventions;
@@ -2996,11 +2967,11 @@ mod tests {
         );
         let keeps_history_rules = &token_v0.keeps_history;
         let TokenKeepsHistoryRules::V0(keeps_history_v0) = keeps_history_rules;
-        assert_eq!(keeps_history_v0.keeps_transfer_history, true);
-        assert_eq!(keeps_history_v0.keeps_freezing_history, true);
+        assert!(keeps_history_v0.keeps_transfer_history);
+        assert!(keeps_history_v0.keeps_freezing_history);
         assert_eq!(token_v0.base_supply, 5_000_000);
         assert_eq!(token_v0.max_supply, Some(10_000_000));
-        assert_eq!(token_v0.start_as_paused, true);
+        assert!(token_v0.start_as_paused);
         assert_eq!(
             token_v0.main_control_group,
             Some(2),
@@ -3064,7 +3035,7 @@ mod tests {
             new_dest_id.to_string(Encoding::Base58),
             "GCMnPwQZcH3RP9atgkmvtmN45QrVcYvh5cmUYARHBTu9"
         );
-        assert_eq!(dist_rules_v0.minting_allow_choosing_destination, true);
+        assert!(dist_rules_v0.minting_allow_choosing_destination);
 
         // F) Check the Groups
         //    (Positions 2 and 7, from above)
@@ -3086,7 +3057,7 @@ mod tests {
     #[test]
     fn test_distribution_function_random() {
         let db_file_path = "test_db";
-        let db = Arc::new(Database::new(&db_file_path).unwrap());
+        let db = Arc::new(Database::new(db_file_path).unwrap());
         db.initialize(Path::new(&db_file_path)).unwrap();
 
         let app_context =
@@ -3171,7 +3142,7 @@ mod tests {
             .expect("Should build successfully");
         let contract_v1 = data_contract.as_v1().expect("Expected DataContract::V1");
 
-        let TokenConfiguration::V0(ref token_v0) = contract_v1.tokens[&(0u16.into())];
+        let TokenConfiguration::V0(ref token_v0) = contract_v1.tokens[&0u16];
         let TokenDistributionRules::V0(dist_rules_v0) = &token_v0.distribution_rules;
         let Some(TokenPerpetualDistribution::V0(perp_v0)) = &dist_rules_v0.perpetual_distribution
         else {
@@ -3196,7 +3167,7 @@ mod tests {
     #[test]
     fn test_parse_token_build_args_fails_with_empty_token_name() {
         let db_file_path = "test_db";
-        let db = Arc::new(Database::new(&db_file_path).unwrap());
+        let db = Arc::new(Database::new(db_file_path).unwrap());
         db.initialize(Path::new(&db_file_path)).unwrap();
 
         let app_context =

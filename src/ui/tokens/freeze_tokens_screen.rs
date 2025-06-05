@@ -97,7 +97,7 @@ impl FreezeTokensScreen {
             }
             AuthorizedActionTakers::ContractOwner => {
                 if identity_token_info.data_contract.contract.owner_id()
-                    != &identity_token_info.identity.identity.id()
+                    != identity_token_info.identity.identity.id()
                 {
                     error_message = Some(
                         "You are not allowed to burn this token. Only the contract owner is."
@@ -244,9 +244,8 @@ impl FreezeTokensScreen {
                     // Grab the data contract for this token from the app context
                     let data_contract = self.identity_token_info.data_contract.contract.clone();
 
-                    let group_info;
-                    if self.group_action_id.is_some() {
-                        group_info = self.group.as_ref().map(|(pos, _)| {
+                    let group_info = if self.group_action_id.is_some() {
+                        self.group.as_ref().map(|(pos, _)| {
                             GroupStateTransitionInfoStatus::GroupStateTransitionInfoOtherSigner(
                                 GroupStateTransitionInfo {
                                     group_contract_position: *pos,
@@ -254,16 +253,16 @@ impl FreezeTokensScreen {
                                     action_is_proposer: false,
                                 },
                             )
-                        });
+                        })
                     } else {
-                        group_info = self.group.as_ref().map(|(pos, _)| {
+                        self.group.as_ref().map(|(pos, _)| {
                             GroupStateTransitionInfoStatus::GroupStateTransitionInfoProposer(*pos)
-                        });
-                    }
+                        })
+                    };
 
                     // Dispatch to backend
-                    action =
-                        AppAction::BackendTask(BackendTask::TokenTask(TokenTask::FreezeTokens {
+                    action = AppAction::BackendTask(BackendTask::TokenTask(Box::new(
+                        TokenTask::FreezeTokens {
                             actor_identity: self.identity.clone(),
                             data_contract,
                             token_position: self.identity_token_info.token_position,
@@ -275,7 +274,8 @@ impl FreezeTokensScreen {
                             },
                             freeze_identity: freeze_id,
                             group_info,
-                        }));
+                        },
+                    )));
                 }
 
                 // Cancel
@@ -300,12 +300,10 @@ impl FreezeTokensScreen {
             if self.group_action_id.is_some() {
                 // This freeze is already initiated by the group, we are just signing it
                 ui.heading("Group Freeze of Identity Signing Successful.");
+            } else if !self.is_unilateral_group_member && self.group.is_some() {
+                ui.heading("Group Freeze of Identity Initiated.");
             } else {
-                if !self.is_unilateral_group_member && self.group.is_some() {
-                    ui.heading("Group Freeze of Identity Initiated.");
-                } else {
-                    ui.heading("Freeze of Identity Successful.");
-                }
+                ui.heading("Freeze of Identity Successful.");
             }
 
             ui.add_space(20.0);
@@ -324,15 +322,13 @@ impl FreezeTokensScreen {
                     action = AppAction::PopScreenAndRefresh;
                 }
 
-                if !self.is_unilateral_group_member {
-                    if ui.button("Go to Group Actions").clicked() {
-                        action = AppAction::PopThenAddScreenToMainScreen(
-                            RootScreenType::RootScreenDocumentQuery,
-                            Screen::GroupActionsScreen(GroupActionsScreen::new(
-                                &self.app_context.clone(),
-                            )),
-                        );
-                    }
+                if !self.is_unilateral_group_member && ui.button("Go to Group Actions").clicked() {
+                    action = AppAction::PopThenAddScreenToMainScreen(
+                        RootScreenType::RootScreenDocumentQuery,
+                        Screen::GroupActionsScreen(GroupActionsScreen::new(
+                            &self.app_context.clone(),
+                        )),
+                    );
                 }
             }
         });
@@ -534,7 +530,7 @@ impl ScreenLike for FreezeTokensScreen {
                             )
                             .changed()
                         {
-                            self.public_note = if txt.len() > 0 {
+                            self.public_note = if !txt.is_empty() {
                                 Some(txt)
                             } else {
                                 None

@@ -127,6 +127,7 @@ pub struct Wallet {
     pub address_balances: BTreeMap<Address, u64>,
     pub known_addresses: BTreeMap<Address, DerivationPath>,
     pub watched_addresses: BTreeMap<DerivationPath, AddressInfo>,
+    #[allow(clippy::type_complexity)]
     pub unused_asset_locks: Vec<(
         Transaction,
         Address,
@@ -212,6 +213,9 @@ impl WalletSeed {
     }
 
     /// Closes the wallet by securely erasing the seed and transitioning to Closed state.
+    // Allow dead_code: This method provides explicit wallet closure functionality,
+    // useful for security-conscious applications requiring manual wallet management
+    #[allow(dead_code)]
     pub fn close(&mut self) {
         match self {
             WalletSeed::Open(open_seed) => {
@@ -246,14 +250,13 @@ impl Wallet {
     }
 
     pub fn has_unused_asset_lock(&self) -> bool {
-        self.unused_asset_locks.len() > 0
+        !self.unused_asset_locks.is_empty()
     }
 
     pub fn max_balance(&self) -> u64 {
         self.utxos
             .values()
-            .map(|outpoints_to_tx_out| outpoints_to_tx_out.values().map(|tx_out| tx_out.value))
-            .flatten()
+            .flat_map(|outpoints_to_tx_out| outpoints_to_tx_out.values().map(|tx_out| tx_out.value))
             .sum::<Duffs>()
     }
 
@@ -299,6 +302,9 @@ impl Wallet {
         }
     }
 
+    // Allow dead_code: This utility method finds wallets by seed hash in collections,
+    // useful for wallet lookup operations and multi-wallet management
+    #[allow(dead_code)]
     pub fn find_in_arc_rw_lock_slice(
         slice: &[Arc<RwLock<Wallet>>],
         wallet_seed_hash: WalletSeedHash,
@@ -344,7 +350,7 @@ impl Wallet {
         let extended_private_key = derivation_path
             .derive_priv_ecdsa_for_master_seed(self.seed_bytes()?, Network::Dash)
             .map_err(|e| e.to_string())?;
-        return Ok(extended_private_key.to_priv());
+        Ok(extended_private_key.to_priv())
     }
 
     pub fn private_key_for_address(
@@ -409,7 +415,7 @@ impl Wallet {
                         .derive_pub(&secp, &derivation_path_extension)
                         .map_err(|e| e.to_string())?
                         .to_pub();
-                    known_public_key = Some(public_key.clone());
+                    known_public_key = Some(public_key);
                     break;
                 } else {
                     // Skip known addresses with no funds
@@ -423,7 +429,7 @@ impl Wallet {
                     .derive_pub(&secp, &derivation_path_extension)
                     .map_err(|e| e.to_string())?
                     .to_pub();
-                known_public_key = Some(public_key.clone());
+                known_public_key = Some(public_key);
                 if let Some(app_context) = register {
                     let address = Address::p2pkh(&public_key, network);
                     app_context
@@ -480,6 +486,7 @@ impl Wallet {
         Ok(extended_public_key.to_pub())
     }
 
+    #[allow(clippy::type_complexity)]
     pub fn identity_authentication_ecdsa_public_keys_data_map(
         &mut self,
         network: Network,
@@ -705,6 +712,9 @@ impl Wallet {
         ))
     }
 
+    // Allow dead_code: This method provides receive addresses with derivation paths,
+    // useful for advanced address management and BIP44 path tracking
+    #[allow(dead_code)]
     pub fn receive_address_with_derivation_path(
         &mut self,
         network: Network,
@@ -731,6 +741,9 @@ impl Wallet {
         ))
     }
 
+    // Allow dead_code: This method provides change addresses with derivation paths,
+    // useful for advanced address management and BIP44 path tracking
+    #[allow(dead_code)]
     pub fn change_address_with_derivation_path(
         &mut self,
         network: Network,

@@ -83,9 +83,9 @@ impl AddContractsScreen {
                         .expect("Time went backwards")
                         .as_secs(),
                 );
-                AppAction::BackendTask(BackendTask::ContractTask(ContractTask::FetchContracts(
+                AppAction::BackendTask(BackendTask::ContractTask(Box::new(ContractTask::FetchContracts(
                     identifiers,
-                )))
+                ))))
             }
             Err(e) => {
                 self.add_contracts_status = AddContractsStatus::ErrorMessage(e);
@@ -106,10 +106,10 @@ impl AddContractsScreen {
             ui.add_space(5.0);
         }
 
-        if self.contract_ids_input.len() < MAX_CONTRACTS {
-            if ui.button("Add Another Contract Field").clicked() {
-                self.add_contract_field();
-            }
+        if self.contract_ids_input.len() < MAX_CONTRACTS
+            && ui.button("Add Another Contract Field").clicked()
+        {
+            self.add_contract_field();
         }
     }
 
@@ -182,10 +182,10 @@ impl AddContractsScreen {
                 } else {
                     // Set the alias in the local db
                     let identifier_result =
-                        Identifier::from_string(&trimmed_id_string, Encoding::Base58).or_else(
+                        Identifier::from_string(trimmed_id_string, Encoding::Base58).or_else(
                             |_| {
                                 // Try hex if base58 fails
-                                hex::decode(&trimmed_id_string)
+                                hex::decode(trimmed_id_string)
                                     .map_err(|e| e.to_string())
                                     .and_then(|bytes| {
                                         Identifier::from_bytes(&bytes).map_err(|e| e.to_string())

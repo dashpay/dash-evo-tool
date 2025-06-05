@@ -164,7 +164,7 @@ impl AppContext {
                         AssetLockProof::Instant(instant_asset_lock_proof.clone())
                     }
                 } else {
-                    asset_lock_proof
+                    asset_lock_proof.as_ref().clone()
                 };
                 (asset_lock_proof, private_key, tx_id)
             }
@@ -403,8 +403,7 @@ impl AppContext {
                                 .expect("expected to make transition");
                             format!(
                                 "error: {}, transaction is {:?}",
-                                e.to_string(),
-                                identity_create_transition
+                                e, identity_create_transition
                             )
                         })?
                 } else {
@@ -433,7 +432,9 @@ impl AppContext {
             .map_err(|e| e.to_string())?;
 
         sender
-            .send(TaskResult::Success(BackendTaskSuccessResult::None))
+            .send(TaskResult::Success(Box::new(
+                BackendTaskSuccessResult::None,
+            )))
             .await
             .map_err(|e| e.to_string())?;
 

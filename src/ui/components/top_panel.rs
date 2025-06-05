@@ -119,12 +119,14 @@ pub fn add_top_panel(
                         right_buttons.into_iter().partition(|(_, act)| {
                             matches!(
                                 act,
-                                DesiredAppAction::AddScreenType(ScreenType::CreateDocument)
-                                    | DesiredAppAction::AddScreenType(ScreenType::DeleteDocument)
-                                    | DesiredAppAction::AddScreenType(ScreenType::ReplaceDocument)
-                                    | DesiredAppAction::AddScreenType(ScreenType::TransferDocument)
-                                    | DesiredAppAction::AddScreenType(ScreenType::PurchaseDocument)
-                                    | DesiredAppAction::AddScreenType(ScreenType::SetDocumentPrice)
+                                DesiredAppAction::AddScreenType(ref screen_type)
+                                    if matches!(**screen_type,
+                                        ScreenType::CreateDocument
+                                        | ScreenType::DeleteDocument
+                                        | ScreenType::ReplaceDocument
+                                        | ScreenType::TransferDocument
+                                        | ScreenType::PurchaseDocument
+                                        | ScreenType::SetDocumentPrice)
                             )
                         });
 

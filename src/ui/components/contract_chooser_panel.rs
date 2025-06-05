@@ -17,6 +17,7 @@ use egui::{Color32, Context as EguiContext, Frame, Margin, RichText, SidePanel};
 use std::collections::HashMap;
 use std::sync::Arc;
 
+#[allow(clippy::too_many_arguments)]
 pub fn add_contract_chooser_panel(
     ctx: &EguiContext,
     current_search_term: &mut String,
@@ -158,7 +159,7 @@ pub fn add_contract_chooser_panel(
                                                                 if let Ok(new_doc_type) = contract
                                                                     .contract
                                                                     .document_type_cloned_for_name(
-                                                                        &doc_name,
+                                                                        doc_name,
                                                                     )
                                                                 {
                                                                     *selected_document_type =
@@ -223,7 +224,7 @@ pub fn add_contract_chooser_panel(
                                                 // Expand doc type
                                                 if let Ok(new_doc_type) = contract
                                                     .contract
-                                                    .document_type_cloned_for_name(&doc_name)
+                                                    .document_type_cloned_for_name(doc_name)
                                                 {
                                                     *pending_document_type = new_doc_type.clone();
                                                     *selected_document_type = new_doc_type.clone();
@@ -348,16 +349,14 @@ pub fn add_contract_chooser_panel(
                                             && contract.alias != Some("token_history".to_string())
                                             && contract.alias != Some("withdrawals".to_string())
                                             && contract.alias != Some("keyword_search".to_string())
+                                            && ui.button("X").clicked()
                                         {
-                                            if ui.button("X").clicked() {
-                                                action |= AppAction::BackendTask(
-                                                    BackendTask::ContractTask(
-                                                        ContractTask::RemoveContract(
-                                                            contract.contract.id().clone(),
-                                                        ),
+                                            action |=
+                                                AppAction::BackendTask(BackendTask::ContractTask(Box::new(
+                                                    ContractTask::RemoveContract(
+                                                        contract.contract.id(),
                                                     ),
-                                                );
-                                            }
+                                                )));
                                         }
                                     },
                                 );

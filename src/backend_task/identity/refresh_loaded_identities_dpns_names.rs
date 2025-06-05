@@ -79,7 +79,7 @@ impl AppContext {
         sender.send(TaskResult::Refresh).await.map_err(|e| {
             format!(
                 "Error refreshing owned DPNS names. Sender failed to send TaskResult: {}",
-                e.to_string()
+                e
             )
         })?;
 

@@ -196,14 +196,14 @@ pub type IdentityIndex = u32;
 pub type TopUpIndex = u32;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RegisterIdentityFundingMethod {
-    UseAssetLock(Address, AssetLockProof, Transaction),
+    UseAssetLock(Address, Box<AssetLockProof>, Box<Transaction>),
     FundWithUtxo(OutPoint, TxOut, Address, IdentityIndex),
     FundWithWallet(Duffs, IdentityIndex),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TopUpIdentityFundingMethod {
-    UseAssetLock(Address, AssetLockProof, Transaction),
+    UseAssetLock(Address, Box<AssetLockProof>, Box<Transaction>),
     FundWithUtxo(OutPoint, TxOut, Address, IdentityIndex, TopUpIndex),
     FundWithWallet(Duffs, IdentityIndex, TopUpIndex),
 }
@@ -248,6 +248,7 @@ pub struct RegisterDpnsNameInput {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum IdentityTask {
     LoadIdentity(IdentityInputToLoad),
+    #[allow(dead_code)] // May be used for finding identities in wallets
     SearchIdentityFromWallet(WalletArcRef, IdentityIndex),
     RegisterIdentity(IdentityRegistrationInfo),
     TopUpIdentity(IdentityTopUpInfo),
@@ -458,7 +459,7 @@ impl AppContext {
             IdentityTask::RefreshIdentity(qualified_identity) => self
                 .refresh_identity(sdk, qualified_identity, sender)
                 .await
-                .map_err(|e| format!("Error refreshing identity: {}", e.to_string())),
+                .map_err(|e| format!("Error refreshing identity: {}", e)),
             IdentityTask::Transfer(qualified_identity, to_identifier, credits, id) => {
                 self.transfer_to_identity(qualified_identity, to_identifier, credits, id)
                     .await

@@ -159,7 +159,7 @@ impl ImportWalletScreen {
             // Seed phrase input grid
             let available_width = ui.available_width();
             let columns = 4; // Adjust the number of columns as needed
-            let rows = (self.selected_seed_phrase_length + columns - 1) / columns;
+            let _rows = self.selected_seed_phrase_length.div_ceil(columns);
             let column_width = available_width / columns as f32;
 
             Grid::new("seed_phrase_input_grid")

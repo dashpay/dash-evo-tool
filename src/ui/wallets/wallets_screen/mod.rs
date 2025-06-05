@@ -157,6 +157,7 @@ impl WalletsBalancesScreen {
         }
     }
 
+    #[allow(clippy::ptr_arg)]
     fn sort_address_data(&self, data: &mut Vec<AddressData>) {
         data.sort_by(|a, b| {
             let order = match self.sort_column {
@@ -244,7 +245,7 @@ impl WalletsBalancesScreen {
                             let is_selected = self
                                 .selected_wallet
                                 .as_ref()
-                                .map_or(false, |selected| Arc::ptr_eq(selected, wallet));
+                                .is_some_and(|selected| Arc::ptr_eq(selected, wallet));
 
                             if ui
                                 .selectable_label(is_selected, wallet_alias.clone())
@@ -709,27 +710,27 @@ impl ScreenLike for WalletsBalancesScreen {
                     ("Refreshing...", DesiredAppAction::None),
                     (
                         "Import Wallet",
-                        DesiredAppAction::AddScreenType(ScreenType::ImportWallet),
+                        DesiredAppAction::AddScreenType(Box::new(ScreenType::ImportWallet)),
                     ),
                     (
                         "Create Wallet",
-                        DesiredAppAction::AddScreenType(ScreenType::AddNewWallet),
+                        DesiredAppAction::AddScreenType(Box::new(ScreenType::AddNewWallet)),
                     ),
                 ],
                 false => vec![
                     (
                         "Refresh",
-                        DesiredAppAction::BackendTask(BackendTask::CoreTask(
+                        DesiredAppAction::BackendTask(Box::new(BackendTask::CoreTask(
                             CoreTask::RefreshWalletInfo(wallet.clone()),
-                        )),
+                        ))),
                     ),
                     (
                         "Import Wallet",
-                        DesiredAppAction::AddScreenType(ScreenType::ImportWallet),
+                        DesiredAppAction::AddScreenType(Box::new(ScreenType::ImportWallet)),
                     ),
                     (
                         "Create Wallet",
-                        DesiredAppAction::AddScreenType(ScreenType::AddNewWallet),
+                        DesiredAppAction::AddScreenType(Box::new(ScreenType::AddNewWallet)),
                     ),
                 ],
             }
@@ -737,11 +738,11 @@ impl ScreenLike for WalletsBalancesScreen {
             vec![
                 (
                     "Import Wallet",
-                    DesiredAppAction::AddScreenType(ScreenType::ImportWallet),
+                    DesiredAppAction::AddScreenType(Box::new(ScreenType::ImportWallet)),
                 ),
                 (
                     "Create Wallet",
-                    DesiredAppAction::AddScreenType(ScreenType::AddNewWallet),
+                    DesiredAppAction::AddScreenType(Box::new(ScreenType::AddNewWallet)),
                 ),
             ]
         };
@@ -822,11 +823,10 @@ impl ScreenLike for WalletsBalancesScreen {
             }
         });
 
-        match action {
-            AppAction::BackendTask(BackendTask::CoreTask(CoreTask::RefreshWalletInfo(_))) => {
-                self.refreshing = true;
-            }
-            _ => {}
+        if let AppAction::BackendTask(BackendTask::CoreTask(CoreTask::RefreshWalletInfo(_))) =
+            action
+        {
+            self.refreshing = true;
         }
 
         action

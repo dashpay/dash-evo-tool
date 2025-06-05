@@ -15,6 +15,7 @@ use crate::app::TaskResult;
 use crate::model::proof_log_item::{ProofLogItem, RequestType};
 
 impl AppContext {
+    #[allow(clippy::too_many_arguments)]
     pub async fn transfer_tokens(
         &self,
         sending_identity: &QualifiedIdentity,
@@ -50,12 +51,7 @@ impl AppContext {
                 options,
             )
             .await
-            .map_err(|e| {
-                format!(
-                    "Error signing token transfer state transition: {}",
-                    e.to_string()
-                )
-            })?;
+            .map_err(|e| format!("Error signing token transfer state transition: {}", e))?;
 
         let _ = state_transition
             .broadcast_and_wait::<StateTransitionProofResult>(sdk, None)

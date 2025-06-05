@@ -95,7 +95,7 @@ impl SetTokenPriceScreen {
             }
             AuthorizedActionTakers::ContractOwner => {
                 if identity_token_info.data_contract.contract.owner_id()
-                    != &identity_token_info.identity.identity.id()
+                    != identity_token_info.identity.identity.id()
                 {
                     error_message = Some(
                         "You are not allowed to set token price on this token. Only the contract owner is."
@@ -282,9 +282,8 @@ impl SetTokenPriceScreen {
                         .as_secs();
                     self.status = SetTokenPriceStatus::WaitingForResult(now);
 
-                    let group_info;
-                    if self.group_action_id.is_some() {
-                        group_info = self.group.as_ref().map(|(pos, _)| {
+                    let group_info = if self.group_action_id.is_some() {
+                        self.group.as_ref().map(|(pos, _)| {
                             GroupStateTransitionInfoStatus::GroupStateTransitionInfoOtherSigner(
                                 GroupStateTransitionInfo {
                                     group_contract_position: *pos,
@@ -292,15 +291,15 @@ impl SetTokenPriceScreen {
                                     action_is_proposer: false,
                                 },
                             )
-                        });
+                        })
                     } else {
-                        group_info = self.group.as_ref().map(|(pos, _)| {
+                        self.group.as_ref().map(|(pos, _)| {
                             GroupStateTransitionInfoStatus::GroupStateTransitionInfoProposer(*pos)
-                        });
-                    }
+                        })
+                    };
 
                     // Dispatch the actual backend mint action
-                    action = AppAction::BackendTask(BackendTask::TokenTask(
+                    action = AppAction::BackendTask(BackendTask::TokenTask(Box::new(
                         TokenTask::SetDirectPurchasePrice {
                             identity: self.identity_token_info.identity.clone(),
                             data_contract: self.identity_token_info.data_contract.contract.clone(),
@@ -314,7 +313,7 @@ impl SetTokenPriceScreen {
                             token_pricing_schedule: token_pricing_schedule_opt,
                             group_info,
                         },
-                    ));
+                    )));
                 }
 
                 // Cancel button
@@ -339,12 +338,10 @@ impl SetTokenPriceScreen {
             if self.group_action_id.is_some() {
                 // This is already initiated by the group, we are just signing it
                 ui.heading("Group Action to Set Price Signed Successfully.");
+            } else if !self.is_unilateral_group_member && self.group.is_some() {
+                ui.heading("Group Action to Set Price Initiated.");
             } else {
-                if !self.is_unilateral_group_member && self.group.is_some() {
-                    ui.heading("Group Action to Set Price Initiated.");
-                } else {
-                    ui.heading("Set Price of Token Successfully.");
-                }
+                ui.heading("Set Price of Token Successfully.");
             }
 
             ui.add_space(20.0);
@@ -363,15 +360,13 @@ impl SetTokenPriceScreen {
                     action = AppAction::PopScreenAndRefresh;
                 }
 
-                if !self.is_unilateral_group_member {
-                    if ui.button("Go to Group Actions").clicked() {
-                        action = AppAction::PopThenAddScreenToMainScreen(
-                            RootScreenType::RootScreenDocumentQuery,
-                            Screen::GroupActionsScreen(GroupActionsScreen::new(
-                                &self.app_context.clone(),
-                            )),
-                        );
-                    }
+                if !self.is_unilateral_group_member && ui.button("Go to Group Actions").clicked() {
+                    action = AppAction::PopThenAddScreenToMainScreen(
+                        RootScreenType::RootScreenDocumentQuery,
+                        Screen::GroupActionsScreen(GroupActionsScreen::new(
+                            &self.app_context.clone(),
+                        )),
+                    );
                 }
             }
         });
@@ -577,7 +572,7 @@ impl ScreenLike for SetTokenPriceScreen {
                             )
                             .changed()
                         {
-                            self.public_note = if txt.len() > 0 {
+                            self.public_note = if !txt.is_empty() {
                                 Some(txt)
                             } else {
                                 None

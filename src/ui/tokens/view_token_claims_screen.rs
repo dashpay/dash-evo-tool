@@ -85,16 +85,13 @@ impl ScreenLike for ViewTokenClaimsScreen {
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
-        match backend_task_success_result {
-            BackendTaskSuccessResult::Documents(documents) => {
-                self.fetch_status = FetchStatus::NotFetching;
-                self.claims = documents.into_iter().filter_map(|(_, doc)| doc).collect();
+        if let BackendTaskSuccessResult::Documents(documents) = backend_task_success_result {
+            self.fetch_status = FetchStatus::NotFetching;
+            self.claims = documents.into_iter().filter_map(|(_, doc)| doc).collect();
 
-                if self.claims.is_empty() {
-                    self.display_message("No claims found", MessageType::Info);
-                }
+            if self.claims.is_empty() {
+                self.display_message("No claims found", MessageType::Info);
             }
-            _ => {}
         }
     }
 
@@ -113,9 +110,9 @@ impl ScreenLike for ViewTokenClaimsScreen {
             ],
             vec![(
                 "Refresh",
-                DesiredAppAction::BackendTask(BackendTask::DocumentTask(
+                DesiredAppAction::BackendTask(Box::new(BackendTask::DocumentTask(Box::new(
                     DocumentTask::FetchDocuments(self.new_claims_query.clone()),
-                )),
+                )))),
             )],
         );
 
@@ -141,9 +138,9 @@ impl ScreenLike for ViewTokenClaimsScreen {
                     .corner_radius(3.0);
 
             if ui.add(fetch_button).clicked() {
-                action |= AppAction::BackendTask(BackendTask::DocumentTask(
+                action |= AppAction::BackendTask(BackendTask::DocumentTask(Box::new(
                     DocumentTask::FetchDocuments(self.new_claims_query.clone()),
-                ));
+                )));
                 self.fetch_status = FetchStatus::Fetching(Utc::now())
             }
 
@@ -164,12 +161,9 @@ impl ScreenLike for ViewTokenClaimsScreen {
 
             if self.fetch_status != FetchStatus::NotFetching {
                 ui.add_space(10.0);
-                match &self.fetch_status {
-                    FetchStatus::Fetching(start_time) => {
-                        let elapsed = Utc::now().signed_duration_since(*start_time);
-                        ui.label(format!("Fetching... ({} seconds)", elapsed.num_seconds()));
-                    }
-                    _ => {}
+                if let FetchStatus::Fetching(start_time) = &self.fetch_status {
+                    let elapsed = Utc::now().signed_duration_since(*start_time);
+                    ui.label(format!("Fetching... ({} seconds)", elapsed.num_seconds()));
                 }
             }
 
@@ -203,12 +197,14 @@ impl ScreenLike for ViewTokenClaimsScreen {
                                     // Timestamp
                                     let timestamp = match claim.created_at() {
                                         Some(ts) => {
-                                            let dt = chrono::NaiveDateTime::from_timestamp_millis(
-                                                ts as i64,
-                                            )
-                                            .unwrap_or_else(|| {
-                                                chrono::NaiveDateTime::from_timestamp(0, 0)
-                                            });
+                                            let dt =
+                                                chrono::DateTime::from_timestamp_millis(ts as i64)
+                                                    .map(|d| d.naive_utc())
+                                                    .unwrap_or_else(|| {
+                                                        chrono::DateTime::from_timestamp(0, 0)
+                                                            .unwrap()
+                                                            .naive_utc()
+                                                    });
                                             dt.format("%Y-%m-%d %H:%M:%S").to_string()
                                         }
                                         None => "Unknown".to_string(),

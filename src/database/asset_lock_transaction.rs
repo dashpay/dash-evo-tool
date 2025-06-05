@@ -20,11 +20,7 @@ impl Database {
         let tx_bytes = serialize(tx);
         let txid = tx.txid().to_byte_array();
 
-        let islock_bytes = if let Some(islock) = islock {
-            Some(serialize(islock))
-        } else {
-            None
-        };
+        let islock_bytes = islock.map(serialize);
 
         let conn = self.conn.lock().unwrap();
 
@@ -54,6 +50,8 @@ impl Database {
     }
 
     /// Retrieves an asset lock transaction by its transaction ID.
+    #[allow(dead_code)] // May be used for querying asset locks
+    #[allow(clippy::type_complexity)]
     pub fn get_asset_lock_transaction(
         &self,
         txid: &[u8; 32],
@@ -92,6 +90,7 @@ impl Database {
     }
 
     /// Updates the chain locked height for an asset lock transaction.
+    #[allow(dead_code)] // May be used for tracking chain confirmation status
     pub fn update_asset_lock_chain_locked_height(
         &self,
         txid: &[u8; 32],
@@ -186,6 +185,7 @@ impl Database {
     }
 
     /// Deletes an asset lock transaction by its transaction ID.
+    #[allow(dead_code)] // May be used for manual cleanup or testing purposes
     pub fn delete_asset_lock_transaction(&self, txid: &str) -> rusqlite::Result<()> {
         let conn = self.conn.lock().unwrap();
 
@@ -198,6 +198,8 @@ impl Database {
     }
 
     /// Retrieves all asset lock transactions.
+    #[allow(dead_code)] // May be used for debugging or administrative views
+    #[allow(clippy::type_complexity)]
     pub fn get_all_asset_lock_transactions(
         &self,
         network: Network,
@@ -255,6 +257,8 @@ impl Database {
     }
 
     /// Retrieves asset lock transactions by identity ID.
+    #[allow(dead_code)] // May be used for identity-specific transaction history
+    #[allow(clippy::type_complexity)]
     pub fn get_asset_lock_transactions_by_identity_id(
         &self,
         identity_id: &[u8; 32],

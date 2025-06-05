@@ -125,12 +125,10 @@ impl DocumentActionScreen {
         selected_identity: Option<QualifiedIdentity>,
         action_type: DocumentActionType,
     ) -> Self {
-        let known_contracts =
-            if let Ok(contracts) = app_context.db.get_contracts(&app_context, None, None) {
-                contracts
-            } else {
-                Vec::new()
-            };
+        let known_contracts = app_context
+            .db
+            .get_contracts(&app_context, None, None)
+            .unwrap_or_default();
 
         let identities_map = if let Ok(identities) = app_context.load_local_user_identities() {
             identities
@@ -309,9 +307,9 @@ impl DocumentActionScreen {
                                 .unwrap()
                                 .as_secs(),
                         );
-                        action = AppAction::BackendTask(BackendTask::DocumentTask(
+                        action = AppAction::BackendTask(BackendTask::DocumentTask(Box::new(
                             DocumentTask::FetchDocuments(query),
-                        ));
+                        )));
                     }
                 } else {
                     ui.label("(Cannot use the Fetch Owned Documents feature as this document type does not have an index on $ownerId)");
@@ -427,9 +425,9 @@ impl DocumentActionScreen {
                             .unwrap()
                             .as_secs(),
                     );
-                    action = AppAction::BackendTask(BackendTask::DocumentTask(
+                    action = AppAction::BackendTask(BackendTask::DocumentTask(Box::new(
                         DocumentTask::FetchDocuments(query),
-                    ));
+                    )));
                 }
             } else {
                 self.backend_message = Some("Invalid Document ID format".to_string());
@@ -488,9 +486,9 @@ impl DocumentActionScreen {
                                 .unwrap()
                                 .as_secs(),
                         );
-                        action = AppAction::BackendTask(BackendTask::DocumentTask(
+                        action = AppAction::BackendTask(BackendTask::DocumentTask(Box::new(
                             DocumentTask::FetchDocuments(query),
-                        ));
+                        )));
                     }
                 } else {
                     self.backend_message = Some("Invalid Document ID format".to_string());
@@ -795,26 +793,27 @@ impl DocumentActionScreen {
                 let doc_type = self.selected_document_type.as_ref().unwrap();
 
                 let token_payment_info =
-                    if let Some(token_creation_cost) = doc_type.document_creation_token_cost() {
-                        Some(TokenPaymentInfo::V0(TokenPaymentInfoV0 {
-                            payment_token_contract_id: token_creation_cost.contract_id,
-                            token_contract_position: token_creation_cost.token_contract_position,
-                            gas_fees_paid_by: token_creation_cost.gas_fees_paid_by,
-                            minimum_token_cost: None,
-                            maximum_token_cost: Some(token_creation_cost.token_amount),
-                        }))
-                    } else {
-                        None
-                    };
+                    doc_type
+                        .document_creation_token_cost()
+                        .map(|token_creation_cost| {
+                            TokenPaymentInfo::V0(TokenPaymentInfoV0 {
+                                payment_token_contract_id: token_creation_cost.contract_id,
+                                token_contract_position: token_creation_cost
+                                    .token_contract_position,
+                                gas_fees_paid_by: token_creation_cost.gas_fees_paid_by,
+                                minimum_token_cost: None,
+                                maximum_token_cost: Some(token_creation_cost.token_amount),
+                            })
+                        });
 
-                BackendTask::DocumentTask(DocumentTask::BroadcastDocument(
+                BackendTask::DocumentTask(Box::new(DocumentTask::BroadcastDocument(
                     doc,
                     token_payment_info,
                     entropy,
                     doc_type.clone(),
                     self.selected_identity.as_ref().unwrap().clone(),
                     self.selected_key.as_ref().unwrap().clone(),
-                ))
+                )))
             }
             Err(e) => {
                 self.backend_message = Some(format!("Failed to build document: {}", e));
@@ -830,26 +829,26 @@ impl DocumentActionScreen {
         let doc_type = self.selected_document_type.as_ref().unwrap();
 
         let token_payment_info =
-            if let Some(token_creation_cost) = doc_type.document_deletion_token_cost() {
-                Some(TokenPaymentInfo::V0(TokenPaymentInfoV0 {
-                    payment_token_contract_id: token_creation_cost.contract_id,
-                    token_contract_position: token_creation_cost.token_contract_position,
-                    gas_fees_paid_by: token_creation_cost.gas_fees_paid_by,
-                    minimum_token_cost: None,
-                    maximum_token_cost: Some(token_creation_cost.token_amount),
-                }))
-            } else {
-                None
-            };
+            doc_type
+                .document_deletion_token_cost()
+                .map(|token_creation_cost| {
+                    TokenPaymentInfo::V0(TokenPaymentInfoV0 {
+                        payment_token_contract_id: token_creation_cost.contract_id,
+                        token_contract_position: token_creation_cost.token_contract_position,
+                        gas_fees_paid_by: token_creation_cost.gas_fees_paid_by,
+                        minimum_token_cost: None,
+                        maximum_token_cost: Some(token_creation_cost.token_amount),
+                    })
+                });
 
-        BackendTask::DocumentTask(DocumentTask::DeleteDocument(
+        BackendTask::DocumentTask(Box::new(DocumentTask::DeleteDocument(
             document_id,
             doc_type.clone(),
             self.selected_contract.as_ref().unwrap().contract.clone(),
             self.selected_identity.as_ref().unwrap().clone(),
             self.selected_key.as_ref().unwrap().clone(),
             token_payment_info,
-        ))
+        )))
     }
 
     fn create_purchase_task(&self) -> BackendTask {
@@ -859,19 +858,19 @@ impl DocumentActionScreen {
         let doc_type = self.selected_document_type.as_ref().unwrap();
 
         let token_payment_info =
-            if let Some(token_creation_cost) = doc_type.document_purchase_token_cost() {
-                Some(TokenPaymentInfo::V0(TokenPaymentInfoV0 {
-                    payment_token_contract_id: token_creation_cost.contract_id,
-                    token_contract_position: token_creation_cost.token_contract_position,
-                    gas_fees_paid_by: token_creation_cost.gas_fees_paid_by,
-                    minimum_token_cost: None,
-                    maximum_token_cost: Some(token_creation_cost.token_amount),
-                }))
-            } else {
-                None
-            };
+            doc_type
+                .document_purchase_token_cost()
+                .map(|token_creation_cost| {
+                    TokenPaymentInfo::V0(TokenPaymentInfoV0 {
+                        payment_token_contract_id: token_creation_cost.contract_id,
+                        token_contract_position: token_creation_cost.token_contract_position,
+                        gas_fees_paid_by: token_creation_cost.gas_fees_paid_by,
+                        minimum_token_cost: None,
+                        maximum_token_cost: Some(token_creation_cost.token_amount),
+                    })
+                });
 
-        BackendTask::DocumentTask(DocumentTask::PurchaseDocument(
+        BackendTask::DocumentTask(Box::new(DocumentTask::PurchaseDocument(
             self.fetched_price.unwrap_or(0),
             document_id,
             doc_type.clone(),
@@ -879,7 +878,7 @@ impl DocumentActionScreen {
             self.selected_identity.as_ref().unwrap().clone(),
             self.selected_key.as_ref().unwrap().clone(),
             token_payment_info,
-        ))
+        )))
     }
 
     fn create_replace_task(&mut self) -> BackendTask {
@@ -888,28 +887,28 @@ impl DocumentActionScreen {
                 Ok((updated_doc, _entropy)) => {
                     let doc_type = self.selected_document_type.as_ref().unwrap();
 
-                    let token_payment_info = if let Some(token_creation_cost) =
-                        doc_type.document_replacement_token_cost()
-                    {
-                        Some(TokenPaymentInfo::V0(TokenPaymentInfoV0 {
-                            payment_token_contract_id: token_creation_cost.contract_id,
-                            token_contract_position: token_creation_cost.token_contract_position,
-                            gas_fees_paid_by: token_creation_cost.gas_fees_paid_by,
-                            minimum_token_cost: None,
-                            maximum_token_cost: Some(token_creation_cost.token_amount),
-                        }))
-                    } else {
-                        None
-                    };
+                    let token_payment_info =
+                        doc_type
+                            .document_replacement_token_cost()
+                            .map(|token_creation_cost| {
+                                TokenPaymentInfo::V0(TokenPaymentInfoV0 {
+                                    payment_token_contract_id: token_creation_cost.contract_id,
+                                    token_contract_position: token_creation_cost
+                                        .token_contract_position,
+                                    gas_fees_paid_by: token_creation_cost.gas_fees_paid_by,
+                                    minimum_token_cost: None,
+                                    maximum_token_cost: Some(token_creation_cost.token_amount),
+                                })
+                            });
 
-                    BackendTask::DocumentTask(DocumentTask::ReplaceDocument(
+                    BackendTask::DocumentTask(Box::new(DocumentTask::ReplaceDocument(
                         updated_doc,
                         doc_type.clone(),
                         self.selected_contract.as_ref().unwrap().contract.clone(),
                         self.selected_identity.as_ref().unwrap().clone(),
                         self.selected_key.as_ref().unwrap().clone(),
                         token_payment_info,
-                    ))
+                    )))
                 }
                 Err(e) => {
                     self.backend_message = Some(format!("Failed to build updated document: {}", e));
@@ -920,26 +919,26 @@ impl DocumentActionScreen {
             let doc_type = self.selected_document_type.as_ref().unwrap();
 
             let token_payment_info =
-                if let Some(token_creation_cost) = doc_type.document_replacement_token_cost() {
-                    Some(TokenPaymentInfo::V0(TokenPaymentInfoV0 {
-                        payment_token_contract_id: token_creation_cost.contract_id,
-                        token_contract_position: token_creation_cost.token_contract_position,
-                        gas_fees_paid_by: token_creation_cost.gas_fees_paid_by,
-                        minimum_token_cost: None,
-                        maximum_token_cost: Some(token_creation_cost.token_amount),
-                    }))
-                } else {
-                    None
-                };
+                doc_type
+                    .document_replacement_token_cost()
+                    .map(|token_creation_cost| {
+                        TokenPaymentInfo::V0(TokenPaymentInfoV0 {
+                            payment_token_contract_id: token_creation_cost.contract_id,
+                            token_contract_position: token_creation_cost.token_contract_position,
+                            gas_fees_paid_by: token_creation_cost.gas_fees_paid_by,
+                            minimum_token_cost: None,
+                            maximum_token_cost: Some(token_creation_cost.token_amount),
+                        })
+                    });
 
-            BackendTask::DocumentTask(DocumentTask::ReplaceDocument(
+            BackendTask::DocumentTask(Box::new(DocumentTask::ReplaceDocument(
                 DocumentV0::default().into(),
                 doc_type.clone(),
                 self.selected_contract.as_ref().unwrap().contract.clone(),
                 self.selected_identity.as_ref().unwrap().clone(),
                 self.selected_key.as_ref().unwrap().clone(),
                 token_payment_info,
-            ))
+            )))
         }
     }
 
@@ -951,19 +950,19 @@ impl DocumentActionScreen {
         let doc_type = self.selected_document_type.as_ref().unwrap();
 
         let token_payment_info =
-            if let Some(token_creation_cost) = doc_type.document_update_price_token_cost() {
-                Some(TokenPaymentInfo::V0(TokenPaymentInfoV0 {
-                    payment_token_contract_id: token_creation_cost.contract_id,
-                    token_contract_position: token_creation_cost.token_contract_position,
-                    gas_fees_paid_by: token_creation_cost.gas_fees_paid_by,
-                    minimum_token_cost: None,
-                    maximum_token_cost: Some(token_creation_cost.token_amount),
-                }))
-            } else {
-                None
-            };
+            doc_type
+                .document_update_price_token_cost()
+                .map(|token_creation_cost| {
+                    TokenPaymentInfo::V0(TokenPaymentInfoV0 {
+                        payment_token_contract_id: token_creation_cost.contract_id,
+                        token_contract_position: token_creation_cost.token_contract_position,
+                        gas_fees_paid_by: token_creation_cost.gas_fees_paid_by,
+                        minimum_token_cost: None,
+                        maximum_token_cost: Some(token_creation_cost.token_amount),
+                    })
+                });
 
-        BackendTask::DocumentTask(DocumentTask::SetDocumentPrice(
+        BackendTask::DocumentTask(Box::new(DocumentTask::SetDocumentPrice(
             price,
             document_id,
             doc_type.clone(),
@@ -971,7 +970,7 @@ impl DocumentActionScreen {
             self.selected_identity.as_ref().unwrap().clone(),
             self.selected_key.as_ref().unwrap().clone(),
             token_payment_info,
-        ))
+        )))
     }
 
     fn create_transfer_task(&self) -> BackendTask {
@@ -983,19 +982,19 @@ impl DocumentActionScreen {
         let doc_type = self.selected_document_type.as_ref().unwrap();
 
         let token_payment_info =
-            if let Some(token_creation_cost) = doc_type.document_transfer_token_cost() {
-                Some(TokenPaymentInfo::V0(TokenPaymentInfoV0 {
-                    payment_token_contract_id: token_creation_cost.contract_id,
-                    token_contract_position: token_creation_cost.token_contract_position,
-                    gas_fees_paid_by: token_creation_cost.gas_fees_paid_by,
-                    minimum_token_cost: None,
-                    maximum_token_cost: Some(token_creation_cost.token_amount),
-                }))
-            } else {
-                None
-            };
+            doc_type
+                .document_transfer_token_cost()
+                .map(|token_creation_cost| {
+                    TokenPaymentInfo::V0(TokenPaymentInfoV0 {
+                        payment_token_contract_id: token_creation_cost.contract_id,
+                        token_contract_position: token_creation_cost.token_contract_position,
+                        gas_fees_paid_by: token_creation_cost.gas_fees_paid_by,
+                        minimum_token_cost: None,
+                        maximum_token_cost: Some(token_creation_cost.token_amount),
+                    })
+                });
 
-        BackendTask::DocumentTask(DocumentTask::TransferDocument(
+        BackendTask::DocumentTask(Box::new(DocumentTask::TransferDocument(
             document_id,
             recipient_id,
             doc_type.clone(),
@@ -1003,7 +1002,7 @@ impl DocumentActionScreen {
             self.selected_identity.as_ref().unwrap().clone(),
             self.selected_key.as_ref().unwrap().clone(),
             token_payment_info,
-        ))
+        )))
     }
 
     fn try_build_document(&self) -> Result<(Document, [u8; 32]), String> {
@@ -1111,7 +1110,7 @@ impl DocumentActionScreen {
                             format!("{} must be hex or base64 for a ByteArray field", name)
                         })?
                     };
-                    Value::Bytes(bytes.into())
+                    Value::Bytes(bytes)
                 }
                 DocumentPropertyType::Identifier => {
                     let id = Identifier::from_string(input_str, Encoding::Base58)
@@ -1282,7 +1281,7 @@ impl DocumentActionScreen {
                             format!("{} must be hex or base64 for a ByteArray field", name)
                         })?
                     };
-                    Value::Bytes(bytes.into())
+                    Value::Bytes(bytes)
                 }
                 DocumentPropertyType::Identifier => {
                     let id = Identifier::from_string(input_str, Encoding::Base58)
@@ -1395,7 +1394,7 @@ impl ScreenLike for DocumentActionScreen {
                 let success_message = format!("{} successful!", self.action_type.display_name());
                 let back_button = ("Back to Contracts".to_string(), AppAction::GoToMainScreen);
                 let reset_button = (
-                    format!("Back to {}", self.action_type.display_name().to_string()),
+                    format!("Back to {}", self.action_type.display_name()),
                     AppAction::Custom("Reset".to_string()),
                 );
 
@@ -1553,7 +1552,7 @@ impl DocumentActionScreen {
         // Wallet unlock
         if let Some(selected_identity) = &self.selected_identity {
             self.wallet = get_selected_wallet(
-                &selected_identity,
+                selected_identity,
                 Some(&self.app_context),
                 None,
                 &mut self.backend_message,

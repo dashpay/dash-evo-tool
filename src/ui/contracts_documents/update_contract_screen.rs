@@ -27,7 +27,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 enum BroadcastStatus {
     Idle,
     ParsingError(String),
-    ValidContract(DataContract),
+    ValidContract(Box<DataContract>),
     FetchingNonce(u64),
     Broadcasting(u64),
     ProofError(u64),
@@ -60,7 +60,7 @@ impl UpdateDataContractScreen {
 
         let mut error_message: Option<String> = None;
         let selected_wallet = if let Some(ref identity) = selected_qualified_identity {
-            get_selected_wallet(&identity, Some(app_context), None, &mut error_message)
+            get_selected_wallet(identity, Some(app_context), None, &mut error_message)
         } else {
             None
         };
@@ -134,7 +134,7 @@ impl UpdateDataContractScreen {
                         }
 
                         // Mark it as a valid contract in our screen state
-                        self.broadcast_status = BroadcastStatus::ValidContract(contract);
+                        self.broadcast_status = BroadcastStatus::ValidContract(Box::new(contract));
                     }
                     Err(e) => {
                         self.broadcast_status =
@@ -188,13 +188,13 @@ impl UpdateDataContractScreen {
                         .corner_radius(3.0);
                 if ui.add(button).clicked() {
                     // Fire off a backend task
-                    app_action = AppAction::BackendTask(BackendTask::ContractTask(
+                    app_action = AppAction::BackendTask(BackendTask::ContractTask(Box::new(
                         ContractTask::UpdateDataContract(
-                            contract.clone(),
+                            (**contract).clone(),
                             self.selected_qualified_identity.clone().unwrap(), // unwrap should be safe here
                             self.selected_key.clone().unwrap(), // unwrap should be safe here
                         ),
-                    ));
+                    )));
                 }
             }
             BroadcastStatus::FetchingNonce(start_time) => {
@@ -243,10 +243,8 @@ impl UpdateDataContractScreen {
             }
         }
 
-        match app_action {
-            AppAction::BackendTask(BackendTask::ContractTask(
-                ContractTask::UpdateDataContract(_, _, _),
-            )) => {
+        if let AppAction::BackendTask(BackendTask::ContractTask(contract_task)) = &app_action {
+            if let ContractTask::UpdateDataContract(_, _, _) = **contract_task {
                 self.broadcast_status = BroadcastStatus::FetchingNonce(
                     SystemTime::now()
                         .duration_since(UNIX_EPOCH)
@@ -254,7 +252,6 @@ impl UpdateDataContractScreen {
                         .as_secs(),
                 );
             }
-            _ => {}
         }
 
         app_action
@@ -340,11 +337,8 @@ impl ScreenLike for UpdateDataContractScreen {
     fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
         // If a separate result needs to be handled here, you can do so
         // For example, if success is a special message or we want to show it in the UI
-        match result {
-            BackendTaskSuccessResult::Message(_msg) => {
-                self.broadcast_status = BroadcastStatus::Done;
-            }
-            _ => {}
+        if let BackendTaskSuccessResult::Message(_msg) = result {
+            self.broadcast_status = BroadcastStatus::Done;
         }
     }
 

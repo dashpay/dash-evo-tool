@@ -97,7 +97,7 @@ impl TopUpIdentityScreen {
                             let is_selected = self
                                 .wallet
                                 .as_ref()
-                                .map_or(false, |selected| Arc::ptr_eq(selected, wallet));
+                                .is_some_and(|selected| Arc::ptr_eq(selected, wallet));
 
                             if ui.selectable_label(is_selected, wallet_alias).clicked() {
                                 // Update the selected wallet
@@ -141,39 +141,37 @@ impl TopUpIdentityScreen {
                     (wallet.has_unused_asset_lock(), wallet.has_balance())
                 };
 
-                if has_unused_asset_lock {
-                    if ui
+                if has_unused_asset_lock
+                    && ui
                         .selectable_value(
                             &mut *funding_method,
                             FundingMethod::UseUnusedAssetLock,
                             "Use Unused Evo Funding Locks (recommended)",
                         )
                         .changed()
-                    {
-                        let mut step = self.step.write().unwrap(); // Write lock on step
-                        *step = WalletFundedScreenStep::ReadyToCreate;
-                    }
+                {
+                    let mut step = self.step.write().unwrap(); // Write lock on step
+                    *step = WalletFundedScreenStep::ReadyToCreate;
                 }
 
-                if has_balance {
-                    if ui
+                if has_balance
+                    && ui
                         .selectable_value(
                             &mut *funding_method,
                             FundingMethod::UseWalletBalance,
                             "Use Wallet Balance",
                         )
                         .changed()
-                    {
-                        if let Some(wallet) = &self.wallet {
-                            let wallet = wallet.read().unwrap();
-                            let max_amount = wallet.max_balance();
-                            self.funding_amount = format!("{:.4}", max_amount as f64 * 1e-8);
-                            self.funding_amount_exact =
-                                Some(self.funding_amount.parse::<f64>().unwrap() as u64);
-                        }
-                        let mut step = self.step.write().unwrap();
-                        *step = WalletFundedScreenStep::ReadyToCreate;
+                {
+                    if let Some(wallet) = &self.wallet {
+                        let wallet = wallet.read().unwrap();
+                        let max_amount = wallet.max_balance();
+                        self.funding_amount = format!("{:.4}", max_amount as f64 * 1e-8);
+                        self.funding_amount_exact =
+                            Some(self.funding_amount.parse::<f64>().unwrap() as u64);
                     }
+                    let mut step = self.step.write().unwrap();
+                    *step = WalletFundedScreenStep::ReadyToCreate;
                 }
 
                 if ui
@@ -202,8 +200,8 @@ impl TopUpIdentityScreen {
                         wallet: Arc::clone(selected_wallet),
                         identity_funding_method: TopUpIdentityFundingMethod::UseAssetLock(
                             address,
-                            funding_asset_lock,
-                            tx,
+                            Box::new(funding_asset_lock),
+                            Box::new(tx),
                         ),
                     };
 
@@ -220,7 +218,7 @@ impl TopUpIdentityScreen {
             FundingMethod::UseWalletBalance => {
                 // Parse the funding amount or fall back to the default value
                 let amount = self.funding_amount_exact.unwrap_or_else(|| {
-                    (self.funding_amount.parse::<f64>().unwrap_or_else(|_| 0.0) * 1e8) as u64
+                    (self.funding_amount.parse::<f64>().unwrap_or(0.0) * 1e8) as u64
                 });
 
                 if amount == 0 {
@@ -367,25 +365,20 @@ impl ScreenLike for TopUpIdentityScreen {
                     if let Some(TransactionPayload::AssetLockPayloadType(asset_lock_payload)) =
                         tx.special_transaction_payload
                     {
-                        if asset_lock_payload
-                            .credit_outputs
-                            .iter()
-                            .find(|tx_out| {
-                                let Ok(address) = Address::from_script(
-                                    &tx_out.script_pubkey,
-                                    self.app_context.network,
-                                ) else {
-                                    return false;
-                                };
-                                if let Some(wallet) = &self.wallet {
-                                    let wallet = wallet.read().unwrap();
-                                    wallet.known_addresses.contains_key(&address)
-                                } else {
-                                    false
-                                }
-                            })
-                            .is_some()
-                        {
+                        if asset_lock_payload.credit_outputs.iter().any(|tx_out| {
+                            let Ok(address) = Address::from_script(
+                                &tx_out.script_pubkey,
+                                self.app_context.network,
+                            ) else {
+                                return false;
+                            };
+                            if let Some(wallet) = &self.wallet {
+                                let wallet = wallet.read().unwrap();
+                                wallet.known_addresses.contains_key(&address)
+                            } else {
+                                false
+                            }
+                        }) {
                             *step = WalletFundedScreenStep::WaitingForPlatformAcceptance;
                         }
                     }
@@ -420,7 +413,7 @@ impl ScreenLike for TopUpIdentityScreen {
 
         egui::CentralPanel::default().show(ctx, |ui| {
             ScrollArea::vertical().show(ui, |ui| {
-                let step = { self.step.read().unwrap().clone() };
+                let step = { *self.step.read().unwrap() };
                 if step == WalletFundedScreenStep::Success {
                     action |= self.show_success(ui);
                     return;
@@ -442,7 +435,7 @@ impl ScreenLike for TopUpIdentityScreen {
                 ui.add_space(10.0);
 
                 // Extract the funding method from the RwLock to minimize borrow scope
-                let funding_method = self.funding_method.read().unwrap().clone();
+                let funding_method = *self.funding_method.read().unwrap();
                 if funding_method == FundingMethod::NoSelection {
                     return;
                 }
@@ -476,7 +469,7 @@ impl ScreenLike for TopUpIdentityScreen {
                 }
 
                 match funding_method {
-                    FundingMethod::NoSelection => return,
+                    FundingMethod::NoSelection => (),
                     FundingMethod::UseUnusedAssetLock => {
                         action |= self.render_ui_by_using_unused_asset_lock(ui, step_number);
                     }

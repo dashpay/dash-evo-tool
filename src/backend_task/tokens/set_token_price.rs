@@ -16,6 +16,7 @@ use crate::model::proof_log_item::{ProofLogItem, RequestType};
 use tokio::sync::mpsc;
 
 impl AppContext {
+    #[allow(clippy::too_many_arguments)]
     pub async fn set_direct_purchase_price(
         &self,
         sending_identity: &QualifiedIdentity,
@@ -54,7 +55,7 @@ impl AppContext {
                 options,
             )
             .await
-            .map_err(|e| format!("Error signing SetPrice state transition: {}", e.to_string()))?;
+            .map_err(|e| format!("Error signing SetPrice state transition: {}", e))?;
 
         // broadcast and wait
         let _proof_result = state_transition

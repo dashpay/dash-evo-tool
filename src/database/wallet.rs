@@ -69,6 +69,7 @@ impl Database {
     }
 
     /// Update only the alias and is_main fields of a wallet
+    #[allow(dead_code)] // May be used for batch wallet metadata updates
     pub fn update_wallet_alias_and_main(
         &self,
         seed_hash: &[u8; 32],
@@ -84,6 +85,7 @@ impl Database {
 
     /// Add a new address to a wallet with optional balance.
     /// If the address already exists, it does nothing.
+    #[allow(clippy::too_many_arguments)]
     pub fn add_address_if_not_exists(
         &self,
         seed_hash: &[u8; 32],
@@ -280,7 +282,7 @@ impl Database {
                     )
                 })?;
 
-            let path_type = DerivationPathType::from_bits_truncate(path_type as u32);
+            let path_type = DerivationPathType::from_bits_truncate(path_type);
 
             Ok((
                 seed_hash_array,

@@ -279,6 +279,7 @@ impl Database {
         Ok(contested_name_map.into_values().collect())
     }
 
+    #[allow(dead_code)] // May be used for direct contest updates from external sources
     pub fn insert_or_update_name_contest(
         &self,
         contested_name: &ContestedName,
@@ -522,6 +523,7 @@ impl Database {
         Ok(())
     }
 
+    #[allow(dead_code)] // May be used for individual contestant updates
     pub fn insert_or_update_contestant(
         &self,
         contest_id: &str,
@@ -634,6 +636,7 @@ impl Database {
 
             // Track the existing and outdated names
             let mut existing_names = HashSet::new();
+            #[allow(clippy::manual_flatten)]
             for row in rows {
                 if let Ok((name, last_updated)) = row {
                     existing_names.insert(name.clone());
@@ -702,7 +705,7 @@ impl Database {
                 match select_stmt.query_row(params![network, name], |row| row.get(0)) {
                     Ok(ending_time) => ending_time,
                     Err(rusqlite::Error::QueryReturnedNoRows) => continue, // Handle no rows case gracefully
-                    Err(e) => return Err(e.into()),                        // Propagate other errors
+                    Err(e) => return Err(e),                               // Propagate other errors
                 };
 
             if let Some(existing_ending_time) = existing_ending_time {
@@ -718,6 +721,7 @@ impl Database {
 
         Ok(())
     }
+    #[allow(dead_code)] // May be used for manual vote count adjustments
     pub fn update_vote_count(
         &self,
         contested_name: &str,

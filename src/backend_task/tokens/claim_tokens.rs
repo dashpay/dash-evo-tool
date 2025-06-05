@@ -12,6 +12,7 @@ use dash_sdk::platform::{DataContract, IdentityPublicKey};
 use dash_sdk::{Error, Sdk};
 
 impl AppContext {
+    #[allow(clippy::too_many_arguments)]
     pub async fn claim_tokens(
         &self,
         data_contract: &DataContract,
@@ -46,7 +47,7 @@ impl AppContext {
                 options,
             )
             .await
-            .map_err(|e| format!("Error signing ClaimTokens transition: {}", e.to_string()))?;
+            .map_err(|e| format!("Error signing ClaimTokens transition: {}", e))?;
 
         // Broadcast
         let _proof_result = state_transition

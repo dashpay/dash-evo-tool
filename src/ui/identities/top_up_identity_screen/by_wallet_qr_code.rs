@@ -111,7 +111,7 @@ impl TopUpIdentityScreen {
 
     pub fn render_ui_by_wallet_qr_code(&mut self, ui: &mut Ui, step_number: u32) -> AppAction {
         // Extract the step from the RwLock to minimize borrow scope
-        let step = self.step.read().unwrap().clone();
+        let step = *self.step.read().unwrap();
 
         let Ok(amount_dash) = self.funding_amount.parse::<f64>() else {
             return AppAction::None;

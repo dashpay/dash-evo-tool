@@ -16,6 +16,7 @@ use dash_sdk::dpp::serialization::{
 use rusqlite::{params, params_from_iter, Connection, Result};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(clippy::enum_variant_names)]
 pub enum InsertTokensToo {
     AllTokensShouldBeAdded,
     NoTokensShouldBeAdded,
@@ -61,7 +62,7 @@ impl Database {
                     {
                         let config = config::standard();
                         let Some(serialized_token_configuration) =
-                            bincode::encode_to_vec(&token_configuration, config).ok()
+                            bincode::encode_to_vec(token_configuration, config).ok()
                         else {
                             // We should always be able to serialize
                             return Ok(());
@@ -126,7 +127,7 @@ impl Database {
                 }
             }
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(e.into()),
+            Err(e) => Err(e),
         }
     }
 
@@ -151,7 +152,7 @@ impl Database {
             )
             .or_else(|e| match e {
                 rusqlite::Error::QueryReturnedNoRows => Ok::<Option<String>, rusqlite::Error>(None),
-                other => Err(other.into()),
+                other => Err(other),
             })?
         };
 
@@ -169,6 +170,7 @@ impl Database {
         Ok(())
     }
 
+    #[allow(dead_code)] // May be used for contract lookup by user-friendly names
     pub fn get_contract_by_alias(
         &self,
         alias: &str,
@@ -208,7 +210,7 @@ impl Database {
                 }
             }
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(e.into()),
+            Err(e) => Err(e),
         }
     }
 
@@ -341,6 +343,7 @@ impl Database {
         Ok(())
     }
 
+    #[allow(dead_code)] // May be used for retrieving user-friendly contract names
     pub fn get_contract_alias(&self, identifier: &Identifier) -> rusqlite::Result<Option<String>> {
         let id = identifier.to_vec();
         let conn = self.conn.lock().unwrap();

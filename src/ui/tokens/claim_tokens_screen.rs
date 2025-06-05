@@ -84,7 +84,7 @@ impl ClaimTokensScreen {
 
         let mut error_message = None;
         let selected_wallet =
-            get_selected_wallet(&identity, None, possible_key.clone(), &mut error_message);
+            get_selected_wallet(&identity, None, possible_key, &mut error_message);
 
         let distribution_type = match (
             token_configuration
@@ -176,7 +176,6 @@ impl ClaimTokensScreen {
         let mut is_open = true;
         let distribution_type = self
             .distribution_type
-            .clone()
             .unwrap_or(TokenDistributionType::Perpetual);
         egui::Window::new("Confirm Claim")
             .collapsible(false)
@@ -196,15 +195,15 @@ impl ClaimTokensScreen {
 
                     action = AppAction::BackendTasks(
                         vec![
-                            BackendTask::TokenTask(TokenTask::ClaimTokens {
+                            BackendTask::TokenTask(Box::new(TokenTask::ClaimTokens {
                                 data_contract: self.token_contract.contract.clone(),
                                 token_position: self.identity_token_basic_info.token_position,
                                 actor_identity: self.identity.clone(),
                                 distribution_type,
                                 signing_key: self.selected_key.clone().expect("No key selected"),
                                 public_note: self.public_note.clone(),
-                            }),
-                            BackendTask::TokenTask(TokenTask::QueryMyTokenBalances),
+                            })),
+                            BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances)),
                         ],
                         BackendTasksExecutionMode::Sequential,
                     );

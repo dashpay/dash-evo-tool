@@ -68,6 +68,7 @@ pub mod tools;
 pub(crate) mod wallets;
 
 #[derive(Debug, Clone, Copy, Ord, PartialOrd, Eq, PartialEq, Hash)]
+#[allow(clippy::enum_variant_names)]
 pub enum RootScreenType {
     RootScreenIdentities,
     RootScreenDPNSActiveContests,
@@ -341,17 +342,18 @@ impl ScreenType {
             }
 
             // Token Screens
-            ScreenType::TokenBalances => {
-                Screen::TokensScreen(TokensScreen::new(app_context, TokensSubscreen::MyTokens))
-            }
-            ScreenType::TokenSearch => Screen::TokensScreen(TokensScreen::new(
+            ScreenType::TokenBalances => Screen::TokensScreen(Box::new(TokensScreen::new(
+                app_context,
+                TokensSubscreen::MyTokens,
+            ))),
+            ScreenType::TokenSearch => Screen::TokensScreen(Box::new(TokensScreen::new(
                 app_context,
                 TokensSubscreen::SearchTokens,
-            )),
-            ScreenType::TokenCreator => Screen::TokensScreen(TokensScreen::new(
+            ))),
+            ScreenType::TokenCreator => Screen::TokensScreen(Box::new(TokensScreen::new(
                 app_context,
                 TokensSubscreen::TokenCreator,
-            )),
+            ))),
             ScreenType::TransferTokensScreen(identity_token_balance) => {
                 Screen::TransferTokensScreen(TransferTokensScreen::new(
                     identity_token_balance.clone(),
@@ -389,10 +391,10 @@ impl ScreenType {
                 unreachable!()
             }
             ScreenType::UpdateTokenConfigScreen(identity_token_info) => {
-                Screen::UpdateTokenConfigScreen(UpdateTokenConfigScreen::new(
+                Screen::UpdateTokenConfigScreen(Box::new(UpdateTokenConfigScreen::new(
                     identity_token_info.clone(),
                     app_context,
-                ))
+                )))
             }
             ScreenType::AddTokenById => Screen::AddTokenById(AddTokenByIdScreen::new(app_context)),
             ScreenType::PurchaseTokenScreen(identity_token_info) => Screen::PurchaseTokenScreen(
@@ -405,6 +407,7 @@ impl ScreenType {
     }
 }
 
+#[allow(clippy::enum_variant_names)]
 pub enum Screen {
     IdentitiesScreen(IdentitiesScreen),
     DPNSScreen(DPNSScreen),
@@ -434,7 +437,7 @@ pub enum Screen {
     ProofVisualizerScreen(ProofVisualizerScreen),
 
     // Token Screens
-    TokensScreen(TokensScreen),
+    TokensScreen(Box<TokensScreen>),
     TransferTokensScreen(TransferTokensScreen),
     MintTokensScreen(MintTokensScreen),
     BurnTokensScreen(BurnTokensScreen),
@@ -445,7 +448,7 @@ pub enum Screen {
     ResumeTokensScreen(ResumeTokensScreen),
     ClaimTokensScreen(ClaimTokensScreen),
     ViewTokenClaimsScreen(ViewTokenClaimsScreen),
-    UpdateTokenConfigScreen(UpdateTokenConfigScreen),
+    UpdateTokenConfigScreen(Box<UpdateTokenConfigScreen>),
     AddTokenById(AddTokenByIdScreen),
     PurchaseTokenScreen(PurchaseTokenScreen),
     SetTokenPriceScreen(SetTokenPriceScreen),
@@ -596,18 +599,21 @@ impl Screen {
             Screen::DocumentVisualizerScreen(_) => ScreenType::DocumentsVisualizer,
 
             // Token Screens
-            Screen::TokensScreen(TokensScreen {
-                tokens_subscreen: TokensSubscreen::MyTokens,
-                ..
-            }) => ScreenType::TokenBalances,
-            Screen::TokensScreen(TokensScreen {
-                tokens_subscreen: TokensSubscreen::SearchTokens,
-                ..
-            }) => ScreenType::TokenSearch,
-            Screen::TokensScreen(TokensScreen {
-                tokens_subscreen: TokensSubscreen::TokenCreator,
-                ..
-            }) => ScreenType::TokenCreator,
+            Screen::TokensScreen(screen)
+                if screen.tokens_subscreen == TokensSubscreen::MyTokens =>
+            {
+                ScreenType::TokenBalances
+            }
+            Screen::TokensScreen(screen)
+                if screen.tokens_subscreen == TokensSubscreen::SearchTokens =>
+            {
+                ScreenType::TokenSearch
+            }
+            Screen::TokensScreen(screen)
+                if screen.tokens_subscreen == TokensSubscreen::TokenCreator =>
+            {
+                ScreenType::TokenCreator
+            }
             Screen::TransferScreen(screen) => ScreenType::TransferScreen(screen.identity.clone()),
             Screen::TransferTokensScreen(screen) => {
                 ScreenType::TransferTokensScreen(screen.identity_token_balance.clone())
@@ -648,6 +654,10 @@ impl Screen {
             }
             Screen::SetTokenPriceScreen(screen) => {
                 ScreenType::SetTokenPriceScreen(screen.identity_token_info.clone())
+            }
+            Screen::TokensScreen(_) => {
+                // Default fallback for any unmatched TokensScreen variants
+                ScreenType::TokenBalances
             }
         }
     }

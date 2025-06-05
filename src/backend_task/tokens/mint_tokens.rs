@@ -15,6 +15,7 @@ use crate::model::proof_log_item::{ProofLogItem, RequestType};
 use tokio::sync::mpsc;
 
 impl AppContext {
+    #[allow(clippy::too_many_arguments)]
     pub async fn mint_tokens(
         &self,
         sending_identity: &QualifiedIdentity,
@@ -60,12 +61,7 @@ impl AppContext {
                 options,
             )
             .await
-            .map_err(|e| {
-                format!(
-                    "Error signing Mint Tokens state transition: {}",
-                    e.to_string()
-                )
-            })?;
+            .map_err(|e| format!("Error signing Mint Tokens state transition: {}", e))?;
 
         // broadcast and wait
         let _proof_result = state_transition

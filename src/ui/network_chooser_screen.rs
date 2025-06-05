@@ -189,12 +189,10 @@ impl NetworkChooserScreen {
                         } else {
                             ui.label("");
                         }
-                        if self.custom_dash_qt_path.is_some() || self.custom_dash_qt_error_message.is_some() {
-                            if ui.button("clear").clicked() {
-                                self.custom_dash_qt_path = None;
-                                self.custom_dash_qt_error_message = None;
-                                self.save().expect("Expected to save db settings");                                
-                            }
+                        if (self.custom_dash_qt_path.is_some() || self.custom_dash_qt_error_message.is_some()) && ui.button("clear").clicked() {
+                            self.custom_dash_qt_path = None;
+                            self.custom_dash_qt_error_message = None;
+                            self.save().expect("Expected to save db settings");                                
                         }
                         ui.end_row();
 
@@ -318,7 +316,7 @@ impl NetworkChooserScreen {
             self.developer_mode = context.developer_mode.load(Ordering::Relaxed);
         }
 
-        if !(network == Network::Regtest) {
+        if network != Network::Regtest {
             if ui.button("Start").clicked() {
                 app_action = AppAction::BackendTask(BackendTask::CoreTask(CoreTask::StartDashQT(
                     network,
@@ -417,31 +415,29 @@ impl ScreenLike for NetworkChooserScreen {
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
-        match backend_task_success_result {
-            BackendTaskSuccessResult::CoreItem(CoreItem::ChainLocks(
-                mainnet_chainlock,
-                testnet_chainlock,
-                devnet_chainlock,
-                local_chainlock,
-            )) => {
-                match mainnet_chainlock {
-                    Some(_) => self.mainnet_core_status_online = true,
-                    None => self.mainnet_core_status_online = false,
-                }
-                match testnet_chainlock {
-                    Some(_) => self.testnet_core_status_online = true,
-                    None => self.testnet_core_status_online = false,
-                }
-                match devnet_chainlock {
-                    Some(_) => self.devnet_core_status_online = true,
-                    None => self.devnet_core_status_online = false,
-                }
-                match local_chainlock {
-                    Some(_) => self.local_core_status_online = true,
-                    None => self.local_core_status_online = false,
-                }
+        if let BackendTaskSuccessResult::CoreItem(CoreItem::ChainLocks(
+            mainnet_chainlock,
+            testnet_chainlock,
+            devnet_chainlock,
+            local_chainlock,
+        )) = backend_task_success_result
+        {
+            match mainnet_chainlock {
+                Some(_) => self.mainnet_core_status_online = true,
+                None => self.mainnet_core_status_online = false,
             }
-            _ => {}
+            match testnet_chainlock {
+                Some(_) => self.testnet_core_status_online = true,
+                None => self.testnet_core_status_online = false,
+            }
+            match devnet_chainlock {
+                Some(_) => self.devnet_core_status_online = true,
+                None => self.devnet_core_status_online = false,
+            }
+            match local_chainlock {
+                Some(_) => self.local_core_status_online = true,
+                None => self.local_core_status_online = false,
+            }
         }
     }
 

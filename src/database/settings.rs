@@ -87,6 +87,7 @@ impl Database {
     }
 
     /// Retrieves the settings from the database.
+    #[allow(clippy::type_complexity)]
     pub fn get_settings(
         &self,
     ) -> Result<

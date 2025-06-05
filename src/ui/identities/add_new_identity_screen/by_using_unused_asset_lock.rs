@@ -80,7 +80,7 @@ impl AddNewIdentityScreen {
         let mut action = AppAction::None;
 
         // Extract the step from the RwLock to minimize borrow scope
-        let step = self.step.read().unwrap().clone();
+        let step = *self.step.read().unwrap();
 
         ui.heading(
             format!(

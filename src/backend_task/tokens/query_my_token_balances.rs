@@ -33,18 +33,12 @@ impl AppContext {
                 .map_err(|e| format!("Failed to load identity token balances: {e}"))?
                 .values()
                 .filter(|t| t.identity_id == identity_id)
-                .map(|t| {
-                    (
-                        t.token_id.clone(),
-                        t.data_contract_id.clone(),
-                        t.token_position,
-                    )
-                })
+                .map(|t| (t.token_id, t.data_contract_id, t.token_position))
                 .collect::<Vec<_>>();
 
             let token_ids: Vec<Identifier> = token_infos
                 .iter()
-                .map(|(token_id, _, _)| token_id.clone())
+                .map(|(token_id, _, _)| *token_id)
                 .collect();
 
             if token_ids.is_empty() {
@@ -77,17 +71,17 @@ impl AppContext {
                         ) {
                             return Err(format!(
                                 "Failed to insert token balance into local database: {}",
-                                e.to_string()
+                                e
                             ));
                         };
                         sender
                             .send(TaskResult::Refresh)
                             .await
-                            .map_err(|e| format!("Failed to send refresh message after successful Platform query and local database insert: {}", e.to_string()))?;
+                            .map_err(|e| format!("Failed to send refresh message after successful Platform query and local database insert: {}", e))?;
                     }
                 }
                 Err(e) => {
-                    return Err(format!("Failed to query token balances: {}", e.to_string()));
+                    return Err(format!("Failed to query token balances: {}", e));
                 }
             }
         }
@@ -128,17 +122,17 @@ impl AppContext {
                     {
                         return Err(format!(
                             "Failed to insert token balance into local database: {}",
-                            e.to_string()
+                            e
                         ));
                     };
                     sender
                             .send(TaskResult::Refresh)
                             .await
-                            .map_err(|e| format!("Failed to send refresh message after successful Platform query and local database insert: {}", e.to_string()))?;
+                            .map_err(|e| format!("Failed to send refresh message after successful Platform query and local database insert: {}", e))?;
                 }
             }
             Err(e) => {
-                return Err(format!("Failed to query token balances: {}", e.to_string()));
+                return Err(format!("Failed to query token balances: {}", e));
             }
         }
 

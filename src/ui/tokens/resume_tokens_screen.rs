@@ -92,7 +92,7 @@ impl ResumeTokensScreen {
             }
             AuthorizedActionTakers::ContractOwner => {
                 if identity_token_info.data_contract.contract.owner_id()
-                    != &identity_token_info.identity.identity.id()
+                    != identity_token_info.identity.identity.id()
                 {
                     error_message = Some(
                         "You are not allowed to burn this token. Only the contract owner is."
@@ -209,9 +209,8 @@ impl ResumeTokensScreen {
                     // Grab the data contract for this token from the app context
                     let data_contract = self.identity_token_info.data_contract.contract.clone();
 
-                    let group_info;
-                    if self.group_action_id.is_some() {
-                        group_info = self.group.as_ref().map(|(pos, _)| {
+                    let group_info = if self.group_action_id.is_some() {
+                        self.group.as_ref().map(|(pos, _)| {
                             GroupStateTransitionInfoStatus::GroupStateTransitionInfoOtherSigner(
                                 GroupStateTransitionInfo {
                                     group_contract_position: *pos,
@@ -219,15 +218,15 @@ impl ResumeTokensScreen {
                                     action_is_proposer: false,
                                 },
                             )
-                        });
+                        })
                     } else {
-                        group_info = self.group.as_ref().map(|(pos, _)| {
+                        self.group.as_ref().map(|(pos, _)| {
                             GroupStateTransitionInfoStatus::GroupStateTransitionInfoProposer(*pos)
-                        });
-                    }
+                        })
+                    };
 
-                    action =
-                        AppAction::BackendTask(BackendTask::TokenTask(TokenTask::ResumeTokens {
+                    action = AppAction::BackendTask(BackendTask::TokenTask(Box::new(
+                        TokenTask::ResumeTokens {
                             actor_identity: self.identity.clone(),
                             data_contract,
                             token_position: self.identity_token_info.token_position,
@@ -238,7 +237,8 @@ impl ResumeTokensScreen {
                                 self.public_note.clone()
                             },
                             group_info,
-                        }));
+                        },
+                    )));
                 }
 
                 if ui.button("Cancel").clicked() {
@@ -261,12 +261,10 @@ impl ResumeTokensScreen {
             if self.group_action_id.is_some() {
                 // This resume is already initiated by the group, we are just signing it
                 ui.heading("Group Resume Signing Successful.");
+            } else if !self.is_unilateral_group_member && self.group.is_some() {
+                ui.heading("Group Resume Initiated.");
             } else {
-                if !self.is_unilateral_group_member && self.group.is_some() {
-                    ui.heading("Group Resume Initiated.");
-                } else {
-                    ui.heading("Resume Successful.");
-                }
+                ui.heading("Resume Successful.");
             }
 
             ui.add_space(20.0);
@@ -285,15 +283,13 @@ impl ResumeTokensScreen {
                     action = AppAction::PopScreenAndRefresh;
                 }
 
-                if !self.is_unilateral_group_member {
-                    if ui.button("Go to Group Actions").clicked() {
-                        action = AppAction::PopThenAddScreenToMainScreen(
-                            RootScreenType::RootScreenDocumentQuery,
-                            Screen::GroupActionsScreen(GroupActionsScreen::new(
-                                &self.app_context.clone(),
-                            )),
-                        );
-                    }
+                if !self.is_unilateral_group_member && ui.button("Go to Group Actions").clicked() {
+                    action = AppAction::PopThenAddScreenToMainScreen(
+                        RootScreenType::RootScreenDocumentQuery,
+                        Screen::GroupActionsScreen(GroupActionsScreen::new(
+                            &self.app_context.clone(),
+                        )),
+                    );
                 }
             }
         });
@@ -473,7 +469,7 @@ impl ScreenLike for ResumeTokensScreen {
                             )
                             .changed()
                         {
-                            self.public_note = if txt.len() > 0 {
+                            self.public_note = if !txt.is_empty() {
                                 Some(txt)
                             } else {
                                 None

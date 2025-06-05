@@ -87,7 +87,7 @@ pub fn app_user_data_file_path(filename: &str) -> Result<PathBuf, std::io::Error
     Ok(app_data_dir.join(filename))
 }
 
-/// If .env filed does not exist in the application data directory,
+/// If .env file does not exist in the application data directory,
 /// copy the bundled `.env.example` file to that directory.
 pub fn copy_env_file_if_not_exists() {
     let app_data_dir =

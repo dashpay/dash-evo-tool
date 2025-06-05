@@ -226,7 +226,7 @@ impl TokensScreen {
                                 // Row 1: Token Name
                                 let mut token_to_remove: Option<u8> = None;
                                 for i in 0..self.token_names_input.len() {
-                                    ui.label("Token Name (singular):");
+                                    ui.label("Token Name (singular)*:");
                                     ui.text_edit_singleline(&mut self.token_names_input[i].0);
                                     if i == 0 {
                                         ComboBox::from_id_salt(format!("token_name_language_selector_{}", i))
@@ -326,7 +326,7 @@ impl TokensScreen {
                                     ui.end_row();
 
                                     // Plural name
-                                    ui.label("Token Name (plural):");
+                                    ui.label("Token Name (plural)*:");
                                     ui.text_edit_singleline(&mut self.token_names_input[i].1);
                                     ui.end_row();
 
@@ -337,7 +337,7 @@ impl TokensScreen {
                                 }
 
                                 // Row 2: Base Supply
-                                ui.label("Base Supply:");
+                                ui.label("Base Supply*:");
                                 ui.text_edit_singleline(&mut self.base_supply_input);
                                 ui.end_row();
 

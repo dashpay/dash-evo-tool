@@ -22,6 +22,7 @@ use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
+use crate::ui::helpers::{add_identity_key_chooser, TransactionType};
 
 use super::get_selected_wallet;
 use super::keys::add_key_screen::AddKeyScreen;
@@ -79,37 +80,15 @@ impl TransferScreen {
     }
 
     fn render_key_selection(&mut self, ui: &mut Ui) {
-        ui.horizontal(|ui| {
-            ui.label("Select Key:");
-
-            egui::ComboBox::from_id_salt("key_selector")
-                .selected_text(match &self.selected_key {
-                    Some(key) => format!("Key ID: {}", key.id()),
-                    None => "Select a key".to_string(),
-                })
-                .show_ui(ui, |ui| {
-                    if self.app_context.developer_mode.load(Ordering::Relaxed) {
-                        for key in self.identity.identity.public_keys().values() {
-                            let label =
-                                format!("Key ID: {} (Purpose: {:?})", key.id(), key.purpose());
-                            ui.selectable_value(&mut self.selected_key, Some(key.clone()), label);
-                        }
-                    } else {
-                        for key in self.identity.available_transfer_keys() {
-                            let label = format!(
-                                "Key ID: {} (Purpose: {:?})",
-                                key.identity_public_key.id(),
-                                key.identity_public_key.purpose()
-                            );
-                            ui.selectable_value(
-                                &mut self.selected_key,
-                                Some(key.identity_public_key.clone()),
-                                label,
-                            );
-                        }
-                    }
-                });
-        });
+        let mut selected_identity = Some(self.identity.clone());
+        add_identity_key_chooser(
+            ui,
+            &self.app_context,
+            std::iter::once(&self.identity),
+            &mut selected_identity,
+            &mut self.selected_key,
+            TransactionType::Transfer,
+        );
     }
 
     fn render_amount_input(&mut self, ui: &mut Ui) {

@@ -69,7 +69,7 @@ impl Database {
                         };
                         let token_name = token_configuration
                             .conventions()
-                            .plural_form_by_language_code_or_default("en");
+                            .singular_form_by_language_code_or_default("en");
                         self.insert_token(
                             &token_id,
                             token_name,

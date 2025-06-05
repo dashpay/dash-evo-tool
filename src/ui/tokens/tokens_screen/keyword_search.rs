@@ -18,7 +18,7 @@ impl TokensScreen {
 
         // 1) Input & “Go” button
         ui.heading("Search Tokens by Keyword");
-        ui.add_space(5.0);
+        ui.add_space(10.0);
 
         ui.horizontal(|ui| {
             ui.label("Enter Keyword:");
@@ -27,7 +27,7 @@ impl TokensScreen {
                 .get_or_insert_with(|| "".to_string());
             let text_edit_response = ui.text_edit_singleline(query_ref);
 
-            let go_clicked = ui.button("Go").clicked();
+            let go_clicked = ui.button("Search").clicked();
             let enter_pressed =
                 text_edit_response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
 
@@ -47,6 +47,26 @@ impl TokensScreen {
                     TokenTask::QueryDescriptionsByKeyword(keyword, None),
                 )));
             }
+
+            // Clear button
+            if ui.button("Clear").clicked() {
+                // Clear the search input
+                self.token_search_query = Some("".to_string());
+                // Clear the search results
+                self.search_results.lock().unwrap().clear();
+                // Reset the search status
+                self.contract_search_status = ContractSearchStatus::NotStarted;
+                // Clear pagination state
+                self.search_current_page = 1;
+                self.next_cursors.clear();
+                self.previous_cursors.clear();
+                self.search_has_next_page = false;
+                // Clear any selected contract and loading state
+                self.selected_contract_id = None;
+                self.contract_details_loading = false;
+                self.selected_contract_description = None;
+                self.selected_token_infos.clear();
+            }
         });
 
         ui.add_space(10.0);
@@ -54,7 +74,7 @@ impl TokensScreen {
         // 2) Display status
         match &self.contract_search_status {
             ContractSearchStatus::NotStarted => {
-                ui.label("Enter a keyword above and click Go.");
+                // Nothing
             }
             ContractSearchStatus::WaitingForResult(start_time) => {
                 let now = Utc::now().timestamp() as u64;
@@ -148,18 +168,19 @@ impl TokensScreen {
                                         if ui.button("More Info").clicked() {
                                             // Show more info about the token
                                             self.selected_contract_id =
-                                                Some(contract.data_contract_id);
-                                            action =
-                                                AppAction::BackendTask(BackendTask::ContractTask(Box::new(
+                                                Some(contract.data_contract_id.clone());
+                                            // Set loading state to true
+                                            self.contract_details_loading = true;
+                                            // Clear previous data
+                                            self.selected_contract_description = None;
+                                            self.selected_token_infos.clear();
+                                            action = AppAction::BackendTask(
+                                                BackendTask::ContractTask(Box::new(
                                                     ContractTask::FetchContractsWithDescriptions(
                                                         vec![contract.data_contract_id],
                                                     ),
-                                                )));
-
-                                            // // Add to MyTokens or do something with it
-                                            // // Note this is implemented, but we will add it back later!
-                                            // // We changed to searching contracts instead of tokens for now
-                                            // self.add_token_to_my_tokens(token.clone());
+                                                )),
+                                            );
                                         }
                                     });
                                 });

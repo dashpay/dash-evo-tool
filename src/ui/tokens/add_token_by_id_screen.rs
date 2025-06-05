@@ -213,7 +213,7 @@ impl ScreenLike for AddTokenByIdScreen {
                 .map(|(pos, cfg)| {
                     let token_name = cfg
                         .conventions()
-                        .plural_form_by_language_code_or_default("en")
+                        .singular_form_by_language_code_or_default("en")
                         .to_string();
 
                     TokenInfo {

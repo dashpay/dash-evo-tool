@@ -142,7 +142,7 @@ impl AppContext {
                 .put_to_platform_and_wait_for_response(
                     sdk,
                     doc_type,
-                    entropy,
+                    Some(entropy),
                     identity_key,
                     token_payment_info,
                     &qualified_identity,

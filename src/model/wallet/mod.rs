@@ -334,7 +334,7 @@ impl Wallet {
             if wallet_ref.seed_hash() == wallet_seed_hash {
                 // Attempt to derive the private key using the provided derivation path
                 let extended_private_key = derivation_path
-                    .derive_priv_ecdsa_for_master_seed(wallet_ref.seed_bytes()?, Network::Dash)
+                    .derive_priv_ecdsa_for_master_seed(wallet_ref.seed_bytes()?, Network::Dash) // Does this need to be dynamic network?
                     .map_err(|e| e.to_string())?;
                 return Ok(Some(extended_private_key.private_key.secret_bytes()));
             }
@@ -346,9 +346,10 @@ impl Wallet {
     pub fn private_key_at_derivation_path(
         &self,
         derivation_path: &DerivationPath,
+        network: Network,
     ) -> Result<PrivateKey, String> {
         let extended_private_key = derivation_path
-            .derive_priv_ecdsa_for_master_seed(self.seed_bytes()?, Network::Dash)
+            .derive_priv_ecdsa_for_master_seed(self.seed_bytes()?, network)
             .map_err(|e| e.to_string())?;
         Ok(extended_private_key.to_priv())
     }

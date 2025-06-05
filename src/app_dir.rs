@@ -26,6 +26,8 @@ pub fn app_user_data_dir_path() -> Result<PathBuf, std::io::Error> {
 pub fn core_user_data_dir_path() -> Result<PathBuf, std::io::Error> {
     #[cfg(target_os = "linux")]
     {
+        use directories::UserDirs;
+
         UserDirs::new()
             .and_then(|dirs| dirs.home_dir().to_owned().into())
             .map(|home_dir| home_dir.join(".dashcore"))

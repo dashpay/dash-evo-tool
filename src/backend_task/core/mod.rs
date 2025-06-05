@@ -57,8 +57,10 @@ impl AppContext {
                 let config = Config::load().map_err(|e| format!("Failed to load config: {}", e))?;
 
                 // Get chain locks
-                let mainnet_result =
-                    Self::get_best_chain_lock(config.config_for_network(Network::Dash), Network::Dash);
+                let mainnet_result = Self::get_best_chain_lock(
+                    config.config_for_network(Network::Dash),
+                    Network::Dash,
+                );
                 let testnet_result = Self::get_best_chain_lock(
                     config.config_for_network(Network::Testnet),
                     Network::Testnet,

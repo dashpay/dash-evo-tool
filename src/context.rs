@@ -87,7 +87,8 @@ impl AppContext {
             "http://{}:{}",
             network_config.core_host, network_config.core_rpc_port
         );
-        let cookie_path = core_cookie_path(network, &network_config.devnet_name).expect("expected to get cookie path");
+        let cookie_path = core_cookie_path(network, &network_config.devnet_name)
+            .expect("expected to get cookie path");
 
         // Try cookie authentication first
         let core_client = match Client::new(&addr, Auth::CookieFile(cookie_path.clone())) {
@@ -106,7 +107,8 @@ impl AppContext {
                     ),
                 )
             }
-        }.expect("Failed to create CoreClient");
+        }
+        .expect("Failed to create CoreClient");
 
         let wallets: BTreeMap<_, _> = db
             .get_wallets(&network)

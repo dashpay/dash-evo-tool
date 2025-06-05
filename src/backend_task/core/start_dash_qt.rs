@@ -53,8 +53,18 @@ impl AppContext {
 
         if overwrite_dash_conf {
             // Construct the full path to the config file
-            let current_dir = env::current_dir()?;
-            let config_path = current_dir.join(config_file);
+            // Try to get the directory where the executable is located first
+            let config_path = if let Ok(exe_path) = env::current_exe() {
+                if let Some(exe_dir) = exe_path.parent() {
+                    exe_dir.join(config_file)
+                } else {
+                    // Fallback to current working directory
+                    env::current_dir()?.join(config_file)
+                }
+            } else {
+                // Fallback to current working directory
+                env::current_dir()?.join(config_file)
+            };
             command.arg(format!("-conf={}", config_path.display()));
         } else if network == Network::Testnet {
             command.arg("-testnet");

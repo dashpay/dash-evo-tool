@@ -5,6 +5,7 @@ use std::env;
 mod app;
 mod app_dir;
 mod backend_task;
+mod bundled;
 mod components;
 mod config;
 mod context;

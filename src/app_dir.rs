@@ -90,13 +90,38 @@ pub fn copy_env_file_if_not_exists() {
         app_user_data_dir_path().expect("Failed to determine application data directory");
     let env_file_in_app_dir = app_data_dir.join(".env");
     if !env_file_in_app_dir.exists() || !env_file_in_app_dir.is_file() {
+        // Get the directory where the executable is located
+        let exe_dir = std::env::current_exe()
+            .ok()
+            .and_then(|path| path.parent().map(|p| p.to_path_buf()));
+
+        if let Some(exe_dir) = exe_dir {
+            let env_example_file_in_exe_dir = exe_dir.join(".env.example");
+            if env_example_file_in_exe_dir.exists() && env_example_file_in_exe_dir.is_file() {
+                fs::copy(&env_example_file_in_exe_dir, env_file_in_app_dir)
+                    .expect("Failed to copy env file");
+                return;
+            }
+
+            let env_file_in_exe_dir = exe_dir.join(".env");
+            if env_file_in_exe_dir.exists() && env_file_in_exe_dir.is_file() {
+                fs::copy(&env_file_in_exe_dir, env_file_in_app_dir)
+                    .expect("Failed to copy env file");
+                return;
+            }
+        }
+
+        // Fallback to current working directory
         let env_example_file_in_exe_dir = PathBuf::from(".env.example");
         if env_example_file_in_exe_dir.exists() && env_example_file_in_exe_dir.is_file() {
             fs::copy(&env_example_file_in_exe_dir, env_file_in_app_dir)
                 .expect("Failed to copy env file");
         } else {
             let env_file_in_exe_dir = PathBuf::from(".env");
-            fs::copy(&env_file_in_exe_dir, env_file_in_app_dir).expect("Failed to copy env file");
+            if env_file_in_exe_dir.exists() && env_file_in_exe_dir.is_file() {
+                fs::copy(&env_file_in_exe_dir, env_file_in_app_dir)
+                    .expect("Failed to copy env file");
+            }
         }
     }
 }

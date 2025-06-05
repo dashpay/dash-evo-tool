@@ -83,9 +83,9 @@ impl AddContractsScreen {
                         .expect("Time went backwards")
                         .as_secs(),
                 );
-                AppAction::BackendTask(BackendTask::ContractTask(Box::new(ContractTask::FetchContracts(
-                    identifiers,
-                ))))
+                AppAction::BackendTask(BackendTask::ContractTask(Box::new(
+                    ContractTask::FetchContracts(identifiers),
+                )))
             }
             Err(e) => {
                 self.add_contracts_status = AddContractsStatus::ErrorMessage(e);

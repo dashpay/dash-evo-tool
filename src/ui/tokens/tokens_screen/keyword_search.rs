@@ -168,7 +168,7 @@ impl TokensScreen {
                                         if ui.button("More Info").clicked() {
                                             // Show more info about the token
                                             self.selected_contract_id =
-                                                Some(contract.data_contract_id.clone());
+                                                Some(contract.data_contract_id);
                                             // Set loading state to true
                                             self.contract_details_loading = true;
                                             // Clear previous data

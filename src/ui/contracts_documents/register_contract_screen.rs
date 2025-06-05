@@ -55,7 +55,7 @@ impl RegisterDataContractScreen {
 
         let mut error_message: Option<String> = None;
         let selected_wallet = if let Some(ref identity) = selected_qualified_identity {
-            get_selected_wallet(&identity, Some(app_context), None, &mut error_message)
+            get_selected_wallet(identity, Some(app_context), None, &mut error_message)
         } else {
             None
         };

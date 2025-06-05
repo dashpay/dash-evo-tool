@@ -2,7 +2,6 @@
 ///
 /// Supported paths:
 /// - `.env.example`: Loads the bundled `.env.example` file.
-
 pub(crate) enum BundledResource {
     DotEnvExample,
     CoreConfigMainnet,

@@ -9,8 +9,8 @@ description: |
   decoding state transitions. The tool supports both Mainnet and Testnet networks.
 
 grade: stable
-confinement: devmode
-
+confinement: strict
+#devmode
 architectures:
   - build-on: amd64
   - build-on: arm64

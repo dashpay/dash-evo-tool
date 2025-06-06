@@ -217,16 +217,11 @@ impl TransferTokensScreen {
                     self.transfer_tokens_status = TransferTokensStatus::WaitingForResult(now);
                     let data_contract = Arc::new(
                         self.app_context
-                            .get_contracts(None, None)
+                            .get_unqualified_contract_by_id(
+                                &self.identity_token_balance.data_contract_id,
+                            )
                             .expect("Contracts not loaded")
-                            .iter()
-                            .find(|contract| {
-                                contract.contract.id()
-                                    == self.identity_token_balance.data_contract_id
-                            })
-                            .expect("Data contract not found")
-                            .contract
-                            .clone(),
+                            .expect("Data contract not found"),
                     );
                     app_action |= AppAction::BackendTasks(
                         vec![

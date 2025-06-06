@@ -490,15 +490,15 @@ impl AppContext {
         contract_id: &Identifier,
     ) -> Result<Option<QualifiedContract>> {
         // Get the contract from the database
-        let contract = self.db.get_contract_by_id(*contract_id, self)?;
+        self.db.get_contract_by_id(*contract_id, self)
+    }
 
-        // If the contract is not found in the database, return None
-        if contract.is_none() {
-            return Ok(None);
-        }
-
-        // If the contract is found, return it
-        Ok(Some(contract.unwrap()))
+    pub fn get_unqualified_contract_by_id(
+        &self,
+        contract_id: &Identifier,
+    ) -> Result<Option<DataContract>> {
+        // Get the contract from the database
+        self.db.get_unqualified_contract_by_id(*contract_id, self)
     }
 
     // Remove contract from the database by ID

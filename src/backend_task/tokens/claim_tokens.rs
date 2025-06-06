@@ -17,7 +17,7 @@ impl AppContext {
     #[allow(clippy::too_many_arguments)]
     pub async fn claim_tokens(
         &self,
-        data_contract: &DataContract,
+        data_contract: Arc<DataContract>,
         token_position: u16,
         actor_identity: &QualifiedIdentity,
         distribution_type: TokenDistributionType,
@@ -26,10 +26,8 @@ impl AppContext {
         sdk: &Sdk,
     ) -> Result<BackendTaskSuccessResult, String> {
         // Build
-        let data_contract_arc = Arc::new(data_contract.clone());
-
         let mut builder = TokenClaimTransitionBuilder::new(
-            data_contract_arc,
+            data_contract.clone(),
             token_position,
             actor_identity.identity.id(),
             distribution_type,

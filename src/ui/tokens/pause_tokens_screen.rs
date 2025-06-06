@@ -208,7 +208,8 @@ impl PauseTokensScreen {
                     self.status = PauseTokensStatus::WaitingForResult(now);
 
                     // Grab the data contract for this token from the app context
-                    let data_contract = self.identity_token_info.data_contract.contract.clone();
+                    let data_contract =
+                        Arc::new(self.identity_token_info.data_contract.contract.clone());
 
                     let group_info = if self.group_action_id.is_some() {
                         self.group.as_ref().map(|(pos, _)| {

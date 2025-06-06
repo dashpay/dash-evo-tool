@@ -215,17 +215,19 @@ impl TransferTokensScreen {
                         .expect("Time went backwards")
                         .as_secs();
                     self.transfer_tokens_status = TransferTokensStatus::WaitingForResult(now);
-                    let data_contract = self
-                        .app_context
-                        .get_contracts(None, None)
-                        .expect("Contracts not loaded")
-                        .iter()
-                        .find(|contract| {
-                            contract.contract.id() == self.identity_token_balance.data_contract_id
-                        })
-                        .expect("Data contract not found")
-                        .contract
-                        .clone();
+                    let data_contract = Arc::new(
+                        self.app_context
+                            .get_contracts(None, None)
+                            .expect("Contracts not loaded")
+                            .iter()
+                            .find(|contract| {
+                                contract.contract.id()
+                                    == self.identity_token_balance.data_contract_id
+                            })
+                            .expect("Data contract not found")
+                            .contract
+                            .clone(),
+                    );
                     app_action |= AppAction::BackendTasks(
                         vec![
                             BackendTask::TokenTask(Box::new(TokenTask::TransferTokens {

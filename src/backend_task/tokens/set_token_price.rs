@@ -19,7 +19,7 @@ impl AppContext {
     pub async fn set_direct_purchase_price(
         &self,
         sending_identity: &QualifiedIdentity,
-        data_contract: &DataContract,
+        data_contract: Arc<DataContract>,
         token_position: u16,
         signing_key: IdentityPublicKey,
         public_note: Option<String>,
@@ -28,10 +28,8 @@ impl AppContext {
         sdk: &Sdk,
         _sender: mpsc::Sender<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, String> {
-        let data_contract_arc = Arc::new(data_contract.clone());
-
         let mut builder = TokenChangeDirectPurchasePriceTransitionBuilder::new(
-            data_contract_arc,
+            data_contract.clone(),
             token_position,
             sending_identity.identity.id(),
             token_pricing_schedule,

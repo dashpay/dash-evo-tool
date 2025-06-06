@@ -35,14 +35,14 @@ pub(crate) enum DocumentTask {
         Option<TokenPaymentInfo>,
         [u8; 32],
         DocumentType,
-        DataContract,
+        Arc<DataContract>,
         QualifiedIdentity,
         IdentityPublicKey,
     ),
     DeleteDocument(
         Identifier, // Document ID
         DocumentType,
-        DataContract,
+        Arc<DataContract>,
         QualifiedIdentity,
         IdentityPublicKey,
         Option<TokenPaymentInfo>,
@@ -50,7 +50,7 @@ pub(crate) enum DocumentTask {
     ReplaceDocument(
         Document,
         DocumentType,
-        DataContract,
+        Arc<DataContract>,
         QualifiedIdentity,
         IdentityPublicKey,
         Option<TokenPaymentInfo>,
@@ -59,7 +59,7 @@ pub(crate) enum DocumentTask {
         Identifier, // Document ID
         Identifier, // New owner ID
         DocumentType,
-        DataContract,
+        Arc<DataContract>,
         QualifiedIdentity,
         IdentityPublicKey,
         Option<TokenPaymentInfo>,
@@ -68,7 +68,7 @@ pub(crate) enum DocumentTask {
         Credits,    // Price in credits
         Identifier, // Document ID
         DocumentType,
-        DataContract,
+        Arc<DataContract>,
         QualifiedIdentity,
         IdentityPublicKey,
         Option<TokenPaymentInfo>,
@@ -77,7 +77,7 @@ pub(crate) enum DocumentTask {
         Credits,    // Price in credits
         Identifier, // Document ID
         DocumentType,
-        DataContract,
+        Arc<DataContract>,
         QualifiedIdentity,
         IdentityPublicKey,
         Option<TokenPaymentInfo>,
@@ -145,10 +145,8 @@ impl AppContext {
                 qualified_identity,
                 identity_key,
             ) => {
-                let data_contract_arc = Arc::new(data_contract.clone());
-
                 let mut builder = DocumentCreateTransitionBuilder::new(
-                    data_contract_arc,
+                    data_contract,
                     doc_type.name().to_string(),
                     document,
                     entropy,
@@ -202,10 +200,8 @@ impl AppContext {
                 identity_key,
                 token_payment_info,
             ) => {
-                let data_contract_arc = Arc::new(data_contract.clone());
-
                 let mut builder = DocumentDeleteTransitionBuilder::new(
-                    data_contract_arc,
+                    data_contract,
                     document_type.name().to_string(),
                     document_id,
                     qualified_identity.identity.id(),
@@ -262,10 +258,8 @@ impl AppContext {
                 identity_key,
                 token_payment_info,
             ) => {
-                let data_contract_arc = Arc::new(data_contract.clone());
-
                 let mut builder = DocumentReplaceTransitionBuilder::new(
-                    data_contract_arc,
+                    data_contract,
                     document_type.name().to_string(),
                     document,
                 );
@@ -338,10 +332,8 @@ impl AppContext {
                     .ok_or_else(|| "Document not found".to_string())?;
                 document.bump_revision();
 
-                let data_contract_arc = Arc::new(data_contract.clone());
-
                 let mut builder = DocumentTransferTransitionBuilder::new(
-                    data_contract_arc,
+                    data_contract,
                     document_type.name().to_string(),
                     document,
                     new_owner_id,
@@ -416,10 +408,8 @@ impl AppContext {
                     .ok_or_else(|| "Document not found".to_string())?;
                 document.bump_revision();
 
-                let data_contract_arc = Arc::new(data_contract.clone());
-
                 let mut builder = DocumentPurchaseTransitionBuilder::new(
-                    data_contract_arc,
+                    data_contract,
                     document_type.name().to_string(),
                     document,
                     qualified_identity.identity.id(),
@@ -495,10 +485,8 @@ impl AppContext {
                     .ok_or_else(|| "Document not found".to_string())?;
                 document.bump_revision();
 
-                let data_contract_arc = Arc::new(data_contract.clone());
-
                 let mut builder = DocumentSetPriceTransitionBuilder::new(
-                    data_contract_arc,
+                    data_contract,
                     document_type.name().to_string(),
                     document,
                     price,

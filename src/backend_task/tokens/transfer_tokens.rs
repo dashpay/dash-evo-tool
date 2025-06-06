@@ -23,17 +23,15 @@ impl AppContext {
         sending_identity: &QualifiedIdentity,
         recipient_id: Identifier,
         amount: u64,
-        data_contract: &DataContract,
+        data_contract: Arc<DataContract>,
         token_position: u16,
         signing_key: IdentityPublicKey,
         public_note: Option<String>,
         sdk: &Sdk,
         _sender: mpsc::Sender<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, String> {
-        let data_contract_arc = Arc::new(data_contract.clone());
-
         let mut builder = TokenTransferTransitionBuilder::new(
-            data_contract_arc,
+            data_contract.clone(),
             token_position,
             sending_identity.identity.id(),
             recipient_id,

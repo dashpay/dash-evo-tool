@@ -1,6 +1,6 @@
 name: dash-evo-tool
-base: core22
-version: "0.9.0"
+base: core24
+version: "0.9.0-dev"
 summary: Graphical user interface for interacting with Dash Evolution
 description: |
   Dash Evo Tool is a graphical user interface for easily interacting with 
@@ -8,12 +8,12 @@ description: |
   viewing active DPNS username contests, voting on active contests, and 
   decoding state transitions. The tool supports both Mainnet and Testnet networks.
 
-grade: stable
+grade: devel
 confinement: strict
-#devmode
-architectures:
-  - build-on: amd64
-  - build-on: arm64
+
+platforms:
+  amd64:
+  arm64:
 
 apps:
   dash-evo-tool:
@@ -21,8 +21,6 @@ apps:
     desktop: usr/share/applications/dash-evo-tool.desktop
     environment:
       XKB_CONFIG_ROOT: $SNAP/usr/share/X11/xkb
-      LIBGL_DRIVERS_PATH: $SNAP/usr/lib/x86_64-linux-gnu/dri
-      LD_LIBRARY_PATH: $SNAP/usr/lib/x86_64-linux-gnu:$SNAP/lib/x86_64-linux-gnu:$SNAP/usr/lib:$SNAP/lib:$LD_LIBRARY_PATH
     plugs:
       - home
       - network
@@ -32,14 +30,10 @@ apps:
       - wayland
       - x11
       - opengl
-      - audio-playback
-      - unity7
       - gsettings
       - screen-inhibit-control
       - browser-support
       - process-control # Required to spawn external processes
-      - removable-media # For accessing external drives/data
-      - password-manager-service # For wallet functionality
       # - system-files # Required to access system binaries
 
 parts:
@@ -63,17 +57,17 @@ parts:
       - curl
       - unzip
     override-build: |
-      # Install protoc
+      # Install protoc to stage directory (build-time only)
       PROTOC_VERSION="31.1"
-      if [ "$SNAPCRAFT_TARGET_ARCH" = "arm64" ]; then
+      if [ "$CRAFT_ARCH_BUILD_ON" = "arm64" ]; then
         PROTOC_ARCH="aarch_64"
       else
         PROTOC_ARCH="x86_64"
       fi
       curl -OL "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-${PROTOC_ARCH}.zip"
-      unzip -o "protoc-${PROTOC_VERSION}-linux-${PROTOC_ARCH}.zip" -d $SNAPCRAFT_PART_INSTALL bin/protoc
-      unzip -o "protoc-${PROTOC_VERSION}-linux-${PROTOC_ARCH}.zip" -d $SNAPCRAFT_PART_INSTALL 'include/*'
-      chmod +x $SNAPCRAFT_PART_INSTALL/bin/protoc
+      unzip -o "protoc-${PROTOC_VERSION}-linux-${PROTOC_ARCH}.zip" -d $SNAPCRAFT_STAGE bin/protoc
+      unzip -o "protoc-${PROTOC_VERSION}-linux-${PROTOC_ARCH}.zip" -d $SNAPCRAFT_STAGE 'include/*'
+      chmod +x $SNAPCRAFT_STAGE/bin/protoc
 
   dash-evo-tool:
     after: [rust-deps, protoc]
@@ -112,13 +106,12 @@ parts:
       - libfontconfig1
       - libfreetype6
       - libx11-6
+      - libx11-xcb1
       - libxcursor1
       - libxi6
       - libxrandr2
-      - libgl1-mesa-glx
       - libgl1-mesa-dri
       - libglu1-mesa
-      - libegl1-mesa
       - libwayland-client0
       - libwayland-cursor0
       - libwayland-egl1
@@ -198,10 +191,6 @@ parts:
       - libfreetype6
       - libexpat1
       - libpng16-16
-      - libbz2-1.0
-      # Compression libraries
-      - zlib1g
-      - libbrotli1
       # BSD libraries
       - libbsd0
       - libmd0
@@ -214,7 +203,7 @@ parts:
     override-build: |
       # Download and install dash-qt
       DASH_VERSION="22.1.2"
-      if [ "$SNAPCRAFT_TARGET_ARCH" = "arm64" ]; then
+      if [ "$CRAFT_ARCH_BUILD_FOR" = "arm64" ]; then
         DASH_ARCH="aarch64"
       else
         DASH_ARCH="x86_64"
@@ -226,7 +215,7 @@ parts:
 
       # Install binaries
       mkdir -p $SNAPCRAFT_PART_INSTALL/bin $SNAPCRAFT_PART_INSTALL/lib
-      cp dashcore-${DASH_VERSION}/bin/* $SNAPCRAFT_PART_INSTALL/bin/
+      cp dashcore-${DASH_VERSION}/bin/dash-qt $SNAPCRAFT_PART_INSTALL/bin/
       cp dashcore-${DASH_VERSION}/lib/* $SNAPCRAFT_PART_INSTALL/lib/
 
       # Make executable

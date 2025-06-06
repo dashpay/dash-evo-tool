@@ -97,7 +97,7 @@ pub(crate) enum TokenTask {
     SaveTokenLocally(TokenInfo),
     MintTokens {
         sending_identity: QualifiedIdentity,
-        data_contract: DataContract,
+        data_contract: Arc<DataContract>,
         token_position: TokenContractPosition,
         signing_key: IdentityPublicKey,
         public_note: Option<String>,
@@ -109,14 +109,14 @@ pub(crate) enum TokenTask {
         sending_identity: QualifiedIdentity,
         recipient_id: Identifier,
         amount: TokenAmount,
-        data_contract: DataContract,
+        data_contract: Arc<DataContract>,
         token_position: TokenContractPosition,
         signing_key: IdentityPublicKey,
         public_note: Option<String>,
     },
     BurnTokens {
         owner_identity: QualifiedIdentity,
-        data_contract: DataContract,
+        data_contract: Arc<DataContract>,
         token_position: TokenContractPosition,
         signing_key: IdentityPublicKey,
         public_note: Option<String>,
@@ -125,7 +125,7 @@ pub(crate) enum TokenTask {
     },
     DestroyFrozenFunds {
         actor_identity: QualifiedIdentity,
-        data_contract: DataContract,
+        data_contract: Arc<DataContract>,
         token_position: TokenContractPosition,
         signing_key: IdentityPublicKey,
         public_note: Option<String>,
@@ -134,7 +134,7 @@ pub(crate) enum TokenTask {
     },
     FreezeTokens {
         actor_identity: QualifiedIdentity,
-        data_contract: DataContract,
+        data_contract: Arc<DataContract>,
         token_position: TokenContractPosition,
         signing_key: IdentityPublicKey,
         public_note: Option<String>,
@@ -143,7 +143,7 @@ pub(crate) enum TokenTask {
     },
     UnfreezeTokens {
         actor_identity: QualifiedIdentity,
-        data_contract: DataContract,
+        data_contract: Arc<DataContract>,
         token_position: TokenContractPosition,
         signing_key: IdentityPublicKey,
         public_note: Option<String>,
@@ -152,7 +152,7 @@ pub(crate) enum TokenTask {
     },
     PauseTokens {
         actor_identity: QualifiedIdentity,
-        data_contract: DataContract,
+        data_contract: Arc<DataContract>,
         token_position: TokenContractPosition,
         signing_key: IdentityPublicKey,
         public_note: Option<String>,
@@ -160,14 +160,14 @@ pub(crate) enum TokenTask {
     },
     ResumeTokens {
         actor_identity: QualifiedIdentity,
-        data_contract: DataContract,
+        data_contract: Arc<DataContract>,
         token_position: TokenContractPosition,
         signing_key: IdentityPublicKey,
         public_note: Option<String>,
         group_info: Option<GroupStateTransitionInfoStatus>,
     },
     ClaimTokens {
-        data_contract: DataContract,
+        data_contract: Arc<DataContract>,
         token_position: TokenContractPosition,
         actor_identity: QualifiedIdentity,
         distribution_type: TokenDistributionType,
@@ -187,7 +187,7 @@ pub(crate) enum TokenTask {
     },
     PurchaseTokens {
         identity: QualifiedIdentity,
-        data_contract: DataContract,
+        data_contract: Arc<DataContract>,
         token_position: TokenContractPosition,
         signing_key: IdentityPublicKey,
         amount: TokenAmount,
@@ -195,7 +195,7 @@ pub(crate) enum TokenTask {
     },
     SetDirectPurchasePrice {
         identity: QualifiedIdentity,
-        data_contract: DataContract,
+        data_contract: Arc<DataContract>,
         token_position: TokenContractPosition,
         signing_key: IdentityPublicKey,
         token_pricing_schedule: Option<TokenPricingSchedule>,
@@ -298,7 +298,7 @@ impl AppContext {
             } => self
                 .mint_tokens(
                     sending_identity,
-                    data_contract,
+                    data_contract.clone(),
                     *token_position,
                     signing_key.clone(),
                     public_note.clone(),
@@ -327,7 +327,7 @@ impl AppContext {
                     sending_identity,
                     *recipient_id,
                     *amount,
-                    data_contract,
+                    data_contract.clone(),
                     *token_position,
                     signing_key.clone(),
                     public_note.clone(),
@@ -347,7 +347,7 @@ impl AppContext {
             } => self
                 .burn_tokens(
                     owner_identity,
-                    data_contract,
+                    data_contract.clone(),
                     *token_position,
                     signing_key.clone(),
                     public_note.clone(),
@@ -369,7 +369,7 @@ impl AppContext {
             } => self
                 .destroy_frozen_funds(
                     actor_identity,
-                    data_contract,
+                    data_contract.clone(),
                     *token_position,
                     signing_key.clone(),
                     public_note.clone(),
@@ -391,7 +391,7 @@ impl AppContext {
             } => self
                 .freeze_tokens(
                     actor_identity,
-                    data_contract,
+                    data_contract.clone(),
                     *token_position,
                     signing_key.clone(),
                     public_note.clone(),
@@ -413,7 +413,7 @@ impl AppContext {
             } => self
                 .unfreeze_tokens(
                     actor_identity,
-                    data_contract,
+                    data_contract.clone(),
                     *token_position,
                     signing_key.clone(),
                     public_note.clone(),
@@ -434,7 +434,7 @@ impl AppContext {
             } => self
                 .pause_tokens(
                     actor_identity,
-                    data_contract,
+                    data_contract.clone(),
                     *token_position,
                     signing_key.clone(),
                     public_note.clone(),
@@ -454,7 +454,7 @@ impl AppContext {
             } => self
                 .resume_tokens(
                     actor_identity,
-                    data_contract,
+                    data_contract.clone(),
                     *token_position,
                     signing_key.clone(),
                     public_note.clone(),
@@ -473,7 +473,7 @@ impl AppContext {
                 public_note,
             } => self
                 .claim_tokens(
-                    data_contract,
+                    data_contract.clone(),
                     *token_position,
                     actor_identity,
                     *distribution_type,
@@ -563,7 +563,7 @@ impl AppContext {
             } => self
                 .purchase_tokens(
                     identity,
-                    data_contract,
+                    data_contract.clone(),
                     *token_position,
                     signing_key.clone(),
                     *amount,
@@ -584,7 +584,7 @@ impl AppContext {
             } => self
                 .set_direct_purchase_price(
                     identity,
-                    data_contract,
+                    data_contract.clone(),
                     *token_position,
                     signing_key.clone(),
                     public_note.clone(),

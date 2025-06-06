@@ -295,7 +295,9 @@ impl MintTokensScreen {
                     action = AppAction::BackendTask(BackendTask::TokenTask(Box::new(
                         TokenTask::MintTokens {
                             sending_identity: self.identity_token_info.identity.clone(),
-                            data_contract: self.identity_token_info.data_contract.contract.clone(),
+                            data_contract: Arc::new(
+                                self.identity_token_info.data_contract.contract.clone(),
+                            ),
                             token_position: self.identity_token_info.token_position,
                             signing_key: self.selected_key.clone().expect("Expected a key"),
                             public_note: if self.group_action_id.is_some() {

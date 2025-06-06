@@ -18,7 +18,7 @@ impl AppContext {
     pub async fn resume_tokens(
         &self,
         actor_identity: &QualifiedIdentity,
-        data_contract: &DataContract,
+        data_contract: Arc<DataContract>,
         token_position: u16,
         signing_key: IdentityPublicKey,
         public_note: Option<String>,
@@ -26,11 +26,9 @@ impl AppContext {
         sdk: &Sdk,
         _sender: mpsc::Sender<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, String> {
-        let data_contract_arc = Arc::new(data_contract.clone());
-
         // Use .resume(...) constructor
         let mut builder = TokenEmergencyActionTransitionBuilder::resume(
-            data_contract_arc,
+            data_contract.clone(),
             token_position,
             actor_identity.identity.id(),
         );

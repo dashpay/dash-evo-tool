@@ -407,7 +407,7 @@ impl WalletsBalancesScreen {
             .id_salt("address_table")
             .show(ui, |ui| {
                 TableBuilder::new(ui)
-                    .striped(true)
+                    .striped(false)
                     .resizable(true)
                     .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
                     .column(Column::auto()) // Address
@@ -573,7 +573,7 @@ impl WalletsBalancesScreen {
                 .id_salt("asset_locks_table")
                 .show(ui, |ui| {
                     TableBuilder::new(ui)
-                        .striped(true)
+                        .striped(false)
                         .resizable(true)
                         .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
                         .column(Column::initial(200.0)) // Transaction ID

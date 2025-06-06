@@ -401,7 +401,7 @@ impl DPNSScreen {
                     .inner_margin(Margin::same(8))
                     .show(ui, |ui| {
                         TableBuilder::new(ui)
-                            .striped(true)
+                            .striped(false)
                             .resizable(true)
                             .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
                             .column(Column::initial(200.0).resizable(true)) // Contested Name
@@ -755,7 +755,7 @@ impl DPNSScreen {
                     .inner_margin(Margin::same(8))
                     .show(ui, |ui| {
                         TableBuilder::new(ui)
-                            .striped(true)
+                            .striped(false)
                             .resizable(true)
                             .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
                             .column(Column::initial(200.0).resizable(true)) // Name
@@ -927,7 +927,7 @@ impl DPNSScreen {
                     .inner_margin(Margin::same(8))
                     .show(ui, |ui| {
                         TableBuilder::new(ui)
-                            .striped(true)
+                            .striped(false)
                             .resizable(true)
                             .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
                             .column(Column::initial(200.0).resizable(true)) // DPNS Name
@@ -1002,7 +1002,7 @@ impl DPNSScreen {
                 .inner_margin(Margin::same(8))
                 .show(ui, |ui| {
                     TableBuilder::new(ui)
-                        .striped(true)
+                        .striped(false)
                         .resizable(true)
                         .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
                         .column(Column::initial(100.0).resizable(true)) // ContestedName

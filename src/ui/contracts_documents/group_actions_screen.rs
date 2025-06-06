@@ -172,7 +172,7 @@ impl GroupActionsScreen {
             .auto_shrink([false; 2])
             .show(ui, |ui| {
                 TableBuilder::new(ui)
-                    .striped(true)
+                    .striped(false)
                     .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
                     .column(Column::auto().resizable(true)) // Action ID
                     .column(Column::auto().resizable(true)) // Type

@@ -127,7 +127,7 @@ impl TokensScreen {
 
         egui::ScrollArea::both().show(ui, |ui| {
             TableBuilder::new(ui)
-                .striped(true)
+                .striped(false)
                 .resizable(true)
                 .cell_layout(egui::Layout::left_to_right(Align::Center))
                 .column(Column::initial(60.0).resizable(true)) // Contract ID

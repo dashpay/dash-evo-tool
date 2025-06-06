@@ -119,7 +119,7 @@ impl NetworkChooserScreen {
         let mut app_action = AppAction::None;
 
         egui::Grid::new("network_grid")
-            .striped(true)
+            .striped(false)
             .spacing([20.0, 10.0])
             .show(ui, |ui| {
                 // Header row

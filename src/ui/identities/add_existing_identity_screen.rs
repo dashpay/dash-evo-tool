@@ -125,7 +125,7 @@ impl AddExistingIdentityScreen {
         egui::Grid::new("add_existing_identity_grid")
             .num_columns(2)
             .spacing([10.0, 10.0])
-            .striped(true)
+            .striped(false)
             .show(ui, |ui| {
                 ui.label("Identity ID / ProTxHash (Hex or Base58):");
                 ui.text_edit_singleline(&mut self.identity_id_input);

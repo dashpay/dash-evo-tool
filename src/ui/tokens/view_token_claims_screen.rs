@@ -175,7 +175,7 @@ impl ScreenLike for ViewTokenClaimsScreen {
                     .auto_shrink([false; 2])
                     .show(ui, |ui| {
                         egui::Grid::new("claims_table")
-                            .striped(true)
+                            .striped(false)
                             .spacing([20.0, 8.0])
                             .show(ui, |ui| {
                                 // Header

@@ -88,7 +88,7 @@ impl ScreenLike for KeyInfoScreen {
                 egui::Grid::new("key_info_grid")
                     .num_columns(2)
                     .spacing([10.0, 10.0])
-                    .striped(true)
+                    .striped(false)
                     .show(ui, |ui| {
                         // Key ID
                         ui.label(RichText::new("Key ID:").strong());
@@ -153,7 +153,7 @@ impl ScreenLike for KeyInfoScreen {
                 egui::Grid::new("public_key_info_grid")
                     .num_columns(2)
                     .spacing([10.0, 10.0])
-                    .striped(true)
+                    .striped(false)
                     .show(ui, |ui| {
                         match self.key.key_type() {
                             KeyType::ECDSA_SECP256K1 | KeyType::BLS12_381 => {

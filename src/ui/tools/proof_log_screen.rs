@@ -112,7 +112,7 @@ impl ProofLogScreen {
             .show(ui, |ui| {
                 Grid::new("proof_log_table")
                     .num_columns(4)
-                    .striped(true)
+                    .striped(false)
                     .show(ui, |ui| {
                         // Table headers with sorting
                         if ui

@@ -202,7 +202,7 @@ impl TokensScreen {
             .max_height(max_scroll_height)
             .show(ui, |ui| {
                 let mut table = TableBuilder::new(ui)
-                            .striped(true)
+                            .striped(false)
                             .resizable(true)
                             .cell_layout(egui::Layout::left_to_right(Align::Center))
                             .column(Column::initial(60.0).resizable(true)) // Identity Alias
@@ -646,7 +646,7 @@ impl TokensScreen {
             .max_height(max_scroll_height)
             .show(ui, |ui| {
                 TableBuilder::new(ui)
-                    .striped(true)
+                    .striped(false)
                     .resizable(true)
                     .cell_layout(egui::Layout::left_to_right(Align::Center))
                     .column(Column::initial(150.0).resizable(true)) // Token Name

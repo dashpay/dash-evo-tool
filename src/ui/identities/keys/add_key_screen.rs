@@ -257,7 +257,7 @@ impl ScreenLike for AddKeyScreen {
             egui::Grid::new("add_key_grid")
                 .num_columns(2)
                 .spacing([10.0, 10.0])
-                .striped(true)
+                .striped(false)
                 .show(ui, |ui| {
                     // Purpose
                     ui.label("Purpose:");

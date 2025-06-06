@@ -326,26 +326,16 @@ impl Wallet {
         slice: &[Arc<RwLock<Wallet>>],
         wallet_seed_hash: WalletSeedHash,
         derivation_path: &DerivationPath,
+        network: Network,
     ) -> Result<Option<[u8; 32]>, String> {
         for wallet in slice {
             // Attempt to read the wallet from the RwLock
             let wallet_ref = wallet.read().unwrap();
             // Check if this wallet's seed hash matches the target hash
             if wallet_ref.seed_hash() == wallet_seed_hash {
-                // Get the network from known addresses or watched addresses
-                let network =
-                    if let Some((address, _)) = wallet_ref.known_addresses.first_key_value() {
-                        address.network()
-                    } else if let Some((_, address_info)) =
-                        wallet_ref.watched_addresses.first_key_value()
-                    {
-                        address_info.address.network()
-                    } else {
-                        return Err("Wallet has no addresses to determine network".to_string());
-                    };
                 // Attempt to derive the private key using the provided derivation path
                 let extended_private_key = derivation_path
-                    .derive_priv_ecdsa_for_master_seed(wallet_ref.seed_bytes()?, *network)
+                    .derive_priv_ecdsa_for_master_seed(wallet_ref.seed_bytes()?, network)
                     .map_err(|e| e.to_string())?;
                 return Ok(Some(extended_private_key.private_key.secret_bytes()));
             }

@@ -325,7 +325,27 @@ impl AppContext {
 
     /// Fetches all local user identities from the database
     pub fn load_local_user_identities(&self) -> Result<Vec<QualifiedIdentity>> {
-        self.db.get_local_user_identities(self)
+        let identities = self.db.get_local_user_identities(self)?;
+
+        let wallets = self.wallets.read().unwrap();
+        identities
+            .into_iter()
+            .map(|(mut identity, wallet_id)| {
+                // For each identity, we need to set the wallet information
+                if let Some(wallet) = wallets.get(&wallet_id) {
+                    identity
+                        .associated_wallets
+                        .insert(wallet_id, wallet.clone());
+                } else {
+                    tracing::warn!(
+                        wallet = %hex::encode(wallet_id),
+                        identity = %identity.identity.id(),
+                        "wallet not found for identity when loading local user identities",
+                    );
+                }
+                Ok(identity)
+            })
+            .collect()
     }
 
     /// Fetches all contested names from the database including past and active ones

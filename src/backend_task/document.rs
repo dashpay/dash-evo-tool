@@ -318,7 +318,7 @@ impl AppContext {
             ) => {
                 // First fetch the document to transfer
                 let document_query = DocumentQuery {
-                    data_contract: data_contract.clone().into(),
+                    data_contract: data_contract.clone(),
                     document_type_name: document_type.name().to_string(),
                     where_clauses: vec![],
                     order_by_clauses: vec![],
@@ -394,7 +394,7 @@ impl AppContext {
             ) => {
                 // First fetch the document to purchase
                 let document_query = DocumentQuery {
-                    data_contract: data_contract.clone().into(),
+                    data_contract: data_contract.clone(),
                     document_type_name: document_type.name().to_string(),
                     where_clauses: vec![],
                     order_by_clauses: vec![],
@@ -471,7 +471,7 @@ impl AppContext {
             ) => {
                 // First fetch the document to set price on
                 let document_query = DocumentQuery {
-                    data_contract: data_contract.clone().into(),
+                    data_contract: data_contract.clone(),
                     document_type_name: document_type.name().to_string(),
                     where_clauses: vec![],
                     order_by_clauses: vec![],

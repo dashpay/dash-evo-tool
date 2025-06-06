@@ -2,8 +2,10 @@ use dash_sdk::dpp::dashcore::Network;
 use directories::ProjectDirs;
 #[cfg(target_os = "linux")]
 use directories::UserDirs;
-use std::fs;
 use std::path::PathBuf;
+use std::{fs, io};
+
+use crate::bundled::BundledResource;
 
 const QUALIFIER: &str = ""; // Typically empty on macOS and Linux
 const ORGANIZATION: &str = "";
@@ -85,18 +87,44 @@ pub fn app_user_data_file_path(filename: &str) -> Result<PathBuf, std::io::Error
     Ok(app_data_dir.join(filename))
 }
 
+/// If .env file does not exist in the application data directory,
+/// copy the bundled `.env.example` file to that directory.
 pub fn copy_env_file_if_not_exists() {
     let app_data_dir =
         app_user_data_dir_path().expect("Failed to determine application data directory");
     let env_file_in_app_dir = app_data_dir.join(".env");
-    if !env_file_in_app_dir.exists() || !env_file_in_app_dir.is_file() {
-        let env_example_file_in_exe_dir = PathBuf::from(".env.example");
-        if env_example_file_in_exe_dir.exists() && env_example_file_in_exe_dir.is_file() {
-            fs::copy(&env_example_file_in_exe_dir, env_file_in_app_dir)
-                .expect("Failed to copy env file");
-        } else {
-            let env_file_in_exe_dir = PathBuf::from(".env");
-            fs::copy(&env_file_in_exe_dir, env_file_in_app_dir).expect("Failed to copy env file");
+    // try to write bundled .env.example file to `env_file_in_app_dir`; it will return false if the file already exists
+    // what we can safely ignore
+    BundledResource::DotEnvExample
+        .write_to_file(&env_file_in_app_dir, false)
+        .expect("Failed to write bundled .env.example file");
+}
+
+/// For a given network, create dash core config file in the application data directory if it does not exist.
+///
+/// Returns the path to the config file or an error if it fails.
+pub fn create_dash_core_config_if_not_exists(network: Network) -> Result<PathBuf, io::Error> {
+    let (resource, filename) = match network {
+        Network::Dash => (BundledResource::CoreConfigMainnet, "mainnet.conf"),
+        Network::Testnet => (BundledResource::CoreConfigTestnet, "testnet.conf"),
+        Network::Devnet => (BundledResource::CoreConfigDevnet, "devnet.conf"),
+        Network::Regtest => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Local network does not support overwriting dash.conf",
+            ));
         }
-    }
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Unsupported network",
+            ))
+        }
+    };
+    // Construct the full path to the config file
+    let dir = app_user_data_dir_path().expect("Failed to get app user data directory path");
+    let config_path = dir.join("dash_core_configs").join(filename);
+    resource.write_to_file(&config_path, false)?;
+
+    Ok(config_path)
 }

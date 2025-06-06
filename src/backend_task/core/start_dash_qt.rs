@@ -1,3 +1,5 @@
+use crate::app_dir::create_dash_core_config_if_not_exists;
+
 use crate::context::AppContext;
 use dash_sdk::dpp::dashcore::Network;
 use std::path::PathBuf;
@@ -36,27 +38,11 @@ impl AppContext {
             ));
         }
 
-        // Determine the config file based on the network
-        let config_file: &str = match network {
-            Network::Dash => "dash_core_configs/mainnet.conf",
-            Network::Testnet => "dash_core_configs/testnet.conf",
-            Network::Devnet => "dash_core_configs/devnet.conf",
-            Network::Regtest => "dash_core_configs/local.conf",
-            _ => {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "Unsupported network",
-                ))
-            }
-        };
-
         let mut command = Command::new(&dash_qt_path);
         command.stdout(Stdio::null()).stderr(Stdio::null()); // Suppress output
 
         if overwrite_dash_conf {
-            // Construct the full path to the config file
-            let current_dir = env::current_dir()?;
-            let config_path = current_dir.join(config_file);
+            let config_path = create_dash_core_config_if_not_exists(network)?;
             command.arg(format!("-conf={}", config_path.display()));
         } else if network == Network::Testnet {
             command.arg("-testnet");

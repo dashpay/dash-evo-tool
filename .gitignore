@@ -3,6 +3,9 @@
 debug/
 target/
 
+# Build artifacts
+*.snap
+
 # Dot env file
 .env
 .env.backups

@@ -107,7 +107,7 @@ impl AppContext {
                 let mut page_docs: IndexMap<Identifier, Option<Document>> = IndexMap::new();
 
                 // Fetch a single page
-                let docs_batch_result = Document::fetch_many(sdk, document_query.clone())
+                let docs_batch_result = Document::fetch_many(sdk, document_query)
                     .await
                     .map_err(|e| format!("Error fetching documents: {}", e))?;
 
@@ -207,7 +207,7 @@ impl AppContext {
                 let mut builder = DocumentDeleteTransitionBuilder::new(
                     data_contract_arc,
                     document_type.name().to_string(),
-                    document_id.clone(),
+                    document_id,
                     qualified_identity.identity.id(),
                 );
 

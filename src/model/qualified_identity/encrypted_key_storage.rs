@@ -7,6 +7,7 @@ use bincode::error::{DecodeError, EncodeError};
 use bincode::{BorrowDecode, Decode, Encode};
 use dash_sdk::dashcore_rpc::dashcore::bip32::DerivationPath;
 use dash_sdk::dpp::dashcore::bip32::ChildNumber;
+use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::{KeyID, Purpose, SecurityLevel};
 use std::collections::{BTreeMap, BTreeSet};
@@ -277,6 +278,7 @@ impl KeyStorage {
         &self,
         key: &(PrivateKeyTarget, KeyID),
         wallets: &[Arc<RwLock<Wallet>>],
+        network: Network,
     ) -> Result<Option<(QualifiedIdentityPublicKey, [u8; 32])>, String> {
         self.private_keys
             .get(key)
@@ -296,6 +298,7 @@ impl KeyStorage {
                             wallets,
                             *wallet_seed_hash,
                             derivation_path,
+                            network,
                         )?
                         .ok_or(format!(
                             "Wallet for key at derivation path {} not present, we have {} wallets",

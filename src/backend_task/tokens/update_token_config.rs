@@ -7,13 +7,14 @@ use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
 use dash_sdk::dpp::group::GroupStateTransitionInfoStatus;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::state_transition::proof_result::StateTransitionProofResult;
+use dash_sdk::platform::tokens::builders::config_update::TokenConfigUpdateTransitionBuilder;
 use dash_sdk::platform::transition::broadcast::BroadcastStateTransition;
 use dash_sdk::platform::{DataContract, Fetch, IdentityPublicKey};
 use dash_sdk::{
     dpp::data_contract::associated_token::token_configuration_item::TokenConfigurationChangeItem,
-    platform::transition::fungible_tokens::config_update::TokenConfigUpdateTransitionBuilder,
     Error, Sdk,
 };
+use std::sync::Arc;
 
 impl AppContext {
     pub async fn update_token_config(
@@ -61,9 +62,11 @@ impl AppContext {
                 )
             })?;
 
+        let data_contract_arc = Arc::new(existing_data_contract.clone());
+
         // Create the TokenConfigUpdateTransition
         let mut builder = TokenConfigUpdateTransitionBuilder::new(
-            existing_data_contract,
+            data_contract_arc,
             identity_token_info.token_position,
             identity_token_info.identity.identity.id(),
             change_item.clone(),
@@ -78,17 +81,13 @@ impl AppContext {
             builder = builder.with_using_group_info(group_info);
         }
 
-        let options = self.state_transition_options();
+        if let Some(options) = self.state_transition_options() {
+            builder = builder.with_state_transition_creation_options(options);
+        }
 
         // Sign the state transition
         let state_transition = builder
-            .sign(
-                sdk,
-                signing_key,
-                &identity,
-                self.platform_version(),
-                options,
-            )
+            .sign(sdk, signing_key, &identity, self.platform_version())
             .await
             .map_err(|e| format!("Error signing Token Config Update transition: {}", e))?;
 

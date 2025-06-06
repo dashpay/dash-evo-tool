@@ -1,16 +1,16 @@
 use crate::app::TaskResult;
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::context::AppContext;
-use crate::model::qualified_identity::QualifiedIdentity;
-
 use crate::model::proof_log_item::{ProofLogItem, RequestType};
+use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::dpp::group::GroupStateTransitionInfoStatus;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::state_transition::proof_result::StateTransitionProofResult;
+use dash_sdk::platform::tokens::builders::emergency_action::TokenEmergencyActionTransitionBuilder;
 use dash_sdk::platform::transition::broadcast::BroadcastStateTransition;
-use dash_sdk::platform::transition::fungible_tokens::emergency_action::TokenEmergencyActionTransitionBuilder;
 use dash_sdk::platform::{DataContract, IdentityPublicKey};
 use dash_sdk::{Error, Sdk};
+use std::sync::Arc;
 use tokio::sync::mpsc;
 
 impl AppContext {
@@ -26,9 +26,11 @@ impl AppContext {
         sdk: &Sdk,
         _sender: mpsc::Sender<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, String> {
+        let data_contract_arc = Arc::new(data_contract.clone());
+
         // Use .pause(...) constructor
         let mut builder = TokenEmergencyActionTransitionBuilder::pause(
-            data_contract,
+            data_contract_arc,
             token_position,
             actor_identity.identity.id(),
         );
@@ -41,16 +43,12 @@ impl AppContext {
             builder = builder.with_using_group_info(group_info);
         }
 
-        let options = self.state_transition_options();
+        if let Some(options) = self.state_transition_options() {
+            builder = builder.with_state_transition_creation_options(options);
+        }
 
         let state_transition = builder
-            .sign(
-                sdk,
-                &signing_key,
-                actor_identity,
-                self.platform_version(),
-                options,
-            )
+            .sign(sdk, &signing_key, actor_identity, self.platform_version())
             .await
             .map_err(|e| format!("Error signing Pause Tokens transition: {}", e))?;
 

@@ -1,28 +1,32 @@
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::context::AppContext;
+use crate::model::proof_log_item::{ProofLogItem, RequestType};
 use crate::model::qualified_identity::QualifiedIdentity;
-use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
 use dash_sdk::dpp::data_contract::document_type::DocumentType;
-use dash_sdk::dpp::document::DocumentV0Setters;
+use dash_sdk::dpp::document::{DocumentV0Getters, DocumentV0Setters};
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-use dash_sdk::dpp::prelude::UserFeeIncrease;
-use dash_sdk::dpp::state_transition::batch_transition::methods::v0::DocumentsBatchTransitionMethodsV0;
-use dash_sdk::dpp::state_transition::batch_transition::BatchTransitionV0;
-use dash_sdk::dpp::state_transition::proof_result::StateTransitionProofResult;
 use dash_sdk::dpp::tokens::token_payment_info::TokenPaymentInfo;
+use dash_sdk::platform::documents::transitions::DocumentCreateResult;
+use dash_sdk::platform::documents::transitions::DocumentCreateTransitionBuilder;
+use dash_sdk::platform::documents::transitions::DocumentDeleteResult;
+use dash_sdk::platform::documents::transitions::DocumentDeleteTransitionBuilder;
+use dash_sdk::platform::documents::transitions::DocumentPurchaseResult;
+use dash_sdk::platform::documents::transitions::DocumentPurchaseTransitionBuilder;
+use dash_sdk::platform::documents::transitions::DocumentReplaceResult;
+use dash_sdk::platform::documents::transitions::DocumentReplaceTransitionBuilder;
+use dash_sdk::platform::documents::transitions::DocumentSetPriceResult;
+use dash_sdk::platform::documents::transitions::DocumentSetPriceTransitionBuilder;
+use dash_sdk::platform::documents::transitions::DocumentTransferResult;
+use dash_sdk::platform::documents::transitions::DocumentTransferTransitionBuilder;
 use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::Start;
-use dash_sdk::platform::transition::broadcast::BroadcastStateTransition;
-use dash_sdk::platform::transition::purchase_document::PurchaseDocument;
-use dash_sdk::platform::transition::put_document::PutDocument;
-use dash_sdk::platform::transition::transfer_document::TransferDocument;
-use dash_sdk::platform::transition::update_price_of_document::UpdatePriceOfDocument;
 use dash_sdk::platform::{
     DataContract, Document, DocumentQuery, Fetch, FetchMany, Identifier, IdentityPublicKey,
 };
 use dash_sdk::query_types::IndexMap;
-use dash_sdk::Sdk;
+use dash_sdk::{Error, Sdk};
+use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum DocumentTask {
@@ -31,6 +35,7 @@ pub(crate) enum DocumentTask {
         Option<TokenPaymentInfo>,
         [u8; 32],
         DocumentType,
+        DataContract,
         QualifiedIdentity,
         IdentityPublicKey,
     ),
@@ -102,7 +107,7 @@ impl AppContext {
                 let mut page_docs: IndexMap<Identifier, Option<Document>> = IndexMap::new();
 
                 // Fetch a single page
-                let docs_batch_result = Document::fetch_many(sdk, document_query.clone())
+                let docs_batch_result = Document::fetch_many(sdk, document_query)
                     .await
                     .map_err(|e| format!("Error fetching documents: {}", e))?;
 
@@ -134,23 +139,61 @@ impl AppContext {
             DocumentTask::BroadcastDocument(
                 document,
                 token_payment_info,
-                entropy, // you usually don’t need it here
+                entropy,
                 doc_type,
+                data_contract,
                 qualified_identity,
                 identity_key,
-            ) => document
-                .put_to_platform_and_wait_for_response(
-                    sdk,
-                    doc_type,
+            ) => {
+                let data_contract_arc = Arc::new(data_contract.clone());
+
+                let mut builder = DocumentCreateTransitionBuilder::new(
+                    data_contract_arc,
+                    doc_type.name().to_string(),
+                    document,
                     entropy,
-                    identity_key,
-                    token_payment_info,
-                    &qualified_identity,
-                    None,
-                )
-                .await
-                .map(BackendTaskSuccessResult::BroadcastedDocument)
-                .map_err(|e| format!("Error broadcasting document: {}", e)),
+                );
+
+                if let Some(token_payment) = token_payment_info {
+                    builder = builder.with_token_payment_info(token_payment);
+                }
+
+                let maybe_options = self.state_transition_options();
+                if let Some(options) = maybe_options {
+                    builder = builder.with_state_transition_creation_options(options);
+                }
+
+                let result = sdk
+                    .document_create(builder, &identity_key, &qualified_identity)
+                    .await
+                    .map_err(|e| match e {
+                        Error::DriveProofError(proof_error, proof_bytes, block_info) => {
+                            self.db
+                                .insert_proof_log_item(ProofLogItem {
+                                    request_type: RequestType::BroadcastStateTransition,
+                                    request_bytes: vec![],
+                                    verification_path_query_bytes: vec![],
+                                    height: block_info.height,
+                                    time_ms: block_info.time_ms,
+                                    proof_bytes,
+                                    error: Some(proof_error.to_string()),
+                                })
+                                .ok();
+                            format!(
+                                "Error broadcasting document: {}, proof error logged",
+                                proof_error
+                            )
+                        }
+                        e => format!("Error broadcasting document: {}", e),
+                    })?;
+
+                // Handle the result - DocumentCreateResult contains the created document
+                match result {
+                    DocumentCreateResult::Document(document) => {
+                        Ok(BackendTaskSuccessResult::BroadcastedDocument(document))
+                    }
+                }
+            }
             DocumentTask::DeleteDocument(
                 document_id,
                 document_type,
@@ -159,56 +202,57 @@ impl AppContext {
                 identity_key,
                 token_payment_info,
             ) => {
-                // ---------- 1. get & bump identity nonce ----------
-                let new_nonce = sdk
-                    .get_identity_contract_nonce(
-                        qualified_identity.identity.id(),
-                        data_contract.id(),
-                        true,
-                        None,
-                    )
-                    .await
-                    .map_err(|e| format!("Fetch nonce error: {e}"))?;
+                let data_contract_arc = Arc::new(data_contract.clone());
 
-                // ---------- 2. fetch document ----------
-                let document_query = DocumentQuery {
-                    data_contract: data_contract.into(),
-                    document_type_name: document_type.name().to_string(),
-                    where_clauses: vec![],
-                    order_by_clauses: vec![],
-                    limit: 1,
-                    start: None,
-                };
-                let query_with_id = DocumentQuery::with_document_id(document_query, &document_id);
-                let document = Document::fetch(sdk, query_with_id)
-                    .await
-                    .map_err(|e| format!("Error fetching document: {}", e))?
-                    .ok_or_else(|| "Document not found".to_string())?;
+                let mut builder = DocumentDeleteTransitionBuilder::new(
+                    data_contract_arc,
+                    document_type.name().to_string(),
+                    document_id,
+                    qualified_identity.identity.id(),
+                );
 
-                let state_transition =
-                    BatchTransitionV0::new_document_deletion_transition_from_document(
-                        document,
-                        document_type.as_ref(),
-                        &identity_key,
-                        new_nonce,
-                        UserFeeIncrease::default(),
-                        token_payment_info,
-                        &qualified_identity,
-                        sdk.version(),
-                        None,
-                    )
-                    .map_err(|e| format!("Error creating batch transition: {}", e))?;
+                if let Some(token_payment) = token_payment_info {
+                    builder = builder.with_token_payment_info(token_payment);
+                }
 
-                // ---------- 4. broadcast ----------
-                state_transition
-                    .broadcast_and_wait::<StateTransitionProofResult>(sdk, None)
+                let maybe_options = self.state_transition_options();
+                if let Some(options) = maybe_options {
+                    builder = builder.with_state_transition_creation_options(options);
+                }
+
+                let result = sdk
+                    .document_delete(builder, &identity_key, &qualified_identity)
                     .await
-                    .map(|_| {
-                        BackendTaskSuccessResult::Message(
-                            "Document deleted successfully".to_string(),
-                        )
-                    })
-                    .map_err(|e| format!("Broadcasting error: {}", e))
+                    .map_err(|e| match e {
+                        Error::DriveProofError(proof_error, proof_bytes, block_info) => {
+                            self.db
+                                .insert_proof_log_item(ProofLogItem {
+                                    request_type: RequestType::BroadcastStateTransition,
+                                    request_bytes: vec![],
+                                    verification_path_query_bytes: vec![],
+                                    height: block_info.height,
+                                    time_ms: block_info.time_ms,
+                                    proof_bytes,
+                                    error: Some(proof_error.to_string()),
+                                })
+                                .ok();
+                            format!(
+                                "Error deleting document: {}, proof error logged",
+                                proof_error
+                            )
+                        }
+                        e => format!("Error deleting document: {}", e),
+                    })?;
+
+                // Handle the result - DocumentDeleteResult contains the deleted document ID
+                match result {
+                    DocumentDeleteResult::Deleted(deleted_id) => {
+                        Ok(BackendTaskSuccessResult::Message(format!(
+                            "Document {} deleted successfully",
+                            deleted_id
+                        )))
+                    }
+                }
             }
             DocumentTask::ReplaceDocument(
                 document,
@@ -218,42 +262,56 @@ impl AppContext {
                 identity_key,
                 token_payment_info,
             ) => {
-                // ---------- 1. get & bump identity nonce ----------
-                let new_nonce = sdk
-                    .get_identity_contract_nonce(
-                        qualified_identity.identity.id(),
-                        data_contract.id(),
-                        true,
-                        None,
-                    )
-                    .await
-                    .map_err(|e| format!("Fetch nonce error: {e}"))?;
+                let data_contract_arc = Arc::new(data_contract.clone());
 
-                // ---------- 2. build ----------
-                let state_transition =
-                    BatchTransitionV0::new_document_replacement_transition_from_document(
-                        document,
-                        document_type.as_ref(),
-                        &identity_key,
-                        new_nonce,
-                        UserFeeIncrease::default(),
-                        token_payment_info,
-                        &qualified_identity,
-                        sdk.version(),
-                        None,
-                    )
-                    .map_err(|e| format!("Error creating batch transition: {}", e))?;
+                let mut builder = DocumentReplaceTransitionBuilder::new(
+                    data_contract_arc,
+                    document_type.name().to_string(),
+                    document,
+                );
 
-                // ---------- 3. broadcast ----------
-                state_transition
-                    .broadcast_and_wait::<StateTransitionProofResult>(sdk, None)
+                if let Some(token_payment) = token_payment_info {
+                    builder = builder.with_token_payment_info(token_payment);
+                }
+
+                let maybe_options = self.state_transition_options();
+                if let Some(options) = maybe_options {
+                    builder = builder.with_state_transition_creation_options(options);
+                }
+
+                let result = sdk
+                    .document_replace(builder, &identity_key, &qualified_identity)
                     .await
-                    .map(|_| {
-                        BackendTaskSuccessResult::Message(
-                            "Document replaced successfully".to_string(),
-                        )
-                    })
-                    .map_err(|e| format!("Broadcasting error: {}", e))
+                    .map_err(|e| match e {
+                        Error::DriveProofError(proof_error, proof_bytes, block_info) => {
+                            self.db
+                                .insert_proof_log_item(ProofLogItem {
+                                    request_type: RequestType::BroadcastStateTransition,
+                                    request_bytes: vec![],
+                                    verification_path_query_bytes: vec![],
+                                    height: block_info.height,
+                                    time_ms: block_info.time_ms,
+                                    proof_bytes,
+                                    error: Some(proof_error.to_string()),
+                                })
+                                .ok();
+                            format!(
+                                "Error replacing document: {}, proof error logged",
+                                proof_error
+                            )
+                        }
+                        e => format!("Error replacing document: {}", e),
+                    })?;
+
+                // Handle the result - DocumentReplaceResult contains the replaced document
+                match result {
+                    DocumentReplaceResult::Document(document) => {
+                        Ok(BackendTaskSuccessResult::Message(format!(
+                            "Document {} replaced successfully",
+                            document.id()
+                        )))
+                    }
+                }
             }
             DocumentTask::TransferDocument(
                 document_id,
@@ -264,9 +322,9 @@ impl AppContext {
                 identity_key,
                 token_payment_info,
             ) => {
-                // ---------- 1. fetch document ----------
+                // First fetch the document to transfer
                 let document_query = DocumentQuery {
-                    data_contract: data_contract.into(),
+                    data_contract: data_contract.clone().into(),
                     document_type_name: document_type.name().to_string(),
                     where_clauses: vec![],
                     order_by_clauses: vec![],
@@ -280,24 +338,58 @@ impl AppContext {
                     .ok_or_else(|| "Document not found".to_string())?;
                 document.bump_revision();
 
-                // ---------- 2. create transfer transition ----------
-                document
-                    .transfer_document_to_identity_and_wait_for_response(
-                        new_owner_id,
-                        sdk,
-                        document_type,
-                        identity_key,
-                        token_payment_info,
-                        &qualified_identity,
-                        None,
-                    )
+                let data_contract_arc = Arc::new(data_contract.clone());
+
+                let mut builder = DocumentTransferTransitionBuilder::new(
+                    data_contract_arc,
+                    document_type.name().to_string(),
+                    document,
+                    new_owner_id,
+                );
+
+                if let Some(token_payment) = token_payment_info {
+                    builder = builder.with_token_payment_info(token_payment);
+                }
+
+                let maybe_options = self.state_transition_options();
+                if let Some(options) = maybe_options {
+                    builder = builder.with_state_transition_creation_options(options);
+                }
+
+                let result = sdk
+                    .document_transfer(builder, &identity_key, &qualified_identity)
                     .await
-                    .map(|_| {
-                        BackendTaskSuccessResult::Message(
-                            "Document transferred successfully".to_string(),
-                        )
-                    })
-                    .map_err(|e| format!("Broadcasting error: {}", e))
+                    .map_err(|e| match e {
+                        Error::DriveProofError(proof_error, proof_bytes, block_info) => {
+                            self.db
+                                .insert_proof_log_item(ProofLogItem {
+                                    request_type: RequestType::BroadcastStateTransition,
+                                    request_bytes: vec![],
+                                    verification_path_query_bytes: vec![],
+                                    height: block_info.height,
+                                    time_ms: block_info.time_ms,
+                                    proof_bytes,
+                                    error: Some(proof_error.to_string()),
+                                })
+                                .ok();
+                            format!(
+                                "Error transferring document: {}, proof error logged",
+                                proof_error
+                            )
+                        }
+                        e => format!("Error transferring document: {}", e),
+                    })?;
+
+                // Handle the result - DocumentTransferResult contains the transferred document
+                match result {
+                    DocumentTransferResult::Document(document) => {
+                        Ok(BackendTaskSuccessResult::Message(format!(
+                            "Document {} transferred to {} successfully",
+                            document.id(),
+                            new_owner_id
+                        )))
+                    }
+                }
             }
             DocumentTask::PurchaseDocument(
                 price,
@@ -308,56 +400,9 @@ impl AppContext {
                 identity_key,
                 token_payment_info,
             ) => {
-                // ---------- 1. fetch document ----------
+                // First fetch the document to purchase
                 let document_query = DocumentQuery {
-                    data_contract: data_contract.into(),
-                    document_type_name: document_type.name().to_string(), // Not needed for purchase
-                    where_clauses: vec![],
-                    order_by_clauses: vec![],
-                    limit: 1,
-                    start: None,
-                };
-                let query_with_id = DocumentQuery::with_document_id(document_query, &document_id);
-                let mut document = Document::fetch(sdk, query_with_id)
-                    .await
-                    .map_err(|e| format!("Error fetching document: {}", e))?
-                    .ok_or_else(|| "Document not found".to_string())?;
-
-                // Bump the document revision
-                document.bump_revision();
-
-                // ---------- 2. purchase document and wait for response ----------
-                document
-                    .purchase_document_and_wait_for_response(
-                        price,
-                        sdk,
-                        document_type,
-                        qualified_identity.identity.id(),
-                        identity_key,
-                        token_payment_info,
-                        &qualified_identity,
-                        None,
-                    )
-                    .await
-                    .map(|_| {
-                        BackendTaskSuccessResult::Message(
-                            "Document purchased successfully".to_string(),
-                        )
-                    })
-                    .map_err(|e| format!("Broadcasting error: {}", e))
-            }
-            DocumentTask::SetDocumentPrice(
-                price,
-                document_id,
-                document_type,
-                data_contract,
-                qualified_identity,
-                identity_key,
-                token_payment_info,
-            ) => {
-                // ---------- 1. fetch document ----------
-                let document_query = DocumentQuery {
-                    data_contract: data_contract.into(),
+                    data_contract: data_contract.clone().into(),
                     document_type_name: document_type.name().to_string(),
                     where_clauses: vec![],
                     order_by_clauses: vec![],
@@ -369,28 +414,139 @@ impl AppContext {
                     .await
                     .map_err(|e| format!("Error fetching document: {}", e))?
                     .ok_or_else(|| "Document not found".to_string())?;
-
-                // Bump the document revision
                 document.bump_revision();
 
-                // ---------- 2. create set price transition ----------
-                document
-                    .update_price_of_document_and_wait_for_response(
-                        price,
-                        sdk,
-                        document_type,
-                        identity_key,
-                        token_payment_info,
-                        &qualified_identity,
-                        None,
-                    )
+                let data_contract_arc = Arc::new(data_contract.clone());
+
+                let mut builder = DocumentPurchaseTransitionBuilder::new(
+                    data_contract_arc,
+                    document_type.name().to_string(),
+                    document,
+                    qualified_identity.identity.id(),
+                    price,
+                );
+
+                if let Some(token_payment) = token_payment_info {
+                    builder = builder.with_token_payment_info(token_payment);
+                }
+
+                let maybe_options = self.state_transition_options();
+                if let Some(options) = maybe_options {
+                    builder = builder.with_state_transition_creation_options(options);
+                }
+
+                let result = sdk
+                    .document_purchase(builder, &identity_key, &qualified_identity)
                     .await
-                    .map(|_| {
-                        BackendTaskSuccessResult::Message(
-                            "Document price set successfully".to_string(),
-                        )
-                    })
-                    .map_err(|e| format!("Broadcasting error: {}", e))
+                    .map_err(|e| match e {
+                        Error::DriveProofError(proof_error, proof_bytes, block_info) => {
+                            self.db
+                                .insert_proof_log_item(ProofLogItem {
+                                    request_type: RequestType::BroadcastStateTransition,
+                                    request_bytes: vec![],
+                                    verification_path_query_bytes: vec![],
+                                    height: block_info.height,
+                                    time_ms: block_info.time_ms,
+                                    proof_bytes,
+                                    error: Some(proof_error.to_string()),
+                                })
+                                .ok();
+                            format!(
+                                "Error purchasing document: {}, proof error logged",
+                                proof_error
+                            )
+                        }
+                        e => format!("Error purchasing document: {}", e),
+                    })?;
+
+                // Handle the result - DocumentPurchaseResult contains the purchased document
+                match result {
+                    DocumentPurchaseResult::Document(document) => {
+                        Ok(BackendTaskSuccessResult::Message(format!(
+                            "Document {} purchased for {} credits",
+                            document.id(),
+                            price
+                        )))
+                    }
+                }
+            }
+            DocumentTask::SetDocumentPrice(
+                price,
+                document_id,
+                document_type,
+                data_contract,
+                qualified_identity,
+                identity_key,
+                token_payment_info,
+            ) => {
+                // First fetch the document to set price on
+                let document_query = DocumentQuery {
+                    data_contract: data_contract.clone().into(),
+                    document_type_name: document_type.name().to_string(),
+                    where_clauses: vec![],
+                    order_by_clauses: vec![],
+                    limit: 1,
+                    start: None,
+                };
+                let query_with_id = DocumentQuery::with_document_id(document_query, &document_id);
+                let mut document = Document::fetch(sdk, query_with_id)
+                    .await
+                    .map_err(|e| format!("Error fetching document: {}", e))?
+                    .ok_or_else(|| "Document not found".to_string())?;
+                document.bump_revision();
+
+                let data_contract_arc = Arc::new(data_contract.clone());
+
+                let mut builder = DocumentSetPriceTransitionBuilder::new(
+                    data_contract_arc,
+                    document_type.name().to_string(),
+                    document,
+                    price,
+                );
+
+                if let Some(token_payment) = token_payment_info {
+                    builder = builder.with_token_payment_info(token_payment);
+                }
+
+                let maybe_options = self.state_transition_options();
+                if let Some(options) = maybe_options {
+                    builder = builder.with_state_transition_creation_options(options);
+                }
+
+                let result = sdk
+                    .document_set_price(builder, &identity_key, &qualified_identity)
+                    .await
+                    .map_err(|e| match e {
+                        Error::DriveProofError(proof_error, proof_bytes, block_info) => {
+                            self.db
+                                .insert_proof_log_item(ProofLogItem {
+                                    request_type: RequestType::BroadcastStateTransition,
+                                    request_bytes: vec![],
+                                    verification_path_query_bytes: vec![],
+                                    height: block_info.height,
+                                    time_ms: block_info.time_ms,
+                                    proof_bytes,
+                                    error: Some(proof_error.to_string()),
+                                })
+                                .ok();
+                            format!(
+                                "Error setting document price: {}, proof error logged",
+                                proof_error
+                            )
+                        }
+                        e => format!("Error setting document price: {}", e),
+                    })?;
+
+                // Handle the result - DocumentSetPriceResult contains the document with updated price
+                match result {
+                    DocumentSetPriceResult::Document(document) => {
+                        Ok(BackendTaskSuccessResult::Message(format!(
+                            "Document {} price set to {} credits",
+                            document.id(),
+                            price
+                        )))
+                    }
+                }
             }
         }
     }

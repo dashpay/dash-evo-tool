@@ -2,6 +2,7 @@ use crate::app::AppAction;
 use crate::context::AppContext;
 use crate::model::qualified_contract::QualifiedContract;
 use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tools_subscreen_chooser_panel::add_tools_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::helpers::add_contract_doc_type_chooser_with_filtering;
@@ -9,7 +10,7 @@ use crate::ui::BackendTaskSuccessResult;
 
 use dash_sdk::dpp::document::serialization_traits::DocumentPlatformConversionMethodsV0;
 use dash_sdk::dpp::{data_contract::document_type::DocumentType, document::Document};
-use eframe::egui::{self, Color32, Context, ScrollArea, TextEdit, Ui};
+use eframe::egui::{self, Color32, Context, TextEdit, Ui};
 use std::sync::Arc;
 // ======================= 1.  Data & helpers =======================
 
@@ -122,7 +123,7 @@ impl DocumentVisualizerScreen {
         ui.add_space(6.0);
         ui.label("Result:");
 
-        ScrollArea::vertical().show(ui, |ui| match &self.parse_status {
+        egui::ScrollArea::both().show(ui, |ui| match &self.parse_status {
             DocumentParseStatus::Complete => {
                 ui.monospace(self.parsed_json.as_ref().unwrap());
             }
@@ -163,7 +164,7 @@ impl crate::ui::ScreenLike for DocumentVisualizerScreen {
         action |= add_tools_subscreen_chooser_panel(ctx, self.app_context.as_ref());
 
         /* ---------- central panel ---------- */
-        egui::CentralPanel::default().show(ctx, |ui| {
+        action |= island_central_panel(ctx, |ui| {
             /* ---------- simple dual-combo chooser ---------- */
             //todo cache the contracts
             add_contract_doc_type_chooser_with_filtering(
@@ -178,6 +179,7 @@ impl crate::ui::ScreenLike for DocumentVisualizerScreen {
 
             self.show_input(ui);
             self.show_output(ui);
+            AppAction::None
         });
 
         action

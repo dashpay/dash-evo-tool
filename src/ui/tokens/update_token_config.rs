@@ -6,6 +6,7 @@ use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
@@ -1039,7 +1040,7 @@ impl ScreenLike for UpdateTokenConfigScreen {
         action |= add_tokens_subscreen_chooser_panel(ctx, &self.app_context);
 
         // Central panel
-        egui::CentralPanel::default().show(ctx, |ui| {
+        island_central_panel(ctx, |ui| {
             if let Some(msg) = &self.backend_message {
                 if msg.1 == MessageType::Success {
                     action |= self.show_success_screen(ui);

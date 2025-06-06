@@ -12,11 +12,13 @@ use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::Identifier;
 use eframe::epaint::Color32;
-use egui::{ComboBox, Context, Frame, Label, RichText, Sense, TextEdit, Ui};
+use egui::{ComboBox, Context, Label, RichText, Sense, TextEdit, Ui};
 use crate::app::{AppAction, BackendTasksExecutionMode};
 use crate::backend_task::BackendTask;
 use crate::backend_task::tokens::TokenTask;
+use crate::ui::components::styled::{StyledCheckbox};
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
+use crate::ui::theme::DashColors;
 use crate::ui::tokens::tokens_screen::{TokenBuildArgs, TokenCreatorStatus, TokenNameLanguage, TokensScreen};
 
 impl TokensScreen {
@@ -44,16 +46,16 @@ impl TokensScreen {
             max_scroll_height -= backend_message_height;
         }
 
+        ui.heading("Token Creator");
+        ui.label(
+            "Create custom tokens on Dash Platform with advanced features and distribution rules",
+        );
+        ui.add_space(20.0);
+
         egui::ScrollArea::vertical()
             .max_height(max_scroll_height)
             .show(ui, |ui| {
-                Frame::group(ui.style())
-                    .fill(ui.visuals().panel_fill)
-                    .stroke(egui::Stroke::new(
-                        1.0,
-                        ui.visuals().widgets.inactive.bg_stroke.color,
-                    ))
-                    .show(ui, |ui| {
+                ui.group(|ui| {
                         // Identity selection
                         ui.add_space(10.0);
                         let all_identities = match self.app_context.load_local_user_identities() {
@@ -300,7 +302,7 @@ impl TokensScreen {
                                     }
 
                                     ui.horizontal(|ui| {
-                                        if ui.button("+").clicked() {
+                                        if ui.button("➕ Add Language").clicked() {
                                             let used_languages: HashSet<_> = self.token_names_input.iter().map(|(_, _, lang, _)| *lang).collect();
                                             let next_non_used_language = enum_iterator::all::<TokenNameLanguage>()
                                                 .find(|lang| !used_languages.contains(lang))
@@ -308,11 +310,11 @@ impl TokensScreen {
                                             // Add a new token name input
                                             self.token_names_input.push((String::new(), String::new(), next_non_used_language, false));
                                         }
-                                        if i != 0 && ui.button("-").clicked() {
+                                        if i != 0 && ui.button("➖").clicked() {
                                             token_to_remove = Some(i.try_into().expect("Failed to convert index"));
                                         }
 
-                                        ui.checkbox(&mut self.token_names_input[i].3, "Add singular name to keywords");
+                                        StyledCheckbox::new(&mut self.token_names_input[i].3, "Add singular name to keywords").show(ui);
 
                                         let info_icon = Label::new("ℹ").sense(Sense::click());
                                         let response = ui.add(info_icon)
@@ -395,7 +397,7 @@ impl TokensScreen {
 
                                     // Start as paused
                                     ui.horizontal(|ui| {
-                                        ui.checkbox(&mut self.start_as_paused_input, "Start as paused");
+                                        StyledCheckbox::new(&mut self.start_as_paused_input, "Start as paused").show(ui);
 
                                         // Information icon with tooltip
                                         if ui
@@ -419,7 +421,7 @@ impl TokensScreen {
 
                                     // Name should be capitalized
                                     ui.horizontal(|ui| {
-                                        ui.checkbox(&mut self.should_capitalize_input, "Name should be capitalized");
+                                        StyledCheckbox::new(&mut self.should_capitalize_input, "Name should be capitalized").show(ui);
 
                                         // Information icon with tooltip
                                         if ui
@@ -620,12 +622,7 @@ impl TokensScreen {
                         new_style.spacing.button_padding = egui::vec2(10.0, 5.0);
                         ui.set_style(new_style);
                         ui.horizontal(|ui| {
-                            let register_button =
-                                egui::Button::new(RichText::new("Register Token Contract").color(Color32::WHITE))
-                                    .fill(Color32::from_rgb(0, 128, 255))
-                                    .frame(true)
-                                    .corner_radius(3.0);
-                            if ui.add(register_button).clicked() {
+                            if ui.button("Register Token Contract").clicked() {
                                 match self.parse_token_build_args() {
                                     Ok(args) => {
                                         // If success, show the "confirmation popup"
@@ -639,11 +636,8 @@ impl TokensScreen {
                                     }
                                 }
                             }
-                            let view_json_button = egui::Button::new(RichText::new("View JSON").color(Color32::WHITE))
-                                .fill(Color32::from_rgb(0, 128, 255))
-                                .frame(true)
-                                .corner_radius(3.0);
-                            if ui.add(view_json_button).clicked() {
+
+                            if ui.button("View JSON").clicked() {
                                 match self.parse_token_build_args() {
                                     Ok(args) => {
                                         // We have the parsed token creation arguments

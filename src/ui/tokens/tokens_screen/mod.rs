@@ -43,7 +43,7 @@ use dash_sdk::dpp::prelude::TimestampMillisInterval;
 use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::Start;
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
 use dash_sdk::query_types::IndexMap;
-use eframe::egui::{self, CentralPanel, Color32, Context, Ui};
+use eframe::egui::{self, Color32, Context, Ui};
 use egui::{Checkbox, ColorImage, ComboBox, Response, RichText, TextEdit, TextureHandle};
 use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
 use enum_iterator::Sequence;
@@ -57,6 +57,7 @@ use crate::context::AppContext;
 use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
 use crate::model::wallet::Wallet;
 use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
@@ -2469,7 +2470,9 @@ impl ScreenLike for TokensScreen {
         action |= add_tokens_subscreen_chooser_panel(ctx, self.app_context.as_ref());
 
         // Main panel
-        CentralPanel::default().show(ctx, |ui| {
+        action |= island_central_panel(ctx, |ui| {
+            let mut inner_action = AppAction::None;
+
             if self.app_context.network == Network::Dash {
                 ui.add_space(50.0);
                 ui.vertical_centered(|ui| {
@@ -2478,27 +2481,27 @@ impl ScreenLike for TokensScreen {
                             .strong(),
                     );
                 });
-                return;
+                return inner_action;
             }
 
             match self.tokens_subscreen {
                 TokensSubscreen::MyTokens => {
-                    action |= self.render_my_tokens_subscreen(ui);
+                    inner_action |= self.render_my_tokens_subscreen(ui);
                 }
                 TokensSubscreen::SearchTokens => {
                     if self.selected_contract_id.is_some() {
-                        action |=
+                        inner_action |=
                             self.render_contract_details(ui, &self.selected_contract_id.unwrap());
                         // Render the JSON popup if needed
                         if self.show_json_popup {
                             self.render_data_contract_json_popup(ui);
                         }
                     } else {
-                        action |= self.render_keyword_search(ui);
+                        inner_action |= self.render_keyword_search(ui);
                     }
                 }
                 TokensSubscreen::TokenCreator => {
-                    action |= self.render_token_creator(ctx, ui);
+                    inner_action |= self.render_token_creator(ctx, ui);
                 }
             }
 
@@ -2562,6 +2565,8 @@ impl ScreenLike for TokensScreen {
                         }
                     });
             }
+
+            inner_action
         });
 
         // Post-processing on user actions

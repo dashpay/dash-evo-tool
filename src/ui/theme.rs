@@ -1,0 +1,454 @@
+use egui::{Color32, FontData, FontDefinitions, FontFamily, FontId, Stroke, Vec2};
+
+/// Dash brand colors according to official guidelines
+pub struct DashColors;
+
+impl DashColors {
+    /// Primary Dash Blue (#008de4)
+    pub const DASH_BLUE: Color32 = Color32::from_rgb(0, 141, 228);
+
+    /// Deep Blue (#012060)
+    pub const DEEP_BLUE: Color32 = Color32::from_rgb(1, 32, 96);
+
+    /// Midnight Blue (#0b0f3b)
+    pub const MIDNIGHT_BLUE: Color32 = Color32::from_rgb(11, 15, 59);
+
+    /// Black (#111921)
+    pub const BLACK: Color32 = Color32::from_rgb(17, 25, 33);
+
+    /// Light Gray - Replaced dark gray with lighter shade
+    pub const GRAY: Color32 = Color32::from_rgb(160, 170, 180);
+
+    /// White (#ffffff)
+    pub const WHITE: Color32 = Color32::from_rgb(255, 255, 255);
+
+    /// Black Pearl (#001624)
+    pub const BLACK_PEARL: Color32 = Color32::from_rgb(0, 22, 36);
+
+    // Semantic colors
+    pub const SUCCESS: Color32 = Color32::from_rgb(39, 174, 96);
+    pub const WARNING: Color32 = Color32::from_rgb(241, 196, 15);
+    pub const ERROR: Color32 = Color32::from_rgb(235, 87, 87);
+    pub const INFO: Color32 = Color32::from_rgb(52, 152, 219);
+
+    // UI Colors - Modern gradient-ready colors
+    pub const BACKGROUND: Color32 = Color32::from_rgb(240, 242, 247);
+    pub const BACKGROUND_DARK: Color32 = Color32::from_rgb(230, 235, 245);
+    pub const SURFACE: Color32 = Color32::WHITE;
+    pub const INPUT_BACKGROUND: Color32 = Color32::from_rgb(248, 250, 252);
+    pub const BORDER: Color32 = Color32::from_rgb(226, 232, 240);
+    pub const BORDER_LIGHT: Color32 = Color32::from_rgb(240, 245, 251);
+    pub const TEXT_PRIMARY: Color32 = Self::BLACK;
+    pub const TEXT_SECONDARY: Color32 = Color32::from_rgb(100, 120, 140);
+    pub const TEXT_ON_PRIMARY: Color32 = Self::WHITE;
+
+    // Gradient colors for modern effects
+    pub const GRADIENT_START: Color32 = Color32::from_rgb(0, 141, 228); // Dash Blue
+    pub const GRADIENT_END: Color32 = Color32::from_rgb(1, 32, 96); // Deep Blue
+    pub const GRADIENT_ACCENT: Color32 = Color32::from_rgb(52, 152, 219); // Info blue
+    pub const GRADIENT_PURPLE: Color32 = Color32::from_rgb(142, 68, 173); // Purple accent
+    pub const GRADIENT_PINK: Color32 = Color32::from_rgb(231, 76, 60); // Pink accent
+    pub const GRADIENT_TEAL: Color32 = Color32::from_rgb(26, 188, 156); // Teal accent
+
+    // Interactive states - using from_rgb since from_rgba_unmultiplied is not const
+    pub const HOVER: Color32 = Color32::from_rgb(200, 220, 250);
+    pub const PRESSED: Color32 = Color32::from_rgb(180, 200, 240);
+    pub const SELECTED: Color32 = Color32::from_rgb(190, 210, 245);
+    pub const DISABLED: Color32 = Color32::from_rgb(189, 195, 199);
+
+    // Glass morphism colors (non-const functions)
+    pub fn surface_elevated() -> Color32 {
+        Color32::from_rgba_unmultiplied(255, 255, 255, 250)
+    }
+
+    pub fn glass_white() -> Color32 {
+        Color32::from_rgba_unmultiplied(255, 255, 255, 180)
+    }
+
+    pub fn glass_blue() -> Color32 {
+        Color32::from_rgba_unmultiplied(0, 141, 228, 40)
+    }
+
+    pub fn glass_border() -> Color32 {
+        Color32::from_rgba_unmultiplied(255, 255, 255, 60)
+    }
+
+    // Animated gradient colors
+    pub fn gradient_animated(time: f32) -> Color32 {
+        let t = (time.sin() + 1.0) / 2.0;
+        let r = (0.0 * (1.0 - t) + 142.0 * t) as u8;
+        let g = (141.0 * (1.0 - t) + 68.0 * t) as u8;
+        let b = (228.0 * (1.0 - t) + 173.0 * t) as u8;
+        Color32::from_rgb(r, g, b)
+    }
+
+    pub fn pastel_gradient(index: usize) -> Color32 {
+        match index % 6 {
+            0 => Color32::from_rgb(255, 182, 193), // Light Pink
+            1 => Color32::from_rgb(255, 218, 185), // Peach
+            2 => Color32::from_rgb(255, 255, 224), // Light Yellow
+            3 => Color32::from_rgb(193, 255, 193), // Light Green
+            4 => Color32::from_rgb(224, 255, 255), // Light Cyan
+            5 => Color32::from_rgb(230, 230, 250), // Lavender
+            _ => Color32::from_rgb(255, 192, 203), // Pink
+        }
+    }
+}
+
+/// Typography scale and font configuration
+pub struct Typography;
+
+impl Typography {
+    pub const SCALE_XS: f32 = 12.0;
+    pub const SCALE_SM: f32 = 14.0;
+    pub const SCALE_BASE: f32 = 16.0;
+    pub const SCALE_LG: f32 = 18.0;
+    pub const SCALE_XL: f32 = 20.0;
+    pub const SCALE_XXL: f32 = 24.0;
+    pub const SCALE_XXXL: f32 = 30.0;
+    pub const SCALE_DISPLAY: f32 = 36.0;
+
+    pub fn heading_xlarge() -> FontId {
+        FontId::new(Self::SCALE_DISPLAY, FontFamily::Proportional)
+    }
+
+    pub fn heading_large() -> FontId {
+        FontId::new(Self::SCALE_XXXL, FontFamily::Proportional)
+    }
+
+    pub fn heading_medium() -> FontId {
+        FontId::new(Self::SCALE_XXL, FontFamily::Proportional)
+    }
+
+    pub fn heading_small() -> FontId {
+        FontId::new(Self::SCALE_XL, FontFamily::Proportional)
+    }
+
+    pub fn body_large() -> FontId {
+        FontId::new(Self::SCALE_LG, FontFamily::Proportional)
+    }
+
+    pub fn body() -> FontId {
+        FontId::new(Self::SCALE_BASE, FontFamily::Proportional)
+    }
+
+    pub fn body_small() -> FontId {
+        FontId::new(Self::SCALE_SM, FontFamily::Proportional)
+    }
+
+    pub fn caption() -> FontId {
+        FontId::new(Self::SCALE_XS, FontFamily::Proportional)
+    }
+
+    pub fn monospace() -> FontId {
+        FontId::new(Self::SCALE_BASE, FontFamily::Monospace)
+    }
+
+    pub fn button() -> FontId {
+        FontId::new(Self::SCALE_BASE, FontFamily::Proportional)
+    }
+}
+
+/// Spacing constants for consistent layout
+pub struct Spacing;
+
+impl Spacing {
+    pub const XXS: f32 = 2.0;
+    pub const XS: f32 = 4.0;
+    pub const SM: f32 = 8.0;
+    pub const MD: f32 = 16.0;
+    pub const LG: f32 = 24.0;
+    pub const XL: f32 = 32.0;
+    pub const XXL: f32 = 48.0;
+    pub const XXXL: f32 = 64.0;
+
+    // For egui Margin which expects i8
+    pub const MD_I8: i8 = 16;
+    pub const SM_I8: i8 = 8;
+
+    pub const BUTTON_PADDING: Vec2 = Vec2::new(24.0, 12.0);
+    pub const BUTTON_PADDING_SMALL: Vec2 = Vec2::new(16.0, 8.0);
+    pub const BUTTON_PADDING_LARGE: Vec2 = Vec2::new(32.0, 16.0);
+
+    pub const CARD_PADDING: f32 = 20.0;
+    pub const SECTION_SPACING: f32 = 32.0;
+    pub const FORM_SPACING: Vec2 = Vec2::new(16.0, 8.0);
+}
+
+/// Border radius and shape constants
+pub struct Shape;
+
+impl Shape {
+    pub const RADIUS_NONE: u8 = 0;
+    pub const RADIUS_SM: u8 = 6;
+    pub const RADIUS_MD: u8 = 12;
+    pub const RADIUS_LG: u8 = 16;
+    pub const RADIUS_XL: u8 = 20;
+    pub const RADIUS_FULL: u8 = 255;
+
+    pub const BORDER_WIDTH: f32 = 1.0;
+    pub const BORDER_WIDTH_THICK: f32 = 2.0;
+}
+
+/// Modern shadow definitions for depth and visual appeal
+pub struct Shadow;
+
+impl Shadow {
+    pub fn small() -> egui::Shadow {
+        egui::Shadow {
+            offset: [0, 2],
+            blur: 4,
+            spread: 0,
+            color: Color32::from_rgba_unmultiplied(0, 0, 0, 8),
+        }
+    }
+
+    pub fn medium() -> egui::Shadow {
+        egui::Shadow {
+            offset: [0, 4],
+            blur: 12,
+            spread: 0,
+            color: Color32::from_rgba_unmultiplied(0, 0, 0, 12),
+        }
+    }
+
+    pub fn large() -> egui::Shadow {
+        egui::Shadow {
+            offset: [0, 8],
+            blur: 24,
+            spread: 0,
+            color: Color32::from_rgba_unmultiplied(0, 0, 0, 15),
+        }
+    }
+
+    /// Modern elevated shadow for cards and panels
+    pub fn elevated() -> egui::Shadow {
+        egui::Shadow {
+            offset: [0, 12],
+            blur: 32,
+            spread: 0,
+            color: Color32::from_rgba_unmultiplied(0, 0, 0, 18),
+        }
+    }
+
+    /// Subtle inner shadow for glass morphism
+    pub fn inner() -> egui::Shadow {
+        egui::Shadow {
+            offset: [0, 1],
+            blur: 2,
+            spread: 0,
+            color: Color32::from_rgba_unmultiplied(255, 255, 255, 25),
+        }
+    }
+
+    /// Glow effect for primary elements
+    pub fn glow() -> egui::Shadow {
+        egui::Shadow {
+            offset: [0, 0],
+            blur: 20,
+            spread: 0,
+            color: Color32::from_rgba_unmultiplied(0, 141, 228, 30),
+        }
+    }
+}
+
+/// Component style definitions
+pub struct ComponentStyles;
+
+impl ComponentStyles {
+    pub fn primary_button_fill() -> Color32 {
+        DashColors::DASH_BLUE
+    }
+
+    pub fn primary_button_text() -> Color32 {
+        DashColors::WHITE
+    }
+
+    pub fn secondary_button_fill() -> Color32 {
+        DashColors::WHITE
+    }
+
+    pub fn secondary_button_text() -> Color32 {
+        DashColors::DASH_BLUE
+    }
+
+    pub fn secondary_button_stroke() -> Stroke {
+        Stroke::new(1.0, DashColors::DASH_BLUE)
+    }
+
+    pub fn danger_button_fill() -> Color32 {
+        DashColors::ERROR
+    }
+
+    pub fn danger_button_text() -> Color32 {
+        DashColors::WHITE
+    }
+
+    pub fn input_stroke() -> Stroke {
+        Stroke::new(1.0, DashColors::BORDER)
+    }
+
+    pub fn input_stroke_focused() -> Stroke {
+        Stroke::new(2.0, DashColors::DASH_BLUE)
+    }
+
+    pub fn input_stroke_error() -> Stroke {
+        Stroke::new(2.0, DashColors::ERROR)
+    }
+}
+
+/// Configure fonts for the application
+pub fn configure_fonts() -> FontDefinitions {
+    let mut fonts = FontDefinitions::default();
+
+    // Load Noto Sans font for better international support
+    fonts.font_data.insert(
+        "NotoSans".to_owned(),
+        FontData::from_static(include_bytes!(
+            "../../assets/Fonts/Noto_Sans/NotoSans-VariableFont.ttf"
+        ))
+        .into(),
+    );
+
+    // Add NotoSans to the proportional font family (used for UI text)
+    fonts
+        .families
+        .get_mut(&FontFamily::Proportional)
+        .unwrap()
+        .insert(0, "NotoSans".to_owned());
+
+    fonts
+}
+
+/// Apply the modern Dash theme to the egui context
+pub fn apply_theme(ctx: &egui::Context) {
+    // Start with light mode as base, then override with our custom colors
+    let mut visuals = egui::Visuals::light();
+
+    // Override ALL background-related properties with our custom colors
+    visuals.window_fill = DashColors::BACKGROUND;
+    visuals.panel_fill = DashColors::BACKGROUND;
+    visuals.extreme_bg_color = DashColors::INPUT_BACKGROUND; // Use INPUT_BACKGROUND for TextEdit widgets
+    visuals.faint_bg_color = DashColors::BACKGROUND;
+    visuals.code_bg_color = Color32::from_rgb(245, 245, 245);
+
+    // Force all background to be light
+    visuals.dark_mode = false;
+
+    // Apply the custom visuals first
+    ctx.set_visuals(visuals);
+
+    let mut style = (*ctx.style()).clone();
+
+    // Configure modern visuals with gradients and glass effects
+    // Override all background colors again to ensure they stick
+    style.visuals.window_fill = DashColors::BACKGROUND;
+    style.visuals.panel_fill = DashColors::BACKGROUND; // Light background for panels
+    style.visuals.extreme_bg_color = DashColors::INPUT_BACKGROUND; // Keep INPUT_BACKGROUND for TextEdit widgets
+    style.visuals.faint_bg_color = DashColors::BACKGROUND;
+    style.visuals.dark_mode = false;
+    style.visuals.window_stroke = Stroke::new(1.0, DashColors::BORDER);
+    // Note: window_rounding is not available in this egui version
+    style.visuals.window_shadow = Shadow::elevated();
+
+    // Modern widget styling with solid backgrounds for buttons
+    style.visuals.widgets.inactive.bg_fill = DashColors::BACKGROUND;
+    style.visuals.widgets.inactive.bg_stroke = Stroke::new(1.0, DashColors::BORDER);
+    style.visuals.widgets.inactive.fg_stroke.color = DashColors::TEXT_PRIMARY;
+    style.visuals.widgets.inactive.weak_bg_fill = DashColors::BACKGROUND;
+    style.visuals.widgets.inactive.expansion = 0.0;
+
+    // Hover state with highlighted background
+    style.visuals.widgets.hovered.bg_fill = DashColors::HOVER;
+    style.visuals.widgets.hovered.bg_stroke = Stroke::new(1.0, DashColors::DASH_BLUE);
+    style.visuals.widgets.hovered.fg_stroke.color = DashColors::DASH_BLUE;
+    style.visuals.widgets.hovered.weak_bg_fill = DashColors::HOVER;
+    style.visuals.widgets.hovered.expansion = 2.0;
+
+    // Active state with enhanced feedback
+    style.visuals.widgets.active.bg_fill = DashColors::GRADIENT_START;
+    style.visuals.widgets.active.bg_stroke = Stroke::new(2.0, DashColors::GRADIENT_END);
+    style.visuals.widgets.active.fg_stroke.color = DashColors::WHITE;
+    style.visuals.widgets.active.weak_bg_fill = DashColors::GRADIENT_START;
+    style.visuals.widgets.active.expansion = 1.0;
+
+    // Text input fields - ensure light background with dark text (noninteractive state is used for text inputs)
+    // Note: TextEdit uses extreme_bg_color by default, but we also set noninteractive for consistency
+    style.visuals.widgets.noninteractive.bg_fill = DashColors::INPUT_BACKGROUND;
+    style.visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0, DashColors::BORDER);
+    style.visuals.widgets.noninteractive.weak_bg_fill = DashColors::INPUT_BACKGROUND;
+    style.visuals.widgets.noninteractive.fg_stroke.color = DashColors::TEXT_PRIMARY;
+
+    // Open state is also used for focused text inputs
+    style.visuals.widgets.open.bg_fill = DashColors::INPUT_BACKGROUND;
+    style.visuals.widgets.open.weak_bg_fill = DashColors::INPUT_BACKGROUND;
+    style.visuals.widgets.open.bg_stroke = Stroke::new(2.0, DashColors::DASH_BLUE);
+    style.visuals.widgets.open.fg_stroke.color = DashColors::TEXT_PRIMARY;
+
+    // Specific text input colors
+    style.visuals.text_cursor.stroke = Stroke::new(1.0, DashColors::TEXT_PRIMARY);
+
+    // Text colors - ensure dark text on all elements
+    style.visuals.override_text_color = Some(DashColors::TEXT_PRIMARY);
+
+    // Text selection
+    style.visuals.selection.bg_fill = DashColors::SELECTED;
+    style.visuals.selection.stroke = Stroke::new(1.0, DashColors::DASH_BLUE);
+
+    // Hyperlinks
+    style.visuals.hyperlink_color = DashColors::DASH_BLUE;
+
+    // Code styling - use light background for better contrast
+    style.visuals.code_bg_color = Color32::from_rgb(245, 245, 245);
+
+    // Note: extreme_bg_color is already set to INPUT_BACKGROUND above for TextEdit widgets
+
+    // Enhance dropdowns and menus
+    style.visuals.popup_shadow = Shadow::medium();
+
+    // Apply improved spacing
+    style.spacing.item_spacing = Vec2::new(Spacing::SM, Spacing::SM);
+    style.spacing.button_padding = Vec2::new(16.0, 8.0);
+    style.spacing.menu_margin = egui::Margin::same(4);
+    style.spacing.indent = Spacing::MD;
+    style.spacing.icon_width = 14.0; // Reduced from 18.0
+    style.spacing.icon_width_inner = 12.0; // Reduced from 16.0
+    style.spacing.icon_spacing = 4.0; // Reduced from 6.0
+
+    // Final override of all background colors to ensure they are definitely set
+    style.visuals.window_fill = DashColors::BACKGROUND;
+    style.visuals.panel_fill = DashColors::BACKGROUND;
+    // Don't override extreme_bg_color here - it should remain as INPUT_BACKGROUND for TextEdit widgets
+    style.visuals.faint_bg_color = DashColors::BACKGROUND;
+
+    ctx.set_style(style);
+    ctx.set_fonts(configure_fonts());
+}
+
+/// Message type styling
+pub enum MessageType {
+    Success,
+    Error,
+    Warning,
+    Info,
+}
+
+impl MessageType {
+    pub fn color(&self) -> Color32 {
+        match self {
+            MessageType::Success => DashColors::SUCCESS,
+            MessageType::Error => DashColors::ERROR,
+            MessageType::Warning => DashColors::WARNING,
+            MessageType::Info => DashColors::INFO,
+        }
+    }
+
+    pub fn background_color(&self) -> Color32 {
+        match self {
+            MessageType::Success => Color32::from_rgba_unmultiplied(39, 174, 96, 20),
+            MessageType::Error => Color32::from_rgba_unmultiplied(235, 87, 87, 20),
+            MessageType::Warning => Color32::from_rgba_unmultiplied(241, 196, 15, 20),
+            MessageType::Info => Color32::from_rgba_unmultiplied(52, 152, 219, 20),
+        }
+    }
+}

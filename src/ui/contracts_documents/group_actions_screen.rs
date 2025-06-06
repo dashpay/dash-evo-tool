@@ -15,6 +15,7 @@ use crate::context::AppContext;
 use crate::model::qualified_contract::QualifiedContract;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::helpers::add_contract_chooser_pre_filtered;
 use crate::ui::helpers::render_identity_selector;
@@ -167,7 +168,7 @@ impl GroupActionsScreen {
         let text_style = TextStyle::Body;
         let row_height = ui.text_style_height(&text_style) + 8.0;
 
-        ScrollArea::vertical()
+        ScrollArea::both()
             .auto_shrink([false; 2])
             .show(ui, |ui| {
                 TableBuilder::new(ui)
@@ -582,7 +583,7 @@ impl ScreenLike for GroupActionsScreen {
             RootScreenType::RootScreenDocumentQuery,
         );
 
-        egui::CentralPanel::default().show(ctx, |ui| {
+        let central_panel_action = island_central_panel(ctx, |ui| {
             ui.heading("Active Group Actions");
 
             ui.add_space(10.0);
@@ -701,10 +702,12 @@ impl ScreenLike for GroupActionsScreen {
                 ui.add_space(10.0);
                 ui.separator();
                 ui.add_space(10.0);
-                action |= self.render_group_actions(ui, &group_actions);
+                return self.render_group_actions(ui, &group_actions);
             }
+            AppAction::None
         });
 
+        action |= central_panel_action;
         action
     }
 }

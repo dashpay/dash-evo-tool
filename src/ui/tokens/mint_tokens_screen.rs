@@ -5,6 +5,7 @@ use crate::backend_task::BackendTask;
 use crate::context::AppContext;
 use crate::model::wallet::Wallet;
 use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
@@ -444,11 +445,10 @@ impl ScreenLike for MintTokensScreen {
         // Subscreen chooser
         action |= add_tokens_subscreen_chooser_panel(ctx, &self.app_context);
 
-        egui::CentralPanel::default().show(ctx, |ui| {
+        let central_panel_action = island_central_panel(ctx, |ui| {
             // If we are in the "Complete" status, just show success screen
             if self.status == MintTokensStatus::Complete {
-                action |= self.show_success_screen(ui);
-                return;
+                return self.show_success_screen(ui);
             }
 
             ui.heading("Mint Tokens");
@@ -463,7 +463,11 @@ impl ScreenLike for MintTokensScreen {
                     .public_keys()
                     .is_empty()
             } else {
-                !self.identity_token_info.identity.available_authentication_keys_with_critical_security_level().is_empty()
+                !self
+                    .identity_token_info
+                    .identity
+                    .available_authentication_keys_with_critical_security_level()
+                    .is_empty()
             };
 
             if !has_keys {
@@ -477,14 +481,16 @@ impl ScreenLike for MintTokensScreen {
                 ui.add_space(10.0);
 
                 // Show "Add key" or "Check keys" option
-                let first_key = self.identity_token_info.identity.identity.get_first_public_key_matching(
-                    Purpose::AUTHENTICATION,
-                    HashSet::from([
-                        SecurityLevel::CRITICAL,
-                    ]),
-                    KeyType::all_key_types().into(),
-                    false,
-                );
+                let first_key = self
+                    .identity_token_info
+                    .identity
+                    .identity
+                    .get_first_public_key_matching(
+                        Purpose::AUTHENTICATION,
+                        HashSet::from([SecurityLevel::CRITICAL]),
+                        KeyType::all_key_types().into(),
+                        false,
+                    );
 
                 if let Some(key) = first_key {
                     if ui.button("Check Keys").clicked() {
@@ -511,7 +517,7 @@ impl ScreenLike for MintTokensScreen {
 
                     if needed_unlock && !just_unlocked {
                         // Must unlock before we can proceed
-                        return;
+                        return AppAction::None;
                     }
                 }
 
@@ -541,10 +547,7 @@ impl ScreenLike for MintTokensScreen {
                         "You are signing an existing group Mint so you are not allowed to choose the amount.",
                     );
                     ui.add_space(5.0);
-                    ui.label(format!(
-                        "Amount: {}",
-                        self.amount_to_mint
-                    ));
+                    ui.label(format!("Amount: {}", self.amount_to_mint));
                 } else {
                     self.render_amount_input(ui);
                 }
@@ -603,20 +606,23 @@ impl ScreenLike for MintTokensScreen {
                             )
                             .changed()
                         {
-                            self.public_note = if !txt.is_empty() {
-                                Some(txt)
-                            } else {
-                                None
-                            };
+                            self.public_note = if !txt.is_empty() { Some(txt) } else { None };
                         }
                     });
                 }
 
-                let button_text =
-                    render_group_action_text(ui, &self.group, &self.identity_token_info, "Mint", &self.group_action_id);
+                let button_text = render_group_action_text(
+                    ui,
+                    &self.group,
+                    &self.identity_token_info,
+                    "Mint",
+                    &self.group_action_id,
+                );
 
                 // Mint button
-                if self.app_context.developer_mode.load(Ordering::Relaxed) || !button_text.contains("Test") {
+                if self.app_context.developer_mode.load(Ordering::Relaxed)
+                    || !button_text.contains("Test")
+                {
                     ui.add_space(10.0);
                     let button =
                         egui::Button::new(RichText::new(button_text).color(Color32::WHITE))
@@ -655,8 +661,11 @@ impl ScreenLike for MintTokensScreen {
                     }
                 }
             }
+
+            AppAction::None
         });
 
+        action |= central_panel_action;
         action
     }
 }

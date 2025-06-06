@@ -1,9 +1,11 @@
 use crate::app::AppAction;
 use crate::context::AppContext;
+use crate::ui::components::styled::GradientButton;
+use crate::ui::theme::{DashColors, Shadow, Shape, Spacing};
 use crate::ui::RootScreenType;
 use dash_sdk::dpp::version::v9::PROTOCOL_VERSION_9;
-use eframe::epaint::{Color32, Margin};
-use egui::{Context, Frame, ImageButton, SidePanel, TextureHandle};
+use eframe::epaint::Margin;
+use egui::{Color32, Context, Frame, ImageButton, SidePanel, TextureHandle};
 use rust_embed::RustEmbed;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -63,70 +65,91 @@ pub fn add_left_panel(
         ("N", RootScreenType::RootScreenNetworkChooser, "config.png"),
     ];
 
-    let panel_width = 50.0 + 20.0; // Button width (50) + 10px margin on each side (20 total)
+    let panel_width = 60.0 + (Spacing::MD * 2.0); // Button width + margins
 
     SidePanel::left("left_panel")
-        .default_width(panel_width)
+        .default_width(panel_width + 20.0) // Add extra width for margins
         .frame(
             Frame::new()
-                .fill(ctx.style().visuals.panel_fill)
-                .inner_margin(Margin {
-                    left: 10,
-                    right: 10,
-                    top: 10,
-                    bottom: 0,
-                }),
+                .fill(DashColors::BACKGROUND) // Light background instead of transparent
+                .inner_margin(Margin::symmetric(10, 10)), // Add margins for island effect
         )
         .show(ctx, |ui| {
-            ui.vertical_centered(|ui| {
-                for (label, screen_type, icon_path) in buttons.iter() {
-                    if !check_root_screen_access(app_context, screen_type) {
-                        continue; // Skip this button if access is denied
-                    }
-                    let texture: Option<TextureHandle> = load_icon(ctx, icon_path);
-                    let is_selected = selected_screen == *screen_type;
+            // Create an island panel with rounded edges
+            Frame::new()
+                .fill(DashColors::SURFACE)
+                .stroke(egui::Stroke::new(1.0, DashColors::BORDER_LIGHT))
+                .inner_margin(Margin::same(Spacing::MD_I8))
+                .rounding(egui::Rounding::same(Shape::RADIUS_LG))
+                .shadow(Shadow::elevated())
+                .show(ui, |ui| {
+                    ui.vertical_centered(|ui| {
+                        for (label, screen_type, icon_path) in buttons.iter() {
+                            if !check_root_screen_access(app_context, screen_type) {
+                                continue; // Skip this button if access is denied
+                            }
+                            let texture: Option<TextureHandle> = load_icon(ctx, icon_path);
+                            let is_selected = selected_screen == *screen_type;
 
-                    let button_color = if is_selected {
-                        Color32::from_rgb(100, 149, 237) // Highlighted blue color for selected
-                    } else {
-                        Color32::from_rgb(169, 169, 169) // Default grayish blue color for unselected
-                    };
+                            let button_color = if is_selected {
+                                DashColors::DASH_BLUE
+                            } else {
+                                DashColors::GRADIENT_ACCENT
+                            };
 
-                    // Add icon-based button if texture is loaded
-                    if let Some(ref texture) = texture {
-                        let button = ImageButton::new(texture)
-                            .frame(false) // Remove button frame
-                            .tint(button_color);
+                            // Add icon-based button if texture is loaded
+                            if let Some(ref texture) = texture {
+                                let button = ImageButton::new(texture)
+                                    .frame(false) // Remove button frame
+                                    .tint(button_color);
 
-                        if ui.add(button).clicked() {
-                            action = AppAction::SetMainScreenThenGoToMainScreen(*screen_type);
+                                if ui.add(button).clicked() {
+                                    action =
+                                        AppAction::SetMainScreenThenGoToMainScreen(*screen_type);
+                                }
+                            } else {
+                                // Fallback to a modern gradient button if texture loading fails
+                                if is_selected {
+                                    if GradientButton::new(*label)
+                                        .min_width(60.0)
+                                        .glow()
+                                        .show(ui)
+                                        .clicked()
+                                    {
+                                        action = AppAction::SetMainScreen(*screen_type);
+                                    }
+                                } else {
+                                    let button = egui::Button::new(*label)
+                                        .fill(DashColors::glass_white())
+                                        .stroke(egui::Stroke::new(1.0, DashColors::glass_border()))
+                                        .rounding(egui::Rounding::same(Shape::RADIUS_MD))
+                                        .min_size(egui::vec2(60.0, 60.0));
+
+                                    if ui.add(button).clicked() {
+                                        action = AppAction::SetMainScreen(*screen_type);
+                                    }
+                                }
+                            }
+
+                            ui.add_space(Spacing::MD); // Add some space between buttons
                         }
-                    } else {
-                        // Fallback to a simple text button if texture loading fails
-                        let button = egui::Button::new(*label)
-                            .fill(button_color)
-                            .min_size(egui::vec2(50.0, 50.0));
 
-                        if ui.add(button).clicked() {
-                            action = AppAction::SetMainScreen(*screen_type);
-                        }
-                    }
-
-                    ui.add_space(10.0); // Add some space between buttons
-                }
-
-                // Push content to the top and dev label to the bottom
-                ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
-                    if app_context.developer_mode.load(Ordering::Relaxed) {
-                        ui.add_space(10.0);
-                        if ui.label("Dev mode").clicked() {
-                            action = AppAction::SetMainScreenThenGoToMainScreen(
-                                RootScreenType::RootScreenNetworkChooser,
-                            );
-                        };
-                    }
-                });
-            });
+                        // Push content to the top and dev label to the bottom
+                        ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
+                            if app_context.developer_mode.load(Ordering::Relaxed) {
+                                ui.add_space(Spacing::MD);
+                                let dev_label = egui::RichText::new("🔧 Dev mode")
+                                    .color(DashColors::GRADIENT_PURPLE)
+                                    .size(12.0);
+                                if ui.label(dev_label).clicked() {
+                                    action = AppAction::SetMainScreenThenGoToMainScreen(
+                                        RootScreenType::RootScreenNetworkChooser,
+                                    );
+                                };
+                            }
+                        });
+                    });
+                }); // Close the island frame
         });
 
     action

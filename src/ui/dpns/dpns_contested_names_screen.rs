@@ -21,6 +21,7 @@ use crate::model::contested_name::{ContestState, ContestedName};
 use crate::model::qualified_identity::{DPNSNameInfo, QualifiedIdentity};
 use crate::ui::components::dpns_subscreen_chooser_panel::add_dpns_subscreen_chooser_panel;
 use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::{BackendTaskSuccessResult, MessageType, RootScreenType, ScreenLike, ScreenType};
 
@@ -388,7 +389,7 @@ impl DPNSScreen {
             max_scroll_height -= backend_message_height;
         }
 
-        egui::ScrollArea::vertical()
+        egui::ScrollArea::both()
             .max_height(max_scroll_height)
             .show(ui, |ui| {
                 Frame::group(ui.style())
@@ -742,7 +743,7 @@ impl DPNSScreen {
             max_scroll_height -= backend_message_height;
         }
 
-        egui::ScrollArea::vertical()
+        egui::ScrollArea::both()
             .max_height(max_scroll_height)
             .show(ui, |ui| {
                 Frame::group(ui.style())
@@ -914,7 +915,7 @@ impl DPNSScreen {
             max_scroll_height -= backend_message_height;
         }
 
-        egui::ScrollArea::vertical()
+        egui::ScrollArea::both()
             .max_height(max_scroll_height)
             .show(ui, |ui| {
                 Frame::group(ui.style())
@@ -991,7 +992,7 @@ impl DPNSScreen {
             }
         });
 
-        egui::ScrollArea::vertical().show(ui, |ui| {
+        egui::ScrollArea::both().show(ui, |ui| {
             Frame::group(ui.style())
                 .fill(ui.visuals().panel_fill)
                 .stroke(egui::Stroke::new(
@@ -1997,7 +1998,8 @@ impl ScreenLike for DPNSScreen {
         action |= add_dpns_subscreen_chooser_panel(ctx, self.app_context.as_ref());
 
         // Main panel
-        CentralPanel::default().show(ctx, |ui| {
+        action |= island_central_panel(ctx, |ui| {
+            let mut inner_action = AppAction::None;
             // Bulk-schedule ephemeral popup
             if self.show_bulk_schedule_popup {
                 egui::Window::new("Voting")
@@ -2005,7 +2007,7 @@ impl ScreenLike for DPNSScreen {
                     .resizable(true)
                     .vscroll(true)
                     .show(ui.ctx(), |ui| {
-                        action |= self.show_bulk_schedule_popup_window(ui);
+                        inner_action |= self.show_bulk_schedule_popup_window(ui);
                     });
             }
 
@@ -2019,7 +2021,7 @@ impl ScreenLike for DPNSScreen {
                     if has_any {
                         self.render_table_active_contests(ui);
                     } else {
-                        action |= self.render_no_active_contests_or_owned_names(ui);
+                        inner_action |= self.render_no_active_contests_or_owned_names(ui);
                     }
                 }
                 DPNSSubscreen::Past => {
@@ -2030,7 +2032,7 @@ impl ScreenLike for DPNSScreen {
                     if has_any {
                         self.render_table_past_contests(ui);
                     } else {
-                        action |= self.render_no_active_contests_or_owned_names(ui);
+                        inner_action |= self.render_no_active_contests_or_owned_names(ui);
                     }
                 }
                 DPNSSubscreen::Owned => {
@@ -2041,7 +2043,7 @@ impl ScreenLike for DPNSScreen {
                     if has_any {
                         self.render_table_local_dpns_names(ui);
                     } else {
-                        action |= self.render_no_active_contests_or_owned_names(ui);
+                        inner_action |= self.render_no_active_contests_or_owned_names(ui);
                     }
                 }
                 DPNSSubscreen::ScheduledVotes => {
@@ -2050,9 +2052,9 @@ impl ScreenLike for DPNSScreen {
                         !guard.is_empty()
                     };
                     if has_any {
-                        action |= self.render_table_scheduled_votes(ui);
+                        inner_action |= self.render_table_scheduled_votes(ui);
                     } else {
-                        action |= self.render_no_active_contests_or_owned_names(ui);
+                        inner_action |= self.render_no_active_contests_or_owned_names(ui);
                     }
                 }
             }
@@ -2091,6 +2093,7 @@ impl ScreenLike for DPNSScreen {
                     });
                 });
             }
+            inner_action
         });
 
         // Extra handling for actions

@@ -6,6 +6,7 @@ use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
@@ -364,7 +365,7 @@ impl ScreenLike for ResumeTokensScreen {
         // Subscreen chooser
         action |= add_tokens_subscreen_chooser_panel(ctx, &self.app_context);
 
-        egui::CentralPanel::default().show(ctx, |ui| {
+        island_central_panel(ctx, |ui| {
             if self.status == ResumeTokensStatus::Complete {
                 action |= self.show_success_screen(ui);
                 return;
@@ -469,11 +470,7 @@ impl ScreenLike for ResumeTokensScreen {
                             )
                             .changed()
                         {
-                            self.public_note = if !txt.is_empty() {
-                                Some(txt)
-                            } else {
-                                None
-                            };
+                            self.public_note = if !txt.is_empty() { Some(txt) } else { None };
                         }
                     });
                 }
@@ -487,7 +484,9 @@ impl ScreenLike for ResumeTokensScreen {
                 );
 
                 // Resume button
-                if self.app_context.developer_mode.load(Ordering::Relaxed) || !button_text.contains("Test") {
+                if self.app_context.developer_mode.load(Ordering::Relaxed)
+                    || !button_text.contains("Test")
+                {
                     ui.add_space(10.0);
                     let button =
                         egui::Button::new(RichText::new(button_text).color(Color32::WHITE))

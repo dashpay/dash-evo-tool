@@ -3,6 +3,7 @@ use crate::backend_task::core::CoreTask;
 use crate::backend_task::BackendTask;
 use crate::components::core_zmq_listener::ZMQConnectionEvent;
 use crate::context::AppContext;
+use crate::ui::theme::{DashColors, Shadow, Shape};
 use crate::ui::ScreenType;
 use dash_sdk::dashcore_rpc::dashcore::Network;
 use egui::{Align, Color32, Context, Frame, Layout, Margin, RichText, Stroke, TopBottomPanel, Ui};
@@ -21,7 +22,7 @@ fn add_location_view(ui: &mut Ui, location: Vec<(&str, AppAction)>) -> AppAction
                     .button(
                         RichText::new(text)
                             .font(font_id.clone())
-                            .color(Color32::WHITE),
+                            .color(DashColors::TEXT_PRIMARY),
                     )
                     .clicked()
                 {
@@ -31,7 +32,7 @@ fn add_location_view(ui: &mut Ui, location: Vec<(&str, AppAction)>) -> AppAction
                     ui.label(
                         RichText::new(">")
                             .font(font_id.clone())
-                            .color(Color32::WHITE),
+                            .color(DashColors::TEXT_SECONDARY),
                     );
                 }
             }
@@ -91,107 +92,128 @@ pub fn add_top_panel(
     right_buttons: Vec<(&str, DesiredAppAction)>,
 ) -> AppAction {
     let mut action = AppAction::None;
-    let color = match app_context.network {
-        Network::Dash => Color32::from_rgb(21, 101, 192),
+    let network_accent = match app_context.network {
+        Network::Dash => DashColors::DASH_BLUE,
         Network::Testnet => Color32::from_rgb(255, 165, 0),
         Network::Devnet => Color32::DARK_RED,
         Network::Regtest => Color32::from_rgb(139, 69, 19),
-        _ => Color32::BLACK,
+        _ => DashColors::DASH_BLUE,
     };
 
     TopBottomPanel::top("top_panel")
         .frame(
             Frame::new()
-                .fill(color)
-                .inner_margin(Margin::symmetric(10, 10)),
+                .fill(DashColors::BACKGROUND)
+                .inner_margin(Margin {
+                    left: 10,
+                    right: 16,
+                    top: 10,
+                    bottom: 10,
+                }),
         )
-        .exact_height(50.0)
+        .exact_height(72.0)
         .show(ctx, |ui| {
-            egui::menu::bar(ui, |ui| {
-                action |= add_connection_indicator(ui, app_context);
-                action |= add_location_view(ui, location);
+            // Create an island panel with rounded edges
+            Frame::new()
+                .fill(DashColors::SURFACE)
+                .stroke(egui::Stroke::new(1.0, DashColors::BORDER_LIGHT))
+                .inner_margin(Margin::symmetric(10, 10))
+                .corner_radius(egui::CornerRadius::same(Shape::RADIUS_LG))
+                .shadow(Shadow::elevated())
+                .show(ui, |ui| {
+                    egui::menu::bar(ui, |ui| {
+                        action |= add_connection_indicator(ui, app_context);
+                        action |= add_location_view(ui, location);
 
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    ui.add_space(10.0);
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            // Add space to match the left-side spacing from connection indicator
+                            ui.add_space(8.0);
 
-                    // Separate document-related actions into dropdown
-                    let (doc_actions, other_actions): (Vec<_>, Vec<_>) =
-                        right_buttons.into_iter().partition(|(_, act)| {
-                            matches!(
-                                act,
-                                DesiredAppAction::AddScreenType(ref screen_type)
-                                    if matches!(**screen_type,
-                                        ScreenType::CreateDocument
-                                        | ScreenType::DeleteDocument
-                                        | ScreenType::ReplaceDocument
-                                        | ScreenType::TransferDocument
-                                        | ScreenType::PurchaseDocument
-                                        | ScreenType::SetDocumentPrice)
-                            )
-                        });
+                            // Separate document-related actions into dropdown
+                            let (doc_actions, other_actions): (Vec<_>, Vec<_>) =
+                                right_buttons.into_iter().partition(|(_, act)| {
+                                    matches!(
+                                        act,
+                                        DesiredAppAction::AddScreenType(ref screen_type)
+                                            if matches!(**screen_type,
+                                                ScreenType::CreateDocument
+                                                | ScreenType::DeleteDocument
+                                                | ScreenType::ReplaceDocument
+                                                | ScreenType::TransferDocument
+                                                | ScreenType::PurchaseDocument
+                                                | ScreenType::SetDocumentPrice)
+                                    )
+                                });
 
-                    // Grouped Documents menu
-                    if !doc_actions.is_empty() {
-                        ui.add_space(3.0);
+                            // Grouped Documents menu
+                            if !doc_actions.is_empty() {
+                                ui.add_space(3.0);
 
-                        // give it the same style as your other buttons
-                        let docs_btn =
-                            egui::Button::new(RichText::new("Documents").color(Color32::WHITE))
-                                .fill(Color32::from_rgb(0, 128, 255))
+                                // give it the same style as your other buttons
+                                let docs_btn = egui::Button::new(
+                                    RichText::new("Documents").color(Color32::WHITE),
+                                )
+                                .fill(network_accent)
                                 .frame(true)
-                                .corner_radius(3.0)
-                                .stroke(Stroke::new(1.0, Color32::WHITE))
+                                .corner_radius(egui::CornerRadius::same(Shape::RADIUS_MD))
+                                .stroke(Stroke::NONE)
                                 .min_size(egui::vec2(100.0, 30.0));
 
-                        // a unique ID for the popup
-                        let popup_id = ui.auto_id_with("documents_popup");
-                        let resp = ui.add(docs_btn);
-                        if resp.clicked() {
-                            ui.memory_mut(|mem| mem.toggle_popup(popup_id));
-                        }
-
-                        // open the popup directly below the button
-                        egui::popup::popup_below_widget(
-                            ui,
-                            popup_id,
-                            &resp,
-                            egui::popup::PopupCloseBehavior::CloseOnClickOutside,
-                            |ui| {
-                                ui.set_min_width(150.0);
-                                for (text, da) in doc_actions {
-                                    if ui.button(text).clicked() {
-                                        action = da.create_action(app_context);
-                                        ui.close_menu();
-                                    }
+                                // a unique ID for the popup
+                                let popup_id = ui.auto_id_with("documents_popup");
+                                let resp = ui.add(docs_btn);
+                                if resp.clicked() {
+                                    ui.memory_mut(|mem| mem.toggle_popup(popup_id));
                                 }
-                            },
-                        );
-                    }
 
-                    // Render other buttons normally
-                    for (text, btn_act) in other_actions.into_iter().rev() {
-                        ui.add_space(3.0);
-                        let font = egui::FontId::proportional(16.0);
-                        let text_size = ui
-                            .fonts(|f| {
-                                f.layout_no_wrap(text.to_string(), font.clone(), Color32::WHITE)
-                            })
-                            .size();
-                        let width = text_size.x + 12.0;
+                                // open the popup directly below the button
+                                egui::popup::popup_below_widget(
+                                    ui,
+                                    popup_id,
+                                    &resp,
+                                    egui::popup::PopupCloseBehavior::CloseOnClickOutside,
+                                    |ui| {
+                                        ui.set_min_width(150.0);
+                                        for (text, da) in doc_actions {
+                                            if ui.button(text).clicked() {
+                                                action = da.create_action(app_context);
+                                                ui.close_menu();
+                                            }
+                                        }
+                                    },
+                                );
+                            }
 
-                        let button = egui::Button::new(RichText::new(text).color(Color32::WHITE))
-                            .fill(Color32::from_rgb(0, 128, 255))
-                            .frame(true)
-                            .corner_radius(3.0)
-                            .stroke(Stroke::new(1.0, Color32::WHITE))
-                            .min_size(egui::vec2(width, 30.0));
+                            // Render other buttons normally
+                            for (text, btn_act) in other_actions.into_iter().rev() {
+                                ui.add_space(3.0);
+                                let font = egui::FontId::proportional(16.0);
+                                let text_size = ui
+                                    .fonts(|f| {
+                                        f.layout_no_wrap(
+                                            text.to_string(),
+                                            font.clone(),
+                                            Color32::WHITE,
+                                        )
+                                    })
+                                    .size();
+                                let width = text_size.x + 12.0;
 
-                        if ui.add(button).clicked() {
-                            action = btn_act.create_action(app_context);
-                        }
-                    }
+                                let button =
+                                    egui::Button::new(RichText::new(text).color(Color32::WHITE))
+                                        .fill(network_accent)
+                                        .frame(true)
+                                        .corner_radius(egui::CornerRadius::same(Shape::RADIUS_MD))
+                                        .stroke(Stroke::NONE)
+                                        .min_size(egui::vec2(width, 30.0));
+
+                                if ui.add(button).clicked() {
+                                    action = btn_act.create_action(app_context);
+                                }
+                            }
+                        });
+                    });
                 });
-            });
         });
 
     action

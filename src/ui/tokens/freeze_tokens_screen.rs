@@ -6,6 +6,7 @@ use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
@@ -403,10 +404,9 @@ impl ScreenLike for FreezeTokensScreen {
         // Subscreen chooser
         action |= add_tokens_subscreen_chooser_panel(ctx, &self.app_context);
 
-        egui::CentralPanel::default().show(ctx, |ui| {
+        let central_panel_action = island_central_panel(ctx, |ui| {
             if self.status == FreezeTokensStatus::Complete {
-                action |= self.show_success_screen(ui);
-                return;
+                return self.show_success_screen(ui);
             }
 
             ui.heading("Freeze Identity’s Tokens");
@@ -464,7 +464,7 @@ impl ScreenLike for FreezeTokensScreen {
                     let (needed_unlock, just_unlocked) = self.render_wallet_unlock_if_needed(ui);
 
                     if needed_unlock && !just_unlocked {
-                        return;
+                        return AppAction::None;
                     }
                 }
 
@@ -494,10 +494,7 @@ impl ScreenLike for FreezeTokensScreen {
                         "You are signing an existing group Freeze so you are not allowed to choose the identity.",
                     );
                     ui.add_space(5.0);
-                    ui.label(format!(
-                        "Identity: {}",
-                        self.freeze_identity_id
-                    ));
+                    ui.label(format!("Identity: {}", self.freeze_identity_id));
                 } else {
                     self.render_freeze_identity_input(ui);
                 }
@@ -530,20 +527,23 @@ impl ScreenLike for FreezeTokensScreen {
                             )
                             .changed()
                         {
-                            self.public_note = if !txt.is_empty() {
-                                Some(txt)
-                            } else {
-                                None
-                            };
+                            self.public_note = if !txt.is_empty() { Some(txt) } else { None };
                         }
                     });
                 }
 
-                let button_text =
-                    render_group_action_text(ui, &self.group, &self.identity_token_info, "Freeze", &self.group_action_id);
+                let button_text = render_group_action_text(
+                    ui,
+                    &self.group,
+                    &self.identity_token_info,
+                    "Freeze",
+                    &self.group_action_id,
+                );
 
                 // Freeze button
-                if self.app_context.developer_mode.load(Ordering::Relaxed) || !button_text.contains("Test") {
+                if self.app_context.developer_mode.load(Ordering::Relaxed)
+                    || !button_text.contains("Test")
+                {
                     ui.add_space(10.0);
                     let button =
                         egui::Button::new(RichText::new(button_text).color(Color32::WHITE))
@@ -582,8 +582,11 @@ impl ScreenLike for FreezeTokensScreen {
                     }
                 }
             }
+
+            AppAction::None
         });
 
+        action |= central_panel_action;
         action
     }
 }

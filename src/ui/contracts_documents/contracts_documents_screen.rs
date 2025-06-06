@@ -6,6 +6,7 @@ use crate::context::AppContext;
 use crate::model::qualified_contract::QualifiedContract;
 use crate::ui::components::contract_chooser_panel::add_contract_chooser_panel;
 use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::{BackendTaskSuccessResult, MessageType, RootScreenType, ScreenLike, ScreenType};
 use crate::utils::parsers::{DocumentQueryTextInputParser, TextInputParser};
@@ -18,7 +19,7 @@ use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::prelude::TimestampMillis;
 use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::Start;
 use dash_sdk::platform::{Document, DocumentQuery, Identifier};
-use egui::{Color32, Context, Frame, Margin, ScrollArea, Ui};
+use egui::{Color32, Context, ScrollArea, Ui};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -170,16 +171,21 @@ impl DocumentQueryScreen {
     fn show_input_field(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
         ui.horizontal(|ui| {
-            let button_width = 120.0;
-            let text_width = ui.available_width() - button_width;
+            let button_width = 140.0; // Increased from 120.0
+            let spacing = 10.0; // Add some spacing
+            let available = ui.available_width();
+            let text_width = (available - button_width - spacing).max(100.0); // Ensure minimum width
 
             ui.add(egui::TextEdit::singleline(&mut self.document_query).desired_width(text_width));
+
+            ui.add_space(spacing);
 
             let button_fetch =
                 egui::Button::new(egui::RichText::new("Fetch Documents").color(Color32::WHITE))
                     .fill(Color32::from_rgb(0, 128, 255))
                     .frame(true)
-                    .corner_radius(3.0);
+                    .corner_radius(3.0)
+                    .min_size(egui::vec2(button_width - spacing, 0.0));
 
             if ui.add(button_fetch).clicked() {
                 self.selected_document_type = self.pending_document_type.clone();
@@ -301,6 +307,12 @@ impl DocumentQueryScreen {
                         }
                     });
             }
+        } else {
+            if matches!(self.document_query_status, DocumentQueryStatus::NotStarted) {
+                ui.label("Please run a query first.");
+            } else {
+                ui.label("No documents found.");
+            }
         }
 
         ui.add_space(5.0);
@@ -308,7 +320,7 @@ impl DocumentQueryScreen {
         let pagination_height = 30.0;
         let max_scroll_height = ui.available_height() - pagination_height;
 
-        ScrollArea::vertical()
+        ScrollArea::both()
             .max_height(max_scroll_height)
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
@@ -673,20 +685,16 @@ impl ScreenLike for DocumentQueryScreen {
             }
         }
 
-        egui::CentralPanel::default()
-            .frame(
-                Frame::new()
-                    .fill(ctx.style().visuals.panel_fill)
-                    .inner_margin(Margin::same(10)),
-            )
-            .show(ctx, |ui| {
-                action |= self.show_input_field(ui);
-                action |= self.show_output(ui);
+        action |= island_central_panel(ctx, |ui| {
+            let mut inner_action = AppAction::None;
+            inner_action |= self.show_input_field(ui);
+            inner_action |= self.show_output(ui);
 
-                if self.confirm_remove_contract_popup {
-                    action |= self.show_remove_contract_popup(ui);
-                }
-            });
+            if self.confirm_remove_contract_popup {
+                inner_action |= self.show_remove_contract_popup(ui);
+            }
+            inner_action
+        });
 
         action
     }

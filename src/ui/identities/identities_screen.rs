@@ -12,6 +12,7 @@ use crate::model::qualified_identity::PrivateKeyTarget::{
 use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
 use crate::model::wallet::WalletSeedHash;
 use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
@@ -227,7 +228,8 @@ impl IdentitiesScreen {
 
         let text_edit = egui::TextEdit::singleline(&mut alias)
             .hint_text(placeholder_text)
-            .desired_width(100.0);
+            .desired_width(100.0)
+            .background_color(crate::ui::theme::DashColors::INPUT_BACKGROUND);
 
         if ui.add(text_edit).changed() {
             // If user edits alias, we do not necessarily turn on "custom order."
@@ -422,7 +424,12 @@ impl IdentitiesScreen {
                 ui.vertical_centered(|ui| {
                     // Heading
                     ui.add_space(5.0);
-                    ui.label(RichText::new("No Identities Loaded").strong().size(25.0));
+                    ui.label(
+                        RichText::new("No Identities Loaded")
+                            .strong()
+                            .size(25.0)
+                            .color(Color32::BLACK),
+                    );
 
                     // A separator line for visual clarity
                     ui.add_space(5.0);
@@ -438,7 +445,12 @@ impl IdentitiesScreen {
                     ui.add_space(10.0);
 
                     // Subheading or emphasis
-                    ui.heading(RichText::new("Here’s what you can do:").strong().size(18.0));
+                    ui.heading(
+                        RichText::new("Here’s what you can do:")
+                            .strong()
+                            .size(18.0)
+                            .color(Color32::BLACK),
+                    );
                     ui.add_space(5.0);
 
                     // Bullet points
@@ -491,16 +503,8 @@ impl IdentitiesScreen {
             max_scroll_height -= backend_message_height;
         }
 
-        egui::ScrollArea::vertical().max_height(max_scroll_height).show(ui, |ui| {
-            Frame::group(ui.style())
-                .fill(ui.visuals().panel_fill)
-                .stroke(egui::Stroke::new(
-                    1.0,
-                    ui.visuals().widgets.inactive.bg_stroke.color,
-                ))
-                .inner_margin(Margin::same(8))
-                .show(ui, |ui| {
-                    TableBuilder::new(ui)
+        egui::ScrollArea::both().max_height(max_scroll_height).show(ui, |ui| {
+            TableBuilder::new(ui)
                         .striped(true)
                         .resizable(true)
                         .cell_layout(egui::Layout::left_to_right(Align::Center))
@@ -713,7 +717,6 @@ impl IdentitiesScreen {
                                 });
                             }
                         });
-                });
         });
 
         action
@@ -931,11 +934,12 @@ impl ScreenLike for IdentitiesScreen {
             guard.values().cloned().collect::<Vec<_>>()
         };
 
-        egui::CentralPanel::default().show(ctx, |ui| {
+        action |= island_central_panel(ctx, |ui| {
+            let mut inner_action = AppAction::None;
             if identities_vec.is_empty() {
                 self.render_no_identities_view(ui);
             } else {
-                action |= self.render_identities_view(ui, &identities_vec);
+                inner_action |= self.render_identities_view(ui, &identities_vec);
             }
 
             // If we are refreshing, show a spinner at the bottom
@@ -978,6 +982,7 @@ impl ScreenLike for IdentitiesScreen {
                 });
                 ui.add_space(10.0);
             }
+            inner_action
         });
 
         if self.show_more_keys_popup.is_some() {

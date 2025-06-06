@@ -5,7 +5,9 @@ use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::config::Config;
 use crate::context::AppContext;
 use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::styled::{island_central_panel, StyledCheckbox};
 use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::theme::DashColors;
 use crate::ui::{RootScreenType, ScreenLike};
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::TimestampMillis;
@@ -121,18 +123,44 @@ impl NetworkChooserScreen {
             .spacing([20.0, 10.0])
             .show(ui, |ui| {
                 // Header row
-                ui.label(egui::RichText::new("Network").strong().underline());
-                ui.label(egui::RichText::new("Status").strong().underline());
+                ui.label(
+                    egui::RichText::new("Network")
+                        .strong()
+                        .underline()
+                        .color(DashColors::TEXT_PRIMARY),
+                );
+                ui.label(
+                    egui::RichText::new("Status")
+                        .strong()
+                        .underline()
+                        .color(DashColors::TEXT_PRIMARY),
+                );
                 // ui.label(egui::RichText::new("Wallet Count").strong().underline());
                 // ui.label(egui::RichText::new("Add New Wallet").strong().underline());
-                ui.label(egui::RichText::new("Select").strong().underline());
-                ui.label(egui::RichText::new("Start").strong().underline());
+                ui.label(
+                    egui::RichText::new("Select")
+                        .strong()
+                        .underline()
+                        .color(DashColors::TEXT_PRIMARY),
+                );
+                ui.label(
+                    egui::RichText::new("Start")
+                        .strong()
+                        .underline()
+                        .color(DashColors::TEXT_PRIMARY),
+                );
                 ui.label(
                     egui::RichText::new("Dashmate Password")
                         .strong()
-                        .underline(),
+                        .underline()
+                        .color(DashColors::TEXT_PRIMARY),
                 );
-                ui.label(egui::RichText::new("Actions").strong().underline());
+                ui.label(
+                    egui::RichText::new("Actions")
+                        .strong()
+                        .underline()
+                        .color(DashColors::TEXT_PRIMARY),
+                );
                 ui.end_row();
 
                 // Render Mainnet Row
@@ -196,13 +224,13 @@ impl NetworkChooserScreen {
                         }
                         ui.end_row();
 
-                        if ui.checkbox(&mut self.overwrite_dash_conf, "Overwrite dash.conf").clicked() {
+                        if StyledCheckbox::new(&mut self.overwrite_dash_conf, "Overwrite dash.conf").show(ui).clicked() {
                             self.save().expect("Expected to save db settings");
                         }
                         ui.end_row();
 
                         ui.label("Developer mode:");
-                        if ui.checkbox(&mut self.developer_mode, "Enable developer mode").clicked() {
+                        if StyledCheckbox::new(&mut self.developer_mode, "Enable developer mode").show(ui).clicked() {
                             // Update the config for the current network
                             if let Ok(mut config) = Config::load() {
                                 let current_config = config.config_for_network(self.current_network).clone();
@@ -296,7 +324,7 @@ impl NetworkChooserScreen {
 
         // Network selection
         let mut is_selected = self.current_network == network;
-        if ui.checkbox(&mut is_selected, "").clicked() && is_selected {
+        if StyledCheckbox::new(&mut is_selected, "").show(ui).clicked() && is_selected {
             self.current_network = network;
             app_action = AppAction::SwitchNetwork(network);
             // Recheck in 1 second
@@ -455,9 +483,7 @@ impl ScreenLike for NetworkChooserScreen {
             RootScreenType::RootScreenNetworkChooser,
         );
 
-        egui::CentralPanel::default().show(ctx, |ui| {
-            action |= self.render_network_table(ui);
-        });
+        action |= island_central_panel(ctx, |ui| self.render_network_table(ui));
 
         // Recheck both network status every 3 seconds
         let recheck_time = Duration::from_secs(3);

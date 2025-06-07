@@ -24,6 +24,7 @@ use crate::ui::Screen;
 use chrono::Utc;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
+use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::accessors::v0::TokenConfigurationConventionV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::accessors::v0::TokenDistributionRulesV0Getters;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use eframe::emath::Align;
@@ -285,8 +286,18 @@ impl TokensScreen {
                                                         if let Some(known_rewards) = itb.estimated_unclaimed_rewards  {
                                                             ui.horizontal(|ui| {
                                                                 ui.label(known_rewards.to_string());
+
+                                                                // Info button to show explanation
+                                                                let identity_token_id = IdentityTokenIdentifier {
+                                                                    identity_id: itb.identity_id,
+                                                                    token_id: itb.token_id,
+                                                                };
+                                                                if ui.button("ℹ").on_hover_text("Show reward calculation explanation").clicked() {
+                                                                    self.show_explanation_popup = Some(identity_token_id);
+                                                                }
+
                                                                 if ui.button("Estimate").clicked() {
-                                                                    action = AppAction::BackendTask(BackendTask::TokenTask(Box::new(TokenTask::EstimatePerpetualTokenRewards {
+                                                                    action = AppAction::BackendTask(BackendTask::TokenTask(Box::new(TokenTask::EstimatePerpetualTokenRewardsWithExplanation {
                                                                         identity_id: itb.identity_id,
                                                                         token_id: itb.token_id,
                                                                     })));
@@ -294,7 +305,7 @@ impl TokensScreen {
                                                                 }
                                                             });
                                                         } else if ui.button("Estimate").clicked() {
-                                                            action = AppAction::BackendTask(BackendTask::TokenTask(Box::new(TokenTask::EstimatePerpetualTokenRewards {
+                                                            action = AppAction::BackendTask(BackendTask::TokenTask(Box::new(TokenTask::EstimatePerpetualTokenRewardsWithExplanation {
                                                                 identity_id: itb.identity_id,
                                                                 token_id: itb.token_id,
                                                             })));
@@ -333,6 +344,66 @@ impl TokensScreen {
                             });
                     });
             });
+
+        // Show explanation popup if requested
+        if let Some(identity_token_id) = self.show_explanation_popup {
+            if let Some(explanation) = self.reward_explanations.get(&identity_token_id) {
+                egui::Window::new("Reward Calculation Explanation")
+                    .resizable(true)
+                    .default_width(600.0)
+                    .default_height(400.0)
+                    .show(ui.ctx(), |ui| {
+                        egui::ScrollArea::vertical().show(ui, |ui| {
+                            ui.heading("Reward Estimation Details");
+                            ui.separator();
+
+                            ui.label(format!(
+                                "Total Estimated Rewards: {} tokens",
+                                explanation.total_amount
+                            ));
+                            ui.separator();
+
+                            ui.collapsing("Short Explanation", |ui| {
+                                ui.label(explanation.short_explanation(
+                                    true,
+                                    token_info.token_configuration.conventions().decimals(),
+                                ));
+                            });
+
+                            ui.collapsing("Medium Explanation", |ui| {
+                                ui.label(explanation.medium_explanation());
+                            });
+
+                            ui.collapsing("Detailed Explanation", |ui| {
+                                ui.label(explanation.long_explanation());
+                            });
+
+                            if !explanation.evaluation_steps.is_empty() {
+                                ui.collapsing("Step-by-Step Breakdown", |ui| {
+                                    for (i, step) in explanation.evaluation_steps.iter().enumerate()
+                                    {
+                                        ui.collapsing(format!("Step {}", i + 1), |ui| {
+                                            if let Some(step_explanation) =
+                                                explanation.explanation_for_step(step.step_index)
+                                            {
+                                                ui.label(step_explanation);
+                                            }
+                                        });
+                                    }
+                                });
+                            }
+
+                            ui.separator();
+                            if ui.button("Close").clicked() {
+                                self.show_explanation_popup = None;
+                            }
+                        });
+                    });
+            } else {
+                // No explanation available yet, close popup
+                self.show_explanation_popup = None;
+            }
+        }
 
         action
     }

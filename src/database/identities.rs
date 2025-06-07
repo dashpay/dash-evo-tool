@@ -365,7 +365,7 @@ impl Database {
     pub fn get_local_user_identities(
         &self,
         app_context: &AppContext,
-    ) -> rusqlite::Result<Vec<(QualifiedIdentity, [u8; 32])>> {
+    ) -> rusqlite::Result<Vec<(QualifiedIdentity, Option<[u8; 32]>)>> {
         let network = app_context.network.to_string();
 
         let conn = self.conn.lock().unwrap();
@@ -375,7 +375,7 @@ impl Database {
         let identities = stmt
             .query_map(params![network], |row| {
                 let data: Vec<u8> = row.get(0)?;
-                let wallet_id: WalletSeedHash = row.get(1)?;
+                let wallet_id: Option<WalletSeedHash> = row.get(1)?;
                 let identity: QualifiedIdentity = QualifiedIdentity::from_bytes(&data);
 
                 Ok((identity, wallet_id))

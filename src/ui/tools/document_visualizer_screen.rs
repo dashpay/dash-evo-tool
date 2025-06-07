@@ -128,13 +128,13 @@ impl DocumentVisualizerScreen {
                 ui.monospace(self.parsed_json.as_ref().unwrap());
             }
             DocumentParseStatus::WaitingForSelection => {
-                ui.colored_label(Color32::LIGHT_BLUE, "Select a contract and document type.");
+                ui.colored_label(Color32::GRAY, "Select a contract and document type.");
             }
             DocumentParseStatus::Error(msg) => {
                 ui.colored_label(Color32::RED, format!("Error: {msg}"));
             }
             DocumentParseStatus::NotStarted => {
-                ui.label("Awaiting input …");
+                ui.colored_label(Color32::GRAY, "Awaiting input …");
             }
         });
     }

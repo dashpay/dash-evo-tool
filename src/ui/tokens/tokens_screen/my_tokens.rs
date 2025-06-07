@@ -457,7 +457,7 @@ impl TokensScreen {
             pos += 1;
         }
         if itb.available_actions.can_destroy {
-            if range.contains(&pos) && ui.button("Destroy Target Identity Tokens").clicked() {
+            if range.contains(&pos) && ui.button("Destroy Frozen Identity Tokens").clicked() {
                 match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
                             Ok(info) => {
                                 action = AppAction::AddScreen(

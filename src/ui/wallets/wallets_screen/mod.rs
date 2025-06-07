@@ -11,7 +11,7 @@ use chrono::{DateTime, Utc};
 use dash_sdk::dashcore_rpc::dashcore::{Address, Network};
 use dash_sdk::dpp::dashcore::bip32::{ChildNumber, DerivationPath};
 use eframe::egui::{self, ComboBox, Context, Ui};
-use egui::{Frame, Margin, RichText};
+use egui::{Color32, Frame, Margin, RichText};
 use egui_extras::{Column, TableBuilder};
 use std::collections::HashSet;
 use std::sync::atomic::Ordering;
@@ -639,7 +639,12 @@ impl WalletsBalancesScreen {
                 ui.vertical_centered(|ui| {
                     // Heading
                     ui.add_space(5.0);
-                    ui.label(RichText::new("No Wallets Loaded").strong().size(25.0));
+                    ui.label(
+                        RichText::new("No Wallets Loaded")
+                            .strong()
+                            .size(25.0)
+                            .color(Color32::BLACK),
+                    );
 
                     // A separator line for visual clarity
                     ui.add_space(5.0);
@@ -652,7 +657,12 @@ impl WalletsBalancesScreen {
                     ui.add_space(10.0);
 
                     // Subheading or emphasis
-                    ui.heading(RichText::new("Here’s what you can do:").strong().size(18.0));
+                    ui.heading(
+                        RichText::new("Here’s what you can do:")
+                            .strong()
+                            .size(18.0)
+                            .color(Color32::BLACK),
+                    );
                     ui.add_space(5.0);
 
                     // Bullet points

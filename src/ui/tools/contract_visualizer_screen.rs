@@ -112,7 +112,7 @@ impl ContractVisualizerScreen {
                 ui.colored_label(Color32::RED, format!("Error: {msg}"));
             }
             ContractParseStatus::NotStarted => {
-                ui.label("Awaiting input …");
+                ui.colored_label(Color32::GRAY, "Awaiting input …");
             }
         });
     }

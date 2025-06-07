@@ -7,8 +7,6 @@ use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::To
 use dash_sdk::dpp::data_contract::change_control_rules::authorized_action_takers::AuthorizedActionTakers;
 use dash_sdk::dpp::data_contract::conversion::json::DataContractJsonConversionMethodsV0;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
-use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::Identifier;
 use eframe::epaint::Color32;
@@ -18,6 +16,7 @@ use crate::backend_task::BackendTask;
 use crate::backend_task::tokens::TokenTask;
 use crate::ui::components::styled::{StyledCheckbox};
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
+use crate::ui::helpers::{add_identity_key_chooser, TransactionType};
 use crate::ui::theme::DashColors;
 use crate::ui::tokens::tokens_screen::{TokenBuildArgs, TokenCreatorStatus, TokenNameLanguage, TokensScreen};
 
@@ -52,11 +51,11 @@ impl TokensScreen {
         );
         ui.add_space(20.0);
 
-        egui::ScrollArea::vertical()
+        egui::ScrollArea::both()
             .max_height(max_scroll_height)
             .show(ui, |ui| {
                 ui.group(|ui| {
-                        // Identity selection
+                        // Identity and key selection
                         ui.add_space(10.0);
                         let all_identities = match self.app_context.load_local_user_identities() {
                             Ok(identities) => identities.into_iter().filter(|qi| !qi.private_keys.private_keys.is_empty()).collect::<Vec<_>>(),
@@ -76,120 +75,25 @@ impl TokensScreen {
                         ui.heading("1. Select an identity and key to register the token contract with:");
                         ui.add_space(5.0);
 
-                        ui.horizontal(|ui| {
-                            ui.label("Identity:");
-                            ComboBox::from_id_salt("token_creator_identity_selector")
-                                .selected_text(
-                                    self.selected_identity
-                                        .as_ref()
-                                        .map(|qi| {
-                                            qi.alias
-                                                .clone()
-                                                .unwrap_or_else(|| qi.identity.id().to_string(Encoding::Base58))
-                                        })
-                                        .unwrap_or_else(|| "Select Identity".to_owned()),
-                                )
-                                .show_ui(ui, |ui| {
-                                    for identity in all_identities.iter() {
-                                        let display = identity
-                                            .alias
-                                            .clone()
-                                            .unwrap_or_else(|| identity.identity.id().to_string(Encoding::Base58));
-                                        if ui
-                                            .selectable_label(
-                                                Some(identity) == self.selected_identity.as_ref(),
-                                                display,
-                                            )
-                                            .clicked()
-                                        {
-                                            // On select, store it
-                                            self.selected_identity = Some(identity.clone());
-                                            // Clear the selected key & wallet
-                                            self.selected_key = None;
-                                            self.selected_wallet = None;
-                                            self.token_creator_error_message = None;
-                                        }
-                                    }
-                                });
-                        });
+                        // Use the helper function for identity and key selection
+                        add_identity_key_chooser(
+                            ui,
+                            &self.app_context,
+                            all_identities.iter(),
+                            &mut self.selected_identity,
+                            &mut self.selected_key,
+                            TransactionType::RegisterContract,
+                        );
 
-                        // Key selection
-                        ui.add_space(3.0);
-                        if let Some(ref qid) = self.selected_identity {
-                            // Attempt to list available keys (only auth keys in normal mode)
-                            let keys = if self.app_context.developer_mode.load(Ordering::Relaxed) {
-                                qid.identity
-                                    .public_keys()
-                                    .values()
-                                    .cloned()
-                                    .collect::<Vec<_>>()
-                            } else {
-                                qid.available_authentication_keys_with_critical_or_high_security_level()
-                                    .into_iter()
-                                    .map(|k| {
-                                        k.identity_public_key.clone()
-                                    })
-                                    .collect()
-                            };
-
-                            ui.horizontal(|ui| {
-                                ui.label("Key:");
-                                ComboBox::from_id_salt("token_creator_key_selector")
-                                    .selected_text(match &self.selected_key {
-                                        Some(k) => format!(
-                                            "Key {} (Purpose: {:?}, Security Level: {:?})",
-                                            k.id(),
-                                            k.purpose(),
-                                            k.security_level()
-                                        ),
-                                        None => "Select Key".to_owned(),
-                                    })
-                                    .show_ui(ui, |ui| {
-                                        for key in keys {
-                                            let is_valid = key.purpose() == Purpose::AUTHENTICATION
-                                                && (key.security_level() == SecurityLevel::CRITICAL || key.security_level() == SecurityLevel::HIGH);
-
-                                            let label = format!(
-                                                "Key {} (Info: {}/{}/{})",
-                                                key.id(),
-                                                key.purpose(),
-                                                key.security_level(),
-                                                key.key_type()
-                                            );
-                                            let styled_label = if is_valid {
-                                                RichText::new(label.clone())
-                                            } else {
-                                                RichText::new(label.clone()).color(Color32::RED)
-                                            };
-
-                                            if ui
-                                                .selectable_label(
-                                                    Some(key.id()) == self.selected_key.as_ref().map(|kk| kk.id()),
-                                                    styled_label,
-                                                )
-                                                .clicked()
-                                            {
-                                                self.selected_key = Some(key.clone());
-
-                                                // If the key belongs to a wallet, set that wallet reference:
-                                                self.selected_wallet = crate::ui::identities::get_selected_wallet(
-                                                    qid,
-                                                    None,
-                                                    Some(&key),
-                                                    &mut self.token_creator_error_message,
-                                                );
-                                            }
-                                        }
-                                    });
-                            });
-                        } else {
-                            ui.horizontal(|ui| {
-                                ui.label("Key:");
-                                ComboBox::from_id_salt("token_creator_key_selector_empty")
-                                    .selected_text("Select Identity First")
-                                    .show_ui(ui, |_| {
-                                    });
-                            });
+                        // If a key was selected, set the wallet reference
+                        if let (Some(ref qid), Some(ref key)) = (&self.selected_identity, &self.selected_key) {
+                            // If the key belongs to a wallet, set that wallet reference:
+                            self.selected_wallet = crate::ui::identities::get_selected_wallet(
+                                qid,
+                                None,
+                                Some(key),
+                                &mut self.token_creator_error_message,
+                            );
                         }
 
                         if self.selected_key.is_none() {
@@ -230,22 +134,25 @@ impl TokensScreen {
                                 for i in 0..self.token_names_input.len() {
                                     ui.label("Token Name (singular)*:");
                                     ui.text_edit_singleline(&mut self.token_names_input[i].0);
+                                    let text_height = ui.spacing().interact_size.y;
                                     if i == 0 {
-                                        ComboBox::from_id_salt(format!("token_name_language_selector_{}", i))
+                                        let mut combo_resp = ComboBox::from_id_salt(format!("token_name_language_selector_{}", i))
                                             .selected_text(format!(
                                                 "{}",
                                                 self.token_names_input[i].2
                                             ))
-                                            .show_ui(ui, |ui| {
-                                                ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::English, "English");
-                                            });
+                                            .width(120.0);
+                                        combo_resp.show_ui(ui, |ui| {
+                                            ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::English, "English");
+                                        });
                                     } else {
-                                        ComboBox::from_id_salt(format!("token_name_language_selector_{}", i))
+                                        let mut combo_resp = ComboBox::from_id_salt(format!("token_name_language_selector_{}", i))
                                             .selected_text(format!(
                                                 "{}",
                                                 self.token_names_input[i].2
                                             ))
-                                            .show_ui(ui, |ui| {
+                                            .width(120.0);
+                                        combo_resp.show_ui(ui, |ui| {
                                                 ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::English, "English");
                                                 ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Arabic, "Arabic");
                                                 ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Bengali, "Bengali");
@@ -302,7 +209,8 @@ impl TokensScreen {
                                     }
 
                                     ui.horizontal(|ui| {
-                                        if ui.button("➕ Add Language").clicked() {
+                                        let button_height = text_height;
+                                        if ui.add(egui::Button::new("➕ Add Language").min_size(egui::vec2(0.0, button_height))).clicked() {
                                             let used_languages: HashSet<_> = self.token_names_input.iter().map(|(_, _, lang, _)| *lang).collect();
                                             let next_non_used_language = enum_iterator::all::<TokenNameLanguage>()
                                                 .find(|lang| !used_languages.contains(lang))
@@ -310,7 +218,7 @@ impl TokensScreen {
                                             // Add a new token name input
                                             self.token_names_input.push((String::new(), String::new(), next_non_used_language, false));
                                         }
-                                        if i != 0 && ui.button("➖").clicked() {
+                                        if i != 0 && ui.add(egui::Button::new("➖").min_size(egui::vec2(30.0, button_height))).clicked() {
                                             token_to_remove = Some(i.try_into().expect("Failed to convert index"));
                                         }
 

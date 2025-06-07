@@ -158,7 +158,7 @@ impl TransitionVisualizerScreen {
             } else {
                 // If parsed_json is None
                 if matches!(self.broadcast_status, TransitionBroadcastStatus::NotStarted) {
-                    ui.label("No state transition parsed yet.");
+                    ui.colored_label(Color32::GRAY, "No state transition parsed yet.");
                 }
             }
         });

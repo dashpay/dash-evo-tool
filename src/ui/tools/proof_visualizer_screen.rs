@@ -9,6 +9,7 @@ use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use dash_sdk::drive::grovedb::operations::proof::GroveDBProof;
 use eframe::egui::{self, Context, ScrollArea, TextEdit, Ui};
+use egui::Color32;
 use std::sync::Arc;
 
 pub struct ProofVisualizerScreen {
@@ -109,7 +110,7 @@ impl ProofVisualizerScreen {
 
                 ui.add_space(10.0);
             } else {
-                ui.label("No proof parsed yet.");
+                ui.colored_label(Color32::GRAY, "No proof parsed yet.");
             }
         });
 

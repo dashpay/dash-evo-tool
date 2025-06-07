@@ -178,6 +178,10 @@ pub(crate) enum TokenTask {
         identity_id: Identifier,
         token_id: Identifier,
     },
+    EstimatePerpetualTokenRewardsWithExplanation {
+        identity_id: Identifier,
+        token_id: Identifier,
+    },
     UpdateTokenConfig {
         identity_token_info: Box<IdentityTokenInfo>,
         change_item: TokenConfigurationChangeItem,
@@ -494,6 +498,17 @@ impl AppContext {
                 )
                 .await
                 .map_err(|e| format!("Failed to get estimated rewards: {e}")),
+            TokenTask::EstimatePerpetualTokenRewardsWithExplanation {
+                identity_id,
+                token_id,
+            } => self
+                .query_token_non_claimed_perpetual_distribution_rewards_with_explanation(
+                    *identity_id,
+                    *token_id,
+                    sdk,
+                )
+                .await
+                .map_err(|e| format!("Failed to get estimated rewards with explanation: {e}")),
             TokenTask::QueryIdentityTokenBalance(identity_token_pair) => self
                 .query_token_balance(
                     sdk,

@@ -11,6 +11,7 @@ use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::accessors::v0::TokenDistributionRulesV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::distribution_function::reward_ratio::RewardRatio;
+use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::distribution_function::DistributionFunction;
 use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::distribution_recipient::TokenDistributionRecipient;
 use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::methods::v0::{TokenPerpetualDistributionV0Accessors, TokenPerpetualDistributionV0Methods};
 use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::reward_distribution_moment::RewardDistributionMoment;
@@ -172,6 +173,118 @@ impl AppContext {
                     token_id,
                 },
                 amount_to_claim,
+            ),
+        )
+    }
+
+    pub async fn query_token_non_claimed_perpetual_distribution_rewards_with_explanation(
+        &self,
+        identity_id: Identifier,
+        token_id: Identifier,
+        sdk: &Sdk,
+    ) -> Result<BackendTaskSuccessResult, String> {
+        let token_config = self
+            .db
+            .get_token_config_for_id(&token_id, self)
+            .map_err(|e| format!("Failed to get token config from local database: {e}"))?
+            .ok_or("Corrupted DET state: Token config not found in database")?;
+        let perpetual_distribution = token_config
+            .distribution_rules()
+            .perpetual_distribution()
+            .ok_or("Token doesn't have perpetual distribution")?;
+        let data_contract = self
+            .get_contract_by_token_id(&token_id)
+            .map_err(|e| format!("Failed to get data contract from local database: {e}"))?
+            .ok_or("Corrupted DET state: Data contract not found in database")?;
+
+        let recipient = perpetual_distribution.distribution_recipient();
+        self.validate_perpetual_distribution_recipient(
+            data_contract.contract.owner_id(),
+            recipient,
+            identity_id,
+        )?;
+
+        let reward_distribution_type = perpetual_distribution.distribution_type();
+
+        let query = TokenLastClaimQuery {
+            identity_id,
+            token_id,
+        };
+
+        // Fetch the last claim moment for the user
+        let last_claim = RewardDistributionMoment::fetch(sdk, query)
+            .await
+            .map_err(|e| {
+                format!("Failed to fetch token non claimed perpetual distribution rewards from Platform: {e}")
+            })?;
+
+        let contract_creation_moment = perpetual_distribution
+            .distribution_type()
+            .contract_creation_moment(&data_contract.contract)
+            .ok_or("Calculation error: Contract does not have a start moment".to_string())?;
+
+        let contract_creation_cycle_start = contract_creation_moment
+            .cycle_start(perpetual_distribution.distribution_type().interval())
+            .map_err(|e| format!("Failed to calculate estimated rewards: {e}"))?;
+
+        let start_from_moment_for_distribution =
+            last_claim.unwrap_or(contract_creation_cycle_start);
+
+        // Calculate how much the user has to claim based on the last time they claimed and the distribution function
+        // Get the current moment (block, time, or epoch)
+        let current_epoch_with_metadata = ExtendedEpochInfo::fetch_current_with_metadata(sdk)
+            .await
+            .map_err(|e| {
+                format!(
+                    "Failed to fetch current epoch from Platform, required for calculation: {e}"
+                )
+            })?;
+
+        let block_info = dash_sdk::dpp::block::block_info::BlockInfo {
+            time_ms: current_epoch_with_metadata.1.time_ms,
+            height: current_epoch_with_metadata.1.height,
+            core_height: current_epoch_with_metadata.1.core_chain_locked_height, // This will not matter
+            epoch: current_epoch_with_metadata
+                .0
+                .index()
+                .try_into()
+                .expect("we should never get back an epoch so far in the future"),
+        };
+
+        let current_cycle_moment = perpetual_distribution.current_interval(&block_info);
+
+        // We need to get the max cycles allowed
+        let max_cycles = self
+            .platform_version()
+            .system_limits
+            .max_token_redemption_cycles;
+        let max_cycle_moment = perpetual_distribution
+            .distribution_type()
+            .max_cycle_moment(
+                start_from_moment_for_distribution,
+                current_cycle_moment,
+                max_cycles,
+            )
+            .map_err(|e| format!("Failed to calculate estimated rewards: {e}"))?;
+
+        // Use the new method that returns explanation
+        let explanation = reward_distribution_type
+            .rewards_in_interval_with_explanation::<fn(std::ops::RangeInclusive<EpochIndex>) -> Option<RewardRatio>>(
+                contract_creation_cycle_start,
+                start_from_moment_for_distribution,
+                max_cycle_moment,
+                None,
+            )
+            .map_err(|e| format!("Failed to calculate estimated rewards: {e}"))?;
+
+        Ok(
+            BackendTaskSuccessResult::TokenEstimatedNonClaimedPerpetualDistributionAmountWithExplanation(
+                IdentityTokenIdentifier {
+                    identity_id,
+                    token_id,
+                },
+                explanation.total_amount,
+                explanation,
             ),
         )
     }

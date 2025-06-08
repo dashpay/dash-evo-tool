@@ -21,7 +21,7 @@ use crate::ui::tokens::unfreeze_tokens_screen::UnfreezeTokensScreen;
 use crate::ui::tokens::update_token_config::UpdateTokenConfigScreen;
 use crate::ui::tokens::view_token_claims_screen::ViewTokenClaimsScreen;
 use crate::ui::Screen;
-use chrono::Utc;
+use chrono::{Local, Utc};
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::accessors::v0::TokenConfigurationConventionV0Getters;
@@ -33,6 +33,25 @@ use egui::{Frame, RichText, Ui};
 use egui_extras::{Column, TableBuilder};
 use std::ops::Range;
 use std::sync::atomic::Ordering;
+
+fn format_token_amount(amount: u64, decimals: u8) -> String {
+    if decimals == 0 {
+        return amount.to_string();
+    }
+
+    let divisor = 10u64.pow(decimals as u32);
+    let whole = amount / divisor;
+    let fraction = amount % divisor;
+
+    if fraction == 0 {
+        whole.to_string()
+    } else {
+        // Format with the appropriate number of decimal places, removing trailing zeros
+        let fraction_str = format!("{:0width$}", fraction, width = decimals as usize);
+        let trimmed = fraction_str.trim_end_matches('0');
+        format!("{}.{}", whole, trimmed)
+    }
+}
 
 impl TokensScreen {
     pub(super) fn render_my_tokens_subscreen(&mut self, ui: &mut Ui) -> AppAction {
@@ -274,8 +293,10 @@ impl TokensScreen {
                                             }
                                         });
                                         row.col(|ui| {
-                                            if let Some(balance) = itb.balance.as_ref().map(|balance| balance.to_string()) {
-                                                ui.label(balance);
+                                            if let Some(balance) = itb.balance {
+                                                let decimals = token_info.token_configuration.conventions().decimals();
+                                                let formatted_balance = format_token_amount(balance, decimals);
+                                                ui.label(formatted_balance);
                                             } else if ui.button("Check").clicked() {
                                                 action = AppAction::BackendTask(BackendTask::TokenTask(Box::new(TokenTask::QueryIdentityTokenBalance(itb.clone().into()))));
                                             }
@@ -285,7 +306,9 @@ impl TokensScreen {
                                                 if itb.available_actions.can_estimate {
                                                         if let Some(known_rewards) = itb.estimated_unclaimed_rewards  {
                                                             ui.horizontal(|ui| {
-                                                                ui.label(known_rewards.to_string());
+                                                                let decimals = token_info.token_configuration.conventions().decimals();
+                                                                let formatted_rewards = format_token_amount(known_rewards, decimals);
+                                                                ui.label(formatted_rewards);
 
                                                                 // Info button to show explanation
                                                                 let identity_token_id = IdentityTokenIdentifier {
@@ -346,32 +369,40 @@ impl TokensScreen {
             });
 
         // Show explanation popup if requested
-        if let Some(identity_token_id) = self.show_explanation_popup {
+        if let Some(identity_token_id) = self.show_explanation_popup.clone() {
             if let Some(explanation) = self.reward_explanations.get(&identity_token_id) {
+                let mut is_open = true;
                 egui::Window::new("Reward Calculation Explanation")
                     .resizable(true)
+                    .collapsible(false)
                     .default_width(600.0)
                     .default_height(400.0)
+                    .open(&mut is_open)
                     .show(ui.ctx(), |ui| {
                         egui::ScrollArea::vertical().show(ui, |ui| {
                             ui.heading("Reward Estimation Details");
                             ui.separator();
 
+                            let decimals = token_info.token_configuration.conventions().decimals();
+                            let formatted_total =
+                                format_token_amount(explanation.total_amount, decimals);
                             ui.label(format!(
                                 "Total Estimated Rewards: {} tokens",
-                                explanation.total_amount
+                                formatted_total
                             ));
                             ui.separator();
 
-                            ui.collapsing("Short Explanation", |ui| {
-                                ui.label(explanation.short_explanation(
-                                    true,
-                                    token_info.token_configuration.conventions().decimals(),
-                                ));
-                            });
+                            ui.collapsing("Basic Explanation", |ui| {
+                                let local_time = Local::now();
+                                let timezone = local_time.format("%Z").to_string();
 
-                            ui.collapsing("Medium Explanation", |ui| {
-                                ui.label(explanation.medium_explanation());
+                                let short_explanation = explanation.short_explanation(
+                                    token_info.token_configuration.conventions().decimals(),
+                                    self.app_context.platform_version(),
+                                    &timezone,
+                                );
+
+                                ui.label(short_explanation);
                             });
 
                             ui.collapsing("Detailed Explanation", |ui| {
@@ -399,6 +430,11 @@ impl TokensScreen {
                             }
                         });
                     });
+
+                // If the window was closed via the X button
+                if !is_open {
+                    self.show_explanation_popup = None;
+                }
             } else {
                 // No explanation available yet, close popup
                 self.show_explanation_popup = None;
@@ -624,8 +660,9 @@ impl TokensScreen {
         }
         if itb.available_actions.can_claim {
             if range.contains(&pos) && ui.button("View Claims").clicked() {
+                let decimals = token_info.token_configuration.conventions().decimals();
                 action = AppAction::AddScreen(Screen::ViewTokenClaimsScreen(
-                    ViewTokenClaimsScreen::new(itb.into(), &self.app_context),
+                    ViewTokenClaimsScreen::new(itb.into(), decimals, &self.app_context),
                 ));
                 ui.close_menu();
             }

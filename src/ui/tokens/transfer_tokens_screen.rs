@@ -28,6 +28,83 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::ui::identities::get_selected_wallet;
 
 use super::tokens_screen::IdentityTokenBalance;
+use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
+use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::accessors::v0::TokenConfigurationConventionV0Getters;
+
+fn format_token_amount(amount: u64, decimals: u8) -> String {
+    if decimals == 0 {
+        return amount.to_string();
+    }
+
+    let divisor = 10u64.pow(decimals as u32);
+    let whole = amount / divisor;
+    let fraction = amount % divisor;
+
+    if fraction == 0 {
+        whole.to_string()
+    } else {
+        // Format with the appropriate number of decimal places, removing trailing zeros
+        let fraction_str = format!("{:0width$}", fraction, width = decimals as usize);
+        let trimmed = fraction_str.trim_end_matches('0');
+        format!("{}.{}", whole, trimmed)
+    }
+}
+
+fn parse_token_amount(input: &str, decimals: u8) -> Result<u64, String> {
+    if decimals == 0 {
+        return input
+            .parse::<u64>()
+            .map_err(|_| "Invalid amount: must be a whole number".to_string());
+    }
+
+    let parts: Vec<&str> = input.split('.').collect();
+    match parts.len() {
+        1 => {
+            // No decimal point, parse as whole number
+            let whole = parts[0]
+                .parse::<u64>()
+                .map_err(|_| "Invalid amount: must be a number".to_string())?;
+            let multiplier = 10u64.pow(decimals as u32);
+            whole
+                .checked_mul(multiplier)
+                .ok_or_else(|| "Amount too large".to_string())
+        }
+        2 => {
+            // Has decimal point
+            let whole = if parts[0].is_empty() {
+                0
+            } else {
+                parts[0]
+                    .parse::<u64>()
+                    .map_err(|_| "Invalid amount: whole part must be a number".to_string())?
+            };
+
+            let fraction_str = parts[1];
+            if fraction_str.len() > decimals as usize {
+                return Err(format!(
+                    "Too many decimal places. Maximum allowed: {}",
+                    decimals
+                ));
+            }
+
+            // Pad with zeros if needed
+            let padded_fraction = format!("{:0<width$}", fraction_str, width = decimals as usize);
+            let fraction = padded_fraction
+                .parse::<u64>()
+                .map_err(|_| "Invalid amount: decimal part must be a number".to_string())?;
+
+            let multiplier = 10u64.pow(decimals as u32);
+            let whole_part = whole
+                .checked_mul(multiplier)
+                .ok_or_else(|| "Amount too large".to_string())?;
+
+            whole_part
+                .checked_add(fraction)
+                .ok_or_else(|| "Amount too large".to_string())
+        }
+        _ => Err("Invalid amount: too many decimal points".to_string()),
+    }
+}
 
 #[derive(PartialEq)]
 pub enum TransferTokensStatus {
@@ -125,7 +202,12 @@ impl TransferTokensScreen {
             ui.text_edit_singleline(&mut self.amount);
 
             if ui.button("Max").clicked() {
-                self.amount = self.max_amount.to_string();
+                let decimals = self
+                    .identity_token_balance
+                    .token_config
+                    .conventions()
+                    .decimals();
+                self.amount = format_token_amount(self.max_amount, decimals);
             }
         });
     }
@@ -203,8 +285,8 @@ impl TransferTokensScreen {
                 };
 
                 ui.label(format!(
-                    "Are you sure you want to transfer {} tokens to {}",
-                    self.amount, self.receiver_identity_id
+                    "Are you sure you want to transfer {} {} to {}?",
+                    self.amount, self.identity_token_balance.token_alias, self.receiver_identity_id
                 ));
 
                 if ui.button("Confirm").clicked() {
@@ -227,7 +309,15 @@ impl TransferTokensScreen {
                             BackendTask::TokenTask(Box::new(TokenTask::TransferTokens {
                                 sending_identity: self.identity.clone(),
                                 recipient_id: identifier,
-                                amount: self.amount.parse().unwrap(),
+                                amount: {
+                                    let decimals = self
+                                        .identity_token_balance
+                                        .token_config
+                                        .conventions()
+                                        .decimals();
+                                    parse_token_amount(&self.amount, decimals)
+                                        .expect("Amount should be valid at this point")
+                                },
                                 data_contract,
                                 token_position: self.identity_token_balance.token_position,
                                 signing_key: self.selected_key.clone().expect("Expected a key"),
@@ -422,6 +512,13 @@ impl ScreenLike for TransferTokensScreen {
                 // Input the amount to transfer
                 ui.heading("2. Input the amount to transfer");
                 ui.add_space(5.0);
+
+                // Show available balance
+                let decimals = self.identity_token_balance.token_config.conventions().decimals();
+                let formatted_balance = format_token_amount(self.max_amount, decimals);
+                ui.label(format!("Available balance: {} {}", formatted_balance, self.identity_token_balance.token_alias));
+                ui.add_space(5.0);
+
                 self.render_amount_input(ui);
 
                 ui.add_space(10.0);
@@ -465,13 +562,24 @@ impl ScreenLike for TransferTokensScreen {
                     .frame(true)
                     .corner_radius(3.0);
                 if ui.add(button).clicked() {
-                    if let Err(e) = self.amount.parse::<TokenAmount>() {
-                        self.transfer_tokens_status = TransferTokensStatus::ErrorMessage(format!(
-                            "The value entered is not valid: {}",
-                            e
-                        ));
-                    } else {
-                        self.confirmation_popup = true;
+                    let decimals = self.identity_token_balance.token_config.conventions().decimals();
+                    match parse_token_amount(&self.amount, decimals) {
+                        Ok(parsed_amount) => {
+                            if parsed_amount > self.max_amount {
+                                self.transfer_tokens_status = TransferTokensStatus::ErrorMessage(
+                                    "Amount exceeds available balance".to_string()
+                                );
+                            } else if parsed_amount == 0 {
+                                self.transfer_tokens_status = TransferTokensStatus::ErrorMessage(
+                                    "Amount must be greater than zero".to_string()
+                                );
+                            } else {
+                                self.confirmation_popup = true;
+                            }
+                        }
+                        Err(e) => {
+                            self.transfer_tokens_status = TransferTokensStatus::ErrorMessage(e);
+                        }
                     }
                 }
 

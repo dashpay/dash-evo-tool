@@ -381,6 +381,19 @@ impl ScreenLike for RegisterDataContractScreen {
             // Input for the contract
             ui.heading("3. Paste the contract JSON below");
             ui.add_space(5.0);
+
+            // Add link to dashpay.io
+            ui.horizontal(|ui| {
+                ui.label("Easily create a contract JSON here:");
+                ui.add(egui::Hyperlink::from_label_and_url(
+                    RichText::new("dashpay.io")
+                        .underline()
+                        .color(Color32::from_rgb(0, 128, 255)),
+                    "https://dashpay.io",
+                ));
+            });
+            ui.add_space(5.0);
+
             self.ui_input_field(ui);
 
             // Parse the contract and show the result

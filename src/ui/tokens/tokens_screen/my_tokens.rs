@@ -173,20 +173,7 @@ impl TokensScreen {
             detail_list.push(record);
         }
 
-        // Allocate space for refreshing indicator
-        let refreshing_height = 33.0;
-        let mut max_scroll_height = if let RefreshingStatus::Refreshing(_) = self.refreshing_status
-        {
-            ui.available_height() - refreshing_height
-        } else {
-            ui.available_height()
-        };
-
-        // Allocate space for backend message
-        let backend_message_height = 40.0;
-        if let Some((_, _, _)) = self.backend_message.clone() {
-            max_scroll_height -= backend_message_height;
-        }
+        // Space allocation for UI elements is handled by the layout system
 
         let in_dev_mode = self.app_context.developer_mode.load(Ordering::Relaxed);
 
@@ -199,7 +186,6 @@ impl TokensScreen {
 
         // A simple table with columns: [Token Name | Token ID | Total Balance]
         egui::ScrollArea::both()
-            .max_height(max_scroll_height)
             .show(ui, |ui| {
                 let mut table = TableBuilder::new(ui)
                             .striped(false)
@@ -626,24 +612,10 @@ impl TokensScreen {
     /// Renders the top-level token list (one row per unique token).
     /// When the user clicks on a token, we set `selected_token_id`.
     fn render_token_list(&mut self, ui: &mut Ui) -> Result<(), String> {
-        // Allocate space for refreshing indicator
-        let refreshing_height = 33.0;
-        let mut max_scroll_height = if let RefreshingStatus::Refreshing(_) = self.refreshing_status
-        {
-            ui.available_height() - refreshing_height
-        } else {
-            ui.available_height()
-        };
-
-        // Allocate space for backend message
-        let backend_message_height = 40.0;
-        if let Some((_, _, _)) = self.backend_message.clone() {
-            max_scroll_height -= backend_message_height;
-        }
+        // Space allocation for UI elements is handled by the layout system
 
         // A simple table with columns: [Token Name | Token ID | Total Balance]
         egui::ScrollArea::both()
-            .max_height(max_scroll_height)
             .show(ui, |ui| {
                 TableBuilder::new(ui)
                     .striped(false)

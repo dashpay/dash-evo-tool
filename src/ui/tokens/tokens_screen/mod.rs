@@ -932,6 +932,7 @@ pub struct TokensScreen {
     backend_message: Option<(String, MessageType, DateTime<Utc>)>,
     pending_backend_task: Option<BackendTask>,
     refreshing_status: RefreshingStatus,
+    should_reset_collapsing_states: bool,
 
     // Contract Search
     pub selected_contract_id: Option<Identifier>,
@@ -1416,6 +1417,7 @@ impl TokensScreen {
             minting_allow_choosing_destination_rules: ChangeControlRulesUI::default(),
             function_images,
             function_textures: BTreeMap::default(),
+            should_reset_collapsing_states: false,
         };
 
         if let Ok(saved_ids) = screen.app_context.db.load_token_order() {
@@ -2349,6 +2351,7 @@ impl ScreenLike for TokensScreen {
 
     fn refresh_on_arrival(&mut self) {
         self.selected_token = None;
+        self.should_reset_collapsing_states = true;
 
         self.all_known_tokens = self
             .app_context
@@ -2554,7 +2557,6 @@ impl ScreenLike for TokensScreen {
                     .resizable(true)
                     .show(ui.ctx(), |ui| {
                         egui::ScrollArea::vertical()
-                            .max_height(600.0)
                             .show(ui, |ui| {
                                 let mut cache = CommonMarkCache::default();
                                 CommonMarkViewer::new().show(ui, &mut cache, &info_text);

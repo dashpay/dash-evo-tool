@@ -5,7 +5,7 @@ use crate::ui::theme::{DashColors, Shadow, Shape, Spacing};
 use crate::ui::RootScreenType;
 use dash_sdk::dpp::version::v9::PROTOCOL_VERSION_9;
 use eframe::epaint::Margin;
-use egui::{Color32, Context, Frame, ImageButton, SidePanel, TextureHandle};
+use egui::{Context, Frame, ImageButton, SidePanel, TextureHandle};
 use rust_embed::RustEmbed;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -16,27 +16,39 @@ struct Assets;
 
 // Function to load an icon as a texture using embedded assets
 fn load_icon(ctx: &Context, path: &str) -> Option<TextureHandle> {
-    // Attempt to retrieve the embedded file
-    if let Some(content) = Assets::get(path) {
-        // Load the image from the embedded bytes
-        if let Ok(image) = image::load_from_memory(&content.data) {
-            let size = [image.width() as usize, image.height() as usize];
-            let rgba_image = image.into_rgba8();
-            let pixels = rgba_image.into_raw();
+    // Use ctx.data_mut to check if texture is already cached
+    ctx.data_mut(|d| {
+        d.get_temp::<TextureHandle>(egui::Id::new(path))
+            .map(|v| v.clone())
+    })
+    .or_else(|| {
+        // Only do expensive operations if texture is not cached
+        if let Some(content) = Assets::get(path) {
+            // Load the image from the embedded bytes
+            if let Ok(image) = image::load_from_memory(&content.data) {
+                let size = [image.width() as usize, image.height() as usize];
+                let rgba_image = image.into_rgba8();
+                let pixels = rgba_image.into_raw();
 
-            Some(ctx.load_texture(
-                path,
-                egui::ColorImage::from_rgba_unmultiplied(size, &pixels),
-                Default::default(),
-            ))
+                let texture = ctx.load_texture(
+                    path,
+                    egui::ColorImage::from_rgba_unmultiplied(size, &pixels),
+                    egui::TextureOptions::LINEAR, // Use linear filtering for smoother scaling
+                );
+
+                // Cache the texture
+                ctx.data_mut(|d| d.insert_temp(egui::Id::new(path), texture.clone()));
+
+                Some(texture)
+            } else {
+                eprintln!("Failed to load image from embedded data at path: {}", path);
+                None
+            }
         } else {
-            eprintln!("Failed to load image from embedded data at path: {}", path);
+            eprintln!("Image not found in embedded assets at path: {}", path);
             None
         }
-    } else {
-        eprintln!("Image not found in embedded assets at path: {}", path);
-        None
-    }
+    })
 }
 
 pub fn add_left_panel(
@@ -80,7 +92,7 @@ pub fn add_left_panel(
                 .fill(DashColors::SURFACE)
                 .stroke(egui::Stroke::new(1.0, DashColors::BORDER_LIGHT))
                 .inner_margin(Margin::same(Spacing::MD_I8))
-                .rounding(egui::Rounding::same(Shape::RADIUS_LG))
+                .corner_radius(egui::CornerRadius::same(Shape::RADIUS_LG))
                 .shadow(Shadow::elevated())
                 .show(ui, |ui| {
                     ui.vertical_centered(|ui| {
@@ -122,7 +134,7 @@ pub fn add_left_panel(
                                     let button = egui::Button::new(*label)
                                         .fill(DashColors::glass_white())
                                         .stroke(egui::Stroke::new(1.0, DashColors::glass_border()))
-                                        .rounding(egui::Rounding::same(Shape::RADIUS_MD))
+                                        .corner_radius(egui::CornerRadius::same(Shape::RADIUS_MD))
                                         .min_size(egui::vec2(60.0, 60.0));
 
                                     if ui.add(button).clicked() {
@@ -134,8 +146,28 @@ pub fn add_left_panel(
                             ui.add_space(Spacing::MD); // Add some space between buttons
                         }
 
-                        // Push content to the top and dev label to the bottom
+                        // Push content to the top and dev label + logo to the bottom
                         ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
+                            // Add Dash logo at the bottom
+                            if let Some(dash_texture) = load_icon(ctx, "dash.png") {
+                                ui.add_space(Spacing::SM);
+                                let logo_size = egui::vec2(50.0, 20.0); // Even smaller size, same aspect ratio
+                                let logo_response = ui.add(
+                                    egui::Image::new(&dash_texture)
+                                        .fit_to_exact_size(logo_size)
+                                        .texture_options(egui::TextureOptions::LINEAR) // Smooth interpolation to reduce pixelation
+                                        .sense(egui::Sense::click())
+                                );
+                                
+                                if logo_response.clicked() {
+                                    ui.ctx().open_url(egui::OpenUrl::new_tab("https://dash.org"));
+                                }
+                                
+                                if logo_response.hovered() {
+                                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                                }
+                            }
+                            
                             if app_context.developer_mode.load(Ordering::Relaxed) {
                                 ui.add_space(Spacing::MD);
                                 let dev_label = egui::RichText::new("🔧 Dev mode")

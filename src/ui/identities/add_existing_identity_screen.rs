@@ -7,6 +7,7 @@ use crate::model::wallet::Wallet;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
+use crate::ui::components::styled::island_central_panel;
 use crate::ui::{MessageType, ScreenLike};
 use dash_sdk::dashcore_rpc::dashcore::Network;
 use dash_sdk::dpp::identity::TimestampMillis;
@@ -511,20 +512,25 @@ impl ScreenLike for AddExistingIdentityScreen {
             crate::ui::RootScreenType::RootScreenIdentities,
         );
 
-        egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("Load Existing Identity");
-            ui.add_space(10.0);
+        action |= island_central_panel(ctx, |ui| {
+            let mut inner_action = AppAction::None;
+            
+            egui::ScrollArea::vertical()
+                .auto_shrink([false; 2])
+                .show(ui, |ui| {
+                    ui.heading("Load Existing Identity");
+                    ui.add_space(10.0);
 
-            if self.add_identity_status == AddIdentityStatus::Complete {
-                action |= self.show_success(ui);
-                return;
-            }
+                    if self.add_identity_status == AddIdentityStatus::Complete {
+                        inner_action |= self.show_success(ui);
+                        return;
+                    }
 
-            action |= self.render_by_identity(ui);
+                    inner_action |= self.render_by_identity(ui);
 
-            ui.add_space(10.0);
+                    ui.add_space(10.0);
 
-            match &self.add_identity_status {
+                    match &self.add_identity_status {
                 AddIdentityStatus::NotStarted => {
                     // Do nothing
                 }
@@ -562,6 +568,9 @@ impl ScreenLike for AddExistingIdentityScreen {
                     // handled above
                 }
             }
+                });
+            
+            inner_action
         });
 
         // Show the popup window if `show_popup` is true

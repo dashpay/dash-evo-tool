@@ -309,59 +309,53 @@ impl DocumentQueryScreen {
             }
         } else {
             if matches!(self.document_query_status, DocumentQueryStatus::NotStarted) {
-                ui.label("Please run a query first.");
-            } else {
+                ui.label("Select a contract and document type on the left and hit \"Fetch Documents\" to query documents.");
+            } else if matches!(self.document_query_status, DocumentQueryStatus::Complete) {
                 ui.label("No documents found.");
             }
         }
 
         ui.add_space(5.0);
 
-        let pagination_height = 30.0;
-        let max_scroll_height = ui.available_height() - pagination_height;
+        ScrollArea::both().show(ui, |ui| {
+            // Remove ui.set_width to respect parent container margins
 
-        ScrollArea::both()
-            .max_height(max_scroll_height)
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-
-                match self.document_query_status {
-                    DocumentQueryStatus::WaitingForResult(start_time) => {
-                        let time_elapsed = SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .expect("Time went backwards")
-                            .as_secs()
-                            - start_time;
-                        ui.horizontal(|ui| {
-                            ui.label(format!(
-                                "Fetching documents... Time taken so far: {} seconds",
-                                time_elapsed
-                            ));
-                            ui.add(
-                                egui::widgets::Spinner::default()
-                                    .color(Color32::from_rgb(0, 128, 255)),
-                            );
-                        });
-                    }
-                    DocumentQueryStatus::Complete => match self.document_display_mode {
-                        DocumentDisplayMode::Json => {
-                            self.show_filtered_docs(ui, DocumentDisplayMode::Json);
-                        }
-                        DocumentDisplayMode::Yaml => {
-                            self.show_filtered_docs(ui, DocumentDisplayMode::Yaml);
-                        }
-                    },
-
-                    DocumentQueryStatus::ErrorMessage(ref message) => {
-                        self.error_message =
-                            Some((message.to_string(), MessageType::Error, Utc::now()));
-                        ui.colored_label(Color32::DARK_RED, message);
-                    }
-                    _ => {
-                        // Nothing
-                    }
+            match self.document_query_status {
+                DocumentQueryStatus::WaitingForResult(start_time) => {
+                    let time_elapsed = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .expect("Time went backwards")
+                        .as_secs()
+                        - start_time;
+                    ui.horizontal(|ui| {
+                        ui.label(format!(
+                            "Fetching documents... Time taken so far: {} seconds",
+                            time_elapsed
+                        ));
+                        ui.add(
+                            egui::widgets::Spinner::default().color(Color32::from_rgb(0, 128, 255)),
+                        );
+                    });
                 }
-            });
+                DocumentQueryStatus::Complete => match self.document_display_mode {
+                    DocumentDisplayMode::Json => {
+                        self.show_filtered_docs(ui, DocumentDisplayMode::Json);
+                    }
+                    DocumentDisplayMode::Yaml => {
+                        self.show_filtered_docs(ui, DocumentDisplayMode::Yaml);
+                    }
+                },
+
+                DocumentQueryStatus::ErrorMessage(ref message) => {
+                    self.error_message =
+                        Some((message.to_string(), MessageType::Error, Utc::now()));
+                    ui.colored_label(Color32::DARK_RED, message);
+                }
+                _ => {
+                    // Nothing
+                }
+            }
+        });
 
         ui.add_space(10.0);
 
@@ -459,7 +453,7 @@ impl DocumentQueryScreen {
         ui.add(
             egui::TextEdit::multiline(&mut combined_string)
                 .desired_rows(10)
-                .desired_width(ui.available_width())
+                // Remove desired_width to respect parent container margins
                 .font(egui::TextStyle::Monospace),
         );
     }
@@ -520,6 +514,12 @@ impl DocumentQueryScreen {
 }
 
 impl ScreenLike for DocumentQueryScreen {
+    fn refresh_on_arrival(&mut self) {
+        // This will be called when navigating to this screen
+        // Note: We can't easily control egui's collapsing headers from here
+        // They maintain their own internal state
+    }
+
     fn refresh(&mut self) {
         // Reset the screen state
         self.error_message = None;

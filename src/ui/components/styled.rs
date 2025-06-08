@@ -673,17 +673,17 @@ pub fn island_central_panel<R>(ctx: &Context, content: impl FnOnce(&mut Ui) -> R
         .frame(
             Frame::new()
                 .fill(DashColors::BACKGROUND) // Light background instead of transparent
-                .inner_margin(Margin::symmetric(10, 10)), // Add margins for island effect
+                .inner_margin(Margin::symmetric(20, 10)), // Increased horizontal margin to prevent edge touching
         )
         .show(ctx, |ui| {
-            // Calculate responsive margins based on available width
+            // Calculate responsive margins based on available width, but ensure minimum spacing
             let available_width = ui.available_width();
             let inner_margin = if available_width > 1200.0 {
                 24.0 // Spacing::LG for larger screens
             } else if available_width > 800.0 {
-                16.0 // Spacing::MD for medium screens
+                20.0 // Increased from 16px to ensure proper spacing
             } else {
-                8.0 // Spacing::SM for smaller screens
+                20.0 // Force minimum 20px to prevent edge touching
             };
 
             // Create an island panel with rounded edges

@@ -386,24 +386,10 @@ impl WalletsBalancesScreen {
         // Sort the data
         self.sort_address_data(&mut address_data);
 
-        let mut allocated_space = if self.message.is_some() { 100.0 } else { 50.0 }; // Space for the message and "Add receiving address" button
-        if self.selected_filters.contains("Unused Asset Locks") {
-            if let Some(wallet) = &self.selected_wallet {
-                let wallet = wallet.read().unwrap();
-
-                if wallet.unused_asset_locks.is_empty() {
-                    allocated_space += 50.0;
-                } else {
-                    for _ in &wallet.unused_asset_locks {
-                        allocated_space += 20.0;
-                    }
-                }
-            }
-        }
+        // Space allocation for UI elements is handled by the layout system
 
         // Render the table
         egui::ScrollArea::both()
-            .max_height(ui.available_height() - allocated_space)
             .id_salt("address_table")
             .show(ui, |ui| {
                 TableBuilder::new(ui)

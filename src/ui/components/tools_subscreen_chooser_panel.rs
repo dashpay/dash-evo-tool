@@ -62,7 +62,10 @@ pub fn add_tools_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext
                 .inner_margin(Margin::symmetric(10, 10)), // Add margins for island effect
         )
         .show(ctx, |ui| {
-            // Create an island panel with rounded edges
+            // Fill the entire available height
+            let available_height = ui.available_height();
+
+            // Create an island panel with rounded edges that fills the height
             Frame::new()
                 .fill(DashColors::SURFACE)
                 .stroke(egui::Stroke::new(1.0, DashColors::BORDER_LIGHT))
@@ -70,6 +73,8 @@ pub fn add_tools_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext
                 .corner_radius(egui::Rounding::same(Shape::RADIUS_LG))
                 .shadow(Shadow::elevated())
                 .show(ui, |ui| {
+                    // Account for both outer margin (10px * 2) and inner margin
+                    ui.set_min_height(available_height - 2.0 - (Spacing::MD_I8 as f32 * 2.0));
                     // Display subscreen names
                     ui.vertical(|ui| {
                         ui.label(
@@ -86,22 +91,22 @@ pub fn add_tools_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext
                                 egui::Button::new(
                                     RichText::new(subscreen.display_name())
                                         .color(DashColors::WHITE)
-                                        .size(Typography::SCALE_BASE),
+                                        .size(Typography::SCALE_SM),
                                 )
                                 .fill(DashColors::DASH_BLUE)
                                 .stroke(egui::Stroke::NONE)
                                 .rounding(egui::Rounding::same(Shape::RADIUS_MD))
-                                .min_size(egui::Vec2::new(200.0, 36.0))
+                                .min_size(egui::Vec2::new(150.0, 28.0))
                             } else {
                                 egui::Button::new(
                                     RichText::new(subscreen.display_name())
                                         .color(DashColors::TEXT_PRIMARY)
-                                        .size(Typography::SCALE_BASE),
+                                        .size(Typography::SCALE_SM),
                                 )
                                 .fill(DashColors::WHITE)
                                 .stroke(egui::Stroke::new(1.0, DashColors::BORDER))
                                 .rounding(egui::Rounding::same(Shape::RADIUS_MD))
-                                .min_size(egui::Vec2::new(200.0, 36.0))
+                                .min_size(egui::Vec2::new(150.0, 28.0))
                             };
 
                             // Show the subscreen name as a clickable option

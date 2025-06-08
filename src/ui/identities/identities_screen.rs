@@ -488,22 +488,9 @@ impl IdentitiesScreen {
             self.sort_vec(&mut local_identities);
         }
 
-        // Allocate space for refreshing status
-        let refreshing_height = 33.0;
-        let mut max_scroll_height =
-            if let IdentitiesRefreshingStatus::Refreshing(_) = self.refreshing_status {
-                ui.available_height() - refreshing_height
-            } else {
-                ui.available_height()
-            };
+        // Space allocation for UI elements is handled by the layout system
 
-        // Allocate space for backend message
-        let backend_message_height = 47.0;
-        if let Some((_, _, _)) = self.backend_message.clone() {
-            max_scroll_height -= backend_message_height;
-        }
-
-        egui::ScrollArea::both().max_height(max_scroll_height).show(ui, |ui| {
+        egui::ScrollArea::both().show(ui, |ui| {
             TableBuilder::new(ui)
                         .striped(false)
                         .resizable(true)
@@ -651,45 +638,45 @@ impl IdentitiesScreen {
                                     row.col(|ui| {
                                         Self::show_balance(ui, qualified_identity);
 
-                                        ui.spacing_mut().item_spacing.x = 3.0;
+                                        ui.horizontal(|ui| {
+                                            ui.spacing_mut().item_spacing.x = 3.0;
 
-                                        if ui.button("Withdraw").on_hover_text("Withdraw credits from this identity to a Dash Core address").clicked() {
-                                            action = AppAction::AddScreen(
-                                                Screen::WithdrawalScreen(WithdrawalScreen::new(
-                                                    qualified_identity.clone(),
-                                                    &self.app_context,
-                                                )),
-                                            );
-                                        }
-                                        if ui.button("Top up").on_hover_text("Increase this identity's balance by sending it Dash from the Core chain").clicked() {
-                                            action = AppAction::AddScreen(
-                                                Screen::TopUpIdentityScreen(TopUpIdentityScreen::new(
-                                                    qualified_identity.clone(),
-                                                    &self.app_context,
-                                                )),
-                                            );
-                                        }
-                                        if ui.button("Transfer").on_hover_text("Transfer credits from this identity to another identity").clicked() {
-                                            action = AppAction::AddScreen(
-                                                Screen::TransferScreen(TransferScreen::new(
-                                                    qualified_identity.clone(),
-                                                    &self.app_context,
-                                                )),
-                                            );
-                                        }
+                                            if ui.button("Withdraw").on_hover_text("Withdraw credits from this identity to a Dash Core address").clicked() {
+                                                action = AppAction::AddScreen(
+                                                    Screen::WithdrawalScreen(WithdrawalScreen::new(
+                                                        qualified_identity.clone(),
+                                                        &self.app_context,
+                                                    )),
+                                                );
+                                            }
+                                            if ui.button("Top up").on_hover_text("Increase this identity's balance by sending it Dash from the Core chain").clicked() {
+                                                action = AppAction::AddScreen(
+                                                    Screen::TopUpIdentityScreen(TopUpIdentityScreen::new(
+                                                        qualified_identity.clone(),
+                                                        &self.app_context,
+                                                    )),
+                                                );
+                                            }
+                                            if ui.button("Transfer").on_hover_text("Transfer credits from this identity to another identity").clicked() {
+                                                action = AppAction::AddScreen(
+                                                    Screen::TransferScreen(TransferScreen::new(
+                                                        qualified_identity.clone(),
+                                                        &self.app_context,
+                                                    )),
+                                                );
+                                            }
+                                        });
                                     });
                                     row.col(|ui| {
-                                        ui.spacing_mut().item_spacing.x = 3.0;
-
                                         ui.horizontal(|ui| {
+                                            ui.spacing_mut().item_spacing.x = 3.0;
+
                                             // Remove
                                             if ui.button("Remove").on_hover_text("Remove this identity from Dash Evo Tool (it'll still exist on Dash Platform)").clicked() {
                                                 self.identity_to_remove =
                                                     Some(qualified_identity.clone());
                                             }
-                                        });
 
-                                        ui.horizontal(|ui| {
                                             // Up arrow
                                             let up_btn = ui.button("⬆").on_hover_text("Move this identity up in the list");
                                             // Down arrow

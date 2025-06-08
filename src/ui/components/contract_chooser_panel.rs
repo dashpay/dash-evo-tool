@@ -62,7 +62,10 @@ pub fn add_contract_chooser_panel(
                 .inner_margin(Margin::symmetric(10, 10)), // Add margins for island effect
         )
         .show(ctx, |ui| {
-            // Create an island panel with rounded edges
+            // Fill the entire available height
+            let available_height = ui.available_height();
+
+            // Create an island panel with rounded edges that fills the height
             Frame::new()
                 .fill(DashColors::SURFACE)
                 .stroke(egui::Stroke::new(1.0, DashColors::BORDER_LIGHT))
@@ -70,6 +73,9 @@ pub fn add_contract_chooser_panel(
                 .corner_radius(egui::Rounding::same(Shape::RADIUS_LG))
                 .shadow(Shadow::elevated())
                 .show(ui, |panel_ui| {
+                    // Account for both outer margin (10px * 2) and inner margin
+                    panel_ui.set_min_height(available_height - 2.0 - (Spacing::MD_I8 as f32 * 2.0));
+
                     // Make the whole panel scrollable (if it overflows vertically)
                     egui::ScrollArea::vertical().show(panel_ui, |ui| {
                         // Search box
@@ -386,8 +392,9 @@ pub fn add_contract_chooser_panel(
 
                                             // Right‐aligned Remove button
                                             ui.with_layout(
-                                                egui::Layout::right_to_left(egui::Align::Min),
+                                                egui::Layout::right_to_left(egui::Align::Center),
                                                 |ui| {
+                                                    ui.add_space(2.0); // Push down a few pixels
                                                     if contract.alias != Some("dpns".to_string())
                                                         && contract.alias
                                                             != Some("token_history".to_string())
@@ -395,7 +402,10 @@ pub fn add_contract_chooser_panel(
                                                             != Some("withdrawals".to_string())
                                                         && contract.alias
                                                             != Some("keyword_search".to_string())
-                                                        && ui.button("X").clicked()
+                                                        && ui.add(egui::Button::new("X")
+                                                            .min_size(egui::Vec2::new(20.0, 20.0))
+                                                            .small())
+                                                            .clicked()
                                                     {
                                                         action |= AppAction::BackendTask(
                                                             BackendTask::ContractTask(Box::new(

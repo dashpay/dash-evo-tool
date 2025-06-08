@@ -85,6 +85,8 @@ impl TokensScreen {
                             TransactionType::RegisterContract,
                         );
 
+                        ui.add_space(5.0);
+
                         // If a key was selected, set the wallet reference
                         if let (Some(ref qid), Some(ref key)) = (&self.selected_identity, &self.selected_key) {
                             // If the key belongs to a wallet, set that wallet reference:
@@ -294,7 +296,23 @@ impl TokensScreen {
                         ui.add_space(10.0);
 
                         // 5) Advanced settings toggle
-                        ui.collapsing("Advanced", |ui| {
+                        let mut advanced_state = egui::collapsing_header::CollapsingState::load_with_default_open(
+                            ui.ctx(),
+                            ui.make_persistent_id("token_creator_advanced"),
+                            false,
+                        );
+                        
+                        // Force close if we need to reset
+                        if self.should_reset_collapsing_states {
+                            advanced_state.set_open(false);
+                        }
+                        
+                        advanced_state.store(ui.ctx());
+                        
+                        advanced_state.show_header(ui, |ui| {
+                            ui.label("Advanced");
+                        })
+                        .body(|ui| {
                             ui.add_space(3.0);
 
                             // Use `Grid` to align labels and text edits
@@ -390,7 +408,23 @@ impl TokensScreen {
 
                         ui.add_space(5.0);
 
-                        ui.collapsing("Action Rules", |ui| {
+                        let mut action_rules_state = egui::collapsing_header::CollapsingState::load_with_default_open(
+                            ui.ctx(),
+                            ui.make_persistent_id("token_creator_action_rules"),
+                            false,
+                        );
+                        
+                        // Force close if we need to reset
+                        if self.should_reset_collapsing_states {
+                            action_rules_state.set_open(false);
+                        }
+                        
+                        action_rules_state.store(ui.ctx());
+                        
+                        action_rules_state.show_header(ui, |ui| {
+                            ui.label("Action Rules");
+                        })
+                        .body(|ui| {
                             ui.horizontal(|ui| {
                                 ui.label("Preset:");
 
@@ -455,7 +489,23 @@ impl TokensScreen {
                             self.conventions_change_rules.render_control_change_rules_ui(ui, &self.groups_ui, "Conventions Change", None);
 
                             // Main control group change is slightly different so do this one manually.
-                            ui.collapsing("Main Control Group Change", |ui| {
+                            let mut main_control_state = egui::collapsing_header::CollapsingState::load_with_default_open(
+                                ui.ctx(),
+                                ui.make_persistent_id("token_creator_main_control_group"),
+                                false,
+                            );
+                            
+                            // Force close if we need to reset
+                            if self.should_reset_collapsing_states {
+                                main_control_state.set_open(false);
+                            }
+                            
+                            main_control_state.store(ui.ctx());
+                            
+                            main_control_state.show_header(ui, |ui| {
+                                ui.label("Main Control Group Change");
+                            })
+                            .body(|ui| {
                                 ui.add_space(3.0);
 
                                 // A) authorized_to_make_change
@@ -516,12 +566,7 @@ impl TokensScreen {
                             });
                         });
 
-                        ui.add_space(5.0);
-
                         self.render_distributions(context, ui);
-
-                        ui.add_space(5.0);
-
                         self.render_groups(ui);
 
                         // 6) "Register Token Contract" button
@@ -595,6 +640,11 @@ impl TokensScreen {
                         });
                     });
             });
+
+        // Reset the flag after processing all collapsing headers
+        if self.should_reset_collapsing_states {
+            self.should_reset_collapsing_states = false;
+        }
 
         // 7) If the user pressed "Register Token Contract," show a popup confirmation
         if self.show_token_creator_confirmation_popup {

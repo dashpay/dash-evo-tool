@@ -375,22 +375,9 @@ impl DPNSScreen {
             cn
         };
 
-        let refreshing_height = 33.0;
-        let mut max_scroll_height = if let RefreshingStatus::Refreshing(_) = self.refreshing_status
-        {
-            ui.available_height() - refreshing_height
-        } else {
-            ui.available_height()
-        };
-
-        // Allocate space for backend message
-        let backend_message_height = 40.0;
-        if let Some((_, _, _)) = self.message.clone() {
-            max_scroll_height -= backend_message_height;
-        }
+        // Space allocation for UI elements is handled by the layout system
 
         egui::ScrollArea::both()
-            .max_height(max_scroll_height)
             .show(ui, |ui| {
                 Frame::group(ui.style())
                     .fill(ui.visuals().panel_fill)
@@ -729,22 +716,9 @@ impl DPNSScreen {
         };
 
         // Allocate space for refreshing indicator
-        let refreshing_height = 33.0;
-        let mut max_scroll_height = if let RefreshingStatus::Refreshing(_) = self.refreshing_status
-        {
-            ui.available_height() - refreshing_height
-        } else {
-            ui.available_height()
-        };
-
-        // Allocate space for backend message
-        let backend_message_height = 40.0;
-        if let Some((_, _, _)) = self.message.clone() {
-            max_scroll_height -= backend_message_height;
-        }
+        // Space allocation for UI elements is handled by the layout system
 
         egui::ScrollArea::both()
-            .max_height(max_scroll_height)
             .show(ui, |ui| {
                 Frame::group(ui.style())
                     .fill(ui.visuals().panel_fill)
@@ -901,22 +875,9 @@ impl DPNSScreen {
             _ => std::cmp::Ordering::Equal,
         });
 
-        let refreshing_height = 33.0;
-        let mut max_scroll_height = if let RefreshingStatus::Refreshing(_) = self.refreshing_status
-        {
-            ui.available_height() - refreshing_height
-        } else {
-            ui.available_height()
-        };
-
-        // Allocate space for backend message
-        let backend_message_height = 40.0;
-        if let Some((_, _, _)) = self.message.clone() {
-            max_scroll_height -= backend_message_height;
-        }
+        // Space allocation for UI elements is handled by the layout system
 
         egui::ScrollArea::both()
-            .max_height(max_scroll_height)
             .show(ui, |ui| {
                 Frame::group(ui.style())
                     .fill(ui.visuals().panel_fill)

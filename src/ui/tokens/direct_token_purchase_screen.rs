@@ -191,12 +191,16 @@ impl PurchaseTokenScreen {
         egui::Window::new("Confirm Purchase")
             .collapsible(false)
             .open(&mut is_open)
-            .frame(egui::Frame::default()
-                .fill(egui::Color32::from_rgb(245, 245, 245))
-                .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(200, 200, 200)))
-                .shadow(egui::epaint::Shadow::default())
-                .inner_margin(egui::Margin::same(20))
-                .corner_radius(egui::CornerRadius::same(8))
+            .frame(
+                egui::Frame::default()
+                    .fill(egui::Color32::from_rgb(245, 245, 245))
+                    .stroke(egui::Stroke::new(
+                        1.0,
+                        egui::Color32::from_rgb(200, 200, 200),
+                    ))
+                    .shadow(egui::epaint::Shadow::default())
+                    .inner_margin(egui::Margin::same(20))
+                    .corner_radius(egui::CornerRadius::same(8)),
             )
             .show(ui.ctx(), |ui| {
                 // Validate user input

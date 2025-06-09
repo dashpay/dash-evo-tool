@@ -255,10 +255,7 @@ impl SetTokenPriceScreen {
                                 format!("Price: {} Dash per token ({} credits)", price, credits),
                             );
                         } else {
-                            ui.colored_label(
-                                Color32::DARK_RED,
-                                "X Price must be greater than 0",
-                            );
+                            ui.colored_label(Color32::DARK_RED, "X Price must be greater than 0");
                         }
                     } else {
                         ui.colored_label(
@@ -480,12 +477,13 @@ impl SetTokenPriceScreen {
         egui::Window::new("Confirm SetPricingSchedule")
             .collapsible(false)
             .open(&mut is_open)
-            .frame(egui::Frame::default()
-                .fill(Color32::from_rgb(245, 245, 245))
-                .stroke(egui::Stroke::new(1.0, Color32::from_rgb(200, 200, 200)))
-                .shadow(egui::epaint::Shadow::default())
-                .inner_margin(egui::Margin::same(20))
-                .corner_radius(egui::CornerRadius::same(8))
+            .frame(
+                egui::Frame::default()
+                    .fill(Color32::from_rgb(245, 245, 245))
+                    .stroke(egui::Stroke::new(1.0, Color32::from_rgb(200, 200, 200)))
+                    .shadow(egui::epaint::Shadow::default())
+                    .inner_margin(egui::Margin::same(20))
+                    .corner_radius(egui::CornerRadius::same(8)),
             )
             .show(ui.ctx(), |ui| {
                 // Validate user input
@@ -906,7 +904,7 @@ impl ScreenLike for SetTokenPriceScreen {
                     PricingType::TieredPricing => {
                         self.tiered_prices.iter().any(|(amount, price)| {
                             !amount.trim().is_empty() && !price.trim().is_empty() &&
-                            amount.trim().parse::<u64>().is_ok() && 
+                            amount.trim().parse::<u64>().is_ok() &&
                             if let Ok(p) = price.trim().parse::<f64>() { p > 0.0 } else { false }
                         })
                     }

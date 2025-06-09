@@ -1,18 +1,17 @@
 use crate::app::TaskResult;
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::context::AppContext;
+use crate::model::proof_log_item::{ProofLogItem, RequestType};
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::dpp::group::GroupStateTransitionInfoStatus;
-
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::state_transition::proof_result::StateTransitionProofResult;
 use dash_sdk::dpp::tokens::token_pricing_schedule::TokenPricingSchedule;
+use dash_sdk::platform::tokens::builders::set_price::TokenChangeDirectPurchasePriceTransitionBuilder;
 use dash_sdk::platform::transition::broadcast::BroadcastStateTransition;
-use dash_sdk::platform::transition::fungible_tokens::set_price::TokenChangeDirectPurchasePriceTransitionBuilder;
 use dash_sdk::platform::{DataContract, IdentityPublicKey};
 use dash_sdk::{Error, Sdk};
-
-use crate::model::proof_log_item::{ProofLogItem, RequestType};
+use std::sync::Arc;
 use tokio::sync::mpsc;
 
 impl AppContext {
@@ -20,7 +19,7 @@ impl AppContext {
     pub async fn set_direct_purchase_price(
         &self,
         sending_identity: &QualifiedIdentity,
-        data_contract: &DataContract,
+        data_contract: Arc<DataContract>,
         token_position: u16,
         signing_key: IdentityPublicKey,
         public_note: Option<String>,
@@ -30,7 +29,7 @@ impl AppContext {
         _sender: mpsc::Sender<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, String> {
         let mut builder = TokenChangeDirectPurchasePriceTransitionBuilder::new(
-            data_contract,
+            data_contract.clone(),
             token_position,
             sending_identity.identity.id(),
             token_pricing_schedule,
@@ -44,16 +43,12 @@ impl AppContext {
             builder = builder.with_using_group_info(group_info);
         }
 
-        let options = self.state_transition_options();
+        if let Some(options) = self.state_transition_options() {
+            builder = builder.with_state_transition_creation_options(options);
+        }
 
         let state_transition = builder
-            .sign(
-                sdk,
-                &signing_key,
-                sending_identity,
-                self.platform_version(),
-                options,
-            )
+            .sign(sdk, &signing_key, sending_identity, self.platform_version())
             .await
             .map_err(|e| format!("Error signing SetPrice state transition: {}", e))?;
 

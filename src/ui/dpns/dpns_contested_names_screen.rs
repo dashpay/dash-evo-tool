@@ -170,10 +170,7 @@ impl DPNSScreen {
             .db
             .get_local_voting_identities(app_context)
             .unwrap_or_default();
-        let user_identities = app_context
-            .db
-            .get_local_user_identities(app_context)
-            .unwrap_or_default();
+        let user_identities = app_context.load_local_user_identities().unwrap_or_default();
 
         // Initialize vote handling pop-up state to hidden
         let identity_count = voting_identities.len();
@@ -1653,8 +1650,7 @@ impl ScreenLike for DPNSScreen {
             .unwrap_or_default();
         self.user_identities = self
             .app_context
-            .db
-            .get_local_user_identities(&self.app_context)
+            .load_local_user_identities()
             .unwrap_or_default();
         self.refresh();
     }

@@ -1,0 +1,226 @@
+name: dash-evo-tool
+title: Dash Evo Tool
+icon: mac_os/AppIcons/Assets.xcassets/AppIcon.appiconset/512.png
+type: app
+version: "0.9.0-dev"
+summary: Graphical user interface for interacting with Dash Evolution
+description: |
+  Dash Evo Tool is a graphical user interface for easily interacting with 
+  Dash Evolution. The current version enables registering DPNS usernames, 
+  viewing active DPNS username contests, voting on active contests, and 
+  decoding state transitions. The tool supports both Mainnet and Testnet networks.
+
+grade: devel
+confinement: strict
+
+base: core24
+
+platforms:
+  amd64:
+  arm64:
+
+apps:
+  dash-evo-tool:
+    command: bin/dash-evo-tool
+    desktop: usr/share/applications/dash-evo-tool.desktop
+    environment:
+      XKB_CONFIG_ROOT: $SNAP/usr/share/X11/xkb
+    plugs:
+      - home
+      - network
+      - network-bind
+      - desktop
+      - desktop-legacy
+      - wayland
+      - x11
+      - opengl
+      - gsettings
+      - screen-inhibit-control
+      - browser-support
+      - process-control # Required to spawn external processes
+      # - system-files # Required to access system binaries
+
+parts:
+  rust-deps:
+    plugin: nil
+    build-packages:
+      - curl
+      - build-essential
+      - pkg-config
+      - libssl-dev
+    override-build: |
+      # Install Rust
+      curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.85
+      export PATH="$HOME/.cargo/bin:$PATH"
+      rustc --version
+      cargo --version
+
+  protoc:
+    plugin: nil
+    build-packages:
+      - curl
+      - unzip
+    override-build: |
+      # Install protoc to stage directory (build-time only)
+      PROTOC_VERSION="31.1"
+      if [ "$CRAFT_ARCH_BUILD_ON" = "arm64" ]; then
+        PROTOC_ARCH="aarch_64"
+      else
+        PROTOC_ARCH="x86_64"
+      fi
+      curl -OL "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-${PROTOC_ARCH}.zip"
+      unzip -o "protoc-${PROTOC_VERSION}-linux-${PROTOC_ARCH}.zip" -d $SNAPCRAFT_STAGE bin/protoc
+      unzip -o "protoc-${PROTOC_VERSION}-linux-${PROTOC_ARCH}.zip" -d $SNAPCRAFT_STAGE 'include/*'
+      chmod +x $SNAPCRAFT_STAGE/bin/protoc
+
+  dash-evo-tool:
+    after: [rust-deps, protoc]
+    plugin: nil
+    source: .
+    build-packages:
+      - build-essential
+      - pkg-config
+      - clang
+      - cmake
+      - libsqlite3-dev
+      - libxcb-xfixes0-dev
+      - libxcb-shape0-dev
+      - libxcb-randr0-dev
+      - libxcb-xkb-dev
+      - libxkbcommon-x11-dev
+      - libxkbcommon-dev
+      - libssl-dev
+      - libsodium-dev
+      - libbsd-dev
+      - libc6-dev
+      - libclang-dev
+      - xkb-data
+    stage-packages:
+      - xkb-data
+      - libxkbcommon0
+      - libxkbcommon-x11-0
+      - libxcb-xfixes0
+      - libxcb-shape0
+      - libxcb-randr0
+      - libxcb-xkb1
+      - libssl3
+      - libsodium23
+      - libbsd0
+      - libsqlite3-0
+      - libfontconfig1
+      - libfreetype6
+      - libx11-6
+      - libx11-xcb1
+      - libxcursor1
+      - libxi6
+      - libxrandr2
+      - libgl1-mesa-dri
+      - libglu1-mesa
+      - libwayland-client0
+      - libwayland-cursor0
+      - libwayland-egl1
+      - mesa-utils
+    override-build: |
+      # Setup environment
+      export PATH="$HOME/.cargo/bin:$PATH"
+      export PROTOC="$SNAPCRAFT_STAGE/bin/protoc"
+
+      # Create necessary directories and copy files
+      mkdir -p dash-evo-tool/
+      cp .env.example dash-evo-tool/.env
+      cp -r dash_core_configs/ dash-evo-tool/dash_core_configs
+
+      # Build the project
+      cargo build --release
+
+      # Install binary
+      mkdir -p $SNAPCRAFT_PART_INSTALL/bin
+      cp target/release/dash-evo-tool $SNAPCRAFT_PART_INSTALL/bin/
+
+      # Install configuration
+      mkdir -p $SNAPCRAFT_PART_INSTALL/etc/dash-evo-tool
+      cp -r dash_core_configs/ $SNAPCRAFT_PART_INSTALL/etc/dash-evo-tool/
+      cp .env.example $SNAPCRAFT_PART_INSTALL/etc/dash-evo-tool/.env
+
+      # Create desktop file
+      mkdir -p $SNAPCRAFT_PART_INSTALL/usr/share/applications
+      cat > $SNAPCRAFT_PART_INSTALL/usr/share/applications/dash-evo-tool.desktop << EOF
+      [Desktop Entry]
+      Name=Dash Evo Tool
+      Comment=Graphical user interface for interacting with Dash Evolution
+      Exec=dash-evo-tool
+      Icon=\${SNAP}/usr/share/icons/hicolor/256x256/apps/dash-evo-tool.png
+      Type=Application
+      Categories=Utility;Finance;Network;
+      StartupWMClass=dash-evo-tool
+      X-SnapInstanceName=dash-evo-tool
+      EOF
+
+      # Install icon
+      mkdir -p $SNAPCRAFT_PART_INSTALL/usr/share/icons/hicolor/256x256/apps
+      if [ -f "mac_os/AppIcons/Assets.xcassets/AppIcon.appiconset/256.png" ]; then
+        cp mac_os/AppIcons/Assets.xcassets/AppIcon.appiconset/256.png $SNAPCRAFT_PART_INSTALL/usr/share/icons/hicolor/256x256/apps/dash-evo-tool.png
+      else
+        # Create a placeholder icon if the original doesn't exist
+        convert -size 256x256 xc:lightblue -gravity center -pointsize 24 -annotate +0+0 "Dash" $SNAPCRAFT_PART_INSTALL/usr/share/icons/hicolor/256x256/apps/dash-evo-tool.png
+      fi
+
+  # Include dash-qt in the snap package
+  dash-qt:
+    plugin: nil
+    build-packages:
+      - curl
+      - unzip
+    stage-packages:
+      # XCB libraries for X11 support
+      - libxcb-icccm4
+      - libxcb-image0
+      - libxcb-shm0
+      - libxcb-keysyms1
+      - libxcb-randr0
+      - libxcb-render-util0
+      - libxcb-render0
+      - libxcb-shape0
+      - libxcb-sync1
+      - libxcb-xfixes0
+      - libxcb-xinerama0
+      - libxcb-xkb1
+      - libxcb1
+      - libxcb-util1
+      # X11 authentication
+      - libxau6
+      - libxdmcp6
+      # Font and graphics support
+      - libfontconfig1
+      - libfreetype6
+      - libexpat1
+      - libpng16-16
+      # BSD libraries
+      - libbsd0
+      - libmd0
+      # XKB support
+      - libxkbcommon0
+      - libxkbcommon-x11-0
+      # Core system libraries (usually included but ensure they're available)
+      - libgcc-s1
+      - libc6
+    override-build: |
+      # Download and install dash-qt
+      DASH_VERSION="22.1.2"
+      if [ "$CRAFT_ARCH_BUILD_FOR" = "arm64" ]; then
+        DASH_ARCH="aarch64"
+      else
+        DASH_ARCH="x86_64"
+      fi
+
+      # Download from official Dash releases
+      curl -L "https://github.com/dashpay/dash/releases/download/v${DASH_VERSION}/dashcore-${DASH_VERSION}-${DASH_ARCH}-linux-gnu.tar.gz" -o dash.tar.gz
+      tar -xzf dash.tar.gz
+
+      # Install binaries
+      mkdir -p $SNAPCRAFT_PART_INSTALL/bin $SNAPCRAFT_PART_INSTALL/lib
+      cp dashcore-${DASH_VERSION}/bin/dash-qt $SNAPCRAFT_PART_INSTALL/bin/
+      cp dashcore-${DASH_VERSION}/lib/* $SNAPCRAFT_PART_INSTALL/lib/
+
+      # Make executable
+      chmod +x $SNAPCRAFT_PART_INSTALL/bin/*

@@ -152,11 +152,9 @@ impl PurchaseTokenScreen {
                         vec![
                             BackendTask::TokenTask(Box::new(TokenTask::PurchaseTokens {
                                 identity: self.identity_token_info.identity.clone(),
-                                data_contract: self
-                                    .identity_token_info
-                                    .data_contract
-                                    .contract
-                                    .clone(),
+                                data_contract: Arc::new(
+                                    self.identity_token_info.data_contract.contract.clone(),
+                                ),
                                 token_position: self.identity_token_info.token_position,
                                 signing_key: self.selected_key.clone().expect("Expected a key"),
                                 amount: amount_ok.expect("Expected a valid amount"),

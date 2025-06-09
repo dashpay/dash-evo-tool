@@ -131,6 +131,45 @@ impl Database {
         }
     }
 
+    pub fn get_unqualified_contract_by_id(
+        &self,
+        contract_id: Identifier,
+        app_context: &AppContext,
+    ) -> Result<Option<DataContract>> {
+        let contract_id_bytes = contract_id.to_vec();
+        let network = app_context.network.to_string();
+
+        // Query the contract by ID
+        let conn = self.conn.lock().unwrap();
+        let mut stmt =
+            conn.prepare("SELECT contract FROM contract WHERE contract_id = ? AND network = ?")?;
+
+        let result = stmt.query_row(params![contract_id_bytes, network], |row| {
+            let contract_bytes: Vec<u8> = row.get(0)?;
+            Ok(contract_bytes)
+        });
+
+        match result {
+            Ok(bytes) => {
+                // Deserialize the DataContract
+                match DataContract::versioned_deserialize(
+                    &bytes,
+                    false,
+                    app_context.platform_version(),
+                ) {
+                    Ok(contract) => Ok(Some(contract)),
+                    Err(e) => {
+                        // Handle deserialization errors
+                        eprintln!("Deserialization error: {}", e);
+                        Ok(None)
+                    }
+                }
+            }
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
     pub fn replace_contract(
         &self,
         contract_id: Identifier,

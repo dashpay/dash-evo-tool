@@ -14,7 +14,6 @@ use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
 use crate::ui::{MessageType, Screen, ScreenLike};
 use dash_sdk::dpp::balances::credits::TokenAmount;
-use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
@@ -216,17 +215,14 @@ impl TransferTokensScreen {
                         .expect("Time went backwards")
                         .as_secs();
                     self.transfer_tokens_status = TransferTokensStatus::WaitingForResult(now);
-                    let data_contract = self
-                        .app_context
-                        .get_contracts(None, None)
-                        .expect("Contracts not loaded")
-                        .iter()
-                        .find(|contract| {
-                            contract.contract.id() == self.identity_token_balance.data_contract_id
-                        })
-                        .expect("Data contract not found")
-                        .contract
-                        .clone();
+                    let data_contract = Arc::new(
+                        self.app_context
+                            .get_unqualified_contract_by_id(
+                                &self.identity_token_balance.data_contract_id,
+                            )
+                            .expect("Contracts not loaded")
+                            .expect("Data contract not found"),
+                    );
                     app_action |= AppAction::BackendTasks(
                         vec![
                             BackendTask::TokenTask(Box::new(TokenTask::TransferTokens {

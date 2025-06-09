@@ -1,17 +1,19 @@
 use crate::app::TaskResult;
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::context::AppContext;
+use crate::model::proof_log_item::{ProofLogItem, RequestType};
 use crate::model::qualified_identity::QualifiedIdentity;
+use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
+use dash_sdk::dpp::document::DocumentV0Getters;
+use dash_sdk::dpp::group::group_action_status::GroupActionStatus;
 use dash_sdk::dpp::group::GroupStateTransitionInfoStatus;
-
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-use dash_sdk::dpp::state_transition::proof_result::StateTransitionProofResult;
-use dash_sdk::platform::transition::broadcast::BroadcastStateTransition;
-use dash_sdk::platform::transition::fungible_tokens::mint::TokenMintTransitionBuilder;
+use dash_sdk::dpp::platform_value::Value;
+use dash_sdk::platform::tokens::builders::mint::TokenMintTransitionBuilder;
+use dash_sdk::platform::tokens::transitions::MintResult;
 use dash_sdk::platform::{DataContract, Identifier, IdentityPublicKey};
 use dash_sdk::{Error, Sdk};
-
-use crate::model::proof_log_item::{ProofLogItem, RequestType};
+use std::sync::Arc;
 use tokio::sync::mpsc;
 
 impl AppContext {
@@ -19,7 +21,7 @@ impl AppContext {
     pub async fn mint_tokens(
         &self,
         sending_identity: &QualifiedIdentity,
-        data_contract: &DataContract,
+        data_contract: Arc<DataContract>,
         token_position: u16,
         signing_key: IdentityPublicKey,
         public_note: Option<String>,
@@ -30,7 +32,7 @@ impl AppContext {
         _sender: mpsc::Sender<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, String> {
         let builder = TokenMintTransitionBuilder::new(
-            data_contract,
+            data_contract.clone(),
             token_position,
             sending_identity.identity.id(),
             amount,
@@ -50,22 +52,13 @@ impl AppContext {
             builder = builder.with_using_group_info(group_info);
         }
 
-        let options = self.state_transition_options();
+        let maybe_options = self.state_transition_options();
+        if let Some(options) = maybe_options {
+            builder = builder.with_state_transition_creation_options(options);
+        }
 
-        let state_transition = builder
-            .sign(
-                sdk,
-                &signing_key,
-                sending_identity,
-                self.platform_version(),
-                options,
-            )
-            .await
-            .map_err(|e| format!("Error signing Mint Tokens state transition: {}", e))?;
-
-        // broadcast and wait
-        let _proof_result = state_transition
-            .broadcast_and_wait::<StateTransitionProofResult>(sdk, None)
+        let result = sdk
+            .token_mint(builder, &signing_key, sending_identity)
             .await
             .map_err(|e| match e {
                 Error::DriveProofError(proof_error, proof_bytes, block_info) => {
@@ -87,6 +80,79 @@ impl AppContext {
                 }
                 e => format!("Error broadcasting Mint Tokens transition: {}", e),
             })?;
+
+        // Using the result, update the balance of the recipient identity
+        if let Some(token_id) = data_contract.token_id(token_position) {
+            match result {
+                // Standard mint result - direct balance update
+                MintResult::TokenBalance(identity_id, amount) => {
+                    if let Err(e) =
+                        self.insert_token_identity_balance(&token_id, &identity_id, amount)
+                    {
+                        eprintln!("Failed to update token balance: {}", e);
+                    }
+                }
+
+                // Historical document - extract recipient and amount from document
+                MintResult::HistoricalDocument(document) => {
+                    if let (Some(recipient_value), Some(amount_value)) =
+                        (document.get("recipientId"), document.get("amount"))
+                    {
+                        if let (Value::Identifier(recipient_bytes), Value::U64(amount)) =
+                            (recipient_value, amount_value)
+                        {
+                            if let Ok(recipient_id) = Identifier::from_bytes(recipient_bytes) {
+                                if let Err(e) = self.insert_token_identity_balance(
+                                    &token_id,
+                                    &recipient_id,
+                                    *amount,
+                                ) {
+                                    eprintln!("Failed to update token balance from historical document: {}", e);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Group action with document - assume completed if document exists
+                MintResult::GroupActionWithDocument(_, Some(document)) => {
+                    if let (Some(recipient_value), Some(amount_value)) =
+                        (document.get("recipientId"), document.get("amount"))
+                    {
+                        if let (Value::Identifier(recipient_bytes), Value::U64(amount)) =
+                            (recipient_value, amount_value)
+                        {
+                            if let Ok(recipient_id) = Identifier::from_bytes(recipient_bytes) {
+                                if let Err(e) = self.insert_token_identity_balance(
+                                    &token_id,
+                                    &recipient_id,
+                                    *amount,
+                                ) {
+                                    eprintln!("Failed to update token balance from group action document: {}", e);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Group action with balance - only update if action is closed
+                MintResult::GroupActionWithBalance(_, status, Some(amount)) => {
+                    if matches!(status, GroupActionStatus::ActionClosed) {
+                        // Get the recipient identity (either optional_recipient or sending_identity)
+                        let recipient_id =
+                            optional_recipient.unwrap_or_else(|| sending_identity.identity.id());
+                        if let Err(e) =
+                            self.insert_token_identity_balance(&token_id, &recipient_id, amount)
+                        {
+                            eprintln!("Failed to update token balance from group action: {}", e);
+                        }
+                    }
+                }
+
+                // Other variants don't require balance updates
+                _ => {}
+            }
+        }
 
         // Return success
         Ok(BackendTaskSuccessResult::Message("MintTokens".to_string()))

@@ -197,7 +197,7 @@ impl ClaimTokensScreen {
                     action = AppAction::BackendTasks(
                         vec![
                             BackendTask::TokenTask(Box::new(TokenTask::ClaimTokens {
-                                data_contract: self.token_contract.contract.clone(),
+                                data_contract: Arc::new(self.token_contract.contract.clone()),
                                 token_position: self.identity_token_basic_info.token_position,
                                 actor_identity: self.identity.clone(),
                                 distribution_type,

@@ -323,7 +323,27 @@ impl AppContext {
 
     /// Fetches all local user identities from the database
     pub fn load_local_user_identities(&self) -> Result<Vec<QualifiedIdentity>> {
-        self.db.get_local_user_identities(self)
+        let identities = self.db.get_local_user_identities(self)?;
+
+        let wallets = self.wallets.read().unwrap();
+        identities
+            .into_iter()
+            .map(|(mut identity, wallet_id)| {
+                // For each identity, we need to set the wallet information
+                if let Some(wallet) = wallets.get(&wallet_id) {
+                    identity
+                        .associated_wallets
+                        .insert(wallet_id, wallet.clone());
+                } else {
+                    tracing::warn!(
+                        wallet = %hex::encode(wallet_id),
+                        identity = %identity.identity.id(),
+                        "wallet not found for identity when loading local user identities",
+                    );
+                }
+                Ok(identity)
+            })
+            .collect()
     }
 
     /// Fetches all contested names from the database including past and active ones
@@ -468,15 +488,15 @@ impl AppContext {
         contract_id: &Identifier,
     ) -> Result<Option<QualifiedContract>> {
         // Get the contract from the database
-        let contract = self.db.get_contract_by_id(*contract_id, self)?;
+        self.db.get_contract_by_id(*contract_id, self)
+    }
 
-        // If the contract is not found in the database, return None
-        if contract.is_none() {
-            return Ok(None);
-        }
-
-        // If the contract is found, return it
-        Ok(Some(contract.unwrap()))
+    pub fn get_unqualified_contract_by_id(
+        &self,
+        contract_id: &Identifier,
+    ) -> Result<Option<DataContract>> {
+        // Get the contract from the database
+        self.db.get_unqualified_contract_by_id(*contract_id, self)
     }
 
     // Remove contract from the database by ID

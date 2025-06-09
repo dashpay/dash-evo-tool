@@ -5,9 +5,9 @@ use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
-use crate::ui::components::styled::island_central_panel;
 use crate::ui::helpers::{add_identity_key_chooser_with_doc_type, TransactionType};
 use crate::ui::{MessageType, ScreenLike};
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
@@ -191,7 +191,7 @@ impl ScreenLike for RegisterDpnsNameScreen {
 
         action |= island_central_panel(ctx, |ui| {
             let mut inner_action = AppAction::None;
-            
+
             egui::ScrollArea::vertical()
                 .auto_shrink([false; 2])
                 .show(ui, |ui| {
@@ -405,4 +405,3 @@ pub fn is_contested_name(name: &str) -> bool {
     }
     true
 }
-

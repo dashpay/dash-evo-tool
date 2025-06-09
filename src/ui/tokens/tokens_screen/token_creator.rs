@@ -301,14 +301,14 @@ impl TokensScreen {
                             ui.make_persistent_id("token_creator_advanced"),
                             false,
                         );
-                        
+
                         // Force close if we need to reset
                         if self.should_reset_collapsing_states {
                             advanced_state.set_open(false);
                         }
-                        
+
                         advanced_state.store(ui.ctx());
-                        
+
                         advanced_state.show_header(ui, |ui| {
                             ui.label("Advanced");
                         })
@@ -413,14 +413,14 @@ impl TokensScreen {
                             ui.make_persistent_id("token_creator_action_rules"),
                             false,
                         );
-                        
+
                         // Force close if we need to reset
                         if self.should_reset_collapsing_states {
                             action_rules_state.set_open(false);
                         }
-                        
+
                         action_rules_state.store(ui.ctx());
-                        
+
                         action_rules_state.show_header(ui, |ui| {
                             ui.label("Action Rules");
                         })
@@ -494,14 +494,14 @@ impl TokensScreen {
                                 ui.make_persistent_id("token_creator_main_control_group"),
                                 false,
                             );
-                            
+
                             // Force close if we need to reset
                             if self.should_reset_collapsing_states {
                                 main_control_state.set_open(false);
                             }
-                            
+
                             main_control_state.store(ui.ctx());
-                            
+
                             main_control_state.show_header(ui, |ui| {
                                 ui.label("Main Control Group Change");
                             })

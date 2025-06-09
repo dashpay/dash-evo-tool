@@ -1,8 +1,8 @@
 use crate::app::AppAction;
 use crate::context::AppContext;
-use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
+use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::ScreenLike;
 use eframe::egui::Context;
 
@@ -175,7 +175,7 @@ impl ImportWalletScreen {
 
                             let response = ui.add_sized(
                                 Vec2::new(input_width, 20.0),
-                                egui::TextEdit::singleline(&mut word)
+                                egui::TextEdit::singleline(&mut word),
                             );
 
                             if response.changed() {
@@ -232,7 +232,7 @@ impl ScreenLike for ImportWalletScreen {
 
         action |= island_central_panel(ctx, |ui| {
             let mut inner_action = AppAction::None;
-            
+
             // Add the scroll area to make the content scrollable both vertically and horizontally
             egui::ScrollArea::both()
                 .auto_shrink([false; 2]) // Prevent shrinking when content is less than the available area
@@ -363,7 +363,7 @@ impl ScreenLike for ImportWalletScreen {
                         }
                     });
                 });
-            
+
             inner_action
         });
 

@@ -186,13 +186,13 @@ impl NetworkChooserScreen {
             ui.make_persistent_id("advanced_settings_header"),
             false,
         );
-        
+
         // Force close if we need to reset
         if self.should_reset_collapsing_states {
             collapsing_state.set_open(false);
             self.should_reset_collapsing_states = false;
         }
-        
+
         collapsing_state
             .show_header(ui, |ui| {
                 ui.label("Advanced Settings");

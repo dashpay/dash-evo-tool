@@ -3,9 +3,6 @@ use crate::app::{AppAction, BackendTasksExecutionMode, DesiredAppAction};
 use crate::backend_task::identity::IdentityTask;
 use crate::backend_task::BackendTask;
 use crate::context::AppContext;
-use crate::model::qualified_identity::encrypted_key_storage::{
-    PrivateKeyData, WalletDerivationPath,
-};
 use crate::model::qualified_identity::PrivateKeyTarget::{
     PrivateKeyOnMainIdentity, PrivateKeyOnVoterIdentity,
 };
@@ -22,7 +19,7 @@ use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike, ScreenType};
 use chrono::{DateTime, Utc};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
-use dash_sdk::dpp::identity::Purpose;
+use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::prelude::IdentityPublicKey;
 use dash_sdk::platform::Identifier;
@@ -59,7 +56,6 @@ enum IdentitiesRefreshingStatus {
 pub struct IdentitiesScreen {
     pub identities: Arc<Mutex<IndexMap<Identifier, QualifiedIdentity>>>,
     pub app_context: Arc<AppContext>,
-    pub show_more_keys_popup: Option<QualifiedIdentity>,
     pub identity_to_remove: Option<QualifiedIdentity>,
     pub wallet_seed_hash_cache: HashMap<WalletSeedHash, String>,
     sort_column: IdentitiesSortColumn,
@@ -83,7 +79,6 @@ impl IdentitiesScreen {
         let mut screen = Self {
             identities,
             app_context: app_context.clone(),
-            show_more_keys_popup: None,
             identity_to_remove: None,
             wallet_seed_hash_cache: Default::default(),
             sort_column: IdentitiesSortColumn::Alias,
@@ -372,45 +367,23 @@ impl IdentitiesScreen {
             .on_hover_text(format!("{}", qualified_identity.identity.balance()));
     }
 
-    fn show_public_key(
-        &self,
-        ui: &mut Ui,
-        identity: &QualifiedIdentity,
-        key: &IdentityPublicKey,
-        encrypted_private_key: Option<(PrivateKeyData, Option<WalletDerivationPath>)>,
-    ) -> AppAction {
-        let button_color = if encrypted_private_key.is_some() {
-            Color32::from_rgb(167, 232, 232)
-        } else {
-            Color32::from_rgb(169, 169, 169)
+    fn format_key_name(&self, key: &IdentityPublicKey) -> String {
+        let purpose_letter = match key.purpose() {
+            Purpose::AUTHENTICATION => "A",
+            Purpose::ENCRYPTION => "E",
+            Purpose::DECRYPTION => "D",
+            Purpose::TRANSFER => "T",
+            Purpose::SYSTEM => "S",
+            Purpose::VOTING => "V",
+            Purpose::OWNER => "O",
         };
-
-        let name = match key.purpose() {
-            Purpose::AUTHENTICATION => format!("A{}", key.id()),
-            Purpose::ENCRYPTION => format!("En{}", key.id()),
-            Purpose::DECRYPTION => format!("De{}", key.id()),
-            Purpose::TRANSFER => format!("T{}", key.id()),
-            Purpose::SYSTEM => format!("S{}", key.id()),
-            Purpose::VOTING => format!("V{}", key.id()),
-            Purpose::OWNER => format!("O{}", key.id()),
+        let security_level = match key.security_level() {
+            SecurityLevel::MASTER => "Master",
+            SecurityLevel::CRITICAL => "Critical",
+            SecurityLevel::HIGH => "High",
+            SecurityLevel::MEDIUM => "Medium",
         };
-
-        let button = egui::Button::new(name)
-            .fill(button_color)
-            .frame(true)
-            .corner_radius(3.0)
-            .min_size(egui::Vec2::new(30.0, 18.0));
-
-        if ui.add(button).clicked() {
-            AppAction::AddScreen(Screen::KeyInfoScreen(KeyInfoScreen::new(
-                identity.clone(),
-                key.clone(),
-                encrypted_private_key,
-                &self.app_context,
-            )))
-        } else {
-            AppAction::None
-        }
+        format!("{} - {} - {}", key.id(), purpose_letter, security_level)
     }
 
     fn render_no_identities_view(&self, ui: &mut Ui) {
@@ -499,9 +472,8 @@ impl IdentitiesScreen {
                         .column(Column::initial(330.0).resizable(true))  // Identity ID
                         .column(Column::initial(60.0).resizable(true))   // In Wallet
                         .column(Column::initial(80.0).resizable(true))   // Type
-                        .column(Column::initial(80.0).resizable(true))   // Keys
                         .column(Column::initial(140.0).resizable(true))  // Balance
-                        .column(Column::initial(120.0).resizable(true))  // Actions (wider for up/down)
+                        .column(Column::initial(160.0).resizable(true))  // Actions (wider for more buttons)
                         .header(30.0, |mut header| {
                             header.col(|ui| {
                                 if ui.button("Name").clicked() {
@@ -524,15 +496,12 @@ impl IdentitiesScreen {
                                 }
                             });
                             header.col(|ui| {
-                                ui.heading("Keys");
-                            });
-                            header.col(|ui| {
                                 if ui.button("Balance").clicked() {
                                     self.toggle_sort(IdentitiesSortColumn::Balance);
                                 }
                             });
                             header.col(|ui| {
-                                ui.heading("Actions");
+                                ui.heading("");
                             });
                         })
                         .body(|mut body| {
@@ -556,84 +525,6 @@ impl IdentitiesScreen {
                                     });
                                     row.col(|ui| {
                                         ui.label(format!("{}", qualified_identity.identity_type));
-                                    });
-                                    row.col(|ui| {
-                                        ui.horizontal(|ui| {
-                                            ui.spacing_mut().item_spacing.x = 3.0;
-
-                                            let mut total_keys_shown = 0;
-                                            let max_keys_to_show = 3;
-                                            let mut more_keys_available = false;
-
-                                            let public_keys_vec: Vec<_> = public_keys.iter().collect();
-                                            for (key_id, key) in public_keys_vec.iter() {
-                                                if total_keys_shown < max_keys_to_show {
-                                                    let holding_private_key = qualified_identity
-                                                        .private_keys
-                                                        .get_cloned_private_key_data_and_wallet_info(&(
-                                                            PrivateKeyOnMainIdentity,
-                                                            **key_id,
-                                                        ));
-                                                    action |= self.show_public_key(
-                                                        ui,
-                                                        qualified_identity,
-                                                        key,
-                                                        holding_private_key,
-                                                    );
-                                                    total_keys_shown += 1;
-                                                } else {
-                                                    more_keys_available = true;
-                                                    break;
-                                                }
-                                            }
-
-                                            if let Some(voting_identity_public_keys) =
-                                                voter_identity_public_keys
-                                            {
-                                                if total_keys_shown < max_keys_to_show {
-                                                    let voter_vec: Vec<_> = voting_identity_public_keys.iter().collect();
-                                                    for (key_id, key) in voter_vec.iter() {
-                                                        if total_keys_shown < max_keys_to_show {
-                                                            let holding_private_key =
-                                                                qualified_identity
-                                                                    .private_keys
-                                                                    .get_cloned_private_key_data_and_wallet_info(&(
-                                                                        PrivateKeyOnVoterIdentity,
-                                                                        **key_id,
-                                                                    ));
-                                                            action |= self.show_public_key(
-                                                                ui,
-                                                                qualified_identity,
-                                                                key,
-                                                                holding_private_key,
-                                                            );
-                                                            total_keys_shown += 1;
-                                                        } else {
-                                                            more_keys_available = true;
-                                                            break;
-                                                        }
-                                                    }
-                                                } else {
-                                                    more_keys_available = true;
-                                                }
-                                            }
-
-                                            if more_keys_available && ui.button("...").on_hover_text("Show more keys").clicked() {
-                                                self.show_more_keys_popup =
-                                                    Some(qualified_identity.clone());
-                                            }
-
-                                            if qualified_identity.can_sign_with_master_key().is_some()
-                                                && ui.button("+").on_hover_text("Add key").clicked()
-                                            {
-                                                action = AppAction::AddScreen(Screen::AddKeyScreen(
-                                                    AddKeyScreen::new(
-                                                        qualified_identity.clone(),
-                                                        &self.app_context,
-                                                    ),
-                                                ));
-                                            }
-                                        });
                                     });
                                     row.col(|ui| {
                                         Self::show_balance(ui, qualified_identity);
@@ -670,6 +561,118 @@ impl IdentitiesScreen {
                                     row.col(|ui| {
                                         ui.horizontal(|ui| {
                                             ui.spacing_mut().item_spacing.x = 3.0;
+
+                                            // Keys dropdown button
+                                            let has_keys = !public_keys.is_empty() || voter_identity_public_keys.is_some();
+                                            if has_keys {
+                                                let button = egui::Button::new("Keys")
+                                                    .fill(ui.visuals().widgets.inactive.bg_fill)
+                                                    .frame(true)
+                                                    .corner_radius(3.0)
+                                                    .min_size(egui::vec2(50.0, 20.0));
+
+                                                let response = ui.add(button).on_hover_text("View and manage keys for this identity");
+
+                                                let popup_id = ui.make_persistent_id(format!("keys_popup_{}", qualified_identity.identity.id().to_string(Encoding::Base58)));
+
+                                                if response.clicked() {
+                                                    ui.memory_mut(|mem| mem.toggle_popup(popup_id));
+                                                }
+
+                                                egui::popup::popup_below_widget(
+                                                    ui,
+                                                    popup_id,
+                                                    &response,
+                                                    egui::PopupCloseBehavior::CloseOnClickOutside,
+                                                    |ui| {
+                                                        ui.set_min_width(200.0);
+
+                                                        // Main Identity Keys
+                                                        if !public_keys.is_empty() {
+                                                            ui.label(RichText::new("Main Identity Keys:").strong().color(Color32::BLACK));
+                                                            ui.separator();
+
+                                                            for (key_id, key) in public_keys.iter() {
+                                                                let holding_private_key = qualified_identity.private_keys
+                                                                    .get_cloned_private_key_data_and_wallet_info(&(PrivateKeyOnMainIdentity, *key_id));
+
+                                                                let button_color = if holding_private_key.is_some() {
+                                                                    Color32::from_rgb(167, 232, 232) // Light blue for loaded keys
+                                                                } else {
+                                                                    Color32::WHITE // White for unloaded keys
+                                                                };
+
+                                                                let button = egui::Button::new(format!("{}", self.format_key_name(key)))
+                                                                    .fill(button_color)
+                                                                    .frame(true);
+
+                                                                if ui.add(button).clicked() {
+                                                                    action |= AppAction::AddScreen(Screen::KeyInfoScreen(KeyInfoScreen::new(
+                                                                        qualified_identity.clone(),
+                                                                        key.clone(),
+                                                                        holding_private_key,
+                                                                        &self.app_context,
+                                                                    )));
+                                                                    ui.close_menu();
+                                                                }
+                                                            }
+                                                        }
+
+                                                        // Voter Identity Keys
+                                                        if let Some((voter_identity, _)) = qualified_identity.associated_voter_identity.as_ref() {
+                                                            let voter_public_keys = voter_identity.public_keys();
+                                                            if !voter_public_keys.is_empty() {
+                                                                if !public_keys.is_empty() {
+                                                                    ui.add_space(5.0);
+                                                                }
+                                                                ui.label(RichText::new("Voter Identity Keys:").strong().color(Color32::BLACK));
+                                                                ui.separator();
+
+                                                                for (key_id, key) in voter_public_keys.iter() {
+                                                                    let holding_private_key = qualified_identity.private_keys
+                                                                        .get_cloned_private_key_data_and_wallet_info(&(PrivateKeyOnVoterIdentity, *key_id));
+
+                                                                    let button_color = if holding_private_key.is_some() {
+                                                                        Color32::from_rgb(167, 232, 232) // Light blue for loaded keys
+                                                                    } else {
+                                                                        Color32::WHITE // White for unloaded keys
+                                                                    };
+
+                                                                    let button = egui::Button::new(format!("{}", self.format_key_name(key)))
+                                                                        .fill(button_color)
+                                                                        .frame(true);
+
+                                                                    if ui.add(button).clicked() {
+                                                                        action |= AppAction::AddScreen(Screen::KeyInfoScreen(KeyInfoScreen::new(
+                                                                            qualified_identity.clone(),
+                                                                            key.clone(),
+                                                                            holding_private_key,
+                                                                            &self.app_context,
+                                                                        )));
+                                                                        ui.close_menu();
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+
+                                                        // Add Key button
+                                                        if qualified_identity.can_sign_with_master_key().is_some() {
+                                                            ui.separator();
+                                                            let add_button = egui::Button::new("➕ Add Key")
+                                                                .fill(Color32::WHITE)
+                                                                .frame(true);
+
+                                                                if ui.add(add_button).on_hover_text("Add a new key to this identity").clicked() {
+                                                                action |= AppAction::AddScreen(Screen::AddKeyScreen(AddKeyScreen::new(
+                                                                    qualified_identity.clone(),
+                                                                    &self.app_context,
+                                                                )));
+                                                                ui.close_menu();
+                                                            }
+                                                        }
+                                                    },
+                                                );
+                                            }
 
                                             // Remove
                                             if ui.button("Remove").on_hover_text("Remove this identity from Dash Evo Tool (it'll still exist on Dash Platform)").clicked() {
@@ -760,56 +763,6 @@ impl IdentitiesScreen {
         }
     }
 
-    fn show_more_keys(&mut self, ui: &mut Ui) -> AppAction {
-        let mut action = AppAction::None;
-        let Some(qualified_identity) = self.show_more_keys_popup.as_ref() else {
-            return action;
-        };
-
-        let identity = &qualified_identity.identity;
-        let public_keys = identity.public_keys();
-        let public_keys_vec: Vec<_> = public_keys.iter().collect();
-        let main_identity_rest_keys = public_keys_vec.iter().skip(3);
-
-        ui.label(format!(
-            "{}...",
-            identity
-                .id()
-                .to_string(Encoding::Base58)
-                .chars()
-                .take(8)
-                .collect::<String>()
-        ));
-        for (key_id, key) in main_identity_rest_keys {
-            let holding_private_key = qualified_identity
-                .private_keys
-                .get_cloned_private_key_data_and_wallet_info(&(PrivateKeyOnMainIdentity, **key_id));
-            action |= self.show_public_key(ui, qualified_identity, key, holding_private_key);
-        }
-
-        if let Some((voter_identity, _)) = qualified_identity.associated_voter_identity.as_ref() {
-            let voter_public_keys = voter_identity.public_keys();
-            let voter_public_keys_vec: Vec<_> = voter_public_keys.iter().collect();
-
-            ui.label("Voter Identity Keys:");
-            for (key_id, key) in voter_public_keys_vec.iter() {
-                let holding_private_key = qualified_identity
-                    .private_keys
-                    .get_cloned_private_key_data_and_wallet_info(&(
-                        PrivateKeyOnVoterIdentity,
-                        **key_id,
-                    ));
-                action |= self.show_public_key(ui, qualified_identity, key, holding_private_key);
-            }
-        }
-
-        if ui.button("Close").clicked() {
-            self.show_more_keys_popup = None;
-        }
-
-        action
-    }
-
     fn dismiss_message(&mut self) {
         self.backend_message = None;
     }
@@ -844,8 +797,6 @@ impl ScreenLike for IdentitiesScreen {
             self.reorder_map_to(saved_ids);
             self.use_custom_order = true;
         }
-
-        self.show_more_keys_popup = None;
     }
 
     fn display_message(&mut self, message: &str, message_type: crate::ui::MessageType) {
@@ -971,14 +922,6 @@ impl ScreenLike for IdentitiesScreen {
             }
             inner_action
         });
-
-        if self.show_more_keys_popup.is_some() {
-            egui::Window::new("More Keys")
-                .collapsible(false)
-                .show(ctx, |ui| {
-                    action |= self.show_more_keys(ui);
-                });
-        }
 
         if self.identity_to_remove.is_some() {
             self.show_identity_to_remove(ctx);

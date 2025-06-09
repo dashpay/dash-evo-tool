@@ -402,9 +402,14 @@ pub fn add_contract_chooser_panel(
                                                             != Some("withdrawals".to_string())
                                                         && contract.alias
                                                             != Some("keyword_search".to_string())
-                                                        && ui.add(egui::Button::new("X")
-                                                            .min_size(egui::Vec2::new(20.0, 20.0))
-                                                            .small())
+                                                        && ui
+                                                            .add(
+                                                                egui::Button::new("X")
+                                                                    .min_size(egui::Vec2::new(
+                                                                        20.0, 20.0,
+                                                                    ))
+                                                                    .small(),
+                                                            )
                                                             .clicked()
                                                     {
                                                         action |= AppAction::BackendTask(

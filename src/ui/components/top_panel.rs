@@ -63,7 +63,7 @@ fn add_location_view(ui: &mut Ui, location: Vec<(&str, AppAction)>) -> AppAction
         // Apply negative vertical offset to move text up
         let offset = egui::vec2(0.0, -5.0);
         ui.add_space(0.0); // Reset any spacing
-        
+
         ui.allocate_ui_at_rect(
             egui::Rect::from_min_size(ui.cursor().min + offset, ui.available_size()),
             |ui| {
@@ -91,7 +91,7 @@ fn add_location_view(ui: &mut Ui, location: Vec<(&str, AppAction)>) -> AppAction
                         }
                     });
                 });
-            }
+            },
         );
     });
     action

@@ -1,8 +1,8 @@
 use crate::app::AppAction;
 use crate::context::AppContext;
-use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
+use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::ScreenLike;
 use eframe::egui::Context;
 
@@ -15,10 +15,7 @@ use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
 use dash_sdk::dpp::dashcore::bip32::{ExtendedPrivKey, ExtendedPubKey};
 use dash_sdk::dpp::dashcore::Network;
 use eframe::emath::Align;
-use egui::{
-    Color32, ComboBox, Direction, Frame, Grid, Layout, Margin, RichText, Stroke,
-    Ui, Vec2,
-};
+use egui::{Color32, ComboBox, Direction, Frame, Grid, Layout, Margin, RichText, Stroke, Ui, Vec2};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 use zxcvbn::zxcvbn;
@@ -175,51 +172,55 @@ impl AddNewWalletScreen {
         ui.vertical_centered(|ui| {
             // Center the language selector and generate button
             ui.horizontal(|ui| {
-                            ui.label("Language:");
-                            
-                            ComboBox::from_label("")
-                                .selected_text(format!("{:?}", self.selected_language))
-                                .width(150.0)
-                                .show_ui(ui, |ui| {
-                                    ui.selectable_value(
-                                        &mut self.selected_language,
-                                        Language::English,
-                                        "English",
-                                    );
-                                    ui.selectable_value(
-                                        &mut self.selected_language,
-                                        Language::Spanish,
-                                        "Spanish",
-                                    );
-                                    ui.selectable_value(
-                                        &mut self.selected_language,
-                                        Language::French,
-                                        "French",
-                                    );
-                                    ui.selectable_value(
-                                        &mut self.selected_language,
-                                        Language::Italian,
-                                        "Italian",
-                                    );
-                                    ui.selectable_value(
-                                        &mut self.selected_language,
-                                        Language::Portuguese,
-                                        "Portuguese",
-                                    );
-                                });
+                ui.label("Language:");
 
-                            ui.add_space(20.0);
+                ComboBox::from_label("")
+                    .selected_text(format!("{:?}", self.selected_language))
+                    .width(150.0)
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut self.selected_language,
+                            Language::English,
+                            "English",
+                        );
+                        ui.selectable_value(
+                            &mut self.selected_language,
+                            Language::Spanish,
+                            "Spanish",
+                        );
+                        ui.selectable_value(
+                            &mut self.selected_language,
+                            Language::French,
+                            "French",
+                        );
+                        ui.selectable_value(
+                            &mut self.selected_language,
+                            Language::Italian,
+                            "Italian",
+                        );
+                        ui.selectable_value(
+                            &mut self.selected_language,
+                            Language::Portuguese,
+                            "Portuguese",
+                        );
+                    });
 
-                            let generate_button =
-                                egui::Button::new(RichText::new("Generate").strong().size(18.0).color(Color32::WHITE))
-                                    .min_size(Vec2::new(120.0, 35.0))
-                                    .fill(Color32::from_rgb(0, 128, 255)) // Blue background like other buttons
-                                    .corner_radius(5.0);
+                ui.add_space(20.0);
 
-                    if ui.add(generate_button).clicked() {
-                        self.generate_seed_phrase();
-                    }
-                });
+                let generate_button = egui::Button::new(
+                    RichText::new("Generate")
+                        .strong()
+                        .size(18.0)
+                        .color(Color32::WHITE),
+                )
+                .min_size(Vec2::new(120.0, 35.0))
+                .fill(Color32::from_rgb(0, 128, 255)) // Blue background like other buttons
+                .corner_radius(5.0);
+
+                if ui.add(generate_button).clicked() {
+                    self.generate_seed_phrase();
+                }
+            });
 
             ui.add_space(10.0);
 
@@ -309,7 +310,7 @@ impl ScreenLike for AddNewWalletScreen {
 
         action |= island_central_panel(ctx, |ui| {
             let mut inner_action = AppAction::None;
-            
+
             // Add the scroll area to make the content scrollable both vertically and horizontally
             egui::ScrollArea::both()
                 .auto_shrink([false; 2]) // Prevent shrinking when content is less than the available area
@@ -456,7 +457,7 @@ impl ScreenLike for AddNewWalletScreen {
                         }
                     });
                 });
-            
+
             inner_action
         });
 

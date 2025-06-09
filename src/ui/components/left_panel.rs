@@ -3,9 +3,10 @@ use crate::context::AppContext;
 use crate::ui::components::styled::GradientButton;
 use crate::ui::theme::{DashColors, Shadow, Shape, Spacing};
 use crate::ui::RootScreenType;
+use dash_sdk::dashcore_rpc::dashcore::Network;
 use dash_sdk::dpp::version::v9::PROTOCOL_VERSION_9;
 use eframe::epaint::Margin;
-use egui::{Context, Frame, ImageButton, SidePanel, TextureHandle};
+use egui::{Color32, Context, Frame, ImageButton, RichText, SidePanel, TextureHandle};
 use rust_embed::RustEmbed;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -106,7 +107,7 @@ pub fn add_left_panel(
                             let button_color = if is_selected {
                                 DashColors::DASH_BLUE
                             } else {
-                                DashColors::GRADIENT_ACCENT
+                                DashColors::GRAY
                             };
 
                             // Add icon-based button if texture is loaded
@@ -148,26 +149,6 @@ pub fn add_left_panel(
 
                         // Push content to the top and dev label + logo to the bottom
                         ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
-                            // Add Dash logo at the bottom
-                            if let Some(dash_texture) = load_icon(ctx, "dash.png") {
-                                ui.add_space(Spacing::SM);
-                                let logo_size = egui::vec2(50.0, 20.0); // Even smaller size, same aspect ratio
-                                let logo_response = ui.add(
-                                    egui::Image::new(&dash_texture)
-                                        .fit_to_exact_size(logo_size)
-                                        .texture_options(egui::TextureOptions::LINEAR) // Smooth interpolation to reduce pixelation
-                                        .sense(egui::Sense::click())
-                                );
-                                
-                                if logo_response.clicked() {
-                                    ui.ctx().open_url(egui::OpenUrl::new_tab("https://dash.org"));
-                                }
-                                
-                                if logo_response.hovered() {
-                                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                                }
-                            }
-                            
                             if app_context.developer_mode.load(Ordering::Relaxed) {
                                 ui.add_space(Spacing::MD);
                                 let dev_label = egui::RichText::new("🔧 Dev mode")
@@ -178,6 +159,49 @@ pub fn add_left_panel(
                                         RootScreenType::RootScreenNetworkChooser,
                                     );
                                 };
+                            }
+
+                            // Show network name if not on main Dash network
+                            if app_context.network != Network::Dash {
+                                let (network_name, network_color) = match app_context.network {
+                                    Network::Testnet => ("Testnet", Color32::from_rgb(255, 165, 0)),
+                                    Network::Devnet => ("Devnet", Color32::DARK_RED),
+                                    Network::Regtest => {
+                                        ("Local Network", Color32::from_rgb(139, 69, 19))
+                                    }
+                                    _ => ("Unknown", DashColors::DASH_BLUE),
+                                };
+
+                                ui.label(
+                                    RichText::new(network_name)
+                                        .color(network_color)
+                                        .size(12.0)
+                                        .strong(),
+                                );
+                                ui.add_space(2.0);
+                            }
+
+                            // Add Dash logo at the bottom
+                            if let Some(dash_texture) = load_icon(ctx, "dash.png") {
+                                if app_context.network == Network::Dash {
+                                    ui.add_space(Spacing::SM);
+                                }
+                                let logo_size = egui::vec2(50.0, 20.0); // Even smaller size, same aspect ratio
+                                let logo_response = ui.add(
+                                    egui::Image::new(&dash_texture)
+                                        .fit_to_exact_size(logo_size)
+                                        .texture_options(egui::TextureOptions::LINEAR) // Smooth interpolation to reduce pixelation
+                                        .sense(egui::Sense::click()),
+                                );
+
+                                if logo_response.clicked() {
+                                    ui.ctx()
+                                        .open_url(egui::OpenUrl::new_tab("https://dash.org"));
+                                }
+
+                                if logo_response.hovered() {
+                                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                                }
                             }
                         });
                     });

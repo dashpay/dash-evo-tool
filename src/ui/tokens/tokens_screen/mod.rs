@@ -2556,11 +2556,10 @@ impl ScreenLike for TokensScreen {
                     .collapsible(false)
                     .resizable(true)
                     .show(ui.ctx(), |ui| {
-                        egui::ScrollArea::vertical()
-                            .show(ui, |ui| {
-                                let mut cache = CommonMarkCache::default();
-                                CommonMarkViewer::new().show(ui, &mut cache, &info_text);
-                            });
+                        egui::ScrollArea::vertical().show(ui, |ui| {
+                            let mut cache = CommonMarkCache::default();
+                            CommonMarkViewer::new().show(ui, &mut cache, &info_text);
+                        });
 
                         if ui.button("Close").clicked() {
                             self.show_pop_up_info = None;

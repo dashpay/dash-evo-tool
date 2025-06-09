@@ -6,6 +6,7 @@ use crate::model::qualified_identity::qualified_identity_public_key::QualifiedId
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
 use crate::ui::identities::get_selected_wallet;
@@ -231,26 +232,28 @@ impl ScreenLike for AddKeyScreen {
             crate::ui::RootScreenType::RootScreenIdentities,
         );
 
-        egui::CentralPanel::default().show(ctx, |ui| {
+        action |= island_central_panel(ctx, |ui| {
+            let mut inner_action = AppAction::None;
+
             // Show the success screen if the key was added successfully
             if self.add_key_status == AddKeyStatus::Complete {
-                action |= self.show_success(ui);
-                return;
+                inner_action |= self.show_success(ui);
+                return inner_action;
             }
 
             ui.heading("Add New Key");
             ui.add_space(10.0);
 
             if self.add_key_status == AddKeyStatus::Complete {
-                action |= self.show_success(ui);
-                return;
+                inner_action |= self.show_success(ui);
+                return inner_action;
             }
 
             if self.selected_wallet.is_some() {
                 let (needed_unlock, just_unlocked) = self.render_wallet_unlock_if_needed(ui);
 
                 if needed_unlock && !just_unlocked {
-                    return;
+                    return inner_action;
                 }
             }
 
@@ -362,7 +365,7 @@ impl ScreenLike for AddKeyScreen {
                     .expect("Time went backwards")
                     .as_secs();
                 self.add_key_status = AddKeyStatus::WaitingForResult(now);
-                action |= self.validate_and_add_key();
+                inner_action |= self.validate_and_add_key();
             }
             ui.add_space(10.0);
 
@@ -404,6 +407,8 @@ impl ScreenLike for AddKeyScreen {
                     // handled above
                 }
             }
+
+            inner_action
         });
 
         action

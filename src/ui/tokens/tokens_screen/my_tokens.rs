@@ -615,68 +615,67 @@ impl TokensScreen {
         // Space allocation for UI elements is handled by the layout system
 
         // A simple table with columns: [Token Name | Token ID | Total Balance]
-        egui::ScrollArea::both()
-            .show(ui, |ui| {
-                TableBuilder::new(ui)
-                    .striped(false)
-                    .resizable(true)
-                    .cell_layout(egui::Layout::left_to_right(Align::Center))
-                    .column(Column::initial(150.0).resizable(true)) // Token Name
-                    .column(Column::initial(200.0).resizable(true)) // Token ID
-                    .column(Column::initial(80.0).resizable(true)) // Description
-                    .column(Column::initial(80.0).resizable(true)) // Actions
-                    // .column(Column::initial(80.0).resizable(true)) // Token Info
-                    .header(30.0, |mut header| {
-                        header.col(|ui| {
-                            ui.label("Token Name");
-                        });
-                        header.col(|ui| {
-                            ui.label("Token ID");
-                        });
-                        header.col(|ui| {
-                            ui.label("Description");
-                        });
-                        header.col(|ui| {
-                            ui.label("Actions");
-                        });
-                    })
-                    .body(|mut body| {
-                        for token_info in self.all_known_tokens.values() {
-                            let TokenInfoWithDataContract {
-                                token_id,
-                                token_name,
-                                description,
-                                ..
-                            } = token_info;
-                            body.row(25.0, |mut row| {
-                                row.col(|ui| {
-                                    // By making the label into a button or using `ui.selectable_label`,
-                                    // we can respond to clicks.
-                                    if ui.button(token_name).clicked() {
-                                        self.selected_token = Some(*token_id);
-                                    }
-                                });
-                                row.col(|ui| {
-                                    ui.label(token_id.to_string(Encoding::Base58));
-                                });
-                                row.col(|ui| {
-                                    ui.label(description.as_ref().unwrap_or(&String::new()));
-                                });
-                                row.col(|ui| {
-                                    // Remove
-                                    if ui
-                                        .button("X")
-                                        .on_hover_text("Remove token from DET")
-                                        .clicked()
-                                    {
-                                        self.confirm_remove_token_popup = true;
-                                        self.token_to_remove = Some(*token_id);
-                                    }
-                                });
-                            });
-                        }
+        egui::ScrollArea::both().show(ui, |ui| {
+            TableBuilder::new(ui)
+                .striped(false)
+                .resizable(true)
+                .cell_layout(egui::Layout::left_to_right(Align::Center))
+                .column(Column::initial(150.0).resizable(true)) // Token Name
+                .column(Column::initial(200.0).resizable(true)) // Token ID
+                .column(Column::initial(80.0).resizable(true)) // Description
+                .column(Column::initial(80.0).resizable(true)) // Actions
+                // .column(Column::initial(80.0).resizable(true)) // Token Info
+                .header(30.0, |mut header| {
+                    header.col(|ui| {
+                        ui.label("Token Name");
                     });
-            });
+                    header.col(|ui| {
+                        ui.label("Token ID");
+                    });
+                    header.col(|ui| {
+                        ui.label("Description");
+                    });
+                    header.col(|ui| {
+                        ui.label("Actions");
+                    });
+                })
+                .body(|mut body| {
+                    for token_info in self.all_known_tokens.values() {
+                        let TokenInfoWithDataContract {
+                            token_id,
+                            token_name,
+                            description,
+                            ..
+                        } = token_info;
+                        body.row(25.0, |mut row| {
+                            row.col(|ui| {
+                                // By making the label into a button or using `ui.selectable_label`,
+                                // we can respond to clicks.
+                                if ui.button(token_name).clicked() {
+                                    self.selected_token = Some(*token_id);
+                                }
+                            });
+                            row.col(|ui| {
+                                ui.label(token_id.to_string(Encoding::Base58));
+                            });
+                            row.col(|ui| {
+                                ui.label(description.as_ref().unwrap_or(&String::new()));
+                            });
+                            row.col(|ui| {
+                                // Remove
+                                if ui
+                                    .button("X")
+                                    .on_hover_text("Remove token from DET")
+                                    .clicked()
+                                {
+                                    self.confirm_remove_token_popup = true;
+                                    self.token_to_remove = Some(*token_id);
+                                }
+                            });
+                        });
+                    }
+                });
+        });
         Ok(())
     }
 }

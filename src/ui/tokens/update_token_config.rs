@@ -1041,15 +1041,16 @@ impl ScreenLike for UpdateTokenConfigScreen {
 
         // Central panel
         island_central_panel(ctx, |ui| {
-            if let Some(msg) = &self.backend_message {
-                if msg.1 == MessageType::Success {
-                    action |= self.show_success_screen(ui);
-                    return;
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                if let Some(msg) = &self.backend_message {
+                    if msg.1 == MessageType::Success {
+                        action |= self.show_success_screen(ui);
+                        return;
+                    }
                 }
-            }
 
-            ui.heading("Update Token Configuration");
-            ui.add_space(10.0);
+                ui.heading("Update Token Configuration");
+                ui.add_space(10.0);
 
             // Check if user has any auth keys
             let has_keys = if self.app_context.developer_mode.load(Ordering::Relaxed) {
@@ -1151,6 +1152,7 @@ impl ScreenLike for UpdateTokenConfigScreen {
                     }
                 }
             }
+            }); // end of ScrollArea
         });
 
         action

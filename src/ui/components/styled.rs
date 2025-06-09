@@ -5,6 +5,7 @@ use egui::{
 };
 
 /// Styled button variants
+#[allow(dead_code)]
 pub enum ButtonVariant {
     Primary,
     Secondary,
@@ -21,6 +22,7 @@ pub struct StyledButton {
     min_width: Option<f32>,
 }
 
+#[allow(dead_code)]
 pub enum ButtonSize {
     Small,
     Medium,
@@ -42,37 +44,38 @@ impl StyledButton {
         Self::new(text)
     }
 
-    pub fn secondary(text: impl Into<String>) -> Self {
-        Self::new(text).variant(ButtonVariant::Secondary)
-    }
+    // Unused methods commented out to eliminate warnings
+    // pub fn secondary(text: impl Into<String>) -> Self {
+    //     Self::new(text).variant(ButtonVariant::Secondary)
+    // }
 
-    pub fn danger(text: impl Into<String>) -> Self {
-        Self::new(text).variant(ButtonVariant::Danger)
-    }
+    // pub fn danger(text: impl Into<String>) -> Self {
+    //     Self::new(text).variant(ButtonVariant::Danger)
+    // }
 
-    pub fn ghost(text: impl Into<String>) -> Self {
-        Self::new(text).variant(ButtonVariant::Ghost)
-    }
+    // pub fn ghost(text: impl Into<String>) -> Self {
+    //     Self::new(text).variant(ButtonVariant::Ghost)
+    // }
 
-    pub fn size(mut self, size: ButtonSize) -> Self {
-        self.size = size;
-        self
-    }
+    // pub fn size(mut self, size: ButtonSize) -> Self {
+    //     self.size = size;
+    //     self
+    // }
 
-    pub fn enabled(mut self, enabled: bool) -> Self {
-        self.enabled = enabled;
-        self
-    }
+    // pub fn enabled(mut self, enabled: bool) -> Self {
+    //     self.enabled = enabled;
+    //     self
+    // }
 
-    pub fn min_width(mut self, width: f32) -> Self {
-        self.min_width = Some(width);
-        self
-    }
+    // pub fn min_width(mut self, width: f32) -> Self {
+    //     self.min_width = Some(width);
+    //     self
+    // }
 
-    pub fn variant(mut self, variant: ButtonVariant) -> Self {
-        self.variant = variant;
-        self
-    }
+    // pub fn variant(mut self, variant: ButtonVariant) -> Self {
+    //     self.variant = variant;
+    //     self
+    // }
 
     pub fn show(self, ui: &mut Ui) -> Response {
         let (text_color, bg_color, _hover_color, stroke) = match self.variant {
@@ -156,20 +159,20 @@ impl StyledCard {
         }
     }
 
-    pub fn title(mut self, title: impl Into<String>) -> Self {
-        self.title = Some(title.into());
-        self
-    }
+    // pub fn title(mut self, title: impl Into<String>) -> Self {
+    //     self.title = Some(title.into());
+    //     self
+    // }
 
     pub fn padding(mut self, padding: f32) -> Self {
         self.padding = padding;
         self
     }
 
-    pub fn show_border(mut self, show: bool) -> Self {
-        self.show_border = show;
-        self
-    }
+    // pub fn show_border(mut self, show: bool) -> Self {
+    //     self.show_border = show;
+    //     self
+    // }
 
     pub fn show<R>(self, ui: &mut Ui, content: impl FnOnce(&mut Ui) -> R) -> R {
         let stroke = if self.show_border {
@@ -199,69 +202,70 @@ impl StyledCard {
     }
 }
 
-/// Styled text input with Dash theme
-pub struct StyledTextInput {
-    hint: Option<String>,
-    multiline: bool,
-    desired_width: Option<f32>,
-    desired_rows: Option<usize>,
-}
-
-impl StyledTextInput {
-    pub fn new() -> Self {
-        Self {
-            hint: None,
-            multiline: false,
-            desired_width: None,
-            desired_rows: None,
-        }
-    }
-
-    pub fn hint(mut self, hint: impl Into<String>) -> Self {
-        self.hint = Some(hint.into());
-        self
-    }
-
-    pub fn multiline(mut self) -> Self {
-        self.multiline = true;
-        self
-    }
-
-    pub fn desired_width(mut self, width: f32) -> Self {
-        self.desired_width = Some(width);
-        self
-    }
-
-    pub fn desired_rows(mut self, rows: usize) -> Self {
-        self.desired_rows = Some(rows);
-        self
-    }
-
-    pub fn show(self, ui: &mut Ui, text: &mut String) -> Response {
-        let mut text_edit = if self.multiline {
-            egui::TextEdit::multiline(text)
-        } else {
-            egui::TextEdit::singleline(text)
-        };
-
-        // Explicitly set the background color to INPUT_BACKGROUND
-        text_edit = text_edit.background_color(DashColors::INPUT_BACKGROUND);
-
-        if let Some(hint) = self.hint {
-            text_edit = text_edit.hint_text(hint);
-        }
-
-        if let Some(width) = self.desired_width {
-            text_edit = text_edit.desired_width(width);
-        }
-
-        if let Some(rows) = self.desired_rows {
-            text_edit = text_edit.desired_rows(rows);
-        }
-
-        ui.add(text_edit)
-    }
-}
+// Styled text input with Dash theme - commented out as it's not currently used
+// #[allow(dead_code)]
+// pub struct StyledTextInput {
+//     hint: Option<String>,
+//     multiline: bool,
+//     desired_width: Option<f32>,
+//     desired_rows: Option<usize>,
+// }
+//
+// impl StyledTextInput {
+//     pub fn new() -> Self {
+//         Self {
+//             hint: None,
+//             multiline: false,
+//             desired_width: None,
+//             desired_rows: None,
+//         }
+//     }
+//
+//     pub fn hint(mut self, hint: impl Into<String>) -> Self {
+//         self.hint = Some(hint.into());
+//         self
+//     }
+//
+//     pub fn multiline(mut self) -> Self {
+//         self.multiline = true;
+//         self
+//     }
+//
+//     pub fn desired_width(mut self, width: f32) -> Self {
+//         self.desired_width = Some(width);
+//         self
+//     }
+//
+//     pub fn desired_rows(mut self, rows: usize) -> Self {
+//         self.desired_rows = Some(rows);
+//         self
+//     }
+//
+//     pub fn show(self, ui: &mut Ui, text: &mut String) -> Response {
+//         let mut text_edit = if self.multiline {
+//             egui::TextEdit::multiline(text)
+//         } else {
+//             egui::TextEdit::singleline(text)
+//         };
+//
+//         // Explicitly set the background color to INPUT_BACKGROUND
+//         text_edit = text_edit.background_color(DashColors::INPUT_BACKGROUND);
+//
+//         if let Some(hint) = self.hint {
+//             text_edit = text_edit.hint_text(hint);
+//         }
+//
+//         if let Some(width) = self.desired_width {
+//             text_edit = text_edit.desired_width(width);
+//         }
+//
+//         if let Some(rows) = self.desired_rows {
+//             text_edit = text_edit.desired_rows(rows);
+//         }
+//
+//         ui.add(text_edit)
+//     }
+// }
 
 /// Styled message component for notifications
 pub struct StyledMessage {
@@ -270,6 +274,7 @@ pub struct StyledMessage {
     show_icon: bool,
 }
 
+#[allow(dead_code)]
 impl StyledMessage {
     pub fn new(text: impl Into<String>, message_type: MessageType) -> Self {
         Self {
@@ -316,6 +321,7 @@ pub struct ScrollableContainer {
     show_scrollbar: bool,
 }
 
+#[allow(dead_code)]
 impl ScrollableContainer {
     pub fn new() -> Self {
         Self {
@@ -356,6 +362,7 @@ pub struct StyledCheckbox<'a> {
     text: String,
 }
 
+#[allow(dead_code)]
 impl<'a> StyledCheckbox<'a> {
     pub fn new(checked: &'a mut bool, text: impl Into<String>) -> Self {
         Self {
@@ -436,6 +443,7 @@ pub struct GlassCard {
     padding: f32,
 }
 
+#[allow(dead_code)]
 impl GlassCard {
     pub fn new() -> Self {
         Self {
@@ -482,6 +490,7 @@ pub struct HeroSection {
     subtitle: Option<String>,
 }
 
+#[allow(dead_code)]
 impl HeroSection {
     pub fn new(title: impl Into<String>) -> Self {
         Self {
@@ -538,6 +547,7 @@ pub struct AnimatedIcon {
     pulse: bool,
 }
 
+#[allow(dead_code)]
 impl AnimatedIcon {
     pub fn new(icon: impl Into<String>) -> Self {
         Self {
@@ -603,6 +613,7 @@ pub struct AnimatedGradientCard {
     gradient_index: usize,
 }
 
+#[allow(dead_code)]
 impl AnimatedGradientCard {
     pub fn new() -> Self {
         Self {
@@ -658,12 +669,13 @@ impl AnimatedGradientCard {
 }
 
 /// Helper function to style a TextEdit with consistent theme
-pub fn styled_text_edit_singleline<'t>(text: &'t mut String) -> TextEdit<'t> {
+pub fn styled_text_edit_singleline(text: &mut String) -> TextEdit<'_> {
     TextEdit::singleline(text).background_color(DashColors::INPUT_BACKGROUND)
 }
 
 /// Helper function to style a multiline TextEdit with consistent theme
-pub fn styled_text_edit_multiline<'t>(text: &'t mut String) -> TextEdit<'t> {
+#[allow(dead_code)]
+pub fn styled_text_edit_multiline(text: &mut String) -> TextEdit<'_> {
     TextEdit::multiline(text).background_color(DashColors::INPUT_BACKGROUND)
 }
 
@@ -680,10 +692,8 @@ pub fn island_central_panel<R>(ctx: &Context, content: impl FnOnce(&mut Ui) -> R
             let available_width = ui.available_width();
             let inner_margin = if available_width > 1200.0 {
                 24.0 // Spacing::LG for larger screens
-            } else if available_width > 800.0 {
-                20.0 // Increased from 16px to ensure proper spacing
             } else {
-                20.0 // Force minimum 20px to prevent edge touching
+                20.0 // Minimum 20px to prevent edge touching
             };
 
             // Create an island panel with rounded edges

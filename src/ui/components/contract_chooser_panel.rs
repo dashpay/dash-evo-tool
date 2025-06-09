@@ -70,7 +70,7 @@ pub fn add_contract_chooser_panel(
                 .fill(DashColors::SURFACE)
                 .stroke(egui::Stroke::new(1.0, DashColors::BORDER_LIGHT))
                 .inner_margin(Margin::same(Spacing::MD_I8))
-                .corner_radius(egui::Rounding::same(Shape::RADIUS_LG))
+                .corner_radius(egui::CornerRadius::same(Shape::RADIUS_LG))
                 .shadow(Shadow::elevated())
                 .show(ui, |panel_ui| {
                     // Account for both outer margin (10px * 2) and inner margin

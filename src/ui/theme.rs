@@ -3,6 +3,7 @@ use egui::{Color32, FontData, FontDefinitions, FontFamily, FontId, Stroke, Vec2}
 /// Dash brand colors according to official guidelines
 pub struct DashColors;
 
+#[allow(dead_code)]
 impl DashColors {
     /// Primary Dash Blue (#008de4)
     pub const DASH_BLUE: Color32 = Color32::from_rgb(0, 141, 228);
@@ -98,6 +99,7 @@ impl DashColors {
 /// Typography scale and font configuration
 pub struct Typography;
 
+#[allow(dead_code)]
 impl Typography {
     pub const SCALE_XS: f32 = 12.0;
     pub const SCALE_SM: f32 = 14.0;
@@ -152,6 +154,7 @@ impl Typography {
 /// Spacing constants for consistent layout
 pub struct Spacing;
 
+#[allow(dead_code)]
 impl Spacing {
     pub const XXS: f32 = 2.0;
     pub const XS: f32 = 4.0;
@@ -178,6 +181,7 @@ impl Spacing {
 /// Border radius and shape constants
 pub struct Shape;
 
+#[allow(dead_code)]
 impl Shape {
     pub const RADIUS_NONE: u8 = 0;
     pub const RADIUS_SM: u8 = 6;
@@ -193,6 +197,7 @@ impl Shape {
 /// Modern shadow definitions for depth and visual appeal
 pub struct Shadow;
 
+#[allow(dead_code)]
 impl Shadow {
     pub fn small() -> egui::Shadow {
         egui::Shadow {
@@ -255,6 +260,7 @@ impl Shadow {
 /// Component style definitions
 pub struct ComponentStyles;
 
+#[allow(dead_code)]
 impl ComponentStyles {
     pub fn primary_button_fill() -> Color32 {
         DashColors::DASH_BLUE
@@ -426,6 +432,7 @@ pub fn apply_theme(ctx: &egui::Context) {
 }
 
 /// Message type styling
+#[allow(dead_code)]
 pub enum MessageType {
     Success,
     Error,
@@ -433,6 +440,7 @@ pub enum MessageType {
     Info,
 }
 
+#[allow(dead_code)]
 impl MessageType {
     pub fn color(&self) -> Color32 {
         match self {

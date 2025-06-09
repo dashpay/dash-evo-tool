@@ -6,9 +6,7 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
 use dash_sdk::platform::Identifier;
-use eframe::egui::{
-    self, Button, CentralPanel, Color32, ComboBox, Context, Frame, Label, Margin, RichText, Ui,
-};
+use eframe::egui::{self, Button, Color32, ComboBox, Context, Label, RichText, Ui};
 use egui_extras::{Column, TableBuilder};
 use itertools::Itertools;
 

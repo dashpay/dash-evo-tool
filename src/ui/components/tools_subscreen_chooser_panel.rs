@@ -2,7 +2,7 @@ use crate::context::AppContext;
 use crate::ui::theme::{DashColors, Shadow, Shape, Spacing, Typography};
 use crate::ui::RootScreenType;
 use crate::{app::AppAction, ui};
-use egui::{Color32, Context, Frame, Margin, RichText, SidePanel};
+use egui::{Context, Frame, Margin, RichText, SidePanel};
 
 #[derive(PartialEq)]
 pub enum ToolsSubscreen {
@@ -70,7 +70,7 @@ pub fn add_tools_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext
                 .fill(DashColors::SURFACE)
                 .stroke(egui::Stroke::new(1.0, DashColors::BORDER_LIGHT))
                 .inner_margin(Margin::same(Spacing::MD_I8))
-                .corner_radius(egui::Rounding::same(Shape::RADIUS_LG))
+                .corner_radius(egui::CornerRadius::same(Shape::RADIUS_LG))
                 .shadow(Shadow::elevated())
                 .show(ui, |ui| {
                     // Account for both outer margin (10px * 2) and inner margin
@@ -95,7 +95,7 @@ pub fn add_tools_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext
                                 )
                                 .fill(DashColors::DASH_BLUE)
                                 .stroke(egui::Stroke::NONE)
-                                .rounding(egui::Rounding::same(Shape::RADIUS_MD))
+                                .corner_radius(egui::CornerRadius::same(Shape::RADIUS_MD))
                                 .min_size(egui::Vec2::new(150.0, 28.0))
                             } else {
                                 egui::Button::new(
@@ -105,7 +105,7 @@ pub fn add_tools_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext
                                 )
                                 .fill(DashColors::WHITE)
                                 .stroke(egui::Stroke::new(1.0, DashColors::BORDER))
-                                .rounding(egui::Rounding::same(Shape::RADIUS_MD))
+                                .corner_radius(egui::CornerRadius::same(Shape::RADIUS_MD))
                                 .min_size(egui::Vec2::new(150.0, 28.0))
                             };
 

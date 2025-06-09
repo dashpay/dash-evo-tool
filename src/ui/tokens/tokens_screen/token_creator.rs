@@ -1,5 +1,4 @@
 use std::collections::HashSet;
-use std::sync::atomic::Ordering;
 use chrono::Utc;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationPreset;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationPresetFeatures::{MostRestrictive, WithAllAdvancedActions, WithExtremeActions, WithMintingAndBurningActions, WithOnlyEmergencyAction};
@@ -17,7 +16,6 @@ use crate::backend_task::tokens::TokenTask;
 use crate::ui::components::styled::{StyledCheckbox};
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
 use crate::ui::helpers::{add_identity_key_chooser, TransactionType};
-use crate::ui::theme::DashColors;
 use crate::ui::tokens::tokens_screen::{TokenBuildArgs, TokenCreatorStatus, TokenNameLanguage, TokensScreen};
 
 impl TokensScreen {
@@ -138,7 +136,7 @@ impl TokensScreen {
                                     ui.text_edit_singleline(&mut self.token_names_input[i].0);
                                     let text_height = ui.spacing().interact_size.y;
                                     if i == 0 {
-                                        let mut combo_resp = ComboBox::from_id_salt(format!("token_name_language_selector_{}", i))
+                                        let combo_resp = ComboBox::from_id_salt(format!("token_name_language_selector_{}", i))
                                             .selected_text(format!(
                                                 "{}",
                                                 self.token_names_input[i].2
@@ -148,7 +146,7 @@ impl TokensScreen {
                                             ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::English, "English");
                                         });
                                     } else {
-                                        let mut combo_resp = ComboBox::from_id_salt(format!("token_name_language_selector_{}", i))
+                                        let combo_resp = ComboBox::from_id_salt(format!("token_name_language_selector_{}", i))
                                             .selected_text(format!(
                                                 "{}",
                                                 self.token_names_input[i].2

@@ -602,7 +602,7 @@ impl IdentitiesScreen {
                                                                     Color32::WHITE // White for unloaded keys
                                                                 };
 
-                                                                let button = egui::Button::new(format!("{}", self.format_key_name(key)))
+                                                                let button = egui::Button::new(self.format_key_name(key))
                                                                     .fill(button_color)
                                                                     .frame(true);
 
@@ -638,7 +638,7 @@ impl IdentitiesScreen {
                                                                         Color32::WHITE // White for unloaded keys
                                                                     };
 
-                                                                    let button = egui::Button::new(format!("{}", self.format_key_name(key)))
+                                                                    let button = egui::Button::new(self.format_key_name(key))
                                                                         .fill(button_color)
                                                                         .frame(true);
 

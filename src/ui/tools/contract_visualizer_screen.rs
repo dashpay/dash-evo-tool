@@ -7,7 +7,7 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::BackendTaskSuccessResult;
 use dash_sdk::dpp::serialization::PlatformDeserializableWithPotentialValidationFromVersionedStructure;
 use dash_sdk::platform::DataContract;
-use eframe::egui::{self, Color32, Context, ScrollArea, TextEdit, Ui};
+use eframe::egui::{Color32, Context, ScrollArea, TextEdit, Ui};
 use std::sync::Arc;
 // ======================= 1.  Data & helpers =======================
 

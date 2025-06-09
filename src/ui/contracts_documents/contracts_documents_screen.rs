@@ -307,12 +307,10 @@ impl DocumentQueryScreen {
                         }
                     });
             }
-        } else {
-            if matches!(self.document_query_status, DocumentQueryStatus::NotStarted) {
-                ui.label("Select a contract and document type on the left and hit \"Fetch Documents\" to query documents.");
-            } else if matches!(self.document_query_status, DocumentQueryStatus::Complete) {
-                ui.label("No documents found.");
-            }
+        } else if matches!(self.document_query_status, DocumentQueryStatus::NotStarted) {
+            ui.label("Select a contract and document type on the left and hit \"Fetch Documents\" to query documents.");
+        } else if matches!(self.document_query_status, DocumentQueryStatus::Complete) {
+            ui.label("No documents found.");
         }
 
         ui.add_space(5.0);

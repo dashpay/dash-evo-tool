@@ -7,8 +7,7 @@ use crate::ui::theme::{DashColors, Shadow, Shape};
 use crate::ui::ScreenType;
 use dash_sdk::dashcore_rpc::dashcore::Network;
 use egui::{
-    Align, Color32, Context, Frame, Layout, Margin, RichText, Stroke, TextureHandle,
-    TopBottomPanel, Ui,
+    Align, Color32, Context, Frame, Margin, RichText, Stroke, TextureHandle, TopBottomPanel, Ui,
 };
 use rust_embed::RustEmbed;
 use std::sync::Arc;
@@ -18,40 +17,38 @@ use std::sync::Arc;
 struct Assets;
 
 // Function to load an icon as a texture using embedded assets
+#[allow(dead_code)]
 fn load_icon(ctx: &Context, path: &str) -> Option<TextureHandle> {
     // Use ctx.data_mut to check if texture is already cached
-    ctx.data_mut(|d| {
-        d.get_temp::<TextureHandle>(egui::Id::new(path))
-            .map(|v| v.clone())
-    })
-    .or_else(|| {
-        // Only do expensive operations if texture is not cached
-        if let Some(content) = Assets::get(path) {
-            // Load the image from the embedded bytes
-            if let Ok(image) = image::load_from_memory(&content.data) {
-                let size = [image.width() as usize, image.height() as usize];
-                let rgba_image = image.into_rgba8();
-                let pixels = rgba_image.into_raw();
+    ctx.data_mut(|d| d.get_temp::<TextureHandle>(egui::Id::new(path)))
+        .or_else(|| {
+            // Only do expensive operations if texture is not cached
+            if let Some(content) = Assets::get(path) {
+                // Load the image from the embedded bytes
+                if let Ok(image) = image::load_from_memory(&content.data) {
+                    let size = [image.width() as usize, image.height() as usize];
+                    let rgba_image = image.into_rgba8();
+                    let pixels = rgba_image.into_raw();
 
-                let texture = ctx.load_texture(
-                    path,
-                    egui::ColorImage::from_rgba_unmultiplied(size, &pixels),
-                    Default::default(),
-                );
+                    let texture = ctx.load_texture(
+                        path,
+                        egui::ColorImage::from_rgba_unmultiplied(size, &pixels),
+                        Default::default(),
+                    );
 
-                // Cache the texture
-                ctx.data_mut(|d| d.insert_temp(egui::Id::new(path), texture.clone()));
+                    // Cache the texture
+                    ctx.data_mut(|d| d.insert_temp(egui::Id::new(path), texture.clone()));
 
-                Some(texture)
+                    Some(texture)
+                } else {
+                    eprintln!("Failed to load image from embedded data at path: {}", path);
+                    None
+                }
             } else {
-                eprintln!("Failed to load image from embedded data at path: {}", path);
+                eprintln!("Image not found in embedded assets at path: {}", path);
                 None
             }
-        } else {
-            eprintln!("Image not found in embedded assets at path: {}", path);
-            None
-        }
-    })
+        })
 }
 
 fn add_location_view(ui: &mut Ui, location: Vec<(&str, AppAction)>) -> AppAction {
@@ -64,8 +61,11 @@ fn add_location_view(ui: &mut Ui, location: Vec<(&str, AppAction)>) -> AppAction
         let offset = egui::vec2(0.0, -5.0);
         ui.add_space(0.0); // Reset any spacing
 
-        ui.allocate_ui_at_rect(
-            egui::Rect::from_min_size(ui.cursor().min + offset, ui.available_size()),
+        ui.allocate_new_ui(
+            egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
+                ui.cursor().min + offset,
+                ui.available_size(),
+            )),
             |ui| {
                 egui::menu::bar(ui, |ui| {
                     ui.horizontal(|ui| {

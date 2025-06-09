@@ -8,8 +8,8 @@ use crate::ui::tokens::tokens_screen::{
 use chrono::Utc;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use eframe::emath::Align;
-use eframe::epaint::{Color32, Margin};
-use egui::{Frame, Ui};
+use eframe::epaint::Color32;
+use egui::Ui;
 use egui_extras::{Column, TableBuilder};
 
 impl TokensScreen {

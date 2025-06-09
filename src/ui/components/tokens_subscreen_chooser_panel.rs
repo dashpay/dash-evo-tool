@@ -3,7 +3,7 @@ use crate::ui::theme::{DashColors, Shadow, Shape, Spacing, Typography};
 use crate::ui::tokens::tokens_screen::TokensSubscreen;
 use crate::ui::RootScreenType;
 use crate::{app::AppAction, ui};
-use egui::{Color32, Context, Frame, Margin, RichText, SidePanel};
+use egui::{Context, Frame, Margin, RichText, SidePanel};
 
 pub fn add_tokens_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext) -> AppAction {
     let mut action = AppAction::None;
@@ -41,11 +41,11 @@ pub fn add_tokens_subscreen_chooser_panel(ctx: &Context, app_context: &AppContex
                 .fill(DashColors::SURFACE)
                 .stroke(egui::Stroke::new(1.0, DashColors::BORDER_LIGHT))
                 .inner_margin(Margin::same(Spacing::XL as i8))
-                .corner_radius(egui::Rounding::same(Shape::RADIUS_LG))
+                .corner_radius(egui::CornerRadius::same(Shape::RADIUS_LG))
                 .shadow(Shadow::elevated())
                 .show(ui, |ui| {
                     // Account for both outer margin (10px * 2) and inner margin
-                    ui.set_min_height(available_height - 2.0 - (Spacing::XL as f32 * 2.0));
+                    ui.set_min_height(available_height - 2.0 - (Spacing::XL * 2.0));
                     // Display subscreen names
                     ui.vertical(|ui| {
                         ui.label(
@@ -66,7 +66,7 @@ pub fn add_tokens_subscreen_chooser_panel(ctx: &Context, app_context: &AppContex
                                 )
                                 .fill(DashColors::DASH_BLUE)
                                 .stroke(egui::Stroke::NONE)
-                                .rounding(egui::Rounding::same(Shape::RADIUS_MD))
+                                .corner_radius(egui::CornerRadius::same(Shape::RADIUS_MD))
                                 .min_size(egui::Vec2::new(150.0, 28.0))
                             } else {
                                 egui::Button::new(
@@ -76,7 +76,7 @@ pub fn add_tokens_subscreen_chooser_panel(ctx: &Context, app_context: &AppContex
                                 )
                                 .fill(DashColors::WHITE)
                                 .stroke(egui::Stroke::new(1.0, DashColors::BORDER))
-                                .rounding(egui::Rounding::same(Shape::RADIUS_MD))
+                                .corner_radius(egui::CornerRadius::same(Shape::RADIUS_MD))
                                 .min_size(egui::Vec2::new(150.0, 28.0))
                             };
 

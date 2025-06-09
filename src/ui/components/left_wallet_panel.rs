@@ -11,6 +11,7 @@ use std::sync::Arc;
 struct Assets;
 
 // Function to load an icon as a texture using embedded assets
+#[allow(dead_code)]
 fn load_icon(ctx: &Context, path: &str) -> Option<TextureHandle> {
     // Attempt to retrieve the embedded file
     if let Some(content) = Assets::get(path) {
@@ -35,6 +36,7 @@ fn load_icon(ctx: &Context, path: &str) -> Option<TextureHandle> {
     }
 }
 
+#[allow(dead_code)]
 pub fn add_left_panel(
     ctx: &Context,
     _app_context: &Arc<AppContext>,

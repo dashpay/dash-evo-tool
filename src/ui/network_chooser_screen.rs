@@ -255,10 +255,9 @@ impl NetworkChooserScreen {
                                         }
                                     }
 
-                                    if self.custom_dash_qt_path.is_some()
-                                        || self.custom_dash_qt_error_message.is_some()
-                                    {
-                                        if ui
+                                    if (self.custom_dash_qt_path.is_some()
+                                        || self.custom_dash_qt_error_message.is_some())
+                                        && ui
                                             .add(
                                                 egui::Button::new("Clear")
                                                     .fill(DashColors::ERROR.linear_multiply(0.8))
@@ -267,11 +266,10 @@ impl NetworkChooserScreen {
                                                     .min_size(egui::vec2(80.0, 32.0)),
                                             )
                                             .clicked()
-                                        {
-                                            self.custom_dash_qt_path = None;
-                                            self.custom_dash_qt_error_message = None;
-                                            self.save().expect("Expected to save db settings");
-                                        }
+                                    {
+                                        self.custom_dash_qt_path = None;
+                                        self.custom_dash_qt_error_message = None;
+                                        self.save().expect("Expected to save db settings");
                                     }
                                 });
 

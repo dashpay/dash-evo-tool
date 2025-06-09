@@ -28,8 +28,8 @@ use dash_sdk::dpp::data_contract::associated_token::token_configuration::accesso
 use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::accessors::v0::TokenDistributionRulesV0Getters;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use eframe::emath::Align;
-use eframe::epaint::{Color32, Margin};
-use egui::{Frame, RichText, Ui};
+use eframe::epaint::Color32;
+use egui::{RichText, Ui};
 use egui_extras::{Column, TableBuilder};
 use std::ops::Range;
 use std::sync::atomic::Ordering;

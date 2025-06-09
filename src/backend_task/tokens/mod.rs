@@ -50,6 +50,7 @@ mod pause_tokens;
 mod purchase_tokens;
 mod query_my_token_balances;
 mod query_token_non_claimed_perpetual_distribution_rewards;
+mod query_token_pricing;
 mod query_tokens;
 mod resume_tokens;
 mod set_token_price;
@@ -95,6 +96,7 @@ pub(crate) enum TokenTask {
     QueryDescriptionsByKeyword(String, Option<Start>),
     FetchTokenByContractId(Identifier),
     SaveTokenLocally(TokenInfo),
+    QueryTokenPricing(Identifier),
     MintTokens {
         sending_identity: QualifiedIdentity,
         data_contract: Arc<DataContract>,
@@ -595,6 +597,10 @@ impl AppContext {
                 )
                 .await
                 .map_err(|e| format!("Failed to set direct purchase price: {e}")),
+            TokenTask::QueryTokenPricing(token_id) => self
+                .query_token_pricing(*token_id, sdk, sender)
+                .await
+                .map_err(|e| format!("Failed to query token pricing: {e}")),
         }
     }
 

@@ -47,8 +47,9 @@ impl TokensScreen {
                 action |= self.render_token_details(ui);
             } else {
                 // Otherwise, show the list of all tokens
-                if let Err(e) = self.render_token_list(ui) {
-                    self.set_error_message(Some(e));
+                match self.render_token_list(ui) {
+                    Ok(list_action) => action |= list_action,
+                    Err(e) => self.set_error_message(Some(e)),
                 }
             }
         }
@@ -167,6 +168,9 @@ impl TokensScreen {
                         &token_info.token_configuration,
                         &token_info.data_contract,
                         in_dev_mode,
+                        self.token_pricing_data
+                            .get(&token_id)
+                            .and_then(|opt| opt.as_ref()),
                     ),
                 }
             };
@@ -561,9 +565,45 @@ impl TokensScreen {
         }
         if itb.available_actions.can_maybe_purchase {
             if range.contains(&pos) {
-                // Purchase
-                if ui.button("Purchase").clicked() {
-                    match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
+                // Check if we have pricing data
+                let has_pricing_data = self.token_pricing_data.contains_key(&itb.token_id);
+                let is_loading = self
+                    .pricing_loading_state
+                    .get(&itb.token_id)
+                    .copied()
+                    .unwrap_or(false);
+
+                if is_loading {
+                    // Show loading spinner
+                    ui.add(egui::Spinner::new());
+                } else if has_pricing_data {
+                    // Check if identity has enough credits for at least one token
+                    let has_credits = self
+                        .app_context
+                        .get_identity_by_id(&itb.identity_id)
+                        .map(|identity_opt| {
+                            identity_opt
+                                .map(|identity| {
+                                    use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+                                    // Get minimum price for one token
+                                    if let Some(Some(_pricing)) =
+                                        self.token_pricing_data.get(&itb.token_id)
+                                    {
+                                        // For now, assume minimum price of 100 credits if pricing exists
+                                        // TODO: Extract actual minimum price from TokenPricingSchedule
+                                        identity.identity.balance() >= 100
+                                    } else {
+                                        false
+                                    }
+                                })
+                                .unwrap_or(false)
+                        })
+                        .unwrap_or(false);
+
+                    if has_credits {
+                        // Purchase button enabled
+                        if ui.button("Purchase").clicked() {
+                            match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
                                 Ok(info) => {
                                     action = AppAction::AddScreen(
                                         Screen::PurchaseTokenScreen(
@@ -578,8 +618,16 @@ impl TokensScreen {
                                     self.set_error_message(Some(e));
                                 }
                             };
-
-                    ui.close_menu();
+                            ui.close_menu();
+                        }
+                    } else {
+                        // Disabled, grayed-out Purchase button
+                        ui.add_enabled(
+                            false,
+                            egui::Button::new(RichText::new("Purchase").color(egui::Color32::GRAY)),
+                        )
+                        .on_hover_text("Insufficient credits for purchase");
+                    }
                 }
             }
             pos += 1;
@@ -611,7 +659,8 @@ impl TokensScreen {
 
     /// Renders the top-level token list (one row per unique token).
     /// When the user clicks on a token, we set `selected_token_id`.
-    fn render_token_list(&mut self, ui: &mut Ui) -> Result<(), String> {
+    fn render_token_list(&mut self, ui: &mut Ui) -> Result<AppAction, String> {
+        let mut action = AppAction::None;
         // Space allocation for UI elements is handled by the layout system
 
         // A simple table with columns: [Token Name | Token ID | Total Balance]
@@ -653,6 +702,15 @@ impl TokensScreen {
                                 // we can respond to clicks.
                                 if ui.button(token_name).clicked() {
                                     self.selected_token = Some(*token_id);
+                                    // Check if we need to fetch pricing data for this token
+                                    if !self.token_pricing_data.contains_key(token_id) {
+                                        // Mark as loading
+                                        self.pricing_loading_state.insert(*token_id, true);
+                                        // Trigger backend task to fetch pricing
+                                        action = AppAction::BackendTask(BackendTask::TokenTask(
+                                            Box::new(TokenTask::QueryTokenPricing(*token_id)),
+                                        ));
+                                    }
                                 }
                             });
                             row.col(|ui| {
@@ -676,6 +734,6 @@ impl TokensScreen {
                     }
                 });
         });
-        Ok(())
+        Ok(action)
     }
 }

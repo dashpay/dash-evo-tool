@@ -129,7 +129,7 @@ impl AppContext {
             .put_to_platform_and_wait_for_response(
                 sdk,
                 preorder_document_type.to_owned_document_type(),
-                entropy.0,
+                Some(entropy.0),
                 public_key.clone(),
                 None,
                 &qualified_identity,
@@ -142,7 +142,7 @@ impl AppContext {
             .put_to_platform_and_wait_for_response(
                 sdk,
                 domain_document_type.to_owned_document_type(),
-                entropy.0,
+                Some(entropy.0),
                 public_key.clone(),
                 None,
                 &qualified_identity,

@@ -550,6 +550,9 @@ impl AppState {
 
 impl App for AppState {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Apply Dash theme on first update
+        crate::ui::theme::apply_theme(ctx);
+
         if let Ok(event) = self.current_app_context().rx_zmq_status.try_recv() {
             if let Ok(mut status) = self.current_app_context().zmq_connection_status.lock() {
                 *status = event;

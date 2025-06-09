@@ -6,6 +6,7 @@ use crate::model::qualified_contract::QualifiedContract;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
 use crate::ui::helpers::{add_identity_key_chooser, TransactionType};
@@ -359,10 +360,9 @@ impl ScreenLike for UpdateDataContractScreen {
             crate::ui::RootScreenType::RootScreenDocumentQuery,
         );
 
-        egui::CentralPanel::default().show(ctx, |ui| {
+        action |= island_central_panel(ctx, |ui| {
             if self.broadcast_status == BroadcastStatus::Done {
-                action |= self.show_success(ui);
-                return;
+                return self.show_success(ui);
             }
 
             ui.heading("Update Data Contract");
@@ -374,7 +374,7 @@ impl ScreenLike for UpdateDataContractScreen {
                     egui::Color32::DARK_RED,
                     "No qualified identities available to update a data contract.",
                 );
-                return;
+                return AppAction::None;
             }
 
             // Select the identity to update the name for
@@ -397,8 +397,7 @@ impl ScreenLike for UpdateDataContractScreen {
             }
 
             if self.selected_key.is_none() {
-                action = AppAction::None;
-                return;
+                return AppAction::None;
             }
 
             ui.add_space(10.0);
@@ -409,7 +408,7 @@ impl ScreenLike for UpdateDataContractScreen {
             if self.selected_wallet.is_some() {
                 let (needed_unlock, just_unlocked) = self.render_wallet_unlock_if_needed(ui);
                 if needed_unlock && !just_unlocked {
-                    return;
+                    return AppAction::None;
                 }
             }
 
@@ -463,7 +462,7 @@ impl ScreenLike for UpdateDataContractScreen {
             self.ui_input_field(ui);
 
             // Parse the contract and show the result
-            action |= self.ui_parsed_contract(ui);
+            self.ui_parsed_contract(ui)
         });
 
         action

@@ -418,6 +418,7 @@ impl QualifiedIdentity {
         keys
     }
 
+    #[allow(dead_code)]
     pub fn available_authentication_keys_with_critical_or_high_security_level(
         &self,
     ) -> Vec<&QualifiedIdentityPublicKey> {

@@ -1,18 +1,17 @@
 use crate::app::TaskResult;
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::context::AppContext;
+use crate::model::proof_log_item::{ProofLogItem, RequestType};
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::dpp::balances::credits::TokenAmount;
 use dash_sdk::dpp::fee::Credits;
-
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::state_transition::proof_result::StateTransitionProofResult;
+use dash_sdk::platform::tokens::builders::purchase::TokenDirectPurchaseTransitionBuilder;
 use dash_sdk::platform::transition::broadcast::BroadcastStateTransition;
-use dash_sdk::platform::transition::fungible_tokens::purchase::TokenDirectPurchaseTransitionBuilder;
 use dash_sdk::platform::{DataContract, IdentityPublicKey};
 use dash_sdk::{Error, Sdk};
-
-use crate::model::proof_log_item::{ProofLogItem, RequestType};
+use std::sync::Arc;
 use tokio::sync::mpsc;
 
 impl AppContext {
@@ -20,7 +19,7 @@ impl AppContext {
     pub async fn purchase_tokens(
         &self,
         sending_identity: &QualifiedIdentity,
-        data_contract: &DataContract,
+        data_contract: Arc<DataContract>,
         token_position: u16,
         signing_key: IdentityPublicKey,
         amount: TokenAmount,
@@ -28,24 +27,20 @@ impl AppContext {
         sdk: &Sdk,
         _sender: mpsc::Sender<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, String> {
-        let builder = TokenDirectPurchaseTransitionBuilder::new(
-            data_contract,
+        let mut builder = TokenDirectPurchaseTransitionBuilder::new(
+            data_contract.clone(),
             token_position,
             sending_identity.identity.id(),
             amount,
             total_agreed_price,
         );
 
-        let options = self.state_transition_options();
+        if let Some(options) = self.state_transition_options() {
+            builder = builder.with_state_transition_creation_options(options);
+        }
 
         let state_transition = builder
-            .sign(
-                sdk,
-                &signing_key,
-                sending_identity,
-                self.platform_version(),
-                options,
-            )
+            .sign(sdk, &signing_key, sending_identity, self.platform_version())
             .await
             .map_err(|e| format!("Error signing Purchase Tokens state transition: {}", e))?;
 

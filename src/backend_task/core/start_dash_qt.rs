@@ -1,8 +1,10 @@
+use crate::app_dir::{app_user_data_file_path, create_dash_core_config_if_not_exists};
+
 use crate::context::AppContext;
 use dash_sdk::dpp::dashcore::Network;
+use std::env;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
-use std::{env, io};
+use tokio::process::Command;
 
 impl AppContext {
     /// Function to start Dash QT based on the selected network
@@ -11,7 +13,7 @@ impl AppContext {
         network: Network,
         custom_dash_qt: Option<String>,
         overwrite_dash_conf: bool,
-    ) -> io::Result<()> {
+    ) -> std::io::Result<()> {
         let dash_qt_path = match custom_dash_qt {
             Some(ref custom_path) => PathBuf::from(custom_path),
             None => {
@@ -30,33 +32,29 @@ impl AppContext {
 
         // Ensure the Dash-Qt binary path exists
         if !dash_qt_path.exists() {
-            return Err(io::Error::new(
-                io::ErrorKind::NotFound,
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
                 format!("Dash-Qt not found at: {:?}", dash_qt_path),
             ));
         }
 
-        // Determine the config file based on the network
-        let config_file: &str = match network {
-            Network::Dash => "dash_core_configs/mainnet.conf",
-            Network::Testnet => "dash_core_configs/testnet.conf",
-            Network::Devnet => "dash_core_configs/devnet.conf",
-            Network::Regtest => "dash_core_configs/local.conf",
-            _ => {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "Unsupported network",
-                ))
-            }
-        };
-
         let mut command = Command::new(&dash_qt_path);
-        command.stdout(Stdio::null()).stderr(Stdio::null()); // Suppress output
+
+        // we need two separate file handles that will write to the same log file
+        let outlog = std::fs::OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(app_user_data_file_path("core.log")?)?;
+
+        let errlog = std::fs::OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(app_user_data_file_path("core-err.log")?)?;
+
+        command.stdout(outlog).stderr(errlog); // Suppress output
 
         if overwrite_dash_conf {
-            // Construct the full path to the config file
-            let current_dir = env::current_dir()?;
-            let config_path = current_dir.join(config_file);
+            let config_path = create_dash_core_config_if_not_exists(network)?;
             command.arg(format!("-conf={}", config_path.display()));
         } else if network == Network::Testnet {
             command.arg("-testnet");
@@ -65,9 +63,29 @@ impl AppContext {
         } else if network == Network::Regtest {
             command.arg("-local");
         }
-
         // Spawn the Dash-Qt process
-        command.spawn()?;
+
+        // Spawn a task to wait for the Dash-Qt process to exit
+        tokio::spawn(async move {
+            let mut dash_qt = command
+                .spawn()
+                .inspect_err(
+                    |e| tracing::error!(error=?e, ?command, "failed to start dash-qt binary"),
+                )
+                .expect("Failed to spawn dash-qt process");
+
+            tracing::debug!(?command, pid = dash_qt.id(), "dash-qt started");
+            match dash_qt.wait().await {
+                Ok(status) => {
+                    if status.success() {
+                        tracing::debug!("dash-qt process exited successfully");
+                    } else {
+                        tracing::warn!("dash-qt process exited with status: {}", status);
+                    }
+                }
+                Err(e) => tracing::error!(error=?e, "dash-qt process failed to wait"),
+            }
+        });
 
         Ok(())
     }

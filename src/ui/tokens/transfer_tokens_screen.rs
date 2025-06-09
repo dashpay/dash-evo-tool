@@ -5,6 +5,7 @@ use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
@@ -13,7 +14,6 @@ use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
 use crate::ui::{MessageType, Screen, ScreenLike};
 use dash_sdk::dpp::balances::credits::TokenAmount;
-use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
@@ -215,17 +215,14 @@ impl TransferTokensScreen {
                         .expect("Time went backwards")
                         .as_secs();
                     self.transfer_tokens_status = TransferTokensStatus::WaitingForResult(now);
-                    let data_contract = self
-                        .app_context
-                        .get_contracts(None, None)
-                        .expect("Contracts not loaded")
-                        .iter()
-                        .find(|contract| {
-                            contract.contract.id() == self.identity_token_balance.data_contract_id
-                        })
-                        .expect("Data contract not found")
-                        .contract
-                        .clone();
+                    let data_contract = Arc::new(
+                        self.app_context
+                            .get_unqualified_contract_by_id(
+                                &self.identity_token_balance.data_contract_id,
+                            )
+                            .expect("Contracts not loaded")
+                            .expect("Data contract not found"),
+                    );
                     app_action |= AppAction::BackendTasks(
                         vec![
                             BackendTask::TokenTask(Box::new(TokenTask::TransferTokens {
@@ -339,11 +336,10 @@ impl ScreenLike for TransferTokensScreen {
         // Subscreen chooser
         action |= add_tokens_subscreen_chooser_panel(ctx, &self.app_context);
 
-        egui::CentralPanel::default().show(ctx, |ui| {
+        let central_panel_action = island_central_panel(ctx, |ui| {
             // Show the success screen if the transfer was successful
             if self.transfer_tokens_status == TransferTokensStatus::Complete {
-                action |= self.show_success(ui);
-                return;
+                return self.show_success(ui);
             }
 
             ui.heading(format!(
@@ -380,7 +376,7 @@ impl ScreenLike for TransferTokensScreen {
 
                 if let Some(key) = key {
                     if ui.button("Check Keys").clicked() {
-                        action |= AppAction::AddScreen(Screen::KeyInfoScreen(KeyInfoScreen::new(
+                        return AppAction::AddScreen(Screen::KeyInfoScreen(KeyInfoScreen::new(
                             self.identity.clone(),
                             key.clone(),
                             None,
@@ -391,7 +387,7 @@ impl ScreenLike for TransferTokensScreen {
                 }
 
                 if ui.button("Add key").clicked() {
-                    action |= AppAction::AddScreen(Screen::AddKeyScreen(AddKeyScreen::new(
+                    return AppAction::AddScreen(Screen::AddKeyScreen(AddKeyScreen::new(
                         self.identity.clone(),
                         &self.app_context,
                     )));
@@ -401,7 +397,7 @@ impl ScreenLike for TransferTokensScreen {
                     let (needed_unlock, just_unlocked) = self.render_wallet_unlock_if_needed(ui);
 
                     if needed_unlock && !just_unlocked {
-                        return;
+                        return AppAction::None;
                     }
                 }
 
@@ -480,7 +476,7 @@ impl ScreenLike for TransferTokensScreen {
                 }
 
                 if self.confirmation_popup {
-                    action |= self.show_confirmation_popup(ui);
+                    return self.show_confirmation_popup(ui);
                 }
 
                 // Handle transfer status messages
@@ -527,7 +523,10 @@ impl ScreenLike for TransferTokensScreen {
                     }
                 }
             }
+
+            AppAction::None
         });
+        action |= central_panel_action;
         action
     }
 }

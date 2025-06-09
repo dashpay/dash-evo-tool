@@ -5,6 +5,7 @@ use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
 use crate::ui::helpers::{add_identity_key_chooser, TransactionType};
@@ -316,10 +317,9 @@ impl ScreenLike for RegisterDataContractScreen {
             crate::ui::RootScreenType::RootScreenDocumentQuery,
         );
 
-        egui::CentralPanel::default().show(ctx, |ui| {
+        action |= island_central_panel(ctx, |ui| {
             if self.broadcast_status == BroadcastStatus::Done {
-                action |= self.show_success(ui);
-                return;
+                return self.show_success(ui);
             }
 
             ui.heading("Register Data Contract");
@@ -331,7 +331,7 @@ impl ScreenLike for RegisterDataContractScreen {
                     egui::Color32::DARK_RED,
                     "No qualified identities available to register a data contract.",
                 );
-                return;
+                return AppAction::None;
             }
 
             // Select the identity to register the name for
@@ -354,7 +354,7 @@ impl ScreenLike for RegisterDataContractScreen {
             }
 
             if self.selected_key.is_none() {
-                return;
+                return AppAction::None;
             }
 
             ui.add_space(10.0);
@@ -365,7 +365,7 @@ impl ScreenLike for RegisterDataContractScreen {
             if self.selected_wallet.is_some() {
                 let (needed_unlock, just_unlocked) = self.render_wallet_unlock_if_needed(ui);
                 if needed_unlock && !just_unlocked {
-                    return;
+                    return AppAction::None;
                 }
             }
 
@@ -381,10 +381,23 @@ impl ScreenLike for RegisterDataContractScreen {
             // Input for the contract
             ui.heading("3. Paste the contract JSON below");
             ui.add_space(5.0);
+
+            // Add link to dashpay.io
+            ui.horizontal(|ui| {
+                ui.label("Easily create a contract JSON here:");
+                ui.add(egui::Hyperlink::from_label_and_url(
+                    RichText::new("dashpay.io")
+                        .underline()
+                        .color(Color32::from_rgb(0, 128, 255)),
+                    "https://dashpay.io",
+                ));
+            });
+            ui.add_space(5.0);
+
             self.ui_input_field(ui);
 
             // Parse the contract and show the result
-            action |= self.ui_parsed_contract(ui);
+            self.ui_parsed_contract(ui)
         });
 
         action

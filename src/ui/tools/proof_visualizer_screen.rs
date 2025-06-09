@@ -1,6 +1,7 @@
 use crate::app::AppAction;
 use crate::context::AppContext;
 use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tools_subscreen_chooser_panel::add_tools_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
@@ -8,6 +9,7 @@ use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use dash_sdk::drive::grovedb::operations::proof::GroveDBProof;
 use eframe::egui::{self, Context, ScrollArea, TextEdit, Ui};
+use egui::Color32;
 use std::sync::Arc;
 
 pub struct ProofVisualizerScreen {
@@ -108,7 +110,7 @@ impl ProofVisualizerScreen {
 
                 ui.add_space(10.0);
             } else {
-                ui.label("No proof parsed yet.");
+                ui.colored_label(Color32::GRAY, "No proof parsed yet.");
             }
         });
 
@@ -138,9 +140,10 @@ impl ScreenLike for ProofVisualizerScreen {
 
         action |= add_tools_subscreen_chooser_panel(ctx, self.app_context.as_ref());
 
-        egui::CentralPanel::default().show(ctx, |ui| {
+        action |= island_central_panel(ctx, |ui| {
             self.show_input_field(ui);
             self.show_output(ui);
+            AppAction::None
         });
 
         action

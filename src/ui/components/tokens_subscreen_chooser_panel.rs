@@ -1,8 +1,9 @@
 use crate::context::AppContext;
+use crate::ui::theme::{DashColors, Shadow, Shape, Spacing, Typography};
 use crate::ui::tokens::tokens_screen::TokensSubscreen;
 use crate::ui::RootScreenType;
 use crate::{app::AppAction, ui};
-use egui::{Color32, Context, Frame, Margin, RichText, SidePanel};
+use egui::{Context, Frame, Margin, RichText, SidePanel};
 
 pub fn add_tokens_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext) -> AppAction {
     let mut action = AppAction::None;
@@ -24,54 +25,87 @@ pub fn add_tokens_subscreen_chooser_panel(ctx: &Context, app_context: &AppContex
     };
 
     SidePanel::left("tokens_subscreen_chooser_panel")
-        .default_width(250.0)
+        .resizable(true)
+        .default_width(270.0) // Increased to account for margins
         .frame(
             Frame::new()
-                .fill(ctx.style().visuals.panel_fill)
-                .inner_margin(Margin::same(10)),
+                .fill(DashColors::BACKGROUND) // Light background instead of transparent
+                .inner_margin(Margin::symmetric(10, 10)), // Add margins for island effect
         )
         .show(ctx, |ui| {
-            // Display subscreen names
-            ui.vertical(|ui| {
-                ui.label("Tokens Subscreens");
-                ui.add_space(10.0);
+            // Fill the entire available height
+            let available_height = ui.available_height();
 
-                for subscreen in subscreens {
-                    let is_active = active_screen == subscreen;
-                    let (button_color, text_color) = if is_active {
-                        (Color32::from_rgb(0, 128, 255), Color32::WHITE)
-                    } else {
-                        (Color32::GRAY, Color32::WHITE)
-                    };
-                    let button = egui::Button::new(
-                        RichText::new(subscreen.display_name()).color(text_color),
-                    )
-                    .fill(button_color);
-                    // Show the subscreen name as a clickable option
-                    if ui.add(button).clicked() {
-                        // Handle navigation based on which subscreen is selected
-                        match subscreen {
-                            TokensSubscreen::MyTokens => {
-                                action = AppAction::SetMainScreenThenGoToMainScreen(
-                                    RootScreenType::RootScreenMyTokenBalances,
+            // Create an island panel with rounded edges that fills the height
+            Frame::new()
+                .fill(DashColors::SURFACE)
+                .stroke(egui::Stroke::new(1.0, DashColors::BORDER_LIGHT))
+                .inner_margin(Margin::same(Spacing::XL as i8))
+                .corner_radius(egui::CornerRadius::same(Shape::RADIUS_LG))
+                .shadow(Shadow::elevated())
+                .show(ui, |ui| {
+                    // Account for both outer margin (10px * 2) and inner margin
+                    ui.set_min_height(available_height - 2.0 - (Spacing::XL * 2.0));
+                    // Display subscreen names
+                    ui.vertical(|ui| {
+                        ui.label(
+                            RichText::new("Tokens")
+                                .font(Typography::heading_small())
+                                .color(DashColors::TEXT_PRIMARY),
+                        );
+                        ui.add_space(Spacing::MD);
+
+                        for subscreen in subscreens {
+                            let is_active = active_screen == subscreen;
+
+                            let button = if is_active {
+                                egui::Button::new(
+                                    RichText::new(subscreen.display_name())
+                                        .color(DashColors::WHITE)
+                                        .size(Typography::SCALE_SM),
                                 )
-                            }
-                            TokensSubscreen::SearchTokens => {
-                                action = AppAction::SetMainScreenThenGoToMainScreen(
-                                    RootScreenType::RootScreenTokenSearch,
+                                .fill(DashColors::DASH_BLUE)
+                                .stroke(egui::Stroke::NONE)
+                                .corner_radius(egui::CornerRadius::same(Shape::RADIUS_MD))
+                                .min_size(egui::Vec2::new(150.0, 28.0))
+                            } else {
+                                egui::Button::new(
+                                    RichText::new(subscreen.display_name())
+                                        .color(DashColors::TEXT_PRIMARY)
+                                        .size(Typography::SCALE_SM),
                                 )
+                                .fill(DashColors::WHITE)
+                                .stroke(egui::Stroke::new(1.0, DashColors::BORDER))
+                                .corner_radius(egui::CornerRadius::same(Shape::RADIUS_MD))
+                                .min_size(egui::Vec2::new(150.0, 28.0))
+                            };
+
+                            // Show the subscreen name as a clickable option
+                            if ui.add(button).clicked() {
+                                // Handle navigation based on which subscreen is selected
+                                match subscreen {
+                                    TokensSubscreen::MyTokens => {
+                                        action = AppAction::SetMainScreenThenGoToMainScreen(
+                                            RootScreenType::RootScreenMyTokenBalances,
+                                        )
+                                    }
+                                    TokensSubscreen::SearchTokens => {
+                                        action = AppAction::SetMainScreenThenGoToMainScreen(
+                                            RootScreenType::RootScreenTokenSearch,
+                                        )
+                                    }
+                                    TokensSubscreen::TokenCreator => {
+                                        action = AppAction::SetMainScreenThenGoToMainScreen(
+                                            RootScreenType::RootScreenTokenCreator,
+                                        )
+                                    }
+                                }
                             }
-                            TokensSubscreen::TokenCreator => {
-                                action = AppAction::SetMainScreenThenGoToMainScreen(
-                                    RootScreenType::RootScreenTokenCreator,
-                                )
-                            }
+
+                            ui.add_space(Spacing::SM);
                         }
-                    }
-
-                    ui.add_space(5.0);
-                }
-            });
+                    });
+                });
         });
 
     action

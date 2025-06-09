@@ -14,6 +14,7 @@ use crate::backend_task::BackendTask;
 use crate::context::AppContext;
 use crate::model::wallet::Wallet;
 use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
@@ -151,11 +152,9 @@ impl PurchaseTokenScreen {
                         vec![
                             BackendTask::TokenTask(Box::new(TokenTask::PurchaseTokens {
                                 identity: self.identity_token_info.identity.clone(),
-                                data_contract: self
-                                    .identity_token_info
-                                    .data_contract
-                                    .contract
-                                    .clone(),
+                                data_contract: Arc::new(
+                                    self.identity_token_info.data_contract.contract.clone(),
+                                ),
                                 token_position: self.identity_token_info.token_position,
                                 signing_key: self.selected_key.clone().expect("Expected a key"),
                                 amount: amount_ok.expect("Expected a valid amount"),
@@ -254,7 +253,7 @@ impl ScreenLike for PurchaseTokenScreen {
         // Subscreen chooser
         action |= add_tokens_subscreen_chooser_panel(ctx, &self.app_context);
 
-        egui::CentralPanel::default().show(ctx, |ui| {
+        island_central_panel(ctx, |ui| {
             // If we are in the "Complete" status, just show success screen
             if self.status == PurchaseTokensStatus::Complete {
                 action |= self.show_success_screen(ui);

@@ -8,7 +8,6 @@ use egui::{ComboBox, Context, Label, RichText, Sense, TextEdit};
 impl TokensScreen {
     pub(super) fn render_distributions(&mut self, context: &Context, ui: &mut egui::Ui) {
         ui.collapsing("Distribution", |ui| {
-            ui.add_space(3.0);
 
             // PERPETUAL DISTRIBUTION SETTINGS
             if ui.checkbox(
@@ -1001,8 +1000,6 @@ Emits tokens in fixed amounts for specific intervals.
                         self.pre_programmed_distributions.push(DistributionEntry::default());
                     }
                 });
-
-                ui.add_space(2.0);
             }
         });
     }

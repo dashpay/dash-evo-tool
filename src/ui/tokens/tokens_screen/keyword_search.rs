@@ -8,8 +8,8 @@ use crate::ui::tokens::tokens_screen::{
 use chrono::Utc;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use eframe::emath::Align;
-use eframe::epaint::{Color32, Margin};
-use egui::{Frame, Ui};
+use eframe::epaint::Color32;
+use egui::Ui;
 use egui_extras::{Column, TableBuilder};
 
 impl TokensScreen {
@@ -125,67 +125,53 @@ impl TokensScreen {
     ) -> AppAction {
         let mut action = AppAction::None;
 
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            Frame::group(ui.style())
-                .fill(ui.visuals().panel_fill)
-                .stroke(egui::Stroke::new(
-                    1.0,
-                    ui.visuals().widgets.inactive.bg_stroke.color,
-                ))
-                .inner_margin(Margin::same(8))
-                .show(ui, |ui| {
-                    TableBuilder::new(ui)
-                        .striped(true)
-                        .resizable(true)
-                        .cell_layout(egui::Layout::left_to_right(Align::Center))
-                        .column(Column::initial(60.0).resizable(true)) // Contract ID
-                        .column(Column::initial(200.0).resizable(true)) // Contract Description
-                        .column(Column::initial(80.0).resizable(true)) // Action
-                        .header(30.0, |mut header| {
-                            header.col(|ui| {
-                                ui.label("Contract ID");
+        egui::ScrollArea::both().show(ui, |ui| {
+            TableBuilder::new(ui)
+                .striped(false)
+                .resizable(true)
+                .cell_layout(egui::Layout::left_to_right(Align::Center))
+                .column(Column::initial(60.0).resizable(true)) // Contract ID
+                .column(Column::initial(200.0).resizable(true)) // Contract Description
+                .column(Column::initial(80.0).resizable(true)) // Action
+                .header(30.0, |mut header| {
+                    header.col(|ui| {
+                        ui.label("Contract ID");
+                    });
+                    header.col(|ui| {
+                        ui.label("Contract Description");
+                    });
+                    header.col(|ui| {
+                        ui.label("Action");
+                    });
+                })
+                .body(|mut body| {
+                    for contract in search_results {
+                        body.row(25.0, |mut row| {
+                            row.col(|ui| {
+                                ui.label(contract.data_contract_id.to_string(Encoding::Base58));
                             });
-                            header.col(|ui| {
-                                ui.label("Contract Description");
+                            row.col(|ui| {
+                                ui.label(contract.description.clone());
                             });
-                            header.col(|ui| {
-                                ui.label("Action");
+                            row.col(|ui| {
+                                // Example "Add" button
+                                if ui.button("More Info").clicked() {
+                                    // Show more info about the token
+                                    self.selected_contract_id = Some(contract.data_contract_id);
+                                    // Set loading state to true
+                                    self.contract_details_loading = true;
+                                    // Clear previous data
+                                    self.selected_contract_description = None;
+                                    self.selected_token_infos.clear();
+                                    action = AppAction::BackendTask(BackendTask::ContractTask(
+                                        Box::new(ContractTask::FetchContractsWithDescriptions(
+                                            vec![contract.data_contract_id],
+                                        )),
+                                    ));
+                                }
                             });
-                        })
-                        .body(|mut body| {
-                            for contract in search_results {
-                                body.row(25.0, |mut row| {
-                                    row.col(|ui| {
-                                        ui.label(
-                                            contract.data_contract_id.to_string(Encoding::Base58),
-                                        );
-                                    });
-                                    row.col(|ui| {
-                                        ui.label(contract.description.clone());
-                                    });
-                                    row.col(|ui| {
-                                        // Example "Add" button
-                                        if ui.button("More Info").clicked() {
-                                            // Show more info about the token
-                                            self.selected_contract_id =
-                                                Some(contract.data_contract_id);
-                                            // Set loading state to true
-                                            self.contract_details_loading = true;
-                                            // Clear previous data
-                                            self.selected_contract_description = None;
-                                            self.selected_token_infos.clear();
-                                            action = AppAction::BackendTask(
-                                                BackendTask::ContractTask(Box::new(
-                                                    ContractTask::FetchContractsWithDescriptions(
-                                                        vec![contract.data_contract_id],
-                                                    ),
-                                                )),
-                                            );
-                                        }
-                                    });
-                                });
-                            }
                         });
+                    }
                 });
         });
 

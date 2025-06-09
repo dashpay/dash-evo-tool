@@ -1,4 +1,5 @@
 use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
 use crate::ui::helpers::{add_identity_key_chooser, TransactionType};
 use std::collections::HashSet;
@@ -196,7 +197,7 @@ impl ClaimTokensScreen {
                     action = AppAction::BackendTasks(
                         vec![
                             BackendTask::TokenTask(Box::new(TokenTask::ClaimTokens {
-                                data_contract: self.token_contract.contract.clone(),
+                                data_contract: Arc::new(self.token_contract.contract.clone()),
                                 token_position: self.identity_token_basic_info.token_position,
                                 actor_identity: self.identity.clone(),
                                 distribution_type,
@@ -292,7 +293,7 @@ impl ScreenLike for ClaimTokensScreen {
         // Subscreen chooser
         action |= add_tokens_subscreen_chooser_panel(ctx, &self.app_context);
 
-        egui::CentralPanel::default().show(ctx, |ui| {
+        island_central_panel(ctx, |ui| {
             if self.status == ClaimTokensStatus::Complete {
                 action |= self.show_success_screen(ui);
                 return;
@@ -306,11 +307,11 @@ impl ScreenLike for ClaimTokensScreen {
                 !self.identity.identity.public_keys().is_empty()
             } else {
                 match self.identity.identity_type {
-                    IdentityType::User => {
-                        !self.identity.available_authentication_keys_with_critical_security_level().is_empty()
-                    }
-                    IdentityType::Masternode |
-                    IdentityType::Evonode => {
+                    IdentityType::User => !self
+                        .identity
+                        .available_authentication_keys_with_critical_security_level()
+                        .is_empty(),
+                    IdentityType::Masternode | IdentityType::Evonode => {
                         !self.identity.available_transfer_keys().is_empty()
                     }
                 }
@@ -328,9 +329,7 @@ impl ScreenLike for ClaimTokensScreen {
 
                 let first_key = self.identity.identity.get_first_public_key_matching(
                     Purpose::AUTHENTICATION,
-                    HashSet::from([
-                        SecurityLevel::CRITICAL,
-                    ]),
+                    HashSet::from([SecurityLevel::CRITICAL]),
                     KeyType::all_key_types().into(),
                     false,
                 );
@@ -405,8 +404,15 @@ impl ScreenLike for ClaimTokensScreen {
                 if self.distribution_type == Some(TokenDistributionType::Perpetual) {
                     ui.heading("!Understanding Claim Limitations!");
                     ui.add_space(5.0);
-                    let extra_info = if let Some(perpetual_distribution) = self.token_configuration.distribution_rules().perpetual_distribution() {
-                        let function_string = match perpetual_distribution.distribution_type().function() {
+                    let extra_info = if let Some(perpetual_distribution) = self
+                        .token_configuration
+                        .distribution_rules()
+                        .perpetual_distribution()
+                    {
+                        let function_string = match perpetual_distribution
+                            .distribution_type()
+                            .function()
+                        {
                             DistributionFunction::FixedAmount { amount } => {
                                 format!("a fixed amount of {} base tokens", amount)
                             }
@@ -449,7 +455,8 @@ impl ScreenLike for ClaimTokensScreen {
                                 "a variable amount based on a logarithmic function".to_string()
                             }
                             DistributionFunction::InvertedLogarithmic { .. } => {
-                                "a variable amount based on an inverted logarithmic function".to_string()
+                                "a variable amount based on an inverted logarithmic function"
+                                    .to_string()
                             }
                         };
 

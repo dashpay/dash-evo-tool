@@ -1,4 +1,5 @@
 use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
 use crate::ui::contracts_documents::group_actions_screen::GroupActionsScreen;
 use crate::ui::helpers::{add_identity_key_chooser, render_group_action_text, TransactionType};
@@ -232,7 +233,8 @@ impl BurnTokensScreen {
                     self.status = BurnTokensStatus::WaitingForResult(now);
 
                     // Grab the data contract for this token from the app context
-                    let data_contract = self.identity_token_info.data_contract.contract.clone();
+                    let data_contract =
+                        Arc::new(self.identity_token_info.data_contract.contract.clone());
 
                     let group_info = if self.group_action_id.is_some() {
                         self.group.as_ref().map(|(pos, _)| {
@@ -398,11 +400,10 @@ impl ScreenLike for BurnTokensScreen {
         // Subscreen chooser
         action |= add_tokens_subscreen_chooser_panel(ctx, &self.app_context);
 
-        egui::CentralPanel::default().show(ctx, |ui| {
+        let central_panel_action = island_central_panel(ctx, |ui| {
             // If we are in the "Complete" status, just show success screen
             if self.status == BurnTokensStatus::Complete {
-                action |= self.show_success_screen(ui);
-                return;
+                return self.show_success_screen(ui);
             }
 
             ui.heading("Burn Tokens");
@@ -441,9 +442,7 @@ impl ScreenLike for BurnTokensScreen {
                     .identity
                     .get_first_public_key_matching(
                         Purpose::AUTHENTICATION,
-                        HashSet::from([
-                            SecurityLevel::CRITICAL,
-                        ]),
+                        HashSet::from([SecurityLevel::CRITICAL]),
                         KeyType::all_key_types().into(),
                         false,
                     );
@@ -473,7 +472,7 @@ impl ScreenLike for BurnTokensScreen {
 
                     if needed_unlock && !just_unlocked {
                         // Must unlock before we can proceed
-                        return;
+                        return AppAction::None;
                     }
                 }
 
@@ -503,10 +502,7 @@ impl ScreenLike for BurnTokensScreen {
                         "You are signing an existing group Burn so you are not allowed to choose the amount.",
                     );
                     ui.add_space(5.0);
-                    ui.label(format!(
-                        "Amount: {}",
-                        self.amount_to_burn
-                    ));
+                    ui.label(format!("Amount: {}", self.amount_to_burn));
                 } else {
                     self.render_amount_input(ui);
                 }
@@ -539,20 +535,23 @@ impl ScreenLike for BurnTokensScreen {
                             )
                             .changed()
                         {
-                            self.public_note = if !txt.is_empty() {
-                                Some(txt)
-                            } else {
-                                None
-                            };
+                            self.public_note = if !txt.is_empty() { Some(txt) } else { None };
                         }
                     });
                 }
 
-                let button_text =
-                    render_group_action_text(ui, &self.group, &self.identity_token_info, "Burn", &self.group_action_id);
+                let button_text = render_group_action_text(
+                    ui,
+                    &self.group,
+                    &self.identity_token_info,
+                    "Burn",
+                    &self.group_action_id,
+                );
 
                 // Burn button
-                if self.app_context.developer_mode.load(Ordering::Relaxed) || !button_text.contains("Test") {
+                if self.app_context.developer_mode.load(Ordering::Relaxed)
+                    || !button_text.contains("Test")
+                {
                     ui.add_space(10.0);
                     let button =
                         egui::Button::new(RichText::new(button_text).color(Color32::WHITE))
@@ -591,8 +590,11 @@ impl ScreenLike for BurnTokensScreen {
                     }
                 }
             }
+
+            AppAction::None
         });
 
+        action |= central_panel_action;
         action
     }
 }

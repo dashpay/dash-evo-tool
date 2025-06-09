@@ -359,24 +359,30 @@ impl Database {
         identities
     }
 
+    /// Retrieves all local user identities along with their associated wallet IDs.
+    ///
+    /// Caller should insert wallet references into associated_wallets before using the identities.
+    #[allow(clippy::let_and_return)]
     pub fn get_local_user_identities(
         &self,
         app_context: &AppContext,
-    ) -> rusqlite::Result<Vec<QualifiedIdentity>> {
+    ) -> rusqlite::Result<Vec<(QualifiedIdentity, [u8; 32])>> {
         let network = app_context.network.to_string();
 
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT data FROM identity WHERE is_local = 1 AND network = ? AND identity_type = 'User' AND data IS NOT NULL",
+            "SELECT data,wallet FROM identity WHERE is_local = 1 AND network = ? AND identity_type = 'User' AND data IS NOT NULL",
         )?;
-        let identity_iter = stmt.query_map(params![network], |row| {
-            let data: Vec<u8> = row.get(0)?;
-            let identity: QualifiedIdentity = QualifiedIdentity::from_bytes(&data);
+        let identities: Result<Vec<(QualifiedIdentity, WalletSeedHash)>, rusqlite::Error> = stmt
+            .query_map(params![network], |row| {
+                let data: Vec<u8> = row.get(0)?;
+                let wallet_id: WalletSeedHash = row.get(1)?;
+                let identity: QualifiedIdentity = QualifiedIdentity::from_bytes(&data);
 
-            Ok(identity)
-        })?;
+                Ok((identity, wallet_id))
+            })?
+            .collect();
 
-        let identities: rusqlite::Result<Vec<QualifiedIdentity>> = identity_iter.collect();
         identities
     }
 

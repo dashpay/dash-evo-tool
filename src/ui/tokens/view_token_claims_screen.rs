@@ -3,6 +3,7 @@ use crate::backend_task::document::DocumentTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::{MessageType, ScreenLike};
@@ -127,7 +128,7 @@ impl ScreenLike for ViewTokenClaimsScreen {
         action |= add_tokens_subscreen_chooser_panel(ctx, &self.app_context);
 
         // Central panel
-        egui::CentralPanel::default().show(ctx, |ui| {
+        island_central_panel(ctx, |ui| {
             ui.heading("View Token Claims");
             ui.add_space(10.0);
 
@@ -174,7 +175,7 @@ impl ScreenLike for ViewTokenClaimsScreen {
                     .auto_shrink([false; 2])
                     .show(ui, |ui| {
                         egui::Grid::new("claims_table")
-                            .striped(true)
+                            .striped(false)
                             .spacing([20.0, 8.0])
                             .show(ui, |ui| {
                                 // Header

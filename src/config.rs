@@ -14,6 +14,8 @@ pub struct Config {
     pub testnet_config: Option<NetworkConfig>,
     pub devnet_config: Option<NetworkConfig>,
     pub local_config: Option<NetworkConfig>,
+    /// Global developer mode setting
+    pub developer_mode: Option<bool>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -44,8 +46,6 @@ pub struct NetworkConfig {
     pub wallet_private_key: Option<String>,
     /// Should this network be visible in the UI
     pub show_in_ui: bool,
-    /// Developer mode
-    pub developer_mode: Option<bool>,
 }
 
 impl Config {
@@ -121,12 +121,6 @@ impl Config {
             writeln!(env_file, "{}show_in_ui={}", prefix, config.show_in_ui)
                 .map_err(|e| ConfigError::LoadError(e.to_string()))?;
 
-            // Developer mode
-            if let Some(developer_mode) = config.developer_mode {
-                writeln!(env_file, "{}developer_mode={}", prefix, developer_mode)
-                    .map_err(|e| ConfigError::LoadError(e.to_string()))?;
-            }
-
             // Add a blank line after each config block
             writeln!(env_file).map_err(|e| ConfigError::LoadError(e.to_string()))?;
 
@@ -153,6 +147,12 @@ impl Config {
         if let Some(ref local_config) = self.local_config {
             // `envy::prefixed("LOCAL_")` expects "LOCAL_..."
             write_network_config("LOCAL_", local_config)?;
+        }
+
+        // Save global developer mode
+        if let Some(developer_mode) = self.developer_mode {
+            writeln!(env_file, "DEVELOPER_MODE={}", developer_mode)
+                .map_err(|e| ConfigError::LoadError(e.to_string()))?;
         }
 
         tracing::info!("Successfully saved configuration to {:?}", env_file_path);
@@ -241,11 +241,17 @@ impl Config {
             );
         }
 
+        // Load global developer mode
+        let developer_mode = std::env::var("DEVELOPER_MODE")
+            .ok()
+            .and_then(|s| s.parse::<bool>().ok());
+
         Ok(Config {
             mainnet_config,
             testnet_config,
             devnet_config,
             local_config,
+            developer_mode,
         })
     }
 

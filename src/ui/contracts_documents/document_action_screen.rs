@@ -6,6 +6,7 @@ use crate::model::qualified_contract::QualifiedContract;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::styled::{island_central_panel, styled_text_edit_singleline};
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
 use crate::ui::helpers::{
@@ -13,6 +14,7 @@ use crate::ui::helpers::{
     show_success_screen, TransactionType,
 };
 use crate::ui::identities::get_selected_wallet;
+use crate::ui::theme::DashColors;
 use crate::ui::ScreenLike;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
@@ -263,7 +265,7 @@ impl DocumentActionScreen {
 
         ui.horizontal(|ui| {
             ui.label("Document ID:");
-            ui.text_edit_singleline(&mut self.document_id_input);
+            ui.add(styled_text_edit_singleline(&mut self.document_id_input));
         });
 
         ui.add_space(10.0);
@@ -405,7 +407,7 @@ impl DocumentActionScreen {
 
         ui.horizontal(|ui| {
             ui.label("Document ID:");
-            ui.text_edit_singleline(&mut self.document_id_input);
+            ui.add(styled_text_edit_singleline(&mut self.document_id_input));
         });
 
         // Add fetch button
@@ -466,7 +468,7 @@ impl DocumentActionScreen {
 
         ui.horizontal(|ui| {
             ui.label("Document ID:");
-            ui.text_edit_singleline(&mut self.document_id_input);
+            ui.add(styled_text_edit_singleline(&mut self.document_id_input));
 
             if ui.button("Fetch").clicked() && !self.document_id_input.is_empty() {
                 if let Ok(doc_id) =
@@ -544,12 +546,12 @@ impl DocumentActionScreen {
 
         ui.horizontal(|ui| {
             ui.label("Document ID:");
-            ui.text_edit_singleline(&mut self.document_id_input);
+            ui.add(styled_text_edit_singleline(&mut self.document_id_input));
         });
 
         ui.horizontal(|ui| {
             ui.label("Price (credits):");
-            ui.text_edit_singleline(&mut self.price_input);
+            ui.add(styled_text_edit_singleline(&mut self.price_input));
         });
 
         ui.add_space(10.0);
@@ -565,12 +567,12 @@ impl DocumentActionScreen {
 
         ui.horizontal(|ui| {
             ui.label("Document ID:");
-            ui.text_edit_singleline(&mut self.document_id_input);
+            ui.add(styled_text_edit_singleline(&mut self.document_id_input));
         });
 
         ui.horizontal(|ui| {
             ui.label("Recipient Identity:");
-            ui.text_edit_singleline(&mut self.recipient_id_input);
+            ui.add(styled_text_edit_singleline(&mut self.recipient_id_input));
         });
 
         ui.add_space(10.0);
@@ -610,14 +612,23 @@ impl DocumentActionScreen {
                         | DocumentPropertyType::I16
                         | DocumentPropertyType::U8
                         | DocumentPropertyType::I8 => {
-                            ui.add(egui::TextEdit::singleline(val).hint_text("integer"));
+                            ui.add(
+                                egui::TextEdit::singleline(val)
+                                    .hint_text("integer")
+                                    .background_color(DashColors::INPUT_BACKGROUND),
+                            );
                         }
                         DocumentPropertyType::F64 => {
-                            ui.add(egui::TextEdit::singleline(val).hint_text("floating-point"));
+                            ui.add(
+                                egui::TextEdit::singleline(val)
+                                    .hint_text("floating-point")
+                                    .background_color(DashColors::INPUT_BACKGROUND),
+                            );
                         }
                         DocumentPropertyType::String(size) => {
                             ui.add({
-                                let text_edit = egui::TextEdit::singleline(val);
+                                let text_edit = egui::TextEdit::singleline(val)
+                                    .background_color(DashColors::INPUT_BACKGROUND);
                                 if let Some(max_length) = size.max_length {
                                     text_edit.hint_text(format!("max {}", max_length).as_str())
                                 } else {
@@ -626,10 +637,18 @@ impl DocumentActionScreen {
                             });
                         }
                         DocumentPropertyType::ByteArray(_size) => {
-                            ui.add(egui::TextEdit::singleline(val).hint_text("hex or base64"));
+                            ui.add(
+                                egui::TextEdit::singleline(val)
+                                    .hint_text("hex or base64")
+                                    .background_color(DashColors::INPUT_BACKGROUND),
+                            );
                         }
                         DocumentPropertyType::Identifier => {
-                            ui.add(egui::TextEdit::singleline(val).hint_text("base58 identifier"));
+                            ui.add(
+                                egui::TextEdit::singleline(val)
+                                    .hint_text("base58 identifier")
+                                    .background_color(DashColors::INPUT_BACKGROUND),
+                            );
                         }
                         DocumentPropertyType::Boolean => {
                             let mut checked = matches!(
@@ -641,12 +660,20 @@ impl DocumentActionScreen {
                             }
                         }
                         DocumentPropertyType::Date => {
-                            ui.add(egui::TextEdit::singleline(val).hint_text("unix-ms"));
+                            ui.add(
+                                egui::TextEdit::singleline(val)
+                                    .hint_text("unix-ms")
+                                    .background_color(DashColors::INPUT_BACKGROUND),
+                            );
                         }
                         DocumentPropertyType::Object(_)
                         | DocumentPropertyType::Array(_)
                         | DocumentPropertyType::VariableTypeArray(_) => {
-                            ui.add(egui::TextEdit::multiline(val).hint_text("JSON value"));
+                            ui.add(
+                                egui::TextEdit::multiline(val)
+                                    .hint_text("JSON value")
+                                    .background_color(DashColors::INPUT_BACKGROUND),
+                            );
                         }
                     }
                     ui.end_row();
@@ -1390,7 +1417,7 @@ impl ScreenLike for DocumentActionScreen {
             crate::ui::RootScreenType::RootScreenDocumentQuery,
         );
 
-        egui::CentralPanel::default().show(ctx, |ui| match &self.broadcast_status {
+        action |= island_central_panel(ctx, |ui| match &self.broadcast_status {
             BroadcastStatus::Broadcasted => {
                 let success_message = format!("{} successful!", self.action_type.display_name());
                 let back_button = ("Back to Contracts".to_string(), AppAction::GoToMainScreen);
@@ -1399,15 +1426,16 @@ impl ScreenLike for DocumentActionScreen {
                     AppAction::Custom("Reset".to_string()),
                 );
 
-                action |= show_success_screen(ui, success_message, vec![back_button, reset_button]);
+                let inner_action =
+                    show_success_screen(ui, success_message, vec![back_button, reset_button]);
 
-                if action == AppAction::Custom("Reset".to_string()) {
+                if inner_action == AppAction::Custom("Reset".to_string()) {
                     self.reset_screen();
                 }
+
+                inner_action
             }
-            _ => {
-                action |= self.render_main_content(ui);
-            }
+            _ => self.render_main_content(ui),
         });
 
         action

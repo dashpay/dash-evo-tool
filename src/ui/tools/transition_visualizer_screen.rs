@@ -2,6 +2,7 @@ use crate::app::AppAction;
 use crate::backend_task::BackendTask;
 use crate::context::AppContext;
 use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tools_subscreen_chooser_panel::add_tools_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
@@ -157,7 +158,7 @@ impl TransitionVisualizerScreen {
             } else {
                 // If parsed_json is None
                 if matches!(self.broadcast_status, TransitionBroadcastStatus::NotStarted) {
-                    ui.label("No state transition parsed yet.");
+                    ui.colored_label(Color32::GRAY, "No state transition parsed yet.");
                 }
             }
         });
@@ -250,9 +251,9 @@ impl ScreenLike for TransitionVisualizerScreen {
 
         action |= add_tools_subscreen_chooser_panel(ctx, self.app_context.as_ref());
 
-        egui::CentralPanel::default().show(ctx, |ui| {
+        action |= island_central_panel(ctx, |ui| {
             self.show_input_field(ui);
-            action |= self.show_output(ui);
+            self.show_output(ui)
         });
 
         action

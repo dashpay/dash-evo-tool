@@ -362,6 +362,7 @@ impl Database {
     /// Retrieves all local user identities along with their associated wallet IDs.
     ///
     /// Caller should insert wallet references into associated_wallets before using the identities.
+    #[allow(clippy::let_and_return)]
     pub fn get_local_user_identities(
         &self,
         app_context: &AppContext,
@@ -372,7 +373,7 @@ impl Database {
         let mut stmt = conn.prepare(
             "SELECT data,wallet FROM identity WHERE is_local = 1 AND network = ? AND identity_type = 'User' AND data IS NOT NULL",
         )?;
-        let identities = stmt
+        let identities: Result<Vec<(QualifiedIdentity, WalletSeedHash)>, rusqlite::Error> = stmt
             .query_map(params![network], |row| {
                 let data: Vec<u8> = row.get(0)?;
                 let wallet_id: Option<WalletSeedHash> = row.get(1)?;

@@ -5,6 +5,7 @@ use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
 use crate::ui::helpers::{add_identity_key_chooser_with_doc_type, TransactionType};
@@ -188,14 +189,19 @@ impl ScreenLike for RegisterDpnsNameScreen {
             crate::ui::RootScreenType::RootScreenDPNSOwnedNames,
         );
 
-        egui::CentralPanel::default().show(ctx, |ui| {
-            if self.register_dpns_name_status == RegisterDpnsNameStatus::Complete {
-                action |= self.show_success(ui);
-                return;
-            }
+        action |= island_central_panel(ctx, |ui| {
+            let mut inner_action = AppAction::None;
 
-            ui.heading("Register DPNS Name");
-            ui.add_space(10.0);
+            egui::ScrollArea::vertical()
+                .auto_shrink([false; 2])
+                .show(ui, |ui| {
+                    if self.register_dpns_name_status == RegisterDpnsNameStatus::Complete {
+                        inner_action |= self.show_success(ui);
+                        return;
+                    }
+
+                    ui.heading("Register DPNS Name");
+                    ui.add_space(10.0);
 
             // If no identities loaded, give message
             if self.qualified_identities.is_empty() {
@@ -278,7 +284,7 @@ impl ScreenLike for RegisterDpnsNameScreen {
                     .expect("Time went backwards")
                     .as_secs();
                 self.register_dpns_name_status = RegisterDpnsNameStatus::WaitingForResult(now);
-                action = self.register_dpns_name_clicked();
+                inner_action = self.register_dpns_name_clicked();
             }
 
             ui.add_space(10.0);
@@ -349,6 +355,8 @@ impl ScreenLike for RegisterDpnsNameScreen {
             ui.label("  • Less than 20 characters long (i.e. “alice”, “quantumexplorer”)");
             ui.label("  • AND");
             ui.label("  • Contain no numbers or only contain the number(s) 0 and/or 1 (i.e. “bob”, “carol01”)");
+                });
+            inner_action
         });
 
         action

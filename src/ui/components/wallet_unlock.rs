@@ -1,4 +1,5 @@
 use crate::model::wallet::Wallet;
+use crate::ui::components::styled::StyledCheckbox;
 use eframe::epaint::Color32;
 use egui::Ui;
 use std::sync::{Arc, RwLock};
@@ -70,11 +71,12 @@ pub trait ScreenWithWalletUnlock {
                     let password_input = ui.add(
                         egui::TextEdit::singleline(wallet_password_mut)
                             .password(!local_show_password)
-                            .hint_text("Enter password"),
+                            .hint_text("Enter password")
+                            .background_color(crate::ui::theme::DashColors::INPUT_BACKGROUND),
                     );
 
                     // Checkbox to toggle password visibility
-                    ui.checkbox(&mut local_show_password, "Show Password");
+                    StyledCheckbox::new(&mut local_show_password, "Show Password").show(ui);
 
                     if password_input.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))
                     {

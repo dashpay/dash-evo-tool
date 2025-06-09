@@ -6,6 +6,7 @@ use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
@@ -1039,16 +1040,17 @@ impl ScreenLike for UpdateTokenConfigScreen {
         action |= add_tokens_subscreen_chooser_panel(ctx, &self.app_context);
 
         // Central panel
-        egui::CentralPanel::default().show(ctx, |ui| {
-            if let Some(msg) = &self.backend_message {
-                if msg.1 == MessageType::Success {
-                    action |= self.show_success_screen(ui);
-                    return;
+        island_central_panel(ctx, |ui| {
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                if let Some(msg) = &self.backend_message {
+                    if msg.1 == MessageType::Success {
+                        action |= self.show_success_screen(ui);
+                        return;
+                    }
                 }
-            }
 
-            ui.heading("Update Token Configuration");
-            ui.add_space(10.0);
+                ui.heading("Update Token Configuration");
+                ui.add_space(10.0);
 
             // Check if user has any auth keys
             let has_keys = if self.app_context.developer_mode.load(Ordering::Relaxed) {
@@ -1150,6 +1152,7 @@ impl ScreenLike for UpdateTokenConfigScreen {
                     }
                 }
             }
+            }); // end of ScrollArea
         });
 
         action

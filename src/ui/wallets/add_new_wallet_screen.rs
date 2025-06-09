@@ -1,5 +1,7 @@
 use crate::app::AppAction;
 use crate::context::AppContext;
+use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::ScreenLike;
 use eframe::egui::Context;
@@ -13,10 +15,7 @@ use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
 use dash_sdk::dpp::dashcore::bip32::{ExtendedPrivKey, ExtendedPubKey};
 use dash_sdk::dpp::dashcore::Network;
 use eframe::emath::Align;
-use egui::{
-    Color32, ComboBox, Direction, FontId, Frame, Grid, Layout, Margin, RichText, Stroke, TextStyle,
-    Ui, Vec2,
-};
+use egui::{Color32, ComboBox, Direction, Frame, Grid, Layout, Margin, RichText, Stroke, Ui, Vec2};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 use zxcvbn::zxcvbn;
@@ -171,80 +170,63 @@ impl AddNewWalletScreen {
     fn render_seed_phrase_input(&mut self, ui: &mut Ui) {
         ui.add_space(15.0); // Add spacing from the top
         ui.vertical_centered(|ui| {
-            // Allocate a full-width container to center align the elements
-            let available_width = ui.available_width();
+            // Center the language selector and generate button
+            ui.horizontal(|ui| {
+                ui.label("Language:");
 
-            ui.allocate_ui_with_layout(
-                Vec2::new(available_width, 0.0),
-                egui::Layout::top_down(egui::Align::Center),
-                |ui| {
-                    ui.horizontal(|ui| {
-                        // Add spacing to align the combo box to the left of the center
-                        let half_width = available_width / 2.0 - 400.0; // Adjust half-width with padding
-                        if half_width > 0.0 {
-                            ui.add_space(half_width);
-                        }
-
-                        let style = ui.style_mut();
-
-                        // Customize text size for the ComboBox
-                        style.text_styles.insert(
-                            TextStyle::Button,          // Apply style to buttons (used in ComboBox entries)
-                            FontId::proportional(24.0), // Set larger font size
+                ComboBox::from_label("")
+                    .selected_text(format!("{:?}", self.selected_language))
+                    .width(150.0)
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut self.selected_language,
+                            Language::English,
+                            "English",
                         );
-
-                        ComboBox::from_label("")
-                            .selected_text(format!("{:?}", self.selected_language))
-                            .width(200.0)
-                            .height(40.0)
-                            .show_ui(ui, |ui| {
-                                ui.selectable_value(
-                                    &mut self.selected_language,
-                                    Language::English,
-                                    "English",
-                                );
-                                ui.selectable_value(
-                                    &mut self.selected_language,
-                                    Language::Spanish,
-                                    "Spanish",
-                                );
-                                ui.selectable_value(
-                                    &mut self.selected_language,
-                                    Language::French,
-                                    "French",
-                                );
-                                ui.selectable_value(
-                                    &mut self.selected_language,
-                                    Language::Italian,
-                                    "Italian",
-                                );
-                                ui.selectable_value(
-                                    &mut self.selected_language,
-                                    Language::Portuguese,
-                                    "Portuguese",
-                                );
-                            });
-
-                        // Add a spacer between the combo box and the generate button
-                        ui.add_space(20.0); // Adjust the space between elements
-
-                        let generate_button =
-                            egui::Button::new(RichText::new("Generate").strong().size(24.0))
-                                .min_size(Vec2::new(150.0, 30.0))
-                                .corner_radius(5.0)
-                                .stroke(Stroke::new(1.0, Color32::WHITE));
-
-                        if ui.add(generate_button).clicked() {
-                            self.generate_seed_phrase();
-                        }
+                        ui.selectable_value(
+                            &mut self.selected_language,
+                            Language::Spanish,
+                            "Spanish",
+                        );
+                        ui.selectable_value(
+                            &mut self.selected_language,
+                            Language::French,
+                            "French",
+                        );
+                        ui.selectable_value(
+                            &mut self.selected_language,
+                            Language::Italian,
+                            "Italian",
+                        );
+                        ui.selectable_value(
+                            &mut self.selected_language,
+                            Language::Portuguese,
+                            "Portuguese",
+                        );
                     });
-                },
-            );
+
+                ui.add_space(20.0);
+
+                let generate_button = egui::Button::new(
+                    RichText::new("Generate")
+                        .strong()
+                        .size(18.0)
+                        .color(Color32::WHITE),
+                )
+                .min_size(Vec2::new(120.0, 35.0))
+                .fill(Color32::from_rgb(0, 128, 255)) // Blue background like other buttons
+                .corner_radius(5.0);
+
+                if ui.add(generate_button).clicked() {
+                    self.generate_seed_phrase();
+                }
+            });
 
             ui.add_space(10.0);
 
-            // Create a container with a fixed width (72% of the available width)
-            let frame_width = available_width * 0.72;
+            // Create a container with a fixed width (limited to 600px max to prevent overflow)
+            let available_width = ui.available_width();
+            let frame_width = (available_width * 0.65).min(600.0);
             ui.allocate_ui_with_layout(
                 Vec2::new(frame_width, 260.0), // Set width and height of the container
                 egui::Layout::top_down(egui::Align::Center),
@@ -255,12 +237,12 @@ impl AddNewWalletScreen {
                         .corner_radius(5.0)
                         .inner_margin(Margin::same(10))
                         .show(ui, |ui| {
-                            let columns = 6;
+                            let columns = 4; // Reduced from 6 to 4 for better fit
                             let rows = 24 / columns;
 
-                            // Calculate the size of each grid cell
-                            let column_width = frame_width / columns as f32;
-                            let row_height = 260.0 / rows as f32;
+                            // Calculate the size of each grid cell with padding
+                            let column_width = (frame_width - 20.0) / columns as f32; // Account for inner margin
+                            let row_height = 240.0 / rows as f32; // Reduced height for padding
 
                             if let Some(mnemonic) = &self.seed_phrase {
                                 Grid::new("seed_phrase_grid")
@@ -320,9 +302,17 @@ impl ScreenLike for AddNewWalletScreen {
             vec![],
         );
 
-        egui::CentralPanel::default().show(ctx, |ui| {
-            // Add the scroll area to make the content scrollable
-            egui::ScrollArea::vertical()
+        action |= add_left_panel(
+            ctx,
+            &self.app_context,
+            crate::ui::RootScreenType::RootScreenWalletsBalances,
+        );
+
+        action |= island_central_panel(ctx, |ui| {
+            let mut inner_action = AppAction::None;
+
+            // Add the scroll area to make the content scrollable both vertically and horizontally
+            egui::ScrollArea::both()
                 .auto_shrink([false; 2]) // Prevent shrinking when content is less than the available area
                 .show(ui, |ui| {
                     ui.add_space(10.0);
@@ -458,7 +448,7 @@ impl ScreenLike for AddNewWalletScreen {
                         if ui.add(save_button).clicked() {
                             match self.save_wallet() {
                                 Ok(save_wallet_action) => {
-                                    action = save_wallet_action;
+                                    inner_action = save_wallet_action;
                                 }
                                 Err(e) => {
                                     self.error = Some(e)
@@ -467,6 +457,8 @@ impl ScreenLike for AddNewWalletScreen {
                         }
                     });
                 });
+
+            inner_action
         });
 
         // Display error popup if there's an error

@@ -1,5 +1,4 @@
 use std::collections::HashSet;
-use std::sync::atomic::Ordering;
 use chrono::Utc;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationPreset;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationPresetFeatures::{MostRestrictive, WithAllAdvancedActions, WithExtremeActions, WithMintingAndBurningActions, WithOnlyEmergencyAction};
@@ -7,16 +6,16 @@ use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::To
 use dash_sdk::dpp::data_contract::change_control_rules::authorized_action_takers::AuthorizedActionTakers;
 use dash_sdk::dpp::data_contract::conversion::json::DataContractJsonConversionMethodsV0;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
-use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::Identifier;
 use eframe::epaint::Color32;
-use egui::{ComboBox, Context, Frame, Label, RichText, Sense, TextEdit, Ui};
+use egui::{ComboBox, Context, Label, RichText, Sense, TextEdit, Ui};
 use crate::app::{AppAction, BackendTasksExecutionMode};
 use crate::backend_task::BackendTask;
 use crate::backend_task::tokens::TokenTask;
+use crate::ui::components::styled::{StyledCheckbox};
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
+use crate::ui::helpers::{add_identity_key_chooser, TransactionType};
 use crate::ui::tokens::tokens_screen::{TokenBuildArgs, TokenCreatorStatus, TokenNameLanguage, TokensScreen};
 
 impl TokensScreen {
@@ -44,17 +43,17 @@ impl TokensScreen {
             max_scroll_height -= backend_message_height;
         }
 
-        egui::ScrollArea::vertical()
+        ui.heading("Token Creator");
+        ui.label(
+            "Create custom tokens on Dash Platform with advanced features and distribution rules",
+        );
+        ui.add_space(20.0);
+
+        egui::ScrollArea::both()
             .max_height(max_scroll_height)
             .show(ui, |ui| {
-                Frame::group(ui.style())
-                    .fill(ui.visuals().panel_fill)
-                    .stroke(egui::Stroke::new(
-                        1.0,
-                        ui.visuals().widgets.inactive.bg_stroke.color,
-                    ))
-                    .show(ui, |ui| {
-                        // Identity selection
+                ui.group(|ui| {
+                        // Identity and key selection
                         ui.add_space(10.0);
                         let all_identities = match self.app_context.load_local_user_identities() {
                             Ok(identities) => identities.into_iter().filter(|qi| !qi.private_keys.private_keys.is_empty()).collect::<Vec<_>>(),
@@ -74,120 +73,27 @@ impl TokensScreen {
                         ui.heading("1. Select an identity and key to register the token contract with:");
                         ui.add_space(5.0);
 
-                        ui.horizontal(|ui| {
-                            ui.label("Identity:");
-                            ComboBox::from_id_salt("token_creator_identity_selector")
-                                .selected_text(
-                                    self.selected_identity
-                                        .as_ref()
-                                        .map(|qi| {
-                                            qi.alias
-                                                .clone()
-                                                .unwrap_or_else(|| qi.identity.id().to_string(Encoding::Base58))
-                                        })
-                                        .unwrap_or_else(|| "Select Identity".to_owned()),
-                                )
-                                .show_ui(ui, |ui| {
-                                    for identity in all_identities.iter() {
-                                        let display = identity
-                                            .alias
-                                            .clone()
-                                            .unwrap_or_else(|| identity.identity.id().to_string(Encoding::Base58));
-                                        if ui
-                                            .selectable_label(
-                                                Some(identity) == self.selected_identity.as_ref(),
-                                                display,
-                                            )
-                                            .clicked()
-                                        {
-                                            // On select, store it
-                                            self.selected_identity = Some(identity.clone());
-                                            // Clear the selected key & wallet
-                                            self.selected_key = None;
-                                            self.selected_wallet = None;
-                                            self.token_creator_error_message = None;
-                                        }
-                                    }
-                                });
-                        });
+                        // Use the helper function for identity and key selection
+                        add_identity_key_chooser(
+                            ui,
+                            &self.app_context,
+                            all_identities.iter(),
+                            &mut self.selected_identity,
+                            &mut self.selected_key,
+                            TransactionType::RegisterContract,
+                        );
 
-                        // Key selection
-                        ui.add_space(3.0);
-                        if let Some(ref qid) = self.selected_identity {
-                            // Attempt to list available keys (only auth keys in normal mode)
-                            let keys = if self.app_context.developer_mode.load(Ordering::Relaxed) {
-                                qid.identity
-                                    .public_keys()
-                                    .values()
-                                    .cloned()
-                                    .collect::<Vec<_>>()
-                            } else {
-                                qid.available_authentication_keys_with_critical_or_high_security_level()
-                                    .into_iter()
-                                    .map(|k| {
-                                        k.identity_public_key.clone()
-                                    })
-                                    .collect()
-                            };
+                        ui.add_space(5.0);
 
-                            ui.horizontal(|ui| {
-                                ui.label("Key:");
-                                ComboBox::from_id_salt("token_creator_key_selector")
-                                    .selected_text(match &self.selected_key {
-                                        Some(k) => format!(
-                                            "Key {} (Purpose: {:?}, Security Level: {:?})",
-                                            k.id(),
-                                            k.purpose(),
-                                            k.security_level()
-                                        ),
-                                        None => "Select Key".to_owned(),
-                                    })
-                                    .show_ui(ui, |ui| {
-                                        for key in keys {
-                                            let is_valid = key.purpose() == Purpose::AUTHENTICATION
-                                                && (key.security_level() == SecurityLevel::CRITICAL || key.security_level() == SecurityLevel::HIGH);
-
-                                            let label = format!(
-                                                "Key {} (Info: {}/{}/{})",
-                                                key.id(),
-                                                key.purpose(),
-                                                key.security_level(),
-                                                key.key_type()
-                                            );
-                                            let styled_label = if is_valid {
-                                                RichText::new(label.clone())
-                                            } else {
-                                                RichText::new(label.clone()).color(Color32::RED)
-                                            };
-
-                                            if ui
-                                                .selectable_label(
-                                                    Some(key.id()) == self.selected_key.as_ref().map(|kk| kk.id()),
-                                                    styled_label,
-                                                )
-                                                .clicked()
-                                            {
-                                                self.selected_key = Some(key.clone());
-
-                                                // If the key belongs to a wallet, set that wallet reference:
-                                                self.selected_wallet = crate::ui::identities::get_selected_wallet(
-                                                    qid,
-                                                    None,
-                                                    Some(&key),
-                                                    &mut self.token_creator_error_message,
-                                                );
-                                            }
-                                        }
-                                    });
-                            });
-                        } else {
-                            ui.horizontal(|ui| {
-                                ui.label("Key:");
-                                ComboBox::from_id_salt("token_creator_key_selector_empty")
-                                    .selected_text("Select Identity First")
-                                    .show_ui(ui, |_| {
-                                    });
-                            });
+                        // If a key was selected, set the wallet reference
+                        if let (Some(ref qid), Some(ref key)) = (&self.selected_identity, &self.selected_key) {
+                            // If the key belongs to a wallet, set that wallet reference:
+                            self.selected_wallet = crate::ui::identities::get_selected_wallet(
+                                qid,
+                                None,
+                                Some(key),
+                                &mut self.token_creator_error_message,
+                            );
                         }
 
                         if self.selected_key.is_none() {
@@ -228,22 +134,25 @@ impl TokensScreen {
                                 for i in 0..self.token_names_input.len() {
                                     ui.label("Token Name (singular)*:");
                                     ui.text_edit_singleline(&mut self.token_names_input[i].0);
+                                    let text_height = ui.spacing().interact_size.y;
                                     if i == 0 {
-                                        ComboBox::from_id_salt(format!("token_name_language_selector_{}", i))
+                                        let combo_resp = ComboBox::from_id_salt(format!("token_name_language_selector_{}", i))
                                             .selected_text(format!(
                                                 "{}",
                                                 self.token_names_input[i].2
                                             ))
-                                            .show_ui(ui, |ui| {
-                                                ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::English, "English");
-                                            });
+                                            .width(120.0);
+                                        combo_resp.show_ui(ui, |ui| {
+                                            ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::English, "English");
+                                        });
                                     } else {
-                                        ComboBox::from_id_salt(format!("token_name_language_selector_{}", i))
+                                        let combo_resp = ComboBox::from_id_salt(format!("token_name_language_selector_{}", i))
                                             .selected_text(format!(
                                                 "{}",
                                                 self.token_names_input[i].2
                                             ))
-                                            .show_ui(ui, |ui| {
+                                            .width(120.0);
+                                        combo_resp.show_ui(ui, |ui| {
                                                 ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::English, "English");
                                                 ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Arabic, "Arabic");
                                                 ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Bengali, "Bengali");
@@ -300,7 +209,8 @@ impl TokensScreen {
                                     }
 
                                     ui.horizontal(|ui| {
-                                        if ui.button("+").clicked() {
+                                        let button_height = text_height;
+                                        if ui.add(egui::Button::new("➕ Add Language").min_size(egui::vec2(0.0, button_height))).clicked() {
                                             let used_languages: HashSet<_> = self.token_names_input.iter().map(|(_, _, lang, _)| *lang).collect();
                                             let next_non_used_language = enum_iterator::all::<TokenNameLanguage>()
                                                 .find(|lang| !used_languages.contains(lang))
@@ -308,11 +218,11 @@ impl TokensScreen {
                                             // Add a new token name input
                                             self.token_names_input.push((String::new(), String::new(), next_non_used_language, false));
                                         }
-                                        if i != 0 && ui.button("-").clicked() {
+                                        if i != 0 && ui.add(egui::Button::new("➖").min_size(egui::vec2(30.0, button_height))).clicked() {
                                             token_to_remove = Some(i.try_into().expect("Failed to convert index"));
                                         }
 
-                                        ui.checkbox(&mut self.token_names_input[i].3, "Add singular name to keywords");
+                                        StyledCheckbox::new(&mut self.token_names_input[i].3, "Add singular name to keywords").show(ui);
 
                                         let info_icon = Label::new("ℹ").sense(Sense::click());
                                         let response = ui.add(info_icon)
@@ -384,7 +294,23 @@ impl TokensScreen {
                         ui.add_space(10.0);
 
                         // 5) Advanced settings toggle
-                        ui.collapsing("Advanced", |ui| {
+                        let mut advanced_state = egui::collapsing_header::CollapsingState::load_with_default_open(
+                            ui.ctx(),
+                            ui.make_persistent_id("token_creator_advanced"),
+                            false,
+                        );
+
+                        // Force close if we need to reset
+                        if self.should_reset_collapsing_states {
+                            advanced_state.set_open(false);
+                        }
+
+                        advanced_state.store(ui.ctx());
+
+                        advanced_state.show_header(ui, |ui| {
+                            ui.label("Advanced");
+                        })
+                        .body(|ui| {
                             ui.add_space(3.0);
 
                             // Use `Grid` to align labels and text edits
@@ -395,7 +321,7 @@ impl TokensScreen {
 
                                     // Start as paused
                                     ui.horizontal(|ui| {
-                                        ui.checkbox(&mut self.start_as_paused_input, "Start as paused");
+                                        StyledCheckbox::new(&mut self.start_as_paused_input, "Start as paused").show(ui);
 
                                         // Information icon with tooltip
                                         if ui
@@ -419,7 +345,7 @@ impl TokensScreen {
 
                                     // Name should be capitalized
                                     ui.horizontal(|ui| {
-                                        ui.checkbox(&mut self.should_capitalize_input, "Name should be capitalized");
+                                        StyledCheckbox::new(&mut self.should_capitalize_input, "Name should be capitalized").show(ui);
 
                                         // Information icon with tooltip
                                         if ui
@@ -480,7 +406,23 @@ impl TokensScreen {
 
                         ui.add_space(5.0);
 
-                        ui.collapsing("Action Rules", |ui| {
+                        let mut action_rules_state = egui::collapsing_header::CollapsingState::load_with_default_open(
+                            ui.ctx(),
+                            ui.make_persistent_id("token_creator_action_rules"),
+                            false,
+                        );
+
+                        // Force close if we need to reset
+                        if self.should_reset_collapsing_states {
+                            action_rules_state.set_open(false);
+                        }
+
+                        action_rules_state.store(ui.ctx());
+
+                        action_rules_state.show_header(ui, |ui| {
+                            ui.label("Action Rules");
+                        })
+                        .body(|ui| {
                             ui.horizontal(|ui| {
                                 ui.label("Preset:");
 
@@ -545,7 +487,23 @@ impl TokensScreen {
                             self.conventions_change_rules.render_control_change_rules_ui(ui, &self.groups_ui, "Conventions Change", None);
 
                             // Main control group change is slightly different so do this one manually.
-                            ui.collapsing("Main Control Group Change", |ui| {
+                            let mut main_control_state = egui::collapsing_header::CollapsingState::load_with_default_open(
+                                ui.ctx(),
+                                ui.make_persistent_id("token_creator_main_control_group"),
+                                false,
+                            );
+
+                            // Force close if we need to reset
+                            if self.should_reset_collapsing_states {
+                                main_control_state.set_open(false);
+                            }
+
+                            main_control_state.store(ui.ctx());
+
+                            main_control_state.show_header(ui, |ui| {
+                                ui.label("Main Control Group Change");
+                            })
+                            .body(|ui| {
                                 ui.add_space(3.0);
 
                                 // A) authorized_to_make_change
@@ -606,12 +564,7 @@ impl TokensScreen {
                             });
                         });
 
-                        ui.add_space(5.0);
-
                         self.render_distributions(context, ui);
-
-                        ui.add_space(5.0);
-
                         self.render_groups(ui);
 
                         // 6) "Register Token Contract" button
@@ -620,12 +573,7 @@ impl TokensScreen {
                         new_style.spacing.button_padding = egui::vec2(10.0, 5.0);
                         ui.set_style(new_style);
                         ui.horizontal(|ui| {
-                            let register_button =
-                                egui::Button::new(RichText::new("Register Token Contract").color(Color32::WHITE))
-                                    .fill(Color32::from_rgb(0, 128, 255))
-                                    .frame(true)
-                                    .corner_radius(3.0);
-                            if ui.add(register_button).clicked() {
+                            if ui.button("Register Token Contract").clicked() {
                                 match self.parse_token_build_args() {
                                     Ok(args) => {
                                         // If success, show the "confirmation popup"
@@ -639,11 +587,8 @@ impl TokensScreen {
                                     }
                                 }
                             }
-                            let view_json_button = egui::Button::new(RichText::new("View JSON").color(Color32::WHITE))
-                                .fill(Color32::from_rgb(0, 128, 255))
-                                .frame(true)
-                                .corner_radius(3.0);
-                            if ui.add(view_json_button).clicked() {
+
+                            if ui.button("View JSON").clicked() {
                                 match self.parse_token_build_args() {
                                     Ok(args) => {
                                         // We have the parsed token creation arguments
@@ -693,6 +638,11 @@ impl TokensScreen {
                         });
                     });
             });
+
+        // Reset the flag after processing all collapsing headers
+        if self.should_reset_collapsing_states {
+            self.should_reset_collapsing_states = false;
+        }
 
         // 7) If the user pressed "Register Token Contract," show a popup confirmation
         if self.show_token_creator_confirmation_popup {

@@ -14,6 +14,7 @@ use crate::backend_task::contract::ContractTask;
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::database::contracts::InsertTokensToo;
 use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
 use crate::ui::tokens::tokens_screen::TokenInfo;
 use crate::{
@@ -268,18 +269,17 @@ impl ScreenLike for AddTokenByIdScreen {
         // Subscreen chooser
         action |= add_tokens_subscreen_chooser_panel(ctx, &self.app_context);
 
-        egui::CentralPanel::default().show(ctx, |ui| {
+        action |= island_central_panel(ctx, |ui| {
             // If we are in the "Complete" status, just show success screen
             if self.status == AddTokenStatus::Complete {
-                action |= self.show_success_screen(ui);
-                return;
+                return self.show_success_screen(ui);
             }
 
             ui.heading("Add Token");
             ui.add_space(10.0);
 
             // Input and search
-            action |= self.render_search_inputs(ui);
+            let mut inner_action = self.render_search_inputs(ui);
 
             if let AddTokenStatus::Searching(start_time) = self.status {
                 ui.add_space(10.0);
@@ -295,7 +295,9 @@ impl ScreenLike for AddTokenByIdScreen {
             }
 
             ui.add_space(10.0);
-            action |= self.render_add_button(ui);
+            inner_action |= self.render_add_button(ui);
+
+            inner_action
         });
 
         action

@@ -3,6 +3,7 @@ use crate::backend_task::contract::ContractTask;
 use crate::backend_task::BackendTask;
 use crate::context::AppContext;
 use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::{BackendTaskSuccessResult, MessageType, ScreenLike};
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
@@ -322,7 +323,7 @@ impl ScreenLike for AddContractsScreen {
             crate::ui::RootScreenType::RootScreenDocumentQuery,
         );
 
-        egui::CentralPanel::default().show(ctx, |ui| {
+        action |= island_central_panel(ctx, |ui| {
             ui.heading("Add Contracts");
             ui.add_space(10.0);
 
@@ -344,7 +345,7 @@ impl ScreenLike for AddContractsScreen {
                             .frame(true)
                             .corner_radius(3.0);
                     if ui.add(button).clicked() {
-                        action = self.add_contracts_clicked();
+                        return self.add_contracts_clicked();
                     }
                 }
                 AddContractsStatus::WaitingForResult(start_time) => {
@@ -378,9 +379,10 @@ impl ScreenLike for AddContractsScreen {
                     ));
                 }
                 AddContractsStatus::Complete(_) => {
-                    action |= self.show_success_screen(ui);
+                    return self.show_success_screen(ui);
                 }
             }
+            AppAction::None
         });
 
         action

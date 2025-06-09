@@ -138,7 +138,7 @@ impl AppContext {
 
         let app_context = AppContext {
             network,
-            developer_mode: AtomicBool::new(network_config.developer_mode.unwrap_or(false)),
+            developer_mode: AtomicBool::new(config.developer_mode.unwrap_or(false)),
             devnet_name: None,
             db,
             sdk: sdk.into(),
@@ -192,9 +192,7 @@ impl AppContext {
             cfg_lock.clone()
         };
 
-        // Update the developer_mode from the config
-        self.developer_mode
-            .store(cfg.developer_mode.unwrap_or(false), Ordering::Relaxed);
+        // Note: developer_mode is now global and managed separately
 
         // 2. Rebuild the RPC client with the new password
         let addr = format!("http://{}:{}", cfg.core_host, cfg.core_rpc_port);

@@ -1,6 +1,7 @@
 use crate::app::AppAction;
 use crate::backend_task::tokens::TokenTask;
 use crate::backend_task::BackendTask;
+use crate::ui::components::styled::StyledButton;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
 use crate::ui::tokens::burn_tokens_screen::BurnTokensScreen;
 use crate::ui::tokens::claim_tokens_screen::ClaimTokensScreen;
@@ -28,8 +29,8 @@ use dash_sdk::dpp::data_contract::associated_token::token_configuration_conventi
 use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::accessors::v0::TokenDistributionRulesV0Getters;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use eframe::emath::Align;
-use eframe::epaint::{Color32, Margin};
-use egui::{Frame, RichText, Ui};
+use eframe::epaint::Color32;
+use egui::{RichText, Ui};
 use egui_extras::{Column, TableBuilder};
 use std::ops::Range;
 use std::sync::atomic::Ordering;
@@ -107,7 +108,7 @@ impl TokensScreen {
 
             ui.label("Please check back later or try refreshing the list.");
             ui.add_space(20.0);
-            if ui.button("Refresh").clicked() {
+            if StyledButton::primary("Refresh").show(ui).clicked() {
                 if let RefreshingStatus::Refreshing(_) = self.refreshing_status {
                     app_action = AppAction::None;
                 } else {
@@ -192,20 +193,7 @@ impl TokensScreen {
             detail_list.push(record);
         }
 
-        // Allocate space for refreshing indicator
-        let refreshing_height = 33.0;
-        let mut max_scroll_height = if let RefreshingStatus::Refreshing(_) = self.refreshing_status
-        {
-            ui.available_height() - refreshing_height
-        } else {
-            ui.available_height()
-        };
-
-        // Allocate space for backend message
-        let backend_message_height = 40.0;
-        if let Some((_, _, _)) = self.backend_message.clone() {
-            max_scroll_height -= backend_message_height;
-        }
+        // Space allocation for UI elements is handled by the layout system
 
         let in_dev_mode = self.app_context.developer_mode.load(Ordering::Relaxed);
 
@@ -217,19 +205,10 @@ impl TokensScreen {
                 .is_some();
 
         // A simple table with columns: [Token Name | Token ID | Total Balance]
-        egui::ScrollArea::vertical()
-            .max_height(max_scroll_height)
+        egui::ScrollArea::both()
             .show(ui, |ui| {
-                Frame::group(ui.style())
-                    .fill(ui.visuals().panel_fill)
-                    .stroke(egui::Stroke::new(
-                        1.0,
-                        ui.visuals().widgets.inactive.bg_stroke.color,
-                    ))
-                    .inner_margin(Margin::same(8))
-                    .show(ui, |ui| {
-                        let mut table = TableBuilder::new(ui)
-                            .striped(true)
+                let mut table = TableBuilder::new(ui)
+                            .striped(false)
                             .resizable(true)
                             .cell_layout(egui::Layout::left_to_right(Align::Center))
                             .column(Column::initial(60.0).resizable(true)) // Identity Alias
@@ -319,7 +298,7 @@ impl TokensScreen {
                                                                     self.show_explanation_popup = Some(identity_token_id);
                                                                 }
 
-                                                                if ui.button("Estimate").clicked() {
+                                                                if StyledButton::primary("Estimate").show(ui).clicked() {
                                                                     action = AppAction::BackendTask(BackendTask::TokenTask(Box::new(TokenTask::EstimatePerpetualTokenRewardsWithExplanation {
                                                                         identity_id: itb.identity_id,
                                                                         token_id: itb.token_id,
@@ -327,13 +306,14 @@ impl TokensScreen {
                                                                     self.refreshing_status = RefreshingStatus::Refreshing(Utc::now().timestamp() as u64);
                                                                 }
                                                             });
-                                                        } else if ui.button("Estimate").clicked() {
+                                                        } else if StyledButton::primary("Estimate").show(ui).clicked() {
                                                             action = AppAction::BackendTask(BackendTask::TokenTask(Box::new(TokenTask::EstimatePerpetualTokenRewardsWithExplanation {
                                                                 identity_id: itb.identity_id,
                                                                 token_id: itb.token_id,
                                                             })));
                                                             self.refreshing_status = RefreshingStatus::Refreshing(Utc::now().timestamp() as u64);
                                                         }
+                                                    
                                                 }
                                             });
                                         }
@@ -365,7 +345,6 @@ impl TokensScreen {
                                     });
                                 }
                             });
-                    });
             });
 
         // Show explanation popup if requested
@@ -472,7 +451,7 @@ impl TokensScreen {
                 // Disabled, grayed-out Transfer button
                 ui.add_enabled(
                     false,
-                    egui::Button::new(RichText::new("Transfer").color(egui::Color32::GRAY)),
+                    egui::Button::new(RichText::new("Transfer").color(Color32::GRAY)),
                 )
                 .on_hover_text("Transfer not available");
             }
@@ -572,7 +551,7 @@ impl TokensScreen {
             pos += 1;
         }
         if itb.available_actions.can_destroy {
-            if range.contains(&pos) && ui.button("Destroy Target Identity Tokens").clicked() {
+            if range.contains(&pos) && ui.button("Destroy Frozen Identity Tokens").clicked() {
                 match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
                             Ok(info) => {
                                 action = AppAction::AddScreen(
@@ -742,96 +721,70 @@ impl TokensScreen {
     /// Renders the top-level token list (one row per unique token).
     /// When the user clicks on a token, we set `selected_token_id`.
     fn render_token_list(&mut self, ui: &mut Ui) -> Result<(), String> {
-        // Allocate space for refreshing indicator
-        let refreshing_height = 33.0;
-        let mut max_scroll_height = if let RefreshingStatus::Refreshing(_) = self.refreshing_status
-        {
-            ui.available_height() - refreshing_height
-        } else {
-            ui.available_height()
-        };
-
-        // Allocate space for backend message
-        let backend_message_height = 40.0;
-        if let Some((_, _, _)) = self.backend_message.clone() {
-            max_scroll_height -= backend_message_height;
-        }
+        // Space allocation for UI elements is handled by the layout system
 
         // A simple table with columns: [Token Name | Token ID | Total Balance]
-        egui::ScrollArea::vertical()
-            .max_height(max_scroll_height)
-            .show(ui, |ui| {
-                Frame::group(ui.style())
-                    .fill(ui.visuals().panel_fill)
-                    .stroke(egui::Stroke::new(
-                        1.0,
-                        ui.visuals().widgets.inactive.bg_stroke.color,
-                    ))
-                    .inner_margin(Margin::same(8))
-                    .show(ui, |ui| {
-                        TableBuilder::new(ui)
-                            .striped(true)
-                            .resizable(true)
-                            .cell_layout(egui::Layout::left_to_right(Align::Center))
-                            .column(Column::initial(150.0).resizable(true)) // Token Name
-                            .column(Column::initial(200.0).resizable(true)) // Token ID
-                            .column(Column::initial(80.0).resizable(true)) // Description
-                            .column(Column::initial(80.0).resizable(true)) // Actions
-                            // .column(Column::initial(80.0).resizable(true)) // Token Info
-                            .header(30.0, |mut header| {
-                                header.col(|ui| {
-                                    ui.label("Token Name");
-                                });
-                                header.col(|ui| {
-                                    ui.label("Token ID");
-                                });
-                                header.col(|ui| {
-                                    ui.label("Description");
-                                });
-                                header.col(|ui| {
-                                    ui.label("Actions");
-                                });
-                            })
-                            .body(|mut body| {
-                                for token_info in self.all_known_tokens.values() {
-                                    let TokenInfoWithDataContract {
-                                        token_id,
-                                        token_name,
-                                        description,
-                                        ..
-                                    } = token_info;
-                                    body.row(25.0, |mut row| {
-                                        row.col(|ui| {
-                                            // By making the label into a button or using `ui.selectable_label`,
-                                            // we can respond to clicks.
-                                            if ui.button(token_name).clicked() {
-                                                self.selected_token = Some(*token_id);
-                                            }
-                                        });
-                                        row.col(|ui| {
-                                            ui.label(token_id.to_string(Encoding::Base58));
-                                        });
-                                        row.col(|ui| {
-                                            ui.label(
-                                                description.as_ref().unwrap_or(&String::new()),
-                                            );
-                                        });
-                                        row.col(|ui| {
-                                            // Remove
-                                            if ui
-                                                .button("X")
-                                                .on_hover_text("Remove token from DET")
-                                                .clicked()
-                                            {
-                                                self.confirm_remove_token_popup = true;
-                                                self.token_to_remove = Some(*token_id);
-                                            }
-                                        });
-                                    });
+        egui::ScrollArea::both().show(ui, |ui| {
+            TableBuilder::new(ui)
+                .striped(false)
+                .resizable(true)
+                .cell_layout(egui::Layout::left_to_right(Align::Center))
+                .column(Column::initial(150.0).resizable(true)) // Token Name
+                .column(Column::initial(200.0).resizable(true)) // Token ID
+                .column(Column::initial(80.0).resizable(true)) // Description
+                .column(Column::initial(80.0).resizable(true)) // Actions
+                // .column(Column::initial(80.0).resizable(true)) // Token Info
+                .header(30.0, |mut header| {
+                    header.col(|ui| {
+                        ui.label("Token Name");
+                    });
+                    header.col(|ui| {
+                        ui.label("Token ID");
+                    });
+                    header.col(|ui| {
+                        ui.label("Description");
+                    });
+                    header.col(|ui| {
+                        ui.label("Actions");
+                    });
+                })
+                .body(|mut body| {
+                    for token_info in self.all_known_tokens.values() {
+                        let TokenInfoWithDataContract {
+                            token_id,
+                            token_name,
+                            description,
+                            ..
+                        } = token_info;
+                        body.row(25.0, |mut row| {
+                            row.col(|ui| {
+                                // By making the label into a button or using `ui.selectable_label`,
+                                // we can respond to clicks.
+                                if ui.button(token_name).clicked() {
+                                    self.selected_token = Some(*token_id);
                                 }
                             });
-                    });
-            });
+                            row.col(|ui| {
+                                ui.label(token_id.to_string(Encoding::Base58));
+                            });
+                            row.col(|ui| {
+                                ui.label(description.as_ref().unwrap_or(&String::new()));
+                            });
+                            row.col(|ui| {
+                                // Remove
+                                if ui
+                                    .button("X")
+                                    .on_hover_text("Remove token from DET")
+                                    .clicked()
+                                {
+                                    self.confirm_remove_token_popup = true;
+                                    self.token_to_remove = Some(*token_id);
+                                }
+                            });
+                        });
+                    }
+                });
+        });
         Ok(())
     }
 }

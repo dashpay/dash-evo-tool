@@ -26,26 +26,29 @@ impl U256EntropyGrid {
         // Add padding around the grid
         ui.add_space(10.0); // Top padding
 
-        // Calculate button size based on available width and enforce max height of 120px.
-        let available_width = ui.available_width() - 20.0; // Account for 10px left and right buffers
-        let max_height = 120;
+        // Calculate button size - make it fixed size for consistency
+        let max_grid_width = 400.0; // Maximum width for the entropy grid
+        let available_width = ui.available_width().min(max_grid_width) - 20.0; // Account for padding
+        let columns = 32usize; // Reduced from 64 for better usability
+        let rows = 8usize; // Increased from 4 to maintain 256 bits
+        let max_height = 160; // Adjusted for 8 rows
         let button_size = Vec2::new(
-            available_width / 64.0, // Divide the width into 64 columns.
-            (max_height / 4).min(available_width as i32 / 64) as f32, // Ensure height stays within limit.
+            available_width / columns as f32, // Divide the width into columns
+            (max_height / rows as i32).min(available_width as i32 / columns as i32) as f32, // Ensure height stays within limit
         );
 
-        // Create a grid with 4 rows and 64 columns (256 bits total).
+        // Create a grid with 8 rows and 32 columns (256 bits total).
         ui.horizontal(|ui| {
             ui.add_space(10.0); // Left padding
 
             Grid::new("entropy_grid")
-                .num_columns(64) // 64 columns, each representing a bit.
+                .num_columns(columns) // columns, each representing a bit.
                 .spacing(Vec2::new(0.0, 0.0)) // No spacing for compact layout.
                 .min_col_width(0.0) // Allow columns to shrink without restriction.
                 .show(ui, |ui| {
-                    for row in 0..4 {
-                        for col in 0..64 {
-                            let bit_position = (row * 64 + col) as u8;
+                    for row in 0..rows {
+                        for col in 0..columns {
+                            let bit_position = (row * columns + col) as u8;
                             let byte_index = (bit_position / 8) as usize;
                             let bit_in_byte = (bit_position % 8) as usize;
 
@@ -70,7 +73,7 @@ impl U256EntropyGrid {
                                 self.toggle_bit(byte_index, bit_in_byte); // Toggle the bit.
                             }
                         }
-                        ui.end_row(); // Move to the next row after 64 bits.
+                        ui.end_row(); // Move to the next row after columns bits.
                     }
                 });
 

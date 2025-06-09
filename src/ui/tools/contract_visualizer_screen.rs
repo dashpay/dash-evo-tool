@@ -1,12 +1,13 @@
 use crate::app::AppAction;
 use crate::context::AppContext;
 use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tools_subscreen_chooser_panel::add_tools_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::BackendTaskSuccessResult;
 use dash_sdk::dpp::serialization::PlatformDeserializableWithPotentialValidationFromVersionedStructure;
 use dash_sdk::platform::DataContract;
-use eframe::egui::{self, Color32, Context, ScrollArea, TextEdit, Ui};
+use eframe::egui::{Color32, Context, ScrollArea, TextEdit, Ui};
 use std::sync::Arc;
 // ======================= 1.  Data & helpers =======================
 
@@ -111,7 +112,7 @@ impl ContractVisualizerScreen {
                 ui.colored_label(Color32::RED, format!("Error: {msg}"));
             }
             ContractParseStatus::NotStarted => {
-                ui.label("Awaiting input …");
+                ui.colored_label(Color32::GRAY, "Awaiting input …");
             }
         });
     }
@@ -141,9 +142,10 @@ impl crate::ui::ScreenLike for ContractVisualizerScreen {
         action |= add_tools_subscreen_chooser_panel(ctx, self.app_context.as_ref());
 
         /* ---------- central panel ---------- */
-        egui::CentralPanel::default().show(ctx, |ui| {
+        action |= island_central_panel(ctx, |ui| {
             self.show_input(ui);
             self.show_output(ui);
+            AppAction::None
         });
 
         action

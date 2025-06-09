@@ -23,6 +23,7 @@ use crate::ui::tokens::update_token_config::UpdateTokenConfigScreen;
 use crate::ui::tokens::view_token_claims_screen::ViewTokenClaimsScreen;
 use crate::ui::Screen;
 use chrono::Utc;
+use dash_sdk::dpp::tokens::token_pricing_schedule::TokenPricingSchedule;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::accessors::v0::TokenDistributionRulesV0Getters;
@@ -33,6 +34,17 @@ use egui::{RichText, Ui};
 use egui_extras::{Column, TableBuilder};
 use std::ops::Range;
 use std::sync::atomic::Ordering;
+
+/// Get the minimum price for purchasing one token from a pricing schedule
+fn get_min_token_price(pricing_schedule: &TokenPricingSchedule) -> u64 {
+    match pricing_schedule {
+        TokenPricingSchedule::SinglePrice(price) => *price,
+        TokenPricingSchedule::SetPrices(price_map) => {
+            // Return the price for the first tier (smallest amount)
+            price_map.values().next().copied().unwrap_or(0)
+        }
+    }
+}
 
 impl TokensScreen {
     pub(super) fn render_my_tokens_subscreen(&mut self, ui: &mut Ui) -> AppAction {
@@ -585,11 +597,12 @@ impl TokensScreen {
                             identity_opt
                                 .map(|identity| {
                                     use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-                                    // Simple check: if pricing exists, just verify they have some credits
-                                    if let Some(Some(_pricing)) =
+                                    // Check if identity has enough credits for the minimum token price
+                                    if let Some(Some(pricing)) =
                                         self.token_pricing_data.get(&itb.token_id)
                                     {
-                                        identity.identity.balance() > 0
+                                        let min_price = get_min_token_price(pricing);
+                                        identity.identity.balance() >= min_price
                                     } else {
                                         false
                                     }
@@ -624,7 +637,14 @@ impl TokensScreen {
                             false,
                             egui::Button::new(RichText::new("Purchase").color(egui::Color32::GRAY)),
                         )
-                        .on_hover_text("No credits available for purchase");
+                        .on_hover_text({
+                            if let Some(Some(pricing)) = self.token_pricing_data.get(&itb.token_id) {
+                                let min_price = get_min_token_price(pricing);
+                                format!("Insufficient credits. Need at least {} credits to purchase one token", min_price)
+                            } else {
+                                "No credits available for purchase".to_string()
+                            }
+                        });
                     }
                 }
             }

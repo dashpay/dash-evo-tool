@@ -7,7 +7,6 @@ use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::tokens::token_pricing_schedule::TokenPricingSchedule;
 use eframe::egui::{self, Color32, Context, Ui};
-use eframe::App;
 use egui::RichText;
 
 use super::tokens_screen::IdentityTokenInfo;

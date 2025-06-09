@@ -3,6 +3,7 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::tokens::token_pricing_schedule::TokenPricingSchedule;
 use eframe::egui::{self, Color32, Context, Ui};
@@ -125,14 +126,22 @@ impl PurchaseTokenScreen {
                         .expect("Time went backwards")
                         .as_secs(),
                 );
-                action = AppAction::BackendTask(BackendTask::TokenTask(Box::new(
-                    TokenTask::FetchTokenPricingSchedule {
-                        data_contract: Arc::new(
-                            self.identity_token_info.data_contract.contract.clone(),
-                        ),
-                        token_position: self.identity_token_info.token_position,
-                    },
-                )));
+                let token_id_opt = self
+                    .identity_token_info
+                    .data_contract
+                    .contract
+                    .token_id(self.identity_token_info.token_position);
+
+                if let Some(token_id) = token_id_opt {
+                    action = AppAction::BackendTask(BackendTask::TokenTask(Box::new(
+                        TokenTask::QueryTokenPricing(token_id),
+                    )));
+                } else {
+                    self.error_message = Some("Failed to get token ID from contract".to_string());
+                    self.status = PurchaseTokensStatus::ErrorMessage(
+                        "Failed to get token ID from contract".to_string(),
+                    );
+                }
             }
         });
 
@@ -292,9 +301,13 @@ impl PurchaseTokenScreen {
 
 impl ScreenLike for PurchaseTokenScreen {
     fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
-        if let BackendTaskSuccessResult::TokenPricingSchedule(pricing_schedule) = result {
+        if let BackendTaskSuccessResult::TokenPricing {
+            token_id: _,
+            prices,
+        } = result
+        {
             self.pricing_fetch_attempted = true;
-            if let Some(schedule) = pricing_schedule {
+            if let Some(schedule) = prices {
                 self.fetched_pricing_schedule = Some(schedule);
                 self.recalculate_price();
                 self.status = PurchaseTokensStatus::NotStarted;

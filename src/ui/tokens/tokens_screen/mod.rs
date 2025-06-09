@@ -929,6 +929,11 @@ pub struct TokensScreen {
     identities: IndexMap<Identifier, QualifiedIdentity>,
     my_tokens: IndexMap<IdentityTokenIdentifier, IdentityTokenBalanceWithActions>,
     pub selected_token: Option<Identifier>,
+    token_pricing_data: IndexMap<
+        Identifier,
+        Option<dash_sdk::dpp::tokens::token_pricing_schedule::TokenPricingSchedule>,
+    >,
+    pricing_loading_state: IndexMap<Identifier, bool>,
     backend_message: Option<(String, MessageType, DateTime<Utc>)>,
     pending_backend_task: Option<BackendTask>,
     refreshing_status: RefreshingStatus,
@@ -1185,6 +1190,10 @@ fn my_tokens(
     app_context: &Arc<AppContext>,
     identities: &IndexMap<Identifier, QualifiedIdentity>,
     all_known_tokens: &IndexMap<Identifier, TokenInfoWithDataContract>,
+    token_pricing_data: &IndexMap<
+        Identifier,
+        Option<dash_sdk::dpp::tokens::token_pricing_schedule::TokenPricingSchedule>,
+    >,
 ) -> IndexMap<IdentityTokenIdentifier, IdentityTokenBalanceWithActions> {
     let in_dev_mode = app_context.developer_mode.load(Ordering::Relaxed);
 
@@ -1200,8 +1209,11 @@ fn my_tokens(
                 .get(&token_balance.token_id)
                 .map(|info| &info.data_contract)?;
 
+            let token_pricing = token_pricing_data
+                .get(&token_balance.token_id)
+                .and_then(|opt| opt.as_ref());
             let token_with_actions =
-                token_balance.into_with_actions(identity, contract, in_dev_mode);
+                token_balance.into_with_actions(identity, contract, in_dev_mode, token_pricing);
             Some((id_token_identifier, token_with_actions))
         })
         .collect()
@@ -1220,7 +1232,12 @@ impl TokensScreen {
             .get_all_known_tokens_with_data_contract(app_context)
             .unwrap_or_default();
 
-        let my_tokens = my_tokens(app_context, &identities, &all_known_tokens);
+        let my_tokens = my_tokens(
+            app_context,
+            &identities,
+            &all_known_tokens,
+            &IndexMap::new(),
+        );
 
         let mut function_images = BTreeMap::new();
 
@@ -1251,6 +1268,8 @@ impl TokensScreen {
             all_known_tokens,
             my_tokens,
             selected_token: None,
+            token_pricing_data: IndexMap::new(),
+            pricing_loading_state: IndexMap::new(),
             selected_contract_id: None,
             selected_contract_description: None,
             selected_token_infos: Vec::new(),
@@ -2335,7 +2354,12 @@ impl ScreenLike for TokensScreen {
             .map(|qi| (qi.identity.id(), qi))
             .collect();
 
-        self.my_tokens = my_tokens(&self.app_context, &self.identities, &self.all_known_tokens);
+        self.my_tokens = my_tokens(
+            &self.app_context,
+            &self.identities,
+            &self.all_known_tokens,
+            &self.token_pricing_data,
+        );
 
         match self.app_context.db.load_token_order() {
             Ok(saved_ids) => {
@@ -2366,7 +2390,12 @@ impl ScreenLike for TokensScreen {
             .map(|qi| (qi.identity.id(), qi))
             .collect();
 
-        self.my_tokens = my_tokens(&self.app_context, &self.identities, &self.all_known_tokens);
+        self.my_tokens = my_tokens(
+            &self.app_context,
+            &self.identities,
+            &self.all_known_tokens,
+            &self.token_pricing_data,
+        );
     }
 
     fn ui(&mut self, ctx: &Context) -> AppAction {
@@ -2693,6 +2722,16 @@ impl ScreenLike for TokensScreen {
                 if let Some(itb) = self.my_tokens.get_mut(&identity_token_id) {
                     itb.estimated_unclaimed_rewards = Some(amount)
                 }
+            }
+            BackendTaskSuccessResult::TokenPricing { token_id, prices } => {
+                // Store the pricing data
+                self.token_pricing_data.insert(token_id, prices);
+                // Clear loading state
+                self.pricing_loading_state.insert(token_id, false);
+                // Refresh my_tokens to update available actions with new pricing data
+                self.my_tokens = my_tokens(&self.app_context, &self.identities, &self.all_known_tokens, &self.token_pricing_data);
+                // Refresh display
+                self.refreshing_status = RefreshingStatus::NotRefreshing;
             }
             _ => {}
         }

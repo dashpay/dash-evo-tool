@@ -2,7 +2,6 @@ use super::BackendTaskSuccessResult;
 use crate::ui::tokens::tokens_screen::{IdentityTokenIdentifier, IdentityTokenInfo, TokenInfo};
 use crate::{app::TaskResult, context::AppContext, model::qualified_identity::QualifiedIdentity};
 use dash_sdk::dpp::balances::credits::TokenAmount;
-use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration_item::TokenConfigurationChangeItem;
 use dash_sdk::dpp::data_contract::GroupContractPosition;
 use dash_sdk::dpp::fee::Credits;
@@ -51,6 +50,7 @@ mod pause_tokens;
 mod purchase_tokens;
 mod query_my_token_balances;
 mod query_token_non_claimed_perpetual_distribution_rewards;
+mod query_token_pricing;
 mod query_tokens;
 mod resume_tokens;
 mod set_token_price;
@@ -96,6 +96,7 @@ pub(crate) enum TokenTask {
     QueryDescriptionsByKeyword(String, Option<Start>),
     FetchTokenByContractId(Identifier),
     SaveTokenLocally(TokenInfo),
+    QueryTokenPricing(Identifier),
     MintTokens {
         sending_identity: QualifiedIdentity,
         data_contract: Arc<DataContract>,
@@ -202,10 +203,6 @@ pub(crate) enum TokenTask {
         token_pricing_schedule: Option<TokenPricingSchedule>,
         public_note: Option<String>,
         group_info: Option<GroupStateTransitionInfoStatus>,
-    },
-    FetchTokenPricingSchedule {
-        data_contract: Arc<DataContract>,
-        token_position: TokenContractPosition,
     },
 }
 
@@ -600,32 +597,10 @@ impl AppContext {
                 )
                 .await
                 .map_err(|e| format!("Failed to set direct purchase price: {e}")),
-            TokenTask::FetchTokenPricingSchedule {
-                data_contract,
-                token_position,
-            } => {
-                // Get the token ID for this position
-                let token_id = data_contract
-                    .token_id(*token_position)
-                    .ok_or_else(|| format!("Token not found at position {}", token_position))?;
-
-                // Fetch the pricing schedule using the SDK
-                use dash_sdk::platform::FetchMany;
-                use dash_sdk::query_types::TokenDirectPurchasePrices;
-
-                let token_ids = &[token_id][..];
-                let prices: TokenDirectPurchasePrices =
-                    TokenPricingSchedule::fetch_many(sdk, token_ids)
-                        .await
-                        .map_err(|e| format!("Failed to fetch token pricing: {e}"))?;
-
-                // Get the pricing schedule for our token
-                let pricing_schedule = prices.get(&token_id).cloned().flatten();
-
-                Ok(BackendTaskSuccessResult::TokenPricingSchedule(
-                    pricing_schedule,
-                ))
-            }
+            TokenTask::QueryTokenPricing(token_id) => self
+                .query_token_pricing(*token_id, sdk, sender)
+                .await
+                .map_err(|e| format!("Failed to query token pricing: {e}")),
         }
     }
 

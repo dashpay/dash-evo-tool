@@ -15,7 +15,6 @@ use dash_sdk::dpp::balances::credits::TokenAmount;
 use dash_sdk::dpp::group::group_action::GroupAction;
 use dash_sdk::dpp::prelude::DataContract;
 use dash_sdk::dpp::state_transition::StateTransition;
-use dash_sdk::dpp::tokens::token_pricing_schedule::TokenPricingSchedule;
 use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
 use dash_sdk::dpp::voting::votes::Vote;
 use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::Start;
@@ -82,7 +81,10 @@ pub(crate) enum BackendTaskSuccessResult {
         BTreeMap<Identifier, (Option<ContractDescriptionInfo>, Vec<TokenInfo>)>,
     ),
     ActiveGroupActions(IndexMap<Identifier, GroupAction>),
-    TokenPricingSchedule(Option<TokenPricingSchedule>),
+    TokenPricing {
+        token_id: Identifier,
+        prices: Option<dash_sdk::dpp::tokens::token_pricing_schedule::TokenPricingSchedule>,
+    },
 }
 
 impl BackendTaskSuccessResult {}

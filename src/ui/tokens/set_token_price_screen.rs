@@ -30,10 +30,19 @@ use dash_sdk::dpp::tokens::token_pricing_schedule::TokenPricingSchedule;
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
 use eframe::egui::{self, Color32, Context, Ui};
 use egui::RichText;
+use egui_extras::{Column, TableBuilder};
 use std::collections::HashSet;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+/// Pricing type selection
+#[derive(PartialEq, Clone)]
+pub enum PricingType {
+    SinglePrice,
+    TieredPricing,
+    RemovePricing,
+}
 
 /// Internal states for the mint process.
 #[derive(PartialEq)]
@@ -54,6 +63,9 @@ pub struct SetTokenPriceScreen {
     pub group_action_id: Option<Identifier>,
 
     pub token_pricing_schedule: String,
+    pricing_type: PricingType,
+    single_price: String,
+    tiered_prices: Vec<(String, String)>,
     status: SetTokenPriceStatus,
     error_message: Option<String>,
 
@@ -182,6 +194,12 @@ impl SetTokenPriceScreen {
             is_unilateral_group_member,
             group_action_id: None,
             token_pricing_schedule: "".to_string(),
+            pricing_type: PricingType::SinglePrice,
+            single_price: "".to_string(),
+            tiered_prices: vec![
+                ("1".to_string(), "".to_string()),
+                ("".to_string(), "".to_string()),
+            ],
             status: SetTokenPriceStatus::NotStarted,
             error_message: None,
             app_context: app_context.clone(),
@@ -192,12 +210,214 @@ impl SetTokenPriceScreen {
         }
     }
 
-    /// Renders a text input for the user to specify an amount to mint
+    /// Renders the pricing input UI
     fn render_pricing_input(&mut self, ui: &mut Ui) {
-        ui.horizontal(|ui| {
-            ui.label("Token pricing schedule:");
-            ui.text_edit_singleline(&mut self.token_pricing_schedule);
+        ui.group(|ui| {
+            ui.heading("Pricing Configuration");
+            ui.add_space(5.0);
+
+            // Radio buttons for pricing type
+            ui.horizontal(|ui| {
+                ui.radio_value(&mut self.pricing_type, PricingType::SinglePrice, "Single Price");
+                ui.radio_value(&mut self.pricing_type, PricingType::TieredPricing, "Tiered Pricing");
+                ui.radio_value(&mut self.pricing_type, PricingType::RemovePricing, "Remove Pricing (Make Token Not For Sale)");
+            });
+
+            ui.add_space(10.0);
+
+            match self.pricing_type {
+                PricingType::SinglePrice => {
+                    ui.label("Set a fixed price per token:");
+                    ui.horizontal(|ui| {
+                        ui.label("Price per token (credits):");
+                        ui.text_edit_singleline(&mut self.single_price);
+                    });
+
+                    // Show preview
+                    if !self.single_price.is_empty() {
+                        if let Ok(price) = self.single_price.parse::<u64>() {
+                            ui.add_space(5.0);
+                            ui.colored_label(Color32::DARK_GREEN, format!("Price: {} credits per token", price));
+                        } else {
+                            ui.colored_label(Color32::DARK_RED, "X Invalid price - must be a positive number");
+                        }
+                    }
+                }
+                PricingType::TieredPricing => {
+                    ui.label("Set different prices based on purchase amount:");
+                    ui.add_space(10.0);
+
+                    // Tiered pricing table
+                    let table = TableBuilder::new(ui)
+                        .striped(true)
+                        .resizable(false)
+                        .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                        .column(Column::exact(120.0).resizable(false))
+                        .column(Column::exact(200.0).resizable(false))
+                        .column(Column::exact(80.0).resizable(false))
+                        .min_scrolled_height(0.0);
+
+                    let mut to_remove = None;
+                    let can_remove = self.tiered_prices.len() > 1;
+
+                    table
+                        .header(20.0, |mut header| {
+                            header.col(|ui| {
+                                ui.label(RichText::new("Minimum Amount").color(Color32::BLACK).strong());
+                            });
+                            header.col(|ui| {
+                                ui.label(RichText::new("Price per Token").color(Color32::BLACK).strong());
+                            });
+                            header.col(|ui| {
+                                ui.label(RichText::new("Actions").color(Color32::BLACK).strong());
+                            });
+                        })
+                        .body(|mut body| {
+                            for (i, (amount, price)) in self.tiered_prices.iter_mut().enumerate() {
+                                body.row(25.0, |mut row| {
+                                    row.col(|ui| {
+                                        if i == 0 {
+                                            // First tier is hardcoded to 1 token
+                                            ui.label("1");
+                                            *amount = "1".to_string(); // Ensure it's always 1
+                                        } else {
+                                            ui.add(
+                                                egui::TextEdit::singleline(amount)
+                                                    .hint_text(RichText::new("100").color(Color32::GRAY))
+                                                    .desired_width(100.0)
+                                            );
+                                        }
+                                    });
+                                    row.col(|ui| {
+                                        ui.add(
+                                            egui::TextEdit::singleline(price)
+                                                .hint_text(RichText::new("50").color(Color32::GRAY))
+                                                .desired_width(120.0)
+                                        );
+                                        ui.label(" credits");
+                                    });
+                                    row.col(|ui| {
+                                        if can_remove && i > 0 && ui.small_button("X").clicked() {
+                                            to_remove = Some(i);
+                                        }
+                                    });
+                                });
+                            }
+                        });
+
+                    if let Some(i) = to_remove {
+                        self.tiered_prices.remove(i);
+                    }
+
+                    ui.add_space(10.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("+ Add Tier").clicked() {
+                            // Add empty tier - user will fill in values
+                            self.tiered_prices.push(("".to_string(), "".to_string()));
+                        }
+                        ui.label(RichText::new("Add pricing tiers to offer volume discounts").color(Color32::GRAY));
+                    });
+
+                    // Show preview
+                    ui.add_space(10.0);
+                    self.render_tiered_pricing_preview(ui);
+                }
+                PricingType::RemovePricing => {
+                    ui.colored_label(Color32::from_rgb(180, 100, 0), "WARNING: This will remove the pricing schedule, making the token unavailable for direct purchase.");
+                    ui.label("Users will no longer be able to buy this token directly.");
+                }
+            }
         });
+    }
+
+    fn render_tiered_pricing_preview(&self, ui: &mut Ui) {
+        ui.group(|ui| {
+            ui.label("Preview:");
+            let mut valid_tiers = Vec::new();
+            let mut has_errors = false;
+
+            for (amount_str, price_str) in &self.tiered_prices {
+                if amount_str.trim().is_empty() || price_str.trim().is_empty() {
+                    continue;
+                }
+
+                match (amount_str.parse::<u64>(), price_str.parse::<u64>()) {
+                    (Ok(amount), Ok(price)) => {
+                        valid_tiers.push((amount, price));
+                    }
+                    _ => {
+                        has_errors = true;
+                    }
+                }
+            }
+
+            // Sort tiers by amount
+            if !valid_tiers.is_empty() {
+                valid_tiers.sort_by_key(|(amount, _)| *amount);
+            }
+
+            if has_errors {
+                ui.colored_label(Color32::DARK_RED, "X Some tiers have invalid values");
+            }
+
+            if !valid_tiers.is_empty() {
+                ui.colored_label(Color32::DARK_GREEN, "Pricing Structure:");
+                for (amount, price) in &valid_tiers {
+                    ui.label(format!(
+                        "  - {} or more tokens: {} credits each",
+                        amount, price
+                    ));
+                }
+            } else if !has_errors {
+                ui.label("Add at least one pricing tier");
+            }
+        });
+    }
+
+    /// Validates and creates the pricing schedule from the UI inputs
+    fn create_pricing_schedule(&self) -> Result<Option<TokenPricingSchedule>, String> {
+        match self.pricing_type {
+            PricingType::RemovePricing => Ok(None),
+            PricingType::SinglePrice => {
+                if self.single_price.trim().is_empty() {
+                    return Err("Please enter a price".to_string());
+                }
+                match self.single_price.trim().parse::<u64>() {
+                    Ok(price) => Ok(Some(TokenPricingSchedule::SinglePrice(price))),
+                    Err(_) => Err("Invalid price - must be a positive number".to_string()),
+                }
+            }
+            PricingType::TieredPricing => {
+                let mut map = std::collections::BTreeMap::new();
+
+                for (amount_str, price_str) in &self.tiered_prices {
+                    if amount_str.trim().is_empty() || price_str.trim().is_empty() {
+                        continue;
+                    }
+
+                    let amount = amount_str.trim().parse::<u64>().map_err(|_| {
+                        format!(
+                            "Invalid amount '{}' - must be a positive number",
+                            amount_str.trim()
+                        )
+                    })?;
+                    let price = price_str.trim().parse::<u64>().map_err(|_| {
+                        format!(
+                            "Invalid price '{}' - must be a positive number",
+                            price_str.trim()
+                        )
+                    })?;
+
+                    map.insert(amount, price);
+                }
+
+                if map.is_empty() {
+                    return Err("Please add at least one pricing tier".to_string());
+                }
+
+                Ok(Some(TokenPricingSchedule::SetPrices(map)))
+            }
+        }
     }
 
     /// Renders a confirm popup with the final "Are you sure?" step
@@ -209,68 +429,37 @@ impl SetTokenPriceScreen {
             .open(&mut is_open)
             .show(ui.ctx(), |ui| {
                 // Validate user input
-                let token_pricing_schedule_opt = if self.token_pricing_schedule.trim().is_empty() {
-                    None
-                } else {
-                    // Try to parse as a single price (u64)
-                    if let Ok(single_price) = self.token_pricing_schedule.trim().parse::<u64>() {
-                        Some(TokenPricingSchedule::SinglePrice(single_price))
-                    } else {
-                        // Try to parse as a tiered pricing schedule: "amount1:price1,amount2:price2"
-                        let mut map = std::collections::BTreeMap::new();
-                        let mut parse_error = None;
-                        for pair in self.token_pricing_schedule.trim().split(',') {
-                            let parts: Vec<_> = pair.split(':').collect();
-                            if parts.len() != 2 {
-                                parse_error = Some(format!(
-                                    "Invalid pair '{}', expected format amount:price",
-                                    pair
-                                ));
-                                break;
-                            }
-                            let amount = match parts[0].trim().parse::<u64>() {
-                                Ok(a) => a,
-                                Err(_) => {
-                                    parse_error =
-                                        Some(format!("Invalid amount '{}'", parts[0].trim()));
-                                    break;
-                                }
-                            };
-                            let price = match parts[1].trim().parse::<u64>() {
-                                Ok(p) => p,
-                                Err(_) => {
-                                    parse_error =
-                                        Some(format!("Invalid price '{}'", parts[1].trim()));
-                                    break;
-                                }
-                            };
-                            map.insert(amount, price);
-                        }
-                        if let Some(e) = parse_error {
-                            self.error_message = Some(format!("Invalid pricing schedule: {}", e));
-                            self.status = SetTokenPriceStatus::ErrorMessage(
-                                "Invalid pricing schedule".into(),
-                            );
-                            self.show_confirmation_popup = false;
-                            return;
-                        }
-                        if map.is_empty() {
-                            self.error_message =
-                                Some("Pricing schedule cannot be empty".to_string());
-                            self.status = SetTokenPriceStatus::ErrorMessage(
-                                "Invalid pricing schedule".into(),
-                            );
-                            self.show_confirmation_popup = false;
-                            return;
-                        }
-                        Some(TokenPricingSchedule::SetPrices(map))
+                let token_pricing_schedule_opt = match self.create_pricing_schedule() {
+                    Ok(schedule) => schedule,
+                    Err(error) => {
+                        self.error_message = Some(error.clone());
+                        self.status = SetTokenPriceStatus::ErrorMessage(error);
+                        self.show_confirmation_popup = false;
+                        return;
                     }
                 };
 
-                ui.label(format!(
-                    "Are you sure you want to set the pricing schedule to \"{}\"?",
-                    self.token_pricing_schedule
-                ));
+                // Show confirmation message based on pricing type
+                match &self.pricing_type {
+                    PricingType::RemovePricing => {
+                        ui.colored_label(Color32::from_rgb(180, 100, 0), "WARNING: Are you sure you want to remove the pricing schedule?");
+                        ui.label("This will make the token unavailable for direct purchase.");
+                    }
+                    PricingType::SinglePrice => {
+                        if let Some(TokenPricingSchedule::SinglePrice(price)) = &token_pricing_schedule_opt {
+                            ui.label(format!("Are you sure you want to set a fixed price of {} credits per token?", price));
+                        }
+                    }
+                    PricingType::TieredPricing => {
+                        if let Some(TokenPricingSchedule::SetPrices(tiers)) = &token_pricing_schedule_opt {
+                            ui.label("Are you sure you want to set the following tiered pricing?");
+                            ui.add_space(5.0);
+                            for (amount, price) in tiers {
+                                ui.label(format!("  - {} or more tokens: {} credits each", amount, price));
+                            }
+                        }
+                    }
+                }
 
                 ui.add_space(10.0);
 
@@ -448,11 +637,12 @@ impl ScreenLike for SetTokenPriceScreen {
         action |= add_tokens_subscreen_chooser_panel(ctx, &self.app_context);
 
         island_central_panel(ctx, |ui| {
-            // If we are in the "Complete" status, just show success screen
-            if self.status == SetTokenPriceStatus::Complete {
-                action |= self.show_success_screen(ui);
-                return;
-            }
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                // If we are in the "Complete" status, just show success screen
+                if self.status == SetTokenPriceStatus::Complete {
+                    action |= self.show_success_screen(ui);
+                    return;
+                }
 
             ui.heading("Set Token Pricing Schedule");
             ui.add_space(10.0);
@@ -543,7 +733,7 @@ impl ScreenLike for SetTokenPriceScreen {
                 ui.add_space(10.0);
 
                 // 2) Pricing schedule
-                ui.heading("2. Pricing schedule");
+                ui.heading("2. Pricing Configuration");
                 ui.add_space(5.0);
                 if self.group_action_id.is_some() {
                     ui.label(
@@ -629,11 +819,32 @@ impl ScreenLike for SetTokenPriceScreen {
                 };
 
                 // Set price button
+                let can_proceed = match self.pricing_type {
+                    PricingType::RemovePricing => true,
+                    PricingType::SinglePrice => !self.single_price.trim().is_empty() && self.single_price.trim().parse::<u64>().is_ok(),
+                    PricingType::TieredPricing => {
+                        self.tiered_prices.iter().any(|(amount, price)| {
+                            !amount.trim().is_empty() && !price.trim().is_empty() &&
+                            amount.trim().parse::<u64>().is_ok() && price.trim().parse::<u64>().is_ok()
+                        })
+                    }
+                };
+
+                let button_color = if can_proceed {
+                    Color32::from_rgb(0, 128, 255)
+                } else {
+                    Color32::from_rgb(100, 100, 100)
+                };
+
                 let button = egui::Button::new(RichText::new(set_price_text).color(Color32::WHITE))
-                    .fill(Color32::from_rgb(0, 128, 255))
+                    .fill(button_color)
                     .corner_radius(3.0);
 
-                if ui.add(button).clicked() {
+                let button_response = ui.add_enabled(can_proceed, button);
+
+                if !can_proceed {
+                    button_response.on_hover_text("Please enter valid pricing information");
+                } else if button_response.clicked() {
                     self.show_confirmation_popup = true;
                 }
 
@@ -664,6 +875,7 @@ impl ScreenLike for SetTokenPriceScreen {
                     }
                 }
             }
+            }); // end of ScrollArea
         });
 
         action

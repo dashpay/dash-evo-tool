@@ -2728,6 +2728,8 @@ impl ScreenLike for TokensScreen {
                 self.token_pricing_data.insert(token_id, prices);
                 // Clear loading state
                 self.pricing_loading_state.insert(token_id, false);
+                // Refresh my_tokens to update available actions with new pricing data
+                self.my_tokens = my_tokens(&self.app_context, &self.identities, &self.all_known_tokens, &self.token_pricing_data);
                 // Refresh display
                 self.refreshing_status = RefreshingStatus::NotRefreshing;
             }

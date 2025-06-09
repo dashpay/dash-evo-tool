@@ -106,16 +106,16 @@ impl PurchaseTokenScreen {
     /// Renders a text input for the user to specify an amount to purchase
     fn render_amount_input(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
-        
+
         ui.horizontal(|ui| {
             ui.label("Amount to Purchase:");
             let response = ui.text_edit_singleline(&mut self.amount_to_purchase);
-            
+
             // When amount changes, recalculate the price if we have pricing schedule
             if response.changed() {
                 self.recalculate_price();
             }
-            
+
             // Fetch pricing button
             if ui.button("Fetch Token Price").clicked() {
                 // We need to fetch the current pricing schedule from the contract
@@ -123,17 +123,19 @@ impl PurchaseTokenScreen {
                     SystemTime::now()
                         .duration_since(UNIX_EPOCH)
                         .expect("Time went backwards")
-                        .as_secs()
+                        .as_secs(),
                 );
                 action = AppAction::BackendTask(BackendTask::TokenTask(Box::new(
                     TokenTask::FetchTokenPricingSchedule {
-                        data_contract: Arc::new(self.identity_token_info.data_contract.contract.clone()),
+                        data_contract: Arc::new(
+                            self.identity_token_info.data_contract.contract.clone(),
+                        ),
                         token_position: self.identity_token_info.token_position,
-                    }
+                    },
                 )));
             }
         });
-        
+
         // Show fetched pricing schedule
         if let Some(pricing_schedule) = &self.fetched_pricing_schedule {
             ui.add_space(5.0);
@@ -150,15 +152,16 @@ impl PurchaseTokenScreen {
                 }
             }
         }
-        
+
         action
     }
-    
+
     /// Recalculates the total price based on amount and pricing schedule
     fn recalculate_price(&mut self) {
-        if let (Some(pricing_schedule), Ok(amount)) = 
-            (&self.fetched_pricing_schedule, self.amount_to_purchase.parse::<u64>()) {
-            
+        if let (Some(pricing_schedule), Ok(amount)) = (
+            &self.fetched_pricing_schedule,
+            self.amount_to_purchase.parse::<u64>(),
+        ) {
             let price_per_token = match pricing_schedule {
                 TokenPricingSchedule::SinglePrice(price) => *price,
                 TokenPricingSchedule::SetPrices(tiers) => {
@@ -172,7 +175,7 @@ impl PurchaseTokenScreen {
                     applicable_price
                 }
             };
-            
+
             let total_price = amount.saturating_mul(price_per_token);
             self.calculated_price = Some(total_price);
             self.total_agreed_price = total_price.to_string();
@@ -287,15 +290,17 @@ impl ScreenLike for PurchaseTokenScreen {
             } else {
                 // No pricing schedule found - token is not for sale
                 self.status = PurchaseTokensStatus::ErrorMessage(
-                    "This token is not available for direct purchase. No pricing has been set.".to_string()
+                    "This token is not available for direct purchase. No pricing has been set."
+                        .to_string(),
                 );
                 self.error_message = Some(
-                    "This token is not available for direct purchase. No pricing has been set.".to_string()
+                    "This token is not available for direct purchase. No pricing has been set."
+                        .to_string(),
                 );
             }
         }
     }
-    
+
     fn display_message(&mut self, message: &str, message_type: MessageType) {
         match message_type {
             MessageType::Success => {
@@ -450,7 +455,7 @@ impl ScreenLike for PurchaseTokenScreen {
                 action |= self.render_amount_input(ui);
 
                 ui.add_space(10.0);
-                
+
                 // Display calculated price
                 if let Some(calculated_price) = self.calculated_price {
                     ui.group(|ui| {
@@ -459,7 +464,10 @@ impl ScreenLike for PurchaseTokenScreen {
                         ui.label("Note: This is the calculated price based on the current pricing schedule.");
                     });
                 } else if self.fetched_pricing_schedule.is_some() {
-                    ui.colored_label(Color32::DARK_RED, "Please enter a valid amount to see the price.");
+                    ui.colored_label(
+                        Color32::DARK_RED,
+                        "Please enter a valid amount to see the price.",
+                    );
                 } else {
                     ui.label("Click 'Fetch Token Price' to retrieve current pricing.");
                 }
@@ -469,28 +477,32 @@ impl ScreenLike for PurchaseTokenScreen {
                 ui.add_space(10.0);
 
                 // Purchase button (disabled if no pricing is available)
-                let can_purchase = self.fetched_pricing_schedule.is_some() && self.calculated_price.is_some();
+                let can_purchase =
+                    self.fetched_pricing_schedule.is_some() && self.calculated_price.is_some();
                 let purchase_text = "Purchase".to_string();
-                
+
                 if can_purchase {
-                    let button = egui::Button::new(RichText::new(purchase_text).color(Color32::WHITE))
-                        .fill(Color32::from_rgb(0, 128, 255))
-                        .corner_radius(3.0);
+                    let button =
+                        egui::Button::new(RichText::new(purchase_text).color(Color32::WHITE))
+                            .fill(Color32::from_rgb(0, 128, 255))
+                            .corner_radius(3.0);
 
                     if ui.add(button).clicked() {
                         self.show_confirmation_popup = true;
                     }
                 } else {
-                    let button = egui::Button::new(RichText::new(purchase_text).color(Color32::GRAY))
-                        .fill(Color32::from_rgb(50, 50, 50))
-                        .corner_radius(3.0);
-                    
-                    ui.add_enabled(false, button)
-                        .on_hover_text(if self.pricing_fetch_attempted && self.fetched_pricing_schedule.is_none() {
+                    let button =
+                        egui::Button::new(RichText::new(purchase_text).color(Color32::GRAY))
+                            .fill(Color32::from_rgb(50, 50, 50))
+                            .corner_radius(3.0);
+
+                    ui.add_enabled(false, button).on_hover_text(
+                        if self.pricing_fetch_attempted && self.fetched_pricing_schedule.is_none() {
                             "This token is not available for purchase"
                         } else {
                             "Fetch token price and enter amount first"
-                        });
+                        },
+                    );
                 }
 
                 // If the user pressed "Purchase," show a popup

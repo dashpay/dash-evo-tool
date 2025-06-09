@@ -585,13 +585,11 @@ impl TokensScreen {
                             identity_opt
                                 .map(|identity| {
                                     use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-                                    // Get minimum price for one token
+                                    // Simple check: if pricing exists, just verify they have some credits
                                     if let Some(Some(_pricing)) =
                                         self.token_pricing_data.get(&itb.token_id)
                                     {
-                                        // For now, assume minimum price of 100 credits if pricing exists
-                                        // TODO: Extract actual minimum price from TokenPricingSchedule
-                                        identity.identity.balance() >= 100
+                                        identity.identity.balance() > 0
                                     } else {
                                         false
                                     }
@@ -626,7 +624,7 @@ impl TokensScreen {
                             false,
                             egui::Button::new(RichText::new("Purchase").color(egui::Color32::GRAY)),
                         )
-                        .on_hover_text("Insufficient credits for purchase");
+                        .on_hover_text("No credits available for purchase");
                     }
                 }
             }

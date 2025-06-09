@@ -5,6 +5,7 @@ use crate::context::AppContext;
 use crate::model::qualified_identity::IdentityType;
 use crate::model::wallet::Wallet;
 use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
 use crate::ui::{MessageType, ScreenLike};
@@ -125,7 +126,7 @@ impl AddExistingIdentityScreen {
         egui::Grid::new("add_existing_identity_grid")
             .num_columns(2)
             .spacing([10.0, 10.0])
-            .striped(true)
+            .striped(false)
             .show(ui, |ui| {
                 ui.label("Identity ID / ProTxHash (Hex or Base58):");
                 ui.text_edit_singleline(&mut self.identity_id_input);
@@ -511,57 +512,65 @@ impl ScreenLike for AddExistingIdentityScreen {
             crate::ui::RootScreenType::RootScreenIdentities,
         );
 
-        egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("Load Existing Identity");
-            ui.add_space(10.0);
+        action |= island_central_panel(ctx, |ui| {
+            let mut inner_action = AppAction::None;
 
-            if self.add_identity_status == AddIdentityStatus::Complete {
-                action |= self.show_success(ui);
-                return;
-            }
+            egui::ScrollArea::vertical()
+                .auto_shrink([false; 2])
+                .show(ui, |ui| {
+                    ui.heading("Load Existing Identity");
+                    ui.add_space(10.0);
 
-            action |= self.render_by_identity(ui);
+                    if self.add_identity_status == AddIdentityStatus::Complete {
+                        inner_action |= self.show_success(ui);
+                        return;
+                    }
 
-            ui.add_space(10.0);
+                    inner_action |= self.render_by_identity(ui);
 
-            match &self.add_identity_status {
-                AddIdentityStatus::NotStarted => {
-                    // Do nothing
-                }
-                AddIdentityStatus::WaitingForResult(start_time) => {
-                    let now = SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .expect("Time went backwards")
-                        .as_secs();
-                    let elapsed_seconds = now - start_time;
+                    ui.add_space(10.0);
 
-                    let display_time = if elapsed_seconds < 60 {
-                        format!(
-                            "{} second{}",
-                            elapsed_seconds,
-                            if elapsed_seconds == 1 { "" } else { "s" }
-                        )
-                    } else {
-                        let minutes = elapsed_seconds / 60;
-                        let seconds = elapsed_seconds % 60;
-                        format!(
-                            "{} minute{} and {} second{}",
-                            minutes,
-                            if minutes == 1 { "" } else { "s" },
-                            seconds,
-                            if seconds == 1 { "" } else { "s" }
-                        )
-                    };
+                    match &self.add_identity_status {
+                        AddIdentityStatus::NotStarted => {
+                            // Do nothing
+                        }
+                        AddIdentityStatus::WaitingForResult(start_time) => {
+                            let now = SystemTime::now()
+                                .duration_since(UNIX_EPOCH)
+                                .expect("Time went backwards")
+                                .as_secs();
+                            let elapsed_seconds = now - start_time;
 
-                    ui.label(format!("Loading... Time taken so far: {}", display_time));
-                }
-                AddIdentityStatus::ErrorMessage(msg) => {
-                    ui.colored_label(egui::Color32::DARK_RED, format!("Error: {}", msg));
-                }
-                AddIdentityStatus::Complete => {
-                    // handled above
-                }
-            }
+                            let display_time = if elapsed_seconds < 60 {
+                                format!(
+                                    "{} second{}",
+                                    elapsed_seconds,
+                                    if elapsed_seconds == 1 { "" } else { "s" }
+                                )
+                            } else {
+                                let minutes = elapsed_seconds / 60;
+                                let seconds = elapsed_seconds % 60;
+                                format!(
+                                    "{} minute{} and {} second{}",
+                                    minutes,
+                                    if minutes == 1 { "" } else { "s" },
+                                    seconds,
+                                    if seconds == 1 { "" } else { "s" }
+                                )
+                            };
+
+                            ui.label(format!("Loading... Time taken so far: {}", display_time));
+                        }
+                        AddIdentityStatus::ErrorMessage(msg) => {
+                            ui.colored_label(egui::Color32::DARK_RED, format!("Error: {}", msg));
+                        }
+                        AddIdentityStatus::Complete => {
+                            // handled above
+                        }
+                    }
+                });
+
+            inner_action
         });
 
         // Show the popup window if `show_popup` is true

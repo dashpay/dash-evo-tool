@@ -5,6 +5,7 @@ use crate::backend_task::BackendTask;
 use crate::context::AppContext;
 use crate::model::wallet::Wallet;
 use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
@@ -446,7 +447,7 @@ impl ScreenLike for SetTokenPriceScreen {
         // Subscreen chooser
         action |= add_tokens_subscreen_chooser_panel(ctx, &self.app_context);
 
-        egui::CentralPanel::default().show(ctx, |ui| {
+        island_central_panel(ctx, |ui| {
             // If we are in the "Complete" status, just show success screen
             if self.status == SetTokenPriceStatus::Complete {
                 action |= self.show_success_screen(ui);
@@ -458,9 +459,18 @@ impl ScreenLike for SetTokenPriceScreen {
 
             // Check if user has any auth keys
             let has_keys = if self.app_context.developer_mode.load(Ordering::Relaxed) {
-                !self.identity_token_info.identity.identity.public_keys().is_empty()
+                !self
+                    .identity_token_info
+                    .identity
+                    .identity
+                    .public_keys()
+                    .is_empty()
             } else {
-                !self.identity_token_info.identity.available_authentication_keys_with_critical_security_level().is_empty()
+                !self
+                    .identity_token_info
+                    .identity
+                    .available_authentication_keys_with_critical_security_level()
+                    .is_empty()
             };
 
             if !has_keys {
@@ -474,14 +484,16 @@ impl ScreenLike for SetTokenPriceScreen {
                 ui.add_space(10.0);
 
                 // Show "Add key" or "Check keys" option
-                let first_key = self.identity_token_info.identity.identity.get_first_public_key_matching(
-                    Purpose::AUTHENTICATION,
-                    HashSet::from([
-                        SecurityLevel::CRITICAL,
-                    ]),
-                    KeyType::all_key_types().into(),
-                    false,
-                );
+                let first_key = self
+                    .identity_token_info
+                    .identity
+                    .identity
+                    .get_first_public_key_matching(
+                        Purpose::AUTHENTICATION,
+                        HashSet::from([SecurityLevel::CRITICAL]),
+                        KeyType::all_key_types().into(),
+                        false,
+                    );
 
                 if let Some(key) = first_key {
                     if ui.button("Check Keys").clicked() {
@@ -533,15 +545,12 @@ impl ScreenLike for SetTokenPriceScreen {
                 // 2) Pricing schedule
                 ui.heading("2. Pricing schedule");
                 ui.add_space(5.0);
-                                if self.group_action_id.is_some() {
+                if self.group_action_id.is_some() {
                     ui.label(
                         "You are signing an existing group SetPrice so you are not allowed to choose the pricing schedule.",
                     );
                     ui.add_space(5.0);
-                    ui.label(format!(
-                        "Schedule: {}",
-                        self.token_pricing_schedule
-                    ));
+                    ui.label(format!("Schedule: {}", self.token_pricing_schedule));
                 } else {
                     self.render_pricing_input(ui);
                 }
@@ -574,28 +583,35 @@ impl ScreenLike for SetTokenPriceScreen {
                             )
                             .changed()
                         {
-                            self.public_note = if !txt.is_empty() {
-                                Some(txt)
-                            } else {
-                                None
-                            };
+                            self.public_note = if !txt.is_empty() { Some(txt) } else { None };
                         }
                     });
                 }
 
                 let set_price_text = if let Some((_, group)) = self.group.as_ref() {
-                    let your_power = group.members().get(&self.identity_token_info.identity.identity.id());
+                    let your_power = group
+                        .members()
+                        .get(&self.identity_token_info.identity.identity.id());
                     if your_power.is_none() {
-                        self.error_message = Some("Only group members can set price on this token".to_string());
+                        self.error_message =
+                            Some("Only group members can set price on this token".to_string());
                     }
                     ui.heading("This is a group action, it is not immediate.");
-                    ui.label(format!("Members are : \n{}", group.members().iter().map(|(member, power)| {
-                        if member == &self.identity_token_info.identity.identity.id() {
-                            format!("{} (You) with power {}", member, power)
-                        } else {
-                            format!("{} with power {}", member, power)
-                        }
-                    }).collect::<Vec<_>>().join(", \n")));
+                    ui.label(format!(
+                        "Members are : \n{}",
+                        group
+                            .members()
+                            .iter()
+                            .map(|(member, power)| {
+                                if member == &self.identity_token_info.identity.identity.id() {
+                                    format!("{} (You) with power {}", member, power)
+                                } else {
+                                    format!("{} with power {}", member, power)
+                                }
+                            })
+                            .collect::<Vec<_>>()
+                            .join(", \n")
+                    ));
                     ui.add_space(10.0);
                     if let Some(your_power) = your_power {
                         if *your_power >= group.required_power() {

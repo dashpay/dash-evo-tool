@@ -4,13 +4,14 @@ use crate::backend_task::BackendTask;
 use crate::context::AppContext;
 use crate::model::wallet::Wallet;
 use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::{MessageType, RootScreenType, ScreenLike, ScreenType};
 use chrono::{DateTime, Utc};
 use dash_sdk::dashcore_rpc::dashcore::{Address, Network};
 use dash_sdk::dpp::dashcore::bip32::{ChildNumber, DerivationPath};
 use eframe::egui::{self, ComboBox, Context, Ui};
-use egui::{Frame, Margin, RichText};
+use egui::{Color32, Frame, Margin, RichText};
 use egui_extras::{Column, TableBuilder};
 use std::collections::HashSet;
 use std::sync::atomic::Ordering;
@@ -385,162 +386,144 @@ impl WalletsBalancesScreen {
         // Sort the data
         self.sort_address_data(&mut address_data);
 
-        let mut allocated_space = if self.message.is_some() { 100.0 } else { 50.0 }; // Space for the message and "Add receiving address" button
-        if self.selected_filters.contains("Unused Asset Locks") {
-            if let Some(wallet) = &self.selected_wallet {
-                let wallet = wallet.read().unwrap();
-
-                if wallet.unused_asset_locks.is_empty() {
-                    allocated_space += 50.0;
-                } else {
-                    for _ in &wallet.unused_asset_locks {
-                        allocated_space += 20.0;
-                    }
-                }
-            }
-        }
+        // Space allocation for UI elements is handled by the layout system
 
         // Render the table
-        egui::ScrollArea::vertical()
-            .max_height(ui.available_height() - allocated_space)
+        egui::ScrollArea::both()
             .id_salt("address_table")
             .show(ui, |ui| {
-                egui::Frame::group(ui.style())
-                    .fill(ui.visuals().panel_fill)
-                    .show(ui, |ui| {
-                        TableBuilder::new(ui)
-                            .striped(true)
-                            .resizable(true)
-                            .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                            .column(Column::auto()) // Address
-                            .column(Column::initial(100.0)) // Balance
-                            .column(Column::initial(60.0)) // UTXOs
-                            .column(Column::initial(150.0)) // Total Received
-                            .column(Column::initial(100.0)) // Type
-                            .column(Column::initial(60.0)) // Index
-                            .column(Column::remainder()) // Derivation Path
-                            .header(30.0, |mut header| {
-                                header.col(|ui| {
-                                    let label = if self.sort_column == SortColumn::Address {
-                                        match self.sort_order {
-                                            SortOrder::Ascending => "Address ^",
-                                            SortOrder::Descending => "Address v",
-                                        }
-                                    } else {
-                                        "Address"
-                                    };
-                                    if ui.button(label).clicked() {
-                                        self.toggle_sort(SortColumn::Address);
-                                    }
-                                });
-                                header.col(|ui| {
-                                    let label = if self.sort_column == SortColumn::Balance {
-                                        match self.sort_order {
-                                            SortOrder::Ascending => "Total Received (DASH) ^",
-                                            SortOrder::Descending => "Total Received (DASH) v",
-                                        }
-                                    } else {
-                                        "Total Received (DASH)"
-                                    };
-                                    if ui.button(label).clicked() {
-                                        self.toggle_sort(SortColumn::Balance);
-                                    }
-                                });
-                                header.col(|ui| {
-                                    let label = if self.sort_column == SortColumn::UTXOs {
-                                        match self.sort_order {
-                                            SortOrder::Ascending => "UTXOs ^",
-                                            SortOrder::Descending => "UTXOs v",
-                                        }
-                                    } else {
-                                        "UTXOs"
-                                    };
-                                    if ui.button(label).clicked() {
-                                        self.toggle_sort(SortColumn::UTXOs);
-                                    }
-                                });
-                                header.col(|ui| {
-                                    let label = if self.sort_column == SortColumn::TotalReceived {
-                                        match self.sort_order {
-                                            SortOrder::Ascending => "Balance (DASH) ^",
-                                            SortOrder::Descending => "Balance (DASH) v",
-                                        }
-                                    } else {
-                                        "Balance (DASH)"
-                                    };
-                                    if ui.button(label).clicked() {
-                                        self.toggle_sort(SortColumn::TotalReceived);
-                                    }
-                                });
-                                header.col(|ui| {
-                                    let label = if self.sort_column == SortColumn::Type {
-                                        match self.sort_order {
-                                            SortOrder::Ascending => "Type ^",
-                                            SortOrder::Descending => "Type v",
-                                        }
-                                    } else {
-                                        "Type"
-                                    };
-                                    if ui.button(label).clicked() {
-                                        self.toggle_sort(SortColumn::Type);
-                                    }
-                                });
-                                header.col(|ui| {
-                                    let label = if self.sort_column == SortColumn::Index {
-                                        match self.sort_order {
-                                            SortOrder::Ascending => "Index ^",
-                                            SortOrder::Descending => "Index v",
-                                        }
-                                    } else {
-                                        "Index"
-                                    };
-                                    if ui.button(label).clicked() {
-                                        self.toggle_sort(SortColumn::Index);
-                                    }
-                                });
-                                header.col(|ui| {
-                                    let label = if self.sort_column == SortColumn::DerivationPath {
-                                        match self.sort_order {
-                                            SortOrder::Ascending => "Full Path ^",
-                                            SortOrder::Descending => "Full Path v",
-                                        }
-                                    } else {
-                                        "Full Path"
-                                    };
-                                    if ui.button(label).clicked() {
-                                        self.toggle_sort(SortColumn::DerivationPath);
-                                    }
-                                });
-                            })
-                            .body(|mut body| {
-                                for data in &address_data {
-                                    body.row(25.0, |mut row| {
-                                        row.col(|ui| {
-                                            ui.label(data.address.to_string());
-                                        });
-                                        row.col(|ui| {
-                                            let dash_balance = data.balance as f64 * 1e-8;
-                                            ui.label(format!("{:.8}", dash_balance));
-                                        });
-                                        row.col(|ui| {
-                                            ui.label(format!("{}", data.utxo_count));
-                                        });
-                                        row.col(|ui| {
-                                            let dash_received = data.total_received as f64 * 1e-8;
-                                            ui.label(format!("{:.8}", dash_received));
-                                        });
-                                        row.col(|ui| {
-                                            ui.label(&data.address_type);
-                                        });
-                                        row.col(|ui| {
-                                            ui.label(format!("{}", data.index));
-                                        });
-                                        row.col(|ui| {
-                                            ui.label(format!("{}", data.derivation_path));
-                                        });
-                                    });
+                TableBuilder::new(ui)
+                    .striped(false)
+                    .resizable(true)
+                    .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                    .column(Column::auto()) // Address
+                    .column(Column::initial(100.0)) // Balance
+                    .column(Column::initial(60.0)) // UTXOs
+                    .column(Column::initial(150.0)) // Total Received
+                    .column(Column::initial(100.0)) // Type
+                    .column(Column::initial(60.0)) // Index
+                    .column(Column::remainder()) // Derivation Path
+                    .header(30.0, |mut header| {
+                        header.col(|ui| {
+                            let label = if self.sort_column == SortColumn::Address {
+                                match self.sort_order {
+                                    SortOrder::Ascending => "Address ^",
+                                    SortOrder::Descending => "Address v",
                                 }
+                            } else {
+                                "Address"
+                            };
+                            if ui.button(label).clicked() {
+                                self.toggle_sort(SortColumn::Address);
+                            }
+                        });
+                        header.col(|ui| {
+                            let label = if self.sort_column == SortColumn::Balance {
+                                match self.sort_order {
+                                    SortOrder::Ascending => "Total Received (DASH) ^",
+                                    SortOrder::Descending => "Total Received (DASH) v",
+                                }
+                            } else {
+                                "Total Received (DASH)"
+                            };
+                            if ui.button(label).clicked() {
+                                self.toggle_sort(SortColumn::Balance);
+                            }
+                        });
+                        header.col(|ui| {
+                            let label = if self.sort_column == SortColumn::UTXOs {
+                                match self.sort_order {
+                                    SortOrder::Ascending => "UTXOs ^",
+                                    SortOrder::Descending => "UTXOs v",
+                                }
+                            } else {
+                                "UTXOs"
+                            };
+                            if ui.button(label).clicked() {
+                                self.toggle_sort(SortColumn::UTXOs);
+                            }
+                        });
+                        header.col(|ui| {
+                            let label = if self.sort_column == SortColumn::TotalReceived {
+                                match self.sort_order {
+                                    SortOrder::Ascending => "Balance (DASH) ^",
+                                    SortOrder::Descending => "Balance (DASH) v",
+                                }
+                            } else {
+                                "Balance (DASH)"
+                            };
+                            if ui.button(label).clicked() {
+                                self.toggle_sort(SortColumn::TotalReceived);
+                            }
+                        });
+                        header.col(|ui| {
+                            let label = if self.sort_column == SortColumn::Type {
+                                match self.sort_order {
+                                    SortOrder::Ascending => "Type ^",
+                                    SortOrder::Descending => "Type v",
+                                }
+                            } else {
+                                "Type"
+                            };
+                            if ui.button(label).clicked() {
+                                self.toggle_sort(SortColumn::Type);
+                            }
+                        });
+                        header.col(|ui| {
+                            let label = if self.sort_column == SortColumn::Index {
+                                match self.sort_order {
+                                    SortOrder::Ascending => "Index ^",
+                                    SortOrder::Descending => "Index v",
+                                }
+                            } else {
+                                "Index"
+                            };
+                            if ui.button(label).clicked() {
+                                self.toggle_sort(SortColumn::Index);
+                            }
+                        });
+                        header.col(|ui| {
+                            let label = if self.sort_column == SortColumn::DerivationPath {
+                                match self.sort_order {
+                                    SortOrder::Ascending => "Full Path ^",
+                                    SortOrder::Descending => "Full Path v",
+                                }
+                            } else {
+                                "Full Path"
+                            };
+                            if ui.button(label).clicked() {
+                                self.toggle_sort(SortColumn::DerivationPath);
+                            }
+                        });
+                    })
+                    .body(|mut body| {
+                        for data in &address_data {
+                            body.row(25.0, |mut row| {
+                                row.col(|ui| {
+                                    ui.label(data.address.to_string());
+                                });
+                                row.col(|ui| {
+                                    let dash_balance = data.balance as f64 * 1e-8;
+                                    ui.label(format!("{:.8}", dash_balance));
+                                });
+                                row.col(|ui| {
+                                    ui.label(format!("{}", data.utxo_count));
+                                });
+                                row.col(|ui| {
+                                    let dash_received = data.total_received as f64 * 1e-8;
+                                    ui.label(format!("{:.8}", dash_received));
+                                });
+                                row.col(|ui| {
+                                    ui.label(&data.address_type);
+                                });
+                                row.col(|ui| {
+                                    ui.label(format!("{}", data.index));
+                                });
+                                row.col(|ui| {
+                                    ui.label(format!("{}", data.derivation_path));
+                                });
                             });
+                        }
                     });
             });
         action
@@ -572,11 +555,11 @@ impl WalletsBalancesScreen {
             }
 
             ui.label("Asset Locks:");
-            egui::ScrollArea::vertical()
+            egui::ScrollArea::both()
                 .id_salt("asset_locks_table")
                 .show(ui, |ui| {
                     TableBuilder::new(ui)
-                        .striped(true)
+                        .striped(false)
                         .resizable(true)
                         .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
                         .column(Column::initial(200.0)) // Transaction ID
@@ -642,7 +625,12 @@ impl WalletsBalancesScreen {
                 ui.vertical_centered(|ui| {
                     // Heading
                     ui.add_space(5.0);
-                    ui.label(RichText::new("No Wallets Loaded").strong().size(25.0));
+                    ui.label(
+                        RichText::new("No Wallets Loaded")
+                            .strong()
+                            .size(25.0)
+                            .color(Color32::BLACK),
+                    );
 
                     // A separator line for visual clarity
                     ui.add_space(5.0);
@@ -655,7 +643,12 @@ impl WalletsBalancesScreen {
                     ui.add_space(10.0);
 
                     // Subheading or emphasis
-                    ui.heading(RichText::new("Here’s what you can do:").strong().size(18.0));
+                    ui.heading(
+                        RichText::new("Here’s what you can do:")
+                            .strong()
+                            .size(18.0)
+                            .color(Color32::BLACK),
+                    );
                     ui.add_space(5.0);
 
                     // Bullet points
@@ -759,10 +752,11 @@ impl ScreenLike for WalletsBalancesScreen {
             RootScreenType::RootScreenWalletsBalances,
         );
 
-        egui::CentralPanel::default().show(ctx, |ui| {
+        action |= island_central_panel(ctx, |ui| {
+            let mut inner_action = AppAction::None;
             if self.app_context.wallets.read().unwrap().is_empty() {
                 self.render_no_wallets_view(ui);
-                return;
+                return inner_action;
             }
 
             ui.add_space(10.0);
@@ -778,14 +772,14 @@ impl ScreenLike for WalletsBalancesScreen {
                 if !(self.selected_filters.contains("Unused Asset Locks")
                     && self.selected_filters.len() == 1)
                 {
-                    action |= self.render_address_table(ui);
+                    inner_action |= self.render_address_table(ui);
                 }
 
                 ui.add_space(20.0);
 
                 if self.selected_filters.contains("Unused Asset Locks") {
                     // Render the asset locks section
-                    action |= self.render_wallet_asset_locks(ui);
+                    inner_action |= self.render_wallet_asset_locks(ui);
                     ui.add_space(10.0);
                 }
 
@@ -821,6 +815,7 @@ impl ScreenLike for WalletsBalancesScreen {
                 });
                 ui.add_space(10.0);
             }
+            inner_action
         });
 
         if let AppAction::BackendTask(BackendTask::CoreTask(CoreTask::RefreshWalletInfo(_))) =

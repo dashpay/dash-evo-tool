@@ -5,6 +5,7 @@ use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
 use crate::ui::{MessageType, Screen, ScreenLike};
@@ -269,11 +270,13 @@ impl ScreenLike for TransferScreen {
             crate::ui::RootScreenType::RootScreenIdentities,
         );
 
-        egui::CentralPanel::default().show(ctx, |ui| {
+        action |= island_central_panel(ctx, |ui| {
+            let mut inner_action = AppAction::None;
+
             // Show the success screen if the transfer was successful
             if self.transfer_credits_status == TransferCreditsStatus::Complete {
-                action |= self.show_success(ui);
-                return;
+                inner_action |= self.show_success(ui);
+                return inner_action;
             }
 
             ui.heading("Transfer Funds");
@@ -304,18 +307,19 @@ impl ScreenLike for TransferScreen {
 
                 if let Some(key) = key {
                     if ui.button("Check Transfer Key").clicked() {
-                        action |= AppAction::AddScreen(Screen::KeyInfoScreen(KeyInfoScreen::new(
-                            self.identity.clone(),
-                            key.clone(),
-                            None,
-                            &self.app_context,
-                        )));
+                        inner_action |=
+                            AppAction::AddScreen(Screen::KeyInfoScreen(KeyInfoScreen::new(
+                                self.identity.clone(),
+                                key.clone(),
+                                None,
+                                &self.app_context,
+                            )));
                     }
                     ui.add_space(5.0);
                 }
 
                 if ui.button("Add key").clicked() {
-                    action |= AppAction::AddScreen(Screen::AddKeyScreen(AddKeyScreen::new(
+                    inner_action |= AppAction::AddScreen(Screen::AddKeyScreen(AddKeyScreen::new(
                         self.identity.clone(),
                         &self.app_context,
                     )));
@@ -325,7 +329,7 @@ impl ScreenLike for TransferScreen {
                     let (needed_unlock, just_unlocked) = self.render_wallet_unlock_if_needed(ui);
 
                     if needed_unlock && !just_unlocked {
-                        return;
+                        return inner_action;
                     }
                 }
 
@@ -378,7 +382,7 @@ impl ScreenLike for TransferScreen {
                 }
 
                 if self.confirmation_popup {
-                    action |= self.show_confirmation_popup(ui);
+                    inner_action |= self.show_confirmation_popup(ui);
                 }
 
                 // Handle transfer status messages
@@ -425,6 +429,8 @@ impl ScreenLike for TransferScreen {
                     }
                 }
             }
+
+            inner_action
         });
         action
     }

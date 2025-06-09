@@ -63,6 +63,7 @@ pub mod dpns;
 pub mod helpers;
 pub(crate) mod identities;
 pub mod network_chooser_screen;
+pub mod theme;
 pub mod tokens;
 pub mod tools;
 pub(crate) mod wallets;

@@ -2,6 +2,8 @@ pub mod contract_chooser_panel;
 pub mod dpns_subscreen_chooser_panel;
 pub mod entropy_grid;
 pub mod left_panel;
+pub mod left_wallet_panel;
+pub mod styled;
 pub mod tokens_subscreen_chooser_panel;
 pub mod tools_subscreen_chooser_panel;
 pub mod top_panel;

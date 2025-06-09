@@ -1,5 +1,7 @@
 use crate::app::AppAction;
 use crate::context::AppContext;
+use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::ScreenLike;
 use eframe::egui::Context;
@@ -156,24 +158,25 @@ impl ImportWalletScreen {
             self.seed_phrase_words
                 .resize(self.selected_seed_phrase_length, "".to_string());
 
-            // Seed phrase input grid
-            let available_width = ui.available_width();
-            let columns = 4; // Adjust the number of columns as needed
+            // Seed phrase input grid with shorter inputs
+            let columns = 4; // 4 columns
             let _rows = self.selected_seed_phrase_length.div_ceil(columns);
-            let column_width = available_width / columns as f32;
+            let input_width = 120.0; // Fixed width for each input
 
             Grid::new("seed_phrase_input_grid")
                 .num_columns(columns)
-                .spacing((10.0, 10.0))
-                .min_col_width(column_width)
+                .spacing((15.0, 10.0))
                 .show(ui, |ui| {
                     for i in 0..self.selected_seed_phrase_length {
                         ui.horizontal(|ui| {
-                            ui.label(format!("{}:", i + 1));
+                            ui.label(format!("{:2}:", i + 1));
 
                             let mut word = self.seed_phrase_words[i].clone();
 
-                            let response = ui.text_edit_singleline(&mut word);
+                            let response = ui.add_sized(
+                                Vec2::new(input_width, 20.0),
+                                egui::TextEdit::singleline(&mut word),
+                            );
 
                             if response.changed() {
                                 // Update the seed_phrase_words[i]
@@ -221,9 +224,17 @@ impl ScreenLike for ImportWalletScreen {
             vec![],
         );
 
-        egui::CentralPanel::default().show(ctx, |ui| {
-            // Add the scroll area to make the content scrollable
-            egui::ScrollArea::vertical()
+        action |= add_left_panel(
+            ctx,
+            &self.app_context,
+            crate::ui::RootScreenType::RootScreenWalletsBalances,
+        );
+
+        action |= island_central_panel(ctx, |ui| {
+            let mut inner_action = AppAction::None;
+
+            // Add the scroll area to make the content scrollable both vertically and horizontally
+            egui::ScrollArea::both()
                 .auto_shrink([false; 2]) // Prevent shrinking when content is less than the available area
                 .show(ui, |ui| {
                     ui.add_space(10.0);
@@ -343,7 +354,7 @@ impl ScreenLike for ImportWalletScreen {
                         if ui.add(save_button).clicked() {
                             match self.save_wallet() {
                                 Ok(save_wallet_action) => {
-                                    action = save_wallet_action;
+                                    inner_action = save_wallet_action;
                                 }
                                 Err(e) => {
                                     self.error = Some(e)
@@ -352,6 +363,8 @@ impl ScreenLike for ImportWalletScreen {
                         }
                     });
                 });
+
+            inner_action
         });
 
         // Display error popup if there's an error

@@ -1,10 +1,13 @@
-use crate::ui::theme::{DashColors, Shadow, Shape, Spacing, Typography};
-use egui::{
-    Button, CentralPanel, Color32, Context, Frame, Id, Margin, Response, RichText, Stroke,
-    TextEdit, Ui, Vec2, ViewportId,
-};
+use std::sync::Arc;
 
-const ANIMATION_REFRESH_TIME: std::time::Duration = std::time::Duration::from_millis(100);
+use crate::{
+    context::AppContext,
+    ui::theme::{DashColors, Shadow, Shape, Spacing, Typography},
+};
+use egui::{
+    Button, CentralPanel, Color32, Context, Frame, Margin, Response, RichText, Stroke, TextEdit,
+    Ui, Vec2,
+};
 
 /// Styled button variants
 #[allow(dead_code)]
@@ -211,14 +214,16 @@ pub(crate) struct GradientButton {
     text: String,
     min_width: Option<f32>,
     glow: bool,
+    app_context: Arc<AppContext>,
 }
 
 impl GradientButton {
-    pub fn new(text: impl Into<String>) -> Self {
+    pub fn new(text: impl Into<String>, app_context: &Arc<AppContext>) -> Self {
         Self {
             text: text.into(),
             min_width: None,
             glow: false,
+            app_context: Arc::clone(app_context),
         }
     }
 
@@ -252,7 +257,7 @@ impl GradientButton {
         let response = ui.add(button);
 
         // Request repaint for animation
-        repaint_animation(ui.ctx(), response.id);
+        self.app_context.repaint_animation(ui.ctx());
 
         response
     }
@@ -297,10 +302,4 @@ pub fn island_central_panel<R>(ctx: &Context, content: impl FnOnce(&mut Ui) -> R
                 .inner
         })
         .inner
-}
-
-/// Repaint animated object
-fn repaint_animation(ctx: &Context, id: Id) {
-    // Request repaint for animations
-    ctx.request_repaint_after_for(ANIMATION_REFRESH_TIME, ViewportId(id));
 }

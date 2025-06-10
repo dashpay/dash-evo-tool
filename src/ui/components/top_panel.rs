@@ -136,7 +136,7 @@ fn add_connection_indicator(ui: &mut Ui, app_context: &Arc<AppContext>) -> AppAc
 
         // Request repaint for animation (only when connected and pulsating)
         if connected {
-            ui.ctx().request_repaint();
+            app_context.repaint_animation(ui.ctx());
         }
         let tip = if connected {
             "Connected to Dash Core Wallet"

@@ -120,7 +120,7 @@ pub fn add_left_panel(
                             } else {
                                 // Fallback to a modern gradient button if texture loading fails
                                 if is_selected {
-                                    if GradientButton::new(*label)
+                                    if GradientButton::new(*label, app_context)
                                         .min_width(60.0)
                                         .glow()
                                         .show(ui)

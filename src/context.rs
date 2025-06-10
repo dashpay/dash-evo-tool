@@ -34,10 +34,13 @@ use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::platform::{DataContract, Identifier};
 use dash_sdk::query_types::IndexMap;
 use dash_sdk::Sdk;
+use egui::Context;
 use rusqlite::Result;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
+
+const ANIMATION_REFRESH_TIME: std::time::Duration = std::time::Duration::from_millis(100);
 
 #[derive(Debug)]
 pub struct AppContext {
@@ -61,6 +64,11 @@ pub struct AppContext {
     #[allow(dead_code)] // May be used for password validation
     pub(crate) password_info: Option<PasswordInfo>,
     pub(crate) transactions_waiting_for_finality: Mutex<BTreeMap<Txid, Option<AssetLockProof>>>,
+    /// Whether to animate the UI elements.
+    ///
+    /// This is used to control animations in the UI, such as loading spinners or transitions.
+    /// Disable for automated tests.
+    pub(crate) animate: bool,
 }
 
 impl AppContext {
@@ -155,12 +163,28 @@ impl AppContext {
             password_info,
             transactions_waiting_for_finality: Mutex::new(BTreeMap::new()),
             zmq_connection_status: Mutex::new(ZMQConnectionEvent::Disconnected),
+            animate: true, // Default to true for animations
         };
 
         let app_context = Arc::new(app_context);
         provider.bind_app_context(app_context.clone());
 
         Some(app_context)
+    }
+
+    pub fn with_animate(mut self, animate: bool) -> Self {
+        self.animate = animate;
+        self
+    }
+
+    /// Repaints the UI if animations are enabled.
+    ///
+    /// Called by UI elements that need to trigger a repaint, such as loading spinners or animated icons.
+    pub(super) fn repaint_animation(&self, ctx: &Context) {
+        if self.animate {
+            ctx.request_repaint();
+        }
+        ctx.request_repaint_after(ANIMATION_REFRESH_TIME);
     }
 
     pub fn platform_version(&self) -> &'static PlatformVersion {

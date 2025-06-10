@@ -180,21 +180,50 @@ impl WalletsBalancesScreen {
     }
 
     fn render_filter_selector(&mut self, ui: &mut Ui) {
-        ui.horizontal(|ui| {
-            let filter_options = ["Funds", "Identity Creation", "System", "Unused Asset Locks"];
+        let filter_options = [
+            ("Funds", "Show receiving and change addresses"),
+            (
+                "Identity Creation",
+                "Show addresses used for identity creation",
+            ),
+            ("System", "Show system-related addresses"),
+            (
+                "Unused Asset Locks",
+                "Show available asset locks for identity creation",
+            ),
+        ];
 
-            for filter_option in &filter_options {
+        // Single row layout
+        ui.horizontal(|ui| {
+            for (filter_option, description) in filter_options.iter() {
                 let is_selected = self.selected_filters.contains(*filter_option);
 
-                // Create RichText with a larger font size
-                let text = egui::RichText::new(*filter_option).size(14.0);
+                // Create a button with distinct styling
+                let button = if is_selected {
+                    egui::Button::new(
+                        RichText::new(*filter_option)
+                            .color(Color32::WHITE)
+                            .size(11.0),
+                    )
+                    .fill(egui::Color32::from_rgb(0, 128, 255))
+                    .stroke(egui::Stroke::NONE)
+                    .corner_radius(4.0)
+                } else {
+                    egui::Button::new(
+                        RichText::new(*filter_option)
+                            .color(Color32::BLACK)
+                            .size(11.0),
+                    )
+                    .fill(egui::Color32::WHITE)
+                    .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(200)))
+                    .corner_radius(4.0)
+                };
 
-                let button = egui::SelectableLabel::new(is_selected, text);
-
-                // Set the desired button size
-                let button_size = egui::Vec2::new(100.0, 30.0);
-
-                if ui.add_sized(button_size, button).clicked() {
+                if ui
+                    .add(button)
+                    .on_hover_text(format!("{} (Shift+click for multiple)", description))
+                    .clicked()
+                {
                     let shift_held = ui.input(|i| i.modifiers.shift_only());
 
                     if shift_held {
@@ -215,30 +244,41 @@ impl WalletsBalancesScreen {
     }
 
     fn render_wallet_selection(&mut self, ui: &mut Ui) {
-        ui.horizontal(|ui| {
-            if self.app_context.has_wallet.load(Ordering::Relaxed) {
-                let wallets = &self.app_context.wallets.read().unwrap();
-                let wallet_aliases: Vec<String> = wallets
-                    .values()
-                    .map(|wallet| {
-                        wallet
-                            .read()
-                            .unwrap()
-                            .alias
-                            .clone()
-                            .unwrap_or_else(|| "Unnamed Wallet".to_string())
-                    })
-                    .collect();
+        if self.app_context.has_wallet.load(Ordering::Relaxed) {
+            let wallets = &self.app_context.wallets.read().unwrap();
+            let wallet_aliases: Vec<String> = wallets
+                .values()
+                .map(|wallet| {
+                    wallet
+                        .read()
+                        .unwrap()
+                        .alias
+                        .clone()
+                        .unwrap_or_else(|| "Unnamed Wallet".to_string())
+                })
+                .collect();
 
-                let selected_wallet_alias = self
-                    .selected_wallet
-                    .as_ref()
-                    .and_then(|wallet| wallet.read().ok()?.alias.clone())
-                    .unwrap_or_else(|| "Select".to_string());
+            let selected_wallet_alias = self
+                .selected_wallet
+                .as_ref()
+                .and_then(|wallet| wallet.read().ok()?.alias.clone())
+                .unwrap_or_else(|| "Select a wallet".to_string());
+
+            ui.heading(RichText::new("Wallet Information").color(Color32::BLACK));
+            ui.add_space(10.0);
+
+            // First row: Wallet selection and balance
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new("Active Wallet:")
+                        .strong()
+                        .color(Color32::BLACK),
+                );
 
                 // Display the ComboBox for wallet selection
                 ComboBox::from_label("")
                     .selected_text(selected_wallet_alias.clone())
+                    .width(200.0)
                     .show_ui(ui, |ui| {
                         for (idx, wallet) in wallets.values().enumerate() {
                             let wallet_alias = wallet_aliases[idx].clone();
@@ -257,52 +297,59 @@ impl WalletsBalancesScreen {
                             }
                         }
                     });
+            });
 
-                ui.add_space(20.0);
+            // Second row: Rename wallet
+            if let Some(selected_wallet) = &self.selected_wallet {
+                ui.add_space(5.0);
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Wallet Name:").strong().color(Color32::BLACK));
 
-                // Text input for renaming the wallet
-                if let Some(selected_wallet) = &self.selected_wallet {
-                    {
-                        let mut wallet = selected_wallet.write().unwrap();
-                        let mut alias = wallet.alias.clone().unwrap_or_default();
+                    let mut wallet = selected_wallet.write().unwrap();
+                    let mut alias = wallet.alias.clone().unwrap_or_default();
 
-                        // Limit the alias length to 64 characters
-                        if alias.len() > 64 {
-                            alias.truncate(64);
-                        }
-
-                        // Render a text field with a placeholder for the wallet alias
-                        let text_edit = egui::TextEdit::singleline(&mut alias)
-                            .hint_text("Enter wallet alias (max 64 chars)");
-
-                        // Render a text field to modify the wallet alias
-                        if ui.add(text_edit).changed() {
-                            // Update the wallet alias when the text field is modified
-                            wallet.alias = Some(alias.clone());
-
-                            // Update the alias in the database
-                            let seed_hash = wallet.seed_hash();
-                            self.app_context
-                                .db
-                                .set_wallet_alias(&seed_hash, Some(alias.clone()))
-                                .ok();
-                        }
+                    // Limit the alias length to 64 characters
+                    if alias.len() > 64 {
+                        alias.truncate(64);
                     }
 
-                    ui.add_space(20.0);
+                    // Render a text field with a placeholder for the wallet alias
+                    let text_edit = egui::TextEdit::singleline(&mut alias)
+                        .hint_text("Enter wallet name")
+                        .desired_width(200.0);
 
-                    // Display total wallet balance next to the selector
-                    if let Some(selected_wallet) = &self.selected_wallet {
-                        let wallet = selected_wallet.read().unwrap();
-                        let total_balance = wallet.max_balance();
-                        let dash_balance = total_balance as f64 * 1e-8; // Convert to DASH
-                        ui.label(format!("Total Balance: {:.8} DASH", dash_balance));
+                    // Render a text field to modify the wallet alias
+                    if ui.add(text_edit).changed() {
+                        // Update the wallet alias when the text field is modified
+                        wallet.alias = Some(alias.clone());
+
+                        // Update the alias in the database
+                        let seed_hash = wallet.seed_hash();
+                        self.app_context
+                            .db
+                            .set_wallet_alias(&seed_hash, Some(alias.clone()))
+                            .ok();
                     }
-                }
-            } else {
-                ui.label("No wallets available.");
+                });
             }
-        });
+
+            // Third Row: Display total wallet balance
+            if let Some(selected_wallet) = &self.selected_wallet {
+                ui.add_space(5.0);
+                ui.horizontal(|ui| {
+                    let wallet = selected_wallet.read().unwrap();
+                    let total_balance = wallet.max_balance();
+                    let dash_balance = total_balance as f64 * 1e-8; // Convert to DASH
+                    ui.label(
+                        RichText::new(format!("Balance: {:.8} DASH", dash_balance))
+                            .strong()
+                            .color(Color32::DARK_GREEN),
+                    );
+                });
+            }
+        } else {
+            ui.label("No wallets available.");
+        }
     }
 
     fn render_address_table(&mut self, ui: &mut Ui) -> AppAction {
@@ -531,10 +578,15 @@ impl WalletsBalancesScreen {
 
     fn render_bottom_options(&mut self, ui: &mut Ui) {
         if self.selected_filters.contains("Funds") {
-            // Add the button to add a receiving address
-            if ui.button("Add Receiving Address").clicked() {
-                self.add_receiving_address();
-            }
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                if ui
+                    .button(RichText::new("➕ Add Receiving Address").size(14.0))
+                    .clicked()
+                {
+                    self.add_receiving_address();
+                }
+            });
         }
     }
 
@@ -543,22 +595,34 @@ impl WalletsBalancesScreen {
         if let Some(arc_wallet) = &self.selected_wallet {
             let wallet = arc_wallet.read().unwrap();
 
-            if wallet.unused_asset_locks.is_empty() {
-                ui.label("No asset locks available.");
-
-                if ui.button("Find asset locks").clicked() {
-                    app_action = AppAction::BackendTask(BackendTask::CoreTask(
-                        CoreTask::RefreshWalletInfo(arc_wallet.clone()),
-                    ))
-                };
-                return app_action;
-            }
-
-            ui.label("Asset Locks:");
-            egui::ScrollArea::both()
-                .id_salt("asset_locks_table")
+            Frame::new()
+                .fill(egui::Color32::from_gray(252))
+                .corner_radius(5.0)
+                .inner_margin(Margin::same(15))
+                .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(235)))
                 .show(ui, |ui| {
-                    TableBuilder::new(ui)
+                    ui.heading(RichText::new("Asset Locks").color(Color32::BLACK));
+                    ui.add_space(10.0);
+
+                    if wallet.unused_asset_locks.is_empty() {
+                        ui.vertical_centered(|ui| {
+                            ui.add_space(20.0);
+                            ui.label(RichText::new("No asset locks found").color(Color32::GRAY).size(14.0));
+                            ui.add_space(10.0);
+                            ui.label(RichText::new("Asset locks are special transactions that can be used to create identities").color(Color32::GRAY).size(12.0));
+                            ui.add_space(15.0);
+                            if ui.button("Search for asset locks").clicked() {
+                                app_action = AppAction::BackendTask(BackendTask::CoreTask(
+                                    CoreTask::RefreshWalletInfo(arc_wallet.clone()),
+                                ))
+                            };
+                            ui.add_space(20.0);
+                        });
+                    } else {
+                        egui::ScrollArea::both()
+                            .id_salt("asset_locks_table")
+                            .show(ui, |ui| {
+                                TableBuilder::new(ui)
                         .striped(false)
                         .resizable(true)
                         .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
@@ -607,6 +671,8 @@ impl WalletsBalancesScreen {
                                 });
                             }
                         });
+                    });
+                    }
                 });
         } else {
             ui.label("No wallet selected.");
@@ -754,39 +820,105 @@ impl ScreenLike for WalletsBalancesScreen {
 
         action |= island_central_panel(ctx, |ui| {
             let mut inner_action = AppAction::None;
-            if self.app_context.wallets.read().unwrap().is_empty() {
-                self.render_no_wallets_view(ui);
-                return inner_action;
-            }
 
-            ui.add_space(10.0);
-            self.render_wallet_selection(ui);
-            ui.add_space(20.0);
+            egui::ScrollArea::vertical()
+                .auto_shrink([false; 2])
+                .show(ui, |ui| {
+                    if self.app_context.wallets.read().unwrap().is_empty() {
+                        self.render_no_wallets_view(ui);
+                        return;
+                    }
 
-            // Render the address table
-            if self.selected_wallet.is_some() {
-                self.render_filter_selector(ui);
+                    // Create side-by-side panels
+                    ui.columns(2, |columns| {
+                        // Left column: Wallet Information
+                        columns[0].push_id("wallet_info_col", |ui| {
+                            Frame::new()
+                                .fill(egui::Color32::from_gray(252))
+                                .corner_radius(5.0)
+                                .inner_margin(Margin::same(15))
+                                .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(235)))
+                                .show(ui, |ui| {
+                                    self.render_wallet_selection(ui);
+                                });
+                        });
 
-                ui.add_space(10.0);
+                        // Right column: Address Filters
+                        columns[1].push_id("address_filters_col", |ui| {
+                            if self.selected_wallet.is_some() {
+                                Frame::new()
+                                    .fill(egui::Color32::from_gray(252))
+                                    .corner_radius(5.0)
+                                    .inner_margin(Margin::same(15))
+                                    .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(235)))
+                                    .show(ui, |ui| {
+                                        ui.heading(
+                                            RichText::new("Address Filters").color(Color32::BLACK),
+                                        );
+                                        ui.add_space(10.0);
+                                        self.render_filter_selector(ui);
+                                        ui.add_space(15.0);
+                                        ui.separator();
+                                        ui.add_space(5.0);
+                                        ui.label(
+                                            RichText::new(
+                                                "Tip: Hold Shift to select multiple filters",
+                                            )
+                                            .color(Color32::GRAY)
+                                            .size(11.0)
+                                            .italics(),
+                                        );
+                                    });
+                            } else {
+                                // Empty placeholder when no wallet selected
+                                Frame::new()
+                                    .fill(egui::Color32::from_gray(252))
+                                    .corner_radius(5.0)
+                                    .inner_margin(Margin::same(15))
+                                    .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(235)))
+                                    .show(ui, |ui| {
+                                        ui.vertical_centered(|ui| {
+                                            ui.add_space(50.0);
+                                            ui.label(
+                                                RichText::new("Select a wallet to view filters")
+                                                    .color(Color32::GRAY)
+                                                    .italics(),
+                                            );
+                                            ui.add_space(50.0);
+                                        });
+                                    });
+                            }
+                        });
+                    });
 
-                if !(self.selected_filters.contains("Unused Asset Locks")
-                    && self.selected_filters.len() == 1)
-                {
-                    inner_action |= self.render_address_table(ui);
-                }
+                    if self.selected_wallet.is_some() {
+                        ui.add_space(20.0);
 
-                ui.add_space(20.0);
+                        if !(self.selected_filters.contains("Unused Asset Locks")
+                            && self.selected_filters.len() == 1)
+                        {
+                            inner_action |= self.render_address_table(ui);
+                        }
 
-                if self.selected_filters.contains("Unused Asset Locks") {
-                    // Render the asset locks section
-                    inner_action |= self.render_wallet_asset_locks(ui);
-                    ui.add_space(10.0);
-                }
+                        if self.selected_filters.contains("Unused Asset Locks") {
+                            ui.add_space(15.0);
+                            // Render the asset locks section
+                            inner_action |= self.render_wallet_asset_locks(ui);
+                        }
 
-                self.render_bottom_options(ui);
-            } else {
-                ui.label("No wallet selected.");
-            }
+                        ui.add_space(10.0);
+                        self.render_bottom_options(ui);
+                    } else {
+                        ui.vertical_centered(|ui| {
+                            ui.add_space(50.0);
+                            ui.label(
+                                RichText::new("Please select a wallet to view its details")
+                                    .size(16.0)
+                                    .color(Color32::GRAY),
+                            );
+                        });
+                    }
+                });
 
             let message = self.message.clone();
             if let Some((message, message_type, timestamp)) = message {
@@ -796,24 +928,20 @@ impl ScreenLike for WalletsBalancesScreen {
                     MessageType::Success => egui::Color32::DARK_GREEN,
                 };
 
-                ui.add_space(10.0);
-                ui.allocate_ui(egui::Vec2::new(ui.available_width(), 30.0), |ui| {
-                    ui.group(|ui| {
-                        ui.horizontal_wrapped(|ui| {
-                            ui.label(egui::RichText::new(message).color(message_color));
-                            let now = Utc::now();
-                            let elapsed = now.signed_duration_since(timestamp);
-                            if ui
-                                .button(format!("Dismiss ({})", 10 - elapsed.num_seconds()))
-                                .clicked()
-                            {
-                                // Update the state outside the closure
-                                self.dismiss_message();
-                            }
-                        });
-                    });
+                ui.add_space(25.0); // Same space as refreshing indicator
+                ui.horizontal(|ui| {
+                    ui.add_space(10.0);
+
+                    // Calculate remaining seconds
+                    let now = Utc::now();
+                    let elapsed = now.signed_duration_since(timestamp);
+                    let remaining = (10 - elapsed.num_seconds()).max(0);
+
+                    // Add the message with auto-dismiss countdown
+                    let full_msg = format!("{} ({}s)", message, remaining);
+                    ui.label(egui::RichText::new(full_msg).color(message_color));
                 });
-                ui.add_space(10.0);
+                ui.add_space(2.0); // Same space below as refreshing indicator
             }
             inner_action
         });

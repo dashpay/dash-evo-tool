@@ -1,8 +1,7 @@
 use std::collections::BTreeMap;
 
 use crate::{context::AppContext, model::qualified_identity::DPNSNameInfo};
-use bip39::rand::SeedableRng;
-use bip39::rand::{rngs::StdRng, Rng};
+use bip39::rand::{rngs::StdRng, Rng, SeedableRng};
 use dash_sdk::{
     dpp::{
         data_contract::{

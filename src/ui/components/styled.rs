@@ -150,6 +150,12 @@ pub struct StyledCard {
     show_border: bool,
 }
 
+impl Default for StyledCard {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl StyledCard {
     pub fn new() -> Self {
         Self {
@@ -322,6 +328,12 @@ pub struct ScrollableContainer {
 }
 
 #[allow(dead_code)]
+impl Default for ScrollableContainer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ScrollableContainer {
     pub fn new() -> Self {
         Self {
@@ -444,6 +456,12 @@ pub struct GlassCard {
 }
 
 #[allow(dead_code)]
+impl Default for GlassCard {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl GlassCard {
     pub fn new() -> Self {
         Self {
@@ -614,6 +632,12 @@ pub struct AnimatedGradientCard {
 }
 
 #[allow(dead_code)]
+impl Default for AnimatedGradientCard {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AnimatedGradientCard {
     pub fn new() -> Self {
         Self {

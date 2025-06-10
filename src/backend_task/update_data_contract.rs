@@ -26,7 +26,7 @@ use dash_sdk::{
     Error, Sdk,
 };
 use std::time::Duration;
-use tokio::{sync::mpsc, time::sleep};
+use tokio::time::sleep;
 
 /// Extracts the contract ID from a formatted error message string that contains:
 /// "... with id <contract_id>: ..."

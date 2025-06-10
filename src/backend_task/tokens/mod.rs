@@ -39,7 +39,6 @@ use dash_sdk::{
     Sdk,
 };
 use std::{collections::BTreeMap, sync::Arc};
-use tokio::sync::mpsc;
 
 mod burn_tokens;
 mod claim_tokens;
@@ -59,7 +58,7 @@ mod unfreeze_tokens;
 mod update_token_config;
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) enum TokenTask {
+pub enum TokenTask {
     RegisterTokenContract {
         identity: QualifiedIdentity,
         signing_key: Box<IdentityPublicKey>,

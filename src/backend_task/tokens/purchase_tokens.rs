@@ -12,7 +12,6 @@ use dash_sdk::platform::transition::broadcast::BroadcastStateTransition;
 use dash_sdk::platform::{DataContract, IdentityPublicKey};
 use dash_sdk::{Error, Sdk};
 use std::sync::Arc;
-use tokio::sync::mpsc;
 
 impl AppContext {
     #[allow(clippy::too_many_arguments)]

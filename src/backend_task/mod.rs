@@ -25,7 +25,6 @@ use futures::future::join_all;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use tokens::TokenTask;
-use tokio::sync::mpsc;
 
 pub mod broadcast_state_transition;
 pub mod contested_names;

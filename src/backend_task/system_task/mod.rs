@@ -2,10 +2,9 @@ use crate::app::TaskResult;
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::context::AppContext;
 use std::sync::Arc;
-use tokio::sync::mpsc;
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) enum SystemTask {
+pub enum SystemTask {
     WipePlatformData,
 }
 

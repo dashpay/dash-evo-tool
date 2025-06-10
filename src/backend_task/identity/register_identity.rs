@@ -18,7 +18,6 @@ use dash_sdk::platform::{Fetch, Identity};
 use dash_sdk::Error;
 use std::collections::BTreeMap;
 use std::time::Duration;
-use tokio::sync::mpsc;
 
 impl AppContext {
     // pub(crate) async fn broadcast_and_retrieve_asset_lock(
@@ -107,7 +106,7 @@ impl AppContext {
     pub(super) async fn register_identity(
         &self,
         input: IdentityRegistrationInfo,
-        sender: mpsc::Sender<TaskResult>,
+        sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, String> {
         let IdentityRegistrationInfo {
             alias_input,

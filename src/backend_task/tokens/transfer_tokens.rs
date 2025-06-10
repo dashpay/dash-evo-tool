@@ -28,7 +28,7 @@ impl AppContext {
         signing_key: IdentityPublicKey,
         public_note: Option<String>,
         sdk: &Sdk,
-        _sender: mpsc::Sender<TaskResult>,
+        _sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, String> {
         let mut builder = TokenTransferTransitionBuilder::new(
             data_contract.clone(),

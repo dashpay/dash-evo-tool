@@ -59,7 +59,7 @@ impl AppContext {
         identity: QualifiedIdentity,
         signing_key: IdentityPublicKey,
         sdk: &Sdk,
-        sender: mpsc::Sender<TaskResult>,
+        sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, String> {
         // Increment the version of the data contract
         data_contract.increment_version();

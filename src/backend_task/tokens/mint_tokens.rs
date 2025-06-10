@@ -29,7 +29,7 @@ impl AppContext {
         optional_recipient: Option<Identifier>,
         group_info: Option<GroupStateTransitionInfoStatus>,
         sdk: &Sdk,
-        _sender: mpsc::Sender<TaskResult>,
+        _sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, String> {
         let builder = TokenMintTransitionBuilder::new(
             data_contract.clone(),

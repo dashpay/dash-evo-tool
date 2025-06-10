@@ -24,7 +24,7 @@ impl AppContext {
         public_note: Option<String>,
         group_info: Option<GroupStateTransitionInfoStatus>,
         sdk: &Sdk,
-        _sender: mpsc::Sender<TaskResult>,
+        _sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, String> {
         // Use .resume(...) constructor
         let mut builder = TokenEmergencyActionTransitionBuilder::resume(

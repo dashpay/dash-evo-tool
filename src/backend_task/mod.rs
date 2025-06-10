@@ -10,6 +10,7 @@ use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::tokens::tokens_screen::{
     ContractDescriptionInfo, IdentityTokenIdentifier, TokenInfo,
 };
+use crate::utils::egui_mpsc::SenderAsync;
 use contested_names::ScheduledDPNSVote;
 use dash_sdk::dpp::balances::credits::TokenAmount;
 use dash_sdk::dpp::group::group_action::GroupAction;
@@ -41,7 +42,7 @@ pub mod update_data_contract;
 pub(crate) const NO_IDENTITIES_FOUND: &str = "No identities found";
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) enum BackendTask {
+pub enum BackendTask {
     IdentityTask(IdentityTask),
     DocumentTask(Box<DocumentTask>),
     ContractTask(Box<ContractTask>),
@@ -55,7 +56,7 @@ pub(crate) enum BackendTask {
 
 #[derive(Debug, Clone, PartialEq)]
 #[allow(clippy::large_enum_variant)]
-pub(crate) enum BackendTaskSuccessResult {
+pub enum BackendTaskSuccessResult {
     None,
     Refresh,
     Message(String),
@@ -94,7 +95,7 @@ impl AppContext {
     pub async fn run_backend_tasks_sequential(
         self: &Arc<Self>,
         tasks: Vec<BackendTask>,
-        sender: mpsc::Sender<TaskResult>,
+        sender: SenderAsync<TaskResult>,
     ) -> Vec<Result<BackendTaskSuccessResult, String>> {
         let mut results = Vec::new();
         for task in tasks {
@@ -110,7 +111,7 @@ impl AppContext {
     pub async fn run_backend_tasks_concurrent(
         self: &Arc<Self>,
         tasks: Vec<BackendTask>,
-        sender: mpsc::Sender<TaskResult>,
+        sender: SenderAsync<TaskResult>,
     ) -> Vec<Result<BackendTaskSuccessResult, String>> {
         let futures = tasks
             .into_iter()
@@ -128,7 +129,7 @@ impl AppContext {
     pub async fn run_backend_task(
         self: &Arc<Self>,
         task: BackendTask,
-        sender: mpsc::Sender<TaskResult>,
+        sender: SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, String> {
         let sdk = {
             let guard = self.sdk.read().unwrap();

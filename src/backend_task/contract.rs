@@ -26,10 +26,9 @@ use dash_sdk::platform::{
 };
 use dash_sdk::query_types::IndexMap;
 use dash_sdk::Sdk;
-use tokio::sync::mpsc;
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) enum ContractTask {
+pub enum ContractTask {
     FetchContracts(Vec<Identifier>),
     FetchContractsWithDescriptions(Vec<Identifier>),
     FetchActiveGroupActions(QualifiedContract, QualifiedIdentity),
@@ -44,7 +43,7 @@ impl AppContext {
         &self,
         task: ContractTask,
         sdk: &Sdk,
-        sender: mpsc::Sender<TaskResult>,
+        sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, String> {
         match task {
             ContractTask::FetchContracts(identifiers) => {

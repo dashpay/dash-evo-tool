@@ -28,7 +28,7 @@ impl AppContext {
         amount: u64,
         group_info: Option<GroupStateTransitionInfoStatus>,
         sdk: &Sdk,
-        _sender: mpsc::Sender<TaskResult>,
+        _sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, String> {
         let mut builder = TokenBurnTransitionBuilder::new(
             data_contract.clone(),

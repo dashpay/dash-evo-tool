@@ -211,7 +211,7 @@ impl AppContext {
         self: &Arc<Self>,
         task: TokenTask,
         sdk: &Sdk,
-        sender: mpsc::Sender<TaskResult>,
+        sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, String> {
         match &task {
             TokenTask::RegisterTokenContract {

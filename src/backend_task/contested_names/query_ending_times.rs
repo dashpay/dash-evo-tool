@@ -10,13 +10,11 @@ use std::sync::Arc;
 
 use crate::app::TaskResult;
 use dash_sdk::Sdk;
-use tokio::sync::mpsc;
-
 impl AppContext {
     pub(super) async fn query_dpns_ending_times(
         self: &Arc<Self>,
         sdk: Sdk,
-        _sender: mpsc::Sender<TaskResult>,
+        _sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<(), String> {
         let now: DateTime<Utc> = Utc::now();
         let start_time_dt = now - Duration::weeks(2);

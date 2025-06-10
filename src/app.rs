@@ -23,6 +23,7 @@ use crate::ui::tools::proof_visualizer_screen::ProofVisualizerScreen;
 use crate::ui::tools::transition_visualizer_screen::TransitionVisualizerScreen;
 use crate::ui::wallets::wallets_screen::WalletsBalancesScreen;
 use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike, ScreenType};
+use crate::utils::egui_mpsc::{self, EguiMpscAsync, EguiMpscSync};
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use derive_more::From;
@@ -68,7 +69,7 @@ pub struct AppState {
     #[allow(dead_code)] // Kept alive for the lifetime of the app
     pub local_core_zmq_listener: CoreZMQListener,
     pub core_message_receiver: mpsc::Receiver<(ZMQMessage, Network)>,
-    pub task_result_sender: tokiompsc::Sender<TaskResult>, // Channel sender for sending task results
+    pub task_result_sender: egui_mpsc::SenderAsync<TaskResult>, // Channel sender for sending task results
     pub task_result_receiver: tokiompsc::Receiver<TaskResult>, // Channel receiver for receiving task results
     last_scheduled_vote_check: Instant, // Last time we checked if there are scheduled masternode votes to cast
 }
@@ -139,7 +140,7 @@ impl BitOrAssign for AppAction {
     }
 }
 impl AppState {
-    pub fn new() -> Self {
+    pub fn new(ctx: egui::Context) -> Self {
         create_app_user_data_directory_if_not_exists()
             .expect("Failed to create app user_data directory");
         copy_env_file_if_not_exists();
@@ -170,6 +171,10 @@ impl AppState {
             AppContext::new(Network::Devnet, db.clone(), password_info.clone());
         let local_app_context = AppContext::new(Network::Regtest, db.clone(), password_info);
 
+        // load fonts
+        ctx.set_fonts(crate::bundled::fonts().expect("failed to load fonts"));
+
+        // create screens
         let mut identities_screen = IdentitiesScreen::new(&mainnet_app_context);
         let mut dpns_active_contests_screen =
             DPNSScreen::new(&mainnet_app_context, DPNSSubscreen::Active);
@@ -302,10 +307,12 @@ impl AppState {
         }
 
         // // Create a channel with a buffer size of 32 (adjust as needed)
-        let (task_result_sender, task_result_receiver) = tokiompsc::channel(256);
+        let (task_result_sender, task_result_receiver) =
+            tokiompsc::channel(256).with_egui_ctx(ctx.clone());
 
         // Create a channel for communication with the InstantSendListener
-        let (core_message_sender, core_message_receiver) = mpsc::channel();
+        let (core_message_sender, core_message_receiver) =
+            mpsc::channel().with_egui_ctx(ctx.clone());
 
         let mainnet_core_zmq_listener = CoreZMQListener::spawn_listener(
             Network::Dash,
@@ -448,7 +455,7 @@ impl AppState {
     }
 
     // Handle the backend task and send the result through the channel
-    pub fn handle_backend_task(&self, task: BackendTask) {
+    fn handle_backend_task(&self, task: BackendTask) {
         let sender = self.task_result_sender.clone();
         let app_context = self.current_app_context().clone();
 
@@ -463,7 +470,7 @@ impl AppState {
     }
 
     /// Handle the backend tasks and send the results through the channel
-    pub fn handle_backend_tasks(&self, tasks: Vec<BackendTask>, mode: BackendTasksExecutionMode) {
+    fn handle_backend_tasks(&self, tasks: Vec<BackendTask>, mode: BackendTasksExecutionMode) {
         let sender = self.task_result_sender.clone();
         let app_context = self.current_app_context().clone();
 
@@ -727,9 +734,6 @@ impl App for AppState {
                 }
             }
         }
-
-        // Use a timer to repaint the UI every 0.05 seconds
-        ctx.request_repaint_after(std::time::Duration::from_millis(50));
 
         let action = self.visible_screen_mut().ui(ctx);
 

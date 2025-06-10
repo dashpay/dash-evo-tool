@@ -25,7 +25,7 @@ impl AppContext {
         frozen_identity: Identifier,
         group_info: Option<GroupStateTransitionInfoStatus>,
         sdk: &Sdk,
-        _sender: mpsc::Sender<TaskResult>,
+        _sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, String> {
         let mut builder = TokenDestroyFrozenFundsTransitionBuilder::new(
             data_contract.clone(),

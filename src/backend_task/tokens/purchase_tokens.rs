@@ -25,7 +25,7 @@ impl AppContext {
         amount: TokenAmount,
         total_agreed_price: Credits,
         sdk: &Sdk,
-        _sender: mpsc::Sender<TaskResult>,
+        _sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, String> {
         let mut builder = TokenDirectPurchaseTransitionBuilder::new(
             data_contract.clone(),

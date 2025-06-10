@@ -16,13 +16,13 @@ use dash_sdk::platform::transition::top_up_identity::TopUpIdentity;
 use dash_sdk::platform::Fetch;
 use dash_sdk::Error;
 use std::time::Duration;
-use tokio::sync::mpsc;
+
 
 impl AppContext {
     pub(super) async fn top_up_identity(
         &self,
         input: IdentityTopUpInfo,
-        sender: mpsc::Sender<TaskResult>,
+        sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, String> {
         let IdentityTopUpInfo {
             mut qualified_identity,

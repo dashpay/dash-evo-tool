@@ -26,7 +26,7 @@ impl AppContext {
         token_pricing_schedule: Option<TokenPricingSchedule>,
         group_info: Option<GroupStateTransitionInfoStatus>,
         sdk: &Sdk,
-        _sender: mpsc::Sender<TaskResult>,
+        _sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, String> {
         let mut builder = TokenChangeDirectPurchasePriceTransitionBuilder::new(
             data_contract.clone(),

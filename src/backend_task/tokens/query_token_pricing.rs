@@ -11,7 +11,7 @@ impl AppContext {
         &self,
         token_id: Identifier,
         sdk: &Sdk,
-        _sender: mpsc::Sender<TaskResult>,
+        _sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, String> {
         // Query token pricing schedule using fetch_many
         match TokenPricingSchedule::fetch_many(sdk, &[token_id][..]).await {

@@ -68,7 +68,7 @@ pub struct AppContext {
     ///
     /// This is used to control animations in the UI, such as loading spinners or transitions.
     /// Disable for automated tests.
-    pub(crate) animate: bool,
+    pub(crate) animate: AtomicBool,
 }
 
 impl AppContext {
@@ -163,7 +163,7 @@ impl AppContext {
             password_info,
             transactions_waiting_for_finality: Mutex::new(BTreeMap::new()),
             zmq_connection_status: Mutex::new(ZMQConnectionEvent::Disconnected),
-            animate: true, // Default to true for animations
+            animate: AtomicBool::new(true), // Default to true for animations
         };
 
         let app_context = Arc::new(app_context);
@@ -172,19 +172,21 @@ impl AppContext {
         Some(app_context)
     }
 
-    pub fn with_animate(mut self, animate: bool) -> Self {
-        self.animate = animate;
-        self
+    /// Enables animations in the UI.
+    ///
+    /// This is used to control whether UI elements should animate, such as loading spinners or transitions.
+    pub fn enable_animations(&self, animate: bool) {
+        self.animate.store(animate, Ordering::Relaxed);
     }
 
     /// Repaints the UI if animations are enabled.
     ///
     /// Called by UI elements that need to trigger a repaint, such as loading spinners or animated icons.
     pub(super) fn repaint_animation(&self, ctx: &Context) {
-        if self.animate {
-            ctx.request_repaint();
+        if self.animate.load(Ordering::Relaxed) {
+            // Request a repaint after a short delay to allow for animations
+            ctx.request_repaint_after(ANIMATION_REFRESH_TIME);
         }
-        ctx.request_repaint_after(ANIMATION_REFRESH_TIME);
     }
 
     pub fn platform_version(&self) -> &'static PlatformVersion {

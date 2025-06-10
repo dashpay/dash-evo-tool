@@ -444,6 +444,24 @@ impl AppState {
         }
     }
 
+    /// Allows enabling or disabling animations globally for the app.
+    ///
+    /// Default is enabled.
+    pub fn with_animations(self, enabled: bool) -> Self {
+        self.mainnet_app_context.enable_animations(enabled);
+        self.devnet_app_context
+            .as_ref()
+            .map(|context| context.enable_animations(enabled));
+        self.testnet_app_context
+            .as_ref()
+            .map(|context| context.enable_animations(enabled));
+        self.local_app_context
+            .as_ref()
+            .map(|context| context.enable_animations(enabled));
+
+        self
+    }
+
     pub fn current_app_context(&self) -> &Arc<AppContext> {
         match self.chosen_network {
             Network::Dash => &self.mainnet_app_context,

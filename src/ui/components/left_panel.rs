@@ -113,9 +113,12 @@ pub fn add_left_panel(
                                     .frame(false) // Remove button frame
                                     .tint(button_color);
 
-                                if ui.add(button).clicked() {
+                                let added = ui.add(button);
+                                if added.clicked() {
                                     action =
                                         AppAction::SetMainScreenThenGoToMainScreen(*screen_type);
+                                } else if added.hovered() {
+                                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                                 }
                             } else {
                                 // Fallback to a modern gradient button if texture loading fails

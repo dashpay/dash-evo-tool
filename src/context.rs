@@ -144,6 +144,14 @@ impl AppContext {
             .map(|w| (w.seed_hash(), Arc::new(RwLock::new(w))))
             .collect();
 
+        let animate = match config.developer_mode.unwrap_or(false) {
+            true => {
+                tracing::debug!("developer_mode is enabled, disabling animations");
+                AtomicBool::new(false)
+            }
+            false => AtomicBool::new(true), // Animations are enabled by default
+        };
+
         let app_context = AppContext {
             network,
             developer_mode: AtomicBool::new(config.developer_mode.unwrap_or(false)),
@@ -163,7 +171,7 @@ impl AppContext {
             password_info,
             transactions_waiting_for_finality: Mutex::new(BTreeMap::new()),
             zmq_connection_status: Mutex::new(ZMQConnectionEvent::Disconnected),
-            animate: AtomicBool::new(true), // Default to true for animations
+            animate,
         };
 
         let app_context = Arc::new(app_context);

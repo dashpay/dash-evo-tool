@@ -449,15 +449,12 @@ impl AppState {
     /// Default is enabled.
     pub fn with_animations(self, enabled: bool) -> Self {
         self.mainnet_app_context.enable_animations(enabled);
-        self.devnet_app_context
-            .as_ref()
-            .map(|context| context.enable_animations(enabled));
-        self.testnet_app_context
-            .as_ref()
-            .map(|context| context.enable_animations(enabled));
-        self.local_app_context
-            .as_ref()
-            .map(|context| context.enable_animations(enabled));
+        if let Some(context) = self.devnet_app_context
+            .as_ref() { context.enable_animations(enabled) }
+        if let Some(context) = self.testnet_app_context
+            .as_ref() { context.enable_animations(enabled) }
+        if let Some(context) = self.local_app_context
+            .as_ref() { context.enable_animations(enabled) }
 
         self
     }

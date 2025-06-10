@@ -45,7 +45,7 @@ const ANIMATION_REFRESH_TIME: std::time::Duration = std::time::Duration::from_mi
 #[derive(Debug)]
 pub struct AppContext {
     pub(crate) network: Network,
-    pub(crate) developer_mode: AtomicBool,
+    developer_mode: AtomicBool,
     #[allow(dead_code)] // May be used for devnet identification
     pub(crate) devnet_name: Option<String>,
     pub(crate) db: Arc<Database>,
@@ -68,7 +68,7 @@ pub struct AppContext {
     ///
     /// This is used to control animations in the UI, such as loading spinners or transitions.
     /// Disable for automated tests.
-    pub(crate) animate: AtomicBool,
+    animate: AtomicBool,
 }
 
 impl AppContext {
@@ -187,6 +187,16 @@ impl AppContext {
         self.animate.store(animate, Ordering::Relaxed);
     }
 
+    pub fn enable_developer_mode(&self, enable: bool) {
+        self.developer_mode.store(enable, Ordering::Relaxed);
+        // Animations are reverse of developer mode
+        self.enable_animations(!enable);
+    }
+
+    pub fn is_developer_mode(&self) -> bool {
+        self.developer_mode.load(Ordering::Relaxed)
+    }
+
     /// Repaints the UI if animations are enabled.
     ///
     /// Called by UI elements that need to trigger a repaint, such as loading spinners or animated icons.
@@ -202,7 +212,7 @@ impl AppContext {
     }
 
     pub fn state_transition_options(&self) -> Option<StateTransitionCreationOptions> {
-        if self.developer_mode.load(Ordering::Relaxed) {
+        if self.is_developer_mode() {
             Some(StateTransitionCreationOptions {
                 signing_options: StateTransitionSigningOptions {
                     allow_signing_with_any_security_level: true,

@@ -12,7 +12,6 @@ pub use structs::*;
 pub use groups::*;
 
 use std::collections::BTreeMap;
-use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, RwLock};
 
 use chrono::{DateTime, Duration, Utc};
@@ -1195,7 +1194,7 @@ fn my_tokens(
         Option<dash_sdk::dpp::tokens::token_pricing_schedule::TokenPricingSchedule>,
     >,
 ) -> IndexMap<IdentityTokenIdentifier, IdentityTokenBalanceWithActions> {
-    let in_dev_mode = app_context.developer_mode.load(Ordering::Relaxed);
+    let in_dev_mode = app_context.is_developer_mode();
 
     app_context
         .identity_token_balances()

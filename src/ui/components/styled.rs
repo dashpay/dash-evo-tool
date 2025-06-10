@@ -1,8 +1,10 @@
 use crate::ui::theme::{DashColors, MessageType, Shadow, Shape, Spacing, Typography};
 use egui::{
-    Button, CentralPanel, Color32, Context, Frame, Margin, Response, RichText, Stroke, TextEdit,
-    Ui, Vec2,
+    Button, CentralPanel, Color32, Context, Frame, Id, Margin, Response, RichText, Stroke,
+    TextEdit, Ui, Vec2, ViewportId,
 };
+
+const ANIMATION_REFRESH_TIME: std::time::Duration = std::time::Duration::from_millis(100);
 
 /// Styled button variants
 #[allow(dead_code)]
@@ -443,7 +445,7 @@ impl GradientButton {
         let response = ui.add(button);
 
         // Request repaint for animation
-        ui.ctx().request_repaint();
+        repaint_animation(ui.ctx(), response.id);
 
         response
     }
@@ -552,7 +554,7 @@ impl HeroSection {
             });
 
         // Request repaint for animation
-        ui.ctx().request_repaint();
+        repaint_animation(ui.ctx(), result.response.id);
     }
 }
 
@@ -617,7 +619,7 @@ impl AnimatedIcon {
 
         // Request repaint for animation
         if self.pulse || self.rotation != 0.0 {
-            ui.ctx().request_repaint();
+            repaint_animation(ui.ctx(), response.id);
         }
 
         response
@@ -684,7 +686,7 @@ impl AnimatedGradientCard {
                 }
 
                 // Request repaint for animation
-                ui.ctx().request_repaint();
+                repaint_animation(ui.ctx(), ui.id());
 
                 content(ui)
             })
@@ -731,4 +733,10 @@ pub fn island_central_panel<R>(ctx: &Context, content: impl FnOnce(&mut Ui) -> R
                 .inner
         })
         .inner
+}
+
+/// Repaint animated object
+fn repaint_animation(ctx: &Context, id: Id) {
+    // Request repaint for animations
+    ctx.request_repaint_after_for(ANIMATION_REFRESH_TIME, ViewportId(id));
 }

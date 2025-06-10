@@ -76,12 +76,21 @@ impl ClaimTokensScreen {
             .expect("No local qualified identity found for this token’s identity.");
 
         let identity_clone = identity.identity.clone();
-        let possible_key = identity_clone.get_first_public_key_matching(
+        let mut possible_key = identity_clone.get_first_public_key_matching(
             Purpose::AUTHENTICATION,
             HashSet::from([SecurityLevel::CRITICAL]),
             KeyType::all_key_types().into(),
             false,
         );
+
+        if possible_key.is_none() {
+            possible_key = identity_clone.get_first_public_key_matching(
+                Purpose::TRANSFER,
+                HashSet::from([SecurityLevel::CRITICAL]),
+                KeyType::all_key_types().into(),
+                false,
+            );
+        }
 
         let mut error_message = None;
         let selected_wallet =
@@ -372,7 +381,7 @@ impl ScreenLike for ClaimTokensScreen {
                     std::iter::once(&self.identity),
                     &mut selected_identity,
                     &mut self.selected_key,
-                    TransactionType::TokenAction,
+                    TransactionType::TokenClaim,
                 );
                 ui.add_space(10.0);
 

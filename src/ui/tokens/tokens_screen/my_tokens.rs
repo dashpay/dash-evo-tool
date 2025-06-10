@@ -313,7 +313,7 @@ impl TokensScreen {
                                                             })));
                                                             self.refreshing_status = RefreshingStatus::Refreshing(Utc::now().timestamp() as u64);
                                                         }
-                                                    
+
                                                 }
                                             });
                                         }
@@ -385,7 +385,7 @@ impl TokensScreen {
                             });
 
                             ui.collapsing("Detailed Explanation", |ui| {
-                                ui.label(explanation.long_explanation());
+                                ui.label(explanation.detailed_explanation());
                             });
 
                             if !explanation.evaluation_steps.is_empty() {

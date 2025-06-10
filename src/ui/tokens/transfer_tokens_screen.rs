@@ -13,7 +13,6 @@ use crate::ui::helpers::{add_identity_key_chooser, TransactionType};
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
 use crate::ui::{MessageType, Screen, ScreenLike};
-use dash_sdk::dpp::balances::credits::TokenAmount;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
@@ -502,7 +501,7 @@ impl ScreenLike for TransferTokensScreen {
                     std::iter::once(&self.identity),
                     &mut selected_identity,
                     &mut self.selected_key,
-                    TransactionType::TokenAction,
+                    TransactionType::TokenTransfer,
                 );
 
                 ui.add_space(10.0);
@@ -514,9 +513,16 @@ impl ScreenLike for TransferTokensScreen {
                 ui.add_space(5.0);
 
                 // Show available balance
-                let decimals = self.identity_token_balance.token_config.conventions().decimals();
+                let decimals = self
+                    .identity_token_balance
+                    .token_config
+                    .conventions()
+                    .decimals();
                 let formatted_balance = format_token_amount(self.max_amount, decimals);
-                ui.label(format!("Available balance: {} {}", formatted_balance, self.identity_token_balance.token_alias));
+                ui.label(format!(
+                    "Available balance: {} {}",
+                    formatted_balance, self.identity_token_balance.token_alias
+                ));
                 ui.add_space(5.0);
 
                 self.render_amount_input(ui);
@@ -562,16 +568,20 @@ impl ScreenLike for TransferTokensScreen {
                     .frame(true)
                     .corner_radius(3.0);
                 if ui.add(button).clicked() {
-                    let decimals = self.identity_token_balance.token_config.conventions().decimals();
+                    let decimals = self
+                        .identity_token_balance
+                        .token_config
+                        .conventions()
+                        .decimals();
                     match parse_token_amount(&self.amount, decimals) {
                         Ok(parsed_amount) => {
                             if parsed_amount > self.max_amount {
                                 self.transfer_tokens_status = TransferTokensStatus::ErrorMessage(
-                                    "Amount exceeds available balance".to_string()
+                                    "Amount exceeds available balance".to_string(),
                                 );
                             } else if parsed_amount == 0 {
                                 self.transfer_tokens_status = TransferTokensStatus::ErrorMessage(
-                                    "Amount must be greater than zero".to_string()
+                                    "Amount must be greater than zero".to_string(),
                                 );
                             } else {
                                 self.confirmation_popup = true;

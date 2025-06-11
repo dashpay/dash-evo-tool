@@ -81,6 +81,10 @@ pub(crate) enum BackendTaskSuccessResult {
         BTreeMap<Identifier, (Option<ContractDescriptionInfo>, Vec<TokenInfo>)>,
     ),
     ActiveGroupActions(IndexMap<Identifier, GroupAction>),
+    TokenPricing {
+        token_id: Identifier,
+        prices: Option<dash_sdk::dpp::tokens::token_pricing_schedule::TokenPricingSchedule>,
+    },
 }
 
 impl BackendTaskSuccessResult {}

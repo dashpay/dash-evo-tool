@@ -343,6 +343,7 @@ impl IdentityTokenBalance {
         identity: &QualifiedIdentity,
         contract: &DataContract,
         in_dev_mode: bool,
+        token_pricing: Option<&dash_sdk::dpp::tokens::token_pricing_schedule::TokenPricingSchedule>,
     ) -> IdentityTokenBalanceWithActions {
         let available_actions = get_available_token_actions_for_identity(
             Some(self.balance),
@@ -350,6 +351,7 @@ impl IdentityTokenBalance {
             &self.token_config,
             contract,
             in_dev_mode,
+            token_pricing,
         );
 
         IdentityTokenBalanceWithActions {
@@ -445,6 +447,7 @@ pub fn get_available_token_actions_for_identity(
     token_configuration: &TokenConfiguration,
     contract: &DataContract,
     in_dev_mode: bool,
+    token_pricing: Option<&dash_sdk::dpp::tokens::token_pricing_schedule::TokenPricingSchedule>,
 ) -> IdentityTokenAvailableActions {
     let main_group = token_configuration.main_control_group();
     let groups = contract.groups();
@@ -512,12 +515,7 @@ pub fn get_available_token_actions_for_identity(
         }
     };
 
-    let can_maybe_purchase = in_dev_mode
-        || token_configuration
-            .distribution_rules()
-            .change_direct_purchase_pricing_rules()
-            .authorized_to_make_change_action_takers()
-            != &AuthorizedActionTakers::NoOne;
+    let can_maybe_purchase = token_pricing.is_some();
 
     let can_update_config = in_dev_mode
         || token_configuration

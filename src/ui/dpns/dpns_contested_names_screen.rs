@@ -1968,12 +1968,12 @@ impl ScreenLike for DPNSScreen {
                 };
                 ui.horizontal(|ui| {
                     ui.add_space(10.0);
-                    
+
                     // Calculate remaining seconds
                     let now = Utc::now();
                     let elapsed = now.signed_duration_since(timestamp);
                     let remaining = (10 - elapsed.num_seconds()).max(0);
-                    
+
                     // Add the message with auto-dismiss countdown
                     let full_msg = format!("{} ({}s)", msg, remaining);
                     ui.label(egui::RichText::new(full_msg).color(color));

@@ -340,7 +340,6 @@ impl AppContext {
             associated_owner_key_id: None,
             identity_type: IdentityType::User,
             alias: None,
-            private_keys: keys.to_key_storage(wallet_seed_hash),
             dpns_names: vec![],
             associated_wallets: BTreeMap::from([(
                 wallet.read().unwrap().seed_hash(),

@@ -10,8 +10,9 @@ use dash_sdk::dpp::{
 };
 use dash_sdk::platform::IdentityPublicKey;
 use std::sync::{Arc, RwLock};
+use zeroize::Zeroize;
 
-#[derive(Debug, Encode, Decode, Clone, PartialEq)]
+#[derive(Debug, Encode, Decode, Clone, PartialEq, Zeroize)]
 pub struct QualifiedIdentityPublicKey {
     pub identity_public_key: IdentityPublicKey,
     pub in_wallet_at_derivation_path: Option<WalletDerivationPath>,

@@ -2570,21 +2570,28 @@ impl ScreenLike for TokensScreen {
                     MessageType::Info => Color32::BLACK,
                     MessageType::Success => Color32::DARK_GREEN,
                 };
-                ui.group(|ui| {
-                    ui.horizontal_wrapped(|ui| {
-                        // Check if this is an "Adding token..." message
-                        if msg.starts_with("Adding token...") {
-                            if let Some(adding_start_time) = &self.adding_token_start_time {
-                                let now = Utc::now();
-                                let elapsed = now.signed_duration_since(*adding_start_time);
-                                ui.colored_label(
-                                    color,
-                                    format!("Adding token... {}s", elapsed.num_seconds()),
-                                );
-                            } else {
-                                ui.colored_label(color, &msg);
-                            }
+                
+                // Check if this is a token-related message
+                if msg.starts_with("Adding token...") || msg == "Token added successfully!" || msg == "Token already in My Tokens" {
+                    // Show without box for token-related messages
+                    if msg.starts_with("Adding token...") {
+                        if let Some(adding_start_time) = &self.adding_token_start_time {
+                            let now = Utc::now();
+                            let elapsed = now.signed_duration_since(*adding_start_time);
+                            ui.colored_label(
+                                color,
+                                format!("Adding token... {}s", elapsed.num_seconds()),
+                            );
                         } else {
+                            ui.colored_label(color, &msg);
+                        }
+                    } else {
+                        ui.colored_label(color, &msg);
+                    }
+                } else {
+                    // Show with box for other messages
+                    ui.group(|ui| {
+                        ui.horizontal_wrapped(|ui| {
                             ui.colored_label(color, &msg);
                             let now = Utc::now();
                             let elapsed = now.signed_duration_since(timestamp);
@@ -2594,9 +2601,9 @@ impl ScreenLike for TokensScreen {
                             {
                                 self.dismiss_message();
                             }
-                        }
+                        });
                     });
-                });
+                }
             }
 
             if self.confirm_remove_identity_token_balance_popup {

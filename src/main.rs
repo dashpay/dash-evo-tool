@@ -24,7 +24,7 @@ fn main() -> eframe::Result<()> {
     runtime.block_on(start(&app_data_dir))
 }
 
-pub async fn start(app_data_dir: &std::path::Path) -> Result<(), eframe::Error> {
+async fn start(app_data_dir: &std::path::Path) -> Result<(), eframe::Error> {
     let native_options = eframe::NativeOptions {
         persist_window: true, // Persist window size and position
         centered: true,       // Center window on startup if not maximized

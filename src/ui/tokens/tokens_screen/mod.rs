@@ -2570,9 +2570,12 @@ impl ScreenLike for TokensScreen {
                     MessageType::Info => Color32::BLACK,
                     MessageType::Success => Color32::DARK_GREEN,
                 };
-                
+
                 // Check if this is a token-related message
-                if msg.starts_with("Adding token...") || msg == "Token added successfully!" || msg == "Token already in My Tokens" {
+                if msg.starts_with("Adding token...")
+                    || msg == "Token added successfully!"
+                    || msg == "Token already in My Tokens"
+                {
                     // Show without box for token-related messages
                     if msg.starts_with("Adding token...") {
                         if let Some(adding_start_time) = &self.adding_token_start_time {

@@ -518,16 +518,18 @@ impl AppContext {
                 }
             }
             TokenTask::FetchTokenByTokenId(token_id) => {
-                use dash_sdk::dpp::tokens::contract_info::TokenContractInfo;
                 use dash_sdk::dpp::tokens::contract_info::v0::TokenContractInfoV0Accessors;
-                
+                use dash_sdk::dpp::tokens::contract_info::TokenContractInfo;
+
                 match TokenContractInfo::fetch(sdk, *token_id).await {
                     Ok(Some(token_contract_info)) => {
                         // Extract the contract ID and token position from token_contract_info
                         let (contract_id, token_position) = match &token_contract_info {
-                            TokenContractInfo::V0(info) => (info.contract_id(), info.token_contract_position()),
+                            TokenContractInfo::V0(info) => {
+                                (info.contract_id(), info.token_contract_position())
+                            }
                         };
-                        
+
                         // Fetch the full contract
                         match DataContract::fetch_by_identifier(sdk, contract_id).await {
                             Ok(Some(data_contract)) => {

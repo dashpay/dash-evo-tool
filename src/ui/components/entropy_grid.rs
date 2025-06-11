@@ -1,5 +1,5 @@
+use bip39::rand::{self, Rng};
 use egui::{Button, Color32, Grid, Ui, Vec2};
-use rand::Rng;
 
 pub struct U256EntropyGrid {
     random_number: [u8; 32], // Current 256-bit number (32 bytes)

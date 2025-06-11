@@ -70,7 +70,7 @@ use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::prelude::AssetLockProof;
 use dash_sdk::platform::Identity;
-use zeroize::Zeroize;
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
@@ -122,6 +122,7 @@ impl PartialEq for WalletArcRef {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Wallet {
     pub wallet_seed: WalletSeed,
+    pub network: Network,
     pub uses_password: bool,
     pub master_bip44_ecdsa_extended_public_key: ExtendedPubKey,
     pub address_balances: BTreeMap<Address, u64>,
@@ -148,7 +149,8 @@ pub enum WalletSeed {
     Open(OpenWalletSeed),
     Closed(ClosedWalletSeed),
 }
-#[derive(Debug, Clone, PartialEq)]
+
+#[derive(Debug, Clone, PartialEq, Zeroize, ZeroizeOnDrop)]
 pub struct OpenKeyItem<const N: usize> {
     pub seed: [u8; N],
     pub wallet_info: ClosedKeyItem,
@@ -157,7 +159,7 @@ pub struct OpenKeyItem<const N: usize> {
 // Type alias for OpenWalletSeed with a fixed seed size of 64 bytes
 pub type OpenWalletSeed = OpenKeyItem<64>;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Zeroize)]
 pub struct ClosedKeyItem {
     pub seed_hash: WalletSeedHash, // SHA-256 hash of the seed
     pub encrypted_seed: Vec<u8>,

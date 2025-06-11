@@ -240,6 +240,7 @@ impl Database {
                     identities: HashMap::new(),
                     utxos: HashMap::new(),
                     is_main,
+                    network: *network,
                 },
             );
 

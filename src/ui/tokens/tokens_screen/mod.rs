@@ -49,6 +49,7 @@ use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
 use enum_iterator::Sequence;
 use image::ImageReader;
 use crate::app::BackendTasksExecutionMode;
+use crate::backend_task::contract::ContractTask;
 use crate::backend_task::tokens::TokenTask;
 use crate::backend_task::{BackendTask, NO_IDENTITIES_FOUND};
 
@@ -1106,6 +1107,10 @@ pub struct TokensScreen {
 
     pub function_images: BTreeMap<DistributionFunctionUI, ColorImage>,
     pub function_textures: BTreeMap<DistributionFunctionUI, TextureHandle>,
+
+    // Token adding status
+    adding_token_start_time: Option<DateTime<Utc>>,
+    adding_token_name: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1437,6 +1442,10 @@ impl TokensScreen {
             function_images,
             function_textures: BTreeMap::default(),
             should_reset_collapsing_states: false,
+
+            // Token adding status
+            adding_token_start_time: None,
+            adding_token_name: None,
         };
 
         if let Ok(saved_ids) = screen.app_context.db.load_token_order() {
@@ -2148,24 +2157,28 @@ impl TokensScreen {
     }
 
     fn add_token_to_tracked_tokens(&mut self, token_info: TokenInfo) -> Result<AppAction, String> {
-        let contract = self
-            .app_context
-            .get_contract_by_id(&token_info.data_contract_id)
-            .map_err(|e| e.to_string())?
-            .ok_or("Could not find contract")?;
+        // Check if token is already added
+        if self.all_known_tokens.contains_key(&token_info.token_id) {
+            self.backend_message = Some((
+                "Token already in My Tokens".to_string(),
+                MessageType::Error,
+                Utc::now(),
+            ));
+            return Ok(AppAction::None);
+        }
 
-        self.all_known_tokens.insert(
-            token_info.token_id,
-            TokenInfoWithDataContract::from_with_data_contract(
-                token_info.clone(),
-                contract.contract,
-            ),
-        );
+        // Set adding status with timestamp for elapsed time display
+        self.adding_token_start_time = Some(Utc::now());
+        self.adding_token_name = Some(token_info.token_name.clone());
+        self.backend_message = Some(("Adding token...".to_string(), MessageType::Info, Utc::now()));
 
-        self.display_message("Added token", MessageType::Success);
-
+        // Always save the token locally and refresh balances
+        // The contract will be fetched automatically when needed
         Ok(AppAction::BackendTasks(
             vec![
+                BackendTask::ContractTask(Box::new(ContractTask::FetchContracts(vec![
+                    token_info.data_contract_id,
+                ]))),
                 BackendTask::TokenTask(Box::new(TokenTask::SaveTokenLocally(token_info))),
                 BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances)),
             ],
@@ -2556,8 +2569,6 @@ impl ScreenLike for TokensScreen {
                     MessageType::Success => Color32::DARK_GREEN,
                 };
                 ui.horizontal(|ui| {
-                    ui.add_space(10.0);
-
                     // Calculate remaining seconds
                     let now = Utc::now();
                     let elapsed = now.signed_duration_since(timestamp);
@@ -2666,6 +2677,11 @@ impl ScreenLike for TokensScreen {
                     || msg.contains("Failed to get estimated rewards")
                     || msg.eq(NO_IDENTITIES_FOUND)
                 {
+                    // Clear adding status on any error
+                    if msg.contains("Failed") {
+                        self.adding_token_start_time = None;
+                        self.adding_token_name = None;
+                    }
                     self.backend_message = Some((msg.to_string(), msg_type, Utc::now()));
                     self.refreshing_status = RefreshingStatus::NotRefreshing;
                 } else {
@@ -2680,9 +2696,22 @@ impl ScreenLike for TokensScreen {
                 if msg.contains("Error fetching tokens") {
                     self.contract_search_status =
                         ContractSearchStatus::ErrorMessage(msg.to_string());
+                    // Clear adding status on error
+                    self.adding_token_start_time = None;
+                    self.adding_token_name = None;
                     self.backend_message = Some((msg.to_string(), msg_type, Utc::now()));
-                } else if msg.contains("Added token") | msg.contains("Token already added") {
-                    self.backend_message = Some((msg.to_string(), msg_type, Utc::now()));
+                } else if msg.contains("Added token")
+                    | msg.contains("Token already added")
+                    | msg.contains("Saved token to db")
+                {
+                    // Clear adding status and show success message
+                    self.adding_token_start_time = None;
+                    self.adding_token_name = None;
+                    self.backend_message = Some((
+                        "Token added successfully!".to_string(),
+                        MessageType::Success,
+                        Utc::now(),
+                    ));
                 } else {
                     return;
                 }

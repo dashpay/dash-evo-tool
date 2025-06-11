@@ -901,12 +901,12 @@ impl ScreenLike for IdentitiesScreen {
                 ui.add_space(25.0); // Same space as refreshing indicator
                 ui.horizontal(|ui| {
                     ui.add_space(10.0);
-                    
+
                     // Calculate remaining seconds
                     let now = Utc::now();
                     let elapsed = now.signed_duration_since(timestamp);
                     let remaining = (10 - elapsed.num_seconds()).max(0);
-                    
+
                     // Add the message with auto-dismiss countdown
                     let full_msg = format!("{} ({}s)", message, remaining);
                     ui.label(egui::RichText::new(full_msg).color(message_color));

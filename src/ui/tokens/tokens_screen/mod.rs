@@ -2537,9 +2537,9 @@ impl ScreenLike for TokensScreen {
                 }
             }
 
-            // If we are refreshing, show a spinner at the bottom
+            // Show either refreshing indicator or message, but not both
             if let RefreshingStatus::Refreshing(start_time) = self.refreshing_status {
-                ui.add_space(5.0);
+                ui.add_space(25.0); // Space above
                 let now = Utc::now().timestamp() as u64;
                 let elapsed = now - start_time;
                 ui.horizontal(|ui| {
@@ -2547,29 +2547,27 @@ impl ScreenLike for TokensScreen {
                     ui.label(format!("Refreshing... Time so far: {}", elapsed));
                     ui.add(egui::widgets::Spinner::default().color(Color32::from_rgb(0, 128, 255)));
                 });
-                ui.add_space(10.0);
-            }
-
-            // If there's a backend message, show it at the bottom
-            if let Some((msg, msg_type, timestamp)) = self.backend_message.clone() {
+                ui.add_space(2.0); // Space below
+            } else if let Some((msg, msg_type, timestamp)) = self.backend_message.clone() {
+                ui.add_space(25.0); // Same space as refreshing indicator
                 let color = match msg_type {
                     MessageType::Error => Color32::DARK_RED,
                     MessageType::Info => Color32::BLACK,
                     MessageType::Success => Color32::DARK_GREEN,
                 };
-                ui.group(|ui| {
-                    ui.horizontal_wrapped(|ui| {
-                        ui.colored_label(color, &msg);
-                        let now = Utc::now();
-                        let elapsed = now.signed_duration_since(timestamp);
-                        if ui
-                            .button(format!("Dismiss ({})", 10 - elapsed.num_seconds()))
-                            .clicked()
-                        {
-                            self.dismiss_message();
-                        }
-                    });
+                ui.horizontal(|ui| {
+                    ui.add_space(10.0);
+
+                    // Calculate remaining seconds
+                    let now = Utc::now();
+                    let elapsed = now.signed_duration_since(timestamp);
+                    let remaining = (10 - elapsed.num_seconds()).max(0);
+
+                    // Add the message with auto-dismiss countdown
+                    let full_msg = format!("{} ({}s)", msg, remaining);
+                    ui.label(egui::RichText::new(full_msg).color(color));
                 });
+                ui.add_space(2.0); // Same space below as refreshing indicator
             }
 
             if self.confirm_remove_identity_token_balance_popup {
@@ -2606,6 +2604,7 @@ impl ScreenLike for TokensScreen {
             {
                 self.refreshing_status =
                     RefreshingStatus::Refreshing(Utc::now().timestamp() as u64);
+                self.backend_message = None; // Clear any existing message
             }
             AppAction::SetMainScreenThenGoToMainScreen(_) => {
                 self.refreshing_status = RefreshingStatus::NotRefreshing;
@@ -2729,7 +2728,12 @@ impl ScreenLike for TokensScreen {
                 // Clear loading state
                 self.pricing_loading_state.insert(token_id, false);
                 // Refresh my_tokens to update available actions with new pricing data
-                self.my_tokens = my_tokens(&self.app_context, &self.identities, &self.all_known_tokens, &self.token_pricing_data);
+                self.my_tokens = my_tokens(
+                    &self.app_context,
+                    &self.identities,
+                    &self.all_known_tokens,
+                    &self.token_pricing_data,
+                );
                 // Refresh display
                 self.refreshing_status = RefreshingStatus::NotRefreshing;
             }

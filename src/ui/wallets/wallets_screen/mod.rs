@@ -324,7 +324,7 @@ impl WalletsBalancesScreen {
     }
 
     fn render_address_table(&mut self, ui: &mut Ui) -> AppAction {
-        let action = AppAction::None;
+        let mut action = AppAction::None;
 
         let mut included_address_types = HashSet::new();
 
@@ -421,6 +421,7 @@ impl WalletsBalancesScreen {
                     .column(Column::initial(100.0)) // Type
                     .column(Column::initial(60.0)) // Index
                     .column(Column::remainder()) // Derivation Path
+                    .column(Column::initial(80.0)) // Export button
                     .header(30.0, |mut header| {
                         header.col(|ui| {
                             let label = if self.sort_column == SortColumn::Address {
@@ -513,6 +514,9 @@ impl WalletsBalancesScreen {
                                 self.toggle_sort(SortColumn::DerivationPath);
                             }
                         });
+                        header.col(|ui| {
+                            ui.label("Actions");
+                        });
                     })
                     .body(|mut body| {
                         for data in &address_data {
@@ -539,6 +543,18 @@ impl WalletsBalancesScreen {
                                 });
                                 row.col(|ui| {
                                     ui.label(format!("{}", data.derivation_path));
+                                });
+                                row.col(|ui| {
+                                    if ui.button("Export").clicked() {
+                                        if let Some(wallet) = &self.selected_wallet {
+                                            let screen_type = ScreenType::ExportPrivateKey(
+                                                data.address.clone(),
+                                                data.derivation_path.clone(),
+                                                wallet.clone(),
+                                            );
+                                            action = AppAction::AddScreen(screen_type.create_screen(&self.app_context));
+                                        }
+                                    }
                                 });
                             });
                         }

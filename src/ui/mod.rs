@@ -5,6 +5,7 @@ use crate::model::qualified_identity::encrypted_key_storage::{
     PrivateKeyData, WalletDerivationPath,
 };
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::wallet::Wallet;
 use crate::ui::contracts_documents::contracts_documents_screen::DocumentQueryScreen;
 use crate::ui::contracts_documents::document_action_screen::{
     DocumentActionScreen, DocumentActionType,
@@ -25,12 +26,15 @@ use crate::ui::tools::contract_visualizer_screen::ContractVisualizerScreen;
 use crate::ui::tools::document_visualizer_screen::DocumentVisualizerScreen;
 use crate::ui::tools::proof_log_screen::ProofLogScreen;
 use crate::ui::tools::proof_visualizer_screen::ProofVisualizerScreen;
+use crate::ui::wallets::export_private_key_screen::ExportPrivateKeyScreen;
 use crate::ui::wallets::import_wallet_screen::ImportWalletScreen;
 use crate::ui::wallets::wallets_screen::WalletsBalancesScreen;
 use contracts_documents::add_contracts_screen::AddContractsScreen;
 use contracts_documents::group_actions_screen::GroupActionsScreen;
 use contracts_documents::register_contract_screen::RegisterDataContractScreen;
 use contracts_documents::update_contract_screen::UpdateDataContractScreen;
+use dash_sdk::dpp::dashcore::bip32::DerivationPath;
+use dash_sdk::dpp::dashcore::Address;
 use dash_sdk::dpp::identity::Identity;
 use dash_sdk::dpp::prelude::IdentityPublicKey;
 use dpns::dpns_contested_names_screen::DPNSSubscreen;
@@ -41,7 +45,7 @@ use identities::identities_screen::IdentitiesScreen;
 use identities::register_dpns_name_screen::RegisterDpnsNameScreen;
 use std::fmt;
 use std::hash::Hash;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use tokens::burn_tokens_screen::BurnTokensScreen;
 use tokens::claim_tokens_screen::ClaimTokensScreen;
 use tokens::destroy_frozen_funds_screen::DestroyFrozenFundsScreen;
@@ -167,7 +171,7 @@ impl From<RootScreenType> for ScreenType {
     }
 }
 
-#[derive(Debug, PartialEq, Clone, Default)]
+#[derive(Debug, Clone, Default)]
 pub enum ScreenType {
     #[default]
     Identities,
@@ -178,6 +182,7 @@ pub enum ScreenType {
     WalletsBalances,
     ImportWallet,
     AddNewWallet,
+    ExportPrivateKey(Address, DerivationPath, Arc<RwLock<Wallet>>),
     AddExistingIdentity,
     TransitionVisualizer,
     WithdrawalScreen(QualifiedIdentity),
@@ -227,6 +232,69 @@ pub enum ScreenType {
     UpdateTokenConfigScreen(IdentityTokenInfo),
     PurchaseTokenScreen(IdentityTokenInfo),
     SetTokenPriceScreen(IdentityTokenInfo),
+}
+
+impl PartialEq for ScreenType {
+    fn eq(&self, other: &Self) -> bool {
+        use ScreenType::*;
+        match (self, other) {
+            (Identities, Identities) => true,
+            (DPNSActiveContests, DPNSActiveContests) => true,
+            (DPNSPastContests, DPNSPastContests) => true,
+            (DPNSMyUsernames, DPNSMyUsernames) => true,
+            (AddNewIdentity, AddNewIdentity) => true,
+            (WalletsBalances, WalletsBalances) => true,
+            (ImportWallet, ImportWallet) => true,
+            (AddNewWallet, AddNewWallet) => true,
+            (ExportPrivateKey(addr1, path1, _), ExportPrivateKey(addr2, path2, _)) => {
+                addr1 == addr2 && path1 == path2
+            }
+            (AddExistingIdentity, AddExistingIdentity) => true,
+            (TransitionVisualizer, TransitionVisualizer) => true,
+            (WithdrawalScreen(id1), WithdrawalScreen(id2)) => id1 == id2,
+            (TransferScreen(id1), TransferScreen(id2)) => id1 == id2,
+            (AddKeyScreen(id1), AddKeyScreen(id2)) => id1 == id2,
+            (KeyInfo(id1, key1, _), KeyInfo(id2, key2, _)) => id1 == id2 && key1 == key2,
+            (Keys(id1), Keys(id2)) => id1 == id2,
+            (DocumentQuery, DocumentQuery) => true,
+            (NetworkChooser, NetworkChooser) => true,
+            (RegisterDpnsName, RegisterDpnsName) => true,
+            (RegisterContract, RegisterContract) => true,
+            (UpdateContract, UpdateContract) => true,
+            (ProofLog, ProofLog) => true,
+            (TopUpIdentity(id1), TopUpIdentity(id2)) => id1 == id2,
+            (ScheduledVotes, ScheduledVotes) => true,
+            (AddContracts, AddContracts) => true,
+            (ProofVisualizer, ProofVisualizer) => true,
+            (DocumentsVisualizer, DocumentsVisualizer) => true,
+            (ContractsVisualizer, ContractsVisualizer) => true,
+            (CreateDocument, CreateDocument) => true,
+            (DeleteDocument, DeleteDocument) => true,
+            (ReplaceDocument, ReplaceDocument) => true,
+            (TransferDocument, TransferDocument) => true,
+            (PurchaseDocument, PurchaseDocument) => true,
+            (SetDocumentPrice, SetDocumentPrice) => true,
+            (GroupActions, GroupActions) => true,
+            (TokenBalances, TokenBalances) => true,
+            (TokenSearch, TokenSearch) => true,
+            (TokenCreator, TokenCreator) => true,
+            (AddTokenById, AddTokenById) => true,
+            (TransferTokensScreen(token1), TransferTokensScreen(token2)) => token1 == token2,
+            (MintTokensScreen(token1), MintTokensScreen(token2)) => token1 == token2,
+            (BurnTokensScreen(token1), BurnTokensScreen(token2)) => token1 == token2,
+            (DestroyFrozenFundsScreen(token1), DestroyFrozenFundsScreen(token2)) => token1 == token2,
+            (FreezeTokensScreen(token1), FreezeTokensScreen(token2)) => token1 == token2,
+            (UnfreezeTokensScreen(token1), UnfreezeTokensScreen(token2)) => token1 == token2,
+            (PauseTokensScreen(token1), PauseTokensScreen(token2)) => token1 == token2,
+            (ResumeTokensScreen(token1), ResumeTokensScreen(token2)) => token1 == token2,
+            (ClaimTokensScreen(token1), ClaimTokensScreen(token2)) => token1 == token2,
+            (ViewTokenClaimsScreen(token1), ViewTokenClaimsScreen(token2)) => token1 == token2,
+            (UpdateTokenConfigScreen(token1), UpdateTokenConfigScreen(token2)) => token1 == token2,
+            (PurchaseTokenScreen(token1), PurchaseTokenScreen(token2)) => token1 == token2,
+            (SetTokenPriceScreen(token1), SetTokenPriceScreen(token2)) => token1 == token2,
+            _ => false,
+        }
+    }
 }
 
 impl ScreenType {
@@ -297,6 +365,14 @@ impl ScreenType {
             }
             ScreenType::ImportWallet => {
                 Screen::ImportWalletScreen(ImportWalletScreen::new(app_context))
+            }
+            ScreenType::ExportPrivateKey(address, derivation_path, wallet) => {
+                Screen::ExportPrivateKeyScreen(ExportPrivateKeyScreen::new(
+                    address.clone(),
+                    derivation_path.clone(),
+                    wallet.clone(),
+                    app_context,
+                ))
             }
             ScreenType::ProofLog => Screen::ProofLogScreen(ProofLogScreen::new(app_context)),
             ScreenType::ScheduledVotes => {
@@ -415,6 +491,7 @@ pub enum Screen {
     DocumentQueryScreen(DocumentQueryScreen),
     AddNewWalletScreen(AddNewWalletScreen),
     ImportWalletScreen(ImportWalletScreen),
+    ExportPrivateKeyScreen(ExportPrivateKeyScreen),
     AddNewIdentityScreen(AddNewIdentityScreen),
     AddExistingIdentityScreen(AddExistingIdentityScreen),
     KeyInfoScreen(KeyInfoScreen),
@@ -480,6 +557,7 @@ impl Screen {
             Screen::TopUpIdentityScreen(screen) => screen.app_context = app_context,
             Screen::WalletsBalancesScreen(screen) => screen.app_context = app_context,
             Screen::ImportWalletScreen(screen) => screen.app_context = app_context,
+            Screen::ExportPrivateKeyScreen(screen) => screen.app_context = app_context,
             Screen::ProofLogScreen(screen) => screen.app_context = app_context,
             Screen::AddContractsScreen(screen) => screen.app_context = app_context,
             Screen::ProofVisualizerScreen(screen) => screen.app_context = app_context,
@@ -594,6 +672,11 @@ impl Screen {
             Screen::AddNewWalletScreen(_) => ScreenType::AddNewWallet,
             Screen::WalletsBalancesScreen(_) => ScreenType::WalletsBalances,
             Screen::ImportWalletScreen(_) => ScreenType::ImportWallet,
+            Screen::ExportPrivateKeyScreen(screen) => ScreenType::ExportPrivateKey(
+                screen.address.clone(),
+                screen.derivation_path.clone(),
+                screen.wallet.clone(),
+            ),
             Screen::ProofLogScreen(_) => ScreenType::ProofLog,
             Screen::AddContractsScreen(_) => ScreenType::AddContracts,
             Screen::ProofVisualizerScreen(_) => ScreenType::ProofVisualizer,
@@ -672,6 +755,7 @@ impl ScreenLike for Screen {
             Screen::DocumentQueryScreen(screen) => screen.refresh(),
             Screen::AddNewWalletScreen(screen) => screen.refresh(),
             Screen::ImportWalletScreen(screen) => screen.refresh(),
+            Screen::ExportPrivateKeyScreen(screen) => screen.refresh(),
             Screen::AddNewIdentityScreen(screen) => screen.refresh(),
             Screen::TopUpIdentityScreen(screen) => screen.refresh(),
             Screen::AddExistingIdentityScreen(screen) => screen.refresh(),
@@ -720,6 +804,7 @@ impl ScreenLike for Screen {
             Screen::DocumentQueryScreen(screen) => screen.refresh_on_arrival(),
             Screen::AddNewWalletScreen(screen) => screen.refresh_on_arrival(),
             Screen::ImportWalletScreen(screen) => screen.refresh_on_arrival(),
+            Screen::ExportPrivateKeyScreen(screen) => screen.refresh_on_arrival(),
             Screen::AddNewIdentityScreen(screen) => screen.refresh_on_arrival(),
             Screen::TopUpIdentityScreen(screen) => screen.refresh_on_arrival(),
             Screen::AddExistingIdentityScreen(screen) => screen.refresh_on_arrival(),
@@ -768,6 +853,7 @@ impl ScreenLike for Screen {
             Screen::DocumentQueryScreen(screen) => screen.ui(ctx),
             Screen::AddNewWalletScreen(screen) => screen.ui(ctx),
             Screen::ImportWalletScreen(screen) => screen.ui(ctx),
+            Screen::ExportPrivateKeyScreen(screen) => screen.ui(ctx),
             Screen::AddNewIdentityScreen(screen) => screen.ui(ctx),
             Screen::TopUpIdentityScreen(screen) => screen.ui(ctx),
             Screen::AddExistingIdentityScreen(screen) => screen.ui(ctx),
@@ -816,6 +902,7 @@ impl ScreenLike for Screen {
             Screen::DocumentQueryScreen(screen) => screen.display_message(message, message_type),
             Screen::AddNewWalletScreen(screen) => screen.display_message(message, message_type),
             Screen::ImportWalletScreen(screen) => screen.display_message(message, message_type),
+            Screen::ExportPrivateKeyScreen(screen) => screen.display_message(message, message_type),
             Screen::AddNewIdentityScreen(screen) => screen.display_message(message, message_type),
             Screen::TopUpIdentityScreen(screen) => screen.display_message(message, message_type),
             Screen::AddExistingIdentityScreen(screen) => {
@@ -886,6 +973,9 @@ impl ScreenLike for Screen {
                 screen.display_task_result(backend_task_success_result)
             }
             Screen::ImportWalletScreen(screen) => {
+                screen.display_task_result(backend_task_success_result)
+            }
+            Screen::ExportPrivateKeyScreen(screen) => {
                 screen.display_task_result(backend_task_success_result)
             }
             Screen::AddNewIdentityScreen(screen) => {
@@ -1000,6 +1090,7 @@ impl ScreenLike for Screen {
             Screen::DocumentQueryScreen(screen) => screen.pop_on_success(),
             Screen::AddNewWalletScreen(screen) => screen.pop_on_success(),
             Screen::ImportWalletScreen(screen) => screen.pop_on_success(),
+            Screen::ExportPrivateKeyScreen(screen) => screen.pop_on_success(),
             Screen::AddNewIdentityScreen(screen) => screen.pop_on_success(),
             Screen::TopUpIdentityScreen(screen) => screen.pop_on_success(),
             Screen::AddExistingIdentityScreen(screen) => screen.pop_on_success(),

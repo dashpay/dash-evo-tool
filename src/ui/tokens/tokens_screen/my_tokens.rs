@@ -364,7 +364,7 @@ impl TokensScreen {
             });
 
         // Show explanation popup if requested
-        if let Some(identity_token_id) = self.show_explanation_popup.clone() {
+        if let Some(identity_token_id) = self.show_explanation_popup {
             if let Some(explanation) = self.reward_explanations.get(&identity_token_id) {
                 let mut is_open = true;
                 egui::Window::new("Reward Calculation Explanation")

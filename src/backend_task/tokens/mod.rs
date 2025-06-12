@@ -176,10 +176,6 @@ pub(crate) enum TokenTask {
         signing_key: IdentityPublicKey,
         public_note: Option<String>,
     },
-    EstimatePerpetualTokenRewards {
-        identity_id: Identifier,
-        token_id: Identifier,
-    },
     EstimatePerpetualTokenRewardsWithExplanation {
         identity_id: Identifier,
         token_id: Identifier,
@@ -489,17 +485,6 @@ impl AppContext {
                 )
                 .await
                 .map_err(|e| format!("Failed to claim tokens: {e}")),
-            TokenTask::EstimatePerpetualTokenRewards {
-                identity_id,
-                token_id,
-            } => self
-                .query_token_non_claimed_perpetual_distribution_rewards(
-                    *identity_id,
-                    *token_id,
-                    sdk,
-                )
-                .await
-                .map_err(|e| format!("Failed to get estimated rewards: {e}")),
             TokenTask::EstimatePerpetualTokenRewardsWithExplanation {
                 identity_id,
                 token_id,

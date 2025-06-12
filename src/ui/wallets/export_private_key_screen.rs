@@ -92,7 +92,7 @@ impl ScreenLike for ExportPrivateKeyScreen {
             // Show address info
             ui.horizontal(|ui| {
                 ui.label(RichText::new("Address:").strong().color(Color32::BLACK));
-                ui.label(RichText::new(&self.address.to_string()).color(Color32::BLACK));
+                ui.label(RichText::new(self.address.to_string()).color(Color32::BLACK));
             });
             ui.add_space(10.0);
 
@@ -102,7 +102,7 @@ impl ScreenLike for ExportPrivateKeyScreen {
                         .strong()
                         .color(Color32::BLACK),
                 );
-                ui.label(RichText::new(&self.derivation_path.to_string()).color(Color32::BLACK));
+                ui.label(RichText::new(self.derivation_path.to_string()).color(Color32::BLACK));
             });
             ui.add_space(20.0);
 
@@ -118,10 +118,8 @@ impl ScreenLike for ExportPrivateKeyScreen {
             }
 
             // Show export button if wallet is unlocked but key not yet exported
-            if !needed_unlock && self.private_key.is_none() {
-                if ui.button("Export Private Key").clicked() {
-                    self.export_private_key();
-                }
+            if !needed_unlock && self.private_key.is_none() && ui.button("Export Private Key").clicked() {
+                self.export_private_key();
             }
 
             // Show private key if exported
@@ -162,10 +160,8 @@ impl ScreenLike for ExportPrivateKeyScreen {
                         Color32::from_rgb(200, 0, 0),
                         "⚠️ Warning: Keep this private key secure! Anyone with access to it can spend your funds.",
                     );
-                } else {
-                    if ui.button("Show Private Key").clicked() {
-                        self.show_private_key = true;
-                    }
+                } else if ui.button("Show Private Key").clicked() {
+                    self.show_private_key = true;
                 }
             }
 
@@ -187,11 +183,8 @@ impl ScreenLike for ExportPrivateKeyScreen {
     }
 
     fn display_message(&mut self, message: &str, message_type: MessageType) {
-        match message_type {
-            MessageType::Error => {
-                self.error_message = Some(message.to_string());
-            }
-            _ => {}
+        if message_type == MessageType::Error {
+            self.error_message = Some(message.to_string());
         }
     }
 }

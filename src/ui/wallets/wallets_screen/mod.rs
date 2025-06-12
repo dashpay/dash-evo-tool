@@ -552,7 +552,9 @@ impl WalletsBalancesScreen {
                                                 data.derivation_path.clone(),
                                                 wallet.clone(),
                                             );
-                                            action = AppAction::AddScreen(screen_type.create_screen(&self.app_context));
+                                            action = AppAction::AddScreen(
+                                                screen_type.create_screen(&self.app_context),
+                                            );
                                         }
                                     }
                                 });

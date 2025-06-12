@@ -282,7 +282,9 @@ impl PartialEq for ScreenType {
             (TransferTokensScreen(token1), TransferTokensScreen(token2)) => token1 == token2,
             (MintTokensScreen(token1), MintTokensScreen(token2)) => token1 == token2,
             (BurnTokensScreen(token1), BurnTokensScreen(token2)) => token1 == token2,
-            (DestroyFrozenFundsScreen(token1), DestroyFrozenFundsScreen(token2)) => token1 == token2,
+            (DestroyFrozenFundsScreen(token1), DestroyFrozenFundsScreen(token2)) => {
+                token1 == token2
+            }
             (FreezeTokensScreen(token1), FreezeTokensScreen(token2)) => token1 == token2,
             (UnfreezeTokensScreen(token1), UnfreezeTokensScreen(token2)) => token1 == token2,
             (PauseTokensScreen(token1), PauseTokensScreen(token2)) => token1 == token2,

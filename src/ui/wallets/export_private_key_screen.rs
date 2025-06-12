@@ -48,18 +48,16 @@ impl ExportPrivateKeyScreen {
 
     fn export_private_key(&mut self) {
         match self.wallet.write() {
-            Ok(wallet) => {
-                match wallet.private_key_at_derivation_path(&self.derivation_path) {
-                    Ok(private_key) => {
-                        self.private_key = Some(private_key);
-                        self.show_private_key = true;
-                        self.error_message = None;
-                    }
-                    Err(e) => {
-                        self.error_message = Some(format!("Failed to export private key: {}", e));
-                    }
+            Ok(wallet) => match wallet.private_key_at_derivation_path(&self.derivation_path) {
+                Ok(private_key) => {
+                    self.private_key = Some(private_key);
+                    self.show_private_key = true;
+                    self.error_message = None;
                 }
-            }
+                Err(e) => {
+                    self.error_message = Some(format!("Failed to export private key: {}", e));
+                }
+            },
             Err(e) => {
                 self.error_message = Some(format!("Failed to lock wallet: {}", e));
             }
@@ -99,14 +97,18 @@ impl ScreenLike for ExportPrivateKeyScreen {
             ui.add_space(10.0);
 
             ui.horizontal(|ui| {
-                ui.label(RichText::new("Derivation Path:").strong().color(Color32::BLACK));
+                ui.label(
+                    RichText::new("Derivation Path:")
+                        .strong()
+                        .color(Color32::BLACK),
+                );
                 ui.label(RichText::new(&self.derivation_path.to_string()).color(Color32::BLACK));
             });
             ui.add_space(20.0);
 
             // Wallet unlock section
             let (needed_unlock, just_unlocked) = self.render_wallet_unlock_if_needed(ui);
-            
+
             if needed_unlock && !just_unlocked {
                 return inner_action;
             }
@@ -130,7 +132,11 @@ impl ScreenLike for ExportPrivateKeyScreen {
 
                 if self.show_private_key {
                     ui.horizontal(|ui| {
-                        ui.label(RichText::new("Private Key (WIF):").strong().color(Color32::BLACK));
+                        ui.label(
+                            RichText::new("Private Key (WIF):")
+                                .strong()
+                                .color(Color32::BLACK),
+                        );
                         if ui.button("Hide").clicked() {
                             self.show_private_key = false;
                         }

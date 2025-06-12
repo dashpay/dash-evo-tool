@@ -17,7 +17,6 @@ use dash_sdk::platform::{Identifier, IdentityPublicKey};
 use eframe::egui::{self, Color32, Context, Ui};
 use egui::RichText;
 use std::collections::HashSet;
-use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -410,7 +409,7 @@ impl ScreenLike for BurnTokensScreen {
             ui.add_space(10.0);
 
             // Check if user has any auth keys
-            let has_keys = if self.app_context.developer_mode.load(Ordering::Relaxed) {
+            let has_keys = if self.app_context.is_developer_mode() {
                 !self
                     .identity_token_info
                     .identity
@@ -549,7 +548,7 @@ impl ScreenLike for BurnTokensScreen {
                 );
 
                 // Burn button
-                if self.app_context.developer_mode.load(Ordering::Relaxed)
+                if self.app_context.is_developer_mode()
                     || !button_text.contains("Test")
                 {
                     ui.add_space(10.0);

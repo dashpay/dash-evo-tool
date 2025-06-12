@@ -4,14 +4,13 @@ use crate::context::AppContext;
 use dash_sdk::dpp::tokens::token_pricing_schedule::TokenPricingSchedule;
 use dash_sdk::platform::{FetchMany, Identifier};
 use dash_sdk::Sdk;
-use tokio::sync::mpsc;
 
 impl AppContext {
     pub async fn query_token_pricing(
         &self,
         token_id: Identifier,
         sdk: &Sdk,
-        _sender: mpsc::Sender<TaskResult>,
+        _sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, String> {
         // Query token pricing schedule using fetch_many
         match TokenPricingSchedule::fetch_many(sdk, &[token_id][..]).await {

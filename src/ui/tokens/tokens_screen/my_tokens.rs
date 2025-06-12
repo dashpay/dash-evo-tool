@@ -33,7 +33,6 @@ use eframe::epaint::Color32;
 use egui::{RichText, Ui};
 use egui_extras::{Column, TableBuilder};
 use std::ops::Range;
-use std::sync::atomic::Ordering;
 
 /// Get the minimum price for purchasing one token from a pricing schedule
 fn get_min_token_price(pricing_schedule: &TokenPricingSchedule) -> u64 {
@@ -143,7 +142,7 @@ impl TokensScreen {
 
         let mut detail_list: Vec<IdentityTokenMaybeBalanceWithActions> = vec![];
 
-        let in_dev_mode = self.app_context.developer_mode.load(Ordering::Relaxed);
+        let in_dev_mode = self.app_context.is_developer_mode();
 
         for (identity_id, identity) in identities {
             let record = if let Some(known_token_balance) =
@@ -191,7 +190,7 @@ impl TokensScreen {
 
         // Space allocation for UI elements is handled by the layout system
 
-        let in_dev_mode = self.app_context.developer_mode.load(Ordering::Relaxed);
+        let in_dev_mode = self.app_context.is_developer_mode();
 
         let shows_estimation_column = in_dev_mode
             || token_info

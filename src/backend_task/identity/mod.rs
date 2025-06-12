@@ -33,7 +33,6 @@ use dash_sdk::platform::{Identifier, Identity, IdentityPublicKey};
 use dash_sdk::Sdk;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, RwLock};
-use tokio::sync::mpsc;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct IdentityInputToLoad {
@@ -246,7 +245,7 @@ pub struct RegisterDpnsNameInput {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) enum IdentityTask {
+pub enum IdentityTask {
     LoadIdentity(IdentityInputToLoad),
     #[allow(dead_code)] // May be used for finding identities in wallets
     SearchIdentityFromWallet(WalletArcRef, IdentityIndex),
@@ -440,7 +439,7 @@ impl AppContext {
         &self,
         task: IdentityTask,
         sdk: &Sdk,
-        sender: mpsc::Sender<TaskResult>,
+        sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, String> {
         match task {
             IdentityTask::LoadIdentity(input) => self.load_identity(sdk, input).await,

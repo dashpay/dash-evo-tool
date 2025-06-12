@@ -5,7 +5,7 @@ use dash_sdk::{
     platform::{transition::put_contract::PutContract, DataContract, Fetch, IdentityPublicKey},
     Error, Sdk,
 };
-use tokio::{sync::mpsc, time::sleep};
+use tokio::time::sleep;
 
 use super::BackendTaskSuccessResult;
 use crate::backend_task::update_data_contract::extract_contract_id_from_error;
@@ -27,7 +27,7 @@ impl AppContext {
         identity: QualifiedIdentity,
         signing_key: IdentityPublicKey,
         sdk: &Sdk,
-        sender: mpsc::Sender<TaskResult>,
+        sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, String> {
         match data_contract
             .put_to_platform_and_wait_for_response(sdk, signing_key.clone(), &identity, None)

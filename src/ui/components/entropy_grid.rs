@@ -6,6 +6,12 @@ pub struct U256EntropyGrid {
     last_bit_changed: u8,    // Store the last bit position changed
 }
 
+impl Default for U256EntropyGrid {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl U256EntropyGrid {
     /// Create a new instance with a random [u8; 32] number
     pub fn new() -> Self {

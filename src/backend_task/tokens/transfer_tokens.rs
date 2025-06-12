@@ -14,7 +14,6 @@ use dash_sdk::platform::tokens::transitions::TransferResult;
 use dash_sdk::platform::{DataContract, Identifier, IdentityPublicKey};
 use dash_sdk::{Error, Sdk};
 use std::sync::Arc;
-use tokio::sync::mpsc;
 
 impl AppContext {
     #[allow(clippy::too_many_arguments)]
@@ -28,7 +27,7 @@ impl AppContext {
         signing_key: IdentityPublicKey,
         public_note: Option<String>,
         sdk: &Sdk,
-        _sender: mpsc::Sender<TaskResult>,
+        _sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, String> {
         let mut builder = TokenTransferTransitionBuilder::new(
             data_contract.clone(),

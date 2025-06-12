@@ -6,7 +6,7 @@ use std::error::Error;
 use std::io::Cursor;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    mpsc, Arc,
+    Arc,
 };
 use std::thread;
 use std::time::Duration;
@@ -60,7 +60,7 @@ impl CoreZMQListener {
     pub fn spawn_listener(
         network: Network,
         endpoint: &str,
-        sender: mpsc::Sender<(ZMQMessage, Network)>,
+        sender: crate::utils::egui_mpsc::SenderSync<(ZMQMessage, Network)>,
         tx_zmq_status: Option<Sender<ZMQConnectionEvent>>,
     ) -> Result<Self, Box<dyn Error>> {
         let should_stop = Arc::new(AtomicBool::new(false));
@@ -282,7 +282,7 @@ impl CoreZMQListener {
     pub fn spawn_listener(
         network: Network,
         endpoint: &str,
-        sender: mpsc::Sender<(ZMQMessage, Network)>,
+        sender: crate::utils::egui_mpsc::SenderSync<(ZMQMessage, Network)>,
         tx_zmq_status: Option<Sender<ZMQConnectionEvent>>,
     ) -> Result<Self, Box<dyn Error>> {
         let should_stop = Arc::new(AtomicBool::new(false));

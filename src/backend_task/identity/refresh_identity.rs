@@ -5,7 +5,6 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::{Fetch, Identity};
 use dash_sdk::Sdk;
-use tokio::sync::mpsc;
 
 use super::BackendTaskSuccessResult;
 
@@ -14,7 +13,7 @@ impl AppContext {
         &self,
         sdk: &Sdk,
         qualified_identity: QualifiedIdentity,
-        sender: mpsc::Sender<TaskResult>,
+        sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, String> {
         // Fetch the latest state of the identity from Platform
         let refreshed_identity =

@@ -15,7 +15,6 @@ use dash_sdk::dpp::voting::votes::Vote;
 use dash_sdk::platform::transition::vote::PutVote;
 use dash_sdk::Sdk;
 use std::sync::Arc;
-use tokio::sync::mpsc;
 
 impl AppContext {
     pub(super) async fn vote_on_dpns_name(
@@ -24,7 +23,7 @@ impl AppContext {
         vote_choice: ResourceVoteChoice,
         voters: &[QualifiedIdentity],
         sdk: &Sdk,
-        sender: mpsc::Sender<TaskResult>,
+        sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, String> {
         // Send a refresh task to the frontend
         // In particular, use this to show the cast is in progress on Scheduled Votes Screen

@@ -8,7 +8,6 @@ use dash_sdk::platform::Identifier;
 use eframe::epaint::Color32;
 use egui::ComboBox;
 use std::collections::BTreeMap;
-use std::sync::atomic::Ordering;
 
 #[derive(Default, Clone)]
 pub struct GroupMemberUI {
@@ -153,7 +152,7 @@ impl TokensScreen {
                                             let id_str = identifier.to_string(Encoding::Base58);
 
                                             // Prevent duplicates unless in developer mode
-                                            if !self.app_context.developer_mode.load(Ordering::Relaxed)
+                                            if !self.app_context.is_developer_mode()
                                                 && group_ui
                                                 .members
                                                 .iter()
@@ -177,7 +176,7 @@ impl TokensScreen {
                                 ui.text_edit_singleline(&mut member.power_str);
 
                                 // Show red warning if someone else already used this identity
-                                if self.app_context.developer_mode.load(Ordering::Relaxed)
+                                if self.app_context.is_developer_mode()
                                     && !group_ui.members[j].identity_str.is_empty()
                                     && group_ui.members.iter().enumerate().any(|(i, m)| {
                                     i > j && m.identity_str == group_ui.members[j].identity_str

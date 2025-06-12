@@ -29,7 +29,7 @@ use dash_sdk::{Error, Sdk};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) enum DocumentTask {
+pub enum DocumentTask {
     BroadcastDocument(
         Document,
         Option<TokenPaymentInfo>,

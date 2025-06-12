@@ -971,6 +971,9 @@ pub struct TokensScreen {
     reward_explanations: IndexMap<IdentityTokenIdentifier, IntervalEvaluationExplanation>,
     show_explanation_popup: Option<IdentityTokenIdentifier>,
 
+    // Token info popup
+    show_token_info_popup: Option<Identifier>,
+
     // ====================================
     //           Token Creator
     // ====================================
@@ -1308,6 +1311,7 @@ impl TokensScreen {
             // Reward explanations
             reward_explanations: IndexMap::new(),
             show_explanation_popup: None,
+            show_token_info_popup: None,
 
             // Token Creator
             selected_token_preset: None,

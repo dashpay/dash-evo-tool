@@ -2751,15 +2751,6 @@ impl ScreenLike for TokensScreen {
                 self.refreshing_status = RefreshingStatus::NotRefreshing;
                 self.contract_details_loading = false;
             }
-            BackendTaskSuccessResult::TokenEstimatedNonClaimedPerpetualDistributionAmount(
-                identity_token_id,
-                amount,
-            ) => {
-                self.refreshing_status = RefreshingStatus::NotRefreshing;
-                if let Some(itb) = self.my_tokens.get_mut(&identity_token_id) {
-                    itb.estimated_unclaimed_rewards = Some(amount)
-                }
-            }
             BackendTaskSuccessResult::TokenEstimatedNonClaimedPerpetualDistributionAmountWithExplanation(
                 identity_token_id,
                 amount,

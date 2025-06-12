@@ -305,12 +305,41 @@ impl ScreenLike for AddKeyScreen {
                     egui::ComboBox::from_id_salt("purpose_selector")
                         .selected_text(format!("{:?}", self.purpose))
                         .show_ui(ui, |ui| {
-                            ui.selectable_value(
-                                &mut self.purpose,
-                                Purpose::AUTHENTICATION,
-                                "AUTHENTICATION",
-                            );
-                            ui.selectable_value(&mut self.purpose, Purpose::TRANSFER, "TRANSFER");
+                            if self.enable_contract_bounds {
+                                // When contract bounds are enabled, only allow ENCRYPTION and DECRYPTION
+                                ui.selectable_value(
+                                    &mut self.purpose,
+                                    Purpose::ENCRYPTION,
+                                    "ENCRYPTION",
+                                );
+                                ui.selectable_value(
+                                    &mut self.purpose,
+                                    Purpose::DECRYPTION,
+                                    "DECRYPTION",
+                                );
+                            } else {
+                                // When contract bounds are disabled, show all purpose options
+                                ui.selectable_value(
+                                    &mut self.purpose,
+                                    Purpose::AUTHENTICATION,
+                                    "AUTHENTICATION",
+                                );
+                                ui.selectable_value(
+                                    &mut self.purpose,
+                                    Purpose::TRANSFER,
+                                    "TRANSFER",
+                                );
+                                ui.selectable_value(
+                                    &mut self.purpose,
+                                    Purpose::ENCRYPTION,
+                                    "ENCRYPTION",
+                                );
+                                ui.selectable_value(
+                                    &mut self.purpose,
+                                    Purpose::DECRYPTION,
+                                    "DECRYPTION",
+                                );
+                            }
                         });
                     ui.end_row();
 
@@ -319,7 +348,14 @@ impl ScreenLike for AddKeyScreen {
                     egui::ComboBox::from_id_salt("security_level_selector")
                         .selected_text(format!("{:?}", self.security_level))
                         .show_ui(ui, |ui| {
-                            if self.purpose == Purpose::AUTHENTICATION {
+                            if self.enable_contract_bounds {
+                                // When contract bounds are enabled, only allow MEDIUM
+                                ui.selectable_value(
+                                    &mut self.security_level,
+                                    SecurityLevel::MEDIUM,
+                                    "MEDIUM",
+                                );
+                            } else if self.purpose == Purpose::AUTHENTICATION {
                                 ui.selectable_value(
                                     &mut self.security_level,
                                     SecurityLevel::CRITICAL,
@@ -388,7 +424,14 @@ impl ScreenLike for AddKeyScreen {
 
                     // Contract Bounds Toggle
                     ui.label("Enable Contract Bounds:");
+                    let prev_contract_bounds = self.enable_contract_bounds;
                     ui.checkbox(&mut self.enable_contract_bounds, "");
+
+                    // If contract bounds was just enabled, set required values
+                    if self.enable_contract_bounds && !prev_contract_bounds {
+                        self.purpose = Purpose::ENCRYPTION;
+                        self.security_level = SecurityLevel::MEDIUM;
+                    }
                     ui.end_row();
 
                     // Contract ID Input (only shown if contract bounds are enabled)

@@ -236,7 +236,8 @@ impl TransferTokensScreen {
                         .selectable_value(&mut self.selected_friend_index, None, "Other")
                         .clicked()
                     {
-                        // Do nothing, user will type manually
+                        // Clear the text box to avoid confusion
+                        self.receiver_identity_id.clear();
                     }
                 });
 

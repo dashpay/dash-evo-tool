@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use crate::{context::AppContext, model::qualified_identity::DPNSNameInfo};
+use bip39::rand::{rngs::StdRng, Rng, SeedableRng};
 use dash_sdk::{
     dpp::{
         data_contract::{
@@ -15,7 +16,6 @@ use dash_sdk::{
     platform::{transition::put_document::PutDocument, Document, DocumentQuery, FetchMany},
     Sdk,
 };
-use rand::{rngs::StdRng, Rng, SeedableRng};
 
 use super::{BackendTaskSuccessResult, RegisterDpnsNameInput};
 impl AppContext {

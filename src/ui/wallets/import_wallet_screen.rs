@@ -115,7 +115,13 @@ impl ImportWalletScreen {
             self.app_context
                 .db
                 .store_wallet(&wallet, &self.app_context.network)
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| {
+                    if e.to_string().contains("UNIQUE constraint failed: wallet.seed_hash") {
+                        "This wallet has already been imported for another network. Each wallet can only be imported once per network. If you want to use this wallet on a different network, please switch networks first.".to_string()
+                    } else {
+                        e.to_string()
+                    }
+                })?;
 
             // Acquire a write lock and add the new wallet
             if let Ok(mut wallets) = self.app_context.wallets.write() {
@@ -255,7 +261,7 @@ impl ScreenLike for ImportWalletScreen {
 
                     ui.add_space(20.0);
 
-                    ui.heading("4. Select a wallet name to remember it. (This will not go to the blockchain)");
+                    ui.heading("2. Select a wallet name to remember it. (This will not go to the blockchain)");
 
                     ui.add_space(8.0);
 
@@ -266,7 +272,7 @@ impl ScreenLike for ImportWalletScreen {
 
                     ui.add_space(20.0);
 
-                    ui.heading("5. Add a password that must be used to unlock the wallet. (Optional but recommended)");
+                    ui.heading("3. Add a password that must be used to unlock the wallet. (Optional but recommended)");
 
                     ui.add_space(8.0);
 
@@ -334,7 +340,7 @@ impl ScreenLike for ImportWalletScreen {
 
                     ui.add_space(20.0);
 
-                    ui.heading("6. Save the wallet.");
+                    ui.heading("4. Save the wallet.");
                     ui.add_space(5.0);
 
                     // Centered "Save Wallet" button at the bottom

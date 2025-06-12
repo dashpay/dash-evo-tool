@@ -13,7 +13,7 @@ derive_more = "2.0.1"
 egui = "0.31.1"
 egui_extras = "0.31.1"
 egui_commonmark = "0.20.0"
-rfd = "0.15.1"
+rfd = "0.15.3"
 qrcode = "0.14.1"
 eframe = { version = "0.31.1", features = ["persistence"] }
 base64 = "0.22.1"
@@ -21,49 +21,52 @@ dash-sdk = { git = "https://github.com/dashpay/platform", rev = "5b8b29df2d0f58f
 thiserror = "2"
 serde = "1.0.219"
 serde_json = "1.0.140"
-tokio = { version = "1.44.2", features = ["full"] }
+serde_yaml = { version = "0.9.34-deprecated" }
+tokio = { version = "1.45.1", features = ["full"] }
 bincode = { version = "=2.0.0-rc.3", features = ["serde"] }
 hex = { version = "0.4.3" }
 itertools = "0.14.0"
 enum-iterator = "2.1.0"
-futures = "0.3.30"
-rand = "0.8"
-tracing = "0.1.40"
-tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
+futures = "0.3.31"
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 dotenvy = "0.15.7"
 envy = "0.4.2"
-chrono = "0.4"
+chrono = "0.4.41"
 chrono-humanize = "0.2.3"
-sha2 = "0.10.8"
-arboard = { version = "3.4.0", default-features = false, features = [
+sha2 = "0.10.9"
+arboard = { version = "3.5.0", default-features = false, features = [
     "windows-sys",
 ] }
-directories = "5.0"
-rusqlite = { version = "0.32.1", features = ["functions"] }
-serde_yaml = "0.9.34"
-image = { version = "0.25.2", default-features = false, features = ["png"] }
-bitflags = "2.6.0"
-libsqlite3-sys = { version = "0.30.1", features = ["bundled"] }
-rust-embed = "8.5.0"
+directories = "6.0.0"
+rusqlite = { version = "0.36.0", features = ["functions"] }
+image = { version = "0.25.6", default-features = false, features = ["png"] }
+bitflags = "2.9.1"
+libsqlite3-sys = { version = "0.34.0", features = ["bundled"] }
+rust-embed = "8.7.2"
 zeroize = "1.8.1"
 zxcvbn = "3.1.0"
-argon2 = "0.5" # For Argon2 key derivation
-aes-gcm = "0.10" # For AES-256-GCM encryption
-crossbeam-channel = "0.5.13"
-regex = "1.11"
+argon2 = "0.5.3" # For Argon2 key derivation
+aes-gcm = "0.10.3" # For AES-256-GCM encryption
+crossbeam-channel = "0.5.15"
+regex = "1.11.1"
 humantime = "2.2.0"
+<<<<<<< HEAD
 which = { version = "7.0.3" }
 tz-rs = { version = "0.7.0"}
+=======
+which = { version = "8.0.0" }
+>>>>>>> v0.9-dev
 
 [target.'cfg(not(target_os = "windows"))'.dependencies]
-zmq = "0.10"
+zmq = "0.10.0"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 zeromq = "0.4.1"
 
 [target.'cfg(any(target_arch = "x86", target_arch = "x86_64"))'.dependencies]
-native-dialog = "0.7.0"
-raw-cpuid = "11.2.0"
+native-dialog = "0.9.0"
+raw-cpuid = "11.5.0"
 
 [dev-dependencies]
 

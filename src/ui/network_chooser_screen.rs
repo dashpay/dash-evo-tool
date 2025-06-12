@@ -642,7 +642,12 @@ impl ScreenLike for NetworkChooserScreen {
             RootScreenType::RootScreenNetworkChooser,
         );
 
-        action |= island_central_panel(ctx, |ui| self.render_network_table(ui));
+        action |= island_central_panel(ctx, |ui| {
+            egui::ScrollArea::vertical()
+                .auto_shrink([false; 2])
+                .show(ui, |ui| self.render_network_table(ui))
+                .inner
+        });
 
         // Recheck both network status every 3 seconds
         let recheck_time = Duration::from_secs(3);

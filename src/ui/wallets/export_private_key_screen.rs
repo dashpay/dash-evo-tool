@@ -118,7 +118,10 @@ impl ScreenLike for ExportPrivateKeyScreen {
             }
 
             // Show export button if wallet is unlocked but key not yet exported
-            if !needed_unlock && self.private_key.is_none() && ui.button("Export Private Key").clicked() {
+            if !needed_unlock
+                && self.private_key.is_none()
+                && ui.button("Export Private Key").clicked()
+            {
                 self.export_private_key();
             }
 

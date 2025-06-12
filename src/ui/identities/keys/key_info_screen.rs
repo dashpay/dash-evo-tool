@@ -20,6 +20,7 @@ use dash_sdk::dpp::dashcore::sign_message::signed_msg_hash;
 use dash_sdk::dpp::dashcore::{Address, PrivateKey, PubkeyHash, ScriptHash};
 use dash_sdk::dpp::identity::hash::IdentityPublicKeyHashMethodsV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds;
 use dash_sdk::dpp::identity::KeyType;
 use dash_sdk::dpp::identity::KeyType::BIP13_SCRIPT_HASH;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
@@ -164,6 +165,36 @@ impl ScreenLike for KeyInfoScreen {
                                 .strong()
                                 .color(Color32::BLACK),
                             );
+                            ui.end_row();
+                        }
+
+                        // Contract Bounds
+                        if let Some(contract_bounds) = self.key.contract_bounds() {
+                            ui.label(
+                                RichText::new("Contract Bounds:")
+                                    .strong()
+                                    .color(Color32::BLACK),
+                            );
+                            match contract_bounds {
+                                ContractBounds::SingleContract { id } => {
+                                    ui.label(
+                                        RichText::new(format!("Contract ID: {}", id))
+                                            .color(Color32::BLACK),
+                                    );
+                                }
+                                ContractBounds::SingleContractDocumentType {
+                                    id,
+                                    document_type_name,
+                                } => {
+                                    ui.label(
+                                        RichText::new(format!(
+                                            "Contract ID: {}\nDocument Type: {}",
+                                            id, document_type_name
+                                        ))
+                                        .color(Color32::BLACK),
+                                    );
+                                }
+                            }
                             ui.end_row();
                         }
 

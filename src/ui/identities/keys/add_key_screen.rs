@@ -14,8 +14,11 @@ use crate::ui::{MessageType, ScreenLike};
 use bip39::rand::{rngs::StdRng, SeedableRng};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::hash::IdentityPublicKeyHashMethodsV0;
+use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds;
 use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
+use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+use dash_sdk::dpp::prelude::Identifier;
 use dash_sdk::dpp::prelude::TimestampMillis;
 use eframe::egui::{self, Context};
 use egui::{Color32, RichText, Ui};
@@ -43,6 +46,9 @@ pub struct AddKeyScreen {
     wallet_password: String,
     show_password: bool,
     error_message: Option<String>,
+    contract_id_input: String,
+    document_type_input: String,
+    enable_contract_bounds: bool,
 }
 
 impl AddKeyScreen {
@@ -70,6 +76,9 @@ impl AddKeyScreen {
             wallet_password: String::new(),
             show_password: false,
             error_message,
+            contract_id_input: String::new(),
+            document_type_input: String::new(),
+            enable_contract_bounds: false,
         }
     }
 
@@ -87,6 +96,33 @@ impl AddKeyScreen {
                     self.add_key_status =
                         AddKeyStatus::ErrorMessage(format!("Issue verifying private key: {}", err));
                 } else {
+                    // Handle contract bounds if enabled
+                    let contract_bounds = if self.enable_contract_bounds
+                        && !self.contract_id_input.is_empty()
+                    {
+                        match Identifier::from_string(&self.contract_id_input, Encoding::Base58) {
+                            Ok(contract_id) => {
+                                if self.document_type_input.is_empty() {
+                                    Some(ContractBounds::SingleContract { id: contract_id })
+                                } else {
+                                    Some(ContractBounds::SingleContractDocumentType {
+                                        id: contract_id,
+                                        document_type_name: self.document_type_input.clone(),
+                                    })
+                                }
+                            }
+                            Err(e) => {
+                                self.add_key_status = AddKeyStatus::ErrorMessage(format!(
+                                    "Invalid contract ID: {}",
+                                    e
+                                ));
+                                return app_action;
+                            }
+                        }
+                    } else {
+                        None
+                    };
+
                     let new_key = IdentityPublicKeyV0 {
                         id: self.identity.identity.get_public_key_max_id() + 1,
                         key_type: self.key_type,
@@ -95,7 +131,7 @@ impl AddKeyScreen {
                         data: public_key_data_result.unwrap().into(),
                         read_only: false,
                         disabled_at: None,
-                        contract_bounds: None,
+                        contract_bounds,
                     };
 
                     // Validate the private key against the public key
@@ -175,6 +211,9 @@ impl AddKeyScreen {
                     IdentityTask::RefreshIdentity(self.identity.clone()),
                 ));
                 self.private_key_input = String::new();
+                self.contract_id_input = String::new();
+                self.document_type_input = String::new();
+                self.enable_contract_bounds = false;
                 self.add_key_status = AddKeyStatus::NotStarted;
             }
         });
@@ -346,6 +385,29 @@ impl ScreenLike for AddKeyScreen {
                         self.generate_random_private_key();
                     }
                     ui.end_row();
+
+                    // Contract Bounds Toggle
+                    ui.label("Enable Contract Bounds:");
+                    ui.checkbox(&mut self.enable_contract_bounds, "");
+                    ui.end_row();
+
+                    // Contract ID Input (only shown if contract bounds are enabled)
+                    if self.enable_contract_bounds {
+                        ui.label("Contract ID:");
+                        ui.horizontal(|ui| {
+                            ui.text_edit_singleline(&mut self.contract_id_input);
+                            ui.label(RichText::new("(required)").size(10.0).color(Color32::GRAY));
+                        });
+                        ui.end_row();
+
+                        // Document Type Input
+                        ui.label("Document Type Name:");
+                        ui.horizontal(|ui| {
+                            ui.text_edit_singleline(&mut self.document_type_input);
+                            ui.label(RichText::new("(optional)").size(10.0).color(Color32::GRAY));
+                        });
+                        ui.end_row();
+                    }
                 });
             ui.add_space(20.0);
 

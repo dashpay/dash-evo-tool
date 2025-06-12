@@ -195,7 +195,7 @@ impl PauseTokensScreen {
             .collapsible(false)
             .open(&mut is_open)
             .show(ui.ctx(), |ui| {
-                ui.label("Are you sure you want to pause all token actions for this contract?");
+                ui.label("Are you sure you want to pause token transfers for this contract?");
                 ui.add_space(10.0);
 
                 // Confirm

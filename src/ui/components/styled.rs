@@ -280,7 +280,7 @@ pub fn island_central_panel<R>(ctx: &Context, content: impl FnOnce(&mut Ui) -> R
         .frame(
             Frame::new()
                 .fill(DashColors::BACKGROUND) // Light background instead of transparent
-                .inner_margin(Margin::symmetric(20, 10)), // Increased horizontal margin to prevent edge touching
+                .inner_margin(Margin::symmetric(10, 10)), // Standard margins for all panels
         )
         .show(ctx, |ui| {
             // Calculate responsive margins based on available width, but ensure minimum spacing

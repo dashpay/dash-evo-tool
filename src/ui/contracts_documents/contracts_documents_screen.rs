@@ -6,8 +6,8 @@ use crate::context::AppContext;
 use crate::model::qualified_contract::QualifiedContract;
 use crate::ui::components::contract_chooser_panel::add_contract_chooser_panel;
 use crate::ui::components::left_panel::add_left_panel;
-use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::theme::{DashColors, Shadow, Shape};
 use crate::ui::{BackendTaskSuccessResult, MessageType, RootScreenType, ScreenLike, ScreenType};
 use crate::utils::parsers::{DocumentQueryTextInputParser, TextInputParser};
 use chrono::{DateTime, Utc};
@@ -19,7 +19,7 @@ use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::prelude::TimestampMillis;
 use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::Start;
 use dash_sdk::platform::{Document, DocumentQuery, Identifier};
-use egui::{Color32, Context, ScrollArea, Ui};
+use egui::{CentralPanel, Color32, Context, Frame, Margin, ScrollArea, Stroke, Ui};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -231,6 +231,7 @@ impl DocumentQueryScreen {
         ui.separator();
         ui.add_space(10.0);
 
+        // Controls section
         if !self.matching_documents.is_empty() {
             ui.horizontal(|ui| {
                 ui.label("Filter documents:");
@@ -315,49 +316,62 @@ impl DocumentQueryScreen {
 
         ui.add_space(5.0);
 
-        ScrollArea::both().show(ui, |ui| {
-            // Remove ui.set_width to respect parent container margins
+        // Calculate available height minus space for pagination controls and margins
+        let available_height = ui.available_height();
+        let pagination_height = 80.0; // Reserve more space for pagination buttons and margins
+        let document_area_height = (available_height - pagination_height).max(200.0);
 
-            match self.document_query_status {
-                DocumentQueryStatus::WaitingForResult(start_time) => {
-                    let time_elapsed = SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .expect("Time went backwards")
-                        .as_secs()
-                        - start_time;
-                    ui.horizontal(|ui| {
-                        ui.label(format!(
-                            "Fetching documents... Time taken so far: {} seconds",
-                            time_elapsed
-                        ));
-                        ui.add(
-                            egui::widgets::Spinner::default().color(Color32::from_rgb(0, 128, 255)),
-                        );
-                    });
-                }
-                DocumentQueryStatus::Complete => match self.document_display_mode {
-                    DocumentDisplayMode::Json => {
-                        self.show_filtered_docs(ui, DocumentDisplayMode::Json);
+        // Document display area with constrained height
+        ScrollArea::both()
+            .max_height(document_area_height)
+            .show(ui, |ui| {
+                // Use full available width
+                ui.set_width(ui.available_width());
+
+                match self.document_query_status {
+                    DocumentQueryStatus::WaitingForResult(start_time) => {
+                        let time_elapsed = SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .expect("Time went backwards")
+                            .as_secs()
+                            - start_time;
+                        ui.horizontal(|ui| {
+                            ui.label(format!(
+                                "Fetching documents... Time taken so far: {} seconds",
+                                time_elapsed
+                            ));
+                            ui.add(
+                                egui::widgets::Spinner::default()
+                                    .color(Color32::from_rgb(0, 128, 255)),
+                            );
+                        });
                     }
-                    DocumentDisplayMode::Yaml => {
-                        self.show_filtered_docs(ui, DocumentDisplayMode::Yaml);
+                    DocumentQueryStatus::Complete => match self.document_display_mode {
+                        DocumentDisplayMode::Json => {
+                            self.show_filtered_docs(ui, DocumentDisplayMode::Json);
+                        }
+                        DocumentDisplayMode::Yaml => {
+                            self.show_filtered_docs(ui, DocumentDisplayMode::Yaml);
+                        }
+                    },
+
+                    DocumentQueryStatus::ErrorMessage(ref message) => {
+                        self.error_message =
+                            Some((message.to_string(), MessageType::Error, Utc::now()));
+                        ui.colored_label(Color32::DARK_RED, message);
                     }
-                },
-
-                DocumentQueryStatus::ErrorMessage(ref message) => {
-                    self.error_message =
-                        Some((message.to_string(), MessageType::Error, Utc::now()));
-                    ui.colored_label(Color32::DARK_RED, message);
+                    _ => {
+                        // Nothing
+                    }
                 }
-                _ => {
-                    // Nothing
-                }
-            }
-        });
+            });
 
-        ui.add_space(10.0);
-
+        // Pagination controls - always visible at the bottom
         if self.document_query_status == DocumentQueryStatus::Complete {
+            ui.add_space(10.0);
+            ui.separator();
+            ui.add_space(5.0);
+
             ui.horizontal(|ui| {
                 if self.current_page > 1 && ui.button("Previous Page").clicked() {
                     // Handle Previous Page
@@ -683,16 +697,51 @@ impl ScreenLike for DocumentQueryScreen {
             }
         }
 
-        action |= island_central_panel(ctx, |ui| {
-            let mut inner_action = AppAction::None;
-            inner_action |= self.show_input_field(ui);
-            inner_action |= self.show_output(ui);
+        // Custom central panel with adjusted margins for Document Query screen
+        action |= CentralPanel::default()
+            .frame(
+                Frame::new()
+                    .fill(DashColors::BACKGROUND)
+                    .inner_margin(Margin {
+                        left: 10,
+                        right: 19, // More space on the right
+                        top: 10,
+                        bottom: 0, // Less space on the bottom
+                    }),
+            )
+            .show(ctx, |ui| {
+                // Create an island panel with rounded edges
+                Frame::new()
+                    .fill(DashColors::SURFACE)
+                    .stroke(Stroke::new(1.0, DashColors::BORDER_LIGHT))
+                    .inner_margin(Margin::same(20))
+                    .corner_radius(egui::CornerRadius::same(Shape::RADIUS_LG))
+                    .shadow(Shadow::elevated())
+                    .show(ui, |ui| {
+                        let mut inner_action = AppAction::None;
 
-            if self.confirm_remove_contract_popup {
-                inner_action |= self.show_remove_contract_popup(ui);
-            }
-            inner_action
-        });
+                        // Use a vertical layout that allocates space properly
+                        ui.vertical(|ui| {
+                            // Input field at the top
+                            inner_action |= self.show_input_field(ui);
+
+                            // Document display area that expands to fill available space
+                            ui.with_layout(
+                                egui::Layout::top_down_justified(egui::Align::LEFT),
+                                |ui| {
+                                    inner_action |= self.show_output(ui);
+                                },
+                            );
+                        });
+
+                        if self.confirm_remove_contract_popup {
+                            inner_action |= self.show_remove_contract_popup(ui);
+                        }
+                        inner_action
+                    })
+                    .inner
+            })
+            .inner;
 
         action
     }

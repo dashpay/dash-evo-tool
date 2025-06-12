@@ -880,9 +880,9 @@ impl ScreenLike for IdentitiesScreen {
                 inner_action |= self.render_identities_view(ui, &identities_vec);
             }
 
-            // If we are refreshing, show a spinner at the bottom
+            // Show either refreshing indicator or message, but not both
             if let IdentitiesRefreshingStatus::Refreshing(start_time) = self.refreshing_status {
-                ui.add_space(5.0);
+                ui.add_space(25.0); // Space above
                 let now = Utc::now().timestamp() as u64;
                 let elapsed = now - start_time;
                 ui.horizontal(|ui| {
@@ -890,35 +890,28 @@ impl ScreenLike for IdentitiesScreen {
                     ui.label(format!("Refreshing... Time taken so far: {}", elapsed));
                     ui.add(egui::widgets::Spinner::default().color(Color32::from_rgb(0, 128, 255)));
                 });
-                ui.add_space(10.0);
-            }
-
-            let message = self.backend_message.clone();
-            if let Some((message, message_type, timestamp)) = message {
+                ui.add_space(2.0); // Space below
+            } else if let Some((message, message_type, timestamp)) = self.backend_message.clone() {
                 let message_color = match message_type {
                     MessageType::Error => egui::Color32::DARK_RED,
                     MessageType::Info => egui::Color32::BLACK,
                     MessageType::Success => egui::Color32::DARK_GREEN,
                 };
 
-                ui.add_space(7.0);
-                ui.allocate_ui(egui::Vec2::new(ui.available_width(), 30.0), |ui| {
-                    ui.group(|ui| {
-                        ui.horizontal_wrapped(|ui| {
-                            ui.label(egui::RichText::new(message).color(message_color));
-                            let now = Utc::now();
-                            let elapsed = now.signed_duration_since(timestamp);
-                            if ui
-                                .button(format!("Dismiss ({})", 10 - elapsed.num_seconds()))
-                                .clicked()
-                            {
-                                // Update the state outside the closure
-                                self.dismiss_message();
-                            }
-                        });
-                    });
+                ui.add_space(25.0); // Same space as refreshing indicator
+                ui.horizontal(|ui| {
+                    ui.add_space(10.0);
+
+                    // Calculate remaining seconds
+                    let now = Utc::now();
+                    let elapsed = now.signed_duration_since(timestamp);
+                    let remaining = (10 - elapsed.num_seconds()).max(0);
+
+                    // Add the message with auto-dismiss countdown
+                    let full_msg = format!("{} ({}s)", message, remaining);
+                    ui.label(egui::RichText::new(full_msg).color(message_color));
                 });
-                ui.add_space(10.0);
+                ui.add_space(2.0); // Same space below as refreshing indicator
             }
             inner_action
         });
@@ -930,12 +923,14 @@ impl ScreenLike for IdentitiesScreen {
         match action {
             AppAction::BackendTask(BackendTask::IdentityTask(IdentityTask::RefreshIdentity(_))) => {
                 self.refreshing_status =
-                    IdentitiesRefreshingStatus::Refreshing(Utc::now().timestamp() as u64)
+                    IdentitiesRefreshingStatus::Refreshing(Utc::now().timestamp() as u64);
+                self.backend_message = None // Clear any existing message
             }
             AppAction::BackendTasks(_, _) => {
                 // Going to assume this is only going to be Refresh All
                 self.refreshing_status =
-                    IdentitiesRefreshingStatus::Refreshing(Utc::now().timestamp() as u64)
+                    IdentitiesRefreshingStatus::Refreshing(Utc::now().timestamp() as u64);
+                self.backend_message = None // Clear any existing message
             }
             _ => {}
         }

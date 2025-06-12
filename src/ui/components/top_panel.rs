@@ -58,8 +58,7 @@ fn add_location_view(ui: &mut Ui, location: Vec<(&str, AppAction)>) -> AppAction
     // Wrap in a container that can be positioned vertically
     ui.allocate_ui(ui.available_size(), |ui| {
         // Apply negative vertical offset to move text up
-        let offset = egui::vec2(0.0, -5.0);
-        ui.add_space(0.0); // Reset any spacing
+        let offset = egui::vec2(0.0, -7.0);
 
         ui.allocate_new_ui(
             egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
@@ -120,42 +119,52 @@ fn add_connection_indicator(ui: &mut Ui, app_context: &Arc<AppContext>) -> AppAc
         Color32::DARK_RED
     };
 
-    ui.horizontal(|ui| {
-        ui.add_space(8.0);
-        let (rect, resp) =
-            ui.allocate_exact_size(egui::vec2(circle_size, circle_size), egui::Sense::click());
-        let center = rect.center() + egui::vec2(0.0, 2.0);
+    // Wrap in a container that can be positioned vertically
+    ui.allocate_ui(ui.available_size(), |ui| {
+        ui.allocate_new_ui(
+            egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
+                ui.cursor().min,
+                ui.available_size(),
+            )),
+            |ui| {
+                ui.horizontal(|ui| {
+                    let (rect, resp) = ui.allocate_exact_size(
+                        egui::vec2(circle_size, circle_size),
+                        egui::Sense::click(),
+                    );
+                    let center = rect.center();
 
-        // Draw the background circle with pulsating effect
-        let bg_radius = (circle_size / 2.0 + 3.0) * pulse_scale;
-        ui.painter()
-            .circle_filled(center, bg_radius, color.linear_multiply(0.3));
+                    // Draw the background circle with pulsating effect
+                    let bg_radius = (circle_size / 2.0 + 3.0) * pulse_scale;
+                    ui.painter()
+                        .circle_filled(center, bg_radius, color.linear_multiply(0.3));
 
-        // Draw the main circle
-        ui.painter().circle_filled(center, circle_size / 2.0, color);
+                    // Draw the main circle
+                    ui.painter().circle_filled(center, circle_size / 2.0, color);
 
-        // Request repaint for animation (only when connected and pulsating)
-        if connected {
-            app_context.repaint_animation(ui.ctx());
-        }
-        let tip = if connected {
-            "Connected to Dash Core Wallet"
-        } else {
-            "Disconnected from Dash Core Wallet. Click to start it."
-        };
-        let resp = resp.on_hover_text(tip);
+                    // Request repaint for animation (only when connected and pulsating)
+                    if connected {
+                        app_context.repaint_animation(ui.ctx());
+                    }
+                    let tip = if connected {
+                        "Connected to Dash Core Wallet"
+                    } else {
+                        "Disconnected from Dash Core Wallet. Click to start it."
+                    };
+                    let resp = resp.on_hover_text(tip);
 
-        if resp.clicked() && !connected {
-            let settings = app_context.db.get_settings().ok().flatten();
-            let (custom_path, overwrite) = settings
-                .map(|(_, _, _, custom_path, overwrite)| (custom_path, overwrite))
-                .unwrap_or((None, true));
-            action |= AppAction::BackendTask(BackendTask::CoreTask(CoreTask::StartDashQT(
-                app_context.network,
-                custom_path,
-                overwrite,
-            )));
-        }
+                    if resp.clicked() && !connected {
+                        let settings = app_context.db.get_settings().ok().flatten();
+                        let (custom_path, overwrite) = settings
+                            .map(|(_, _, _, custom_path, overwrite)| (custom_path, overwrite))
+                            .unwrap_or((None, true));
+                        action |= AppAction::BackendTask(BackendTask::CoreTask(
+                            CoreTask::StartDashQT(app_context.network, custom_path, overwrite),
+                        ));
+                    }
+                });
+            },
+        );
     });
     action
 }
@@ -193,9 +202,9 @@ pub fn add_top_panel(
                 .fill(DashColors::SURFACE)
                 .stroke(egui::Stroke::new(1.0, DashColors::BORDER_LIGHT))
                 .inner_margin(Margin {
-                    left: 12,
-                    right: 12,
-                    top: 6,
+                    left: 20,
+                    right: 20,
+                    top: 10,
                     bottom: 10,
                 })
                 .corner_radius(egui::CornerRadius::same(Shape::RADIUS_LG))
@@ -226,10 +235,9 @@ pub fn add_top_panel(
 
                         // Right column: action buttons (right-aligned)
                         columns[2].with_layout(
-                            egui::Layout::right_to_left(egui::Align::Center),
+                            egui::Layout::right_to_left(egui::Align::Center)
+                                .with_cross_align(Align::Center),
                             |ui| {
-                                ui.add_space(8.0);
-
                                 // Separate contract and document-related actions
                                 let mut contract_actions = Vec::new();
                                 let mut doc_actions = Vec::new();

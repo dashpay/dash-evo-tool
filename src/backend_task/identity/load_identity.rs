@@ -302,10 +302,14 @@ impl AppContext {
             wallet_index: None, //todo
             top_ups: Default::default(),
         };
+        let (wallet_seed_hash, identity_id) = qualified_identity.determine_wallet_info()?;
 
         // Insert qualified identity into the database
-        self.insert_local_qualified_identity(&qualified_identity, None)
-            .map_err(|e| format!("Database error: {}", e))?;
+        self.insert_local_qualified_identity(
+            &qualified_identity,
+            Some((&wallet_seed_hash, identity_id)),
+        )
+        .map_err(|e| format!("Database error: {}", e))?;
 
         Ok(BackendTaskSuccessResult::Message(
             "Successfully loaded identity".to_string(),

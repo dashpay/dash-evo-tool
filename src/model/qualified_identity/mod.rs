@@ -8,6 +8,7 @@ use bincode::{Decode, Encode};
 use dash_sdk::dashcore_rpc::dashcore::{signer, PubkeyHash};
 use dash_sdk::dpp::bls_signatures::{Bls12381G2Impl, SignatureSchemes};
 use dash_sdk::dpp::dashcore::address::Payload;
+use dash_sdk::dpp::dashcore::bip32::ChildNumber;
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::{Address, Network, ScriptHash};
 use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
@@ -434,8 +435,48 @@ impl QualifiedIdentity {
 
         keys
     }
-}
 
+    /// Returns the wallet info for the first public key that is in a wallet.
+    ///
+    /// If more than one public key is in a wallet, it returns the first one found.
+    ///
+    /// ## Returns
+    /// A tuple containing the wallet seed hash and the index of the identity in the wallet.
+    pub fn determine_wallet_info(&self) -> Result<(WalletSeedHash, u32), String> {
+        self
+            .private_keys
+            .identity_public_keys()
+            .into_iter()
+            .filter_map(|(_, public_key)| {
+                if let Some(wallet_derivation_path) = &public_key.in_wallet_at_derivation_path {
+                    let seed_hash = wallet_derivation_path.wallet_seed_hash;
+                    let derivation_path = &wallet_derivation_path.derivation_path;
+                    // second to last element is the wallet index
+                    if derivation_path.len() < 2 {
+                        return None; // Not enough elements to get wallet index
+                    }
+                    // Get the wallet index from the second to last element
+                    let wallet_index = match derivation_path[derivation_path.len() - 2] {
+                        ChildNumber::Hardened { index } => Some(index),
+                        ChildNumber::Normal { index } => Some(index),
+                        _ => { tracing::debug!(
+                            ?derivation_path,
+                            "determine wallet: unexpected derivation path format, skipping key"); None},
+                    }?;
+                    // consistency check
+                    if self.wallet_index.is_some_and(|v| v != wallet_index) {
+                        panic!("Inconsistent wallet index found: {:?} vs {:?}", self.wallet_index, wallet_index);
+                    };
+                    Some((seed_hash, wallet_index))
+                } else {
+                    None
+                }})
+            .next()
+            .ok_or(format!(
+                "Cannot derive keys for this identity using any of the loaded wallets. This is not supported yet."
+            ))
+    }
+}
 impl From<Identity> for QualifiedIdentity {
     fn from(value: Identity) -> Self {
         QualifiedIdentity {

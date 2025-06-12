@@ -17,8 +17,8 @@ rfd = "0.15.3"
 qrcode = "0.14.1"
 eframe = { version = "0.31.1", features = ["persistence"] }
 base64 = "0.22.1"
-dash-sdk = { git = "https://github.com/dashpay/platform", rev = "399d2d709e066ac5a61d869a5a70fd11ed0d9f41" }
-thiserror = "2.0.12"
+dash-sdk = { git = "https://github.com/dashpay/platform", rev = "5b8b29df2d0f58f52ae75b8d0672378df4b9e154" }
+thiserror = "2"
 serde = "1.0.219"
 serde_json = "1.0.140"
 serde_yaml = { version = "0.9.34-deprecated" }
@@ -51,7 +51,8 @@ aes-gcm = "0.10.3" # For AES-256-GCM encryption
 crossbeam-channel = "0.5.15"
 regex = "1.11.1"
 humantime = "2.2.0"
-which = { version = "8.0.0" }
+which = { version = "7.0.3" }
+tz-rs = { version = "0.7.0"}
 
 [target.'cfg(not(target_os = "windows"))'.dependencies]
 zmq = "0.10.0"

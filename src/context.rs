@@ -329,17 +329,19 @@ impl AppContext {
         identities
             .into_iter()
             .map(|(mut identity, wallet_id)| {
-                // For each identity, we need to set the wallet information
-                if let Some(wallet) = wallets.get(&wallet_id) {
-                    identity
-                        .associated_wallets
-                        .insert(wallet_id, wallet.clone());
-                } else {
-                    tracing::warn!(
-                        wallet = %hex::encode(wallet_id),
-                        identity = %identity.identity.id(),
-                        "wallet not found for identity when loading local user identities",
-                    );
+                if let Some(wallet_id) = wallet_id {
+                    // For each identity, we need to set the wallet information
+                    if let Some(wallet) = wallets.get(&wallet_id) {
+                        identity
+                            .associated_wallets
+                            .insert(wallet_id, wallet.clone());
+                    } else {
+                        tracing::warn!(
+                            wallet = %hex::encode(wallet_id),
+                            identity = %identity.identity.id(),
+                            "wallet not found for identity when loading local user identities",
+                        );
+                    }
                 }
                 Ok(identity)
             })

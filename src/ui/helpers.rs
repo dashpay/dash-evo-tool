@@ -117,8 +117,12 @@ pub enum TransactionType {
     Withdraw,
     /// Generic document creation/update - security level depends on document type
     DocumentAction,
-    // Token actions such as minting - requires Critical Authentication keys
+    /// Token actions such as minting - requires Critical Authentication keys
     TokenAction,
+    /// Token action of transferring tokens
+    TokenTransfer,
+    /// Token action of claiming
+    TokenClaim,
 }
 
 impl TransactionType {
@@ -130,8 +134,12 @@ impl TransactionType {
             }
             TransactionType::Transfer => vec![Purpose::TRANSFER],
             TransactionType::Withdraw => vec![Purpose::TRANSFER, Purpose::OWNER], // Owner keys handled separately
-            TransactionType::DocumentAction => vec![Purpose::AUTHENTICATION],
-            TransactionType::TokenAction => vec![Purpose::AUTHENTICATION],
+            TransactionType::DocumentAction | TransactionType::TokenAction => {
+                vec![Purpose::AUTHENTICATION]
+            }
+            TransactionType::TokenTransfer | TransactionType::TokenClaim => {
+                vec![Purpose::TRANSFER, Purpose::AUTHENTICATION]
+            }
         }
     }
 
@@ -147,7 +155,9 @@ impl TransactionType {
                 SecurityLevel::HIGH,
                 SecurityLevel::MEDIUM,
             ],
-            TransactionType::TokenAction => vec![SecurityLevel::CRITICAL],
+            TransactionType::TokenAction
+            | TransactionType::TokenTransfer
+            | TransactionType::TokenClaim => vec![SecurityLevel::CRITICAL],
         }
     }
 
@@ -160,6 +170,8 @@ impl TransactionType {
             TransactionType::Withdraw => "Withdraw",
             TransactionType::DocumentAction => "Document Action",
             TransactionType::TokenAction => "Token Action",
+            TransactionType::TokenTransfer => "Token Transfer",
+            TransactionType::TokenClaim => "Token Claim",
         }
     }
 }

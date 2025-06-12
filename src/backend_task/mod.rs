@@ -12,6 +12,7 @@ use crate::ui::tokens::tokens_screen::{
 };
 use contested_names::ScheduledDPNSVote;
 use dash_sdk::dpp::balances::credits::TokenAmount;
+use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::distribution_function::evaluate_interval::IntervalEvaluationExplanation;
 use dash_sdk::dpp::group::group_action::GroupAction;
 use dash_sdk::dpp::prelude::DataContract;
 use dash_sdk::dpp::state_transition::StateTransition;
@@ -76,7 +77,11 @@ pub(crate) enum BackendTaskSuccessResult {
     #[allow(dead_code)] // May be used for token search results
     TokensByKeyword(Vec<TokenInfo>, Option<Start>),
     DescriptionsByKeyword(Vec<ContractDescriptionInfo>, Option<Start>),
-    TokenEstimatedNonClaimedPerpetualDistributionAmount(IdentityTokenIdentifier, TokenAmount),
+    TokenEstimatedNonClaimedPerpetualDistributionAmountWithExplanation(
+        IdentityTokenIdentifier,
+        TokenAmount,
+        IntervalEvaluationExplanation,
+    ),
     ContractsWithDescriptions(
         BTreeMap<Identifier, (Option<ContractDescriptionInfo>, Vec<TokenInfo>)>,
     ),

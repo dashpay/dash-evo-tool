@@ -23,7 +23,6 @@ use dash_sdk::dpp::data_contract::TokenConfiguration;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::state_transition::asset_lock_proof::chain::ChainAssetLockProof;
 use dash_sdk::dpp::identity::state_transition::asset_lock_proof::InstantAssetLockProof;
-use dash_sdk::dpp::identity::Identity;
 use dash_sdk::dpp::prelude::{AssetLockProof, CoreBlockHeight};
 use dash_sdk::dpp::state_transition::batch_transition::methods::StateTransitionCreationOptions;
 use dash_sdk::dpp::state_transition::StateTransitionSigningOptions;
@@ -270,12 +269,6 @@ impl AppContext {
         Ok(())
     }
 
-    #[allow(dead_code)] // May be used for storing identities
-    pub fn insert_local_identity(&self, identity: &Identity) -> Result<()> {
-        self.db
-            .insert_local_qualified_identity(&identity.clone().into(), None, self)
-    }
-
     /// Inserts a local qualified identity into the database
     pub fn insert_local_qualified_identity(
         &self,
@@ -369,25 +362,54 @@ impl AppContext {
     pub fn load_local_user_identities(&self) -> Result<Vec<QualifiedIdentity>> {
         let identities = self.db.get_local_user_identities(self)?;
 
-        let wallets = self.wallets.read().unwrap();
-        identities
+        Ok(identities
             .into_iter()
-            .map(|(mut identity, wallet_id)| {
-                // For each identity, we need to set the wallet information
-                if let Some(wallet) = wallets.get(&wallet_id) {
-                    identity
-                        .associated_wallets
-                        .insert(wallet_id, wallet.clone());
+            .map(|(mut identity, wallet_hash)| {
+                if let Some(wallet_id) = wallet_hash {
+                    // Load wallets for each identity
+                    self.load_wallet_for_identity(
+                        &mut identity,
+                        &[wallet_id],
+                    )
+                    .unwrap_or_else(|e| {
+                        tracing::warn!(
+                            identity = %identity.identity.id(),
+                            error = ?e,
+                            "cannot load wallet for identity when loading local user identities",
+                        )
+                    })
                 } else {
-                    tracing::warn!(
-                        wallet = %hex::encode(wallet_id),
+                    tracing::debug!(
                         identity = %identity.identity.id(),
-                        "wallet not found for identity when loading local user identities",
+                        "no wallet hash found for identity when loading local user identities",
                     );
                 }
-                Ok(identity)
+                identity
             })
-            .collect()
+            .collect())
+    }
+
+    fn load_wallet_for_identity(
+        &self,
+        identity: &mut QualifiedIdentity,
+        wallet_hashes: &[WalletSeedHash],
+    ) -> Result<()> {
+        let wallets = self.wallets.read().unwrap();
+        for wallet_hash in wallet_hashes {
+            if let Some(wallet) = wallets.get(wallet_hash) {
+                identity
+                    .associated_wallets
+                    .insert(wallet_hash.clone(), wallet.clone());
+            } else {
+                tracing::warn!(
+                    wallet = %hex::encode(wallet_hash),
+                    identity = %identity.identity.id(),
+                    "wallet not found for identity when loading local user identities",
+                );
+            }
+        }
+
+        Ok(())
     }
 
     /// Fetches all contested names from the database including past and active ones

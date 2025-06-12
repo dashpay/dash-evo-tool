@@ -366,17 +366,17 @@ impl Database {
     pub fn get_local_user_identities(
         &self,
         app_context: &AppContext,
-    ) -> rusqlite::Result<Vec<(QualifiedIdentity, [u8; 32])>> {
+    ) -> rusqlite::Result<Vec<(QualifiedIdentity, Option<WalletSeedHash>)>> {
         let network = app_context.network.to_string();
 
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT data,wallet FROM identity WHERE is_local = 1 AND network = ? AND identity_type = 'User' AND data IS NOT NULL",
         )?;
-        let identities: Result<Vec<(QualifiedIdentity, WalletSeedHash)>, rusqlite::Error> = stmt
-            .query_map(params![network], |row| {
+        let identities: Result<Vec<(QualifiedIdentity, Option<WalletSeedHash>)>, rusqlite::Error> =
+            stmt.query_map(params![network], |row| {
                 let data: Vec<u8> = row.get(0)?;
-                let wallet_id: WalletSeedHash = row.get(1)?;
+                let wallet_id: Option<WalletSeedHash> = row.get(1)?;
                 let identity: QualifiedIdentity = QualifiedIdentity::from_bytes(&data);
 
                 Ok((identity, wallet_id))

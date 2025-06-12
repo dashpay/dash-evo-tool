@@ -17,7 +17,6 @@ use dash_sdk::platform::Fetch;
 use dash_sdk::Error;
 use std::time::Duration;
 
-
 impl AppContext {
     pub(super) async fn top_up_identity(
         &self,

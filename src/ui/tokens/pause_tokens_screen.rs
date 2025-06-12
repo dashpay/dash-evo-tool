@@ -484,9 +484,7 @@ impl ScreenLike for PauseTokensScreen {
                 );
 
                 // Pause button
-                if self.app_context.is_developer_mode()
-                    || !button_text.contains("Test")
-                {
+                if self.app_context.is_developer_mode() || !button_text.contains("Test") {
                     ui.add_space(10.0);
                     let button =
                         egui::Button::new(RichText::new(button_text).color(Color32::WHITE))

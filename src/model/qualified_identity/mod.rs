@@ -463,7 +463,8 @@ impl QualifiedIdentity {
                             ?derivation_path,
                             "determine wallet: unexpected derivation path format, skipping key"); None},
                     }?;
-                    // consistency check
+                    // consistency check; if we get a different index here, this is non-recoverable error and we should panic
+                    // to avoid unexpected behavior and loss of access to private keys
                     if self.wallet_index.is_some_and(|v| v != wallet_index) {
                         panic!("Inconsistent wallet index found: {:?} vs {:?}", self.wallet_index, wallet_index);
                     };

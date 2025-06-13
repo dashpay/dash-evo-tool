@@ -337,11 +337,11 @@ impl ScreenLike for ImportWalletScreen {
 
                         // Since score ranges from 0 to 4, adjust percentage accordingly
                         let strength_percentage = (self.password_strength / 100.0).min(1.0);
-                        let color = match self.password_strength as i32 {
-                            0..=25 => Color32::RED,
-                            26..=50 => Color32::YELLOW,
-                            51..=75 => Color32::LIGHT_GREEN,
-                            _ => Color32::GREEN,
+                        let fill_color = match self.password_strength as i32 {
+                            0..=25 => Color32::from_rgb(255, 182, 193),    // Light pink
+                            26..=50 => Color32::from_rgb(255, 224, 130),   // Light yellow
+                            51..=75 => Color32::from_rgb(144, 238, 144),   // Light green
+                            _ => Color32::from_rgb(90, 200, 90),           // Medium green
                         };
                         ui.add(
                             egui::ProgressBar::new(strength_percentage as f32)
@@ -354,7 +354,7 @@ impl ScreenLike for ImportWalletScreen {
                                     51..=75 => "Strong".to_string(),
                                     _ => "Very Strong".to_string(),
                                 })
-                                .fill(color),
+                                .fill(fill_color),
                         );
                     });
 

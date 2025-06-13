@@ -589,6 +589,14 @@ impl ScreenLike for NetworkChooserScreen {
         // Reset collapsing states when arriving at this screen
         // This ensures dropdowns are closed when navigating back
         self.should_reset_collapsing_states = true;
+
+        // Reload settings from database to ensure we have the latest values
+        if let Ok(Some((_, _, _, custom_dash_qt_path, overwrite_dash_conf))) =
+            self.current_app_context().get_settings()
+        {
+            self.custom_dash_qt_path = custom_dash_qt_path;
+            self.overwrite_dash_conf = overwrite_dash_conf;
+        }
     }
 
     fn display_message(&mut self, message: &str, _message_type: super::MessageType) {

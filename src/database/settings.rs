@@ -19,8 +19,7 @@ impl Database {
              VALUES (1, ?, ?, 1)
              ON CONFLICT(id) DO UPDATE SET
                 network = excluded.network,
-                start_root_screen = excluded.start_root_screen,
-                database_version = excluded.database_version",
+                start_root_screen = excluded.start_root_screen",
             params![network_str, screen_type_int],
         )?;
         Ok(())

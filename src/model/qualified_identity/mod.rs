@@ -24,6 +24,7 @@ use dash_sdk::dpp::platform_value::BinaryData;
 use dash_sdk::dpp::state_transition::errors::InvalidIdentityPublicKeyTypeError;
 use dash_sdk::dpp::{bls_signatures, ed25519_dalek, ProtocolError};
 use dash_sdk::platform::IdentityPublicKey;
+use egui::Color32;
 use std::collections::{BTreeMap, HashSet};
 use std::fmt::{Display, Formatter};
 use std::sync::{Arc, RwLock};
@@ -87,6 +88,125 @@ pub struct DPNSNameInfo {
     pub acquired_at: u64,
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum IdentityStatus {
+    /// Identity status is unknown, refresh is required.
+    #[default]
+    Unknown = 0,
+    /// Identity creation is in progress, but not yet completed. It can be also an error condition.
+    PendingCreation = 1,
+    /// Identity is in a normal state, fully functional.
+    Active = 2,
+    /// Identity not found on the platform, either failed creation or invalid.
+    NotFound = 3,
+    /// Identity creation failed, it can be due to various reasons.
+    FailedCreation = 4,
+}
+impl From<u8> for IdentityStatus {
+    fn from(value: u8) -> Self {
+        match value {
+            0 => IdentityStatus::Unknown,
+            1 => IdentityStatus::PendingCreation,
+            2 => IdentityStatus::Active,
+            3 => IdentityStatus::NotFound,
+            4 => IdentityStatus::FailedCreation,
+            _ => IdentityStatus::Unknown, // Default to Unknown for any other value
+        }
+    }
+}
+
+impl From<IdentityStatus> for u8 {
+    fn from(status: IdentityStatus) -> Self {
+        match status {
+            IdentityStatus::Unknown => 0,
+            IdentityStatus::PendingCreation => 1,
+            IdentityStatus::Active => 2,
+            IdentityStatus::NotFound => 3,
+            IdentityStatus::FailedCreation => 4,
+        }
+    }
+}
+
+impl Display for IdentityStatus {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            IdentityStatus::Unknown => write!(f, "Unknown"),
+            IdentityStatus::PendingCreation => write!(f, "Pending Creation"),
+            IdentityStatus::Active => write!(f, "Active"),
+            IdentityStatus::NotFound => write!(f, "Not Found"),
+            IdentityStatus::FailedCreation => write!(f, "Creation Failed"),
+        }
+    }
+}
+
+impl From<IdentityStatus> for Color32 {
+    fn from(value: IdentityStatus) -> Self {
+        match value {
+            IdentityStatus::Active => Color32::from_rgb(0, 128, 0), // Green
+            IdentityStatus::Unknown => Color32::from_rgb(128, 128, 128), // Gray
+            IdentityStatus::PendingCreation => Color32::from_rgb(255, 165, 0), // Orange
+            IdentityStatus::NotFound => Color32::from_rgb(255, 0, 0), // Red
+            IdentityStatus::FailedCreation => Color32::from_rgb(255, 0, 0), // Red
+        }
+    } //
+}
+
+impl IdentityStatus {
+    /// Returns identity status as a u8 value, for serialization
+    pub fn as_u8(&self) -> u8 {
+        (*self).into()
+    }
+    /// Constructs identity status from an u8 value, for deserialization
+    pub fn from_u8(x: u8) -> Self {
+        Self::from(x)
+    }
+
+    /// Returns true if the identity status can be updated to the `to` status.
+    pub fn can_update(&self, to: &Self) -> bool {
+        use IdentityStatus::*;
+        let from = self;
+        if from == to {
+            return true; // No change needed
+        }
+
+        match (from, to) {
+            // PendingCreation can be updated to FailedCreation or Active
+            (PendingCreation, FailedCreation) => true,
+            (PendingCreation, Active) => true,
+
+            // FailedCreation can be updated to Active (but it's unlikely)
+            (FailedCreation, Active) => true,
+
+            // Active might disappear - update to NotFound
+            (Active, NotFound) => true,
+
+            // Unknown can be updated to Active or NotFound
+            (Unknown, Active) => true,
+            (Unknown, NotFound) => true,
+
+            // NotFound can be updated to Active or Unknown
+            (NotFound, Active) => true,
+
+            _ => false,
+        }
+    }
+
+    /// Update identity status to the `to` status if the update is allowed.
+    ///
+    /// See [`IdentityStatus::can_update`] for the rules of updating.
+    pub fn update(&mut self, to: Self) {
+        if self.can_update(&to) {
+            *self = to;
+        } else {
+            tracing::trace!(
+                "Invalid attempt to  update identity status from {:?} to {:?}",
+                self,
+                to
+            );
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct QualifiedIdentity {
     pub identity: Identity,
@@ -101,6 +221,7 @@ pub struct QualifiedIdentity {
     /// The index used to register the identity
     pub wallet_index: Option<u32>,
     pub top_ups: BTreeMap<u32, u32>,
+    pub status: IdentityStatus,
 }
 
 impl PartialEq for QualifiedIdentity {
@@ -133,6 +254,9 @@ impl Encode for QualifiedIdentity {
         self.private_keys.encode(encoder)?;
         self.dpns_names.encode(encoder)?;
         // `decrypted_wallets` is skipped
+
+        // we don't encode/decode status - it's stored in the database
+        // self.status.encode(encoder)?;
         Ok(())
     }
 }
@@ -154,6 +278,7 @@ impl Decode for QualifiedIdentity {
             associated_wallets: BTreeMap::new(), // Initialize with an empty vector
             wallet_index: None,
             top_ups: Default::default(),
+            status: IdentityStatus::Unknown, // Loaded from the database, not encoded
         })
     }
 }
@@ -450,6 +575,7 @@ impl From<Identity> for QualifiedIdentity {
             associated_wallets: BTreeMap::new(),
             wallet_index: None,
             top_ups: Default::default(),
+            status: IdentityStatus::Unknown,
         }
     }
 }

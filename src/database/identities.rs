@@ -366,7 +366,7 @@ impl Database {
     pub fn get_local_user_identities(
         &self,
         app_context: &AppContext,
-    ) -> rusqlite::Result<Vec<(QualifiedIdentity, Option<[u8; 32]>)>> {
+    ) -> rusqlite::Result<Vec<(QualifiedIdentity, Option<WalletSeedHash>)>> {
         let network = app_context.network.to_string();
 
         let conn = self.conn.lock().unwrap();

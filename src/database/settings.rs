@@ -1,3 +1,4 @@
+use crate::database::initialization::DEFAULT_DB_VERSION;
 use crate::database::Database;
 use crate::model::password_info::PasswordInfo;
 use crate::ui::RootScreenType;
@@ -16,11 +17,11 @@ impl Database {
         let screen_type_int = start_root_screen.to_int();
         self.execute(
             "INSERT INTO settings (id, network, start_root_screen, database_version)
-             VALUES (1, ?, ?, 1)
+             VALUES (1, ?, ?, ?)
              ON CONFLICT(id) DO UPDATE SET
                 network = excluded.network,
                 start_root_screen = excluded.start_root_screen",
-            params![network_str, screen_type_int],
+            params![network_str, screen_type_int, DEFAULT_DB_VERSION],
         )?;
         Ok(())
     }
@@ -61,14 +62,33 @@ impl Database {
     }
 
     pub fn add_custom_dash_qt_columns(&self, conn: &rusqlite::Connection) -> Result<()> {
-        conn.execute(
-            "ALTER TABLE settings ADD COLUMN custom_dash_qt_path TEXT DEFAULT NULL;",
-            (),
+        // Check if custom_dash_qt_path column exists
+        let custom_dash_qt_path_exists: bool = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('settings') WHERE name='custom_dash_qt_path'",
+            [],
+            |row| row.get::<_, i32>(0).map(|count| count > 0),
         )?;
-        conn.execute(
-            "ALTER TABLE settings ADD COLUMN overwrite_dash_conf INTEGER DEFAULT NULL;",
-            (),
+
+        if !custom_dash_qt_path_exists {
+            conn.execute(
+                "ALTER TABLE settings ADD COLUMN custom_dash_qt_path TEXT DEFAULT NULL;",
+                (),
+            )?;
+        }
+
+        // Check if overwrite_dash_conf column exists
+        let overwrite_dash_conf_exists: bool = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('settings') WHERE name='overwrite_dash_conf'",
+            [],
+            |row| row.get::<_, i32>(0).map(|count| count > 0),
         )?;
+
+        if !overwrite_dash_conf_exists {
+            conn.execute(
+                "ALTER TABLE settings ADD COLUMN overwrite_dash_conf INTEGER DEFAULT NULL;",
+                (),
+            )?;
+        }
 
         Ok(())
     }

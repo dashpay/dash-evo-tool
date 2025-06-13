@@ -194,16 +194,14 @@ impl AppState {
             TokensScreen::new(&mainnet_app_context, TokensSubscreen::TokenCreator);
 
         let (custom_dash_qt_path, overwrite_dash_conf) = match settings.clone() {
-            Some((.., Some(db_custom_dash_qt_path), db_overwrite_dash_qt)) => {
-                (Some(db_custom_dash_qt_path), db_overwrite_dash_qt)
+            Some((.., custom_dash_qt_path, db_overwrite_dash_conf)) => {
+                // Use the stored settings
+                // Note: if custom_dash_qt_path is None, the backend will use platform-specific defaults
+                (custom_dash_qt_path, db_overwrite_dash_conf)
             }
-            _ => {
-                // Find `dash-qt` executable in the system PATH as default, and overwrite dash.conf
-                let dash_qt = which::which("dash-qt")
-                    .map(|path| path.to_string_lossy().to_string())
-                    .inspect_err(|e| tracing::warn!("failed to find dash-qt: {}", e))
-                    .ok();
-                (dash_qt, true)
+            None => {
+                // Only use defaults if there are no settings at all
+                (None, true)
             }
         };
 

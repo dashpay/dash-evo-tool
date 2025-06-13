@@ -12,7 +12,8 @@ use crate::ui::helpers::{add_identity_key_chooser_with_doc_type, TransactionType
 use crate::ui::{MessageType, ScreenLike};
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-use dash_sdk::dpp::identity::TimestampMillis;
+use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+use dash_sdk::dpp::identity::{Purpose, TimestampMillis};
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
 use eframe::egui::Context;
 use egui::{Color32, RichText, Ui};
@@ -207,7 +208,24 @@ impl ScreenLike for RegisterDpnsNameScreen {
             if self.qualified_identities.is_empty() {
                 ui.colored_label(
                     egui::Color32::DARK_RED,
-                    "No qualified identities available to register a DPNS name.",
+                    "No identities loaded. Please load an identity first.",
+                );
+                return;
+            }
+
+            // Check if any identity has suitable private keys for DPNS registration
+            let has_suitable_keys = self.qualified_identities.iter().any(|qi| {
+                qi.private_keys.identity_public_keys().iter().any(|key_ref| {
+                    let key = &key_ref.1.identity_public_key;
+                    // DPNS registration requires Authentication keys
+                    key.purpose() == Purpose::AUTHENTICATION
+                })
+            });
+
+            if !has_suitable_keys {
+                ui.colored_label(
+                    egui::Color32::DARK_RED,
+                    "No identities with authentication private keys loaded. Please load identity keys to register a DPNS name.",
                 );
                 return;
             }

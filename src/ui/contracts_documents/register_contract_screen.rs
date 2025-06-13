@@ -14,6 +14,8 @@ use crate::ui::{BackendTaskSuccessResult, MessageType, ScreenLike};
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Setters;
 use dash_sdk::dpp::data_contract::conversion::json::DataContractJsonConversionMethodsV0;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
 use dash_sdk::platform::{DataContract, IdentityPublicKey};
 use eframe::egui::{self, Color32, Context, TextEdit};
 use egui::{RichText, ScrollArea, Ui};
@@ -329,7 +331,29 @@ impl ScreenLike for RegisterDataContractScreen {
             if self.qualified_identities.is_empty() {
                 ui.colored_label(
                     egui::Color32::DARK_RED,
-                    "No qualified identities available to register a data contract.",
+                    "No identities loaded. Please load an identity first.",
+                );
+                return AppAction::None;
+            }
+
+            // Check if any identity has suitable private keys for contract registration
+            let has_suitable_keys = self.qualified_identities.iter().any(|qi| {
+                qi.private_keys
+                    .identity_public_keys()
+                    .iter()
+                    .any(|key_ref| {
+                        let key = &key_ref.1.identity_public_key;
+                        // Contract registration requires Authentication keys with High or Critical security level
+                        key.purpose() == Purpose::AUTHENTICATION
+                            && (key.security_level() == SecurityLevel::HIGH
+                                || key.security_level() == SecurityLevel::CRITICAL)
+                    })
+            });
+
+            if !has_suitable_keys {
+                ui.colored_label(
+                    egui::Color32::DARK_RED,
+                    "No identities with high or critical authentication private keys loaded. Contract registration requires high or critical security level keys.",
                 );
                 return AppAction::None;
             }

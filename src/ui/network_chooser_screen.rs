@@ -589,6 +589,14 @@ impl ScreenLike for NetworkChooserScreen {
         // Reset collapsing states when arriving at this screen
         // This ensures dropdowns are closed when navigating back
         self.should_reset_collapsing_states = true;
+
+        // Reload settings from database to ensure we have the latest values
+        if let Ok(Some((_, _, _, custom_dash_qt_path, overwrite_dash_conf))) =
+            self.current_app_context().get_settings()
+        {
+            self.custom_dash_qt_path = custom_dash_qt_path;
+            self.overwrite_dash_conf = overwrite_dash_conf;
+        }
     }
 
     fn display_message(&mut self, message: &str, _message_type: super::MessageType) {
@@ -642,7 +650,12 @@ impl ScreenLike for NetworkChooserScreen {
             RootScreenType::RootScreenNetworkChooser,
         );
 
-        action |= island_central_panel(ctx, |ui| self.render_network_table(ui));
+        action |= island_central_panel(ctx, |ui| {
+            egui::ScrollArea::vertical()
+                .auto_shrink([false; 2])
+                .show(ui, |ui| self.render_network_table(ui))
+                .inner
+        });
 
         // Recheck both network status every 3 seconds
         let recheck_time = Duration::from_secs(3);

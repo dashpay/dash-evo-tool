@@ -251,8 +251,39 @@ impl ScreenLike for ImportWalletScreen {
                     ui.heading("1. Select the seed phrase length and enter all words.");
                     self.render_seed_phrase_input(ui);
 
-                    if self.seed_phrase.is_none() && self.seed_phrase_words.iter().all(|string| !string.is_empty()) {
-                        self.seed_phrase = Mnemonic::parse_normalized(self.seed_phrase_words.join(" ").as_str()).ok();
+                    // Check seed phrase validity whenever all words are filled
+                    if self.seed_phrase_words.iter().all(|string| !string.is_empty()) {
+                        match Mnemonic::parse_normalized(self.seed_phrase_words.join(" ").as_str()) {
+                            Ok(mnemonic) => {
+                                self.seed_phrase = Some(mnemonic);
+                                // Clear any existing seed phrase error
+                                if let Some(ref mut error) = self.error {
+                                    if error.contains("Invalid seed phrase") {
+                                        self.error = None;
+                                    }
+                                }
+                            }
+                            Err(_) => {
+                                self.seed_phrase = None;
+                                self.error = Some("Invalid seed phrase. Please check that all words are spelled correctly and are valid BIP39 words.".to_string());
+                            }
+                        }
+                    } else {
+                        // Clear seed phrase and error if not all words are filled
+                        self.seed_phrase = None;
+                        if let Some(ref mut error) = self.error {
+                            if error.contains("Invalid seed phrase") {
+                                self.error = None;
+                            }
+                        }
+                    }
+
+                    // Display error message if seed phrase is invalid
+                    if let Some(ref error_msg) = self.error {
+                        if error_msg.contains("Invalid seed phrase") {
+                            ui.add_space(10.0);
+                            ui.colored_label(Color32::from_rgb(255, 100, 100), error_msg);
+                        }
                     }
 
                     if self.seed_phrase.is_none() {
@@ -306,11 +337,11 @@ impl ScreenLike for ImportWalletScreen {
 
                         // Since score ranges from 0 to 4, adjust percentage accordingly
                         let strength_percentage = (self.password_strength / 100.0).min(1.0);
-                        let color = match self.password_strength as i32 {
-                            0..=25 => Color32::RED,
-                            26..=50 => Color32::YELLOW,
-                            51..=75 => Color32::LIGHT_GREEN,
-                            _ => Color32::GREEN,
+                        let fill_color = match self.password_strength as i32 {
+                            0..=25 => Color32::from_rgb(255, 182, 193),    // Light pink
+                            26..=50 => Color32::from_rgb(255, 224, 130),   // Light yellow
+                            51..=75 => Color32::from_rgb(144, 238, 144),   // Light green
+                            _ => Color32::from_rgb(90, 200, 90),           // Medium green
                         };
                         ui.add(
                             egui::ProgressBar::new(strength_percentage as f32)
@@ -323,7 +354,7 @@ impl ScreenLike for ImportWalletScreen {
                                     51..=75 => "Strong".to_string(),
                                     _ => "Very Strong".to_string(),
                                 })
-                                .fill(color),
+                                .fill(fill_color),
                         );
                     });
 
@@ -372,22 +403,6 @@ impl ScreenLike for ImportWalletScreen {
 
             inner_action
         });
-
-        // Display error popup if there's an error
-        if let Some(error_message) = self.error.as_ref() {
-            let error_message = error_message.clone();
-            egui::Window::new("Error")
-                .resizable(false)
-                .collapsible(false)
-                .anchor(egui::Align2::CENTER_CENTER, Vec2::new(0.0, 0.0))
-                .show(ctx, |ui| {
-                    ui.label(error_message);
-                    ui.add_space(10.0);
-                    if ui.button("Close").clicked() {
-                        self.error = None; // Clear the error to close the popup
-                    }
-                });
-        }
 
         action
     }

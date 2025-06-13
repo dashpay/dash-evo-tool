@@ -124,21 +124,20 @@ impl AppContext {
                                     token_infos.push(token_info);
                                 }
 
-                                if let Some(document) = document_option {
-                                    let contract_description_info = ContractDescriptionInfo {
+                                let contract_description_info =
+                                    document_option.map(|document| ContractDescriptionInfo {
                                         data_contract_id: contract.id(),
                                         description: document
                                             .get("description")
                                             .and_then(|v| v.as_text())
                                             .unwrap_or_default()
                                             .to_string(),
-                                    };
+                                    });
 
-                                    results.insert(
-                                        contract.id(),
-                                        (Some(contract_description_info), token_infos),
-                                    );
-                                }
+                                results.insert(
+                                    contract.id(),
+                                    (contract_description_info, token_infos),
+                                );
                             }
                         }
                         Ok(BackendTaskSuccessResult::ContractsWithDescriptions(results))

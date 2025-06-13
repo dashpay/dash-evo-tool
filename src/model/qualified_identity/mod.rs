@@ -161,15 +161,48 @@ impl IdentityStatus {
         Self::from(x)
     }
 
-    /// Returns true if the identity status should be refreshed using the platform.
-    ///
-    /// Some pending statuses contain more information about the identity than the platform,
-    /// so they should not be refreshed.
-    pub fn should_refresh(&self) -> bool {
+    /// Returns true if the identity status can be updated to the `to` status.
+    pub fn can_update(&self, to: &Self) -> bool {
         use IdentityStatus::*;
-        match self {
-            PendingCreation | FailedCreation => false,
-            Active | Unknown | NotFound => true,
+        let from = self;
+        if from == to {
+            return true; // No change needed
+        }
+
+        match (from, to) {
+            // PendingCreation can be updated to FailedCreation or Active
+            (PendingCreation, FailedCreation) => true,
+            (PendingCreation, Active) => true,
+
+            // FailedCreation can be updated to Active (but it's unlikely)
+            (FailedCreation, Active) => true,
+
+            // Active might disappear - update to NotFound
+            (Active, NotFound) => true,
+
+            // Unknown can be updated to Active or NotFound
+            (Unknown, Active) => true,
+            (Unknown, NotFound) => true,
+
+            // NotFound can be updated to Active or Unknown
+            (NotFound, Active) => true,
+
+            _ => false,
+        }
+    }
+
+    /// Update identity status to the `to` status if the update is allowed.
+    ///
+    /// See [`IdentityStatus::can_update`] for the rules of updating.
+    pub fn update(&mut self, to: Self) {
+        if self.can_update(&to) {
+            *self = to;
+        } else {
+            tracing::trace!(
+                "Invalid attempt to  update identity status from {:?} to {:?}",
+                self,
+                to
+            );
         }
     }
 }

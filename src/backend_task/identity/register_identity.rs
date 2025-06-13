@@ -383,7 +383,9 @@ impl AppContext {
             }
             Err(e) => {
                 // we failed, set the status accordingly and terminate the process
-                qualified_identity.status = IdentityStatus::FailedCreation;
+                qualified_identity
+                    .status
+                    .update(IdentityStatus::FailedCreation);
 
                 self.insert_local_qualified_identity(
                     &qualified_identity,

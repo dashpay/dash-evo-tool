@@ -46,13 +46,15 @@ impl AppContext {
         match maybe_refreshed_identity {
             Some(refreshed_identity) => {
                 qualified_identity_to_update.identity = refreshed_identity;
-                qualified_identity_to_update.status = IdentityStatus::Active;
+                qualified_identity_to_update
+                    .status
+                    .update(IdentityStatus::Active);
             }
             None => {
                 // it is not found and the status allows refresh, update status to NotFound
-                if qualified_identity_to_update.status.should_refresh() {
-                    qualified_identity_to_update.status = IdentityStatus::NotFound;
-                }
+                qualified_identity_to_update
+                    .status
+                    .update(IdentityStatus::NotFound);
             }
         }
 

@@ -67,6 +67,108 @@ fn get_min_token_price(pricing_schedule: &TokenPricingSchedule) -> u64 {
 }
 
 impl TokensScreen {
+    fn render_token_info_popup_content(&self, ui: &mut Ui, token_info: &TokenInfoWithDataContract) {
+        let config = &token_info.token_configuration;
+
+        ui.heading(&token_info.token_name);
+        ui.separator();
+
+        // Basic Information
+        ui.collapsing("Basic Information", |ui| {
+            egui::Grid::new("token_basic_info")
+                .num_columns(2)
+                .spacing([10.0, 5.0])
+                .show(ui, |ui| {
+                    ui.label("Description:");
+                    ui.label(
+                        token_info
+                            .token_configuration
+                            .description()
+                            .as_ref()
+                            .unwrap_or(&"No description".to_string()),
+                    );
+                    ui.end_row();
+
+                    // Base Supply
+                    ui.label("Base Supply:");
+                    ui.label(config.base_supply().to_string());
+                    ui.end_row();
+
+                    // Max Supply
+                    ui.label("Max Supply:");
+                    if let Some(max_supply) = config.max_supply() {
+                        ui.label(max_supply.to_string());
+                    } else {
+                        ui.label("Unlimited");
+                    }
+                    ui.end_row();
+
+                    // Distribution info
+                    ui.label("Perpetual Distribution:");
+                    ui.label(
+                        if config
+                            .distribution_rules()
+                            .perpetual_distribution()
+                            .is_some()
+                        {
+                            "Yes"
+                        } else {
+                            "No"
+                        },
+                    );
+                    ui.end_row();
+
+                    ui.label("Preprogrammed Distribution:");
+                    ui.label(
+                        if config
+                            .distribution_rules()
+                            .pre_programmed_distribution()
+                            .is_some()
+                        {
+                            "Yes"
+                        } else {
+                            "No"
+                        },
+                    );
+                    ui.end_row();
+
+                    ui.label("Token ID:");
+                    ui.label(token_info.token_id.to_string(Encoding::Base58));
+                    ui.end_row();
+
+                    ui.label("Contract ID:");
+                    ui.label(token_info.data_contract.id().to_string(Encoding::Base58));
+                    ui.end_row();
+
+                    ui.label("Contract Owner:");
+                    ui.label(
+                        token_info
+                            .data_contract
+                            .owner_id()
+                            .to_string(Encoding::Base58),
+                    );
+                    ui.end_row();
+                });
+        });
+
+        // Token Configuration Summary
+        ui.collapsing("Token Configuration", |ui| {
+            ui.label("This token has the following configuration:");
+            ui.add_space(5.0);
+
+            // Show raw configuration as JSON for now
+            if let Ok(json_str) = serde_json::to_string_pretty(&config) {
+                egui::ScrollArea::vertical()
+                    .max_height(300.0)
+                    .show(ui, |ui| {
+                        ui.code(&json_str);
+                    });
+            } else {
+                ui.label("Unable to display configuration details");
+            }
+        });
+    }
+
     pub(super) fn render_my_tokens_subscreen(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
         if self.all_known_tokens.is_empty() {
@@ -85,6 +187,46 @@ impl TokensScreen {
                 }
             }
         }
+
+        // Show token info popup
+        if let Some(token_id) = self.show_token_info_popup {
+            if let Some(token_info) = self.all_known_tokens.get(&token_id).cloned() {
+                let mut is_open = true;
+                let mut close_popup = false;
+
+                egui::Window::new("Token Configuration Details")
+                    .resizable(true)
+                    .collapsible(false)
+                    .default_width(600.0)
+                    .default_height(500.0)
+                    .open(&mut is_open)
+                    .show(ui.ctx(), |ui| {
+                        // Add white background frame
+                        egui::Frame::new()
+                            .fill(egui::Color32::WHITE)
+                            .inner_margin(egui::Margin::same(10))
+                            .show(ui, |ui| {
+                                egui::ScrollArea::vertical().show(ui, |ui| {
+                                    self.render_token_info_popup_content(ui, &token_info);
+
+                                    ui.separator();
+                                    if ui.button("Close").clicked() {
+                                        close_popup = true;
+                                    }
+                                });
+                            });
+                    });
+
+                // Handle close actions
+                if !is_open || close_popup {
+                    self.show_token_info_popup = None;
+                }
+            } else {
+                // Token not found, close popup
+                self.show_token_info_popup = None;
+            }
+        }
+
         action
     }
     fn render_no_owned_tokens(&mut self, ui: &mut Ui) -> AppAction {
@@ -800,7 +942,6 @@ impl TokensScreen {
                 .column(Column::initial(200.0).resizable(true)) // Token ID
                 .column(Column::initial(80.0).resizable(true)) // Description
                 .column(Column::initial(80.0).resizable(true)) // Actions
-                // .column(Column::initial(80.0).resizable(true)) // Token Info
                 .header(30.0, |mut header| {
                     header.col(|ui| {
                         ui.label("Token Name");
@@ -847,15 +988,26 @@ impl TokensScreen {
                                 ui.label(description.as_ref().unwrap_or(&String::new()));
                             });
                             row.col(|ui| {
-                                // Remove
-                                if ui
-                                    .button("X")
-                                    .on_hover_text("Remove token from DET")
-                                    .clicked()
-                                {
-                                    self.confirm_remove_token_popup = true;
-                                    self.token_to_remove = Some(*token_id);
-                                }
+                                ui.horizontal(|ui| {
+                                    // Info button
+                                    if ui
+                                        .button("ℹ")
+                                        .on_hover_text("View token configuration details")
+                                        .clicked()
+                                    {
+                                        self.show_token_info_popup = Some(*token_id);
+                                    }
+
+                                    // Remove button
+                                    if ui
+                                        .button("X")
+                                        .on_hover_text("Remove token from DET")
+                                        .clicked()
+                                    {
+                                        self.confirm_remove_token_popup = true;
+                                        self.token_to_remove = Some(*token_id);
+                                    }
+                                });
                             });
                         });
                     }

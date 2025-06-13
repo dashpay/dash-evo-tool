@@ -57,8 +57,8 @@ impl TokensScreen {
                         ui.add_space(10.0);
                         let all_identities = match self.app_context.load_local_user_identities() {
                             Ok(identities) => identities.into_iter().filter(|qi| !qi.private_keys.private_keys.is_empty()).collect::<Vec<_>>(),
-                            Err(_) => {
-                                ui.colored_label(Color32::RED, "Error loading identities from local DB");
+                            Err(e) => {
+                                ui.colored_label(Color32::RED, format!("Error loading identities from local DB: {}", e));
                                 return;
                             }
                         };

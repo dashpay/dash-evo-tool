@@ -22,9 +22,10 @@ use crate::ui::tokens::unfreeze_tokens_screen::UnfreezeTokensScreen;
 use crate::ui::tokens::update_token_config::UpdateTokenConfigScreen;
 use crate::ui::tokens::view_token_claims_screen::ViewTokenClaimsScreen;
 use crate::ui::Screen;
-use chrono::Utc;
+use chrono::{Local, Utc};
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
+use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::accessors::v0::TokenConfigurationConventionV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::accessors::v0::TokenDistributionRulesV0Getters;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::tokens::token_pricing_schedule::TokenPricingSchedule;
@@ -34,6 +35,25 @@ use egui::{RichText, Ui};
 use egui_extras::{Column, TableBuilder};
 use std::ops::Range;
 use std::sync::atomic::Ordering;
+
+fn format_token_amount(amount: u64, decimals: u8) -> String {
+    if decimals == 0 {
+        return amount.to_string();
+    }
+
+    let divisor = 10u64.pow(decimals as u32);
+    let whole = amount / divisor;
+    let fraction = amount % divisor;
+
+    if fraction == 0 {
+        whole.to_string()
+    } else {
+        // Format with the appropriate number of decimal places, removing trailing zeros
+        let fraction_str = format!("{:0width$}", fraction, width = decimals as usize);
+        let trimmed = fraction_str.trim_end_matches('0');
+        format!("{}.{}", whole, trimmed)
+    }
+}
 
 /// Get the minimum price for purchasing one token from a pricing schedule
 fn get_min_token_price(pricing_schedule: &TokenPricingSchedule) -> u64 {
@@ -268,9 +288,11 @@ impl TokensScreen {
                                             }
                                         });
                                         row.col(|ui| {
-                                            if let Some(balance) = itb.balance.as_ref().map(|balance| balance.to_string()) {
-                                                ui.label(balance);
-                                            } else if StyledButton::primary("Check").show(ui).clicked() {
+                                            if let Some(balance) = itb.balance {
+                                                let decimals = token_info.token_configuration.conventions().decimals();
+                                                let formatted_balance = format_token_amount(balance, decimals);
+                                                ui.label(formatted_balance);
+                                            } else if ui.button("Check").clicked() {
                                                 action = AppAction::BackendTask(BackendTask::TokenTask(Box::new(TokenTask::QueryIdentityTokenBalance(itb.clone().into()))));
                                             }
                                         });
@@ -279,9 +301,21 @@ impl TokensScreen {
                                                 if itb.available_actions.can_estimate {
                                                         if let Some(known_rewards) = itb.estimated_unclaimed_rewards  {
                                                             ui.horizontal(|ui| {
-                                                                ui.label(known_rewards.to_string());
+                                                                let decimals = token_info.token_configuration.conventions().decimals();
+                                                                let formatted_rewards = format_token_amount(known_rewards, decimals);
+                                                                ui.label(formatted_rewards);
+
+                                                                // Info button to show explanation
+                                                                let identity_token_id = IdentityTokenIdentifier {
+                                                                    identity_id: itb.identity_id,
+                                                                    token_id: itb.token_id,
+                                                                };
+                                                                if ui.button("ℹ").on_hover_text("Show reward calculation explanation").clicked() {
+                                                                    self.show_explanation_popup = Some(identity_token_id);
+                                                                }
+
                                                                 if StyledButton::primary("Estimate").show(ui).clicked() {
-                                                                    action = AppAction::BackendTask(BackendTask::TokenTask(Box::new(TokenTask::EstimatePerpetualTokenRewards {
+                                                                    action = AppAction::BackendTask(BackendTask::TokenTask(Box::new(TokenTask::EstimatePerpetualTokenRewardsWithExplanation {
                                                                         identity_id: itb.identity_id,
                                                                         token_id: itb.token_id,
                                                                     })));
@@ -289,12 +323,13 @@ impl TokensScreen {
                                                                 }
                                                             });
                                                         } else if StyledButton::primary("Estimate").show(ui).clicked() {
-                                                            action = AppAction::BackendTask(BackendTask::TokenTask(Box::new(TokenTask::EstimatePerpetualTokenRewards {
+                                                            action = AppAction::BackendTask(BackendTask::TokenTask(Box::new(TokenTask::EstimatePerpetualTokenRewardsWithExplanation {
                                                                 identity_id: itb.identity_id,
                                                                 token_id: itb.token_id,
                                                             })));
                                                             self.refreshing_status = RefreshingStatus::Refreshing(Utc::now().timestamp() as u64);
                                                         }
+
                                                 }
                                             });
                                         }
@@ -328,6 +363,79 @@ impl TokensScreen {
                             });
             });
 
+        // Show explanation popup if requested
+        if let Some(identity_token_id) = self.show_explanation_popup {
+            if let Some(explanation) = self.reward_explanations.get(&identity_token_id) {
+                let mut is_open = true;
+                egui::Window::new("Reward Calculation Explanation")
+                    .resizable(true)
+                    .collapsible(false)
+                    .default_width(600.0)
+                    .default_height(400.0)
+                    .open(&mut is_open)
+                    .show(ui.ctx(), |ui| {
+                        egui::ScrollArea::vertical().show(ui, |ui| {
+                            ui.heading("Reward Estimation Details");
+                            ui.separator();
+
+                            let decimals = token_info.token_configuration.conventions().decimals();
+                            let formatted_total =
+                                format_token_amount(explanation.total_amount, decimals);
+                            ui.label(format!(
+                                "Total Estimated Rewards: {} tokens",
+                                formatted_total
+                            ));
+                            ui.separator();
+
+                            ui.collapsing("Basic Explanation", |ui| {
+                                let local_time = Local::now();
+                                let timezone = local_time.format("%Z").to_string();
+
+                                let short_explanation = explanation.short_explanation(
+                                    token_info.token_configuration.conventions().decimals(),
+                                    self.app_context.platform_version(),
+                                    &timezone,
+                                );
+
+                                ui.label(short_explanation);
+                            });
+
+                            ui.collapsing("Detailed Explanation", |ui| {
+                                ui.label(explanation.detailed_explanation());
+                            });
+
+                            if !explanation.evaluation_steps.is_empty() {
+                                ui.collapsing("Step-by-Step Breakdown", |ui| {
+                                    for (i, step) in explanation.evaluation_steps.iter().enumerate()
+                                    {
+                                        ui.collapsing(format!("Step {}", i + 1), |ui| {
+                                            if let Some(step_explanation) =
+                                                explanation.explanation_for_step(step.step_index)
+                                            {
+                                                ui.label(step_explanation);
+                                            }
+                                        });
+                                    }
+                                });
+                            }
+
+                            ui.separator();
+                            if ui.button("Close").clicked() {
+                                self.show_explanation_popup = None;
+                            }
+                        });
+                    });
+
+                // If the window was closed via the X button
+                if !is_open {
+                    self.show_explanation_popup = None;
+                }
+            } else {
+                // No explanation available yet, close popup
+                self.show_explanation_popup = None;
+            }
+        }
+
         action
     }
 
@@ -359,7 +467,7 @@ impl TokensScreen {
                 // Disabled, grayed-out Transfer button
                 ui.add_enabled(
                     false,
-                    egui::Button::new(RichText::new("Transfer").color(egui::Color32::GRAY)),
+                    egui::Button::new(RichText::new("Transfer").color(Color32::GRAY)),
                 )
                 .on_hover_text("Transfer not available");
             }
@@ -547,8 +655,9 @@ impl TokensScreen {
         }
         if itb.available_actions.can_claim {
             if range.contains(&pos) && ui.button("View Claims").clicked() {
+                let decimals = token_info.token_configuration.conventions().decimals();
                 action = AppAction::AddScreen(Screen::ViewTokenClaimsScreen(
-                    ViewTokenClaimsScreen::new(itb.into(), &self.app_context),
+                    ViewTokenClaimsScreen::new(itb.into(), decimals, &self.app_context),
                 ));
                 ui.close_menu();
             }

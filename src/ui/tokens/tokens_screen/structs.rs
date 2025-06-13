@@ -35,20 +35,6 @@ pub struct TokenInfoWithDataContract {
     pub description: Option<String>,
 }
 
-impl TokenInfoWithDataContract {
-    /// Constructs a `TokenInfoWithDataContract` from a `TokenInfo` and a `DataContract`.
-    pub fn from_with_data_contract(token_info: TokenInfo, data_contract: DataContract) -> Self {
-        TokenInfoWithDataContract {
-            token_id: token_info.token_id,
-            token_name: token_info.token_name,
-            data_contract,
-            token_position: token_info.token_position,
-            token_configuration: token_info.token_configuration,
-            description: token_info.description,
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
 pub struct IdentityTokenIdentifier {
     pub identity_id: Identifier,

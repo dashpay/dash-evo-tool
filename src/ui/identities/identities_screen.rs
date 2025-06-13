@@ -6,7 +6,7 @@ use crate::context::AppContext;
 use crate::model::qualified_identity::PrivateKeyTarget::{
     PrivateKeyOnMainIdentity, PrivateKeyOnVoterIdentity,
 };
-use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
+use crate::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
 use crate::model::wallet::WalletSeedHash;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
@@ -449,12 +449,50 @@ impl IdentitiesScreen {
             });
     }
 
+    /// Ensures that all identities have their status known (not `Unknown`).
+    ///
+    /// Returns Some `AppAction` if any identity needs to be refreshed,
+    /// otherwise returns None.
+    pub fn ensure_identities_status(&self, identities: &[QualifiedIdentity]) -> Option<AppAction> {
+        if self.refreshing_status != IdentitiesRefreshingStatus::NotRefreshing {
+            // avoid refresh loop
+            return None;
+        }
+
+        let backend_tasks: Vec<BackendTask> = identities
+            .iter()
+            .filter_map(|qi| {
+                if qi.status == IdentityStatus::Unknown {
+                    Some(BackendTask::IdentityTask(IdentityTask::RefreshIdentity(
+                        qi.clone(),
+                    )))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        if !backend_tasks.is_empty() {
+            Some(AppAction::BackendTasks(
+                backend_tasks,
+                BackendTasksExecutionMode::Concurrent,
+            ))
+        } else {
+            None
+        }
+    }
+
     fn render_identities_view(
         &mut self,
         ui: &mut Ui,
         identities: &[QualifiedIdentity],
     ) -> AppAction {
         let mut action = AppAction::None;
+
+        // Refresh identities if needed
+        if let Some(action) = self.ensure_identities_status(identities) {
+            return action;
+        }
 
         let mut local_identities = identities.to_vec();
         if !self.use_custom_order {
@@ -513,21 +551,49 @@ impl IdentitiesScreen {
                                     .as_ref()
                                     .map(|(id, _)| id.public_keys());
 
+                                // Check if identity is active
+                                let is_active = qualified_identity.status == IdentityStatus::Active;
+
                                 body.row(25.0, |mut row| {
                                     row.col(|ui| {
-                                        self.show_alias(ui, qualified_identity);
+                                        // Disable UI elements if identity is not active
+                                        ui.add_enabled_ui(is_active, |ui| {
+                                            self.show_alias(ui, qualified_identity);
+                                        });
                                     });
                                     row.col(|ui| {
-                                        Self::show_identity_id(ui, qualified_identity);
+                                        ui.add_enabled_ui(is_active, |ui| {
+                                            Self::show_identity_id(ui, qualified_identity);
+                                        });
                                     });
                                     row.col(|ui| {
-                                        self.show_in_wallet(ui, qualified_identity);
+                                        ui.add_enabled_ui(is_active, |ui| {
+                                            self.show_in_wallet(ui, qualified_identity);
+                                        });
                                     });
                                     row.col(|ui| {
-                                        ui.label(format!("{}", qualified_identity.identity_type));
+                                        // Always show status information (don't disable this column)
+                                        // Show identity type and status
+                                        let type_text = format!("{}", qualified_identity.identity_type);
+                                        let status_text = qualified_identity.status.to_string();
+
+                                        // Use different colors based on status
+                                        let status_color = match qualified_identity.status {
+                                            IdentityStatus::Active => Color32::from_rgb(0, 128, 0), // Green
+                                            IdentityStatus::Unknown => Color32::from_rgb(128, 128, 128), // Gray
+                                            IdentityStatus::PendingCreation => Color32::from_rgb(255, 165, 0), // Orange
+                                            IdentityStatus::CreationFailed => Color32::from_rgb(255, 0, 0), // Red
+                                            IdentityStatus::NotFoundOnPlatform => Color32::from_rgb(255, 0, 0), // Red
+                                        };
+
+                                        ui.vertical(|ui| {
+                                            ui.label(type_text);
+                                            ui.label(RichText::new(status_text).color(status_color).size(10.0));
+                                        });
                                     });
                                     row.col(|ui| {
-                                        Self::show_balance(ui, qualified_identity);
+                                        ui.add_enabled_ui(is_active, |ui| {
+                                            Self::show_balance(ui, qualified_identity);
 
                                         ui.horizontal(|ui| {
                                             ui.spacing_mut().item_spacing.x = 3.0;
@@ -557,9 +623,11 @@ impl IdentitiesScreen {
                                                 );
                                             }
                                         });
+                                        });
                                     });
                                     row.col(|ui| {
-                                        ui.horizontal(|ui| {
+                                        ui.add_enabled_ui(is_active, |ui| {
+                                            ui.horizontal(|ui| {
                                             ui.spacing_mut().item_spacing.x = 3.0;
 
                                             // Keys dropdown button
@@ -702,6 +770,7 @@ impl IdentitiesScreen {
                                                 self.use_custom_order = true;
                                                 self.move_identity_down(&identity.id());
                                             }
+                                        });
                                         });
                                     });
                                 });

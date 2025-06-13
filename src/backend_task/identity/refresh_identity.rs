@@ -45,6 +45,7 @@ impl AppContext {
         // Update the identity
         if let Some(refreshed_identity) = maybe_refreshed_identity {
             qualified_identity_to_update.identity = refreshed_identity;
+            qualified_identity_to_update.status = IdentityStatus::Active;
         } else {
             // its not found, so we set status to `NotFound`
             qualified_identity_to_update.status = IdentityStatus::NotFoundOnPlatform;

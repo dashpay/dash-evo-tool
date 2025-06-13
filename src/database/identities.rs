@@ -54,16 +54,13 @@ impl Database {
 
         let network = app_context.network.to_string();
 
-        let is_in_creation: u8 = match qualified_identity.status {
-            IdentityStatus::PendingCreation | IdentityStatus::CreationFailed => 1,
-            _ => 0,
-        };
+        let status = qualified_identity.status.to_u8();
 
         if let Some((wallet, wallet_index)) = wallet_and_identity_id_info {
             // If wallet information is provided, insert with wallet and wallet_index
             self.execute(
                 "INSERT OR REPLACE INTO identity
-             (id, data, is_local, alias, identity_type, network, wallet, wallet_index, is_in_creation)
+             (id, data, is_local, alias, identity_type, network, wallet, wallet_index, status)
              VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?)",
                 params![
                     id,
@@ -73,7 +70,7 @@ impl Database {
                     network,
                     wallet,
                     wallet_index,
-                    is_in_creation,
+                    status,
                 ],
             )?;
         } else {
@@ -104,12 +101,14 @@ impl Database {
         // Get the network string from the app context
         let network = app_context.network.to_string();
 
+        let status = qualified_identity.status.to_u8();
+
         // Execute the update statement
         self.execute(
             "UPDATE identity
-         SET data = ?, alias = ?, identity_type = ?, network = ?, is_local = 1
+         SET data = ?, alias = ?, identity_type = ?, network = ?, is_local = 1, status = ?
          WHERE id = ?",
-            params![data, alias, identity_type, network, id],
+            params![data, alias, identity_type, network, status, id],
         )?;
 
         Ok(())
@@ -159,7 +158,7 @@ impl Database {
 
         // Prepare the main statement to select identities, including wallet_index
         let mut stmt = conn.prepare(
-            "SELECT data, alias, wallet_index FROM identity WHERE is_local = 1 AND network = ? AND data IS NOT NULL",
+            "SELECT data, alias, wallet_index, status FROM identity WHERE is_local = 1 AND network = ? AND data IS NOT NULL",
         )?;
 
         // Prepare the statement to select top-ups (will be used multiple times)
@@ -171,10 +170,13 @@ impl Database {
             let data: Vec<u8> = row.get(0)?;
             let alias: Option<String> = row.get(1)?;
             let wallet_index: Option<u32> = row.get(2)?;
+            let status: u8 = row.get(3)?;
 
             let mut identity: QualifiedIdentity = QualifiedIdentity::from_bytes(&data);
             identity.alias = alias;
             identity.wallet_index = wallet_index;
+
+            identity.status = IdentityStatus::from_u8(status);
 
             // Associate wallets
             identity.associated_wallets = wallets.clone(); //todo: use less wallets
@@ -544,6 +546,26 @@ impl Database {
         }
 
         tracing::debug!("Updated network names in database");
+
+        Ok(())
+    }
+
+    pub fn rename_identity_column_is_in_creation_to_status(
+        &self,
+        conn: &Connection,
+    ) -> rusqlite::Result<()> {
+        // Rename the column in the identity table
+        conn.execute(
+            "ALTER TABLE identity RENAME COLUMN is_in_creation TO status",
+            [],
+        )?;
+
+        // Update the status values to match the new enum
+        conn.execute(
+            "UPDATE identity SET status = 2 WHERE status = 0", // Active was 0, now it's 2
+            [],
+        )?;
+        tracing::debug!("Renamed column 'is_in_creation' to 'status' in identity table");
 
         Ok(())
     }

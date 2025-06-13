@@ -87,7 +87,7 @@ pub struct DPNSNameInfo {
     pub acquired_at: u64,
 }
 
-#[derive(Debug, Default, Encode, Decode, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum IdentityStatus {
     /// Identity status is unknown, refresh is required.
     #[default]
@@ -100,6 +100,53 @@ pub enum IdentityStatus {
     CreationFailed = 3,
     /// DET expects identity to be present, but the Platform claims it's not.
     NotFoundOnPlatform = 4,
+}
+impl From<u8> for IdentityStatus {
+    fn from(value: u8) -> Self {
+        match value {
+            0 => IdentityStatus::Unknown,
+            1 => IdentityStatus::PendingCreation,
+            2 => IdentityStatus::Active,
+            3 => IdentityStatus::CreationFailed,
+            4 => IdentityStatus::NotFoundOnPlatform,
+            _ => IdentityStatus::Unknown, // Default to Unknown for any other value
+        }
+    }
+}
+
+impl From<IdentityStatus> for u8 {
+    fn from(status: IdentityStatus) -> Self {
+        match status {
+            IdentityStatus::Unknown => 0,
+            IdentityStatus::PendingCreation => 1,
+            IdentityStatus::Active => 2,
+            IdentityStatus::CreationFailed => 3,
+            IdentityStatus::NotFoundOnPlatform => 4,
+        }
+    }
+}
+
+impl Display for IdentityStatus {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            IdentityStatus::Unknown => write!(f, "Unknown"),
+            IdentityStatus::PendingCreation => write!(f, "Pending Creation"),
+            IdentityStatus::Active => write!(f, "Active"),
+            IdentityStatus::CreationFailed => write!(f, "Creation Failed"),
+            IdentityStatus::NotFoundOnPlatform => write!(f, "Not Found on Platform"),
+        }
+    }
+}
+
+impl IdentityStatus {
+    /// Returns identity status as a u8 value, for serialization
+    pub fn to_u8(&self) -> u8 {
+        return (*self).into();
+    }
+    /// Constructs identity status from an u8 value, for deserialization
+    pub fn from_u8(x: u8) -> Self {
+        Self::from(x)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -149,6 +196,9 @@ impl Encode for QualifiedIdentity {
         self.private_keys.encode(encoder)?;
         self.dpns_names.encode(encoder)?;
         // `decrypted_wallets` is skipped
+
+        // we don't encode/decode status - it's stored in the database
+        // self.status.encode(encoder)?;
         Ok(())
     }
 }
@@ -170,7 +220,7 @@ impl Decode for QualifiedIdentity {
             associated_wallets: BTreeMap::new(), // Initialize with an empty vector
             wallet_index: None,
             top_ups: Default::default(),
-            status: IdentityStatus::Unknown,
+            status: IdentityStatus::Unknown, // Loaded from the database, not encoded
         })
     }
 }

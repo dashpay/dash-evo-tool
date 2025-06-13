@@ -124,14 +124,15 @@ impl AppContext {
                                     token_infos.push(token_info);
                                 }
 
-                                let contract_description_info = document_option.map(|document| ContractDescriptionInfo {
-                                    data_contract_id: contract.id(),
-                                    description: document
-                                        .get("description")
-                                        .and_then(|v| v.as_text())
-                                        .unwrap_or_default()
-                                        .to_string(),
-                                });
+                                let contract_description_info =
+                                    document_option.map(|document| ContractDescriptionInfo {
+                                        data_contract_id: contract.id(),
+                                        description: document
+                                            .get("description")
+                                            .and_then(|v| v.as_text())
+                                            .unwrap_or_default()
+                                            .to_string(),
+                                    });
 
                                 results.insert(
                                     contract.id(),

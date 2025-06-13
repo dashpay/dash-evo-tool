@@ -2,7 +2,7 @@ use crate::app::TaskResult;
 use crate::backend_task::identity::{IdentityRegistrationInfo, RegisterIdentityFundingMethod};
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::context::AppContext;
-use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
+use crate::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
 use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dpp::block::extended_epoch_info::ExtendedEpochInfo;
 use dash_sdk::dpp::dashcore::hashes::Hash;
@@ -348,16 +348,16 @@ impl AppContext {
             )]),
             wallet_index: Some(wallet_identity_index),
             top_ups: Default::default(),
+            status: IdentityStatus::PendingCreation,
         };
 
         if !alias_input.is_empty() {
             qualified_identity.alias = Some(alias_input);
         }
 
-        self.insert_local_qualified_identity_in_creation(
+        self.insert_local_qualified_identity(
             &qualified_identity,
-            wallet_id.as_slice(),
-            wallet_identity_index,
+            Some((wallet_id.as_slice(), wallet_identity_index)),
         )
         .map_err(|e| e.to_string())?;
         self.db

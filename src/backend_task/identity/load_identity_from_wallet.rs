@@ -5,7 +5,7 @@ use crate::model::qualified_identity::encrypted_key_storage::{
 };
 use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
 use crate::model::qualified_identity::{
-    DPNSNameInfo, IdentityType, PrivateKeyTarget, QualifiedIdentity,
+    DPNSNameInfo, IdentityStatus, IdentityType, PrivateKeyTarget, QualifiedIdentity,
 };
 use crate::model::wallet::WalletArcRef;
 use dash_sdk::dpp::dashcore::bip32::{DerivationPath, KeyDerivationType};
@@ -141,6 +141,7 @@ impl AppContext {
             )]),
             wallet_index: Some(identity_index),
             top_ups: Default::default(),
+            status: IdentityStatus::Active,
         };
 
         // Insert qualified identity into the database

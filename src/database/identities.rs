@@ -1,6 +1,6 @@
 use crate::context::AppContext;
 use crate::database::Database;
-use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::qualified_identity::{IdentityStatus, QualifiedIdentity};
 use crate::model::wallet::{Wallet, WalletSeedHash};
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -54,12 +54,17 @@ impl Database {
 
         let network = app_context.network.to_string();
 
+        let is_in_creation: u8 = match qualified_identity.status {
+            IdentityStatus::PendingCreation | IdentityStatus::CreationFailed => 1,
+            _ => 0,
+        };
+
         if let Some((wallet, wallet_index)) = wallet_and_identity_id_info {
             // If wallet information is provided, insert with wallet and wallet_index
             self.execute(
                 "INSERT OR REPLACE INTO identity
-             (id, data, is_local, alias, identity_type, network, wallet, wallet_index)
-             VALUES (?, ?, 1, ?, ?, ?, ?, ?)",
+             (id, data, is_local, alias, identity_type, network, wallet, wallet_index, is_in_creation)
+             VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?)",
                 params![
                     id,
                     data,
@@ -67,7 +72,8 @@ impl Database {
                     identity_type,
                     network,
                     wallet,
-                    wallet_index
+                    wallet_index,
+                    is_in_creation,
                 ],
             )?;
         } else {
@@ -104,38 +110,6 @@ impl Database {
          SET data = ?, alias = ?, identity_type = ?, network = ?, is_local = 1
          WHERE id = ?",
             params![data, alias, identity_type, network, id],
-        )?;
-
-        Ok(())
-    }
-
-    pub fn insert_local_qualified_identity_in_creation(
-        &self,
-        qualified_identity: &QualifiedIdentity,
-        wallet_id: &[u8],
-        identity_index: u32,
-        app_context: &AppContext,
-    ) -> rusqlite::Result<()> {
-        let id = qualified_identity.identity.id().to_vec();
-        let data = qualified_identity.to_bytes();
-        let alias = qualified_identity.alias.clone();
-        let identity_type = format!("{:?}", qualified_identity.identity_type);
-
-        let network = app_context.network.to_string();
-
-        self.execute(
-            "INSERT OR REPLACE INTO identity
-         (id, data, is_local, alias, identity_type, network, is_in_creation, wallet, wallet_index)
-         VALUES (?, ?, 1, ?, ?, ?, 1, ?, ?)",
-            params![
-                id,
-                data,
-                alias,
-                identity_type,
-                network,
-                wallet_id,
-                identity_index
-            ],
         )?;
 
         Ok(())

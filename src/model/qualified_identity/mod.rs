@@ -87,6 +87,21 @@ pub struct DPNSNameInfo {
     pub acquired_at: u64,
 }
 
+#[derive(Debug, Default, Encode, Decode, Clone, Copy, PartialEq, Eq)]
+pub enum IdentityStatus {
+    /// Identity status is unknown, refresh is required.
+    #[default]
+    Unknown = 0,
+    /// Identity creation is in progress, but not yet completed. It can be also an error condition.
+    PendingCreation = 1,
+    /// Identity is in a normal state, fully functional.
+    Active = 2,
+    /// Identity creation failed, it is not usable.
+    CreationFailed = 3,
+    /// DET expects identity to be present, but the Platform claims it's not.
+    NotFoundOnPlatform = 4,
+}
+
 #[derive(Debug, Clone)]
 pub struct QualifiedIdentity {
     pub identity: Identity,
@@ -101,6 +116,7 @@ pub struct QualifiedIdentity {
     /// The index used to register the identity
     pub wallet_index: Option<u32>,
     pub top_ups: BTreeMap<u32, u32>,
+    pub status: IdentityStatus,
 }
 
 impl PartialEq for QualifiedIdentity {
@@ -154,6 +170,7 @@ impl Decode for QualifiedIdentity {
             associated_wallets: BTreeMap::new(), // Initialize with an empty vector
             wallet_index: None,
             top_ups: Default::default(),
+            status: IdentityStatus::Unknown,
         })
     }
 }
@@ -450,6 +467,7 @@ impl From<Identity> for QualifiedIdentity {
             associated_wallets: BTreeMap::new(),
             wallet_index: None,
             top_ups: Default::default(),
+            status: IdentityStatus::Unknown,
         }
     }
 }

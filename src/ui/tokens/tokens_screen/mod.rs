@@ -2822,6 +2822,7 @@ mod tests {
 
     use crate::database::Database;
     use crate::model::qualified_identity::encrypted_key_storage::KeyStorage;
+    use crate::model::qualified_identity::IdentityStatus;
 
     use super::*; use dash_sdk::dpp::dashcore::Network;
     use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::TokenConfigurationConvention;
@@ -2884,6 +2885,7 @@ mod tests {
             associated_wallets: BTreeMap::new(),
             wallet_index: None,
             top_ups: BTreeMap::new(),
+            status: IdentityStatus::Active,
         };
 
         token_creator_ui.selected_identity = Some(mock_identity);
@@ -3180,6 +3182,7 @@ mod tests {
             associated_wallets: BTreeMap::new(),
             wallet_index: None,
             top_ups: BTreeMap::new(),
+            status: IdentityStatus::Active,
         };
 
         token_creator_ui.selected_identity = Some(mock_identity);
@@ -3290,6 +3293,7 @@ mod tests {
             associated_wallets: BTreeMap::new(),
             wallet_index: None,
             top_ups: BTreeMap::new(),
+            status: IdentityStatus::Active,
         };
 
         token_creator_ui.selected_identity = Some(mock_identity);

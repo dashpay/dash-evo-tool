@@ -195,23 +195,13 @@ impl AppState {
 
         let (custom_dash_qt_path, overwrite_dash_conf) = match settings.clone() {
             Some((.., custom_dash_qt_path, db_overwrite_dash_conf)) => {
-                // Use the stored settings, even if custom_dash_qt_path is None
-                let dash_qt_path = custom_dash_qt_path.or_else(|| {
-                    // If no custom path is set, try to find dash-qt in PATH
-                    which::which("dash-qt")
-                        .map(|path| path.to_string_lossy().to_string())
-                        .inspect_err(|e| tracing::warn!("failed to find dash-qt: {}", e))
-                        .ok()
-                });
-                (dash_qt_path, db_overwrite_dash_conf)
+                // Use the stored settings
+                // Note: if custom_dash_qt_path is None, the backend will use platform-specific defaults
+                (custom_dash_qt_path, db_overwrite_dash_conf)
             }
             None => {
                 // Only use defaults if there are no settings at all
-                let dash_qt = which::which("dash-qt")
-                    .map(|path| path.to_string_lossy().to_string())
-                    .inspect_err(|e| tracing::warn!("failed to find dash-qt: {}", e))
-                    .ok();
-                (dash_qt, true)
+                (None, true)
             }
         };
 

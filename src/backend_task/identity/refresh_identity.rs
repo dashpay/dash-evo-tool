@@ -47,8 +47,8 @@ impl AppContext {
             qualified_identity_to_update.identity = refreshed_identity;
             qualified_identity_to_update.status = IdentityStatus::Active;
         } else {
-            // it is not found and we are not pending creation, we set the status to Invalid
-            if qualified_identity_to_update.status != IdentityStatus::PendingCreation {
+            // it is not found and the status allows refresh, update status to NotFound
+            if qualified_identity_to_update.status.should_refresh() {
                 qualified_identity_to_update.status = IdentityStatus::NotFound;
             }
         }

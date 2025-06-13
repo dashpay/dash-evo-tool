@@ -621,7 +621,8 @@ impl IdentitiesScreen {
                                         });
                                     });
                                     row.col(|ui| {
-                                        ui.add_enabled_ui(is_active, |ui| {
+                                        // we always enable the actions column to be able to delete/reorder invalid identities
+                                        ui.add_enabled_ui(true, |ui| {
                                             ui.horizontal(|ui| {
                                             ui.spacing_mut().item_spacing.x = 3.0;
 

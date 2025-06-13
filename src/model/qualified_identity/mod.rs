@@ -99,6 +99,8 @@ pub enum IdentityStatus {
     Active = 2,
     /// Identity not found on the platform, either failed creation or invalid.
     NotFound = 3,
+    /// Identity creation failed, it can be due to various reasons.
+    FailedCreation = 4,
 }
 impl From<u8> for IdentityStatus {
     fn from(value: u8) -> Self {
@@ -107,6 +109,7 @@ impl From<u8> for IdentityStatus {
             1 => IdentityStatus::PendingCreation,
             2 => IdentityStatus::Active,
             3 => IdentityStatus::NotFound,
+            4 => IdentityStatus::FailedCreation,
             _ => IdentityStatus::Unknown, // Default to Unknown for any other value
         }
     }
@@ -119,6 +122,7 @@ impl From<IdentityStatus> for u8 {
             IdentityStatus::PendingCreation => 1,
             IdentityStatus::Active => 2,
             IdentityStatus::NotFound => 3,
+            IdentityStatus::FailedCreation => 4,
         }
     }
 }
@@ -130,6 +134,7 @@ impl Display for IdentityStatus {
             IdentityStatus::PendingCreation => write!(f, "Pending Creation"),
             IdentityStatus::Active => write!(f, "Active"),
             IdentityStatus::NotFound => write!(f, "Not found"),
+            IdentityStatus::FailedCreation => write!(f, "Creation Failed"),
         }
     }
 }
@@ -141,6 +146,7 @@ impl From<IdentityStatus> for Color32 {
             IdentityStatus::Unknown => Color32::from_rgb(128, 128, 128), // Gray
             IdentityStatus::PendingCreation => Color32::from_rgb(255, 165, 0), // Orange
             IdentityStatus::NotFound => Color32::from_rgb(255, 0, 0), // Red
+            IdentityStatus::FailedCreation => Color32::from_rgb(255, 0, 0), // Red
         }
     } //
 }
@@ -153,6 +159,18 @@ impl IdentityStatus {
     /// Constructs identity status from an u8 value, for deserialization
     pub fn from_u8(x: u8) -> Self {
         Self::from(x)
+    }
+
+    /// Returns true if the identity status should be refreshed using the platform.
+    ///
+    /// Some pending statuses contain more information about the identity than the platform,
+    /// so they should not be refreshed.
+    pub fn should_refresh(&self) -> bool {
+        use IdentityStatus::*;
+        match self {
+            PendingCreation | FailedCreation => false,
+            Active | Unknown | NotFound => true,
+        }
     }
 }
 

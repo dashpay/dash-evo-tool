@@ -54,7 +54,7 @@ impl Database {
 
         let network = app_context.network.to_string();
 
-        let status = qualified_identity.status.to_u8();
+        let status = qualified_identity.status.as_u8();
 
         if let Some((wallet, wallet_index)) = wallet_and_identity_id_info {
             // If wallet information is provided, insert with wallet and wallet_index
@@ -101,7 +101,7 @@ impl Database {
         // Get the network string from the app context
         let network = app_context.network.to_string();
 
-        let status = qualified_identity.status.to_u8();
+        let status = qualified_identity.status.as_u8();
 
         // Execute the update statement
         self.execute(

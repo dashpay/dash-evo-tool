@@ -572,12 +572,11 @@ impl IdentitiesScreen {
                                         });
                                     });
                                     row.col(|ui| {
-                                        // Always show status information (don't disable this column)
                                         // Show identity type and status
                                         let type_text = format!("{}", qualified_identity.identity_type);
                                         let status = qualified_identity.status;
-
-                                        ui.add_enabled_ui(is_active, |ui|{
+                                        // Always show status information (don't disable this column)
+                                        ui.add_enabled_ui(true, |ui|{
                                             if is_active {
                                                 ui.label(type_text);
                                             } else{

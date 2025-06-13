@@ -436,9 +436,9 @@ impl AppContext {
     ) -> Result<Identity, String> {
         match identity
             .put_to_platform_and_wait_for_response(
-                &sdk,
+                sdk,
                 asset_lock_proof.clone(),
-                &asset_lock_proof_private_key,
+                asset_lock_proof_private_key,
                 &qualified_identity,
                 None,
             )
@@ -449,9 +449,9 @@ impl AppContext {
                 if matches!(e, Error::Protocol(ProtocolError::UnknownVersionError(_))) {
                     identity
                         .put_to_platform_and_wait_for_response(
-                            &sdk,
+                            sdk,
                             asset_lock_proof.clone(),
-                            &asset_lock_proof_private_key,
+                            asset_lock_proof_private_key,
                             &qualified_identity,
                             None,
                         )
@@ -459,7 +459,7 @@ impl AppContext {
                         .map_err(|e| {
                             let identity_create_transition =
                                 IdentityCreateTransition::try_from_identity_with_signer(
-                                    &identity,
+                                    identity,
                                     asset_lock_proof,
                                     asset_lock_proof_private_key.inner.as_ref(),
                                     &qualified_identity,
@@ -474,7 +474,7 @@ impl AppContext {
                             )
                         })
                 } else {
-                    return Err(e.to_string());
+                    Err(e.to_string())
                 }
             }
         }

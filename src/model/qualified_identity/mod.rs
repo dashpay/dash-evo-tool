@@ -153,8 +153,8 @@ impl From<IdentityStatus> for Color32 {
 
 impl IdentityStatus {
     /// Returns identity status as a u8 value, for serialization
-    pub fn to_u8(&self) -> u8 {
-        return (*self).into();
+    pub fn as_u8(&self) -> u8 {
+        (*self).into()
     }
     /// Constructs identity status from an u8 value, for deserialization
     pub fn from_u8(x: u8) -> Self {

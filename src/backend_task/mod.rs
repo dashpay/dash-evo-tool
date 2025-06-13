@@ -72,6 +72,10 @@ pub(crate) enum BackendTaskSuccessResult {
     DPNSVoteResults(Vec<(String, ResourceVoteChoice, Result<(), String>)>),
     CastScheduledVote(ScheduledDPNSVote),
     FetchedContract(DataContract),
+    FetchedContractWithTokenPosition(
+        DataContract,
+        dash_sdk::dpp::data_contract::TokenContractPosition,
+    ),
     FetchedContracts(Vec<Option<DataContract>>),
     PageDocuments(IndexMap<Identifier, Option<Document>>, Option<Start>),
     #[allow(dead_code)] // May be used for token search results

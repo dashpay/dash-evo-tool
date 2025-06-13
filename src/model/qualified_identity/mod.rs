@@ -24,6 +24,7 @@ use dash_sdk::dpp::platform_value::BinaryData;
 use dash_sdk::dpp::state_transition::errors::InvalidIdentityPublicKeyTypeError;
 use dash_sdk::dpp::{bls_signatures, ed25519_dalek, ProtocolError};
 use dash_sdk::platform::IdentityPublicKey;
+use egui::Color32;
 use std::collections::{BTreeMap, HashSet};
 use std::fmt::{Display, Formatter};
 use std::sync::{Arc, RwLock};
@@ -133,9 +134,21 @@ impl Display for IdentityStatus {
             IdentityStatus::PendingCreation => write!(f, "Pending Creation"),
             IdentityStatus::Active => write!(f, "Active"),
             IdentityStatus::CreationFailed => write!(f, "Creation Failed"),
-            IdentityStatus::NotFoundOnPlatform => write!(f, "Not Found on Platform"),
+            IdentityStatus::NotFoundOnPlatform => write!(f, "Missing"),
         }
     }
+}
+
+impl From<IdentityStatus> for Color32 {
+    fn from(value: IdentityStatus) -> Self {
+        match value {
+            IdentityStatus::Active => Color32::from_rgb(0, 128, 0), // Green
+            IdentityStatus::Unknown => Color32::from_rgb(128, 128, 128), // Gray
+            IdentityStatus::PendingCreation => Color32::from_rgb(255, 165, 0), // Orange
+            IdentityStatus::CreationFailed => Color32::from_rgb(255, 0, 0), // Red
+            IdentityStatus::NotFoundOnPlatform => Color32::from_rgb(255, 0, 0), // Red
+        }
+    } //
 }
 
 impl IdentityStatus {

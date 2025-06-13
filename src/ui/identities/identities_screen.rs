@@ -575,22 +575,17 @@ impl IdentitiesScreen {
                                         // Always show status information (don't disable this column)
                                         // Show identity type and status
                                         let type_text = format!("{}", qualified_identity.identity_type);
-                                        let status_text = qualified_identity.status.to_string();
+                                        let status = qualified_identity.status;
 
-                                        // Use different colors based on status
-                                        let status_color = match qualified_identity.status {
-                                            IdentityStatus::Active => Color32::from_rgb(0, 128, 0), // Green
-                                            IdentityStatus::Unknown => Color32::from_rgb(128, 128, 128), // Gray
-                                            IdentityStatus::PendingCreation => Color32::from_rgb(255, 165, 0), // Orange
-                                            IdentityStatus::CreationFailed => Color32::from_rgb(255, 0, 0), // Red
-                                            IdentityStatus::NotFoundOnPlatform => Color32::from_rgb(255, 0, 0), // Red
-                                        };
-
-                                        ui.vertical(|ui| {
-                                            ui.label(type_text);
-                                            ui.label(RichText::new(status_text).color(status_color).size(10.0));
+                                        ui.add_enabled_ui(is_active, |ui|{
+                                            if is_active {
+                                                ui.label(type_text);
+                                            } else{
+                                                ui.label(RichText::new(status.to_string()).color(status));
+                                            };
                                         });
                                     });
+
                                     row.col(|ui| {
                                         ui.add_enabled_ui(is_active, |ui| {
                                             Self::show_balance(ui, qualified_identity);

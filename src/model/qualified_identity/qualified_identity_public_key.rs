@@ -50,8 +50,9 @@ impl QualifiedIdentityPublicKey {
                 if value.data().len() == 20 {
                     // This is actually a hash, treat it as ECDSA_HASH160
                     let hash160_data = value.data().as_slice();
-                    let pubkey_hash = PubkeyHash::from_slice(hash160_data)
-                        .expect("Expected valid 20-byte pubkey hash for ECDSA_SECP256K1 with hash data");
+                    let pubkey_hash = PubkeyHash::from_slice(hash160_data).expect(
+                        "Expected valid 20-byte pubkey hash for ECDSA_SECP256K1 with hash data",
+                    );
 
                     let address = Address::new(network, Payload::PubkeyHash(pubkey_hash));
 
@@ -78,7 +79,9 @@ impl QualifiedIdentityPublicKey {
                         }
 
                         if let Some(testnet_address) = testnet_address.as_ref() {
-                            if let Some(derivation_path) = wallet.known_addresses.get(testnet_address) {
+                            if let Some(derivation_path) =
+                                wallet.known_addresses.get(testnet_address)
+                            {
                                 in_wallet_at_derivation_path = Some(WalletDerivationPath {
                                     wallet_seed_hash: wallet.seed_hash(),
                                     derivation_path: derivation_path.clone(),
@@ -117,7 +120,9 @@ impl QualifiedIdentityPublicKey {
                         }
 
                         if let Some(testnet_address) = testnet_address.as_ref() {
-                            if let Some(derivation_path) = wallet.known_addresses.get(testnet_address) {
+                            if let Some(derivation_path) =
+                                wallet.known_addresses.get(testnet_address)
+                            {
                                 in_wallet_at_derivation_path = Some(WalletDerivationPath {
                                     wallet_seed_hash: wallet.seed_hash(),
                                     derivation_path: derivation_path.clone(),

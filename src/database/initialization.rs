@@ -381,7 +381,6 @@ impl Database {
         self.initialize_identity_order_table(&conn)?;
         self.initialize_token_order_table(&conn)?;
         self.initialize_identity_token_balances_table(&conn)?;
-        self.rename_identity_column_is_in_creation_to_status(&conn)?;
 
         Ok(())
     }

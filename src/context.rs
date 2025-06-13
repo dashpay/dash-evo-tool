@@ -355,7 +355,7 @@ impl AppContext {
             if let Some(wallet) = wallets.get(wallet_hash) {
                 identity
                     .associated_wallets
-                    .insert(wallet_hash.clone(), wallet.clone());
+                    .insert(*wallet_hash, wallet.clone());
             } else {
                 tracing::warn!(
                     wallet = %hex::encode(wallet_hash),

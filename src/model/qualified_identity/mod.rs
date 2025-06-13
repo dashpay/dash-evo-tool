@@ -133,7 +133,7 @@ impl Display for IdentityStatus {
             IdentityStatus::Unknown => write!(f, "Unknown"),
             IdentityStatus::PendingCreation => write!(f, "Pending Creation"),
             IdentityStatus::Active => write!(f, "Active"),
-            IdentityStatus::NotFound => write!(f, "Not found"),
+            IdentityStatus::NotFound => write!(f, "Not Found"),
             IdentityStatus::FailedCreation => write!(f, "Creation Failed"),
         }
     }

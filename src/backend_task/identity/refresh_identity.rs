@@ -43,13 +43,16 @@ impl AppContext {
             local_qualified_identities.remove(outdated_identity_index);
 
         // Update the identity
-        if let Some(refreshed_identity) = maybe_refreshed_identity {
-            qualified_identity_to_update.identity = refreshed_identity;
-            qualified_identity_to_update.status = IdentityStatus::Active;
-        } else {
-            // it is not found and the status allows refresh, update status to NotFound
-            if qualified_identity_to_update.status.should_refresh() {
-                qualified_identity_to_update.status = IdentityStatus::NotFound;
+        match maybe_refreshed_identity {
+            Some(refreshed_identity) => {
+                qualified_identity_to_update.identity = refreshed_identity;
+                qualified_identity_to_update.status = IdentityStatus::Active;
+            }
+            None => {
+                // it is not found and the status allows refresh, update status to NotFound
+                if qualified_identity_to_update.status.should_refresh() {
+                    qualified_identity_to_update.status = IdentityStatus::NotFound;
+                }
             }
         }
 

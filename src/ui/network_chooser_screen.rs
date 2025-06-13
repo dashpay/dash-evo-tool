@@ -591,7 +591,7 @@ impl ScreenLike for NetworkChooserScreen {
         self.should_reset_collapsing_states = true;
 
         // Reload settings from database to ensure we have the latest values
-        if let Ok(Some((_, _, _, custom_dash_qt_path, overwrite_dash_conf))) =
+        if let Ok(Some((_, _, _, custom_dash_qt_path, overwrite_dash_conf, _))) =
             self.current_app_context().get_settings()
         {
             self.custom_dash_qt_path = custom_dash_qt_path;

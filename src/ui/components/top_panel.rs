@@ -156,7 +156,7 @@ fn add_connection_indicator(ui: &mut Ui, app_context: &Arc<AppContext>) -> AppAc
                     if resp.clicked() && !connected {
                         let settings = app_context.db.get_settings().ok().flatten();
                         let (custom_path, overwrite) = settings
-                            .map(|(_, _, _, custom_path, overwrite)| (custom_path, overwrite))
+                            .map(|(_, _, _, custom_path, overwrite, _)| (custom_path, overwrite))
                             .unwrap_or((None, true));
                         action |= AppAction::BackendTask(BackendTask::CoreTask(
                             CoreTask::StartDashQT(app_context.network, custom_path, overwrite),

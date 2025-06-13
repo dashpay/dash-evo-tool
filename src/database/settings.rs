@@ -1,6 +1,7 @@
 use crate::database::initialization::DEFAULT_DB_VERSION;
 use crate::database::Database;
 use crate::model::password_info::PasswordInfo;
+use crate::ui::theme::ThemeMode;
 use crate::ui::RootScreenType;
 use dash_sdk::dpp::dashcore::Network;
 use rusqlite::{params, Connection, Result};
@@ -93,6 +94,41 @@ impl Database {
         Ok(())
     }
 
+    pub fn add_theme_preference_column(&self, conn: &rusqlite::Connection) -> Result<()> {
+        // Check if theme_preference column exists
+        let theme_preference_exists: bool = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('settings') WHERE name='theme_preference'",
+            [],
+            |row| row.get::<_, i32>(0).map(|count| count > 0),
+        )?;
+
+        if !theme_preference_exists {
+            conn.execute(
+                "ALTER TABLE settings ADD COLUMN theme_preference TEXT DEFAULT 'System';",
+                (),
+            )?;
+        }
+
+        Ok(())
+    }
+
+    pub fn update_theme_preference(&self, theme_preference: ThemeMode) -> Result<()> {
+        let theme_str = match theme_preference {
+            ThemeMode::Light => "Light",
+            ThemeMode::Dark => "Dark",
+            ThemeMode::System => "System",
+        };
+        
+        self.execute(
+            "UPDATE settings
+            SET theme_preference = ?
+            WHERE id = 1",
+            rusqlite::params![theme_str],
+        )?;
+
+        Ok(())
+    }
+
     /// Updates the database version in the settings table.
     pub fn update_database_version(&self, new_version: u16, conn: &Connection) -> Result<()> {
         // Ensure the database version is updated
@@ -117,12 +153,13 @@ impl Database {
             Option<PasswordInfo>,
             Option<String>,
             bool,
+            ThemeMode,
         )>,
     > {
         // Query the settings row
         let conn = self.conn.lock().unwrap();
         let mut stmt =
-            conn.prepare("SELECT network, start_root_screen, password_check, main_password_salt, main_password_nonce, custom_dash_qt_path, overwrite_dash_conf FROM settings WHERE id = 1")?;
+            conn.prepare("SELECT network, start_root_screen, password_check, main_password_salt, main_password_nonce, custom_dash_qt_path, overwrite_dash_conf, theme_preference FROM settings WHERE id = 1")?;
 
         let result = stmt.query_row([], |row| {
             let network: String = row.get(0)?;
@@ -132,6 +169,7 @@ impl Database {
             let main_password_nonce: Option<Vec<u8>> = row.get(4)?;
             let custom_dash_qt_path: Option<String> = row.get(5)?;
             let overwrite_dash_conf: Option<bool> = row.get(6)?;
+            let theme_preference: Option<String> = row.get(7)?;
 
             // Combine the password-related fields if all are present, otherwise set to None
             let password_data = match (password_check, main_password_salt, main_password_nonce) {
@@ -151,12 +189,21 @@ impl Database {
             let root_screen_type = RootScreenType::from_int(start_root_screen)
                 .ok_or_else(|| rusqlite::Error::InvalidQuery)?;
 
+            // Parse theme preference
+            let theme_mode = match theme_preference.as_deref() {
+                Some("Light") => ThemeMode::Light,
+                Some("Dark") => ThemeMode::Dark,
+                Some("System") | None => ThemeMode::System, // Default to System if missing
+                _ => ThemeMode::System, // Default to System for unknown values
+            };
+
             Ok((
                 parsed_network,
                 root_screen_type,
                 password_data,
                 custom_dash_qt_path,
                 overwrite_dash_conf.unwrap_or(true),
+                theme_mode,
             ))
         });
 

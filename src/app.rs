@@ -22,6 +22,7 @@ use crate::ui::tools::proof_log_screen::ProofLogScreen;
 use crate::ui::tools::proof_visualizer_screen::ProofVisualizerScreen;
 use crate::ui::tools::transition_visualizer_screen::TransitionVisualizerScreen;
 use crate::ui::wallets::wallets_screen::WalletsBalancesScreen;
+use crate::ui::theme::ThemeMode;
 use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike, ScreenType};
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -70,6 +71,7 @@ pub struct AppState {
     pub core_message_receiver: mpsc::Receiver<(ZMQMessage, Network)>,
     pub task_result_sender: tokiompsc::Sender<TaskResult>, // Channel sender for sending task results
     pub task_result_receiver: tokiompsc::Receiver<TaskResult>, // Channel receiver for receiving task results
+    pub theme_preference: ThemeMode, // Current theme preference
     last_scheduled_vote_check: Instant, // Last time we checked if there are scheduled masternode votes to cast
 }
 
@@ -150,9 +152,11 @@ impl AppState {
 
         let settings = db.get_settings().expect("expected to get settings");
 
-        let password_info = settings
-            .clone()
-            .and_then(|(_, _, password_info, _, _)| password_info);
+        let (password_info, theme_preference) = if let Some((_, _, password_info, _, _, theme_pref)) = settings.clone() {
+            (password_info, theme_pref)
+        } else {
+            (None, ThemeMode::System) // Default values if no settings found
+        };
 
         let mainnet_app_context =
             match AppContext::new(Network::Dash, db.clone(), password_info.clone()) {
@@ -194,7 +198,7 @@ impl AppState {
             TokensScreen::new(&mainnet_app_context, TokensSubscreen::TokenCreator);
 
         let (custom_dash_qt_path, overwrite_dash_conf) = match settings.clone() {
-            Some((.., custom_dash_qt_path, db_overwrite_dash_conf)) => {
+            Some((.., custom_dash_qt_path, db_overwrite_dash_conf, _theme_pref)) => {
                 // Use the stored settings
                 // Note: if custom_dash_qt_path is None, the backend will use platform-specific defaults
                 (custom_dash_qt_path, db_overwrite_dash_conf)
@@ -221,7 +225,7 @@ impl AppState {
 
         let mut chosen_network = Network::Dash;
 
-        if let Some((network, screen_type, _password_info, _, _)) = settings {
+        if let Some((network, screen_type, _password_info, _, _, _)) = settings {
             selected_main_screen = screen_type;
             chosen_network = network;
             network_chooser_screen.current_network = chosen_network;
@@ -431,6 +435,7 @@ impl AppState {
             core_message_receiver,
             task_result_sender,
             task_result_receiver,
+            theme_preference,
             last_scheduled_vote_check: Instant::now(),
         }
     }
@@ -442,6 +447,14 @@ impl AppState {
             Network::Devnet => self.devnet_app_context.as_ref().expect("expected devnet"),
             Network::Regtest => self.local_app_context.as_ref().expect("expected local"),
             _ => todo!(),
+        }
+    }
+
+    pub fn update_theme_preference(&mut self, new_theme: ThemeMode) {
+        self.theme_preference = new_theme;
+        // Persist to database
+        if let Err(e) = self.current_app_context().db.update_theme_preference(new_theme) {
+            tracing::error!("Failed to save theme preference to database: {}", e);
         }
     }
 
@@ -548,8 +561,8 @@ impl AppState {
 
 impl App for AppState {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Apply Dash theme on first update
-        crate::ui::theme::apply_theme(ctx);
+        // Apply Dash theme with user preference
+        crate::ui::theme::apply_theme(ctx, self.theme_preference);
 
         if let Ok(event) = self.current_app_context().rx_zmq_status.try_recv() {
             if let Ok(mut status) = self.current_app_context().zmq_connection_status.lock() {

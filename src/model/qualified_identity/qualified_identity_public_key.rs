@@ -46,32 +46,28 @@ impl QualifiedIdentityPublicKey {
 
         match value.key_type() {
             KeyType::ECDSA_SECP256K1 => {
-                let pubkey = PublicKey::from_slice(value.data().as_slice())
-                    .expect("Expected valid public key");
+                // Check if data is a full public key (33 bytes) or just a hash (20 bytes)
+                if value.data().len() == 20 {
+                    // This is actually a hash, treat it as ECDSA_HASH160
+                    let hash160_data = value.data().as_slice();
+                    let pubkey_hash = PubkeyHash::from_slice(hash160_data)
+                        .expect("Expected valid 20-byte pubkey hash for ECDSA_SECP256K1 with hash data");
 
-                let address = Address::p2pkh(&pubkey, network);
+                    let address = Address::new(network, Payload::PubkeyHash(pubkey_hash));
 
-                let testnet_address = if network != Network::Dash {
-                    Some(Address::p2pkh(&pubkey, Network::Testnet))
-                } else {
-                    None
-                };
+                    let testnet_address = if network != Network::Dash {
+                        Some(Address::new(
+                            Network::Testnet,
+                            Payload::PubkeyHash(pubkey_hash),
+                        ))
+                    } else {
+                        None
+                    };
 
-                // Iterate over each wallet to check for matching derivation paths
-                for locked_wallet in wallets {
-                    let wallet = locked_wallet.read().unwrap();
-                    if let Some(derivation_path) = wallet.known_addresses.get(&address) {
-                        in_wallet_at_derivation_path = Some(WalletDerivationPath {
-                            wallet_seed_hash: wallet.seed_hash(),
-                            derivation_path: derivation_path.clone(),
-                        });
-                    }
-                    if in_wallet_at_derivation_path.is_some() {
-                        break;
-                    }
-
-                    if let Some(testnet_address) = testnet_address.as_ref() {
-                        if let Some(derivation_path) = wallet.known_addresses.get(testnet_address) {
+                    // Iterate over each wallet to check for matching derivation paths
+                    for locked_wallet in wallets {
+                        let wallet = locked_wallet.read().unwrap();
+                        if let Some(derivation_path) = wallet.known_addresses.get(&address) {
                             in_wallet_at_derivation_path = Some(WalletDerivationPath {
                                 wallet_seed_hash: wallet.seed_hash(),
                                 derivation_path: derivation_path.clone(),
@@ -79,6 +75,57 @@ impl QualifiedIdentityPublicKey {
                         }
                         if in_wallet_at_derivation_path.is_some() {
                             break;
+                        }
+
+                        if let Some(testnet_address) = testnet_address.as_ref() {
+                            if let Some(derivation_path) = wallet.known_addresses.get(testnet_address) {
+                                in_wallet_at_derivation_path = Some(WalletDerivationPath {
+                                    wallet_seed_hash: wallet.seed_hash(),
+                                    derivation_path: derivation_path.clone(),
+                                });
+                            }
+                            if in_wallet_at_derivation_path.is_some() {
+                                break;
+                            }
+                        }
+                    }
+                } else {
+                    // This is a full public key (expected 33 bytes)
+                    let pubkey = PublicKey::from_slice(value.data().as_slice())
+                        .map_err(|e| format!("Expected valid public key: {}", e))
+                        .expect("Expected valid public key");
+
+                    let address = Address::p2pkh(&pubkey, network);
+
+                    let testnet_address = if network != Network::Dash {
+                        Some(Address::p2pkh(&pubkey, Network::Testnet))
+                    } else {
+                        None
+                    };
+
+                    // Iterate over each wallet to check for matching derivation paths
+                    for locked_wallet in wallets {
+                        let wallet = locked_wallet.read().unwrap();
+                        if let Some(derivation_path) = wallet.known_addresses.get(&address) {
+                            in_wallet_at_derivation_path = Some(WalletDerivationPath {
+                                wallet_seed_hash: wallet.seed_hash(),
+                                derivation_path: derivation_path.clone(),
+                            });
+                        }
+                        if in_wallet_at_derivation_path.is_some() {
+                            break;
+                        }
+
+                        if let Some(testnet_address) = testnet_address.as_ref() {
+                            if let Some(derivation_path) = wallet.known_addresses.get(testnet_address) {
+                                in_wallet_at_derivation_path = Some(WalletDerivationPath {
+                                    wallet_seed_hash: wallet.seed_hash(),
+                                    derivation_path: derivation_path.clone(),
+                                });
+                            }
+                            if in_wallet_at_derivation_path.is_some() {
+                                break;
+                            }
                         }
                     }
                 }

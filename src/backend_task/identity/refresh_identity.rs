@@ -47,8 +47,10 @@ impl AppContext {
             qualified_identity_to_update.identity = refreshed_identity;
             qualified_identity_to_update.status = IdentityStatus::Active;
         } else {
-            // its not found, so we set status to `NotFound`
-            qualified_identity_to_update.status = IdentityStatus::NotFoundOnPlatform;
+            // it is not found and we are not pending creation, we set the status to Invalid
+            if qualified_identity_to_update.status != IdentityStatus::PendingCreation {
+                qualified_identity_to_update.status = IdentityStatus::NotFound;
+            }
         }
 
         // Insert the updated identity into local state

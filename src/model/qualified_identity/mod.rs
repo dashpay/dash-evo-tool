@@ -97,10 +97,8 @@ pub enum IdentityStatus {
     PendingCreation = 1,
     /// Identity is in a normal state, fully functional.
     Active = 2,
-    /// Identity creation failed, it is not usable.
-    CreationFailed = 3,
-    /// DET expects identity to be present, but the Platform claims it's not.
-    NotFoundOnPlatform = 4,
+    /// Identity not found on the platform, either failed creation or invalid.
+    NotFound = 3,
 }
 impl From<u8> for IdentityStatus {
     fn from(value: u8) -> Self {
@@ -108,8 +106,7 @@ impl From<u8> for IdentityStatus {
             0 => IdentityStatus::Unknown,
             1 => IdentityStatus::PendingCreation,
             2 => IdentityStatus::Active,
-            3 => IdentityStatus::CreationFailed,
-            4 => IdentityStatus::NotFoundOnPlatform,
+            3 => IdentityStatus::NotFound,
             _ => IdentityStatus::Unknown, // Default to Unknown for any other value
         }
     }
@@ -121,8 +118,7 @@ impl From<IdentityStatus> for u8 {
             IdentityStatus::Unknown => 0,
             IdentityStatus::PendingCreation => 1,
             IdentityStatus::Active => 2,
-            IdentityStatus::CreationFailed => 3,
-            IdentityStatus::NotFoundOnPlatform => 4,
+            IdentityStatus::NotFound => 3,
         }
     }
 }
@@ -133,8 +129,7 @@ impl Display for IdentityStatus {
             IdentityStatus::Unknown => write!(f, "Unknown"),
             IdentityStatus::PendingCreation => write!(f, "Pending Creation"),
             IdentityStatus::Active => write!(f, "Active"),
-            IdentityStatus::CreationFailed => write!(f, "Creation Failed"),
-            IdentityStatus::NotFoundOnPlatform => write!(f, "Missing"),
+            IdentityStatus::NotFound => write!(f, "Not found"),
         }
     }
 }
@@ -145,8 +140,7 @@ impl From<IdentityStatus> for Color32 {
             IdentityStatus::Active => Color32::from_rgb(0, 128, 0), // Green
             IdentityStatus::Unknown => Color32::from_rgb(128, 128, 128), // Gray
             IdentityStatus::PendingCreation => Color32::from_rgb(255, 165, 0), // Orange
-            IdentityStatus::CreationFailed => Color32::from_rgb(255, 0, 0), // Red
-            IdentityStatus::NotFoundOnPlatform => Color32::from_rgb(255, 0, 0), // Red
+            IdentityStatus::NotFound => Color32::from_rgb(255, 0, 0), // Red
         }
     } //
 }

@@ -2,7 +2,7 @@ name: dash-evo-tool
 title: Dash Evo Tool
 icon: mac_os/AppIcons/Assets.xcassets/AppIcon.appiconset/512.png
 type: app
-version: "0.9.0-dev"
+version: "0.9.0-preview.4"
 summary: Graphical user interface for interacting with Dash Evolution
 description: |
   Dash Evo Tool is a graphical user interface for easily interacting with 

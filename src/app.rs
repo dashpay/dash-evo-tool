@@ -451,18 +451,6 @@ impl AppState {
         }
     }
 
-    pub fn update_theme_preference(&mut self, new_theme: ThemeMode) {
-        self.theme_preference = new_theme;
-        // Persist to database
-        if let Err(e) = self
-            .current_app_context()
-            .db
-            .update_theme_preference(new_theme)
-        {
-            tracing::error!("Failed to save theme preference to database: {}", e);
-        }
-    }
-
     // Handle the backend task and send the result through the channel
     pub fn handle_backend_task(&self, task: BackendTask) {
         let sender = self.task_result_sender.clone();

@@ -1,17 +1,12 @@
 use egui::{Color32, FontData, FontDefinitions, FontFamily, FontId, Stroke, Vec2};
 
 /// Theme mode enumeration
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ThemeMode {
     Light,
     Dark,
+    #[default]
     System,
-}
-
-impl Default for ThemeMode {
-    fn default() -> Self {
-        ThemeMode::System
-    }
 }
 
 /// Detect system theme preference

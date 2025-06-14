@@ -105,12 +105,10 @@ pub fn add_left_panel(
 
                             let button_color = if is_selected {
                                 Color32::WHITE // Bright white for selected
+                            } else if dark_mode {
+                                Color32::from_rgb(180, 180, 180) // Bright gray for visibility in dark mode
                             } else {
-                                if dark_mode {
-                                    Color32::from_rgb(180, 180, 180) // Bright gray for visibility in dark mode
-                                } else {
-                                    Color32::from_rgb(160, 160, 160) // Medium gray for contrast in light mode
-                                }
+                                Color32::from_rgb(160, 160, 160) // Medium gray for contrast in light mode
                             };
 
                             // Add icon-based button if texture is loaded

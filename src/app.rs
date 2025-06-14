@@ -15,6 +15,7 @@ use crate::ui::dpns::dpns_contested_names_screen::{
 };
 use crate::ui::identities::identities_screen::IdentitiesScreen;
 use crate::ui::network_chooser_screen::NetworkChooserScreen;
+use crate::ui::theme::ThemeMode;
 use crate::ui::tokens::tokens_screen::{TokensScreen, TokensSubscreen};
 use crate::ui::tools::contract_visualizer_screen::ContractVisualizerScreen;
 use crate::ui::tools::document_visualizer_screen::DocumentVisualizerScreen;
@@ -22,7 +23,6 @@ use crate::ui::tools::proof_log_screen::ProofLogScreen;
 use crate::ui::tools::proof_visualizer_screen::ProofVisualizerScreen;
 use crate::ui::tools::transition_visualizer_screen::TransitionVisualizerScreen;
 use crate::ui::wallets::wallets_screen::WalletsBalancesScreen;
-use crate::ui::theme::ThemeMode;
 use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike, ScreenType};
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -71,7 +71,7 @@ pub struct AppState {
     pub core_message_receiver: mpsc::Receiver<(ZMQMessage, Network)>,
     pub task_result_sender: tokiompsc::Sender<TaskResult>, // Channel sender for sending task results
     pub task_result_receiver: tokiompsc::Receiver<TaskResult>, // Channel receiver for receiving task results
-    pub theme_preference: ThemeMode, // Current theme preference
+    pub theme_preference: ThemeMode,                           // Current theme preference
     last_scheduled_vote_check: Instant, // Last time we checked if there are scheduled masternode votes to cast
 }
 
@@ -152,11 +152,12 @@ impl AppState {
 
         let settings = db.get_settings().expect("expected to get settings");
 
-        let (password_info, theme_preference) = if let Some((_, _, password_info, _, _, theme_pref)) = settings.clone() {
-            (password_info, theme_pref)
-        } else {
-            (None, ThemeMode::System) // Default values if no settings found
-        };
+        let (password_info, theme_preference) =
+            if let Some((_, _, password_info, _, _, theme_pref)) = settings.clone() {
+                (password_info, theme_pref)
+            } else {
+                (None, ThemeMode::System) // Default values if no settings found
+            };
 
         let mainnet_app_context =
             match AppContext::new(Network::Dash, db.clone(), password_info.clone()) {
@@ -453,7 +454,11 @@ impl AppState {
     pub fn update_theme_preference(&mut self, new_theme: ThemeMode) {
         self.theme_preference = new_theme;
         // Persist to database
-        if let Err(e) = self.current_app_context().db.update_theme_preference(new_theme) {
+        if let Err(e) = self
+            .current_app_context()
+            .db
+            .update_theme_preference(new_theme)
+        {
             tracing::error!("Failed to save theme preference to database: {}", e);
         }
     }

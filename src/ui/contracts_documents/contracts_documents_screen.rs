@@ -700,7 +700,7 @@ impl ScreenLike for DocumentQueryScreen {
 
         // Custom central panel with adjusted margins for Document Query screen
         let dark_mode = ctx.style().visuals.dark_mode;
-        
+
         action |= CentralPanel::default()
             .frame(
                 Frame::new()

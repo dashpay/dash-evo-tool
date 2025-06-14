@@ -613,7 +613,7 @@ impl IdentitiesScreen {
                                                                 } else {
                                                                     crate::ui::theme::DashColors::text_primary(dark_mode) // Theme-aware text
                                                                 };
-                                                                
+
                                                                 let button = egui::Button::new(RichText::new(self.format_key_name(key)).color(text_color))
                                                                     .fill(button_color)
                                                                     .frame(true);
@@ -660,7 +660,7 @@ impl IdentitiesScreen {
                                                                     } else {
                                                                         crate::ui::theme::DashColors::text_primary(dark_mode) // Theme-aware text
                                                                     };
-                                                                    
+
                                                                     let button = egui::Button::new(RichText::new(self.format_key_name(key)).color(text_color))
                                                                         .fill(button_color)
                                                                         .frame(true);

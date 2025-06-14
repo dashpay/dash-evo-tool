@@ -161,47 +161,91 @@ impl DashColors {
 
     // Theme-aware color getters
     pub fn background(dark_mode: bool) -> Color32 {
-        if dark_mode { Self::DARK_BACKGROUND } else { Self::BACKGROUND }
+        if dark_mode {
+            Self::DARK_BACKGROUND
+        } else {
+            Self::BACKGROUND
+        }
     }
 
     pub fn surface(dark_mode: bool) -> Color32 {
-        if dark_mode { Self::DARK_SURFACE } else { Self::SURFACE }
+        if dark_mode {
+            Self::DARK_SURFACE
+        } else {
+            Self::SURFACE
+        }
     }
 
     pub fn input_background(dark_mode: bool) -> Color32 {
-        if dark_mode { Self::DARK_INPUT_BACKGROUND } else { Self::INPUT_BACKGROUND }
+        if dark_mode {
+            Self::DARK_INPUT_BACKGROUND
+        } else {
+            Self::INPUT_BACKGROUND
+        }
     }
 
     pub fn border(dark_mode: bool) -> Color32 {
-        if dark_mode { Self::DARK_BORDER } else { Self::BORDER }
+        if dark_mode {
+            Self::DARK_BORDER
+        } else {
+            Self::BORDER
+        }
     }
 
     pub fn border_light(dark_mode: bool) -> Color32 {
-        if dark_mode { Self::DARK_BORDER_LIGHT } else { Self::BORDER_LIGHT }
+        if dark_mode {
+            Self::DARK_BORDER_LIGHT
+        } else {
+            Self::BORDER_LIGHT
+        }
     }
 
     pub fn text_primary(dark_mode: bool) -> Color32 {
-        if dark_mode { Self::DARK_TEXT_PRIMARY } else { Self::TEXT_PRIMARY }
+        if dark_mode {
+            Self::DARK_TEXT_PRIMARY
+        } else {
+            Self::TEXT_PRIMARY
+        }
     }
 
     pub fn text_secondary(dark_mode: bool) -> Color32 {
-        if dark_mode { Self::DARK_TEXT_SECONDARY } else { Self::TEXT_SECONDARY }
+        if dark_mode {
+            Self::DARK_TEXT_SECONDARY
+        } else {
+            Self::TEXT_SECONDARY
+        }
     }
 
     pub fn hover(dark_mode: bool) -> Color32 {
-        if dark_mode { Self::DARK_HOVER } else { Self::HOVER }
+        if dark_mode {
+            Self::DARK_HOVER
+        } else {
+            Self::HOVER
+        }
     }
 
     pub fn pressed(dark_mode: bool) -> Color32 {
-        if dark_mode { Self::DARK_PRESSED } else { Self::PRESSED }
+        if dark_mode {
+            Self::DARK_PRESSED
+        } else {
+            Self::PRESSED
+        }
     }
 
     pub fn selected(dark_mode: bool) -> Color32 {
-        if dark_mode { Self::DARK_SELECTED } else { Self::SELECTED }
+        if dark_mode {
+            Self::DARK_SELECTED
+        } else {
+            Self::SELECTED
+        }
     }
 
     pub fn disabled(dark_mode: bool) -> Color32 {
-        if dark_mode { Self::DARK_DISABLED } else { Self::DISABLED }
+        if dark_mode {
+            Self::DARK_DISABLED
+        } else {
+            Self::DISABLED
+        }
     }
 
     // Semantic colors that adapt to theme
@@ -473,16 +517,24 @@ pub fn apply_theme(ctx: &egui::Context, theme_mode: ThemeMode) {
     // Resolve the actual theme to use
     let resolved_theme = resolve_theme_mode(theme_mode);
     let dark_mode = resolved_theme == ThemeMode::Dark;
-    
+
     // Start with appropriate base mode
-    let mut visuals = if dark_mode { egui::Visuals::dark() } else { egui::Visuals::light() };
+    let mut visuals = if dark_mode {
+        egui::Visuals::dark()
+    } else {
+        egui::Visuals::light()
+    };
 
     // Override ALL background-related properties with our custom colors
     visuals.window_fill = DashColors::background(dark_mode);
     visuals.panel_fill = DashColors::background(dark_mode);
     visuals.extreme_bg_color = DashColors::input_background(dark_mode);
     visuals.faint_bg_color = DashColors::background(dark_mode);
-    visuals.code_bg_color = if dark_mode { Color32::from_rgb(30, 30, 30) } else { Color32::from_rgb(245, 245, 245) };
+    visuals.code_bg_color = if dark_mode {
+        Color32::from_rgb(30, 30, 30)
+    } else {
+        Color32::from_rgb(245, 245, 245)
+    };
 
     // Set dark mode flag correctly
     visuals.dark_mode = dark_mode;
@@ -527,7 +579,8 @@ pub fn apply_theme(ctx: &egui::Context, theme_mode: ThemeMode) {
     // Text input fields - ensure appropriate background with contrasting text
     // Note: TextEdit uses extreme_bg_color by default, but we also set noninteractive for consistency
     style.visuals.widgets.noninteractive.bg_fill = DashColors::input_background(dark_mode);
-    style.visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0, DashColors::border(dark_mode));
+    style.visuals.widgets.noninteractive.bg_stroke =
+        Stroke::new(1.0, DashColors::border(dark_mode));
     style.visuals.widgets.noninteractive.weak_bg_fill = DashColors::input_background(dark_mode);
     style.visuals.widgets.noninteractive.fg_stroke.color = DashColors::text_primary(dark_mode);
 
@@ -551,7 +604,11 @@ pub fn apply_theme(ctx: &egui::Context, theme_mode: ThemeMode) {
     style.visuals.hyperlink_color = DashColors::DASH_BLUE;
 
     // Code styling - use appropriate background for better contrast
-    style.visuals.code_bg_color = if dark_mode { Color32::from_rgb(30, 30, 30) } else { Color32::from_rgb(245, 245, 245) };
+    style.visuals.code_bg_color = if dark_mode {
+        Color32::from_rgb(30, 30, 30)
+    } else {
+        Color32::from_rgb(245, 245, 245)
+    };
 
     // Note: extreme_bg_color is already set to INPUT_BACKGROUND above for TextEdit widgets
 

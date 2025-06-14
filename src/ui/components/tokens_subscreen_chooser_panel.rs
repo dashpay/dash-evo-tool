@@ -25,7 +25,7 @@ pub fn add_tokens_subscreen_chooser_panel(ctx: &Context, app_context: &AppContex
     };
 
     let dark_mode = ctx.style().visuals.dark_mode;
-    
+
     SidePanel::left("tokens_subscreen_chooser_panel")
         .resizable(true)
         .default_width(270.0) // Increased to account for margins

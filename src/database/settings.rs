@@ -118,7 +118,7 @@ impl Database {
             ThemeMode::Dark => "Dark",
             ThemeMode::System => "System",
         };
-        
+
         self.execute(
             "UPDATE settings
             SET theme_preference = ?
@@ -194,7 +194,7 @@ impl Database {
                 Some("Light") => ThemeMode::Light,
                 Some("Dark") => ThemeMode::Dark,
                 Some("System") | None => ThemeMode::System, // Default to System if missing
-                _ => ThemeMode::System, // Default to System for unknown values
+                _ => ThemeMode::System,                     // Default to System for unknown values
             };
 
             Ok((

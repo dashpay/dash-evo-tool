@@ -64,7 +64,7 @@ impl NetworkChooserScreen {
             _ => mainnet_app_context,
         };
         let developer_mode = current_context.developer_mode.load(Ordering::Relaxed);
-        
+
         // Load theme preference from settings
         let theme_preference = current_context
             .get_settings()
@@ -404,7 +404,7 @@ impl NetworkChooserScreen {
                                             .strong()
                                             .color(DashColors::text_primary(dark_mode)),
                                     );
-                                    
+
                                     egui::ComboBox::from_id_salt("theme_selection")
                                         .selected_text(match self.theme_preference {
                                             ThemeMode::Light => "Light",

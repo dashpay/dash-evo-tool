@@ -429,7 +429,7 @@ impl ScreenLike for TransferTokensScreen {
 
         let central_panel_action = island_central_panel(ctx, |ui| {
             let dark_mode = ui.ctx().style().visuals.dark_mode;
-            
+
             // Show the success screen if the transfer was successful
             if self.transfer_tokens_status == TransferTokensStatus::Complete {
                 return self.show_success(ui);
@@ -638,7 +638,10 @@ impl ScreenLike for TransferTokensScreen {
                         ));
                     }
                     TransferTokensStatus::ErrorMessage(msg) => {
-                        ui.colored_label(DashColors::error_color(dark_mode), format!("Error: {}", msg));
+                        ui.colored_label(
+                            DashColors::error_color(dark_mode),
+                            format!("Error: {}", msg),
+                        );
                     }
                     TransferTokensStatus::Complete => {
                         // Handled above

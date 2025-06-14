@@ -517,10 +517,11 @@ impl ScreenLike for PurchaseTokenScreen {
                         self.show_confirmation_popup = true;
                     }
                 } else {
-                    let button =
-                        egui::Button::new(RichText::new(purchase_text).color(DashColors::muted_color(dark_mode)))
-                            .fill(Color32::from_rgb(50, 50, 50))
-                            .corner_radius(3.0);
+                    let button = egui::Button::new(
+                        RichText::new(purchase_text).color(DashColors::muted_color(dark_mode)),
+                    )
+                    .fill(Color32::from_rgb(50, 50, 50))
+                    .corner_radius(3.0);
 
                     ui.add_enabled(false, button).on_hover_text(
                         if self.pricing_fetch_attempted && self.fetched_pricing_schedule.is_none() {
@@ -551,7 +552,10 @@ impl ScreenLike for PurchaseTokenScreen {
                         ui.label(format!("Purchasing... elapsed: {} seconds", elapsed));
                     }
                     PurchaseTokensStatus::ErrorMessage(msg) => {
-                        ui.colored_label(DashColors::error_color(dark_mode), format!("Error: {}", msg));
+                        ui.colored_label(
+                            DashColors::error_color(dark_mode),
+                            format!("Error: {}", msg),
+                        );
                     }
                     PurchaseTokensStatus::Complete => {
                         // handled above

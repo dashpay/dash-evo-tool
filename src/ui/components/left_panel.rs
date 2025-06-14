@@ -115,12 +115,12 @@ pub fn add_left_panel(
 
                             // Add icon-based button if texture is loaded
                             if let Some(ref texture) = texture {
-                                let button = ImageButton::new(texture)
-                                    .frame(false)
-                                    .tint(button_color);
+                                let button =
+                                    ImageButton::new(texture).frame(false).tint(button_color);
 
                                 if ui.add(button).clicked() {
-                                    action = AppAction::SetMainScreenThenGoToMainScreen(*screen_type);
+                                    action =
+                                        AppAction::SetMainScreenThenGoToMainScreen(*screen_type);
                                 }
                             } else {
                                 // Fallback to a modern gradient button if texture loading fails

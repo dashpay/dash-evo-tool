@@ -427,7 +427,7 @@ impl ScreenLike for DestroyFrozenFundsScreen {
 
         island_central_panel(ctx, |ui| {
             let dark_mode = ui.ctx().style().visuals.dark_mode;
-            
+
             if self.status == DestroyFrozenFundsStatus::Complete {
                 action |= self.show_success_screen(ui);
                 return;
@@ -601,7 +601,10 @@ impl ScreenLike for DestroyFrozenFundsScreen {
                         ));
                     }
                     DestroyFrozenFundsStatus::ErrorMessage(msg) => {
-                        ui.colored_label(DashColors::error_color(dark_mode), format!("Error: {}", msg));
+                        ui.colored_label(
+                            DashColors::error_color(dark_mode),
+                            format!("Error: {}", msg),
+                        );
                     }
                     DestroyFrozenFundsStatus::Complete => {
                         // handled above

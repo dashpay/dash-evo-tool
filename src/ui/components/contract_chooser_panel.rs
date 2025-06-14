@@ -53,7 +53,7 @@ pub fn add_contract_chooser_panel(
         .collect();
 
     let dark_mode = ctx.style().visuals.dark_mode;
-    
+
     SidePanel::left("contract_chooser_panel")
         // Let the user resize this panel horizontally
         .resizable(true)

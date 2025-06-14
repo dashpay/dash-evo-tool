@@ -403,7 +403,7 @@ impl ScreenLike for BurnTokensScreen {
 
         let central_panel_action = island_central_panel(ctx, |ui| {
             let dark_mode = ui.ctx().style().visuals.dark_mode;
-            
+
             // If we are in the "Complete" status, just show success screen
             if self.status == BurnTokensStatus::Complete {
                 return self.show_success_screen(ui);
@@ -586,7 +586,10 @@ impl ScreenLike for BurnTokensScreen {
                         ui.label(format!("Burning... elapsed: {} seconds", elapsed));
                     }
                     BurnTokensStatus::ErrorMessage(msg) => {
-                        ui.colored_label(DashColors::error_color(dark_mode), format!("Error: {}", msg));
+                        ui.colored_label(
+                            DashColors::error_color(dark_mode),
+                            format!("Error: {}", msg),
+                        );
                     }
                     BurnTokensStatus::Complete => {
                         // handled above

@@ -442,7 +442,7 @@ impl ScreenLike for MintTokensScreen {
 
         let central_panel_action = island_central_panel(ctx, |ui| {
             let dark_mode = ui.ctx().style().visuals.dark_mode;
-            
+
             // If we are in the "Complete" status, just show success screen
             if self.status == MintTokensStatus::Complete {
                 return self.show_success_screen(ui);
@@ -651,7 +651,10 @@ impl ScreenLike for MintTokensScreen {
                         ui.label(format!("Minting... elapsed: {} seconds", elapsed));
                     }
                     MintTokensStatus::ErrorMessage(msg) => {
-                        ui.colored_label(DashColors::error_color(dark_mode), format!("Error: {}", msg));
+                        ui.colored_label(
+                            DashColors::error_color(dark_mode),
+                            format!("Error: {}", msg),
+                        );
                     }
                     MintTokensStatus::Complete => {
                         // handled above

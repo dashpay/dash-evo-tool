@@ -79,7 +79,7 @@ impl StyledButton {
 
     pub fn show(self, ui: &mut Ui) -> Response {
         let dark_mode = ui.ctx().style().visuals.dark_mode;
-        
+
         let (text_color, bg_color, _hover_color, stroke) = match self.variant {
             ButtonVariant::Primary => (
                 DashColors::WHITE,
@@ -89,7 +89,11 @@ impl StyledButton {
             ),
             ButtonVariant::Secondary => (
                 DashColors::DASH_BLUE,
-                if dark_mode { DashColors::surface(dark_mode) } else { DashColors::WHITE },
+                if dark_mode {
+                    DashColors::surface(dark_mode)
+                } else {
+                    DashColors::WHITE
+                },
                 DashColors::background(dark_mode),
                 Some(Stroke::new(1.0, DashColors::DASH_BLUE)),
             ),
@@ -178,7 +182,7 @@ impl StyledCard {
 
     pub fn show<R>(self, ui: &mut Ui, content: impl FnOnce(&mut Ui) -> R) -> R {
         let dark_mode = ui.ctx().style().visuals.dark_mode;
-        
+
         let stroke = if self.show_border {
             Stroke::new(1.0, DashColors::border(dark_mode))
         } else {
@@ -468,7 +472,7 @@ impl GlassCard {
 
     pub fn show<R>(self, ui: &mut Ui, content: impl FnOnce(&mut Ui) -> R) -> R {
         let dark_mode = ui.ctx().style().visuals.dark_mode;
-        
+
         egui::Frame::new()
             .fill(DashColors::glass_white(dark_mode))
             .stroke(Stroke::new(1.0, DashColors::glass_border(dark_mode)))
@@ -689,7 +693,7 @@ pub fn styled_text_edit_multiline(text: &mut String) -> TextEdit<'_> {
 /// Helper function to create an island-style central panel
 pub fn island_central_panel<R>(ctx: &Context, content: impl FnOnce(&mut Ui) -> R) -> R {
     let dark_mode = ctx.style().visuals.dark_mode;
-    
+
     CentralPanel::default()
         .frame(
             Frame::new()

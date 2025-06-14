@@ -19,7 +19,9 @@ impl AppContext {
     ) -> Result<BackendTaskSuccessResult, String> {
         match task {
             SystemTask::WipePlatformData => self.wipe_devnet(),
-            SystemTask::UpdateThemePreference(theme_mode) => self.update_theme_preference(theme_mode),
+            SystemTask::UpdateThemePreference(theme_mode) => {
+                self.update_theme_preference(theme_mode)
+            }
         }
     }
 
@@ -43,7 +45,10 @@ impl AppContext {
         Ok(BackendTaskSuccessResult::Refresh)
     }
 
-    pub fn update_theme_preference(self: &Arc<Self>, theme_mode: ThemeMode) -> Result<BackendTaskSuccessResult, String> {
+    pub fn update_theme_preference(
+        self: &Arc<Self>,
+        theme_mode: ThemeMode,
+    ) -> Result<BackendTaskSuccessResult, String> {
         self.db
             .update_theme_preference(theme_mode)
             .map_err(|e| e.to_string())?;

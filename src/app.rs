@@ -15,6 +15,7 @@ use crate::ui::dpns::dpns_contested_names_screen::{
 };
 use crate::ui::identities::identities_screen::IdentitiesScreen;
 use crate::ui::network_chooser_screen::NetworkChooserScreen;
+use crate::ui::theme::ThemeMode;
 use crate::ui::tokens::tokens_screen::{TokensScreen, TokensSubscreen};
 use crate::ui::tools::contract_visualizer_screen::ContractVisualizerScreen;
 use crate::ui::tools::document_visualizer_screen::DocumentVisualizerScreen;
@@ -70,6 +71,7 @@ pub struct AppState {
     pub core_message_receiver: mpsc::Receiver<(ZMQMessage, Network)>,
     pub task_result_sender: tokiompsc::Sender<TaskResult>, // Channel sender for sending task results
     pub task_result_receiver: tokiompsc::Receiver<TaskResult>, // Channel receiver for receiving task results
+    pub theme_preference: ThemeMode,                           // Current theme preference
     last_scheduled_vote_check: Instant, // Last time we checked if there are scheduled masternode votes to cast
 }
 
@@ -150,9 +152,12 @@ impl AppState {
 
         let settings = db.get_settings().expect("expected to get settings");
 
-        let password_info = settings
-            .clone()
-            .and_then(|(_, _, password_info, _, _)| password_info);
+        let (password_info, theme_preference) =
+            if let Some((_, _, password_info, _, _, theme_pref)) = settings.clone() {
+                (password_info, theme_pref)
+            } else {
+                (None, ThemeMode::System) // Default values if no settings found
+            };
 
         let mainnet_app_context =
             match AppContext::new(Network::Dash, db.clone(), password_info.clone()) {
@@ -194,7 +199,7 @@ impl AppState {
             TokensScreen::new(&mainnet_app_context, TokensSubscreen::TokenCreator);
 
         let (custom_dash_qt_path, overwrite_dash_conf) = match settings.clone() {
-            Some((.., custom_dash_qt_path, db_overwrite_dash_conf)) => {
+            Some((.., custom_dash_qt_path, db_overwrite_dash_conf, _theme_pref)) => {
                 // Use the stored settings
                 // Note: if custom_dash_qt_path is None, the backend will use platform-specific defaults
                 (custom_dash_qt_path, db_overwrite_dash_conf)
@@ -221,7 +226,7 @@ impl AppState {
 
         let mut chosen_network = Network::Dash;
 
-        if let Some((network, screen_type, _password_info, _, _)) = settings {
+        if let Some((network, screen_type, _password_info, _, _, _)) = settings {
             selected_main_screen = screen_type;
             chosen_network = network;
             network_chooser_screen.current_network = chosen_network;
@@ -431,6 +436,7 @@ impl AppState {
             core_message_receiver,
             task_result_sender,
             task_result_receiver,
+            theme_preference,
             last_scheduled_vote_check: Instant::now(),
         }
     }
@@ -548,8 +554,8 @@ impl AppState {
 
 impl App for AppState {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Apply Dash theme on first update
-        crate::ui::theme::apply_theme(ctx);
+        // Apply Dash theme with user preference
+        crate::ui::theme::apply_theme(ctx, self.theme_preference);
 
         if let Ok(event) = self.current_app_context().rx_zmq_status.try_recv() {
             if let Ok(mut status) = self.current_app_context().zmq_connection_status.lock() {
@@ -571,6 +577,13 @@ impl App for AppState {
                         BackendTaskSuccessResult::Message(ref msg) => {
                             self.visible_screen_mut()
                                 .display_message(msg, MessageType::Success);
+                        }
+                        BackendTaskSuccessResult::UpdatedThemePreference(new_theme) => {
+                            self.theme_preference = new_theme;
+                            self.visible_screen_mut().display_message(
+                                "Theme preference updated successfully",
+                                MessageType::Success,
+                            );
                         }
                         BackendTaskSuccessResult::CastScheduledVote(ref vote) => {
                             let _ = self.current_app_context().mark_vote_executed(

@@ -6,6 +6,7 @@ use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, ScreenLike};
 use chrono::{DateTime, Utc};
 use dash_sdk::dpp::document::DocumentV0Getters;
@@ -151,6 +152,7 @@ impl ScreenLike for ViewTokenClaimsScreen {
 
         // Central panel
         island_central_panel(ctx, |ui| {
+            let dark_mode = ui.ctx().style().visuals.dark_mode;
             ui.heading("View Token Claims");
             ui.add_space(10.0);
 
@@ -171,10 +173,10 @@ impl ScreenLike for ViewTokenClaimsScreen {
                 ui.add_space(10.0);
                 match msg_type {
                     MessageType::Success => {
-                        ui.colored_label(Color32::DARK_GREEN, msg);
+                        ui.colored_label(DashColors::success_color(dark_mode), msg);
                     }
                     MessageType::Error => {
-                        ui.colored_label(Color32::DARK_RED, msg);
+                        ui.colored_label(DashColors::error_color(dark_mode), msg);
                     }
                     MessageType::Info => {
                         ui.label(msg);

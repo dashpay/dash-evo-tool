@@ -3,6 +3,7 @@ use crate::backend_task::tokens::TokenTask;
 use crate::backend_task::BackendTask;
 use crate::ui::components::styled::StyledButton;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
+use crate::ui::theme::DashColors;
 use crate::ui::tokens::burn_tokens_screen::BurnTokensScreen;
 use crate::ui::tokens::claim_tokens_screen::ClaimTokensScreen;
 use crate::ui::tokens::destroy_frozen_funds_screen::DestroyFrozenFundsScreen;
@@ -261,7 +262,11 @@ impl TokensScreen {
             }
             ui.add_space(10.0);
 
-            ui.label("Please check back later or try refreshing the list.");
+            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            ui.label(
+                RichText::new("Please check back later or try refreshing the list.")
+                    .color(DashColors::text_primary(dark_mode)),
+            );
             ui.add_space(20.0);
             if StyledButton::primary("Refresh").show(ui).clicked() {
                 if let RefreshingStatus::Refreshing(_) = self.refreshing_status {

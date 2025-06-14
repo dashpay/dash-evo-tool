@@ -6,6 +6,7 @@ use crate::model::wallet::Wallet;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, ScreenLike, ScreenType};
 use chrono::{DateTime, Utc};
 use dash_sdk::dashcore_rpc::dashcore::{Address, Network};
@@ -184,6 +185,7 @@ impl WalletsBalancesScreen {
     }
 
     fn render_filter_selector(&mut self, ui: &mut Ui) {
+        let dark_mode = ui.ctx().style().visuals.dark_mode;
         let filter_options = [
             ("Funds", "Show receiving and change addresses"),
             (
@@ -216,11 +218,11 @@ impl WalletsBalancesScreen {
                 } else {
                     egui::Button::new(
                         RichText::new(*filter_option)
-                            .color(Color32::BLACK)
+                            .color(DashColors::text_primary(dark_mode))
                             .size(10.0),
                     )
-                    .fill(egui::Color32::WHITE)
-                    .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(200)))
+                    .fill(DashColors::glass_white(dark_mode))
+                    .stroke(egui::Stroke::new(1.0, DashColors::border(dark_mode)))
                     .corner_radius(3.0)
                     .min_size(egui::vec2(0.0, 22.0))
                 };
@@ -250,6 +252,7 @@ impl WalletsBalancesScreen {
     }
 
     fn render_wallet_selection(&mut self, ui: &mut Ui) {
+        let dark_mode = ui.ctx().style().visuals.dark_mode;
         if self.app_context.has_wallet.load(Ordering::Relaxed) {
             let wallets = &self.app_context.wallets.read().unwrap();
             let wallet_aliases: Vec<String> = wallets
@@ -314,7 +317,7 @@ impl WalletsBalancesScreen {
                     ui.label(
                         RichText::new(format!("Balance: {:.8} DASH", dash_balance))
                             .strong()
-                            .color(Color32::DARK_GREEN),
+                            .color(DashColors::success_color(dark_mode)),
                     );
                 }
             });
@@ -566,13 +569,15 @@ impl WalletsBalancesScreen {
         if let Some(arc_wallet) = &self.selected_wallet {
             let wallet = arc_wallet.read().unwrap();
 
+            let dark_mode = ui.ctx().style().visuals.dark_mode;
             Frame::new()
-                .fill(egui::Color32::from_gray(252))
+                .fill(DashColors::surface(dark_mode))
                 .corner_radius(5.0)
                 .inner_margin(Margin::same(15))
-                .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(235)))
+                .stroke(egui::Stroke::new(1.0, DashColors::border_light(dark_mode)))
                 .show(ui, |ui| {
-                    ui.heading(RichText::new("Asset Locks").color(Color32::BLACK));
+                    let dark_mode = ui.ctx().style().visuals.dark_mode;
+                    ui.heading(RichText::new("Asset Locks").color(DashColors::text_primary(dark_mode)));
                     ui.add_space(10.0);
 
                     if wallet.unused_asset_locks.is_empty() {
@@ -662,11 +667,12 @@ impl WalletsBalancesScreen {
                 ui.vertical_centered(|ui| {
                     // Heading
                     ui.add_space(5.0);
+                    let dark_mode = ui.ctx().style().visuals.dark_mode;
                     ui.label(
                         RichText::new("No Wallets Loaded")
                             .strong()
                             .size(25.0)
-                            .color(Color32::BLACK),
+                            .color(DashColors::text_primary(dark_mode)),
                     );
 
                     // A separator line for visual clarity
@@ -684,7 +690,7 @@ impl WalletsBalancesScreen {
                         RichText::new("Here’s what you can do:")
                             .strong()
                             .size(18.0)
-                            .color(Color32::BLACK),
+                            .color(DashColors::text_primary(dark_mode)),
                     );
                     ui.add_space(5.0);
 
@@ -791,6 +797,7 @@ impl ScreenLike for WalletsBalancesScreen {
 
         action |= island_central_panel(ctx, |ui| {
             let mut inner_action = AppAction::None;
+            let dark_mode = ui.ctx().style().visuals.dark_mode;
 
             egui::ScrollArea::vertical()
                 .auto_shrink([false; 2])
@@ -802,14 +809,16 @@ impl ScreenLike for WalletsBalancesScreen {
 
                     // Wallet Information Panel (fit content)
                     ui.vertical(|ui| {
-                        ui.heading(RichText::new("Wallets").color(Color32::BLACK));
+                        ui.heading(
+                            RichText::new("Wallets").color(DashColors::text_primary(dark_mode)),
+                        );
                         ui.add_space(5.0);
                         ui.horizontal(|ui| {
                             Frame::new()
-                                .fill(egui::Color32::from_gray(252))
+                                .fill(DashColors::surface(dark_mode))
                                 .corner_radius(5.0)
                                 .inner_margin(Margin::symmetric(15, 10))
-                                .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(235)))
+                                .stroke(egui::Stroke::new(1.0, DashColors::border_light(dark_mode)))
                                 .show(ui, |ui| {
                                     self.render_wallet_selection(ui);
                                 });
@@ -823,7 +832,10 @@ impl ScreenLike for WalletsBalancesScreen {
                     if self.selected_wallet.is_some() {
                         // Always show the filter selector
                         ui.vertical(|ui| {
-                            ui.heading(RichText::new("Addresses").color(Color32::BLACK));
+                            ui.heading(
+                                RichText::new("Addresses")
+                                    .color(DashColors::text_primary(dark_mode)),
+                            );
                             ui.add_space(10.0);
 
                             // Filter section
@@ -869,7 +881,7 @@ impl ScreenLike for WalletsBalancesScreen {
             if let Some((message, message_type, timestamp)) = message {
                 let message_color = match message_type {
                     MessageType::Error => egui::Color32::DARK_RED,
-                    MessageType::Info => egui::Color32::BLACK,
+                    MessageType::Info => DashColors::text_primary(dark_mode),
                     MessageType::Success => egui::Color32::DARK_GREEN,
                 };
 

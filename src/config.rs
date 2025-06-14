@@ -7,6 +7,7 @@ use dash_sdk::dapi_client::AddressList;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::sdk::Uri;
 use serde::Deserialize;
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct Config {
@@ -26,7 +27,7 @@ pub enum ConfigError {
     NoValidConfigs,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone, Zeroize, ZeroizeOnDrop)]
 pub struct NetworkConfig {
     /// Hostname of the Dash Platform node to connect to
     pub dapi_addresses: String,

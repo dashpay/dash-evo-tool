@@ -112,6 +112,7 @@ impl AddNewWalletScreen {
                     .expect("Failed to create master ECDSA extended private key");
             let bip44_root_derivation_path: DerivationPath = match self.app_context.network {
                 Network::Dash => DerivationPath::from(DASH_BIP44_ACCOUNT_0_PATH_MAINNET.as_slice()),
+                // All other networks use the testnet derivation path
                 _ => DerivationPath::from(DASH_BIP44_ACCOUNT_0_PATH_TESTNET.as_slice()),
             };
             let secp = Secp256k1::new();
@@ -136,6 +137,7 @@ impl AddNewWalletScreen {
                         password_hint: None, // Set a password hint if needed
                     },
                 }),
+                network: self.app_context.network,
                 uses_password,
                 master_bip44_ecdsa_extended_public_key,
                 address_balances: Default::default(),

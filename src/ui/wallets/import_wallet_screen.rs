@@ -101,6 +101,7 @@ impl ImportWalletScreen {
                     },
                 }),
                 uses_password,
+                network: self.app_context.network,
                 master_bip44_ecdsa_extended_public_key,
                 address_balances: Default::default(),
                 known_addresses: Default::default(),

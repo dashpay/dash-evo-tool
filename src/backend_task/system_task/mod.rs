@@ -1,12 +1,14 @@
 use crate::app::TaskResult;
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::context::AppContext;
+use crate::ui::theme::ThemeMode;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum SystemTask {
     WipePlatformData,
+    UpdateThemePreference(ThemeMode),
 }
 
 impl AppContext {
@@ -17,6 +19,7 @@ impl AppContext {
     ) -> Result<BackendTaskSuccessResult, String> {
         match task {
             SystemTask::WipePlatformData => self.wipe_devnet(),
+            SystemTask::UpdateThemePreference(theme_mode) => self.update_theme_preference(theme_mode),
         }
     }
 
@@ -38,5 +41,13 @@ impl AppContext {
             .map_err(|e| e.to_string())?;
 
         Ok(BackendTaskSuccessResult::Refresh)
+    }
+
+    pub fn update_theme_preference(self: &Arc<Self>, theme_mode: ThemeMode) -> Result<BackendTaskSuccessResult, String> {
+        self.db
+            .update_theme_preference(theme_mode)
+            .map_err(|e| e.to_string())?;
+
+        Ok(BackendTaskSuccessResult::UpdatedThemePreference(theme_mode))
     }
 }

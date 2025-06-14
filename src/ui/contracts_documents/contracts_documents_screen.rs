@@ -228,6 +228,7 @@ impl DocumentQueryScreen {
 
     fn show_output(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
+        let dark_mode = ui.ctx().style().visuals.dark_mode;
         ui.separator();
         ui.add_space(10.0);
 
@@ -358,7 +359,7 @@ impl DocumentQueryScreen {
                     DocumentQueryStatus::ErrorMessage(ref message) => {
                         self.error_message =
                             Some((message.to_string(), MessageType::Error, Utc::now()));
-                        ui.colored_label(Color32::DARK_RED, message);
+                        ui.colored_label(DashColors::error_color(dark_mode), message);
                     }
                     _ => {
                         // Nothing
@@ -698,10 +699,12 @@ impl ScreenLike for DocumentQueryScreen {
         }
 
         // Custom central panel with adjusted margins for Document Query screen
+        let dark_mode = ctx.style().visuals.dark_mode;
+        
         action |= CentralPanel::default()
             .frame(
                 Frame::new()
-                    .fill(DashColors::BACKGROUND)
+                    .fill(DashColors::background(dark_mode))
                     .inner_margin(Margin {
                         left: 10,
                         right: 19, // More space on the right
@@ -712,8 +715,8 @@ impl ScreenLike for DocumentQueryScreen {
             .show(ctx, |ui| {
                 // Create an island panel with rounded edges
                 Frame::new()
-                    .fill(DashColors::SURFACE)
-                    .stroke(Stroke::new(1.0, DashColors::BORDER_LIGHT))
+                    .fill(DashColors::surface(dark_mode))
+                    .stroke(Stroke::new(1.0, DashColors::border_light(dark_mode)))
                     .inner_margin(Margin::same(20))
                     .corner_radius(egui::CornerRadius::same(Shape::RADIUS_LG))
                     .shadow(Shadow::elevated())

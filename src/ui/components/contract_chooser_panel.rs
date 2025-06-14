@@ -52,13 +52,15 @@ pub fn add_contract_chooser_panel(
         })
         .collect();
 
+    let dark_mode = ctx.style().visuals.dark_mode;
+    
     SidePanel::left("contract_chooser_panel")
         // Let the user resize this panel horizontally
         .resizable(true)
         .default_width(270.0) // Increased to account for margins
         .frame(
             Frame::new()
-                .fill(DashColors::BACKGROUND) // Light background instead of transparent
+                .fill(DashColors::background(dark_mode))
                 .inner_margin(Margin::symmetric(10, 10)), // Add margins for island effect
         )
         .show(ctx, |ui| {
@@ -67,8 +69,8 @@ pub fn add_contract_chooser_panel(
 
             // Create an island panel with rounded edges that fills the height
             Frame::new()
-                .fill(DashColors::SURFACE)
-                .stroke(egui::Stroke::new(1.0, DashColors::BORDER_LIGHT))
+                .fill(DashColors::surface(dark_mode))
+                .stroke(egui::Stroke::new(1.0, DashColors::border_light(dark_mode)))
                 .inner_margin(Margin::same(Spacing::MD_I8))
                 .corner_radius(egui::CornerRadius::same(Shape::RADIUS_LG))
                 .shadow(Shadow::elevated())

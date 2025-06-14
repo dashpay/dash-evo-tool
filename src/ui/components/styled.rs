@@ -78,6 +78,8 @@ impl StyledButton {
     // }
 
     pub fn show(self, ui: &mut Ui) -> Response {
+        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        
         let (text_color, bg_color, _hover_color, stroke) = match self.variant {
             ButtonVariant::Primary => (
                 DashColors::WHITE,
@@ -87,8 +89,8 @@ impl StyledButton {
             ),
             ButtonVariant::Secondary => (
                 DashColors::DASH_BLUE,
-                DashColors::WHITE,
-                DashColors::BACKGROUND,
+                if dark_mode { DashColors::surface(dark_mode) } else { DashColors::WHITE },
+                DashColors::background(dark_mode),
                 Some(Stroke::new(1.0, DashColors::DASH_BLUE)),
             ),
             ButtonVariant::Danger => (
@@ -98,9 +100,9 @@ impl StyledButton {
                 None,
             ),
             ButtonVariant::Ghost => (
-                DashColors::TEXT_PRIMARY,
+                DashColors::text_primary(dark_mode),
                 Color32::TRANSPARENT,
-                DashColors::glass_white(),
+                DashColors::glass_white(dark_mode),
                 None,
             ),
         };
@@ -175,14 +177,16 @@ impl StyledCard {
     // }
 
     pub fn show<R>(self, ui: &mut Ui, content: impl FnOnce(&mut Ui) -> R) -> R {
+        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        
         let stroke = if self.show_border {
-            Stroke::new(1.0, DashColors::BORDER)
+            Stroke::new(1.0, DashColors::border(dark_mode))
         } else {
             Stroke::NONE
         };
 
         egui::Frame::new()
-            .fill(DashColors::SURFACE)
+            .fill(DashColors::surface(dark_mode))
             .stroke(stroke)
             .corner_radius(egui::CornerRadius::same(Shape::RADIUS_MD))
             .inner_margin(egui::Margin::same(self.padding as i8))
@@ -192,7 +196,7 @@ impl StyledCard {
                     ui.label(
                         RichText::new(title)
                             .font(Typography::heading_small())
-                            .color(DashColors::TEXT_PRIMARY),
+                            .color(DashColors::text_primary(dark_mode)),
                     );
                     ui.add_space(Spacing::MD);
                 }
@@ -463,9 +467,11 @@ impl GlassCard {
     }
 
     pub fn show<R>(self, ui: &mut Ui, content: impl FnOnce(&mut Ui) -> R) -> R {
+        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        
         egui::Frame::new()
-            .fill(DashColors::glass_white())
-            .stroke(Stroke::new(1.0, DashColors::glass_border()))
+            .fill(DashColors::glass_white(dark_mode))
+            .stroke(Stroke::new(1.0, DashColors::glass_border(dark_mode)))
             .corner_radius(egui::CornerRadius::same(Shape::RADIUS_XL))
             .inner_margin(egui::Margin::same(self.padding as i8))
             .shadow(Shadow::medium())
@@ -474,7 +480,7 @@ impl GlassCard {
                     ui.label(
                         RichText::new(title)
                             .font(Typography::heading_medium())
-                            .color(DashColors::TEXT_PRIMARY),
+                            .color(DashColors::text_primary(dark_mode)),
                     );
                     ui.add_space(Spacing::MD);
                 }
@@ -516,10 +522,11 @@ impl HeroSection {
             .shadow(Shadow::glow())
             .show(ui, |ui| {
                 ui.vertical_centered(|ui| {
+                    let dark_mode = ui.ctx().style().visuals.dark_mode;
                     ui.label(
                         RichText::new(self.title)
                             .font(Typography::heading_large())
-                            .color(DashColors::TEXT_PRIMARY),
+                            .color(DashColors::text_primary(dark_mode)),
                     );
 
                     if let Some(subtitle) = self.subtitle {
@@ -527,7 +534,7 @@ impl HeroSection {
                         ui.label(
                             RichText::new(subtitle)
                                 .font(Typography::body_large())
-                                .color(DashColors::TEXT_SECONDARY),
+                                .color(DashColors::text_secondary(dark_mode)),
                         );
                     }
                 });
@@ -681,10 +688,12 @@ pub fn styled_text_edit_multiline(text: &mut String) -> TextEdit<'_> {
 
 /// Helper function to create an island-style central panel
 pub fn island_central_panel<R>(ctx: &Context, content: impl FnOnce(&mut Ui) -> R) -> R {
+    let dark_mode = ctx.style().visuals.dark_mode;
+    
     CentralPanel::default()
         .frame(
             Frame::new()
-                .fill(DashColors::BACKGROUND) // Light background instead of transparent
+                .fill(DashColors::background(dark_mode))
                 .inner_margin(Margin::symmetric(10, 10)), // Standard margins for all panels
         )
         .show(ctx, |ui| {
@@ -698,8 +707,8 @@ pub fn island_central_panel<R>(ctx: &Context, content: impl FnOnce(&mut Ui) -> R
 
             // Create an island panel with rounded edges
             Frame::new()
-                .fill(DashColors::SURFACE)
-                .stroke(Stroke::new(1.0, DashColors::BORDER_LIGHT))
+                .fill(DashColors::surface(dark_mode))
+                .stroke(Stroke::new(1.0, DashColors::border_light(dark_mode)))
                 .inner_margin(Margin::same(inner_margin as i8))
                 .corner_radius(egui::CornerRadius::same(Shape::RADIUS_LG))
                 .shadow(Shadow::elevated())

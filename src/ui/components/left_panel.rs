@@ -77,18 +77,20 @@ pub fn add_left_panel(
 
     let panel_width = 60.0 + (Spacing::MD * 2.0); // Button width + margins
 
+    let dark_mode = ctx.style().visuals.dark_mode;
+
     SidePanel::left("left_panel")
         .default_width(panel_width + 20.0) // Add extra width for margins
         .frame(
             Frame::new()
-                .fill(DashColors::BACKGROUND) // Light background instead of transparent
+                .fill(DashColors::background(dark_mode))
                 .inner_margin(Margin::symmetric(10, 10)), // Add margins for island effect
         )
         .show(ctx, |ui| {
             // Create an island panel with rounded edges
             Frame::new()
-                .fill(DashColors::SURFACE)
-                .stroke(egui::Stroke::new(1.0, DashColors::BORDER_LIGHT))
+                .fill(DashColors::surface(dark_mode))
+                .stroke(egui::Stroke::new(1.0, DashColors::border_light(dark_mode)))
                 .inner_margin(Margin::same(Spacing::MD_I8))
                 .corner_radius(egui::CornerRadius::same(Shape::RADIUS_LG))
                 .shadow(Shadow::elevated())
@@ -102,20 +104,23 @@ pub fn add_left_panel(
                             let is_selected = selected_screen == *screen_type;
 
                             let button_color = if is_selected {
-                                DashColors::DASH_BLUE
+                                Color32::WHITE // Bright white for selected
                             } else {
-                                DashColors::GRAY
+                                if dark_mode {
+                                    Color32::from_rgb(180, 180, 180) // Bright gray for visibility in dark mode
+                                } else {
+                                    Color32::from_rgb(160, 160, 160) // Medium gray for contrast in light mode
+                                }
                             };
 
                             // Add icon-based button if texture is loaded
                             if let Some(ref texture) = texture {
                                 let button = ImageButton::new(texture)
-                                    .frame(false) // Remove button frame
+                                    .frame(false)
                                     .tint(button_color);
 
                                 if ui.add(button).clicked() {
-                                    action =
-                                        AppAction::SetMainScreenThenGoToMainScreen(*screen_type);
+                                    action = AppAction::SetMainScreenThenGoToMainScreen(*screen_type);
                                 }
                             } else {
                                 // Fallback to a modern gradient button if texture loading fails
@@ -130,8 +135,11 @@ pub fn add_left_panel(
                                     }
                                 } else {
                                     let button = egui::Button::new(*label)
-                                        .fill(DashColors::glass_white())
-                                        .stroke(egui::Stroke::new(1.0, DashColors::glass_border()))
+                                        .fill(DashColors::glass_white(dark_mode))
+                                        .stroke(egui::Stroke::new(
+                                            1.0,
+                                            DashColors::glass_border(dark_mode),
+                                        ))
                                         .corner_radius(egui::CornerRadius::same(Shape::RADIUS_MD))
                                         .min_size(egui::vec2(60.0, 60.0));
 

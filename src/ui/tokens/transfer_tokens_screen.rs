@@ -12,6 +12,7 @@ use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
 use crate::ui::helpers::{add_identity_key_chooser, TransactionType};
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
+use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, Screen, ScreenLike};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
@@ -427,6 +428,8 @@ impl ScreenLike for TransferTokensScreen {
         action |= add_tokens_subscreen_chooser_panel(ctx, &self.app_context);
 
         let central_panel_action = island_central_panel(ctx, |ui| {
+            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            
             // Show the success screen if the transfer was successful
             if self.transfer_tokens_status == TransferTokensStatus::Complete {
                 return self.show_success(ui);
@@ -449,7 +452,7 @@ impl ScreenLike for TransferTokensScreen {
 
             if !has_keys {
                 ui.colored_label(
-                    egui::Color32::DARK_RED,
+                    DashColors::error_color(dark_mode),
                     format!(
                         "You do not have any authentication keys with CRITICAL security level loaded for this {} identity.",
                         self.identity.identity_type
@@ -635,7 +638,7 @@ impl ScreenLike for TransferTokensScreen {
                         ));
                     }
                     TransferTokensStatus::ErrorMessage(msg) => {
-                        ui.colored_label(egui::Color32::DARK_RED, format!("Error: {}", msg));
+                        ui.colored_label(DashColors::error_color(dark_mode), format!("Error: {}", msg));
                     }
                     TransferTokensStatus::Complete => {
                         // Handled above

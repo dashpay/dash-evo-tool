@@ -585,6 +585,13 @@ impl App for AppState {
                             self.visible_screen_mut()
                                 .display_message(msg, MessageType::Success);
                         }
+                        BackendTaskSuccessResult::UpdatedThemePreference(new_theme) => {
+                            self.theme_preference = new_theme;
+                            self.visible_screen_mut().display_message(
+                                "Theme preference updated successfully",
+                                MessageType::Success,
+                            );
+                        }
                         BackendTaskSuccessResult::CastScheduledVote(ref vote) => {
                             let _ = self.current_app_context().mark_vote_executed(
                                 vote.voter_id.as_slice(),

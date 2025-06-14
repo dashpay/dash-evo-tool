@@ -94,6 +94,7 @@ pub(crate) enum BackendTaskSuccessResult {
         token_id: Identifier,
         prices: Option<dash_sdk::dpp::tokens::token_pricing_schedule::TokenPricingSchedule>,
     },
+    UpdatedThemePreference(crate::ui::theme::ThemeMode),
 }
 
 impl BackendTaskSuccessResult {}

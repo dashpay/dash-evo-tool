@@ -221,10 +221,11 @@ impl IdentitiesScreen {
 
         let mut alias = qualified_identity.alias.clone().unwrap_or_default();
 
+        let dark_mode = ui.ctx().style().visuals.dark_mode;
         let text_edit = egui::TextEdit::singleline(&mut alias)
             .hint_text(placeholder_text)
             .desired_width(100.0)
-            .background_color(crate::ui::theme::DashColors::INPUT_BACKGROUND);
+            .background_color(crate::ui::theme::DashColors::input_background(dark_mode));
 
         if ui.add(text_edit).changed() {
             // If user edits alias, we do not necessarily turn on "custom order."
@@ -589,7 +590,8 @@ impl IdentitiesScreen {
 
                                                         // Main Identity Keys
                                                         if !public_keys.is_empty() {
-                                                            ui.label(RichText::new("Main Identity Keys:").strong().color(Color32::BLACK));
+                                                            let dark_mode = ui.ctx().style().visuals.dark_mode;
+                                                            ui.label(RichText::new("Main Identity Keys:").strong().color(crate::ui::theme::DashColors::text_primary(dark_mode)));
                                                             ui.separator();
 
                                                             for (key_id, key) in public_keys.iter() {
@@ -597,12 +599,22 @@ impl IdentitiesScreen {
                                                                     .get_cloned_private_key_data_and_wallet_info(&(PrivateKeyOnMainIdentity, *key_id));
 
                                                                 let button_color = if holding_private_key.is_some() {
-                                                                    Color32::from_rgb(167, 232, 232) // Light blue for loaded keys
+                                                                    if dark_mode {
+                                                                        Color32::from_rgb(100, 180, 180) // Darker blue for dark mode
+                                                                    } else {
+                                                                        Color32::from_rgb(167, 232, 232) // Light blue for light mode
+                                                                    }
                                                                 } else {
-                                                                    Color32::WHITE // White for unloaded keys
+                                                                    crate::ui::theme::DashColors::glass_white(dark_mode) // Theme-aware for unloaded keys
                                                                 };
 
-                                                                let button = egui::Button::new(self.format_key_name(key))
+                                                                let text_color = if holding_private_key.is_some() {
+                                                                    Color32::BLACK // Black text on light blue background
+                                                                } else {
+                                                                    crate::ui::theme::DashColors::text_primary(dark_mode) // Theme-aware text
+                                                                };
+                                                                
+                                                                let button = egui::Button::new(RichText::new(self.format_key_name(key)).color(text_color))
                                                                     .fill(button_color)
                                                                     .frame(true);
 
@@ -625,7 +637,8 @@ impl IdentitiesScreen {
                                                                 if !public_keys.is_empty() {
                                                                     ui.add_space(5.0);
                                                                 }
-                                                                ui.label(RichText::new("Voter Identity Keys:").strong().color(Color32::BLACK));
+                                                                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                                                                ui.label(RichText::new("Voter Identity Keys:").strong().color(crate::ui::theme::DashColors::text_primary(dark_mode)));
                                                                 ui.separator();
 
                                                                 for (key_id, key) in voter_public_keys.iter() {
@@ -633,12 +646,22 @@ impl IdentitiesScreen {
                                                                         .get_cloned_private_key_data_and_wallet_info(&(PrivateKeyOnVoterIdentity, *key_id));
 
                                                                     let button_color = if holding_private_key.is_some() {
-                                                                        Color32::from_rgb(167, 232, 232) // Light blue for loaded keys
+                                                                        if dark_mode {
+                                                                            Color32::from_rgb(100, 180, 180) // Darker blue for dark mode
+                                                                        } else {
+                                                                            Color32::from_rgb(167, 232, 232) // Light blue for light mode
+                                                                        }
                                                                     } else {
-                                                                        Color32::WHITE // White for unloaded keys
+                                                                        crate::ui::theme::DashColors::glass_white(dark_mode) // Theme-aware for unloaded keys
                                                                     };
 
-                                                                    let button = egui::Button::new(self.format_key_name(key))
+                                                                    let text_color = if holding_private_key.is_some() {
+                                                                        Color32::BLACK // Black text on light blue background
+                                                                    } else {
+                                                                        crate::ui::theme::DashColors::text_primary(dark_mode) // Theme-aware text
+                                                                    };
+                                                                    
+                                                                    let button = egui::Button::new(RichText::new(self.format_key_name(key)).color(text_color))
                                                                         .fill(button_color)
                                                                         .frame(true);
 
@@ -658,8 +681,9 @@ impl IdentitiesScreen {
                                                         // Add Key button
                                                         if qualified_identity.can_sign_with_master_key().is_some() {
                                                             ui.separator();
+                                                            let dark_mode = ui.ctx().style().visuals.dark_mode;
                                                             let add_button = egui::Button::new("➕ Add Key")
-                                                                .fill(Color32::WHITE)
+                                                                .fill(crate::ui::theme::DashColors::glass_white(dark_mode))
                                                                 .frame(true);
 
                                                                 if ui.add(add_button).on_hover_text("Add a new key to this identity").clicked() {

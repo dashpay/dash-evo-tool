@@ -106,20 +106,36 @@ impl DashColors {
     pub const DARK_DISABLED: Color32 = Color32::from_rgb(80, 80, 80);
 
     // Glass morphism colors (non-const functions)
-    pub fn surface_elevated() -> Color32 {
-        Color32::from_rgba_unmultiplied(255, 255, 255, 250)
+    pub fn surface_elevated(dark_mode: bool) -> Color32 {
+        if dark_mode {
+            Color32::from_rgba_unmultiplied(40, 40, 40, 240)
+        } else {
+            Color32::from_rgba_unmultiplied(255, 255, 255, 250)
+        }
     }
 
-    pub fn glass_white() -> Color32 {
-        Color32::from_rgba_unmultiplied(255, 255, 255, 180)
+    pub fn glass_white(dark_mode: bool) -> Color32 {
+        if dark_mode {
+            Color32::from_rgba_unmultiplied(60, 60, 60, 180)
+        } else {
+            Color32::from_rgba_unmultiplied(255, 255, 255, 180)
+        }
     }
 
-    pub fn glass_blue() -> Color32 {
-        Color32::from_rgba_unmultiplied(0, 141, 228, 40)
+    pub fn glass_blue(dark_mode: bool) -> Color32 {
+        if dark_mode {
+            Color32::from_rgba_unmultiplied(0, 141, 228, 60)
+        } else {
+            Color32::from_rgba_unmultiplied(0, 141, 228, 40)
+        }
     }
 
-    pub fn glass_border() -> Color32 {
-        Color32::from_rgba_unmultiplied(255, 255, 255, 60)
+    pub fn glass_border(dark_mode: bool) -> Color32 {
+        if dark_mode {
+            Color32::from_rgba_unmultiplied(100, 100, 100, 80)
+        } else {
+            Color32::from_rgba_unmultiplied(255, 255, 255, 60)
+        }
     }
 
     // Animated gradient colors
@@ -186,6 +202,39 @@ impl DashColors {
 
     pub fn disabled(dark_mode: bool) -> Color32 {
         if dark_mode { Self::DARK_DISABLED } else { Self::DISABLED }
+    }
+
+    // Semantic colors that adapt to theme
+    pub fn error_color(dark_mode: bool) -> Color32 {
+        if dark_mode {
+            Color32::from_rgb(255, 100, 100) // Lighter red for dark mode
+        } else {
+            Color32::DARK_RED
+        }
+    }
+
+    pub fn success_color(dark_mode: bool) -> Color32 {
+        if dark_mode {
+            Color32::from_rgb(80, 160, 80) // Darker muted green for dark mode
+        } else {
+            Color32::DARK_GREEN
+        }
+    }
+
+    pub fn warning_color(dark_mode: bool) -> Color32 {
+        if dark_mode {
+            Color32::from_rgb(255, 200, 100) // Lighter orange for dark mode
+        } else {
+            Color32::from_rgb(255, 140, 0) // Dark orange
+        }
+    }
+
+    pub fn muted_color(dark_mode: bool) -> Color32 {
+        if dark_mode {
+            Color32::from_rgb(150, 150, 150) // Lighter gray for dark mode
+        } else {
+            Color32::GRAY
+        }
     }
 }
 

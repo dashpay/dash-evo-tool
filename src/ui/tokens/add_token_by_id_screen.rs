@@ -21,7 +21,7 @@ use crate::{
     app::AppAction,
     backend_task::{tokens::TokenTask, BackendTask},
     context::AppContext,
-    ui::{components::top_panel::add_top_panel, MessageType, ScreenLike},
+    ui::{components::top_panel::add_top_panel, theme::DashColors, MessageType, ScreenLike},
 };
 
 /// UI state during the add-token flow.
@@ -331,6 +331,8 @@ impl ScreenLike for AddTokenByIdScreen {
         action |= add_tokens_subscreen_chooser_panel(ctx, &self.app_context);
 
         action |= island_central_panel(ctx, |ui| {
+            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            
             // If we are in the "Complete" status, just show success screen
             if self.status == AddTokenStatus::Complete {
                 return self.show_success_screen(ui);
@@ -382,7 +384,7 @@ impl ScreenLike for AddTokenByIdScreen {
 
             if let AddTokenStatus::Error(err) = &self.status {
                 ui.add_space(10.0);
-                ui.colored_label(Color32::DARK_RED, format!("Error: {}", err));
+                ui.colored_label(DashColors::error_color(dark_mode), format!("Error: {}", err));
             }
 
             ui.add_space(10.0);
@@ -391,7 +393,7 @@ impl ScreenLike for AddTokenByIdScreen {
             // Show any additional error messages
             if let Some(error_msg) = &self.error_message {
                 ui.add_space(5.0);
-                ui.colored_label(Color32::DARK_RED, format!("Details: {}", error_msg));
+                ui.colored_label(DashColors::error_color(dark_mode), format!("Details: {}", error_msg));
             }
 
             inner_action

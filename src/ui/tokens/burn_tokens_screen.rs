@@ -3,6 +3,7 @@ use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
 use crate::ui::contracts_documents::group_actions_screen::GroupActionsScreen;
 use crate::ui::helpers::{add_identity_key_chooser, render_group_action_text, TransactionType};
+use crate::ui::theme::DashColors;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
@@ -401,6 +402,8 @@ impl ScreenLike for BurnTokensScreen {
         action |= add_tokens_subscreen_chooser_panel(ctx, &self.app_context);
 
         let central_panel_action = island_central_panel(ctx, |ui| {
+            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            
             // If we are in the "Complete" status, just show success screen
             if self.status == BurnTokensStatus::Complete {
                 return self.show_success_screen(ui);
@@ -427,7 +430,7 @@ impl ScreenLike for BurnTokensScreen {
 
             if !has_keys {
                 ui.colored_label(
-                    Color32::DARK_RED,
+                    DashColors::error_color(dark_mode),
                     format!(
                         "No authentication keys found for this {} identity.",
                         self.identity_token_info.identity.identity_type,
@@ -583,7 +586,7 @@ impl ScreenLike for BurnTokensScreen {
                         ui.label(format!("Burning... elapsed: {} seconds", elapsed));
                     }
                     BurnTokensStatus::ErrorMessage(msg) => {
-                        ui.colored_label(Color32::DARK_RED, format!("Error: {}", msg));
+                        ui.colored_label(DashColors::error_color(dark_mode), format!("Error: {}", msg));
                     }
                     BurnTokensStatus::Complete => {
                         // handled above

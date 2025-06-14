@@ -7,6 +7,7 @@ use egui::{Context, Frame, Margin, RichText, SidePanel};
 
 pub fn add_dpns_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext) -> AppAction {
     let mut action = AppAction::None;
+    let dark_mode = ctx.style().visuals.dark_mode;
 
     let subscreens = vec![
         DPNSSubscreen::Active,
@@ -30,7 +31,7 @@ pub fn add_dpns_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext)
         .default_width(270.0) // Increased to account for margins
         .frame(
             Frame::new()
-                .fill(DashColors::BACKGROUND) // Light background instead of transparent
+                .fill(DashColors::background(dark_mode)) // Light background instead of transparent
                 .inner_margin(Margin::symmetric(10, 10)), // Add margins for island effect
         )
         .show(ctx, |ui| {
@@ -39,8 +40,8 @@ pub fn add_dpns_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext)
 
             // Create an island panel with rounded edges that fills the height
             Frame::new()
-                .fill(DashColors::SURFACE)
-                .stroke(egui::Stroke::new(1.0, DashColors::BORDER_LIGHT))
+                .fill(DashColors::surface(dark_mode))
+                .stroke(egui::Stroke::new(1.0, DashColors::border_light(dark_mode)))
                 .inner_margin(Margin::same(Spacing::MD_I8))
                 .corner_radius(egui::CornerRadius::same(Shape::RADIUS_LG))
                 .shadow(Shadow::elevated())
@@ -52,7 +53,7 @@ pub fn add_dpns_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext)
                         ui.label(
                             RichText::new("DPNS Subscreens")
                                 .font(Typography::heading_small())
-                                .color(DashColors::TEXT_PRIMARY),
+                                .color(DashColors::text_primary(dark_mode)),
                         );
                         ui.add_space(Spacing::MD);
 
@@ -72,11 +73,11 @@ pub fn add_dpns_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext)
                             } else {
                                 egui::Button::new(
                                     RichText::new(subscreen.display_name())
-                                        .color(DashColors::TEXT_PRIMARY)
+                                        .color(DashColors::text_primary(dark_mode))
                                         .size(Typography::SCALE_SM),
                                 )
-                                .fill(DashColors::WHITE)
-                                .stroke(egui::Stroke::new(1.0, DashColors::BORDER))
+                                .fill(DashColors::glass_white(dark_mode))
+                                .stroke(egui::Stroke::new(1.0, DashColors::border(dark_mode)))
                                 .corner_radius(egui::CornerRadius::same(Shape::RADIUS_MD))
                                 .min_size(egui::Vec2::new(150.0, 28.0))
                             };

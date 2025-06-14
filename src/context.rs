@@ -432,6 +432,7 @@ impl AppContext {
             Option<PasswordInfo>,
             Option<String>,
             bool,
+            crate::ui::theme::ThemeMode,
         )>,
     > {
         self.db.get_settings()

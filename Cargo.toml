@@ -40,6 +40,7 @@ arboard = { version = "3.5.0", default-features = false, features = [
 ] }
 directories = "6.0.0"
 rusqlite = { version = "0.36.0", features = ["functions"] }
+dark-light = "1.1.0"
 image = { version = "0.25.6", default-features = false, features = ["png"] }
 bitflags = "2.9.1"
 libsqlite3-sys = { version = "0.34.0", features = ["bundled"] }

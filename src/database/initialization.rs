@@ -4,7 +4,7 @@ use rusqlite::{params, Connection};
 use std::fs;
 use std::path::Path;
 
-pub const DEFAULT_DB_VERSION: u16 = 10;
+pub const DEFAULT_DB_VERSION: u16 = 11;
 
 pub const DEFAULT_NETWORK: &str = "dash";
 
@@ -33,6 +33,7 @@ impl Database {
 
     fn apply_version_changes(&self, version: u16, tx: &Connection) -> rusqlite::Result<()> {
         match version {
+            11 => self.rename_identity_column_is_in_creation_to_status(tx)?,
             10 => {
                 self.add_theme_preference_column(tx)?;
             }
@@ -304,7 +305,7 @@ impl Database {
                     "CREATE TABLE IF NOT EXISTS identity (
                         id BLOB PRIMARY KEY,
                         data BLOB,
-                        is_in_creation INTEGER NOT NULL DEFAULT 0,
+                        status INTEGER NOT NULL DEFAULT 0,
                         is_local INTEGER NOT NULL,
                         alias TEXT,
                         info TEXT,

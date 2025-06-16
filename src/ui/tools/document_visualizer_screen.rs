@@ -8,6 +8,7 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::helpers::add_contract_doc_type_chooser_with_filtering;
 use crate::ui::BackendTaskSuccessResult;
 
+use base64::{engine::general_purpose::STANDARD, Engine};
 use dash_sdk::dpp::document::serialization_traits::DocumentPlatformConversionMethodsV0;
 use dash_sdk::dpp::{data_contract::document_type::DocumentType, document::Document};
 use eframe::egui::{self, Color32, Context, TextEdit, Ui};
@@ -75,10 +76,41 @@ impl DocumentVisualizerScreen {
         self.parsed_json = None;
         self.parse_status = DocumentParseStatus::NotStarted;
 
-        // hex decode
-        let Ok(bytes) = hex::decode(&self.input_data_hex) else {
-            self.parse_status = DocumentParseStatus::Error("Invalid hex".to_owned());
-            return;
+        // decode the input - try comma-separated integers first, then hex, then base64
+        let bytes = if self.input_data_hex.contains(',') {
+            // Try parsing as comma-separated integers
+            match self
+                .input_data_hex
+                .split(',')
+                .filter(|s| !s.trim().is_empty()) // Skip empty segments
+                .map(|s| s.trim().parse::<u8>())
+                .collect::<Result<Vec<u8>, _>>()
+            {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    self.parse_status = DocumentParseStatus::Error(format!(
+                        "Failed to parse comma-separated integers: {}",
+                        e
+                    ));
+                    return;
+                }
+            }
+        } else {
+            // Try hex decode first, then base64
+            match hex::decode(&self.input_data_hex.trim()) {
+                Ok(bytes) => bytes,
+                Err(_) => {
+                    // Try base64 decode
+                    match STANDARD.decode(&self.input_data_hex.trim()) {
+                        Ok(bytes) => bytes,
+                        Err(e) => {
+                            self.parse_status =
+                                DocumentParseStatus::Error(format!("Invalid hex or base64: {}", e));
+                            return;
+                        }
+                    }
+                }
+            }
         };
 
         // deserialise
@@ -106,7 +138,7 @@ impl DocumentVisualizerScreen {
     // --------------- egui helpers ---------------
 
     fn show_input(&mut self, ui: &mut Ui) {
-        ui.label("Hex-encoded Document:");
+        ui.label("Enter hex, base64, or comma-separated integers for Document:");
         let resp = ui.add(
             TextEdit::multiline(&mut self.input_data_hex)
                 .desired_rows(4)

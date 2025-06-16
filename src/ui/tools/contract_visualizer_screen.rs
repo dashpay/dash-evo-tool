@@ -5,6 +5,7 @@ use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tools_subscreen_chooser_panel::add_tools_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::BackendTaskSuccessResult;
+use base64::{engine::general_purpose::STANDARD, Engine};
 use dash_sdk::dpp::serialization::PlatformDeserializableWithPotentialValidationFromVersionedStructure;
 use dash_sdk::platform::DataContract;
 use eframe::egui::{Color32, Context, ScrollArea, TextEdit, Ui};
@@ -57,10 +58,41 @@ impl ContractVisualizerScreen {
         self.parsed_json = None;
         self.parse_status = ContractParseStatus::NotStarted;
 
-        // hex decode
-        let Ok(bytes) = hex::decode(&self.input_data_hex) else {
-            self.parse_status = ContractParseStatus::Error("Invalid hex".to_owned());
-            return;
+        // decode the input - try comma-separated integers first, then hex, then base64
+        let bytes = if self.input_data_hex.contains(',') {
+            // Try parsing as comma-separated integers
+            match self
+                .input_data_hex
+                .split(',')
+                .filter(|s| !s.trim().is_empty()) // Skip empty segments
+                .map(|s| s.trim().parse::<u8>())
+                .collect::<Result<Vec<u8>, _>>()
+            {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    self.parse_status = ContractParseStatus::Error(format!(
+                        "Failed to parse comma-separated integers: {}",
+                        e
+                    ));
+                    return;
+                }
+            }
+        } else {
+            // Try hex decode first, then base64
+            match hex::decode(&self.input_data_hex.trim()) {
+                Ok(bytes) => bytes,
+                Err(_) => {
+                    // Try base64 decode
+                    match STANDARD.decode(&self.input_data_hex.trim()) {
+                        Ok(bytes) => bytes,
+                        Err(e) => {
+                            self.parse_status =
+                                ContractParseStatus::Error(format!("Invalid hex or base64: {}", e));
+                            return;
+                        }
+                    }
+                }
+            }
         };
 
         match DataContract::versioned_deserialize(
@@ -87,7 +119,7 @@ impl ContractVisualizerScreen {
     // --------------- egui helpers ---------------
 
     fn show_input(&mut self, ui: &mut Ui) {
-        ui.label("Hex-encoded Contract:");
+        ui.label("Enter hex, base64, or comma-separated integers for Contract:");
         let resp = ui.add(
             TextEdit::multiline(&mut self.input_data_hex)
                 .desired_rows(4)

@@ -2,7 +2,6 @@ use crate::app_dir::{app_user_data_file_path, create_dash_core_config_if_not_exi
 
 use crate::context::AppContext;
 use dash_sdk::dpp::dashcore::Network;
-use std::env;
 use std::path::PathBuf;
 use tokio::process::Command;
 
@@ -11,30 +10,14 @@ impl AppContext {
     pub(super) fn start_dash_qt(
         &self,
         network: Network,
-        custom_dash_qt: Option<String>,
+        dash_qt_path: PathBuf,
         overwrite_dash_conf: bool,
     ) -> std::io::Result<()> {
-        let dash_qt_path = match custom_dash_qt {
-            Some(ref custom_path) => PathBuf::from(custom_path),
-            None => {
-                if cfg!(target_os = "macos") {
-                    PathBuf::from("/Applications/Dash-Qt.app/Contents/MacOS/Dash-Qt")
-                } else if cfg!(target_os = "windows") {
-                    // Retrieve the PROGRAMFILES environment variable or default to "C:\\Program Files"
-                    let program_files = env::var("PROGRAMFILES")
-                        .unwrap_or_else(|_| "C:\\Program Files".to_string());
-                    PathBuf::from(program_files).join("DashCore\\dash-qt.exe")
-                } else {
-                    PathBuf::from("/usr/local/bin/dash-qt") // Default Linux path
-                }
-            }
-        };
-
         // Ensure the Dash-Qt binary path exists
-        if !dash_qt_path.exists() {
+        if !dash_qt_path.is_file() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
-                format!("Dash-Qt not found at: {:?}", dash_qt_path),
+                format!("Dash-Qt binary file not found at: {:?}", dash_qt_path),
             ));
         }
 

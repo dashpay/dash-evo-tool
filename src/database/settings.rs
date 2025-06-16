@@ -5,7 +5,7 @@ use crate::ui::theme::ThemeMode;
 use crate::ui::RootScreenType;
 use dash_sdk::dpp::dashcore::Network;
 use rusqlite::{params, Connection, Result};
-use std::str::FromStr;
+use std::{path::PathBuf, str::FromStr};
 
 impl Database {
     /// Inserts or updates the settings in the database. This method ensures that only one row exists.
@@ -48,15 +48,16 @@ impl Database {
 
     pub fn update_dash_core_execution_settings(
         &self,
-        custom_dash_path: Option<String>,
+        custom_dash_path: Option<PathBuf>,
         overwrite_dash_conf: bool,
     ) -> Result<()> {
+        let dash_qt_path = custom_dash_path.map(|p| p.to_string_lossy().to_string());
         self.execute(
             "UPDATE settings
             SET custom_dash_qt_path = ?,
                 overwrite_dash_conf = ?
             WHERE id = 1",
-            rusqlite::params![custom_dash_path, overwrite_dash_conf],
+            rusqlite::params![dash_qt_path, overwrite_dash_conf],
         )?;
 
         Ok(())
@@ -151,7 +152,7 @@ impl Database {
             Network,
             RootScreenType,
             Option<PasswordInfo>,
-            Option<String>,
+            Option<PathBuf>,
             bool,
             ThemeMode,
         )>,
@@ -201,7 +202,7 @@ impl Database {
                 parsed_network,
                 root_screen_type,
                 password_data,
-                custom_dash_qt_path,
+                custom_dash_qt_path.map(PathBuf::from),
                 overwrite_dash_conf.unwrap_or(true),
                 theme_mode,
             ))

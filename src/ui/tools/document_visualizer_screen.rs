@@ -97,11 +97,11 @@ impl DocumentVisualizerScreen {
             }
         } else {
             // Try hex decode first, then base64
-            match hex::decode(&self.input_data_hex.trim()) {
+            match hex::decode(self.input_data_hex.trim()) {
                 Ok(bytes) => bytes,
                 Err(_) => {
                     // Try base64 decode
-                    match STANDARD.decode(&self.input_data_hex.trim()) {
+                    match STANDARD.decode(self.input_data_hex.trim()) {
                         Ok(bytes) => bytes,
                         Err(e) => {
                             self.parse_status =

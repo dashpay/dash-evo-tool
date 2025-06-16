@@ -45,9 +45,9 @@ impl ProofVisualizerScreen {
                 .map_err(|e| format!("Failed to parse comma-separated integers: {}", e))
         } else {
             // Try to decode the input as hex first
-            hex::decode(&self.input_data.trim()).or_else(|_| {
+            hex::decode(self.input_data.trim()).or_else(|_| {
                 STANDARD
-                    .decode(&self.input_data.trim())
+                    .decode(self.input_data.trim())
                     .map_err(|e| format!("Base64 decode error: {}", e))
             })
         };

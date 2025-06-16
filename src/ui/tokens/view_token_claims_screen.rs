@@ -190,9 +190,7 @@ impl ScreenLike for ViewTokenClaimsScreen {
                                 for claim in &self.claims {
                                     // Amount
                                     let amount = match claim.get("amount") {
-                                        Some(Value::U64(amount)) => {
-                                            amount.to_string()
-                                        }
+                                        Some(Value::U64(amount)) => amount.to_string(),
                                         Some(Value::I64(amount)) => {
                                             if *amount >= 0 {
                                                 (*amount as u64).to_string()

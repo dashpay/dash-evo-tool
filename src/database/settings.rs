@@ -48,10 +48,10 @@ impl Database {
 
     pub fn update_dash_core_execution_settings(
         &self,
-        custom_dash_path: Option<PathBuf>,
+        custom_dash_qt_path: Option<PathBuf>,
         overwrite_dash_conf: bool,
     ) -> Result<()> {
-        let dash_qt_path = custom_dash_path.map(|p| p.to_string_lossy().to_string());
+        let dash_qt_path = custom_dash_qt_path.map(|p| p.to_string_lossy().to_string());
         self.execute(
             "UPDATE settings
             SET custom_dash_qt_path = ?,

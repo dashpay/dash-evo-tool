@@ -165,7 +165,7 @@ fn add_connection_indicator(ui: &mut Ui, app_context: &Arc<AppContext>) -> AppAc
                             ));
                         } else {
                             tracing::debug!(
-                                "Dash-Qt path not set in settings, not sarting Dash-Qt from connection indicator."
+                                "Dash-Qt path not set in settings, not starting Dash-Qt from connection indicator."
                             );
                         }
                     }

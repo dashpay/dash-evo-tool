@@ -23,6 +23,7 @@ use crate::ui::helpers::{add_identity_key_chooser, TransactionType};
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
+use crate::ui::theme::DashColors;
 use crate::ui::{BackendTaskSuccessResult, MessageType, Screen, ScreenLike};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
@@ -378,6 +379,7 @@ impl ScreenLike for PurchaseTokenScreen {
         action |= add_tokens_subscreen_chooser_panel(ctx, &self.app_context);
 
         island_central_panel(ctx, |ui| {
+            let dark_mode = ui.ctx().style().visuals.dark_mode;
             // If we are in the "Complete" status, just show success screen
             if self.status == PurchaseTokensStatus::Complete {
                 action |= self.show_success_screen(ui);
@@ -405,7 +407,7 @@ impl ScreenLike for PurchaseTokenScreen {
 
             if !has_keys {
                 ui.colored_label(
-                    Color32::DARK_RED,
+                    DashColors::error_color(dark_mode),
                     format!(
                         "No authentication keys with CRITICAL security level found for this {} identity.",
                         self.identity_token_info.identity.identity_type,
@@ -488,7 +490,7 @@ impl ScreenLike for PurchaseTokenScreen {
                     });
                 } else if self.fetched_pricing_schedule.is_some() {
                     ui.colored_label(
-                        Color32::DARK_RED,
+                        DashColors::error_color(dark_mode),
                         "Please enter a valid amount to see the price.",
                     );
                 } else {
@@ -514,10 +516,11 @@ impl ScreenLike for PurchaseTokenScreen {
                         self.show_confirmation_popup = true;
                     }
                 } else {
-                    let button =
-                        egui::Button::new(RichText::new(purchase_text).color(Color32::GRAY))
-                            .fill(Color32::from_rgb(50, 50, 50))
-                            .corner_radius(3.0);
+                    let button = egui::Button::new(
+                        RichText::new(purchase_text).color(DashColors::muted_color(dark_mode)),
+                    )
+                    .fill(Color32::from_rgb(50, 50, 50))
+                    .corner_radius(3.0);
 
                     ui.add_enabled(false, button).on_hover_text(
                         if self.pricing_fetch_attempted && self.fetched_pricing_schedule.is_none() {
@@ -548,7 +551,10 @@ impl ScreenLike for PurchaseTokenScreen {
                         ui.label(format!("Purchasing... elapsed: {} seconds", elapsed));
                     }
                     PurchaseTokensStatus::ErrorMessage(msg) => {
-                        ui.colored_label(Color32::DARK_RED, format!("Error: {}", msg));
+                        ui.colored_label(
+                            DashColors::error_color(dark_mode),
+                            format!("Error: {}", msg),
+                        );
                     }
                     PurchaseTokensStatus::Complete => {
                         // handled above

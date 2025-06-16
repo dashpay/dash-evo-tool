@@ -15,6 +15,7 @@ use crate::ui::helpers::{add_identity_key_chooser, render_group_action_text, Tra
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
+use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike};
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
@@ -424,6 +425,8 @@ impl ScreenLike for DestroyFrozenFundsScreen {
         action |= add_tokens_subscreen_chooser_panel(ctx, &self.app_context);
 
         island_central_panel(ctx, |ui| {
+            let dark_mode = ui.ctx().style().visuals.dark_mode;
+
             if self.status == DestroyFrozenFundsStatus::Complete {
                 action |= self.show_success_screen(ui);
                 return;
@@ -444,7 +447,7 @@ impl ScreenLike for DestroyFrozenFundsScreen {
 
             if !has_keys {
                 ui.colored_label(
-                    Color32::DARK_RED,
+                    DashColors::error_color(dark_mode),
                     format!(
                         "No authentication keys with CRITICAL security level found for this {} identity.",
                         self.identity.identity_type,
@@ -595,7 +598,10 @@ impl ScreenLike for DestroyFrozenFundsScreen {
                         ));
                     }
                     DestroyFrozenFundsStatus::ErrorMessage(msg) => {
-                        ui.colored_label(Color32::DARK_RED, format!("Error: {}", msg));
+                        ui.colored_label(
+                            DashColors::error_color(dark_mode),
+                            format!("Error: {}", msg),
+                        );
                     }
                     DestroyFrozenFundsStatus::Complete => {
                         // handled above

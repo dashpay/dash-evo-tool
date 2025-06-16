@@ -94,6 +94,7 @@ pub enum TokenTask {
     QueryIdentityTokenBalance(IdentityTokenIdentifier),
     QueryDescriptionsByKeyword(String, Option<Start>),
     FetchTokenByContractId(Identifier),
+    FetchTokenByTokenId(Identifier),
     SaveTokenLocally(TokenInfo),
     QueryTokenPricing(Identifier),
     MintTokens {
@@ -175,7 +176,7 @@ pub enum TokenTask {
         signing_key: IdentityPublicKey,
         public_note: Option<String>,
     },
-    EstimatePerpetualTokenRewards {
+    EstimatePerpetualTokenRewardsWithExplanation {
         identity_id: Identifier,
         token_id: Identifier,
     },
@@ -484,17 +485,17 @@ impl AppContext {
                 )
                 .await
                 .map_err(|e| format!("Failed to claim tokens: {e}")),
-            TokenTask::EstimatePerpetualTokenRewards {
+            TokenTask::EstimatePerpetualTokenRewardsWithExplanation {
                 identity_id,
                 token_id,
             } => self
-                .query_token_non_claimed_perpetual_distribution_rewards(
+                .query_token_non_claimed_perpetual_distribution_rewards_with_explanation(
                     *identity_id,
                     *token_id,
                     sdk,
                 )
                 .await
-                .map_err(|e| format!("Failed to get estimated rewards: {e}")),
+                .map_err(|e| format!("Failed to get estimated rewards with explanation: {e}")),
             TokenTask::QueryIdentityTokenBalance(identity_token_pair) => self
                 .query_token_balance(
                     sdk,
@@ -513,6 +514,40 @@ impl AppContext {
                         "Contract not found".to_string(),
                     )),
                     Err(e) => Err(format!("Error fetching contracts: {}", e)),
+                }
+            }
+            TokenTask::FetchTokenByTokenId(token_id) => {
+                use dash_sdk::dpp::tokens::contract_info::v0::TokenContractInfoV0Accessors;
+                use dash_sdk::dpp::tokens::contract_info::TokenContractInfo;
+
+                match TokenContractInfo::fetch(sdk, *token_id).await {
+                    Ok(Some(token_contract_info)) => {
+                        // Extract the contract ID and token position from token_contract_info
+                        let (contract_id, token_position) = match &token_contract_info {
+                            TokenContractInfo::V0(info) => {
+                                (info.contract_id(), info.token_contract_position())
+                            }
+                        };
+
+                        // Fetch the full contract
+                        match DataContract::fetch_by_identifier(sdk, contract_id).await {
+                            Ok(Some(data_contract)) => {
+                                // Return the contract with the specific token position
+                                Ok(BackendTaskSuccessResult::FetchedContractWithTokenPosition(
+                                    data_contract,
+                                    token_position,
+                                ))
+                            }
+                            Ok(None) => Ok(BackendTaskSuccessResult::Message(
+                                "Contract not found for token".to_string(),
+                            )),
+                            Err(e) => Err(format!("Error fetching contract for token: {}", e)),
+                        }
+                    }
+                    Ok(None) => Ok(BackendTaskSuccessResult::Message(
+                        "Token not found".to_string(),
+                    )),
+                    Err(e) => Err(format!("Error fetching token info: {}", e)),
                 }
             }
             TokenTask::SaveTokenLocally(token_info) => {

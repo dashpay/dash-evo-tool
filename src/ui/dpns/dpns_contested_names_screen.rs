@@ -21,6 +21,7 @@ use crate::ui::components::dpns_subscreen_chooser_panel::add_dpns_subscreen_choo
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::theme::DashColors;
 use crate::ui::{BackendTaskSuccessResult, MessageType, RootScreenType, ScreenLike, ScreenType};
 
 /// Which DPNS sub-screen is currently showing.
@@ -300,7 +301,8 @@ impl DPNSScreen {
             ui.add_space(10.0);
 
             if self.dpns_subscreen != DPNSSubscreen::ScheduledVotes {
-                ui.label(RichText::new("Please check back later or try refreshing the list.").color(Color32::BLACK));
+                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                ui.label(RichText::new("Please check back later or try refreshing the list.").color(DashColors::text_primary(dark_mode)));
                 ui.add_space(20.0);
                 if ui.button("Refresh").clicked() {
                     if let RefreshingStatus::Refreshing(_) = self.refreshing_status {

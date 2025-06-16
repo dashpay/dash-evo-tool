@@ -24,6 +24,7 @@ use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::To
 use dash_sdk::dpp::data_contract::associated_token::token_keeps_history_rules::TokenKeepsHistoryRules;
 use dash_sdk::dpp::data_contract::associated_token::token_keeps_history_rules::v0::TokenKeepsHistoryRulesV0;
 use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::distribution_function::DistributionFunction;
+use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::distribution_function::evaluate_interval::IntervalEvaluationExplanation;
 use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::distribution_recipient::TokenDistributionRecipient;
 use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::reward_distribution_type::RewardDistributionType;
 use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::v0::TokenPerpetualDistributionV0;
@@ -965,6 +966,13 @@ pub struct TokensScreen {
     confirm_remove_token_popup: bool,
     token_to_remove: Option<Identifier>,
 
+    // Reward explanations
+    reward_explanations: IndexMap<IdentityTokenIdentifier, IntervalEvaluationExplanation>,
+    show_explanation_popup: Option<IdentityTokenIdentifier>,
+
+    // Token info popup
+    show_token_info_popup: Option<Identifier>,
+
     // ====================================
     //           Token Creator
     // ====================================
@@ -1298,6 +1306,11 @@ impl TokensScreen {
             identity_token_balance_to_remove: None,
             confirm_remove_token_popup: false,
             token_to_remove: None,
+
+            // Reward explanations
+            reward_explanations: IndexMap::new(),
+            show_explanation_popup: None,
+            show_token_info_popup: None,
 
             // Token Creator
             selected_token_preset: None,
@@ -2741,14 +2754,16 @@ impl ScreenLike for TokensScreen {
                 self.refreshing_status = RefreshingStatus::NotRefreshing;
                 self.contract_details_loading = false;
             }
-            BackendTaskSuccessResult::TokenEstimatedNonClaimedPerpetualDistributionAmount(
+            BackendTaskSuccessResult::TokenEstimatedNonClaimedPerpetualDistributionAmountWithExplanation(
                 identity_token_id,
                 amount,
+                explanation,
             ) => {
                 self.refreshing_status = RefreshingStatus::NotRefreshing;
                 if let Some(itb) = self.my_tokens.get_mut(&identity_token_id) {
-                    itb.estimated_unclaimed_rewards = Some(amount)
+                    itb.estimated_unclaimed_rewards = Some(amount);
                 }
+                self.reward_explanations.insert(identity_token_id, explanation);
             }
             BackendTaskSuccessResult::TokenPricing { token_id, prices } => {
                 // Store the pricing data

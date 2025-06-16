@@ -6,6 +6,7 @@ use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, ScreenLike};
 use chrono::{DateTime, Utc};
 use dash_sdk::dpp::document::DocumentV0Getters;
@@ -17,6 +18,25 @@ use egui::{Color32, RichText};
 use std::sync::Arc;
 
 use super::tokens_screen::IdentityTokenBasicInfo;
+
+fn format_token_amount(amount: u64, decimals: u8) -> String {
+    if decimals == 0 {
+        return amount.to_string();
+    }
+
+    let divisor = 10u64.pow(decimals as u32);
+    let whole = amount / divisor;
+    let fraction = amount % divisor;
+
+    if fraction == 0 {
+        whole.to_string()
+    } else {
+        // Format with the appropriate number of decimal places, removing trailing zeros
+        let fraction_str = format!("{:0width$}", fraction, width = decimals as usize);
+        let trimmed = fraction_str.trim_end_matches('0');
+        format!("{}.{}", whole, trimmed)
+    }
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum FetchStatus {
@@ -31,11 +51,13 @@ pub struct ViewTokenClaimsScreen {
     fetch_status: FetchStatus,
     pub app_context: Arc<AppContext>,
     claims: Vec<Document>,
+    token_decimals: u8,
 }
 
 impl ViewTokenClaimsScreen {
     pub fn new(
         identity_token_basic_info: IdentityTokenBasicInfo,
+        token_decimals: u8,
         app_context: &Arc<AppContext>,
     ) -> Self {
         Self {
@@ -63,6 +85,7 @@ impl ViewTokenClaimsScreen {
             fetch_status: FetchStatus::NotFetching,
             app_context: app_context.clone(),
             claims: vec![],
+            token_decimals,
         }
     }
 }
@@ -129,6 +152,7 @@ impl ScreenLike for ViewTokenClaimsScreen {
 
         // Central panel
         island_central_panel(ctx, |ui| {
+            let dark_mode = ui.ctx().style().visuals.dark_mode;
             ui.heading("View Token Claims");
             ui.add_space(10.0);
 
@@ -149,10 +173,10 @@ impl ScreenLike for ViewTokenClaimsScreen {
                 ui.add_space(10.0);
                 match msg_type {
                     MessageType::Success => {
-                        ui.colored_label(Color32::DARK_GREEN, msg);
+                        ui.colored_label(DashColors::success_color(dark_mode), msg);
                     }
                     MessageType::Error => {
-                        ui.colored_label(Color32::DARK_RED, msg);
+                        ui.colored_label(DashColors::error_color(dark_mode), msg);
                     }
                     MessageType::Info => {
                         ui.label(msg);
@@ -188,8 +212,19 @@ impl ScreenLike for ViewTokenClaimsScreen {
                                 for claim in &self.claims {
                                     // Amount
                                     let amount = match claim.get("amount") {
-                                        Some(Value::U64(amount)) => format!("{}", amount),
-                                        Some(Value::I64(amount)) => format!("{}", amount),
+                                        Some(Value::U64(amount)) => {
+                                            format_token_amount(*amount, self.token_decimals)
+                                        }
+                                        Some(Value::I64(amount)) => {
+                                            if *amount >= 0 {
+                                                format_token_amount(
+                                                    *amount as u64,
+                                                    self.token_decimals,
+                                                )
+                                            } else {
+                                                format!("{}", amount)
+                                            }
+                                        }
                                         Some(Value::Text(s)) => s.clone(),
                                         Some(other) => other.to_string(),
                                         None => "None".to_string(),

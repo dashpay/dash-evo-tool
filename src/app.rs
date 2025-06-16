@@ -24,6 +24,7 @@ use crate::ui::tools::proof_visualizer_screen::ProofVisualizerScreen;
 use crate::ui::tools::transition_visualizer_screen::TransitionVisualizerScreen;
 use crate::ui::wallets::wallets_screen::WalletsBalancesScreen;
 use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike, ScreenType};
+use crate::utils::tasks::TaskManager;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use derive_more::From;
@@ -34,7 +35,6 @@ use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant, SystemTime};
 use std::vec;
 use tokio::sync::mpsc as tokiompsc;
-use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, From)]
 pub enum TaskResult {
@@ -74,6 +74,7 @@ pub struct AppState {
     pub task_result_receiver: tokiompsc::Receiver<TaskResult>, // Channel receiver for receiving task results
     pub theme_preference: ThemeMode,                           // Current theme preference
     last_scheduled_vote_check: Instant, // Last time we checked if there are scheduled masternode votes to cast
+    pub subtasks: Arc<TaskManager>,     // Subtasks manager for graceful shutdown
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -160,14 +161,12 @@ impl AppState {
                 (None, ThemeMode::System) // Default values if no settings found
             };
 
-        // Cancellation token is shared between all contexts, as we want to cancel
-        // all tasks from all contexts when the app is closed.
-        let cancellation_token = CancellationToken::new();
+        let subtasks = Arc::new(TaskManager::new());
         let mainnet_app_context = match AppContext::new(
             Network::Dash,
             db.clone(),
             password_info.clone(),
-            cancellation_token.clone(),
+            subtasks.clone(),
         ) {
             Some(context) => context,
             None => {
@@ -181,19 +180,19 @@ impl AppState {
             Network::Testnet,
             db.clone(),
             password_info.clone(),
-            cancellation_token.clone(),
+            subtasks.clone(),
         );
         let devnet_app_context = AppContext::new(
             Network::Devnet,
             db.clone(),
             password_info.clone(),
-            cancellation_token.clone(),
+            subtasks.clone(),
         );
         let local_app_context = AppContext::new(
             Network::Regtest,
             db.clone(),
             password_info,
-            cancellation_token.clone(),
+            subtasks.clone(),
         );
 
         let mut identities_screen = IdentitiesScreen::new(&mainnet_app_context);
@@ -459,6 +458,7 @@ impl AppState {
             task_result_receiver,
             theme_preference,
             last_scheduled_vote_check: Instant::now(),
+            subtasks,
         }
     }
 
@@ -476,7 +476,6 @@ impl AppState {
     pub fn handle_backend_task(&self, task: BackendTask) {
         let sender = self.task_result_sender.clone();
         let app_context = self.current_app_context().clone();
-
         tokio::spawn(async move {
             let result = app_context.run_backend_task(task, sender.clone()).await;
 
@@ -839,7 +838,16 @@ impl App for AppState {
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         // Signal all background tasks to cancel
-        tracing::debug!("App is exiting, cancelling all background tasks");
-        self.current_app_context().cancellation_token.cancel();
+        tracing::debug!("App received on_exit event, cancelling all background tasks");
+
+        // if ctx.input(|i| i.viewport().close_requested()) {
+        if !self.subtasks.cancellation_token.is_cancelled() {
+            self.subtasks.shutdown().unwrap_or_else(|e| {
+                tracing::debug!("Failed to shutdown subtasks: {}", e);
+            });
+        } else {
+            tracing::debug!("Shutdown already in progress, ignoring close request");
+        }
+        // }
     }
 }

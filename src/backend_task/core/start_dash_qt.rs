@@ -66,8 +66,8 @@ impl AppContext {
         // Spawn the Dash-Qt process
 
         // Spawn a task to wait for the Dash-Qt process to exit
-        let cancel = self.cancellation_token.clone();
-        tokio::spawn(async move {
+        let cancel = self.subtasks.cancellation_token.clone();
+        self.subtasks.spawn_sync(async move {
             let mut dash_qt = command
                 .spawn()
                 .inspect_err(
@@ -93,6 +93,10 @@ impl AppContext {
                     tracing::debug!("dash-qt process was cancelled, sending SIGTERM");
                     signal_term(&dash_qt)
                         .unwrap_or_else(|e| tracing::error!(error=?e, "Failed to send SIGTERM to dash-qt"));
+                    let status = dash_qt.wait().await
+                        .inspect_err(|e| tracing::error!(error=?e, "Failed to wait for dash-qt process to exit"));
+                    tracing::debug!(?status, "dash-qt process stopped gracefully");
+
                 }
             }
         });

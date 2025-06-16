@@ -4,7 +4,9 @@ use crate::backend_task::document::DocumentTask::{self, FetchDocumentsPage}; // 
 use crate::backend_task::BackendTask;
 use crate::context::AppContext;
 use crate::model::qualified_contract::QualifiedContract;
-use crate::ui::components::contract_chooser_panel::add_contract_chooser_panel;
+use crate::ui::components::contract_chooser_panel::{
+    add_contract_chooser_panel, ContractChooserState,
+};
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::theme::{DashColors, Shadow, Shape};
@@ -64,6 +66,8 @@ pub struct DocumentQueryScreen {
     pub next_cursors: Vec<Start>,
     has_next_page: bool,
     previous_cursors: Vec<Start>,
+    // Contract chooser state
+    contract_chooser_state: ContractChooserState,
 }
 
 #[derive(PartialEq, Eq, Clone)]
@@ -127,6 +131,7 @@ impl DocumentQueryScreen {
             next_cursors: vec![],
             has_next_page: false,
             previous_cursors: Vec::new(),
+            contract_chooser_state: ContractChooserState::default(),
         }
     }
 
@@ -688,6 +693,7 @@ impl ScreenLike for DocumentQueryScreen {
             &mut self.document_query,
             &mut self.pending_document_type,
             &mut self.pending_fields_selection,
+            &mut self.contract_chooser_state,
         );
 
         if let AppAction::BackendTask(BackendTask::ContractTask(contract_task)) = &action {

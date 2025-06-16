@@ -34,12 +34,23 @@ impl ProofVisualizerScreen {
         self.proof_string = None;
         self.error = None;
 
-        // Try to decode the input as hex first
-        let decoded_bytes = hex::decode(&self.input_data).or_else(|_| {
-            STANDARD
-                .decode(&self.input_data)
-                .map_err(|e| format!("Base64 decode error: {}", e))
-        });
+        // First, try to parse as comma-separated integers
+        let decoded_bytes = if self.input_data.contains(',') {
+            // Try parsing as comma-separated integers
+            self.input_data
+                .split(',')
+                .filter(|s| !s.trim().is_empty()) // Skip empty segments
+                .map(|s| s.trim().parse::<u8>())
+                .collect::<Result<Vec<u8>, _>>()
+                .map_err(|e| format!("Failed to parse comma-separated integers: {}", e))
+        } else {
+            // Try to decode the input as hex first
+            hex::decode(self.input_data.trim()).or_else(|_| {
+                STANDARD
+                    .decode(self.input_data.trim())
+                    .map_err(|e| format!("Base64 decode error: {}", e))
+            })
+        };
 
         match decoded_bytes {
             Ok(bytes) => {
@@ -65,7 +76,7 @@ impl ProofVisualizerScreen {
     }
 
     fn show_input_field(&mut self, ui: &mut Ui) {
-        ui.label("Enter hex or Base64 encoded GroveDB proof:");
+        ui.label("Enter hex, base64, or comma-separated integers for GroveDB proof:");
         ui.add_space(5.0);
         let response = ui.add(
             TextEdit::multiline(&mut self.input_data)

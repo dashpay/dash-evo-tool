@@ -1969,10 +1969,7 @@ impl TokensScreen {
             pre_programmed_distribution: if self.enable_pre_programmed_distribution {
                 let distributions: BTreeMap<u64, BTreeMap<Identifier, u64>> =
                     match self.parse_pre_programmed_distributions() {
-                        Ok(distributions) => distributions
-                            .into_iter()
-                            .map(|(k, v)| (k, std::iter::once(v).collect()))
-                            .collect(),
+                        Ok(distributions) => distributions,
                         Err(err) => {
                             self.token_creator_error_message = Some(err.clone());
                             return Err(err.to_string());
@@ -2023,10 +2020,11 @@ impl TokensScreen {
 
     /// Attempts to parse the `pre_programmed_distributions` into a BTreeMap.
     /// Returns an error string if any row fails.
+    /// Now supports multiple identities per timestamp.
     pub fn parse_pre_programmed_distributions(
         &mut self,
-    ) -> Result<BTreeMap<u64, (Identifier, u64)>, String> {
-        let mut map = BTreeMap::new();
+    ) -> Result<BTreeMap<u64, BTreeMap<Identifier, u64>>, String> {
+        let mut map: BTreeMap<u64, BTreeMap<Identifier, u64>> = BTreeMap::new();
 
         let now = Utc::now();
 
@@ -2056,8 +2054,8 @@ impl TokensScreen {
                 )
             })?;
 
-            // Insert into the map
-            map.insert(timestamp, (id, amount));
+            // Insert into the map, supporting multiple identities per timestamp
+            map.entry(timestamp).or_default().insert(id, amount);
         }
         Ok(map)
     }

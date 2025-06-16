@@ -436,7 +436,7 @@ impl TokensScreen {
                                                                     identity_id: itb.identity_id,
                                                                     token_id: itb.token_id,
                                                                 };
-                                                                if ui.button("ℹ").on_hover_text("Show reward calculation explanation").clicked() {
+                                                                if crate::ui::helpers::info_icon_button(ui, "Show reward calculation explanation").clicked() {
                                                                     self.show_explanation_popup = Some(identity_token_id);
                                                                 }
 
@@ -971,10 +971,11 @@ impl TokensScreen {
                             row.col(|ui| {
                                 ui.horizontal(|ui| {
                                     // Info button
-                                    if ui
-                                        .button("ℹ")
-                                        .on_hover_text("View token configuration details")
-                                        .clicked()
+                                    if crate::ui::helpers::info_icon_button(
+                                        ui,
+                                        "View token configuration details",
+                                    )
+                                    .clicked()
                                     {
                                         self.show_token_info_popup = Some(*token_id);
                                     }

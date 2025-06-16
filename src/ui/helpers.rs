@@ -20,9 +20,39 @@ use dash_sdk::{
     },
     platform::{Identifier, IdentityPublicKey},
 };
-use egui::{Color32, ComboBox, Ui};
+use egui::{Color32, ComboBox, Response, Ui};
 
 use super::tokens::tokens_screen::IdentityTokenInfo;
+
+/// Helper function to create a styled info icon button
+pub fn info_icon_button(ui: &mut egui::Ui, hover_text: &str) -> Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::click());
+
+    if ui.is_rect_visible(rect) {
+        // Draw circle background
+        ui.painter().circle(
+            rect.center(),
+            8.0,
+            if response.hovered() {
+                Color32::from_rgb(0, 100, 200)
+            } else {
+                Color32::from_rgb(100, 100, 100)
+            },
+            egui::Stroke::NONE,
+        );
+
+        // Draw "i" text
+        ui.painter().text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            "i",
+            egui::FontId::proportional(12.0),
+            Color32::WHITE,
+        );
+    }
+
+    response.on_hover_text(hover_text)
+}
 
 /// Returns the newly selected identity (if changed), otherwise the existing one.
 pub fn render_identity_selector(

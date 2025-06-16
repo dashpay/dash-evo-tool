@@ -269,21 +269,6 @@ impl AppContext {
         self.db.get_identity_alias(identifier)
     }
 
-    /// This is for before we know if Platform will accept the identity
-    pub fn insert_local_qualified_identity_in_creation(
-        &self,
-        qualified_identity: &QualifiedIdentity,
-        wallet_id: &[u8],
-        identity_index: u32,
-    ) -> Result<()> {
-        self.db.insert_local_qualified_identity_in_creation(
-            qualified_identity,
-            wallet_id,
-            identity_index,
-            self,
-        )
-    }
-
     /// Fetches all local qualified identities from the database
     pub fn load_local_qualified_identities(&self) -> Result<Vec<QualifiedIdentity>> {
         let wallets = self.wallets.read().unwrap();

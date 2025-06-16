@@ -363,7 +363,7 @@ impl TransitionVisualizerScreen {
                         if ui
                             .add(
                                 egui::Button::new(
-                                    RichText::new("View in Contracts →").color(
+                                    RichText::new("View in Contracts").color(
                                         Color32::from_rgba_premultiplied(255, 255, 255, alpha),
                                     ),
                                 )

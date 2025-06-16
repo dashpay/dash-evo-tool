@@ -302,7 +302,7 @@ impl NetworkChooserScreen {
                                 } else {
                                     ui.label(
                                         egui::RichText::new(
-                                            "No custom path selected (using system default)",
+                                            "dash-qt not found, click 'Select File' to choose.",
                                         )
                                         .color(DashColors::TEXT_SECONDARY)
                                         .italics(),
@@ -557,18 +557,25 @@ impl NetworkChooserScreen {
         }
 
         // Add a button to start the network
-        if network != Network::Regtest && self.custom_dash_qt_path.is_some() {
-            if ui.button("Start").clicked() {
-                app_action = AppAction::BackendTask(BackendTask::CoreTask(CoreTask::StartDashQT(
-                    network,
-                    self.custom_dash_qt_path
-                        .clone()
-                        .expect("Some() checked above"),
-                    self.overwrite_dash_conf,
-                )));
-            }
-        } else {
-            ui.label("");
+        if network != Network::Regtest {
+            ui.add_enabled_ui(self.custom_dash_qt_path.is_some(), |ui| {
+                if ui
+                    .button("Start")
+                    .on_disabled_hover_text(
+                        "Configure dash-qt binary using Advanced Settings below",
+                    )
+                    .clicked()
+                {
+                    app_action =
+                        AppAction::BackendTask(BackendTask::CoreTask(CoreTask::StartDashQT(
+                            network,
+                            self.custom_dash_qt_path
+                                .clone()
+                                .expect("Some() checked above"),
+                            self.overwrite_dash_conf,
+                        )));
+                }
+            });
         }
 
         // Add a text field for the dashmate password

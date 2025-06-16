@@ -51,7 +51,7 @@ fn load_icon(ctx: &Context, path: &str) -> Option<TextureHandle> {
         })
 }
 
-fn add_location_view(ui: &mut Ui, location: Vec<(&str, AppAction)>) -> AppAction {
+fn add_location_view(ui: &mut Ui, location: Vec<(&str, AppAction)>, dark_mode: bool) -> AppAction {
     let mut action = AppAction::None;
     let font_id = egui::FontId::proportional(22.0);
 
@@ -74,7 +74,7 @@ fn add_location_view(ui: &mut Ui, location: Vec<(&str, AppAction)>) -> AppAction
                                 .button(
                                     RichText::new(text)
                                         .font(font_id.clone())
-                                        .color(DashColors::TEXT_PRIMARY),
+                                        .color(DashColors::text_primary(dark_mode)),
                                 )
                                 .clicked()
                             {
@@ -84,7 +84,7 @@ fn add_location_view(ui: &mut Ui, location: Vec<(&str, AppAction)>) -> AppAction
                                 ui.label(
                                     RichText::new(">")
                                         .font(font_id.clone())
-                                        .color(DashColors::TEXT_SECONDARY),
+                                        .color(DashColors::text_secondary(dark_mode)),
                                 );
                             }
                         }
@@ -112,11 +112,12 @@ fn add_connection_indicator(ui: &mut Ui, app_context: &Arc<AppContext>) -> AppAc
         1.0 // No pulsation when disconnected
     };
 
+    let dark_mode = ui.ctx().style().visuals.dark_mode;
     let circle_size = 14.0;
     let color = if connected {
-        Color32::DARK_GREEN
+        DashColors::success_color(dark_mode)
     } else {
-        Color32::DARK_RED
+        DashColors::error_color(dark_mode)
     };
 
     // Wrap in a container that can be positioned vertically
@@ -156,7 +157,7 @@ fn add_connection_indicator(ui: &mut Ui, app_context: &Arc<AppContext>) -> AppAc
                     if resp.clicked() && !connected {
                         let settings = app_context.db.get_settings().ok().flatten();
                         let (custom_path, overwrite) = settings
-                            .map(|(_, _, _, custom_path, overwrite)| (custom_path, overwrite))
+                            .map(|(_, _, _, custom_path, overwrite, _)| (custom_path, overwrite))
                             .unwrap_or((None, true));
                         action |= AppAction::BackendTask(BackendTask::CoreTask(
                             CoreTask::StartDashQT(app_context.network, custom_path, overwrite),
@@ -184,10 +185,12 @@ pub fn add_top_panel(
         _ => DashColors::DASH_BLUE,
     };
 
+    let dark_mode = ctx.style().visuals.dark_mode;
+
     TopBottomPanel::top("top_panel")
         .frame(
             Frame::new()
-                .fill(DashColors::BACKGROUND)
+                .fill(DashColors::background(dark_mode))
                 .inner_margin(Margin {
                     left: 10,
                     right: 10,
@@ -199,8 +202,8 @@ pub fn add_top_panel(
         .show(ctx, |ui| {
             // Create an island panel with rounded edges
             Frame::new()
-                .fill(DashColors::SURFACE)
-                .stroke(egui::Stroke::new(1.0, DashColors::BORDER_LIGHT))
+                .fill(DashColors::surface(dark_mode))
+                .stroke(egui::Stroke::new(1.0, DashColors::border_light(dark_mode)))
                 .inner_margin(Margin {
                     left: 20,
                     right: 20,
@@ -220,7 +223,7 @@ pub fn add_top_panel(
                                 .with_cross_align(Align::Center),
                             |ui| {
                                 action |= add_connection_indicator(ui, app_context);
-                                action |= add_location_view(ui, location);
+                                action |= add_location_view(ui, location, dark_mode);
                             },
                         );
 

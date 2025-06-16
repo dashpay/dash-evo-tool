@@ -1,5 +1,31 @@
 use egui::{Color32, FontData, FontDefinitions, FontFamily, FontId, Stroke, Vec2};
 
+/// Theme mode enumeration
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ThemeMode {
+    Light,
+    Dark,
+    #[default]
+    System,
+}
+
+/// Detect system theme preference
+pub fn detect_system_theme() -> ThemeMode {
+    match dark_light::detect() {
+        dark_light::Mode::Dark => ThemeMode::Dark,
+        dark_light::Mode::Light => ThemeMode::Light,
+        dark_light::Mode::Default => ThemeMode::Light, // Default to light if unknown
+    }
+}
+
+/// Resolve the actual theme to use based on preference
+pub fn resolve_theme_mode(preference: ThemeMode) -> ThemeMode {
+    match preference {
+        ThemeMode::System => detect_system_theme(),
+        other => other,
+    }
+}
+
 /// Dash brand colors according to official guidelines
 pub struct DashColors;
 
@@ -32,7 +58,7 @@ impl DashColors {
     pub const ERROR: Color32 = Color32::from_rgb(235, 87, 87);
     pub const INFO: Color32 = Color32::from_rgb(52, 152, 219);
 
-    // UI Colors - Modern gradient-ready colors
+    // UI Colors - Light mode
     pub const BACKGROUND: Color32 = Color32::from_rgb(240, 242, 247);
     pub const BACKGROUND_DARK: Color32 = Color32::from_rgb(230, 235, 245);
     pub const SURFACE: Color32 = Color32::WHITE;
@@ -43,6 +69,17 @@ impl DashColors {
     pub const TEXT_SECONDARY: Color32 = Color32::from_rgb(100, 120, 140);
     pub const TEXT_ON_PRIMARY: Color32 = Self::WHITE;
 
+    // Dark mode UI colors
+    pub const DARK_BACKGROUND: Color32 = Color32::from_rgb(18, 18, 18);
+    pub const DARK_BACKGROUND_ELEVATED: Color32 = Color32::from_rgb(28, 28, 28);
+    pub const DARK_SURFACE: Color32 = Color32::from_rgb(32, 32, 32);
+    pub const DARK_INPUT_BACKGROUND: Color32 = Color32::from_rgb(40, 40, 40);
+    pub const DARK_BORDER: Color32 = Color32::from_rgb(60, 60, 60);
+    pub const DARK_BORDER_LIGHT: Color32 = Color32::from_rgb(50, 50, 50);
+    pub const DARK_TEXT_PRIMARY: Color32 = Color32::from_rgb(240, 240, 240);
+    pub const DARK_TEXT_SECONDARY: Color32 = Color32::from_rgb(160, 160, 160);
+    pub const DARK_TEXT_ON_PRIMARY: Color32 = Self::WHITE;
+
     // Gradient colors for modern effects
     pub const GRADIENT_START: Color32 = Color32::from_rgb(0, 141, 228); // Dash Blue
     pub const GRADIENT_END: Color32 = Color32::from_rgb(1, 32, 96); // Deep Blue
@@ -51,27 +88,49 @@ impl DashColors {
     pub const GRADIENT_PINK: Color32 = Color32::from_rgb(231, 76, 60); // Pink accent
     pub const GRADIENT_TEAL: Color32 = Color32::from_rgb(26, 188, 156); // Teal accent
 
-    // Interactive states - using from_rgb since from_rgba_unmultiplied is not const
+    // Interactive states - Light mode
     pub const HOVER: Color32 = Color32::from_rgb(200, 220, 250);
     pub const PRESSED: Color32 = Color32::from_rgb(180, 200, 240);
     pub const SELECTED: Color32 = Color32::from_rgb(190, 210, 245);
     pub const DISABLED: Color32 = Color32::from_rgb(189, 195, 199);
 
+    // Interactive states - Dark mode
+    pub const DARK_HOVER: Color32 = Color32::from_rgb(45, 45, 55);
+    pub const DARK_PRESSED: Color32 = Color32::from_rgb(55, 55, 65);
+    pub const DARK_SELECTED: Color32 = Color32::from_rgb(50, 70, 100);
+    pub const DARK_DISABLED: Color32 = Color32::from_rgb(80, 80, 80);
+
     // Glass morphism colors (non-const functions)
-    pub fn surface_elevated() -> Color32 {
-        Color32::from_rgba_unmultiplied(255, 255, 255, 250)
+    pub fn surface_elevated(dark_mode: bool) -> Color32 {
+        if dark_mode {
+            Color32::from_rgba_unmultiplied(40, 40, 40, 240)
+        } else {
+            Color32::from_rgba_unmultiplied(255, 255, 255, 250)
+        }
     }
 
-    pub fn glass_white() -> Color32 {
-        Color32::from_rgba_unmultiplied(255, 255, 255, 180)
+    pub fn glass_white(dark_mode: bool) -> Color32 {
+        if dark_mode {
+            Color32::from_rgba_unmultiplied(60, 60, 60, 180)
+        } else {
+            Color32::from_rgba_unmultiplied(255, 255, 255, 180)
+        }
     }
 
-    pub fn glass_blue() -> Color32 {
-        Color32::from_rgba_unmultiplied(0, 141, 228, 40)
+    pub fn glass_blue(dark_mode: bool) -> Color32 {
+        if dark_mode {
+            Color32::from_rgba_unmultiplied(0, 141, 228, 60)
+        } else {
+            Color32::from_rgba_unmultiplied(0, 141, 228, 40)
+        }
     }
 
-    pub fn glass_border() -> Color32 {
-        Color32::from_rgba_unmultiplied(255, 255, 255, 60)
+    pub fn glass_border(dark_mode: bool) -> Color32 {
+        if dark_mode {
+            Color32::from_rgba_unmultiplied(100, 100, 100, 80)
+        } else {
+            Color32::from_rgba_unmultiplied(255, 255, 255, 60)
+        }
     }
 
     // Animated gradient colors
@@ -92,6 +151,128 @@ impl DashColors {
             4 => Color32::from_rgb(224, 255, 255), // Light Cyan
             5 => Color32::from_rgb(230, 230, 250), // Lavender
             _ => Color32::from_rgb(255, 192, 203), // Pink
+        }
+    }
+
+    // Theme-aware color getters
+    pub fn background(dark_mode: bool) -> Color32 {
+        if dark_mode {
+            Self::DARK_BACKGROUND
+        } else {
+            Self::BACKGROUND
+        }
+    }
+
+    pub fn surface(dark_mode: bool) -> Color32 {
+        if dark_mode {
+            Self::DARK_SURFACE
+        } else {
+            Self::SURFACE
+        }
+    }
+
+    pub fn input_background(dark_mode: bool) -> Color32 {
+        if dark_mode {
+            Self::DARK_INPUT_BACKGROUND
+        } else {
+            Self::INPUT_BACKGROUND
+        }
+    }
+
+    pub fn border(dark_mode: bool) -> Color32 {
+        if dark_mode {
+            Self::DARK_BORDER
+        } else {
+            Self::BORDER
+        }
+    }
+
+    pub fn border_light(dark_mode: bool) -> Color32 {
+        if dark_mode {
+            Self::DARK_BORDER_LIGHT
+        } else {
+            Self::BORDER_LIGHT
+        }
+    }
+
+    pub fn text_primary(dark_mode: bool) -> Color32 {
+        if dark_mode {
+            Self::DARK_TEXT_PRIMARY
+        } else {
+            Self::TEXT_PRIMARY
+        }
+    }
+
+    pub fn text_secondary(dark_mode: bool) -> Color32 {
+        if dark_mode {
+            Self::DARK_TEXT_SECONDARY
+        } else {
+            Self::TEXT_SECONDARY
+        }
+    }
+
+    pub fn hover(dark_mode: bool) -> Color32 {
+        if dark_mode {
+            Self::DARK_HOVER
+        } else {
+            Self::HOVER
+        }
+    }
+
+    pub fn pressed(dark_mode: bool) -> Color32 {
+        if dark_mode {
+            Self::DARK_PRESSED
+        } else {
+            Self::PRESSED
+        }
+    }
+
+    pub fn selected(dark_mode: bool) -> Color32 {
+        if dark_mode {
+            Self::DARK_SELECTED
+        } else {
+            Self::SELECTED
+        }
+    }
+
+    pub fn disabled(dark_mode: bool) -> Color32 {
+        if dark_mode {
+            Self::DARK_DISABLED
+        } else {
+            Self::DISABLED
+        }
+    }
+
+    // Semantic colors that adapt to theme
+    pub fn error_color(dark_mode: bool) -> Color32 {
+        if dark_mode {
+            Color32::from_rgb(255, 100, 100) // Lighter red for dark mode
+        } else {
+            Color32::DARK_RED
+        }
+    }
+
+    pub fn success_color(dark_mode: bool) -> Color32 {
+        if dark_mode {
+            Color32::from_rgb(80, 160, 80) // Darker muted green for dark mode
+        } else {
+            Color32::DARK_GREEN
+        }
+    }
+
+    pub fn warning_color(dark_mode: bool) -> Color32 {
+        if dark_mode {
+            Color32::from_rgb(255, 200, 100) // Lighter orange for dark mode
+        } else {
+            Color32::from_rgb(255, 140, 0) // Dark orange
+        }
+    }
+
+    pub fn muted_color(dark_mode: bool) -> Color32 {
+        if dark_mode {
+            Color32::from_rgb(150, 150, 150) // Lighter gray for dark mode
+        } else {
+            Color32::GRAY
         }
     }
 }
@@ -327,19 +508,31 @@ pub fn configure_fonts() -> FontDefinitions {
 }
 
 /// Apply the modern Dash theme to the egui context
-pub fn apply_theme(ctx: &egui::Context) {
-    // Start with light mode as base, then override with our custom colors
-    let mut visuals = egui::Visuals::light();
+pub fn apply_theme(ctx: &egui::Context, theme_mode: ThemeMode) {
+    // Resolve the actual theme to use
+    let resolved_theme = resolve_theme_mode(theme_mode);
+    let dark_mode = resolved_theme == ThemeMode::Dark;
+
+    // Start with appropriate base mode
+    let mut visuals = if dark_mode {
+        egui::Visuals::dark()
+    } else {
+        egui::Visuals::light()
+    };
 
     // Override ALL background-related properties with our custom colors
-    visuals.window_fill = DashColors::BACKGROUND;
-    visuals.panel_fill = DashColors::BACKGROUND;
-    visuals.extreme_bg_color = DashColors::INPUT_BACKGROUND; // Use INPUT_BACKGROUND for TextEdit widgets
-    visuals.faint_bg_color = DashColors::BACKGROUND;
-    visuals.code_bg_color = Color32::from_rgb(245, 245, 245);
+    visuals.window_fill = DashColors::background(dark_mode);
+    visuals.panel_fill = DashColors::background(dark_mode);
+    visuals.extreme_bg_color = DashColors::input_background(dark_mode);
+    visuals.faint_bg_color = DashColors::background(dark_mode);
+    visuals.code_bg_color = if dark_mode {
+        Color32::from_rgb(30, 30, 30)
+    } else {
+        Color32::from_rgb(245, 245, 245)
+    };
 
-    // Force all background to be light
-    visuals.dark_mode = false;
+    // Set dark mode flag correctly
+    visuals.dark_mode = dark_mode;
 
     // Apply the custom visuals first
     ctx.set_visuals(visuals);
@@ -348,27 +541,27 @@ pub fn apply_theme(ctx: &egui::Context) {
 
     // Configure modern visuals with gradients and glass effects
     // Override all background colors again to ensure they stick
-    style.visuals.window_fill = DashColors::BACKGROUND;
-    style.visuals.panel_fill = DashColors::BACKGROUND; // Light background for panels
-    style.visuals.extreme_bg_color = DashColors::INPUT_BACKGROUND; // Keep INPUT_BACKGROUND for TextEdit widgets
-    style.visuals.faint_bg_color = DashColors::BACKGROUND;
-    style.visuals.dark_mode = false;
-    style.visuals.window_stroke = Stroke::new(1.0, DashColors::BORDER);
+    style.visuals.window_fill = DashColors::background(dark_mode);
+    style.visuals.panel_fill = DashColors::background(dark_mode);
+    style.visuals.extreme_bg_color = DashColors::input_background(dark_mode);
+    style.visuals.faint_bg_color = DashColors::background(dark_mode);
+    style.visuals.dark_mode = dark_mode;
+    style.visuals.window_stroke = Stroke::new(1.0, DashColors::border(dark_mode));
     // Note: window_rounding is not available in this egui version
     style.visuals.window_shadow = Shadow::elevated();
 
     // Modern widget styling with solid backgrounds for buttons
-    style.visuals.widgets.inactive.bg_fill = DashColors::BACKGROUND;
-    style.visuals.widgets.inactive.bg_stroke = Stroke::new(1.0, DashColors::BORDER);
-    style.visuals.widgets.inactive.fg_stroke.color = DashColors::TEXT_PRIMARY;
-    style.visuals.widgets.inactive.weak_bg_fill = DashColors::BACKGROUND;
+    style.visuals.widgets.inactive.bg_fill = DashColors::background(dark_mode);
+    style.visuals.widgets.inactive.bg_stroke = Stroke::new(1.0, DashColors::border(dark_mode));
+    style.visuals.widgets.inactive.fg_stroke.color = DashColors::text_primary(dark_mode);
+    style.visuals.widgets.inactive.weak_bg_fill = DashColors::background(dark_mode);
     style.visuals.widgets.inactive.expansion = 0.0;
 
     // Hover state with highlighted background
-    style.visuals.widgets.hovered.bg_fill = DashColors::HOVER;
+    style.visuals.widgets.hovered.bg_fill = DashColors::hover(dark_mode);
     style.visuals.widgets.hovered.bg_stroke = Stroke::new(1.0, DashColors::DASH_BLUE);
     style.visuals.widgets.hovered.fg_stroke.color = DashColors::DASH_BLUE;
-    style.visuals.widgets.hovered.weak_bg_fill = DashColors::HOVER;
+    style.visuals.widgets.hovered.weak_bg_fill = DashColors::hover(dark_mode);
     style.visuals.widgets.hovered.expansion = 2.0;
 
     // Active state with enhanced feedback
@@ -378,34 +571,39 @@ pub fn apply_theme(ctx: &egui::Context) {
     style.visuals.widgets.active.weak_bg_fill = DashColors::GRADIENT_START;
     style.visuals.widgets.active.expansion = 1.0;
 
-    // Text input fields - ensure light background with dark text (noninteractive state is used for text inputs)
+    // Text input fields - ensure appropriate background with contrasting text
     // Note: TextEdit uses extreme_bg_color by default, but we also set noninteractive for consistency
-    style.visuals.widgets.noninteractive.bg_fill = DashColors::INPUT_BACKGROUND;
-    style.visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0, DashColors::BORDER);
-    style.visuals.widgets.noninteractive.weak_bg_fill = DashColors::INPUT_BACKGROUND;
-    style.visuals.widgets.noninteractive.fg_stroke.color = DashColors::TEXT_PRIMARY;
+    style.visuals.widgets.noninteractive.bg_fill = DashColors::input_background(dark_mode);
+    style.visuals.widgets.noninteractive.bg_stroke =
+        Stroke::new(1.0, DashColors::border(dark_mode));
+    style.visuals.widgets.noninteractive.weak_bg_fill = DashColors::input_background(dark_mode);
+    style.visuals.widgets.noninteractive.fg_stroke.color = DashColors::text_primary(dark_mode);
 
     // Open state is also used for focused text inputs
-    style.visuals.widgets.open.bg_fill = DashColors::INPUT_BACKGROUND;
-    style.visuals.widgets.open.weak_bg_fill = DashColors::INPUT_BACKGROUND;
+    style.visuals.widgets.open.bg_fill = DashColors::input_background(dark_mode);
+    style.visuals.widgets.open.weak_bg_fill = DashColors::input_background(dark_mode);
     style.visuals.widgets.open.bg_stroke = Stroke::new(2.0, DashColors::DASH_BLUE);
-    style.visuals.widgets.open.fg_stroke.color = DashColors::TEXT_PRIMARY;
+    style.visuals.widgets.open.fg_stroke.color = DashColors::text_primary(dark_mode);
 
     // Specific text input colors
-    style.visuals.text_cursor.stroke = Stroke::new(1.0, DashColors::TEXT_PRIMARY);
+    style.visuals.text_cursor.stroke = Stroke::new(1.0, DashColors::text_primary(dark_mode));
 
-    // Text colors - ensure dark text on all elements
-    style.visuals.override_text_color = Some(DashColors::TEXT_PRIMARY);
+    // Text colors - ensure contrasting text on all elements
+    style.visuals.override_text_color = Some(DashColors::text_primary(dark_mode));
 
     // Text selection
-    style.visuals.selection.bg_fill = DashColors::SELECTED;
+    style.visuals.selection.bg_fill = DashColors::selected(dark_mode);
     style.visuals.selection.stroke = Stroke::new(1.0, DashColors::DASH_BLUE);
 
     // Hyperlinks
     style.visuals.hyperlink_color = DashColors::DASH_BLUE;
 
-    // Code styling - use light background for better contrast
-    style.visuals.code_bg_color = Color32::from_rgb(245, 245, 245);
+    // Code styling - use appropriate background for better contrast
+    style.visuals.code_bg_color = if dark_mode {
+        Color32::from_rgb(30, 30, 30)
+    } else {
+        Color32::from_rgb(245, 245, 245)
+    };
 
     // Note: extreme_bg_color is already set to INPUT_BACKGROUND above for TextEdit widgets
 
@@ -422,10 +620,10 @@ pub fn apply_theme(ctx: &egui::Context) {
     style.spacing.icon_spacing = 4.0; // Reduced from 6.0
 
     // Final override of all background colors to ensure they are definitely set
-    style.visuals.window_fill = DashColors::BACKGROUND;
-    style.visuals.panel_fill = DashColors::BACKGROUND;
-    // Don't override extreme_bg_color here - it should remain as INPUT_BACKGROUND for TextEdit widgets
-    style.visuals.faint_bg_color = DashColors::BACKGROUND;
+    style.visuals.window_fill = DashColors::background(dark_mode);
+    style.visuals.panel_fill = DashColors::background(dark_mode);
+    // Don't override extreme_bg_color here - it should remain as input_background for TextEdit widgets
+    style.visuals.faint_bg_color = DashColors::background(dark_mode);
 
     ctx.set_style(style);
     ctx.set_fonts(configure_fonts());

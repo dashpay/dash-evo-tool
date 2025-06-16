@@ -4,7 +4,7 @@ use rusqlite::{params, Connection};
 use std::fs;
 use std::path::Path;
 
-pub const DEFAULT_DB_VERSION: u16 = 10;
+pub const DEFAULT_DB_VERSION: u16 = 11;
 
 pub const DEFAULT_NETWORK: &str = "dash";
 
@@ -33,7 +33,10 @@ impl Database {
 
     fn apply_version_changes(&self, version: u16, tx: &Connection) -> rusqlite::Result<()> {
         match version {
-            10 => self.rename_identity_column_is_in_creation_to_status(tx)?,
+            11 => self.rename_identity_column_is_in_creation_to_status(tx)?,
+            10 => {
+                self.add_theme_preference_column(tx)?;
+            }
             9 => {
                 self.delete_all_identities_in_all_devnets_and_regtest(tx)?;
                 self.delete_all_local_tokens_in_all_devnets_and_regtest(tx)?;
@@ -212,6 +215,7 @@ impl Database {
             start_root_screen INTEGER NOT NULL,
             custom_dash_qt_path TEXT,
             overwrite_dash_conf INTEGER,
+            theme_preference TEXT DEFAULT 'System',
             database_version INTEGER NOT NULL
         )",
             [],

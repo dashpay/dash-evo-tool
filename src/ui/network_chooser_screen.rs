@@ -11,8 +11,7 @@ use crate::ui::theme::{DashColors, ThemeMode};
 use crate::ui::{RootScreenType, ScreenLike};
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::TimestampMillis;
-use eframe::egui::{self, Color32, Context, Ui};
-use std::sync::atomic::Ordering;
+use eframe::egui::{self, Context, Ui};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 

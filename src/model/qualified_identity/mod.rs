@@ -472,9 +472,8 @@ impl QualifiedIdentity {
                     None
                 }})
             .next()
-            .ok_or(format!(
-                "Cannot derive keys for this identity using any of the loaded wallets. This is not supported yet."
-            ))
+            .ok_or(
+                "Cannot derive keys for this identity using any of the loaded wallets. This is not supported yet.".to_string())
     }
 }
 impl From<Identity> for QualifiedIdentity {

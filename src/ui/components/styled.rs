@@ -320,6 +320,11 @@ impl GlassCard {
     }
 }
 
+impl Default for GlassCard {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 /// Hero section with gradient background
 pub struct HeroSection {
     title: String,
@@ -502,6 +507,12 @@ impl AnimatedGradientCard {
                 content(ui)
             })
             .inner
+    }
+}
+
+impl Default for AnimatedGradientCard {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

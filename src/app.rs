@@ -34,6 +34,7 @@ use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant, SystemTime};
 use std::vec;
 use tokio::sync::mpsc as tokiompsc;
+use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, From)]
 pub enum TaskResult {
@@ -159,21 +160,41 @@ impl AppState {
                 (None, ThemeMode::System) // Default values if no settings found
             };
 
-        let mainnet_app_context =
-            match AppContext::new(Network::Dash, db.clone(), password_info.clone()) {
-                Some(context) => context,
-                None => {
-                    eprintln!(
-                        "Error: Failed to create the AppContext. Expected Dash config for mainnet."
-                    );
-                    std::process::exit(1);
-                }
-            };
-        let testnet_app_context =
-            AppContext::new(Network::Testnet, db.clone(), password_info.clone());
-        let devnet_app_context =
-            AppContext::new(Network::Devnet, db.clone(), password_info.clone());
-        let local_app_context = AppContext::new(Network::Regtest, db.clone(), password_info);
+        // Cancellation token is shared between all contexts, as we want to cancel
+        // all tasks from all contexts when the app is closed.
+        let cancellation_token = CancellationToken::new();
+        let mainnet_app_context = match AppContext::new(
+            Network::Dash,
+            db.clone(),
+            password_info.clone(),
+            cancellation_token.clone(),
+        ) {
+            Some(context) => context,
+            None => {
+                eprintln!(
+                    "Error: Failed to create the AppContext. Expected Dash config for mainnet."
+                );
+                std::process::exit(1);
+            }
+        };
+        let testnet_app_context = AppContext::new(
+            Network::Testnet,
+            db.clone(),
+            password_info.clone(),
+            cancellation_token.clone(),
+        );
+        let devnet_app_context = AppContext::new(
+            Network::Devnet,
+            db.clone(),
+            password_info.clone(),
+            cancellation_token.clone(),
+        );
+        let local_app_context = AppContext::new(
+            Network::Regtest,
+            db.clone(),
+            password_info,
+            cancellation_token.clone(),
+        );
 
         let mut identities_screen = IdentitiesScreen::new(&mainnet_app_context);
         let mut dpns_active_contests_screen =
@@ -814,5 +835,11 @@ impl App for AppState {
             }
             AppAction::Custom(_) => {}
         }
+    }
+
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        // Signal all background tasks to cancel
+        tracing::debug!("App is exiting, cancelling all background tasks");
+        self.current_app_context().cancellation_token.cancel();
     }
 }

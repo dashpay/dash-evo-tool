@@ -2832,6 +2832,7 @@ mod tests {
     use dash_sdk::dpp::data_contract::TokenConfiguration;
     use dash_sdk::dpp::identifier::Identifier;
     use dash_sdk::platform::{DataContract, Identity};
+    use tokio_util::sync::CancellationToken;
 
     impl ChangeControlRulesUI {
         /// Sets every field to some dummy/test value to ensure coverage in tests.
@@ -2858,8 +2859,8 @@ mod tests {
         let db = Arc::new(Database::new(db_file_path).unwrap());
         db.initialize(Path::new(&db_file_path)).unwrap();
 
-        let app_context =
-            AppContext::new(Network::Regtest, db, None).expect("Expected to create AppContext");
+        let app_context = AppContext::new(Network::Regtest, db, None, CancellationToken::new())
+            .expect("Expected to create AppContext");
         let mut token_creator_ui = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
 
         // Identity selection
@@ -3155,8 +3156,8 @@ mod tests {
         let db = Arc::new(Database::new(db_file_path).unwrap());
         db.initialize(Path::new(&db_file_path)).unwrap();
 
-        let app_context =
-            AppContext::new(Network::Regtest, db, None).expect("Expected to create AppContext");
+        let app_context = AppContext::new(Network::Regtest, db, None, CancellationToken::new())
+            .expect("Expected to create AppContext");
         let mut token_creator_ui = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
 
         // Identity selection
@@ -3266,8 +3267,8 @@ mod tests {
         let db = Arc::new(Database::new(db_file_path).unwrap());
         db.initialize(Path::new(&db_file_path)).unwrap();
 
-        let app_context =
-            AppContext::new(Network::Regtest, db, None).expect("Expected to create AppContext");
+        let app_context = AppContext::new(Network::Regtest, db, None, CancellationToken::new())
+            .expect("Expected to create AppContext");
         let mut token_creator_ui = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
 
         // Identity selection

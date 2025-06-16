@@ -38,6 +38,7 @@ use rusqlite::Result;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
+use tokio_util::sync::CancellationToken;
 
 #[derive(Debug)]
 pub struct AppContext {
@@ -61,6 +62,8 @@ pub struct AppContext {
     #[allow(dead_code)] // May be used for password validation
     pub(crate) password_info: Option<PasswordInfo>,
     pub(crate) transactions_waiting_for_finality: Mutex<BTreeMap<Txid, Option<AssetLockProof>>>,
+    // Cancellation token to handle graceful shutdown
+    pub(crate) cancellation_token: tokio_util::sync::CancellationToken,
 }
 
 impl AppContext {
@@ -68,6 +71,7 @@ impl AppContext {
         network: Network,
         db: Arc<Database>,
         password_info: Option<PasswordInfo>,
+        cancellation_token: CancellationToken,
     ) -> Option<Arc<Self>> {
         let config = match Config::load() {
             Ok(config) => config,
@@ -155,6 +159,7 @@ impl AppContext {
             password_info,
             transactions_waiting_for_finality: Mutex::new(BTreeMap::new()),
             zmq_connection_status: Mutex::new(ZMQConnectionEvent::Disconnected),
+            cancellation_token,
         };
 
         let app_context = Arc::new(app_context);

@@ -4,7 +4,7 @@ use crate::context::AppContext;
 use dash_sdk::dpp::dashcore::Network;
 use std::env;
 use std::path::PathBuf;
-use tokio::process::Command;
+use tokio::process::{Child, Command};
 
 impl AppContext {
     /// Function to start Dash QT based on the selected network
@@ -66,6 +66,7 @@ impl AppContext {
         // Spawn the Dash-Qt process
 
         // Spawn a task to wait for the Dash-Qt process to exit
+        let cancel = self.cancellation_token.clone();
         tokio::spawn(async move {
             let mut dash_qt = command
                 .spawn()
@@ -75,18 +76,58 @@ impl AppContext {
                 .expect("Failed to spawn dash-qt process");
 
             tracing::debug!(?command, pid = dash_qt.id(), "dash-qt started");
-            match dash_qt.wait().await {
-                Ok(status) => {
-                    if status.success() {
-                        tracing::debug!("dash-qt process exited successfully");
-                    } else {
-                        tracing::warn!("dash-qt process exited with status: {}", status);
-                    }
+
+            // Wait for the process to exit or current task to be cancelled
+            tokio::select! {
+                exited = dash_qt.wait() => {
+                    match exited {
+                        Err(e) => {
+                            tracing::error!(error=?e, "dash-qt process failed");
+                        },
+                        Ok(status) => {
+                            tracing::debug!(%status, "dash-qt process exited");
+                        }
+                    };
+                },
+                _ = cancel.cancelled() => {
+                    tracing::debug!("dash-qt process was cancelled, sending SIGTERM");
+                    signal_term(&dash_qt)
+                        .unwrap_or_else(|e| tracing::error!(error=?e, "Failed to send SIGTERM to dash-qt"));
                 }
-                Err(e) => tracing::error!(error=?e, "dash-qt process failed to wait"),
             }
         });
-
         Ok(())
     }
+}
+
+/// Send a SIGTERM signal to the Dash-Qt process to gracefully terminate it.
+/// Only on UNIX-like systems.
+#[cfg(unix)]
+fn signal_term(child: &Child) -> Result<(), String> {
+    let Some(raw_pid) = child.id() else {
+        // No-op, most likely the child process has already exited
+        tracing::trace!("Child process ID is not available, cannot send SIGTERM.");
+        return Ok(());
+    };
+
+    let pid = nix::unistd::Pid::from_raw(raw_pid as i32);
+    match nix::sys::signal::kill(pid, nix::sys::signal::Signal::SIGTERM) {
+        Ok(_) => {
+            tracing::debug!(
+                "SIGTERM signal sent to Dash-Qt process with PID: {}",
+                raw_pid
+            );
+            Ok(())
+        }
+        Err(e) => Err(format!(
+            "Failed to send SIGTERM signal to dash-qt({}): {}",
+            raw_pid, e
+        )),
+    }
+}
+
+#[cfg(windows)]
+fn signal_term(child: &Child) -> Result<(), String> {
+    // TODO: Implement graceful termination for Dash-Qt on Windows.
+    tracing::warn!("SIGTERM signal is not supported on Windows. Dash-Qt process will not be gracefully terminated.");
 }

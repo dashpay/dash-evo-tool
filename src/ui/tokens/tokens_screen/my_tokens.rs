@@ -37,23 +37,8 @@ use egui_extras::{Column, TableBuilder};
 use std::ops::Range;
 use std::sync::atomic::Ordering;
 
-fn format_token_amount(amount: u64, decimals: u8) -> String {
-    if decimals == 0 {
-        return amount.to_string();
-    }
-
-    let divisor = 10u64.pow(decimals as u32);
-    let whole = amount / divisor;
-    let fraction = amount % divisor;
-
-    if fraction == 0 {
-        whole.to_string()
-    } else {
-        // Format with the appropriate number of decimal places, removing trailing zeros
-        let fraction_str = format!("{:0width$}", fraction, width = decimals as usize);
-        let trimmed = fraction_str.trim_end_matches('0');
-        format!("{}.{}", whole, trimmed)
-    }
+fn format_token_amount(amount: u64) -> String {
+    amount.to_string()
 }
 
 /// Get the minimum price for purchasing one token from a pricing schedule
@@ -436,8 +421,7 @@ impl TokensScreen {
                                         });
                                         row.col(|ui| {
                                             if let Some(balance) = itb.balance {
-                                                let decimals = token_info.token_configuration.conventions().decimals();
-                                                let formatted_balance = format_token_amount(balance, decimals);
+                                                let formatted_balance = format_token_amount(balance);
                                                 ui.label(formatted_balance);
                                             } else if ui.button("Check").clicked() {
                                                 action = AppAction::BackendTask(BackendTask::TokenTask(Box::new(TokenTask::QueryIdentityTokenBalance(itb.clone().into()))));
@@ -448,8 +432,7 @@ impl TokensScreen {
                                                 if itb.available_actions.can_estimate {
                                                         if let Some(known_rewards) = itb.estimated_unclaimed_rewards  {
                                                             ui.horizontal(|ui| {
-                                                                let decimals = token_info.token_configuration.conventions().decimals();
-                                                                let formatted_rewards = format_token_amount(known_rewards, decimals);
+                                                                let formatted_rewards = format_token_amount(known_rewards);
                                                                 ui.label(formatted_rewards);
 
                                                                 // Info button to show explanation
@@ -525,9 +508,8 @@ impl TokensScreen {
                             ui.heading("Reward Estimation Details");
                             ui.separator();
 
-                            let decimals = token_info.token_configuration.conventions().decimals();
                             let formatted_total =
-                                format_token_amount(explanation.total_amount, decimals);
+                                format_token_amount(explanation.total_amount);
                             ui.label(format!(
                                 "Total Estimated Rewards: {} tokens",
                                 formatted_total
@@ -802,9 +784,8 @@ impl TokensScreen {
         }
         if itb.available_actions.can_claim {
             if range.contains(&pos) && ui.button("View Claims").clicked() {
-                let decimals = token_info.token_configuration.conventions().decimals();
                 action = AppAction::AddScreen(Screen::ViewTokenClaimsScreen(
-                    ViewTokenClaimsScreen::new(itb.into(), decimals, &self.app_context),
+                    ViewTokenClaimsScreen::new(itb.into(), &self.app_context),
                 ));
                 ui.close_menu();
             }

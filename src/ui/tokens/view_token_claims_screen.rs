@@ -19,23 +19,8 @@ use std::sync::Arc;
 
 use super::tokens_screen::IdentityTokenBasicInfo;
 
-fn format_token_amount(amount: u64, decimals: u8) -> String {
-    if decimals == 0 {
-        return amount.to_string();
-    }
-
-    let divisor = 10u64.pow(decimals as u32);
-    let whole = amount / divisor;
-    let fraction = amount % divisor;
-
-    if fraction == 0 {
-        whole.to_string()
-    } else {
-        // Format with the appropriate number of decimal places, removing trailing zeros
-        let fraction_str = format!("{:0width$}", fraction, width = decimals as usize);
-        let trimmed = fraction_str.trim_end_matches('0');
-        format!("{}.{}", whole, trimmed)
-    }
+fn format_token_amount(amount: u64) -> String {
+    amount.to_string()
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -51,13 +36,11 @@ pub struct ViewTokenClaimsScreen {
     fetch_status: FetchStatus,
     pub app_context: Arc<AppContext>,
     claims: Vec<Document>,
-    token_decimals: u8,
 }
 
 impl ViewTokenClaimsScreen {
     pub fn new(
         identity_token_basic_info: IdentityTokenBasicInfo,
-        token_decimals: u8,
         app_context: &Arc<AppContext>,
     ) -> Self {
         Self {
@@ -85,7 +68,6 @@ impl ViewTokenClaimsScreen {
             fetch_status: FetchStatus::NotFetching,
             app_context: app_context.clone(),
             claims: vec![],
-            token_decimals,
         }
     }
 }
@@ -213,14 +195,11 @@ impl ScreenLike for ViewTokenClaimsScreen {
                                     // Amount
                                     let amount = match claim.get("amount") {
                                         Some(Value::U64(amount)) => {
-                                            format_token_amount(*amount, self.token_decimals)
+                                            format_token_amount(*amount)
                                         }
                                         Some(Value::I64(amount)) => {
                                             if *amount >= 0 {
-                                                format_token_amount(
-                                                    *amount as u64,
-                                                    self.token_decimals,
-                                                )
+                                                format_token_amount(*amount as u64)
                                             } else {
                                                 format!("{}", amount)
                                             }

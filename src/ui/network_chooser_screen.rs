@@ -249,7 +249,7 @@ impl NetworkChooserScreen {
                                                         //linux
                                                         String::from("dash-qt")
                                                     };
-                                                if file_name.ends_with(required_file_name.as_str())
+                                                if file_name.to_ascii_lowercase().ends_with(required_file_name.as_str())
                                                 {
                                                     self.custom_dash_qt_path =
                                                         Some(path);

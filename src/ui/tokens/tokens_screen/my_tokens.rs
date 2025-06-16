@@ -37,10 +37,6 @@ use egui_extras::{Column, TableBuilder};
 use std::ops::Range;
 use std::sync::atomic::Ordering;
 
-fn format_token_amount(amount: u64) -> String {
-    amount.to_string()
-}
-
 /// Get the minimum price for purchasing one token from a pricing schedule
 fn get_min_token_price(pricing_schedule: &TokenPricingSchedule) -> u64 {
     match pricing_schedule {
@@ -421,7 +417,7 @@ impl TokensScreen {
                                         });
                                         row.col(|ui| {
                                             if let Some(balance) = itb.balance {
-                                                let formatted_balance = format_token_amount(balance);
+                                                let formatted_balance = balance.to_string();
                                                 ui.label(formatted_balance);
                                             } else if ui.button("Check").clicked() {
                                                 action = AppAction::BackendTask(BackendTask::TokenTask(Box::new(TokenTask::QueryIdentityTokenBalance(itb.clone().into()))));
@@ -432,7 +428,7 @@ impl TokensScreen {
                                                 if itb.available_actions.can_estimate {
                                                         if let Some(known_rewards) = itb.estimated_unclaimed_rewards  {
                                                             ui.horizontal(|ui| {
-                                                                let formatted_rewards = format_token_amount(known_rewards);
+                                                                let formatted_rewards = known_rewards.to_string();
                                                                 ui.label(formatted_rewards);
 
                                                                 // Info button to show explanation
@@ -508,8 +504,7 @@ impl TokensScreen {
                             ui.heading("Reward Estimation Details");
                             ui.separator();
 
-                            let formatted_total =
-                                format_token_amount(explanation.total_amount);
+                            let formatted_total = explanation.total_amount.to_string();
                             ui.label(format!(
                                 "Total Estimated Rewards: {} tokens",
                                 formatted_total

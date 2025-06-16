@@ -184,7 +184,7 @@ impl GroupActionsScreen {
                         for title in ["Action ID", "Type", "Info", "Note"] {
                             header.col(|ui| {
                                 ui.horizontal(|ui| {
-                                    ui.label(RichText::new(title).strong().color(ui.visuals().text_color()));
+                                    ui.label(RichText::new(title).strong().color(ui.visuals().text_color()).underline());
                                     ui.add_space(30.0);
                                 });
                             });

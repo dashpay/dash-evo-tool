@@ -19,10 +19,6 @@ use std::sync::Arc;
 
 use super::tokens_screen::IdentityTokenBasicInfo;
 
-fn format_token_amount(amount: u64) -> String {
-    amount.to_string()
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub enum FetchStatus {
     NotFetching,
@@ -195,11 +191,11 @@ impl ScreenLike for ViewTokenClaimsScreen {
                                     // Amount
                                     let amount = match claim.get("amount") {
                                         Some(Value::U64(amount)) => {
-                                            format_token_amount(*amount)
+                                            amount.to_string()
                                         }
                                         Some(Value::I64(amount)) => {
                                             if *amount >= 0 {
-                                                format_token_amount(*amount as u64)
+                                                (*amount as u64).to_string()
                                             } else {
                                                 format!("{}", amount)
                                             }

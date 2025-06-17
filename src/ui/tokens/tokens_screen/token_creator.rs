@@ -1040,6 +1040,8 @@ impl TokensScreen {
 
     /// Render the document schemas collapsible section
     fn render_document_schemas(&mut self, ui: &mut Ui) {
+        ui.add_space(5.0);
+
         let mut document_schemas_state =
             egui::collapsing_header::CollapsingState::load_with_default_open(
                 ui.ctx(),

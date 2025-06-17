@@ -155,9 +155,7 @@ impl AddExistingIdentityScreen {
                 // Input for Alias
                 ui.horizontal(|ui| {
                     ui.label("Alias (optional):");
-                    let info_icon = egui::Label::new("ℹ").sense(egui::Sense::click());
-                    let response = ui.add(info_icon)
-                        .on_hover_text("Alias is optional. It is only used to help identify the identity in Dash Evo Tool. It isn't saved to Dash Platform.");
+                    let response = crate::ui::helpers::info_icon_button(ui, "Alias is optional. It is only used to help identify the identity in Dash Evo Tool. It isn't saved to Dash Platform.");
                     if response.clicked() {
                         self.show_pop_up_info = Some("Alias is optional. It is only used to help identify the identity in Dash Evo Tool. It isn't saved to Dash Platform.".to_string());
                     }
@@ -196,10 +194,7 @@ impl AddExistingIdentityScreen {
                             ui.horizontal(|ui| {
                                 ui.label(format!("Private Key {} (Hex or WIF):", i + 1));
 
-                                let info_icon = egui::Label::new("ℹ").sense(egui::Sense::click());
-                                let response = ui
-                                    .add(info_icon)
-                                    .on_hover_text("You don't need to add all or even any private keys here. \
+                                let response = crate::ui::helpers::info_icon_button(ui, "You don't need to add all or even any private keys here. \
                                                     Private keys can be added later. However, without private keys, \
                                                     you won't be able to sign any transactions.");
 

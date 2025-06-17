@@ -14,6 +14,9 @@ use egui_extras::{Column, TableBuilder};
 
 impl TokensScreen {
     pub(super) fn render_keyword_search(&mut self, ui: &mut Ui) -> AppAction {
+        ui.set_min_width(ui.available_width());
+        ui.set_max_width(ui.available_width());
+
         let mut action = AppAction::None;
 
         // 1) Input & “Go” button
@@ -22,51 +25,62 @@ impl TokensScreen {
 
         ui.horizontal(|ui| {
             ui.label("Enter Keyword:");
+            // Extract the query string as a clone to avoid multiple mutable borrows
             let query_ref = self
                 .token_search_query
                 .get_or_insert_with(|| "".to_string());
             let text_edit_response = ui.text_edit_singleline(query_ref);
 
-            let go_clicked = ui.button("Search").clicked();
-            let enter_pressed =
-                text_edit_response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            // Clone the current query for use in the closure below
+            let current_query = query_ref.clone();
 
-            if go_clicked || enter_pressed {
-                // Clear old results, set status
-                self.search_results.lock().unwrap().clear();
-                let now = Utc::now().timestamp() as u64;
-                self.contract_search_status = ContractSearchStatus::WaitingForResult(now);
-                self.search_current_page = 1;
-                self.next_cursors.clear();
-                self.previous_cursors.clear();
-                self.search_has_next_page = false;
+            ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                ui.add_space(-6.0);
 
-                // Dispatch a backend task to do the actual keyword => token retrieval
-                let keyword = query_ref.to_lowercase();
-                action = AppAction::BackendTask(BackendTask::TokenTask(Box::new(
-                    TokenTask::QueryDescriptionsByKeyword(keyword, None),
-                )));
-            }
+                ui.horizontal(|ui| {
+                    let go_clicked = ui.button("Search").clicked();
 
-            // Clear button
-            if ui.button("Clear").clicked() {
-                // Clear the search input
-                self.token_search_query = Some("".to_string());
-                // Clear the search results
-                self.search_results.lock().unwrap().clear();
-                // Reset the search status
-                self.contract_search_status = ContractSearchStatus::NotStarted;
-                // Clear pagination state
-                self.search_current_page = 1;
-                self.next_cursors.clear();
-                self.previous_cursors.clear();
-                self.search_has_next_page = false;
-                // Clear any selected contract and loading state
-                self.selected_contract_id = None;
-                self.contract_details_loading = false;
-                self.selected_contract_description = None;
-                self.selected_token_infos.clear();
-            }
+                    let enter_pressed = text_edit_response.lost_focus()
+                        && ui.input(|i| i.key_pressed(egui::Key::Enter));
+
+                    if go_clicked || enter_pressed {
+                        // Clear old results, set status
+                        self.search_results.lock().unwrap().clear();
+                        let now = Utc::now().timestamp() as u64;
+                        self.contract_search_status = ContractSearchStatus::WaitingForResult(now);
+                        self.search_current_page = 1;
+                        self.next_cursors.clear();
+                        self.previous_cursors.clear();
+                        self.search_has_next_page = false;
+
+                        // Dispatch a backend task to do the actual keyword => token retrieval
+                        let keyword = current_query.to_lowercase();
+                        action = AppAction::BackendTask(BackendTask::TokenTask(Box::new(
+                            TokenTask::QueryDescriptionsByKeyword(keyword, None),
+                        )));
+                    }
+
+                    // Clear button
+                    if ui.button("Clear").clicked() {
+                        // Clear the search input
+                        self.token_search_query = Some("".to_string());
+                        // Clear the search results
+                        self.search_results.lock().unwrap().clear();
+                        // Reset the search status
+                        self.contract_search_status = ContractSearchStatus::NotStarted;
+                        // Clear pagination state
+                        self.search_current_page = 1;
+                        self.next_cursors.clear();
+                        self.previous_cursors.clear();
+                        self.search_has_next_page = false;
+                        // Clear any selected contract and loading state
+                        self.selected_contract_id = None;
+                        self.contract_details_loading = false;
+                        self.selected_contract_description = None;
+                        self.selected_token_infos.clear();
+                    }
+                })
+            });
         });
 
         ui.add_space(10.0);
@@ -126,6 +140,9 @@ impl TokensScreen {
         let mut action = AppAction::None;
 
         egui::ScrollArea::both().show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            ui.set_max_width(ui.available_width());
+
             TableBuilder::new(ui)
                 .striped(false)
                 .resizable(true)

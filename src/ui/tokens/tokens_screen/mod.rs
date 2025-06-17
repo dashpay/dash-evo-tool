@@ -2527,96 +2527,105 @@ impl ScreenLike for TokensScreen {
 
         // Main panel
         action |= island_central_panel(ctx, |ui| {
-            let mut inner_action = AppAction::None;
+            egui::ScrollArea::vertical()
+                .show(ui, |ui| {
+                    let mut inner_action = AppAction::None;
 
-            if self.app_context.network == Network::Dash {
-                ui.add_space(50.0);
-                ui.vertical_centered(|ui| {
-                    ui.heading(
-                        RichText::new("Tokens not supported on Mainnet yet. Testnet only.")
-                            .strong(),
-                    );
-                });
-                return inner_action;
-            }
-
-            match self.tokens_subscreen {
-                TokensSubscreen::MyTokens => {
-                    inner_action |= self.render_my_tokens_subscreen(ui);
-                }
-                TokensSubscreen::SearchTokens => {
-                    if self.selected_contract_id.is_some() {
-                        inner_action |=
-                            self.render_contract_details(ui, &self.selected_contract_id.unwrap());
-                        // Render the JSON popup if needed
-                        if self.show_json_popup {
-                            self.render_data_contract_json_popup(ui);
-                        }
-                    } else {
-                        inner_action |= self.render_keyword_search(ui);
-                    }
-                }
-                TokensSubscreen::TokenCreator => {
-                    inner_action |= self.render_token_creator(ctx, ui);
-                }
-            }
-
-            // Show either refreshing indicator or message, but not both
-            if let RefreshingStatus::Refreshing(start_time) = self.refreshing_status {
-                ui.add_space(25.0); // Space above
-                let now = Utc::now().timestamp() as u64;
-                let elapsed = now - start_time;
-                ui.horizontal(|ui| {
-                    ui.add_space(10.0);
-                    ui.label(format!("Refreshing... Time so far: {}", elapsed));
-                    ui.add(egui::widgets::Spinner::default().color(Color32::from_rgb(0, 128, 255)));
-                });
-                ui.add_space(2.0); // Space below
-            } else if let Some((msg, msg_type, timestamp)) = self.backend_message.clone() {
-                ui.add_space(25.0); // Same space as refreshing indicator
-                let color = match msg_type {
-                    MessageType::Error => Color32::DARK_RED,
-                    MessageType::Info => Color32::BLACK,
-                    MessageType::Success => Color32::DARK_GREEN,
-                };
-                ui.horizontal(|ui| {
-                    // Calculate remaining seconds
-                    let now = Utc::now();
-                    let elapsed = now.signed_duration_since(timestamp);
-                    let remaining = (10 - elapsed.num_seconds()).max(0);
-
-                    // Add the message with auto-dismiss countdown
-                    let full_msg = format!("{} ({}s)", msg, remaining);
-                    ui.label(egui::RichText::new(full_msg).color(color));
-                });
-                ui.add_space(2.0); // Same space below as refreshing indicator
-            }
-
-            if self.confirm_remove_identity_token_balance_popup {
-                self.show_remove_identity_token_balance_popup(ui);
-            }
-            if self.confirm_remove_token_popup {
-                self.show_remove_token_popup(ui);
-            }
-
-            // If we have info text, open a pop-up window to show it
-            if let Some(info_text) = self.show_pop_up_info.clone() {
-                egui::Window::new("Distribution Type Info")
-                    .collapsible(false)
-                    .resizable(true)
-                    .show(ui.ctx(), |ui| {
-                        egui::ScrollArea::vertical().show(ui, |ui| {
-                            let mut cache = CommonMarkCache::default();
-                            CommonMarkViewer::new().show(ui, &mut cache, &info_text);
+                    if self.app_context.network == Network::Dash {
+                        ui.add_space(50.0);
+                        ui.vertical_centered(|ui| {
+                            ui.heading(
+                                RichText::new("Tokens not supported on Mainnet yet. Testnet only.")
+                                    .strong(),
+                            );
                         });
+                        return inner_action;
+                    }
 
-                        if ui.button("Close").clicked() {
-                            self.show_pop_up_info = None;
+                    match self.tokens_subscreen {
+                        TokensSubscreen::MyTokens => {
+                            inner_action |= self.render_my_tokens_subscreen(ui);
                         }
-                    });
-            }
+                        TokensSubscreen::SearchTokens => {
+                            if self.selected_contract_id.is_some() {
+                                inner_action |= self.render_contract_details(
+                                    ui,
+                                    &self.selected_contract_id.unwrap(),
+                                );
+                                // Render the JSON popup if needed
+                                if self.show_json_popup {
+                                    self.render_data_contract_json_popup(ui);
+                                }
+                            } else {
+                                inner_action |= self.render_keyword_search(ui);
+                            }
+                        }
+                        TokensSubscreen::TokenCreator => {
+                            inner_action |= self.render_token_creator(ctx, ui);
+                        }
+                    }
 
-            inner_action
+                    // Show either refreshing indicator or message, but not both
+                    if let RefreshingStatus::Refreshing(start_time) = self.refreshing_status {
+                        ui.add_space(25.0); // Space above
+                        let now = Utc::now().timestamp() as u64;
+                        let elapsed = now - start_time;
+                        ui.horizontal(|ui| {
+                            ui.add_space(10.0);
+                            ui.label(format!("Refreshing... Time so far: {}", elapsed));
+                            ui.add(
+                                egui::widgets::Spinner::default()
+                                    .color(Color32::from_rgb(0, 128, 255)),
+                            );
+                        });
+                        ui.add_space(2.0); // Space below
+                    } else if let Some((msg, msg_type, timestamp)) = self.backend_message.clone() {
+                        ui.add_space(25.0); // Same space as refreshing indicator
+                        let color = match msg_type {
+                            MessageType::Error => Color32::DARK_RED,
+                            MessageType::Info => Color32::BLACK,
+                            MessageType::Success => Color32::DARK_GREEN,
+                        };
+                        ui.horizontal(|ui| {
+                            // Calculate remaining seconds
+                            let now = Utc::now();
+                            let elapsed = now.signed_duration_since(timestamp);
+                            let remaining = (10 - elapsed.num_seconds()).max(0);
+
+                            // Add the message with auto-dismiss countdown
+                            let full_msg = format!("{} ({}s)", msg, remaining);
+                            ui.label(egui::RichText::new(full_msg).color(color));
+                        });
+                        ui.add_space(2.0); // Same space below as refreshing indicator
+                    }
+
+                    if self.confirm_remove_identity_token_balance_popup {
+                        self.show_remove_identity_token_balance_popup(ui);
+                    }
+                    if self.confirm_remove_token_popup {
+                        self.show_remove_token_popup(ui);
+                    }
+
+                    // If we have info text, open a pop-up window to show it
+                    if let Some(info_text) = self.show_pop_up_info.clone() {
+                        egui::Window::new("Distribution Type Info")
+                            .collapsible(false)
+                            .resizable(true)
+                            .show(ui.ctx(), |ui| {
+                                egui::ScrollArea::vertical().show(ui, |ui| {
+                                    let mut cache = CommonMarkCache::default();
+                                    CommonMarkViewer::new().show(ui, &mut cache, &info_text);
+                                });
+
+                                if ui.button("Close").clicked() {
+                                    self.show_pop_up_info = None;
+                                }
+                            });
+                    }
+
+                    inner_action
+                })
+                .inner
         });
 
         // Post-processing on user actions

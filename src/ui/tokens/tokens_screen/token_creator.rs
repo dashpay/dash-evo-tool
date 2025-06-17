@@ -9,7 +9,7 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::Identifier;
 use eframe::epaint::Color32;
-use egui::{ComboBox, Context, Label, RichText, Sense, TextEdit, Ui};
+use egui::{ComboBox, Context, RichText, TextEdit, Ui};
 use crate::app::{AppAction, BackendTasksExecutionMode};
 use crate::backend_task::BackendTask;
 use crate::backend_task::tokens::TokenTask;
@@ -28,31 +28,17 @@ impl TokensScreen {
             return action;
         }
 
-        // Allocate space for refreshing indicator
-        let refreshing_height = 33.0;
-        let mut max_scroll_height =
-            if let TokenCreatorStatus::WaitingForResult(_) = self.token_creator_status {
-                ui.available_height() - refreshing_height
-            } else {
-                ui.available_height()
-            };
-
-        // Allocate space for backend message
-        let backend_message_height = 40.0;
-        if self.token_creator_error_message.clone().is_some() {
-            max_scroll_height -= backend_message_height;
-        }
-
         ui.heading("Token Creator");
         ui.label(
             "Create custom tokens on Dash Platform with advanced features and distribution rules",
         );
         ui.add_space(20.0);
 
-        egui::ScrollArea::both()
-            .max_height(max_scroll_height)
+        egui::ScrollArea::horizontal()
             .show(ui, |ui| {
-                ui.group(|ui| {
+                // Stretch the panel to fill the available width
+                ui.set_min_width(ui.available_width());
+                ui.set_max_width(ui.available_width());
                         // Identity and key selection
                         ui.add_space(10.0);
                         let all_identities = match self.app_context.load_local_user_identities() {
@@ -134,83 +120,95 @@ impl TokensScreen {
                                 for i in 0..self.token_names_input.len() {
                                     ui.label("Token Name (singular)*:");
                                     ui.text_edit_singleline(&mut self.token_names_input[i].0);
-                                    let text_height = ui.spacing().interact_size.y;
-                                    if i == 0 {
-                                        let combo_resp = ComboBox::from_id_salt(format!("token_name_language_selector_{}", i))
-                                            .selected_text(format!(
-                                                "{}",
-                                                self.token_names_input[i].2
-                                            ))
-                                            .width(120.0);
-                                        combo_resp.show_ui(ui, |ui| {
-                                            ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::English, "English");
-                                        });
-                                    } else {
-                                        let combo_resp = ComboBox::from_id_salt(format!("token_name_language_selector_{}", i))
-                                            .selected_text(format!(
-                                                "{}",
-                                                self.token_names_input[i].2
-                                            ))
-                                            .width(120.0);
-                                        combo_resp.show_ui(ui, |ui| {
-                                                ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::English, "English");
-                                                ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Arabic, "Arabic");
-                                                ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Bengali, "Bengali");
-                                                ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Burmese, "Burmese");
-                                                ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Chinese, "Chinese");
-                                                ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Czech, "Czech");
-                                                ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Dutch, "Dutch");
-                                                ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Farsi, "Farsi (Persian)");
-                                                ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Filipino, "Filipino (Tagalog)");
-                                                ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::French, "French");
-                                                ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::German, "German");
-                                                ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Greek, "Greek");
-                                                ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Gujarati, "Gujarati");
-                                                ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Hausa, "Hausa");
-                                                ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Hebrew, "Hebrew");
-                                                ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Hindi, "Hindi");
-                                                ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Hungarian, "Hungarian");
-                                                ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Igbo, "Igbo");
-                                                ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Indonesian, "Indonesian");
-                                                ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Italian, "Italian");
-                                                ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Japanese, "Japanese");
-                                                ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Javanese, "Javanese");
-                                                ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Kannada, "Kannada");
-                                                ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Khmer, "Khmer");
-                                                ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Korean, "Korean");
-                                                ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Malay, "Malay");
-                                                ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Malayalam, "Malayalam");
-                                                ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Mandarin, "Mandarin Chinese");
-                                                ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Marathi, "Marathi");
-                                                ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Nepali, "Nepali");
-                                                ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Oriya, "Oriya");
-                                                ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Pashto, "Pashto");
-                                                ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Polish, "Polish");
-                                                ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Portuguese, "Portuguese");
-                                                ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Punjabi, "Punjabi");
-                                                ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Romanian, "Romanian");
-                                                ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Russian, "Russian");
-                                                ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Serbian, "Serbian");
-                                                ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Sindhi, "Sindhi");
-                                                ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Sinhala, "Sinhala");
-                                                ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Somali, "Somali");
-                                                ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Spanish, "Spanish");
-                                                ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Swahili, "Swahili");
-                                                ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Swedish, "Swedish");
-                                                ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Tamil, "Tamil");
-                                                ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Telugu, "Telugu");
-                                                ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Thai, "Thai");
-                                                ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Turkish, "Turkish");
-                                                ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Ukrainian, "Ukrainian");
-                                                ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Urdu, "Urdu");
-                                                ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Vietnamese, "Vietnamese");
-                                                ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Yoruba, "Yoruba");
-                                            });
-                                    }
-
                                     ui.horizontal(|ui| {
-                                        let button_height = text_height;
-                                        if ui.add(egui::Button::new("➕ Add Language").min_size(egui::vec2(0.0, button_height))).clicked() {
+                                        if i == 0 {
+                                            ui.push_id(format!("combo_{}", i), |ui| {
+                                                ui.style_mut().spacing.combo_height = 10.0;
+                                                ui.style_mut().spacing.button_padding = egui::vec2(3.0, 0.0);
+                                                ui.style_mut().visuals.widgets.inactive.fg_stroke.width = 1.0;
+                                                ui.style_mut().text_styles.get_mut(&egui::TextStyle::Body).unwrap().size = 12.0;
+                                                let combo_resp = ComboBox::from_id_salt(format!("token_name_language_selector_{}", i))
+                                                    .selected_text(format!(
+                                                        "{}",
+                                                        self.token_names_input[i].2
+                                                    ))
+                                                    .width(100.0);
+                                                combo_resp.show_ui(ui, |ui| {
+                                                    ui.style_mut().text_styles.get_mut(&egui::TextStyle::Body).unwrap().size = 12.0;
+                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::English, "English");
+                                                });
+                                            });
+                                        } else {
+                                            ui.push_id(format!("combo_{}", i), |ui| {
+                                                    ui.style_mut().spacing.combo_height = 10.0;
+                                                    ui.style_mut().spacing.button_padding = egui::vec2(3.0, 0.0);
+                                                    ui.style_mut().visuals.widgets.inactive.fg_stroke.width = 1.0;
+                                                    ui.style_mut().text_styles.get_mut(&egui::TextStyle::Body).unwrap().size = 12.0;
+                                                let combo_resp = ComboBox::from_id_salt(format!("token_name_language_selector_{}", i))
+                                                    .selected_text(format!(
+                                                        "{}",
+                                                        self.token_names_input[i].2
+                                                    ))
+                                                    .width(100.0);
+                                                combo_resp.show_ui(ui, |ui| {
+                                                    ui.style_mut().text_styles.get_mut(&egui::TextStyle::Body).unwrap().size = 12.0;
+                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::English, "English");
+                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Arabic, "Arabic");
+                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Bengali, "Bengali");
+                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Burmese, "Burmese");
+                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Chinese, "Chinese");
+                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Czech, "Czech");
+                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Dutch, "Dutch");
+                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Farsi, "Farsi (Persian)");
+                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Filipino, "Filipino (Tagalog)");
+                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::French, "French");
+                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::German, "German");
+                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Greek, "Greek");
+                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Gujarati, "Gujarati");
+                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Hausa, "Hausa");
+                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Hebrew, "Hebrew");
+                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Hindi, "Hindi");
+                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Hungarian, "Hungarian");
+                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Igbo, "Igbo");
+                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Indonesian, "Indonesian");
+                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Italian, "Italian");
+                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Japanese, "Japanese");
+                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Javanese, "Javanese");
+                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Kannada, "Kannada");
+                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Khmer, "Khmer");
+                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Korean, "Korean");
+                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Malay, "Malay");
+                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Malayalam, "Malayalam");
+                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Mandarin, "Mandarin Chinese");
+                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Marathi, "Marathi");
+                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Nepali, "Nepali");
+                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Oriya, "Oriya");
+                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Pashto, "Pashto");
+                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Polish, "Polish");
+                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Portuguese, "Portuguese");
+                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Punjabi, "Punjabi");
+                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Romanian, "Romanian");
+                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Russian, "Russian");
+                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Serbian, "Serbian");
+                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Sindhi, "Sindhi");
+                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Sinhala, "Sinhala");
+                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Somali, "Somali");
+                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Spanish, "Spanish");
+                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Swahili, "Swahili");
+                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Swedish, "Swedish");
+                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Tamil, "Tamil");
+                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Telugu, "Telugu");
+                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Thai, "Thai");
+                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Turkish, "Turkish");
+                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Ukrainian, "Ukrainian");
+                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Urdu, "Urdu");
+                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Vietnamese, "Vietnamese");
+                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Yoruba, "Yoruba");
+                                                });
+                                            });
+                                        }
+
+                                        if ui.add(egui::Button::new("➕ Add Language").small()).clicked() {
                                             let used_languages: HashSet<_> = self.token_names_input.iter().map(|(_, _, lang, _)| *lang).collect();
                                             let next_non_used_language = enum_iterator::all::<TokenNameLanguage>()
                                                 .find(|lang| !used_languages.contains(lang))
@@ -218,18 +216,17 @@ impl TokensScreen {
                                             // Add a new token name input
                                             self.token_names_input.push((String::new(), String::new(), next_non_used_language, false));
                                         }
-                                        if i != 0 && ui.add(egui::Button::new("➖").min_size(egui::vec2(30.0, button_height))).clicked() {
+                                        if i != 0 && ui.add(egui::Button::new("➖").small()).clicked() {
                                             token_to_remove = Some(i.try_into().expect("Failed to convert index"));
                                         }
 
-                                        StyledCheckbox::new(&mut self.token_names_input[i].3, "Add singular name to keywords").show(ui);
+                                        // This is really ugly
+                                        // StyledCheckbox::new(&mut self.token_names_input[i].3, "Keyword").show(ui);
 
-                                        let info_icon = Label::new("ℹ").sense(Sense::click());
-                                        let response = ui.add(info_icon)
-                                            .on_hover_text("Each searchable keyword costs 0.1 Dash");
-                                        if response.clicked() {
-                                            self.show_pop_up_info = Some("Each searchable keyword costs 0.1 Dash".to_string());
-                                        }
+                                        // let response = crate::ui::helpers::info_icon_button(ui, "Checking this box adds this token name to the contract keywords.\nEach searchable keyword costs 0.1 Dash.\n");
+                                        // if response.clicked() {
+                                        //     self.show_pop_up_info = Some("Checking this box adds this token name to the contract keywords.\nEach searchable keyword costs 0.1 Dash".to_string());
+                                        // }
                                     });
                                     ui.end_row();
 
@@ -257,14 +254,12 @@ impl TokensScreen {
                                 // Row 4: Contract Keywords
                                 ui.horizontal(|ui| {
                                     ui.label("Contract Keywords (comma separated):");
-                                    let info_icon = Label::new("ℹ").sense(Sense::click());
-                                    let response = ui.add(info_icon)
-                                        .on_hover_text("Each searchable keyword costs 0.1 Dash");
+                                });
+                                ui.text_edit_singleline(&mut self.contract_keywords_input);
+                                let response = crate::ui::helpers::info_icon_button(ui, "Each searchable keyword costs 0.1 Dash");
                                     if response.clicked() {
                                         self.show_pop_up_info = Some("Each searchable keyword costs 0.1 Dash".to_string());
                                     }
-                                });
-                                ui.text_edit_singleline(&mut self.contract_keywords_input);
 
                                 for name in self.token_names_input.iter() {
                                     if !name.0.is_empty() && name.3 {
@@ -323,20 +318,7 @@ impl TokensScreen {
                                     ui.horizontal(|ui| {
                                         StyledCheckbox::new(&mut self.start_as_paused_input, "Start as paused").show(ui);
 
-                                        // Information icon with tooltip
-                                        if ui
-                                            .add(Label::new(RichText::new("ℹ").monospace()).sense(Sense::hover()))
-                                            .on_hover_text(
-                                                "When enabled, the token will be created in a paused state, meaning transfers will be \
-             disabled by default. All other token features—such as distributions and manual minting—\
-             remain fully functional. To allow transfers in the future, the token must be unpaused \
-             via an emergency action. It is strongly recommended to enable emergency actions if this \
-             option is selected, unless the intention is to permanently disable transfers.",
-                                            )
-                                            .hovered()
-                                        {
-                                            // Optional: visual feedback or styling if hovered
-                                        }
+                                        crate::ui::helpers::info_icon_button(ui, "When enabled, the token will be created in a paused state, meaning transfers will be disabled by default. All other token features—such as distributions and manual minting—remain fully functional. To allow transfers in the future, the token must be unpaused via an emergency action. It is strongly recommended to enable emergency actions if this option is selected, unless the intention is to permanently disable transfers.");
                                     });
                                     ui.end_row();
 
@@ -347,16 +329,7 @@ impl TokensScreen {
                                     ui.horizontal(|ui| {
                                         StyledCheckbox::new(&mut self.should_capitalize_input, "Name should be capitalized").show(ui);
 
-                                        // Information icon with tooltip
-                                        if ui
-                                            .add(Label::new(RichText::new("ℹ").monospace()).sense(Sense::hover()))
-                                            .on_hover_text(
-                                                "This is used only as helper information to client applications that will use \
-                                            token. This informs them on whether to capitalize the token name or not by default.",
-                                            )
-                                            .hovered()
-                                        {
-                                        }
+                                        crate::ui::helpers::info_icon_button(ui, "This is used only as helper information to client applications that will use token. This informs them on whether to capitalize the token name or not by default.");
                                     });
                                     ui.end_row();
 
@@ -388,17 +361,7 @@ impl TokensScreen {
 
                                         ui.label(RichText::new(message).color(Color32::GRAY));
 
-                                        if ui
-                                            .add(Label::new(RichText::new("ℹ").monospace()).sense(Sense::hover()))
-                                            .on_hover_text(
-                                                "The decimal places of the token, for example Dash and Bitcoin use 8. \
-                                            The minimum indivisible amount is a Duff or a Satoshi respectively. \
-                                            If you put a value greater than 0 this means that it is indicated that the \
-                                            consensus is that 10^(number entered) is what represents 1 full unit of the token.",
-                                            )
-                                            .hovered()
-                                        {
-                                        }
+                                        crate::ui::helpers::info_icon_button(ui, "The decimal places of the token, for example Dash and Bitcoin use 8. The minimum indivisible amount is a Duff or a Satoshi respectively. If you put a value greater than 0 this means that it is indicated that the consensus is that 10^(number entered) is what represents 1 full unit of the token.");
                                     });
                                     ui.end_row();
                                 });
@@ -636,7 +599,6 @@ impl TokensScreen {
                                 }
                             }
                         });
-                    });
             });
 
         // Reset the flag after processing all collapsing headers

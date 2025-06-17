@@ -209,7 +209,7 @@ impl WalletsBalancesScreen {
                     egui::Button::new(
                         RichText::new(*filter_option)
                             .color(Color32::WHITE)
-                            .size(10.0),
+                            .size(12.0),
                     )
                     .fill(egui::Color32::from_rgb(0, 128, 255))
                     .stroke(egui::Stroke::NONE)
@@ -219,7 +219,7 @@ impl WalletsBalancesScreen {
                     egui::Button::new(
                         RichText::new(*filter_option)
                             .color(DashColors::text_primary(dark_mode))
-                            .size(10.0),
+                            .size(12.0),
                     )
                     .fill(DashColors::glass_white(dark_mode))
                     .stroke(egui::Stroke::new(1.0, DashColors::border(dark_mode)))

@@ -336,6 +336,7 @@ impl GroupActionsScreen {
         }
     }
 
+    /// On click of the "Take Action" button
     fn handle_token_event_action(
         &mut self,
         token_event: &TokenEvent,

@@ -196,8 +196,7 @@ impl GroupActionsScreen {
                     })
                     .body(|mut body| {
                         for (id, group_action) in group_actions {
-                            let GroupAction::V0(action_v0) = group_action;
-                            let GroupActionEvent::TokenEvent(token_event) = &action_v0.event;
+                            let GroupActionEvent::TokenEvent(token_event) = group_action.event();
 
                             body.row(row_height, |mut row| {
                                 row.col(|ui| {
@@ -240,7 +239,7 @@ impl GroupActionsScreen {
                                         )
                                         .clicked()
                                     {
-                                        let token_contract_position = action_v0.token_contract_position();
+                                        let token_contract_position = group_action.token_contract_position();
                                         let token_id = self.selected_contract.clone().expect("No contract selected").contract.token_id(token_contract_position).expect("No token ID found at the given position");
                                         let identity_token_balance = match self
                                             .identity_token_balances

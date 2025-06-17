@@ -1060,7 +1060,18 @@ impl TokensScreen {
             })
             .body(|ui| {
                 ui.add_space(3.0);
-                ui.label("Paste JSON document schemas to include in the data contract:");
+
+                // Add link to dashpay.io
+                ui.horizontal(|ui| {
+                    ui.label("Paste JSON document schemas to include in the contract. Easily create document schemas here:");
+                    ui.add(egui::Hyperlink::from_label_and_url(
+                        RichText::new("dashpay.io")
+                            .underline()
+                            .color(Color32::from_rgb(0, 128, 255)),
+                        "https://dashpay.io",
+                    ));
+                });
+
                 ui.add_space(5.0);
 
                 let schemas_response = ui.add_sized(

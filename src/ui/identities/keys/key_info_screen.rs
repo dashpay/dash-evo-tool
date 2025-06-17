@@ -490,7 +490,7 @@ impl KeyInfoScreen {
             );
             match self
                 .app_context
-                .insert_local_qualified_identity(&self.identity, None)
+                .insert_local_qualified_identity(&self.identity, &None)
             {
                 Ok(_) => {
                     self.error_message = None;
@@ -628,7 +628,7 @@ impl KeyInfoScreen {
                             .remove(&(self.key.purpose().into(), self.key.id()));
                         match self
                             .app_context
-                            .insert_local_qualified_identity(&self.identity, None)
+                            .insert_local_qualified_identity(&self.identity, &None)
                         {
                             Ok(_) => {
                                 self.error_message = None;

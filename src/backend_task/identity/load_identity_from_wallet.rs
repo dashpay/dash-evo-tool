@@ -147,7 +147,7 @@ impl AppContext {
         // Insert qualified identity into the database
         self.insert_local_qualified_identity(
             &qualified_identity,
-            Some((&wallet_seed_hash, identity_index)),
+            &Some((wallet_seed_hash, identity_index)),
         )
         .map_err(|e| format!("Database error: {}", e))?;
 

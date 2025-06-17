@@ -397,10 +397,11 @@ impl GroupActionsScreen {
                     },
                 }
             }
-            TokenEvent::ConfigUpdate(_change_item, note_opt) => {
+            TokenEvent::ConfigUpdate(change_item, note_opt) => {
                 let mut update_screen = UpdateTokenConfigScreen::new(identity_token_info, &self.app_context);
                 update_screen.group_action_id = Some(action_id);
                 update_screen.public_note = note_opt.clone();
+                update_screen.change_item = change_item.clone();
                 *action |= AppAction::AddScreen(Screen::UpdateTokenConfigScreen(Box::new(update_screen)));
             }
             TokenEvent::ChangePriceForDirectPurchase(schedule, note_opt) => {

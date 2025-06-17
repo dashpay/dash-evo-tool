@@ -223,6 +223,10 @@ impl UpdateTokenConfigScreen {
         ui.add_space(10.0);
         if self.group_action_id.is_some() {
             ui.label("You are signing an existing group action. Make sure you construct the exact same item as the one in the group action, details of which can be found on the previous screen.");
+            if self.group.is_none() {
+                // we need to initialize group based on the change item
+                self.update_group_based_on_change_item();
+            }
         }
 
         // Clone the token configuration to avoid borrowing issues
@@ -230,7 +234,6 @@ impl UpdateTokenConfigScreen {
 
         ui.horizontal(|ui| {
             let label = token_change_item_label(&self.change_item);
-            
 
             egui::ComboBox::from_id_salt("cfg_item_type".to_string())
                 .selected_text(label)

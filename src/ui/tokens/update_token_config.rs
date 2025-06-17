@@ -234,7 +234,8 @@ impl UpdateTokenConfigScreen {
 
         ui.horizontal(|ui| {
             let label = token_change_item_label(&self.change_item);
-
+            // user cannot change the item if it's part of a group action
+            ui.add_enabled_ui(self.group_action_id.is_none(), |ui| {
             egui::ComboBox::from_id_salt("cfg_item_type".to_string())
                 .selected_text(label)
                 .width(270.0)
@@ -553,7 +554,7 @@ impl UpdateTokenConfigScreen {
                         self.update_group_based_on_change_item();
                     }
                 });
-    });
+    
 
         ui.add_space(10.0);
 
@@ -672,7 +673,8 @@ impl UpdateTokenConfigScreen {
                 unimplemented!("marketplace settings not implemented yet")
             }
         }
-
+        });
+        });
         ui.add_space(10.0);
         ui.separator();
         ui.add_space(10.0);

@@ -15,6 +15,8 @@ use std::collections::BTreeMap;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, RwLock};
 
+use serde_json;
+
 use chrono::{DateTime, Duration, Utc};
 use dash_sdk::dpp::balances::credits::TokenAmount;
 use dash_sdk::dpp::dashcore::Network;
@@ -317,9 +319,9 @@ impl ChangeControlRulesUI {
                                         let is_valid = Identifier::from_string(id_str.as_str(), Encoding::Base58).is_ok();
 
                                         let (symbol, color) = if is_valid {
-                                            ("✔", Color32::GREEN)
+                                            ("✔", Color32::DARK_GREEN)
                                         } else {
-                                            ("×", Color32::RED)
+                                            ("×", Color32::DARK_RED)
                                         };
 
                                         ui.label(RichText::new(symbol).color(color).strong());
@@ -396,9 +398,9 @@ impl ChangeControlRulesUI {
                                         let is_valid = Identifier::from_string(id_str.as_str(), Encoding::Base58).is_ok();
 
                                         let (symbol, color) = if is_valid {
-                                            ("✔", Color32::GREEN)
+                                            ("✔", Color32::DARK_GREEN)
                                         } else {
-                                            ("×", Color32::RED)
+                                            ("×", Color32::DARK_RED)
                                         };
 
                                         ui.label(RichText::new(symbol).color(color).strong());
@@ -540,9 +542,9 @@ impl ChangeControlRulesUI {
                                         let is_valid = Identifier::from_string(id_str.as_str(), Encoding::Base58).is_ok();
 
                                         let (symbol, color) = if is_valid {
-                                            ("✔", Color32::GREEN)
+                                            ("✔", Color32::DARK_GREEN)
                                         } else {
-                                            ("×", Color32::RED)
+                                            ("×", Color32::DARK_RED)
                                         };
 
                                         ui.label(RichText::new(symbol).color(color).strong());
@@ -619,9 +621,9 @@ impl ChangeControlRulesUI {
                                         let is_valid = Identifier::from_string(id_str.as_str(), Encoding::Base58).is_ok();
 
                                         let (symbol, color) = if is_valid {
-                                            ("✔", Color32::GREEN)
+                                            ("✔", Color32::DARK_GREEN)
                                         } else {
-                                            ("×", Color32::RED)
+                                            ("×", Color32::DARK_RED)
                                         };
 
                                         ui.label(RichText::new(symbol).color(color).strong());
@@ -917,6 +919,7 @@ pub struct TokenBuildArgs {
 
     pub distribution_rules: TokenDistributionRules,
     pub groups: BTreeMap<u16, Group>,
+    pub document_schemas: Option<BTreeMap<String, serde_json::Value>>,
 }
 
 pub type TokenSearchable = bool;
@@ -1119,6 +1122,11 @@ pub struct TokensScreen {
     // Token adding status
     adding_token_start_time: Option<DateTime<Utc>>,
     adding_token_name: Option<String>,
+
+    // Document Schemas
+    document_schemas_input: String,
+    parsed_document_schemas: Option<BTreeMap<String, serde_json::Value>>,
+    document_schemas_error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1459,6 +1467,11 @@ impl TokensScreen {
             // Token adding status
             adding_token_start_time: None,
             adding_token_name: None,
+
+            // Document Schemas
+            document_schemas_input: String::new(),
+            parsed_document_schemas: None,
+            document_schemas_error: None,
         };
 
         if let Ok(saved_ids) = screen.app_context.db.load_token_order() {
@@ -2165,6 +2178,11 @@ impl TokensScreen {
 
         self.show_token_creator_confirmation_popup = false;
         self.token_creator_error_message = None;
+
+        // Reset document schemas
+        self.document_schemas_input = String::new();
+        self.parsed_document_schemas = None;
+        self.document_schemas_error = None;
     }
 
     fn add_token_to_tracked_tokens(&mut self, token_info: TokenInfo) -> Result<AppAction, String> {
@@ -3021,6 +3039,7 @@ mod tests {
                 build_args.main_control_group_change_authorized,
                 build_args.distribution_rules,
                 build_args.groups,
+                build_args.document_schemas,
             )
             .expect("Contract build failed");
 
@@ -3232,6 +3251,7 @@ mod tests {
                 build_args.main_control_group_change_authorized,
                 build_args.distribution_rules,
                 build_args.groups,
+                build_args.document_schemas,
             )
             .expect("Should build successfully");
         let contract_v1 = data_contract.as_v1().expect("Expected DataContract::V1");

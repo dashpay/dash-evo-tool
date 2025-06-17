@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use chrono::Utc;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationPreset;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationPresetFeatures::{MostRestrictive, WithAllAdvancedActions, WithExtremeActions, WithMintingAndBurningActions, WithOnlyEmergencyAction};
@@ -44,7 +44,7 @@ impl TokensScreen {
                         let all_identities = match self.app_context.load_local_user_identities() {
                             Ok(identities) => identities.into_iter().filter(|qi| !qi.private_keys.private_keys.is_empty()).collect::<Vec<_>>(),
                             Err(e) => {
-                                ui.colored_label(Color32::RED, format!("Error loading identities from local DB: {}", e));
+                                ui.colored_label(Color32::DARK_RED, format!("Error loading identities from local DB: {}", e));
                                 return;
                             }
                         };
@@ -529,6 +529,7 @@ impl TokensScreen {
 
                         self.render_distributions(context, ui);
                         self.render_groups(ui);
+                        self.render_document_schemas(ui);
 
                         // 6) "Register Token Contract" button
                         ui.add_space(10.0);
@@ -581,6 +582,7 @@ impl TokensScreen {
                                             args.main_control_group_change_authorized,
                                             args.distribution_rules,
                                             args.groups,
+                                            args.document_schemas,
                                         ) {
                                             Ok(dc) => dc,
                                             Err(e) => {
@@ -632,7 +634,7 @@ impl TokensScreen {
         // Show an error if we have one
         if let Some(err_msg) = &self.token_creator_error_message {
             ui.add_space(10.0);
-            ui.colored_label(Color32::RED, err_msg.to_string());
+            ui.colored_label(Color32::DARK_RED, err_msg.to_string());
             ui.add_space(10.0);
         }
 
@@ -866,6 +868,7 @@ impl TokensScreen {
 
             distribution_rules: TokenDistributionRules::V0(distribution_rules),
             groups,
+            document_schemas: self.parsed_document_schemas.clone(),
         })
     }
 
@@ -1010,6 +1013,7 @@ impl TokensScreen {
                                 .main_control_group_change_authorized,
                             distribution_rules: args.distribution_rules,
                             groups: args.groups,
+                            document_schemas: args.document_schemas,
                         })),
                         BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances)),
                     ];
@@ -1032,6 +1036,108 @@ impl TokensScreen {
         }
 
         action
+    }
+
+    /// Render the document schemas collapsible section
+    fn render_document_schemas(&mut self, ui: &mut Ui) {
+        let mut document_schemas_state =
+            egui::collapsing_header::CollapsingState::load_with_default_open(
+                ui.ctx(),
+                ui.make_persistent_id("token_creator_document_schemas"),
+                false,
+            );
+
+        // Force close if we need to reset
+        if self.should_reset_collapsing_states {
+            document_schemas_state.set_open(false);
+        }
+
+        document_schemas_state.store(ui.ctx());
+
+        document_schemas_state
+            .show_header(ui, |ui| {
+                ui.label("Document Schemas");
+            })
+            .body(|ui| {
+                ui.add_space(3.0);
+                ui.label("Paste JSON document schemas to include in the data contract:");
+                ui.add_space(5.0);
+
+                let schemas_response = ui.add_sized(
+                    [ui.available_width(), 120.0],
+                    TextEdit::multiline(&mut self.document_schemas_input),
+                );
+
+                if schemas_response.changed() {
+                    self.parse_document_schemas();
+                }
+
+                ui.add_space(5.0);
+
+                // Show validation result
+                if let Some(ref error) = self.document_schemas_error {
+                    ui.colored_label(
+                        Color32::DARK_RED,
+                        format!("Schema validation error: {}", error),
+                    );
+                } else if self.parsed_document_schemas.is_some() {
+                    let schema_count = self.parsed_document_schemas.as_ref().unwrap().len();
+                    if schema_count > 0 {
+                        ui.colored_label(
+                            Color32::DARK_GREEN,
+                            format!("✓ {} valid document schema(s) parsed", schema_count),
+                        );
+                    }
+                }
+            });
+    }
+
+    /// Parse and validate the document schemas JSON input
+    fn parse_document_schemas(&mut self) {
+        self.document_schemas_error = None;
+        self.parsed_document_schemas = None;
+
+        if self.document_schemas_input.trim().is_empty() {
+            return;
+        }
+
+        match serde_json::from_str::<serde_json::Value>(&self.document_schemas_input) {
+            Ok(json_value) => {
+                match json_value.as_object() {
+                    Some(obj) => {
+                        let mut schemas = BTreeMap::new();
+
+                        for (key, value) in obj {
+                            // Basic validation - ensure it's an object with required fields
+                            if let Some(schema_obj) = value.as_object() {
+                                if schema_obj.contains_key("type") {
+                                    schemas.insert(key.clone(), value.clone());
+                                } else {
+                                    self.document_schemas_error = Some(format!(
+                                        "Document schema '{}' missing required 'type' field",
+                                        key
+                                    ));
+                                    return;
+                                }
+                            } else {
+                                self.document_schemas_error =
+                                    Some(format!("Document schema '{}' must be an object", key));
+                                return;
+                            }
+                        }
+
+                        self.parsed_document_schemas = Some(schemas);
+                    }
+                    None => {
+                        self.document_schemas_error =
+                            Some("Document schemas must be a JSON object".to_string());
+                    }
+                }
+            }
+            Err(e) => {
+                self.document_schemas_error = Some(format!("Invalid JSON: {}", e));
+            }
+        }
     }
 
     /// Once the contract creation is done (status=Complete),

@@ -90,11 +90,13 @@ pub(crate) enum TokenTask {
 
         distribution_rules: TokenDistributionRules,
         groups: BTreeMap<GroupContractPosition, Group>,
+        document_schemas: Option<BTreeMap<String, serde_json::Value>>,
     },
     QueryMyTokenBalances,
     QueryIdentityTokenBalance(IdentityTokenIdentifier),
     QueryDescriptionsByKeyword(String, Option<Start>),
     FetchTokenByContractId(Identifier),
+    FetchTokenByTokenId(Identifier),
     SaveTokenLocally(TokenInfo),
     QueryTokenPricing(Identifier),
     MintTokens {
@@ -176,7 +178,7 @@ pub(crate) enum TokenTask {
         signing_key: IdentityPublicKey,
         public_note: Option<String>,
     },
-    EstimatePerpetualTokenRewards {
+    EstimatePerpetualTokenRewardsWithExplanation {
         identity_id: Identifier,
         token_id: Identifier,
     },
@@ -239,6 +241,7 @@ impl AppContext {
                 main_control_group_change_authorized,
                 distribution_rules,
                 groups,
+                document_schemas,
             } => {
                 let data_contract = self
                     .build_data_contract_v1_with_one_token(
@@ -265,6 +268,7 @@ impl AppContext {
                         *main_control_group_change_authorized,
                         distribution_rules.clone(),
                         groups.clone(),
+                        document_schemas.clone(),
                     )
                     .map_err(|e| format!("Error building contract V1: {e}"))?;
 
@@ -485,17 +489,17 @@ impl AppContext {
                 )
                 .await
                 .map_err(|e| format!("Failed to claim tokens: {e}")),
-            TokenTask::EstimatePerpetualTokenRewards {
+            TokenTask::EstimatePerpetualTokenRewardsWithExplanation {
                 identity_id,
                 token_id,
             } => self
-                .query_token_non_claimed_perpetual_distribution_rewards(
+                .query_token_non_claimed_perpetual_distribution_rewards_with_explanation(
                     *identity_id,
                     *token_id,
                     sdk,
                 )
                 .await
-                .map_err(|e| format!("Failed to get estimated rewards: {e}")),
+                .map_err(|e| format!("Failed to get estimated rewards with explanation: {e}")),
             TokenTask::QueryIdentityTokenBalance(identity_token_pair) => self
                 .query_token_balance(
                     sdk,
@@ -514,6 +518,40 @@ impl AppContext {
                         "Contract not found".to_string(),
                     )),
                     Err(e) => Err(format!("Error fetching contracts: {}", e)),
+                }
+            }
+            TokenTask::FetchTokenByTokenId(token_id) => {
+                use dash_sdk::dpp::tokens::contract_info::v0::TokenContractInfoV0Accessors;
+                use dash_sdk::dpp::tokens::contract_info::TokenContractInfo;
+
+                match TokenContractInfo::fetch(sdk, *token_id).await {
+                    Ok(Some(token_contract_info)) => {
+                        // Extract the contract ID and token position from token_contract_info
+                        let (contract_id, token_position) = match &token_contract_info {
+                            TokenContractInfo::V0(info) => {
+                                (info.contract_id(), info.token_contract_position())
+                            }
+                        };
+
+                        // Fetch the full contract
+                        match DataContract::fetch_by_identifier(sdk, contract_id).await {
+                            Ok(Some(data_contract)) => {
+                                // Return the contract with the specific token position
+                                Ok(BackendTaskSuccessResult::FetchedContractWithTokenPosition(
+                                    data_contract,
+                                    token_position,
+                                ))
+                            }
+                            Ok(None) => Ok(BackendTaskSuccessResult::Message(
+                                "Contract not found for token".to_string(),
+                            )),
+                            Err(e) => Err(format!("Error fetching contract for token: {}", e)),
+                        }
+                    }
+                    Ok(None) => Ok(BackendTaskSuccessResult::Message(
+                        "Token not found".to_string(),
+                    )),
+                    Err(e) => Err(format!("Error fetching token info: {}", e)),
                 }
             }
             TokenTask::SaveTokenLocally(token_info) => {
@@ -637,13 +675,15 @@ impl AppContext {
         main_control_group_change_authorized: AuthorizedActionTakers,
         distribution_rules: TokenDistributionRules,
         groups: BTreeMap<u16, Group>,
+        document_schemas: Option<BTreeMap<String, serde_json::Value>>,
     ) -> Result<DataContract, ProtocolError> {
-        // 1) Create the V1 struct
+        // 1) Create the V1 struct first to get the contract ID
+        let contract_id = Identifier::random();
         let mut contract_v1 = DataContractV1 {
-            id: Identifier::random(),
+            id: contract_id,
             version: 1,
             owner_id,
-            document_types: BTreeMap::new(),
+            document_types: BTreeMap::new(), // Initialize empty, will populate below
             config: DataContractConfig::default_for_version(self.platform_version())?,
             schema_defs: None,
             groups,
@@ -658,7 +698,39 @@ impl AppContext {
             description: token_description.clone(),
         };
 
-        // 2) Build a single TokenConfiguration in V0 format
+        // 2) Parse document schemas if provided and add them to the contract
+        if let Some(schemas) = document_schemas {
+            for (name, schema_json) in schemas {
+                // Convert serde_json::Value to platform_value::Value
+                let platform_value = schema_json.into();
+
+                // Convert JSON schema to DocumentType using the proper parameters
+                let mut validation_operations = Vec::new();
+                match dash_sdk::dpp::data_contract::document_type::DocumentType::try_from_schema(
+                    contract_id,
+                    &name,
+                    platform_value,
+                    None, // schema_defs
+                    &contract_v1.tokens,
+                    &contract_v1.config,
+                    true, // validate_required
+                    &mut validation_operations,
+                    self.platform_version(),
+                ) {
+                    Ok(document_type) => {
+                        contract_v1.document_types.insert(name, document_type);
+                    }
+                    Err(e) => {
+                        return Err(ProtocolError::Generic(format!(
+                            "Failed to convert document schema '{}' to DocumentType: {}",
+                            name, e
+                        )));
+                    }
+                }
+            }
+        }
+
+        // 3) Build a single TokenConfiguration in V0 format
         let mut token_config_v0 = TokenConfigurationV0::default_most_restrictive();
 
         let TokenConfigurationConvention::V0(ref mut conv_v0) = token_config_v0.conventions;

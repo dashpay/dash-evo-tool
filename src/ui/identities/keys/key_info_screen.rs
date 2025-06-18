@@ -20,6 +20,7 @@ use dash_sdk::dpp::dashcore::sign_message::signed_msg_hash;
 use dash_sdk::dpp::dashcore::{Address, PrivateKey, PubkeyHash, ScriptHash};
 use dash_sdk::dpp::identity::hash::IdentityPublicKeyHashMethodsV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds;
 use dash_sdk::dpp::identity::KeyType;
 use dash_sdk::dpp::identity::KeyType::BIP13_SCRIPT_HASH;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
@@ -164,6 +165,36 @@ impl ScreenLike for KeyInfoScreen {
                                 .strong()
                                 .color(Color32::BLACK),
                             );
+                            ui.end_row();
+                        }
+
+                        // Contract Bounds
+                        if let Some(contract_bounds) = self.key.contract_bounds() {
+                            ui.label(
+                                RichText::new("Contract Bounds:")
+                                    .strong()
+                                    .color(Color32::BLACK),
+                            );
+                            match contract_bounds {
+                                ContractBounds::SingleContract { id } => {
+                                    ui.label(
+                                        RichText::new(format!("Contract ID: {}", id))
+                                            .color(Color32::BLACK),
+                                    );
+                                }
+                                ContractBounds::SingleContractDocumentType {
+                                    id,
+                                    document_type_name,
+                                } => {
+                                    ui.label(
+                                        RichText::new(format!(
+                                            "Contract ID: {}\nDocument Type: {}",
+                                            id, document_type_name
+                                        ))
+                                        .color(Color32::BLACK),
+                                    );
+                                }
+                            }
                             ui.end_row();
                         }
 
@@ -512,10 +543,8 @@ impl KeyInfoScreen {
         ui.horizontal(|ui| {
             ui.heading(RichText::new("Sign").color(Color32::BLACK));
 
-            // Create a label with click sense and tooltip
-            let info_icon = egui::Label::new("ℹ").sense(egui::Sense::click());
-            let response = ui.add(info_icon)
-                .on_hover_text("Enter a message and click Sign to encrypt it with your private key. You can send the encrypted message to someone and they can decrypt it using your public key. This is useful for proving you own the private key.");
+            // Create an info icon button
+            let response = crate::ui::helpers::info_icon_button(ui, "Enter a message and click Sign to encrypt it with your private key. You can send the encrypted message to someone and they can decrypt it using your public key. This is useful for proving you own the private key.");
 
             // Check if the label was clicked
             if response.clicked() {

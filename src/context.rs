@@ -276,21 +276,6 @@ impl AppContext {
         self.db.get_identity_alias(identifier)
     }
 
-    /// This is for before we know if Platform will accept the identity
-    pub fn insert_local_qualified_identity_in_creation(
-        &self,
-        qualified_identity: &QualifiedIdentity,
-        wallet_id: &[u8],
-        identity_index: u32,
-    ) -> Result<()> {
-        self.db.insert_local_qualified_identity_in_creation(
-            qualified_identity,
-            wallet_id,
-            identity_index,
-            self,
-        )
-    }
-
     /// Fetches all local qualified identities from the database
     pub fn load_local_qualified_identities(&self) -> Result<Vec<QualifiedIdentity>> {
         let wallets = self.wallets.read().unwrap();
@@ -329,17 +314,19 @@ impl AppContext {
         identities
             .into_iter()
             .map(|(mut identity, wallet_id)| {
-                // For each identity, we need to set the wallet information
-                if let Some(wallet) = wallets.get(&wallet_id) {
-                    identity
-                        .associated_wallets
-                        .insert(wallet_id, wallet.clone());
-                } else {
-                    tracing::warn!(
-                        wallet = %hex::encode(wallet_id),
-                        identity = %identity.identity.id(),
-                        "wallet not found for identity when loading local user identities",
-                    );
+                if let Some(wallet_id) = wallet_id {
+                    // For each identity, we need to set the wallet information
+                    if let Some(wallet) = wallets.get(&wallet_id) {
+                        identity
+                            .associated_wallets
+                            .insert(wallet_id, wallet.clone());
+                    } else {
+                        tracing::warn!(
+                            wallet = %hex::encode(wallet_id),
+                            identity = %identity.identity.id(),
+                            "wallet not found for identity when loading local user identities",
+                        );
+                    }
                 }
                 Ok(identity)
             })
@@ -430,6 +417,7 @@ impl AppContext {
             Option<PasswordInfo>,
             Option<String>,
             bool,
+            crate::ui::theme::ThemeMode,
         )>,
     > {
         self.db.get_settings()

@@ -7,11 +7,11 @@ use crate::context::AppContext;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::{island_central_panel, StyledCard, StyledCheckbox};
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::theme::DashColors;
+use crate::ui::theme::{DashColors, ThemeMode};
 use crate::ui::{RootScreenType, ScreenLike};
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::TimestampMillis;
-use eframe::egui::{self, Color32, Context, Ui};
+use eframe::egui::{self, Context, Ui};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -32,6 +32,7 @@ pub struct NetworkChooserScreen {
     custom_dash_qt_error_message: Option<String>,
     overwrite_dash_conf: bool,
     developer_mode: bool,
+    theme_preference: ThemeMode,
     should_reset_collapsing_states: bool,
 }
 
@@ -64,6 +65,14 @@ impl NetworkChooserScreen {
         };
         let developer_mode = current_context.developer_mode.load(Ordering::Relaxed);
 
+        // Load theme preference from settings
+        let theme_preference = current_context
+            .get_settings()
+            .ok()
+            .flatten()
+            .map(|(_, _, _, _, _, theme)| theme)
+            .unwrap_or(ThemeMode::System);
+
         Self {
             mainnet_app_context: mainnet_app_context.clone(),
             testnet_app_context: testnet_app_context.cloned(),
@@ -80,6 +89,7 @@ impl NetworkChooserScreen {
             custom_dash_qt_error_message: None,
             overwrite_dash_conf,
             developer_mode,
+            theme_preference,
             should_reset_collapsing_states: true, // Start with collapsed state
         }
     }
@@ -119,6 +129,7 @@ impl NetworkChooserScreen {
     /// Render the network selection table
     fn render_network_table(&mut self, ui: &mut Ui) -> AppAction {
         let mut app_action = AppAction::None;
+        let dark_mode = ui.ctx().style().visuals.dark_mode;
 
         egui::Grid::new("network_grid")
             .striped(false)
@@ -129,13 +140,13 @@ impl NetworkChooserScreen {
                     egui::RichText::new("Network")
                         .strong()
                         .underline()
-                        .color(DashColors::TEXT_PRIMARY),
+                        .color(DashColors::text_primary(dark_mode)),
                 );
                 ui.label(
                     egui::RichText::new("Status")
                         .strong()
                         .underline()
-                        .color(DashColors::TEXT_PRIMARY),
+                        .color(DashColors::text_primary(dark_mode)),
                 );
                 // ui.label(egui::RichText::new("Wallet Count").strong().underline());
                 // ui.label(egui::RichText::new("Add New Wallet").strong().underline());
@@ -143,25 +154,25 @@ impl NetworkChooserScreen {
                     egui::RichText::new("Select")
                         .strong()
                         .underline()
-                        .color(DashColors::TEXT_PRIMARY),
+                        .color(DashColors::text_primary(dark_mode)),
                 );
                 ui.label(
                     egui::RichText::new("Start")
                         .strong()
                         .underline()
-                        .color(DashColors::TEXT_PRIMARY),
+                        .color(DashColors::text_primary(dark_mode)),
                 );
                 ui.label(
                     egui::RichText::new("Dashmate Password")
                         .strong()
                         .underline()
-                        .color(DashColors::TEXT_PRIMARY),
+                        .color(DashColors::text_primary(dark_mode)),
                 );
                 ui.label(
                     egui::RichText::new("Actions")
                         .strong()
                         .underline()
-                        .color(DashColors::TEXT_PRIMARY),
+                        .color(DashColors::text_primary(dark_mode)),
                 );
                 ui.end_row();
 
@@ -207,7 +218,7 @@ impl NetworkChooserScreen {
                                 ui.label(
                                     egui::RichText::new("Custom Dash-QT Path")
                                         .strong()
-                                        .color(DashColors::TEXT_PRIMARY),
+                                        .color(DashColors::text_primary(dark_mode)),
                                 );
                                 ui.add_space(8.0);
 
@@ -307,7 +318,7 @@ impl NetworkChooserScreen {
                                 ui.label(
                                     egui::RichText::new("Configuration Options")
                                         .strong()
-                                        .color(DashColors::TEXT_PRIMARY),
+                                        .color(DashColors::text_primary(dark_mode)),
                                 );
                                 ui.add_space(8.0);
 
@@ -383,6 +394,50 @@ impl NetworkChooserScreen {
                             });
                         });
 
+                        // Theme Selection Section
+                        ui.add_space(16.0);
+                        ui.group(|ui| {
+                            ui.vertical(|ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        egui::RichText::new("Theme:")
+                                            .strong()
+                                            .color(DashColors::text_primary(dark_mode)),
+                                    );
+
+                                    egui::ComboBox::from_id_salt("theme_selection")
+                                        .selected_text(match self.theme_preference {
+                                            ThemeMode::Light => "Light",
+                                            ThemeMode::Dark => "Dark",
+                                            ThemeMode::System => "System",
+                                        })
+                                        .show_ui(ui, |ui| {
+                                            if ui.selectable_value(&mut self.theme_preference, ThemeMode::System, "System").clicked() {
+                                                app_action |= AppAction::BackendTask(BackendTask::SystemTask(
+                                                    SystemTask::UpdateThemePreference(ThemeMode::System)
+                                                ));
+                                            }
+                                            if ui.selectable_value(&mut self.theme_preference, ThemeMode::Light, "Light").clicked() {
+                                                app_action |= AppAction::BackendTask(BackendTask::SystemTask(
+                                                    SystemTask::UpdateThemePreference(ThemeMode::Light)
+                                                ));
+                                            }
+                                            if ui.selectable_value(&mut self.theme_preference, ThemeMode::Dark, "Dark").clicked() {
+                                                app_action |= AppAction::BackendTask(BackendTask::SystemTask(
+                                                    SystemTask::UpdateThemePreference(ThemeMode::Dark)
+                                                ));
+                                            }
+                                        });
+                                });
+                                ui.label(
+                                    egui::RichText::new(
+                                        "System: follows your OS theme • Light/Dark: force specific theme",
+                                    )
+                                    .color(DashColors::TEXT_SECONDARY),
+                                );
+                            });
+                        });
+
                         // Configuration Requirements Section (only show if not overwriting dash.conf)
                         if !self.overwrite_dash_conf {
                             ui.add_space(16.0);
@@ -455,14 +510,15 @@ impl NetworkChooserScreen {
     /// Render a single row for the network table
     fn render_network_row(&mut self, ui: &mut Ui, network: Network, name: &str) -> AppAction {
         let mut app_action = AppAction::None;
+        let dark_mode = ui.ctx().style().visuals.dark_mode;
         ui.label(name);
 
         // Check network status
         let is_working = self.check_network_status(network);
         let status_color = if is_working {
-            Color32::DARK_GREEN // Green if working
+            DashColors::success_color(dark_mode) // Theme-aware green
         } else {
-            Color32::RED // Red if not working
+            DashColors::error_color(dark_mode) // Theme-aware red
         };
 
         // Display status indicator
@@ -516,9 +572,12 @@ impl NetworkChooserScreen {
         // Add a text field for the dashmate password
         if network == Network::Regtest {
             ui.spacing_mut().item_spacing.x = 5.0;
+            let dark_mode = ui.ctx().style().visuals.dark_mode;
             ui.add(
                 egui::TextEdit::singleline(&mut self.local_network_dashmate_password)
-                    .desired_width(100.0),
+                    .desired_width(100.0)
+                    .text_color(crate::ui::theme::DashColors::text_primary(dark_mode))
+                    .background_color(crate::ui::theme::DashColors::input_background(dark_mode)),
             );
             if ui.button("Save Password").clicked() {
                 // 1) Reload the config
@@ -589,6 +648,15 @@ impl ScreenLike for NetworkChooserScreen {
         // Reset collapsing states when arriving at this screen
         // This ensures dropdowns are closed when navigating back
         self.should_reset_collapsing_states = true;
+
+        // Reload settings from database to ensure we have the latest values
+        if let Ok(Some((_, _, _, custom_dash_qt_path, overwrite_dash_conf, theme_preference))) =
+            self.current_app_context().get_settings()
+        {
+            self.custom_dash_qt_path = custom_dash_qt_path;
+            self.overwrite_dash_conf = overwrite_dash_conf;
+            self.theme_preference = theme_preference;
+        }
     }
 
     fn display_message(&mut self, message: &str, _message_type: super::MessageType) {
@@ -642,7 +710,12 @@ impl ScreenLike for NetworkChooserScreen {
             RootScreenType::RootScreenNetworkChooser,
         );
 
-        action |= island_central_panel(ctx, |ui| self.render_network_table(ui));
+        action |= island_central_panel(ctx, |ui| {
+            egui::ScrollArea::vertical()
+                .auto_shrink([false; 2])
+                .show(ui, |ui| self.render_network_table(ui))
+                .inner
+        });
 
         // Recheck both network status every 3 seconds
         let recheck_time = Duration::from_secs(3);

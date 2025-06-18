@@ -15,6 +15,8 @@ use std::collections::BTreeMap;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, RwLock};
 
+use serde_json;
+
 use chrono::{DateTime, Duration, Utc};
 use dash_sdk::dpp::balances::credits::TokenAmount;
 use dash_sdk::dpp::dashcore::Network;
@@ -25,6 +27,7 @@ use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::To
 use dash_sdk::dpp::data_contract::associated_token::token_keeps_history_rules::TokenKeepsHistoryRules;
 use dash_sdk::dpp::data_contract::associated_token::token_keeps_history_rules::v0::TokenKeepsHistoryRulesV0;
 use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::distribution_function::DistributionFunction;
+use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::distribution_function::evaluate_interval::IntervalEvaluationExplanation;
 use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::distribution_recipient::TokenDistributionRecipient;
 use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::reward_distribution_type::RewardDistributionType;
 use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::v0::TokenPerpetualDistributionV0;
@@ -49,6 +52,7 @@ use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
 use enum_iterator::Sequence;
 use image::ImageReader;
 use crate::app::BackendTasksExecutionMode;
+use crate::backend_task::contract::ContractTask;
 use crate::backend_task::tokens::TokenTask;
 use crate::backend_task::{BackendTask, NO_IDENTITIES_FOUND};
 
@@ -306,18 +310,22 @@ impl ChangeControlRulesUI {
                             self.authorized_identity.get_or_insert_with(String::new);
                             if let Some(ref mut id_str) = self.authorized_identity {
                                 ui.horizontal(|ui| {
+                                    let dark_mode = ui.ctx().style().visuals.dark_mode;
                                     ui.add_sized(
                                         [300.0, 22.0],
-                                        TextEdit::singleline(id_str).hint_text("Enter base58 id"),
+                                        TextEdit::singleline(id_str)
+                                            .hint_text("Enter base58 id")
+                                            .text_color(crate::ui::theme::DashColors::text_primary(dark_mode))
+                                            .background_color(crate::ui::theme::DashColors::input_background(dark_mode)),
                                     );
 
                                     if !id_str.is_empty() {
                                         let is_valid = Identifier::from_string(id_str.as_str(), Encoding::Base58).is_ok();
 
                                         let (symbol, color) = if is_valid {
-                                            ("✔", Color32::GREEN)
+                                            ("✔", Color32::DARK_GREEN)
                                         } else {
-                                            ("×", Color32::RED)
+                                            ("×", Color32::DARK_RED)
                                         };
 
                                         ui.label(RichText::new(symbol).color(color).strong());
@@ -385,18 +393,22 @@ impl ChangeControlRulesUI {
                             self.admin_identity.get_or_insert_with(String::new);
                             if let Some(ref mut id_str) = self.admin_identity {
                                 ui.horizontal(|ui| {
+                                    let dark_mode = ui.ctx().style().visuals.dark_mode;
                                     ui.add_sized(
                                         [300.0, 22.0],
-                                        TextEdit::singleline(id_str).hint_text("Enter base58 id"),
+                                        TextEdit::singleline(id_str)
+                                            .hint_text("Enter base58 id")
+                                            .text_color(crate::ui::theme::DashColors::text_primary(dark_mode))
+                                            .background_color(crate::ui::theme::DashColors::input_background(dark_mode)),
                                     );
 
                                     if !id_str.is_empty() {
                                         let is_valid = Identifier::from_string(id_str.as_str(), Encoding::Base58).is_ok();
 
                                         let (symbol, color) = if is_valid {
-                                            ("✔", Color32::GREEN)
+                                            ("✔", Color32::DARK_GREEN)
                                         } else {
-                                            ("×", Color32::RED)
+                                            ("×", Color32::DARK_RED)
                                         };
 
                                         ui.label(RichText::new(symbol).color(color).strong());
@@ -529,18 +541,22 @@ impl ChangeControlRulesUI {
                             self.authorized_identity.get_or_insert_with(String::new);
                             if let Some(ref mut id_str) = self.authorized_identity {
                                 ui.horizontal(|ui| {
+                                    let dark_mode = ui.ctx().style().visuals.dark_mode;
                                     ui.add_sized(
                                         [300.0, 22.0],
-                                        TextEdit::singleline(id_str).hint_text("Enter base58 id"),
+                                        TextEdit::singleline(id_str)
+                                            .hint_text("Enter base58 id")
+                                            .text_color(crate::ui::theme::DashColors::text_primary(dark_mode))
+                                            .background_color(crate::ui::theme::DashColors::input_background(dark_mode)),
                                     );
 
                                     if !id_str.is_empty() {
                                         let is_valid = Identifier::from_string(id_str.as_str(), Encoding::Base58).is_ok();
 
                                         let (symbol, color) = if is_valid {
-                                            ("✔", Color32::GREEN)
+                                            ("✔", Color32::DARK_GREEN)
                                         } else {
-                                            ("×", Color32::RED)
+                                            ("×", Color32::DARK_RED)
                                         };
 
                                         ui.label(RichText::new(symbol).color(color).strong());
@@ -608,18 +624,22 @@ impl ChangeControlRulesUI {
                             self.admin_identity.get_or_insert_with(String::new);
                             if let Some(ref mut id_str) = self.admin_identity {
                                 ui.horizontal(|ui| {
+                                    let dark_mode = ui.ctx().style().visuals.dark_mode;
                                     ui.add_sized(
                                         [300.0, 22.0],
-                                        TextEdit::singleline(id_str).hint_text("Enter base58 id"),
+                                        TextEdit::singleline(id_str)
+                                            .hint_text("Enter base58 id")
+                                            .text_color(crate::ui::theme::DashColors::text_primary(dark_mode))
+                                            .background_color(crate::ui::theme::DashColors::input_background(dark_mode)),
                                     );
 
                                     if !id_str.is_empty() {
                                         let is_valid = Identifier::from_string(id_str.as_str(), Encoding::Base58).is_ok();
 
                                         let (symbol, color) = if is_valid {
-                                            ("✔", Color32::GREEN)
+                                            ("✔", Color32::DARK_GREEN)
                                         } else {
-                                            ("×", Color32::RED)
+                                            ("×", Color32::DARK_RED)
                                         };
 
                                         ui.label(RichText::new(symbol).color(color).strong());
@@ -915,6 +935,7 @@ pub struct TokenBuildArgs {
 
     pub distribution_rules: TokenDistributionRules,
     pub groups: BTreeMap<u16, Group>,
+    pub document_schemas: Option<BTreeMap<String, serde_json::Value>>,
 }
 
 pub type TokenSearchable = bool;
@@ -964,6 +985,13 @@ pub struct TokensScreen {
     identity_token_balance_to_remove: Option<IdentityTokenBasicInfo>,
     confirm_remove_token_popup: bool,
     token_to_remove: Option<Identifier>,
+
+    // Reward explanations
+    reward_explanations: IndexMap<IdentityTokenIdentifier, IntervalEvaluationExplanation>,
+    show_explanation_popup: Option<IdentityTokenIdentifier>,
+
+    // Token info popup
+    show_token_info_popup: Option<Identifier>,
 
     // ====================================
     //           Token Creator
@@ -1106,6 +1134,15 @@ pub struct TokensScreen {
 
     pub function_images: BTreeMap<DistributionFunctionUI, ColorImage>,
     pub function_textures: BTreeMap<DistributionFunctionUI, TextureHandle>,
+
+    // Token adding status
+    adding_token_start_time: Option<DateTime<Utc>>,
+    adding_token_name: Option<String>,
+
+    // Document Schemas
+    document_schemas_input: String,
+    parsed_document_schemas: Option<BTreeMap<String, serde_json::Value>>,
+    document_schemas_error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1295,6 +1332,11 @@ impl TokensScreen {
             confirm_remove_token_popup: false,
             token_to_remove: None,
 
+            // Reward explanations
+            reward_explanations: IndexMap::new(),
+            show_explanation_popup: None,
+            show_token_info_popup: None,
+
             // Token Creator
             selected_token_preset: None,
             show_pop_up_info: None,
@@ -1437,6 +1479,15 @@ impl TokensScreen {
             function_images,
             function_textures: BTreeMap::default(),
             should_reset_collapsing_states: false,
+
+            // Token adding status
+            adding_token_start_time: None,
+            adding_token_name: None,
+
+            // Document Schemas
+            document_schemas_input: String::new(),
+            parsed_document_schemas: None,
+            document_schemas_error: None,
         };
 
         if let Ok(saved_ids) = screen.app_context.db.load_token_order() {
@@ -1947,10 +1998,7 @@ impl TokensScreen {
             pre_programmed_distribution: if self.enable_pre_programmed_distribution {
                 let distributions: BTreeMap<u64, BTreeMap<Identifier, u64>> =
                     match self.parse_pre_programmed_distributions() {
-                        Ok(distributions) => distributions
-                            .into_iter()
-                            .map(|(k, v)| (k, std::iter::once(v).collect()))
-                            .collect(),
+                        Ok(distributions) => distributions,
                         Err(err) => {
                             self.token_creator_error_message = Some(err.clone());
                             return Err(err.to_string());
@@ -2001,10 +2049,11 @@ impl TokensScreen {
 
     /// Attempts to parse the `pre_programmed_distributions` into a BTreeMap.
     /// Returns an error string if any row fails.
+    /// Now supports multiple identities per timestamp.
     pub fn parse_pre_programmed_distributions(
         &mut self,
-    ) -> Result<BTreeMap<u64, (Identifier, u64)>, String> {
-        let mut map = BTreeMap::new();
+    ) -> Result<BTreeMap<u64, BTreeMap<Identifier, u64>>, String> {
+        let mut map: BTreeMap<u64, BTreeMap<Identifier, u64>> = BTreeMap::new();
 
         let now = Utc::now();
 
@@ -2034,8 +2083,8 @@ impl TokensScreen {
                 )
             })?;
 
-            // Insert into the map
-            map.insert(timestamp, (id, amount));
+            // Insert into the map, supporting multiple identities per timestamp
+            map.entry(timestamp).or_default().insert(id, amount);
         }
         Ok(map)
     }
@@ -2145,27 +2194,36 @@ impl TokensScreen {
 
         self.show_token_creator_confirmation_popup = false;
         self.token_creator_error_message = None;
+
+        // Reset document schemas
+        self.document_schemas_input = String::new();
+        self.parsed_document_schemas = None;
+        self.document_schemas_error = None;
     }
 
     fn add_token_to_tracked_tokens(&mut self, token_info: TokenInfo) -> Result<AppAction, String> {
-        let contract = self
-            .app_context
-            .get_contract_by_id(&token_info.data_contract_id)
-            .map_err(|e| e.to_string())?
-            .ok_or("Could not find contract")?;
+        // Check if token is already added
+        if self.all_known_tokens.contains_key(&token_info.token_id) {
+            self.backend_message = Some((
+                "Token already in My Tokens".to_string(),
+                MessageType::Error,
+                Utc::now(),
+            ));
+            return Ok(AppAction::None);
+        }
 
-        self.all_known_tokens.insert(
-            token_info.token_id,
-            TokenInfoWithDataContract::from_with_data_contract(
-                token_info.clone(),
-                contract.contract,
-            ),
-        );
+        // Set adding status with timestamp for elapsed time display
+        self.adding_token_start_time = Some(Utc::now());
+        self.adding_token_name = Some(token_info.token_name.clone());
+        self.backend_message = Some(("Adding token...".to_string(), MessageType::Info, Utc::now()));
 
-        self.display_message("Added token", MessageType::Success);
-
+        // Always save the token locally and refresh balances
+        // The contract will be fetched automatically when needed
         Ok(AppAction::BackendTasks(
             vec![
+                BackendTask::ContractTask(Box::new(ContractTask::FetchContracts(vec![
+                    token_info.data_contract_id,
+                ]))),
                 BackendTask::TokenTask(Box::new(TokenTask::SaveTokenLocally(token_info))),
                 BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances)),
             ],
@@ -2503,100 +2561,105 @@ impl ScreenLike for TokensScreen {
 
         // Main panel
         action |= island_central_panel(ctx, |ui| {
-            let mut inner_action = AppAction::None;
+            egui::ScrollArea::vertical()
+                .show(ui, |ui| {
+                    let mut inner_action = AppAction::None;
 
-            if self.app_context.network == Network::Dash {
-                ui.add_space(50.0);
-                ui.vertical_centered(|ui| {
-                    ui.heading(
-                        RichText::new("Tokens not supported on Mainnet yet. Testnet only.")
-                            .strong(),
-                    );
-                });
-                return inner_action;
-            }
-
-            match self.tokens_subscreen {
-                TokensSubscreen::MyTokens => {
-                    inner_action |= self.render_my_tokens_subscreen(ui);
-                }
-                TokensSubscreen::SearchTokens => {
-                    if self.selected_contract_id.is_some() {
-                        inner_action |=
-                            self.render_contract_details(ui, &self.selected_contract_id.unwrap());
-                        // Render the JSON popup if needed
-                        if self.show_json_popup {
-                            self.render_data_contract_json_popup(ui);
-                        }
-                    } else {
-                        inner_action |= self.render_keyword_search(ui);
-                    }
-                }
-                TokensSubscreen::TokenCreator => {
-                    inner_action |= self.render_token_creator(ctx, ui);
-                }
-            }
-
-            // If we are refreshing, show a spinner at the bottom
-            if let RefreshingStatus::Refreshing(start_time) = self.refreshing_status {
-                ui.add_space(5.0);
-                let now = Utc::now().timestamp() as u64;
-                let elapsed = now - start_time;
-                ui.horizontal(|ui| {
-                    ui.add_space(10.0);
-                    ui.label(format!("Refreshing... Time so far: {}", elapsed));
-                    ui.add(egui::widgets::Spinner::default().color(Color32::from_rgb(0, 128, 255)));
-                });
-                ui.add_space(10.0);
-            }
-
-            // If there's a backend message, show it at the bottom
-            if let Some((msg, msg_type, timestamp)) = self.backend_message.clone() {
-                let color = match msg_type {
-                    MessageType::Error => Color32::DARK_RED,
-                    MessageType::Info => Color32::BLACK,
-                    MessageType::Success => Color32::DARK_GREEN,
-                };
-                ui.group(|ui| {
-                    ui.horizontal_wrapped(|ui| {
-                        ui.colored_label(color, &msg);
-                        let now = Utc::now();
-                        let elapsed = now.signed_duration_since(timestamp);
-                        if ui
-                            .button(format!("Dismiss ({})", 10 - elapsed.num_seconds()))
-                            .clicked()
-                        {
-                            self.dismiss_message();
-                        }
-                    });
-                });
-            }
-
-            if self.confirm_remove_identity_token_balance_popup {
-                self.show_remove_identity_token_balance_popup(ui);
-            }
-            if self.confirm_remove_token_popup {
-                self.show_remove_token_popup(ui);
-            }
-
-            // If we have info text, open a pop-up window to show it
-            if let Some(info_text) = self.show_pop_up_info.clone() {
-                egui::Window::new("Distribution Type Info")
-                    .collapsible(false)
-                    .resizable(true)
-                    .show(ui.ctx(), |ui| {
-                        egui::ScrollArea::vertical().show(ui, |ui| {
-                            let mut cache = CommonMarkCache::default();
-                            CommonMarkViewer::new().show(ui, &mut cache, &info_text);
+                    if self.app_context.network == Network::Dash {
+                        ui.add_space(50.0);
+                        ui.vertical_centered(|ui| {
+                            ui.heading(
+                                RichText::new("Tokens not supported on Mainnet yet. Testnet only.")
+                                    .strong(),
+                            );
                         });
+                        return inner_action;
+                    }
 
-                        if ui.button("Close").clicked() {
-                            self.show_pop_up_info = None;
+                    match self.tokens_subscreen {
+                        TokensSubscreen::MyTokens => {
+                            inner_action |= self.render_my_tokens_subscreen(ui);
                         }
-                    });
-            }
+                        TokensSubscreen::SearchTokens => {
+                            if self.selected_contract_id.is_some() {
+                                inner_action |= self.render_contract_details(
+                                    ui,
+                                    &self.selected_contract_id.unwrap(),
+                                );
+                                // Render the JSON popup if needed
+                                if self.show_json_popup {
+                                    self.render_data_contract_json_popup(ui);
+                                }
+                            } else {
+                                inner_action |= self.render_keyword_search(ui);
+                            }
+                        }
+                        TokensSubscreen::TokenCreator => {
+                            inner_action |= self.render_token_creator(ctx, ui);
+                        }
+                    }
 
-            inner_action
+                    // Show either refreshing indicator or message, but not both
+                    if let RefreshingStatus::Refreshing(start_time) = self.refreshing_status {
+                        ui.add_space(25.0); // Space above
+                        let now = Utc::now().timestamp() as u64;
+                        let elapsed = now - start_time;
+                        ui.horizontal(|ui| {
+                            ui.add_space(10.0);
+                            ui.label(format!("Refreshing... Time so far: {}", elapsed));
+                            ui.add(
+                                egui::widgets::Spinner::default()
+                                    .color(Color32::from_rgb(0, 128, 255)),
+                            );
+                        });
+                        ui.add_space(2.0); // Space below
+                    } else if let Some((msg, msg_type, timestamp)) = self.backend_message.clone() {
+                        ui.add_space(25.0); // Same space as refreshing indicator
+                        let color = match msg_type {
+                            MessageType::Error => Color32::DARK_RED,
+                            MessageType::Info => Color32::BLACK,
+                            MessageType::Success => Color32::DARK_GREEN,
+                        };
+                        ui.horizontal(|ui| {
+                            // Calculate remaining seconds
+                            let now = Utc::now();
+                            let elapsed = now.signed_duration_since(timestamp);
+                            let remaining = (10 - elapsed.num_seconds()).max(0);
+
+                            // Add the message with auto-dismiss countdown
+                            let full_msg = format!("{} ({}s)", msg, remaining);
+                            ui.label(egui::RichText::new(full_msg).color(color));
+                        });
+                        ui.add_space(2.0); // Same space below as refreshing indicator
+                    }
+
+                    if self.confirm_remove_identity_token_balance_popup {
+                        self.show_remove_identity_token_balance_popup(ui);
+                    }
+                    if self.confirm_remove_token_popup {
+                        self.show_remove_token_popup(ui);
+                    }
+
+                    // If we have info text, open a pop-up window to show it
+                    if let Some(info_text) = self.show_pop_up_info.clone() {
+                        egui::Window::new("Distribution Type Info")
+                            .collapsible(false)
+                            .resizable(true)
+                            .show(ui.ctx(), |ui| {
+                                egui::ScrollArea::vertical().show(ui, |ui| {
+                                    let mut cache = CommonMarkCache::default();
+                                    CommonMarkViewer::new().show(ui, &mut cache, &info_text);
+                                });
+
+                                if ui.button("Close").clicked() {
+                                    self.show_pop_up_info = None;
+                                }
+                            });
+                    }
+
+                    inner_action
+                })
+                .inner
         });
 
         // Post-processing on user actions
@@ -2606,6 +2669,7 @@ impl ScreenLike for TokensScreen {
             {
                 self.refreshing_status =
                     RefreshingStatus::Refreshing(Utc::now().timestamp() as u64);
+                self.backend_message = None; // Clear any existing message
             }
             AppAction::SetMainScreenThenGoToMainScreen(_) => {
                 self.refreshing_status = RefreshingStatus::NotRefreshing;
@@ -2667,6 +2731,11 @@ impl ScreenLike for TokensScreen {
                     || msg.contains("Failed to get estimated rewards")
                     || msg.eq(NO_IDENTITIES_FOUND)
                 {
+                    // Clear adding status on any error
+                    if msg.contains("Failed") {
+                        self.adding_token_start_time = None;
+                        self.adding_token_name = None;
+                    }
                     self.backend_message = Some((msg.to_string(), msg_type, Utc::now()));
                     self.refreshing_status = RefreshingStatus::NotRefreshing;
                 } else {
@@ -2681,9 +2750,22 @@ impl ScreenLike for TokensScreen {
                 if msg.contains("Error fetching tokens") {
                     self.contract_search_status =
                         ContractSearchStatus::ErrorMessage(msg.to_string());
+                    // Clear adding status on error
+                    self.adding_token_start_time = None;
+                    self.adding_token_name = None;
                     self.backend_message = Some((msg.to_string(), msg_type, Utc::now()));
-                } else if msg.contains("Added token") | msg.contains("Token already added") {
-                    self.backend_message = Some((msg.to_string(), msg_type, Utc::now()));
+                } else if msg.contains("Added token")
+                    | msg.contains("Token already added")
+                    | msg.contains("Saved token to db")
+                {
+                    // Clear adding status and show success message
+                    self.adding_token_start_time = None;
+                    self.adding_token_name = None;
+                    self.backend_message = Some((
+                        "Token added successfully!".to_string(),
+                        MessageType::Success,
+                        Utc::now(),
+                    ));
                 } else {
                     return;
                 }
@@ -2714,14 +2796,16 @@ impl ScreenLike for TokensScreen {
                 self.refreshing_status = RefreshingStatus::NotRefreshing;
                 self.contract_details_loading = false;
             }
-            BackendTaskSuccessResult::TokenEstimatedNonClaimedPerpetualDistributionAmount(
+            BackendTaskSuccessResult::TokenEstimatedNonClaimedPerpetualDistributionAmountWithExplanation(
                 identity_token_id,
                 amount,
+                explanation,
             ) => {
                 self.refreshing_status = RefreshingStatus::NotRefreshing;
                 if let Some(itb) = self.my_tokens.get_mut(&identity_token_id) {
-                    itb.estimated_unclaimed_rewards = Some(amount)
+                    itb.estimated_unclaimed_rewards = Some(amount);
                 }
+                self.reward_explanations.insert(identity_token_id, explanation);
             }
             BackendTaskSuccessResult::TokenPricing { token_id, prices } => {
                 // Store the pricing data
@@ -2729,7 +2813,12 @@ impl ScreenLike for TokensScreen {
                 // Clear loading state
                 self.pricing_loading_state.insert(token_id, false);
                 // Refresh my_tokens to update available actions with new pricing data
-                self.my_tokens = my_tokens(&self.app_context, &self.identities, &self.all_known_tokens, &self.token_pricing_data);
+                self.my_tokens = my_tokens(
+                    &self.app_context,
+                    &self.identities,
+                    &self.all_known_tokens,
+                    &self.token_pricing_data,
+                );
                 // Refresh display
                 self.refreshing_status = RefreshingStatus::NotRefreshing;
             }
@@ -2774,6 +2863,7 @@ mod tests {
 
     use crate::database::Database;
     use crate::model::qualified_identity::encrypted_key_storage::KeyStorage;
+    use crate::model::qualified_identity::IdentityStatus;
 
     use super::*; use dash_sdk::dpp::dashcore::Network;
     use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::TokenConfigurationConvention;
@@ -2836,6 +2926,7 @@ mod tests {
             associated_wallets: BTreeMap::new(),
             wallet_index: None,
             top_ups: BTreeMap::new(),
+            status: IdentityStatus::Active,
         };
 
         token_creator_ui.selected_identity = Some(mock_identity);
@@ -2973,6 +3064,7 @@ mod tests {
                 build_args.main_control_group_change_authorized,
                 build_args.distribution_rules,
                 build_args.groups,
+                build_args.document_schemas,
             )
             .expect("Contract build failed");
 
@@ -3132,6 +3224,7 @@ mod tests {
             associated_wallets: BTreeMap::new(),
             wallet_index: None,
             top_ups: BTreeMap::new(),
+            status: IdentityStatus::Active,
         };
 
         token_creator_ui.selected_identity = Some(mock_identity);
@@ -3183,6 +3276,7 @@ mod tests {
                 build_args.main_control_group_change_authorized,
                 build_args.distribution_rules,
                 build_args.groups,
+                build_args.document_schemas,
             )
             .expect("Should build successfully");
         let contract_v1 = data_contract.as_v1().expect("Expected DataContract::V1");
@@ -3242,6 +3336,7 @@ mod tests {
             associated_wallets: BTreeMap::new(),
             wallet_index: None,
             top_ups: BTreeMap::new(),
+            status: IdentityStatus::Active,
         };
 
         token_creator_ui.selected_identity = Some(mock_identity);

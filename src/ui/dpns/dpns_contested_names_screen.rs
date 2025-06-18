@@ -417,7 +417,9 @@ impl DPNSScreen {
                     });
                     header.col(|ui| {
                         let dark_mode = ui.ctx().style().visuals.dark_mode;
-                        ui.heading(RichText::new("Contestants").color(DashColors::text_primary(dark_mode)));
+                        ui.heading(
+                            RichText::new("Contestants").color(DashColors::text_primary(dark_mode)),
+                        );
                     });
                 })
                 .body(|mut body| {
@@ -477,8 +479,10 @@ impl DPNSScreen {
                                     };
 
                                 let dark_mode = ui.ctx().style().visuals.dark_mode;
-                                let label_response =
-                                    ui.label(RichText::new(used_name).color(DashColors::text_primary(dark_mode)));
+                                let label_response = ui.label(
+                                    RichText::new(used_name)
+                                        .color(DashColors::text_primary(dark_mode)),
+                                );
                                 if let Some(tooltip) = highlighted {
                                     label_response.on_hover_text(tooltip);
                                 }
@@ -595,7 +599,10 @@ impl DPNSScreen {
                                         let iso_date = dt.format("%Y-%m-%d %H:%M:%S");
                                         let relative_time = HumanTime::from(dt).to_string();
                                         let text = format!("{} ({})", iso_date, relative_time);
-                                        ui.label(RichText::new(text).color(DashColors::text_primary(dark_mode)));
+                                        ui.label(
+                                            RichText::new(text)
+                                                .color(DashColors::text_primary(dark_mode)),
+                                        );
                                     } else {
                                         ui.label(
                                             RichText::new("Invalid timestamp")
@@ -603,7 +610,10 @@ impl DPNSScreen {
                                         );
                                     }
                                 } else {
-                                    ui.label(RichText::new("Fetching").color(DashColors::text_primary(dark_mode)));
+                                    ui.label(
+                                        RichText::new("Fetching")
+                                            .color(DashColors::text_primary(dark_mode)),
+                                    );
                                 }
                             });
 
@@ -616,9 +626,15 @@ impl DPNSScreen {
                                     {
                                         let rel_time = HumanTime::from(dt).to_string();
                                         if rel_time.contains("seconds") {
-                                            ui.label(RichText::new("now").color(DashColors::text_primary(dark_mode)));
+                                            ui.label(
+                                                RichText::new("now")
+                                                    .color(DashColors::text_primary(dark_mode)),
+                                            );
                                         } else {
-                                            ui.label(RichText::new(rel_time).color(DashColors::text_primary(dark_mode)));
+                                            ui.label(
+                                                RichText::new(rel_time)
+                                                    .color(DashColors::text_primary(dark_mode)),
+                                            );
                                         }
                                     } else {
                                         ui.label(
@@ -627,7 +643,10 @@ impl DPNSScreen {
                                         );
                                     }
                                 } else {
-                                    ui.label(RichText::new("Fetching").color(DashColors::text_primary(dark_mode)));
+                                    ui.label(
+                                        RichText::new("Fetching")
+                                            .color(DashColors::text_primary(dark_mode)),
+                                    );
                                 }
                             });
 
@@ -746,7 +765,10 @@ impl DPNSScreen {
                                         );
                                     }
                                 } else {
-                                    ui.label(RichText::new("Fetching").color(DashColors::text_primary(dark_mode)));
+                                    ui.label(
+                                        RichText::new("Fetching")
+                                            .color(DashColors::text_primary(dark_mode)),
+                                    );
                                 }
                             });
                             // Last Updated
@@ -758,9 +780,15 @@ impl DPNSScreen {
                                     {
                                         let rel = HumanTime::from(dt).to_string();
                                         if rel.contains("seconds") {
-                                            ui.label(RichText::new("now").color(DashColors::text_primary(dark_mode)));
+                                            ui.label(
+                                                RichText::new("now")
+                                                    .color(DashColors::text_primary(dark_mode)),
+                                            );
                                         } else {
-                                            ui.label(RichText::new(rel).color(DashColors::text_primary(dark_mode)));
+                                            ui.label(
+                                                RichText::new(rel)
+                                                    .color(DashColors::text_primary(dark_mode)),
+                                            );
                                         }
                                     } else {
                                         ui.label(
@@ -769,30 +797,45 @@ impl DPNSScreen {
                                         );
                                     }
                                 } else {
-                                    ui.label(RichText::new("Fetching").color(DashColors::text_primary(dark_mode)));
+                                    ui.label(
+                                        RichText::new("Fetching")
+                                            .color(DashColors::text_primary(dark_mode)),
+                                    );
                                 }
                             });
                             // Awarded To
                             row.col(|ui| {
                                 let dark_mode = ui.ctx().style().visuals.dark_mode;
                                 match contested_name.state {
-                                ContestState::Unknown => {
-                                    ui.label(RichText::new("Fetching").color(DashColors::text_primary(dark_mode)));
-                                }
-                                ContestState::Joinable | ContestState::Ongoing => {
-                                    ui.label(RichText::new("Active").color(DashColors::text_primary(dark_mode)));
-                                }
-                                ContestState::WonBy(identifier) => {
-                                    ui.add(
-                                        egui::Label::new(identifier.to_string(Encoding::Base58))
+                                    ContestState::Unknown => {
+                                        ui.label(
+                                            RichText::new("Fetching")
+                                                .color(DashColors::text_primary(dark_mode)),
+                                        );
+                                    }
+                                    ContestState::Joinable | ContestState::Ongoing => {
+                                        ui.label(
+                                            RichText::new("Active")
+                                                .color(DashColors::text_primary(dark_mode)),
+                                        );
+                                    }
+                                    ContestState::WonBy(identifier) => {
+                                        ui.add(
+                                            egui::Label::new(
+                                                identifier.to_string(Encoding::Base58),
+                                            )
                                             .sense(egui::Sense::hover())
                                             .truncate(),
-                                    );
+                                        );
+                                    }
+                                    ContestState::Locked => {
+                                        ui.label(
+                                            RichText::new("Locked")
+                                                .color(DashColors::text_primary(dark_mode)),
+                                        );
+                                    }
                                 }
-                                ContestState::Locked => {
-                                    ui.label(RichText::new("Locked").color(DashColors::text_primary(dark_mode)));
-                                }
-                            }});
+                            });
                         });
                     }
                 });
@@ -877,7 +920,10 @@ impl DPNSScreen {
                         body.row(25.0, |mut row| {
                             row.col(|ui| {
                                 let dark_mode = ui.ctx().style().visuals.dark_mode;
-                                ui.label(RichText::new(dpns_info.name).color(DashColors::text_primary(dark_mode)));
+                                ui.label(
+                                    RichText::new(dpns_info.name)
+                                        .color(DashColors::text_primary(dark_mode)),
+                                );
                             });
                             row.col(|ui| {
                                 let dark_mode = ui.ctx().style().visuals.dark_mode;
@@ -894,7 +940,9 @@ impl DPNSScreen {
                             .unwrap_or_else(|| "Invalid timestamp".to_string());
                             row.col(|ui| {
                                 let dark_mode = ui.ctx().style().visuals.dark_mode;
-                                ui.label(RichText::new(dt).color(DashColors::text_primary(dark_mode)));
+                                ui.label(
+                                    RichText::new(dt).color(DashColors::text_primary(dark_mode)),
+                                );
                             });
                         });
                     }
@@ -938,11 +986,15 @@ impl DPNSScreen {
                     });
                     header.col(|ui| {
                         let dark_mode = ui.ctx().style().visuals.dark_mode;
-                        ui.heading(RichText::new("Voter").color(DashColors::text_primary(dark_mode)));
+                        ui.heading(
+                            RichText::new("Voter").color(DashColors::text_primary(dark_mode)),
+                        );
                     });
                     header.col(|ui| {
                         let dark_mode = ui.ctx().style().visuals.dark_mode;
-                        ui.heading(RichText::new("Vote Choice").color(DashColors::text_primary(dark_mode)));
+                        ui.heading(
+                            RichText::new("Vote Choice").color(DashColors::text_primary(dark_mode)),
+                        );
                     });
                     header.col(|ui| {
                         if ui.button("Scheduled Time").clicked() {
@@ -951,11 +1003,15 @@ impl DPNSScreen {
                     });
                     header.col(|ui| {
                         let dark_mode = ui.ctx().style().visuals.dark_mode;
-                        ui.heading(RichText::new("Status").color(DashColors::text_primary(dark_mode)));
+                        ui.heading(
+                            RichText::new("Status").color(DashColors::text_primary(dark_mode)),
+                        );
                     });
                     header.col(|ui| {
                         let dark_mode = ui.ctx().style().visuals.dark_mode;
-                        ui.heading(RichText::new("Actions").color(DashColors::text_primary(dark_mode)));
+                        ui.heading(
+                            RichText::new("Actions").color(DashColors::text_primary(dark_mode)),
+                        );
                     });
                 })
                 .body(|mut body| {
@@ -995,10 +1051,14 @@ impl DPNSScreen {
                                         rel_time
                                     };
                                     let text = format!("{} ({})", iso, relative);
-                                    ui.label(RichText::new(text).color(DashColors::text_primary(dark_mode)));
+                                    ui.label(
+                                        RichText::new(text)
+                                            .color(DashColors::text_primary(dark_mode)),
+                                    );
                                 } else {
                                     ui.label(
-                                        RichText::new("Invalid timestamp").color(DashColors::text_primary(dark_mode)),
+                                        RichText::new("Invalid timestamp")
+                                            .color(DashColors::text_primary(dark_mode)),
                                     );
                                 }
                             });
@@ -1006,19 +1066,26 @@ impl DPNSScreen {
                             row.col(|ui| {
                                 let dark_mode = ui.ctx().style().visuals.dark_mode;
                                 match vote.1 {
-                                ScheduledVoteCastingStatus::NotStarted => {
-                                    ui.label(RichText::new("Pending").color(DashColors::text_primary(dark_mode)));
+                                    ScheduledVoteCastingStatus::NotStarted => {
+                                        ui.label(
+                                            RichText::new("Pending")
+                                                .color(DashColors::text_primary(dark_mode)),
+                                        );
+                                    }
+                                    ScheduledVoteCastingStatus::InProgress => {
+                                        ui.label(
+                                            RichText::new("Casting...")
+                                                .color(DashColors::text_primary(dark_mode)),
+                                        );
+                                    }
+                                    ScheduledVoteCastingStatus::Failed => {
+                                        ui.colored_label(Color32::DARK_RED, "Failed");
+                                    }
+                                    ScheduledVoteCastingStatus::Completed => {
+                                        ui.colored_label(Color32::DARK_GREEN, "Casted");
+                                    }
                                 }
-                                ScheduledVoteCastingStatus::InProgress => {
-                                    ui.label(RichText::new("Casting...").color(DashColors::text_primary(dark_mode)));
-                                }
-                                ScheduledVoteCastingStatus::Failed => {
-                                    ui.colored_label(Color32::DARK_RED, "Failed");
-                                }
-                                ScheduledVoteCastingStatus::Completed => {
-                                    ui.colored_label(Color32::DARK_GREEN, "Casted");
-                                }
-                            }});
+                            });
                             // Actions
                             row.col(|ui| {
                                 if ui.button("Remove").clicked() {
@@ -1202,7 +1269,9 @@ impl DPNSScreen {
             // Show which votes were clicked
             ui.group(|ui| {
                 let dark_mode = ui.ctx().style().visuals.dark_mode;
-                ui.heading(RichText::new("Selected Votes:").color(DashColors::text_primary(dark_mode)));
+                ui.heading(
+                    RichText::new("Selected Votes:").color(DashColors::text_primary(dark_mode)),
+                );
                 ui.separator();
                 for sv in &self.selected_votes {
                     // Convert end_time -> readable
@@ -1236,7 +1305,10 @@ impl DPNSScreen {
 
             // Show each identity + let user pick None / Immediate / Scheduled
             let dark_mode = ui.ctx().style().visuals.dark_mode;
-            ui.heading(RichText::new("Select cast method for each node:").color(DashColors::text_primary(dark_mode)));
+            ui.heading(
+                RichText::new("Select cast method for each node:")
+                    .color(DashColors::text_primary(dark_mode)),
+            );
             ui.add_space(10.0);
             ui.group(|ui| {
                 ui.horizontal(|ui| {
@@ -1302,7 +1374,10 @@ impl DPNSScreen {
                     } = self.set_all_option
                     {
                         let dark_mode = ui.ctx().style().visuals.dark_mode;
-                        ui.label(RichText::new("Schedule In:").color(DashColors::text_primary(dark_mode)));
+                        ui.label(
+                            RichText::new("Schedule In:")
+                                .color(DashColors::text_primary(dark_mode)),
+                        );
                         ui.add(egui::DragValue::new(days).prefix("Days: ").range(0..=14));
                         ui.add(egui::DragValue::new(hours).prefix("Hours: ").range(0..=23));
                         ui.add(egui::DragValue::new(minutes).prefix("Min: ").range(0..=59));
@@ -1326,7 +1401,8 @@ impl DPNSScreen {
                             .unwrap_or_else(|| identity.identity.id().to_string(Encoding::Base58));
                         let dark_mode = ui.ctx().style().visuals.dark_mode;
                         ui.label(
-                            RichText::new(format!("Identity: {}", label)).color(DashColors::text_primary(dark_mode)),
+                            RichText::new(format!("Identity: {}", label))
+                                .color(DashColors::text_primary(dark_mode)),
                         );
 
                         // This is a hack
@@ -1400,7 +1476,10 @@ impl DPNSScreen {
                         } = current_option
                         {
                             let dark_mode = ui.ctx().style().visuals.dark_mode;
-                        ui.label(RichText::new("Schedule In:").color(DashColors::text_primary(dark_mode)));
+                            ui.label(
+                                RichText::new("Schedule In:")
+                                    .color(DashColors::text_primary(dark_mode)),
+                            );
                             ui.add(egui::DragValue::new(days).prefix("Days: ").range(0..=14));
                             ui.add(egui::DragValue::new(hours).prefix("Hours: ").range(0..=23));
                             ui.add(egui::DragValue::new(minutes).prefix("Min: ").range(0..=59));
@@ -1452,7 +1531,9 @@ impl DPNSScreen {
             }
             VoteHandlingStatus::SchedulingVotes => {
                 let dark_mode = ui.ctx().style().visuals.dark_mode;
-                ui.label(RichText::new("Scheduling votes...").color(DashColors::text_primary(dark_mode)));
+                ui.label(
+                    RichText::new("Scheduling votes...").color(DashColors::text_primary(dark_mode)),
+                );
             }
             VoteHandlingStatus::Completed => {
                 // handled above
@@ -1567,7 +1648,9 @@ impl DPNSScreen {
                         match message.0 {
                             MessageType::Error => {
                                 let dark_mode = ui.ctx().style().visuals.dark_mode;
-                                ui.heading(RichText::new("❌").color(DashColors::text_primary(dark_mode)));
+                                ui.heading(
+                                    RichText::new("❌").color(DashColors::text_primary(dark_mode)),
+                                );
                                 if message.1.contains("Successes") {
                                     let dark_mode = ui.ctx().style().visuals.dark_mode;
                                     ui.heading(
@@ -1577,16 +1660,22 @@ impl DPNSScreen {
                                 } else {
                                     let dark_mode = ui.ctx().style().visuals.dark_mode;
                                     ui.heading(
-                                        RichText::new("No votes succeeded").color(DashColors::text_primary(dark_mode)),
+                                        RichText::new("No votes succeeded")
+                                            .color(DashColors::text_primary(dark_mode)),
                                     );
                                 }
                                 ui.add_space(10.0);
                                 let dark_mode = ui.ctx().style().visuals.dark_mode;
-                                ui.label(RichText::new(message.1.clone()).color(DashColors::text_primary(dark_mode)));
+                                ui.label(
+                                    RichText::new(message.1.clone())
+                                        .color(DashColors::text_primary(dark_mode)),
+                                );
                             }
                             MessageType::Success => {
                                 let dark_mode = ui.ctx().style().visuals.dark_mode;
-                                ui.heading(RichText::new("🎉").color(DashColors::text_primary(dark_mode)));
+                                ui.heading(
+                                    RichText::new("🎉").color(DashColors::text_primary(dark_mode)),
+                                );
                                 let dark_mode = ui.ctx().style().visuals.dark_mode;
                                 ui.heading(
                                     RichText::new("Successfully casted and scheduled all votes")

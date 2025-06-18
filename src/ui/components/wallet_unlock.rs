@@ -74,7 +74,9 @@ pub trait ScreenWithWalletUnlock {
                             .password(!local_show_password)
                             .hint_text("Enter password")
                             .text_color(crate::ui::theme::DashColors::text_primary(dark_mode))
-                            .background_color(crate::ui::theme::DashColors::input_background(dark_mode)),
+                            .background_color(crate::ui::theme::DashColors::input_background(
+                                dark_mode,
+                            )),
                     );
 
                     // Checkbox to toggle password visibility

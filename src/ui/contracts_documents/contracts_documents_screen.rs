@@ -182,10 +182,12 @@ impl DocumentQueryScreen {
             let text_width = (available - button_width - spacing).max(100.0); // Ensure minimum width
 
             let dark_mode = ui.ctx().style().visuals.dark_mode;
-            ui.add(egui::TextEdit::singleline(&mut self.document_query)
-                .desired_width(text_width)
-                .text_color(crate::ui::theme::DashColors::text_primary(dark_mode))
-                .background_color(crate::ui::theme::DashColors::input_background(dark_mode)));
+            ui.add(
+                egui::TextEdit::singleline(&mut self.document_query)
+                    .desired_width(text_width)
+                    .text_color(crate::ui::theme::DashColors::text_primary(dark_mode))
+                    .background_color(crate::ui::theme::DashColors::input_background(dark_mode)),
+            );
 
             ui.add_space(spacing);
 

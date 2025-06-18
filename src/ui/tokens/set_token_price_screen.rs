@@ -325,8 +325,16 @@ impl SetTokenPriceScreen {
                                                     RichText::new("100").color(Color32::GRAY),
                                                 )
                                                 .desired_width(100.0)
-                                                .text_color(crate::ui::theme::DashColors::text_primary(dark_mode))
-                                                .background_color(crate::ui::theme::DashColors::input_background(dark_mode)),
+                                                .text_color(
+                                                    crate::ui::theme::DashColors::text_primary(
+                                                        dark_mode,
+                                                    ),
+                                                )
+                                                .background_color(
+                                                    crate::ui::theme::DashColors::input_background(
+                                                        dark_mode,
+                                                    ),
+                                                ),
                                         );
                                     }
                                 });
@@ -336,8 +344,14 @@ impl SetTokenPriceScreen {
                                         egui::TextEdit::singleline(price)
                                             .hint_text(RichText::new("50").color(Color32::GRAY))
                                             .desired_width(120.0)
-                                            .text_color(crate::ui::theme::DashColors::text_primary(dark_mode))
-                                            .background_color(crate::ui::theme::DashColors::input_background(dark_mode)),
+                                            .text_color(crate::ui::theme::DashColors::text_primary(
+                                                dark_mode,
+                                            ))
+                                            .background_color(
+                                                crate::ui::theme::DashColors::input_background(
+                                                    dark_mode,
+                                                ),
+                                            ),
                                     );
                                     ui.label(" Dash");
                                 });

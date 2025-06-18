@@ -68,11 +68,13 @@ pub trait ScreenWithWalletUnlock {
                 let wallet_password_mut = self.wallet_password_mut(); // Mutable reference to the password
 
                 ui.horizontal(|ui| {
+                    let dark_mode = ui.ctx().style().visuals.dark_mode;
                     let password_input = ui.add(
                         egui::TextEdit::singleline(wallet_password_mut)
                             .password(!local_show_password)
                             .hint_text("Enter password")
-                            .background_color(crate::ui::theme::DashColors::INPUT_BACKGROUND),
+                            .text_color(crate::ui::theme::DashColors::text_primary(dark_mode))
+                            .background_color(crate::ui::theme::DashColors::input_background(dark_mode)),
                     );
 
                     // Checkbox to toggle password visibility

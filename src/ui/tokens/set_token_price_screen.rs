@@ -318,20 +318,26 @@ impl SetTokenPriceScreen {
                                         ui.label("1");
                                         *amount = "1".to_string(); // Ensure it's always 1
                                     } else {
+                                        let dark_mode = ui.ctx().style().visuals.dark_mode;
                                         ui.add(
                                             egui::TextEdit::singleline(amount)
                                                 .hint_text(
                                                     RichText::new("100").color(Color32::GRAY),
                                                 )
-                                                .desired_width(100.0),
+                                                .desired_width(100.0)
+                                                .text_color(crate::ui::theme::DashColors::text_primary(dark_mode))
+                                                .background_color(crate::ui::theme::DashColors::input_background(dark_mode)),
                                         );
                                     }
                                 });
                                 row.col(|ui| {
+                                    let dark_mode = ui.ctx().style().visuals.dark_mode;
                                     ui.add(
                                         egui::TextEdit::singleline(price)
                                             .hint_text(RichText::new("50").color(Color32::GRAY))
-                                            .desired_width(120.0),
+                                            .desired_width(120.0)
+                                            .text_color(crate::ui::theme::DashColors::text_primary(dark_mode))
+                                            .background_color(crate::ui::theme::DashColors::input_background(dark_mode)),
                                     );
                                     ui.label(" Dash");
                                 });

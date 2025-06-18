@@ -572,9 +572,12 @@ impl NetworkChooserScreen {
         // Add a text field for the dashmate password
         if network == Network::Regtest {
             ui.spacing_mut().item_spacing.x = 5.0;
+            let dark_mode = ui.ctx().style().visuals.dark_mode;
             ui.add(
                 egui::TextEdit::singleline(&mut self.local_network_dashmate_password)
-                    .desired_width(100.0),
+                    .desired_width(100.0)
+                    .text_color(crate::ui::theme::DashColors::text_primary(dark_mode))
+                    .background_color(crate::ui::theme::DashColors::input_background(dark_mode)),
             );
             if ui.button("Save Password").clicked() {
                 // 1) Reload the config

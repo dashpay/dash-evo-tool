@@ -264,7 +264,8 @@ impl DocumentActionScreen {
 
         ui.horizontal(|ui| {
             ui.label("Document ID:");
-            ui.add(styled_text_edit_singleline(&mut self.document_id_input));
+            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            ui.add(styled_text_edit_singleline(&mut self.document_id_input, dark_mode));
         });
 
         ui.add_space(10.0);
@@ -406,7 +407,8 @@ impl DocumentActionScreen {
 
         ui.horizontal(|ui| {
             ui.label("Document ID:");
-            ui.add(styled_text_edit_singleline(&mut self.document_id_input));
+            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            ui.add(styled_text_edit_singleline(&mut self.document_id_input, dark_mode));
         });
 
         // Add fetch button
@@ -467,7 +469,8 @@ impl DocumentActionScreen {
 
         ui.horizontal(|ui| {
             ui.label("Document ID:");
-            ui.add(styled_text_edit_singleline(&mut self.document_id_input));
+            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            ui.add(styled_text_edit_singleline(&mut self.document_id_input, dark_mode));
 
             if ui.button("Fetch").clicked() && !self.document_id_input.is_empty() {
                 if let Ok(doc_id) =
@@ -545,12 +548,14 @@ impl DocumentActionScreen {
 
         ui.horizontal(|ui| {
             ui.label("Document ID:");
-            ui.add(styled_text_edit_singleline(&mut self.document_id_input));
+            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            ui.add(styled_text_edit_singleline(&mut self.document_id_input, dark_mode));
         });
 
         ui.horizontal(|ui| {
             ui.label("Price (credits):");
-            ui.add(styled_text_edit_singleline(&mut self.price_input));
+            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            ui.add(styled_text_edit_singleline(&mut self.price_input, dark_mode));
         });
 
         ui.add_space(10.0);
@@ -566,12 +571,14 @@ impl DocumentActionScreen {
 
         ui.horizontal(|ui| {
             ui.label("Document ID:");
-            ui.add(styled_text_edit_singleline(&mut self.document_id_input));
+            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            ui.add(styled_text_edit_singleline(&mut self.document_id_input, dark_mode));
         });
 
         ui.horizontal(|ui| {
             ui.label("Recipient Identity:");
-            ui.add(styled_text_edit_singleline(&mut self.recipient_id_input));
+            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            ui.add(styled_text_edit_singleline(&mut self.recipient_id_input, dark_mode));
         });
 
         ui.add_space(10.0);
@@ -668,10 +675,12 @@ impl DocumentActionScreen {
                         DocumentPropertyType::Object(_)
                         | DocumentPropertyType::Array(_)
                         | DocumentPropertyType::VariableTypeArray(_) => {
+                            let dark_mode = ui.ctx().style().visuals.dark_mode;
                             ui.add(
                                 egui::TextEdit::multiline(val)
                                     .hint_text("JSON value")
-                                    .background_color(DashColors::INPUT_BACKGROUND),
+                                    .text_color(DashColors::text_primary(dark_mode))
+                                    .background_color(DashColors::input_background(dark_mode)),
                             );
                         }
                     }

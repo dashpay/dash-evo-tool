@@ -179,9 +179,12 @@ impl ImportWalletScreen {
 
                             let mut word = self.seed_phrase_words[i].clone();
 
+                            let dark_mode = ui.ctx().style().visuals.dark_mode;
                             let response = ui.add_sized(
                                 Vec2::new(input_width, 20.0),
-                                egui::TextEdit::singleline(&mut word),
+                                egui::TextEdit::singleline(&mut word)
+                                    .text_color(crate::ui::theme::DashColors::text_primary(dark_mode))
+                                    .background_color(crate::ui::theme::DashColors::input_background(dark_mode)),
                             );
 
                             if response.changed() {

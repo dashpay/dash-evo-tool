@@ -3,11 +3,31 @@ use crate::ui::tokens::tokens_screen::{
     PerpetualDistributionIntervalTypeUI, TokenDistributionRecipientUI, TokensScreen,
 };
 use eframe::epaint::Color32;
-use egui::{ComboBox, Context, Label, RichText, Sense, TextEdit};
+use egui::{ComboBox, Context, RichText, TextEdit};
 
 impl TokensScreen {
     pub(super) fn render_distributions(&mut self, context: &Context, ui: &mut egui::Ui) {
-        ui.collapsing("Distribution", |ui| {
+        ui.add_space(5.0);
+
+        let mut distribution_state =
+            egui::collapsing_header::CollapsingState::load_with_default_open(
+                ui.ctx(),
+                ui.make_persistent_id("token_creator_distribution"),
+                false,
+            );
+
+        // Force close if we need to reset
+        if self.should_reset_collapsing_states {
+            distribution_state.set_open(false);
+        }
+
+        distribution_state.store(ui.ctx());
+
+        distribution_state.show_header(ui, |ui| {
+            ui.label("Distribution");
+        })
+        .body(|ui| {
+            ui.add_space(3.0);
 
             // PERPETUAL DISTRIBUTION SETTINGS
             if ui.checkbox(
@@ -153,8 +173,7 @@ impl TokensScreen {
                             );
                         });
 
-                    let info_icon = Label::new("ℹ").sense(Sense::click());
-                    let response = ui.add(info_icon).on_hover_text("Info about distribution types");
+                    let response = crate::ui::helpers::info_icon_button(ui, "Info about distribution types");
 
                     // Check if the label was clicked
                     if response.clicked() {

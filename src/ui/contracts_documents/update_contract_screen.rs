@@ -154,10 +154,13 @@ impl UpdateDataContractScreen {
         ScrollArea::vertical()
             .max_height(ui.available_height() - 100.0)
             .show(ui, |ui| {
+                let dark_mode = ui.ctx().style().visuals.dark_mode;
                 let response = ui.add(
                     TextEdit::multiline(&mut self.contract_json_input)
                         .desired_rows(6)
                         .desired_width(ui.available_width())
+                        .text_color(crate::ui::theme::DashColors::text_primary(dark_mode))
+                        .background_color(crate::ui::theme::DashColors::input_background(dark_mode))
                         .code_editor(),
                 );
                 if response.changed() {

@@ -139,10 +139,13 @@ impl DocumentVisualizerScreen {
 
     fn show_input(&mut self, ui: &mut Ui) {
         ui.label("Enter hex, base64, or comma-separated integers for Document:");
+        let dark_mode = ui.ctx().style().visuals.dark_mode;
         let resp = ui.add(
             TextEdit::multiline(&mut self.input_data_hex)
                 .desired_rows(4)
                 .desired_width(ui.available_width())
+                .text_color(crate::ui::theme::DashColors::text_primary(dark_mode))
+                .background_color(crate::ui::theme::DashColors::input_background(dark_mode))
                 .code_editor(),
         );
         if resp.changed() {

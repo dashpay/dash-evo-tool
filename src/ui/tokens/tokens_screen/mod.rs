@@ -310,9 +310,13 @@ impl ChangeControlRulesUI {
                             self.authorized_identity.get_or_insert_with(String::new);
                             if let Some(ref mut id_str) = self.authorized_identity {
                                 ui.horizontal(|ui| {
+                                    let dark_mode = ui.ctx().style().visuals.dark_mode;
                                     ui.add_sized(
                                         [300.0, 22.0],
-                                        TextEdit::singleline(id_str).hint_text("Enter base58 id"),
+                                        TextEdit::singleline(id_str)
+                                            .hint_text("Enter base58 id")
+                                            .text_color(crate::ui::theme::DashColors::text_primary(dark_mode))
+                                            .background_color(crate::ui::theme::DashColors::input_background(dark_mode)),
                                     );
 
                                     if !id_str.is_empty() {
@@ -389,9 +393,13 @@ impl ChangeControlRulesUI {
                             self.admin_identity.get_or_insert_with(String::new);
                             if let Some(ref mut id_str) = self.admin_identity {
                                 ui.horizontal(|ui| {
+                                    let dark_mode = ui.ctx().style().visuals.dark_mode;
                                     ui.add_sized(
                                         [300.0, 22.0],
-                                        TextEdit::singleline(id_str).hint_text("Enter base58 id"),
+                                        TextEdit::singleline(id_str)
+                                            .hint_text("Enter base58 id")
+                                            .text_color(crate::ui::theme::DashColors::text_primary(dark_mode))
+                                            .background_color(crate::ui::theme::DashColors::input_background(dark_mode)),
                                     );
 
                                     if !id_str.is_empty() {
@@ -533,9 +541,13 @@ impl ChangeControlRulesUI {
                             self.authorized_identity.get_or_insert_with(String::new);
                             if let Some(ref mut id_str) = self.authorized_identity {
                                 ui.horizontal(|ui| {
+                                    let dark_mode = ui.ctx().style().visuals.dark_mode;
                                     ui.add_sized(
                                         [300.0, 22.0],
-                                        TextEdit::singleline(id_str).hint_text("Enter base58 id"),
+                                        TextEdit::singleline(id_str)
+                                            .hint_text("Enter base58 id")
+                                            .text_color(crate::ui::theme::DashColors::text_primary(dark_mode))
+                                            .background_color(crate::ui::theme::DashColors::input_background(dark_mode)),
                                     );
 
                                     if !id_str.is_empty() {
@@ -612,9 +624,13 @@ impl ChangeControlRulesUI {
                             self.admin_identity.get_or_insert_with(String::new);
                             if let Some(ref mut id_str) = self.admin_identity {
                                 ui.horizontal(|ui| {
+                                    let dark_mode = ui.ctx().style().visuals.dark_mode;
                                     ui.add_sized(
                                         [300.0, 22.0],
-                                        TextEdit::singleline(id_str).hint_text("Enter base58 id"),
+                                        TextEdit::singleline(id_str)
+                                            .hint_text("Enter base58 id")
+                                            .text_color(crate::ui::theme::DashColors::text_primary(dark_mode))
+                                            .background_color(crate::ui::theme::DashColors::input_background(dark_mode)),
                                     );
 
                                     if !id_str.is_empty() {

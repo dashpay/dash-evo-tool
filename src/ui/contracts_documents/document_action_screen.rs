@@ -264,7 +264,11 @@ impl DocumentActionScreen {
 
         ui.horizontal(|ui| {
             ui.label("Document ID:");
-            ui.add(styled_text_edit_singleline(&mut self.document_id_input));
+            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            ui.add(styled_text_edit_singleline(
+                &mut self.document_id_input,
+                dark_mode,
+            ));
         });
 
         ui.add_space(10.0);
@@ -406,7 +410,11 @@ impl DocumentActionScreen {
 
         ui.horizontal(|ui| {
             ui.label("Document ID:");
-            ui.add(styled_text_edit_singleline(&mut self.document_id_input));
+            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            ui.add(styled_text_edit_singleline(
+                &mut self.document_id_input,
+                dark_mode,
+            ));
         });
 
         // Add fetch button
@@ -467,7 +475,11 @@ impl DocumentActionScreen {
 
         ui.horizontal(|ui| {
             ui.label("Document ID:");
-            ui.add(styled_text_edit_singleline(&mut self.document_id_input));
+            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            ui.add(styled_text_edit_singleline(
+                &mut self.document_id_input,
+                dark_mode,
+            ));
 
             if ui.button("Fetch").clicked() && !self.document_id_input.is_empty() {
                 if let Ok(doc_id) =
@@ -545,12 +557,20 @@ impl DocumentActionScreen {
 
         ui.horizontal(|ui| {
             ui.label("Document ID:");
-            ui.add(styled_text_edit_singleline(&mut self.document_id_input));
+            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            ui.add(styled_text_edit_singleline(
+                &mut self.document_id_input,
+                dark_mode,
+            ));
         });
 
         ui.horizontal(|ui| {
             ui.label("Price (credits):");
-            ui.add(styled_text_edit_singleline(&mut self.price_input));
+            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            ui.add(styled_text_edit_singleline(
+                &mut self.price_input,
+                dark_mode,
+            ));
         });
 
         ui.add_space(10.0);
@@ -566,12 +586,20 @@ impl DocumentActionScreen {
 
         ui.horizontal(|ui| {
             ui.label("Document ID:");
-            ui.add(styled_text_edit_singleline(&mut self.document_id_input));
+            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            ui.add(styled_text_edit_singleline(
+                &mut self.document_id_input,
+                dark_mode,
+            ));
         });
 
         ui.horizontal(|ui| {
             ui.label("Recipient Identity:");
-            ui.add(styled_text_edit_singleline(&mut self.recipient_id_input));
+            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            ui.add(styled_text_edit_singleline(
+                &mut self.recipient_id_input,
+                dark_mode,
+            ));
         });
 
         ui.add_space(10.0);
@@ -611,23 +639,29 @@ impl DocumentActionScreen {
                         | DocumentPropertyType::I16
                         | DocumentPropertyType::U8
                         | DocumentPropertyType::I8 => {
+                            let dark_mode = ui.ctx().style().visuals.dark_mode;
                             ui.add(
                                 egui::TextEdit::singleline(val)
                                     .hint_text("integer")
-                                    .background_color(DashColors::INPUT_BACKGROUND),
+                                    .text_color(DashColors::text_primary(dark_mode))
+                                    .background_color(DashColors::input_background(dark_mode)),
                             );
                         }
                         DocumentPropertyType::F64 => {
+                            let dark_mode = ui.ctx().style().visuals.dark_mode;
                             ui.add(
                                 egui::TextEdit::singleline(val)
                                     .hint_text("floating-point")
-                                    .background_color(DashColors::INPUT_BACKGROUND),
+                                    .text_color(DashColors::text_primary(dark_mode))
+                                    .background_color(DashColors::input_background(dark_mode)),
                             );
                         }
                         DocumentPropertyType::String(size) => {
+                            let dark_mode = ui.ctx().style().visuals.dark_mode;
                             ui.add({
                                 let text_edit = egui::TextEdit::singleline(val)
-                                    .background_color(DashColors::INPUT_BACKGROUND);
+                                    .text_color(DashColors::text_primary(dark_mode))
+                                    .background_color(DashColors::input_background(dark_mode));
                                 if let Some(max_length) = size.max_length {
                                     text_edit.hint_text(format!("max {}", max_length).as_str())
                                 } else {
@@ -636,17 +670,21 @@ impl DocumentActionScreen {
                             });
                         }
                         DocumentPropertyType::ByteArray(_size) => {
+                            let dark_mode = ui.ctx().style().visuals.dark_mode;
                             ui.add(
                                 egui::TextEdit::singleline(val)
                                     .hint_text("hex or base64")
-                                    .background_color(DashColors::INPUT_BACKGROUND),
+                                    .text_color(DashColors::text_primary(dark_mode))
+                                    .background_color(DashColors::input_background(dark_mode)),
                             );
                         }
                         DocumentPropertyType::Identifier => {
+                            let dark_mode = ui.ctx().style().visuals.dark_mode;
                             ui.add(
                                 egui::TextEdit::singleline(val)
                                     .hint_text("base58 identifier")
-                                    .background_color(DashColors::INPUT_BACKGROUND),
+                                    .text_color(DashColors::text_primary(dark_mode))
+                                    .background_color(DashColors::input_background(dark_mode)),
                             );
                         }
                         DocumentPropertyType::Boolean => {
@@ -659,19 +697,23 @@ impl DocumentActionScreen {
                             }
                         }
                         DocumentPropertyType::Date => {
+                            let dark_mode = ui.ctx().style().visuals.dark_mode;
                             ui.add(
                                 egui::TextEdit::singleline(val)
                                     .hint_text("unix-ms")
-                                    .background_color(DashColors::INPUT_BACKGROUND),
+                                    .text_color(DashColors::text_primary(dark_mode))
+                                    .background_color(DashColors::input_background(dark_mode)),
                             );
                         }
                         DocumentPropertyType::Object(_)
                         | DocumentPropertyType::Array(_)
                         | DocumentPropertyType::VariableTypeArray(_) => {
+                            let dark_mode = ui.ctx().style().visuals.dark_mode;
                             ui.add(
                                 egui::TextEdit::multiline(val)
                                     .hint_text("JSON value")
-                                    .background_color(DashColors::INPUT_BACKGROUND),
+                                    .text_color(DashColors::text_primary(dark_mode))
+                                    .background_color(DashColors::input_background(dark_mode)),
                             );
                         }
                     }

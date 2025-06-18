@@ -225,6 +225,7 @@ impl IdentitiesScreen {
         let text_edit = egui::TextEdit::singleline(&mut alias)
             .hint_text(placeholder_text)
             .desired_width(100.0)
+            .text_color(crate::ui::theme::DashColors::text_primary(dark_mode))
             .background_color(crate::ui::theme::DashColors::input_background(dark_mode));
 
         if ui.add(text_edit).changed() {

@@ -40,6 +40,13 @@ impl AppContext {
         public_key_to_add
             .identity_public_key
             .set_id(qualified_identity.identity.get_public_key_max_id() + 1);
+        qualified_identity.private_keys.insert_non_encrypted(
+            (
+                PrivateKeyOnMainIdentity,
+                public_key_to_add.identity_public_key.id(),
+            ),
+            (public_key_to_add.clone(), private_key),
+        );
         let state_transition = IdentityUpdateTransition::try_from_identity_with_signer(
             &qualified_identity.identity,
             &master_key_id,

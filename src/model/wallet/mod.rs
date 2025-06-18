@@ -1,10 +1,7 @@
 mod asset_lock_transaction;
 pub mod encryption;
-pub mod kms;
 mod utxos;
 
-use bincode::enc::Encoder;
-use bincode::{Decode, Encode};
 use dash_sdk::dashcore_rpc::dashcore::bip32::{ChildNumber, ExtendedPubKey, KeyDerivationType};
 
 use dash_sdk::dpp::dashcore::bip32::DerivationPath;
@@ -73,7 +70,7 @@ use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::prelude::AssetLockProof;
 use dash_sdk::platform::Identity;
-use zeroize::{Zeroize, ZeroizeOnDrop};
+use zeroize::Zeroize;
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
@@ -151,29 +148,7 @@ pub enum WalletSeed {
     Open(OpenWalletSeed),
     Closed(ClosedWalletSeed),
 }
-impl Encode for WalletSeed {
-    fn encode<E: Encoder>(&self, encoder: &mut E) -> Result<(), bincode::error::EncodeError> {
-        match self {
-            WalletSeed::Open(_) => {
-                // close seed and recurse to encode as a closed seed
-                let mut closed_seed = self.clone();
-                closed_seed.close();
-                closed_seed.encode(encoder)
-            }
-            WalletSeed::Closed(closed_seed) => closed_seed.encode(encoder),
-        }
-    }
-}
-impl Decode for WalletSeed {
-    fn decode<D: bincode::de::Decoder>(
-        decoder: &mut D,
-    ) -> Result<Self, bincode::error::DecodeError> {
-        let closed_seed = ClosedWalletSeed::decode(decoder)?;
-        Ok(WalletSeed::Closed(closed_seed))
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Zeroize, ZeroizeOnDrop)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct OpenKeyItem<const N: usize> {
     pub seed: [u8; N],
     pub wallet_info: ClosedKeyItem,
@@ -182,7 +157,7 @@ pub struct OpenKeyItem<const N: usize> {
 // Type alias for OpenWalletSeed with a fixed seed size of 64 bytes
 pub type OpenWalletSeed = OpenKeyItem<64>;
 
-#[derive(Debug, Clone, PartialEq, Encode, Decode, Zeroize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ClosedKeyItem {
     pub seed_hash: WalletSeedHash, // SHA-256 hash of the seed
     pub encrypted_seed: Vec<u8>,
@@ -345,6 +320,27 @@ impl Wallet {
         }
         // Return None if no wallet with the matching seed hash is found
         None
+    }
+
+    pub fn derive_private_key_in_arc_rw_lock_slice(
+        slice: &[Arc<RwLock<Wallet>>],
+        wallet_seed_hash: WalletSeedHash,
+        derivation_path: &DerivationPath,
+    ) -> Result<Option<[u8; 32]>, String> {
+        for wallet in slice {
+            // Attempt to read the wallet from the RwLock
+            let wallet_ref = wallet.read().unwrap();
+            // Check if this wallet's seed hash matches the target hash
+            if wallet_ref.seed_hash() == wallet_seed_hash {
+                // Attempt to derive the private key using the provided derivation path
+                let extended_private_key = derivation_path
+                    .derive_priv_ecdsa_for_master_seed(wallet_ref.seed_bytes()?, Network::Dash)
+                    .map_err(|e| e.to_string())?;
+                return Ok(Some(extended_private_key.private_key.secret_bytes()));
+            }
+        }
+        // Return None if no wallet with the matching seed hash is found
+        Ok(None)
     }
 
     pub fn private_key_at_derivation_path(

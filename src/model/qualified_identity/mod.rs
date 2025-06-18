@@ -28,7 +28,6 @@ use egui::Color32;
 use std::collections::{BTreeMap, HashSet};
 use std::fmt::{Display, Formatter};
 use std::sync::{Arc, RwLock};
-use zeroize::Zeroize;
 
 #[derive(Debug, Encode, Decode, PartialEq, Clone, Copy)]
 pub enum IdentityType {
@@ -66,7 +65,7 @@ impl Display for IdentityType {
     }
 }
 
-#[derive(Debug, Encode, Decode, Clone, Hash, Ord, PartialOrd, Eq, PartialEq, Zeroize)]
+#[derive(Debug, Encode, Decode, Clone, Hash, Ord, PartialOrd, Eq, PartialEq)]
 #[allow(clippy::enum_variant_names)]
 pub enum PrivateKeyTarget {
     PrivateKeyOnMainIdentity,
@@ -216,6 +215,7 @@ pub struct QualifiedIdentity {
     pub associated_owner_key_id: Option<KeyID>,
     pub identity_type: IdentityType,
     pub alias: Option<String>,
+    pub private_keys: KeyStorage,
     pub dpns_names: Vec<DPNSNameInfo>,
     pub associated_wallets: BTreeMap<WalletSeedHash, Arc<RwLock<Wallet>>>,
     /// The index used to register the identity
@@ -233,6 +233,7 @@ impl PartialEq for QualifiedIdentity {
             && self.identity_type == other.identity_type
             && self.wallet_index == other.wallet_index
             && self.alias == other.alias
+            && self.private_keys == other.private_keys
             && self.dpns_names == other.dpns_names
         // `associated_wallets` is ignored in this comparison
     }
@@ -250,6 +251,7 @@ impl Encode for QualifiedIdentity {
         self.associated_owner_key_id.encode(encoder)?;
         self.identity_type.encode(encoder)?;
         self.alias.encode(encoder)?;
+        self.private_keys.encode(encoder)?;
         self.dpns_names.encode(encoder)?;
         // `decrypted_wallets` is skipped
 
@@ -289,10 +291,17 @@ impl Signer for QualifiedIdentity {
     ) -> Result<BinaryData, ProtocolError> {
         let (_, private_key) = self
             .private_keys
-            .get_resolve(&(
-                identity_public_key.purpose().into(),
-                identity_public_key.id(),
-            ))
+            .get_resolve(
+                &(
+                    identity_public_key.purpose().into(),
+                    identity_public_key.id(),
+                ),
+                self.associated_wallets
+                    .values()
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .as_slice(),
+            )
             .map_err(ProtocolError::Generic)?
             .ok_or(ProtocolError::Generic(format!(
                 "Key {} ({}) not found in identity {:?}",
@@ -561,6 +570,7 @@ impl From<Identity> for QualifiedIdentity {
             associated_owner_key_id: None,
             identity_type: IdentityType::User,
             alias: None,
+            private_keys: Default::default(),
             dpns_names: vec![],
             associated_wallets: BTreeMap::new(),
             wallet_index: None,

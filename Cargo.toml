@@ -53,7 +53,7 @@ crossbeam-channel = "0.5.15"
 regex = "1.11.1"
 humantime = "2.2.0"
 which = { version = "7.0.3" }
-tz-rs = { version = "0.7.0"}
+tz-rs = { version = "0.7.0" }
 
 [target.'cfg(not(target_os = "windows"))'.dependencies]
 zmq = "0.10.0"
@@ -68,3 +68,6 @@ raw-cpuid = "11.5.0"
 [dev-dependencies]
 
 tempfile = { version = "3.20.0" }
+
+[workspace]
+members = [".", "dash-platform-wallet"]

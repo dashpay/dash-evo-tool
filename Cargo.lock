@@ -1566,6 +1566,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "dash-platform-wallet"
+version = "0.1.0"
+dependencies = [
+ "argon2",
+ "dash-sdk",
+ "rand 0.9.1",
+ "rand_chacha 0.9.0",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.12",
+ "zeroize",
+]
+
+[[package]]
 name = "dash-sdk"
 version = "2.0.0-rc.16"
 source = "git+https://github.com/dashpay/platform?rev=5b8b29df2d0f58f52ae75b8d0672378df4b9e154#5b8b29df2d0f58f52ae75b8d0672378df4b9e154"

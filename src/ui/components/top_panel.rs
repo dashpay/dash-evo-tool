@@ -181,15 +181,44 @@ pub fn add_top_panel(
     right_buttons: Vec<(&str, DesiredAppAction)>,
 ) -> AppAction {
     let mut action = AppAction::None;
-    let network_accent = match app_context.network {
-        Network::Dash => DashColors::DASH_BLUE,
-        Network::Testnet => Color32::from_rgb(255, 165, 0),
-        Network::Devnet => Color32::DARK_RED,
-        Network::Regtest => Color32::from_rgb(139, 69, 19),
-        _ => DashColors::DASH_BLUE,
-    };
-
     let dark_mode = ctx.style().visuals.dark_mode;
+    let network_accent = match app_context.network {
+        Network::Dash => {
+            if dark_mode {
+                Color32::from_rgb(0, 113, 182) // Muted blue for dark mode (20% darker)
+            } else {
+                DashColors::DASH_BLUE // Original: rgb(0, 141, 228)
+            }
+        }
+        Network::Testnet => {
+            if dark_mode {
+                Color32::from_rgb(204, 132, 0) // Muted orange for dark mode
+            } else {
+                Color32::from_rgb(255, 165, 0) // Original bright orange for light mode
+            }
+        }
+        Network::Devnet => {
+            if dark_mode {
+                Color32::from_rgb(111, 0, 0) // Muted dark red for dark mode (20% darker)
+            } else {
+                Color32::DARK_RED // Original: rgb(139, 0, 0)
+            }
+        }
+        Network::Regtest => {
+            if dark_mode {
+                Color32::from_rgb(111, 55, 15) // Muted brown for dark mode (20% darker)
+            } else {
+                Color32::from_rgb(139, 69, 19) // Original brown
+            }
+        }
+        _ => {
+            if dark_mode {
+                Color32::from_rgb(0, 113, 182) // Muted blue for dark mode
+            } else {
+                DashColors::DASH_BLUE
+            }
+        }
+    };
 
     TopBottomPanel::top("top_panel")
         .frame(

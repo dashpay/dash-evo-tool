@@ -389,6 +389,8 @@ impl IdentitiesScreen {
     }
 
     fn render_no_identities_view(&self, ui: &mut Ui) {
+        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        
         // Optionally put everything in a framed "card"-like container
         Frame::group(ui.style())
             .fill(ui.visuals().extreme_bg_color) // background color
@@ -403,7 +405,7 @@ impl IdentitiesScreen {
                         RichText::new("No Identities Loaded")
                             .strong()
                             .size(25.0)
-                            .color(Color32::BLACK),
+                            .color(crate::ui::theme::DashColors::text_primary(dark_mode)),
                     );
 
                     // A separator line for visual clarity
@@ -424,7 +426,7 @@ impl IdentitiesScreen {
                         RichText::new("Here’s what you can do:")
                             .strong()
                             .size(18.0)
-                            .color(Color32::BLACK),
+                            .color(crate::ui::theme::DashColors::text_primary(dark_mode)),
                     );
                     ui.add_space(5.0);
 

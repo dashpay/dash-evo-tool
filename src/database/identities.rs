@@ -156,9 +156,9 @@ impl Database {
 
         let conn = self.conn.lock().unwrap();
 
-        // Prepare the main statement to select identities, including wallet_index
+        // Prepare the main statement to select identities, including wallet_index and wallet
         let mut stmt = conn.prepare(
-            "SELECT data, alias, wallet_index, status FROM identity WHERE is_local = 1 AND network = ? AND data IS NOT NULL",
+            "SELECT data, alias, wallet_index, status, wallet FROM identity WHERE is_local = 1 AND network = ? AND data IS NOT NULL",
         )?;
 
         // Prepare the statement to select top-ups (will be used multiple times)
@@ -171,6 +171,7 @@ impl Database {
             let alias: Option<String> = row.get(1)?;
             let wallet_index: Option<u32> = row.get(2)?;
             let status: u8 = row.get(3)?;
+            let wallet_seed_hash: Option<WalletSeedHash> = row.get(4)?;
 
             let mut identity: QualifiedIdentity = QualifiedIdentity::from_bytes(&data);
             identity.alias = alias;
@@ -178,8 +179,18 @@ impl Database {
 
             identity.status = IdentityStatus::from_u8(status);
 
-            // Associate wallets
-            identity.associated_wallets = wallets.clone(); //todo: use less wallets
+            // Associate only the wallet that owns this identity
+            identity.associated_wallets = if let Some(seed_hash) = wallet_seed_hash {
+                if let Some(wallet) = wallets.get(&seed_hash) {
+                    let mut associated = BTreeMap::new();
+                    associated.insert(seed_hash, wallet.clone());
+                    associated
+                } else {
+                    BTreeMap::new()
+                }
+            } else {
+                BTreeMap::new()
+            };
 
             // Retrieve the identity_id as bytes
             let identity_id = identity.identity.id().to_buffer();
@@ -214,9 +225,9 @@ impl Database {
 
         let conn = self.conn.lock().unwrap();
 
-        // Prepare the main statement to select identities, including wallet_index
+        // Prepare the main statement to select identities, including wallet_index and wallet
         let mut stmt = conn.prepare(
-            "SELECT data, alias, wallet_index FROM identity WHERE is_local = 1 AND network = ? AND data IS NOT NULL AND wallet_index IS NOT NULL",
+            "SELECT data, alias, wallet_index, wallet FROM identity WHERE is_local = 1 AND network = ? AND data IS NOT NULL AND wallet_index IS NOT NULL",
         )?;
 
         // Prepare the statement to select top-ups (will be used multiple times)
@@ -228,13 +239,24 @@ impl Database {
             let data: Vec<u8> = row.get(0)?;
             let alias: Option<String> = row.get(1)?;
             let wallet_index: Option<u32> = row.get(2)?;
+            let wallet_seed_hash: Option<WalletSeedHash> = row.get(3)?;
 
             let mut identity: QualifiedIdentity = QualifiedIdentity::from_bytes(&data);
             identity.alias = alias;
             identity.wallet_index = wallet_index;
 
-            // Associate wallets
-            identity.associated_wallets = wallets.clone(); //todo: use less wallets
+            // Associate only the wallet that owns this identity
+            identity.associated_wallets = if let Some(seed_hash) = wallet_seed_hash {
+                if let Some(wallet) = wallets.get(&seed_hash) {
+                    let mut associated = BTreeMap::new();
+                    associated.insert(seed_hash, wallet.clone());
+                    associated
+                } else {
+                    BTreeMap::new()
+                }
+            } else {
+                BTreeMap::new()
+            };
 
             // Retrieve the identity_id as bytes
             let identity_id = identity.identity.id().to_buffer();
@@ -269,9 +291,9 @@ impl Database {
 
         let conn = self.conn.lock().unwrap();
 
-        // Prepare the main statement to select identities, including wallet_index
+        // Prepare the main statement to select identities, including wallet_index and wallet
         let mut stmt = conn.prepare(
-            "SELECT data, alias, wallet_index FROM identity WHERE id = ? AND is_local = 1 AND network = ? AND data IS NOT NULL",
+            "SELECT data, alias, wallet_index, wallet FROM identity WHERE id = ? AND is_local = 1 AND network = ? AND data IS NOT NULL",
         )?;
 
         // Prepare the statement to select top-ups (will be used multiple times)
@@ -283,13 +305,24 @@ impl Database {
             let data: Vec<u8> = row.get(0)?;
             let alias: Option<String> = row.get(1)?;
             let wallet_index: Option<u32> = row.get(2)?;
+            let wallet_seed_hash: Option<WalletSeedHash> = row.get(3)?;
 
             let mut identity: QualifiedIdentity = QualifiedIdentity::from_bytes(&data);
             identity.alias = alias;
             identity.wallet_index = wallet_index;
 
-            // Associate wallets
-            identity.associated_wallets = wallets.clone(); //todo: use less wallets
+            // Associate only the wallet that owns this identity
+            identity.associated_wallets = if let Some(seed_hash) = wallet_seed_hash {
+                if let Some(wallet) = wallets.get(&seed_hash) {
+                    let mut associated = BTreeMap::new();
+                    associated.insert(seed_hash, wallet.clone());
+                    associated
+                } else {
+                    BTreeMap::new()
+                }
+            } else {
+                BTreeMap::new()
+            };
 
             // Retrieve the identity_id as bytes
             let identity_id = identity.identity.id().to_buffer();

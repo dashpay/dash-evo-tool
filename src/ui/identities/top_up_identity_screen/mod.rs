@@ -48,6 +48,7 @@ pub struct TopUpIdentityScreen {
 
 impl TopUpIdentityScreen {
     pub fn new(qualified_identity: QualifiedIdentity, app_context: &Arc<AppContext>) -> Self {
+        // Use the wallet from identity's associated_wallets since it now contains the correct wallet reference
         let selected_wallet = qualified_identity
             .associated_wallets
             .first_key_value()
@@ -101,7 +102,7 @@ impl TopUpIdentityScreen {
                                 .is_some_and(|selected| Arc::ptr_eq(selected, wallet));
 
                             if ui.selectable_label(is_selected, wallet_alias).clicked() {
-                                // Update the selected wallet
+                                // Update the selected wallet from app_context
                                 self.wallet = Some(wallet.clone());
                             }
                         }
@@ -109,7 +110,7 @@ impl TopUpIdentityScreen {
                 true
             } else if let Some(wallet) = wallets.values().next() {
                 if self.wallet.is_none() {
-                    // Automatically select the only available wallet
+                    // Automatically select the only available wallet from app_context
                     self.wallet = Some(wallet.clone());
                 }
                 false
@@ -285,7 +286,7 @@ impl TopUpIdentityScreen {
             if *funding_method == FundingMethod::UseWalletBalance {
                 // Safely access the selected wallet
                 if let Some(wallet) = &self.wallet {
-                    let wallet = wallet.read().unwrap(); // Read lock on the wallet
+                    let wallet = wallet.read().unwrap();
                     if ui.button("Max").clicked() {
                         let max_amount = wallet.max_balance();
                         self.funding_amount = format!("{:.4}", max_amount as f64 * 1e-8);

@@ -75,7 +75,7 @@ impl TopUpIdentityScreen {
             let wallets = self.app_context.wallets.read().unwrap();
             if wallets.len() > 1 {
                 // Get the current funding method
-                let funding_method = self.funding_method.read().unwrap().clone();
+                let funding_method = *self.funding_method.read().unwrap();
 
                 // Retrieve the alias of the currently selected wallet, if any
                 let selected_wallet_alias = self
@@ -124,7 +124,7 @@ impl TopUpIdentityScreen {
             } else if let Some(wallet) = wallets.values().next() {
                 if self.wallet.is_none() {
                     // Get the current funding method
-                    let funding_method = self.funding_method.read().unwrap().clone();
+                    let funding_method = *self.funding_method.read().unwrap();
 
                     // Check if the wallet has the required resources
                     let has_required_resources = {

@@ -390,7 +390,7 @@ impl IdentitiesScreen {
 
     fn render_no_identities_view(&self, ui: &mut Ui) {
         let dark_mode = ui.ctx().style().visuals.dark_mode;
-        
+
         // Optionally put everything in a framed "card"-like container
         Frame::group(ui.style())
             .fill(ui.visuals().extreme_bg_color) // background color

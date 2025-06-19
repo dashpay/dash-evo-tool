@@ -363,7 +363,7 @@ impl TokensScreen {
 
 
                         if shows_estimation_column {
-                            table = table.column(Column::initial(60.0).resizable(true)); // Estimated Rewards
+                            table = table.column(Column::initial(85.0).resizable(true)); // Estimated Rewards
                         }
 
                         table = table.column(Column::initial(200.0).resizable(true));// Actions
@@ -394,7 +394,7 @@ impl TokensScreen {
                         })
                             .body(|mut body| {
                                 for itb in &detail_list {
-                                    body.row(25.0, |mut row| {
+                                    body.row(30.0, |mut row| {
                                         row.col(|ui| {
                                             // Show identity alias or ID
                                             if let Some(alias) = self
@@ -444,7 +444,7 @@ impl TokensScreen {
                                                                 ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
                                                                     ui.add_space(-9.0);
                                                                     ui.horizontal(|ui| {
-                                                                        if StyledButton::primary("Estimate").show(ui).clicked() {
+                                                                        if ui.button("Estimate").clicked() {
                                                                             action = AppAction::BackendTask(BackendTask::TokenTask(Box::new(TokenTask::EstimatePerpetualTokenRewardsWithExplanation {
                                                                                 identity_id: itb.identity_id,
                                                                                 token_id: itb.token_id,
@@ -454,7 +454,10 @@ impl TokensScreen {
                                                                     })
                                                                 });
                                                             });
-                                                        } else if StyledButton::primary("Estimate").show(ui).clicked() {
+                                                        } else if ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                                                            ui.add_space(-3.0);
+                                                            ui.button("Estimate").clicked()
+                                                        }).inner {
                                                             action = AppAction::BackendTask(BackendTask::TokenTask(Box::new(TokenTask::EstimatePerpetualTokenRewardsWithExplanation {
                                                                 identity_id: itb.identity_id,
                                                                 token_id: itb.token_id,

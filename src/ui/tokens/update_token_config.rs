@@ -827,9 +827,15 @@ impl UpdateTokenConfigScreen {
                 authorized_identity_input.get_or_insert_with(String::new);
                 if let Some(ref mut id_str) = authorized_identity_input {
                     ui.horizontal(|ui| {
+                        let dark_mode = ui.ctx().style().visuals.dark_mode;
                         ui.add_sized(
                             [300.0, 22.0],
-                            egui::TextEdit::singleline(id_str).hint_text("Enter base58 identity"),
+                            egui::TextEdit::singleline(id_str)
+                                .hint_text("Enter base58 identity")
+                                .text_color(crate::ui::theme::DashColors::text_primary(dark_mode))
+                                .background_color(crate::ui::theme::DashColors::input_background(
+                                    dark_mode,
+                                )),
                         );
 
                         if !id_str.is_empty() {

@@ -1010,10 +1010,8 @@ impl ScreenLike for AddNewIdentityScreen {
                     }
 
 
-                    // Create a label with click sense and tooltip
-                    let info_icon = egui::Label::new("ℹ").sense(egui::Sense::click());
-                    let response = ui.add(info_icon)
-                        .on_hover_text("The identity index is an internal reference within the wallet. The wallet’s seed phrase can always be used to recover any identity, including this one, by using the same index.");
+                    // Create info icon button with tooltip
+                    let response = crate::ui::helpers::info_icon_button(ui, "The identity index is an internal reference within the wallet. The wallet's seed phrase can always be used to recover any identity, including this one, by using the same index.");
 
                     // Check if the label was clicked
                     if response.clicked() {
@@ -1038,10 +1036,8 @@ impl ScreenLike for AddNewIdentityScreen {
                         step_number
                     ));
 
-                    // Create a label with click sense and tooltip
-                    let info_icon = egui::Label::new("ℹ").sense(egui::Sense::click());
-                    let response = ui.add(info_icon)
-                        .on_hover_text("Keys allow an identity to perform actions on the Blockchain. They are contained in your wallet and allow you to prove that the action you are making is really coming from yourself.");
+                    // Create info icon button with tooltip
+                    let response = crate::ui::helpers::info_icon_button(ui, "Keys allow an identity to perform actions on the Blockchain. They are contained in your wallet and allow you to prove that the action you are making is really coming from yourself.");
 
                     // Check if the label was clicked
                     if response.clicked() {

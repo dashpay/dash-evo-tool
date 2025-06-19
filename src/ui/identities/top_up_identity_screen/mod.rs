@@ -48,11 +48,19 @@ pub struct TopUpIdentityScreen {
 
 impl TopUpIdentityScreen {
     pub fn new(qualified_identity: QualifiedIdentity, app_context: &Arc<AppContext>) -> Self {
-        // Use the wallet from identity's associated_wallets since it now contains the correct wallet reference
+        // Try to use the wallet from identity's associated_wallets first, but allow any wallet to be selected
         let selected_wallet = qualified_identity
             .associated_wallets
             .first_key_value()
-            .map(|(_, wallet)| wallet.clone());
+            .map(|(_, wallet)| wallet.clone())
+            .or_else(|| {
+                // If no associated wallet, just pick the first available wallet
+                app_context
+                    .wallets
+                    .read()
+                    .ok()
+                    .and_then(|wallets| wallets.values().next().cloned())
+            });
 
         Self {
             identity: qualified_identity,
@@ -76,7 +84,7 @@ impl TopUpIdentityScreen {
 
     fn render_wallet_selection(&mut self, ui: &mut Ui) -> bool {
         if self.app_context.has_wallet.load(Ordering::Relaxed) {
-            let wallets = &self.identity.associated_wallets;
+            let wallets = self.app_context.wallets.read().unwrap();
             if wallets.len() > 1 {
                 // Retrieve the alias of the currently selected wallet, if any
                 let selected_wallet_alias = self

@@ -222,7 +222,9 @@ impl UpdateTokenConfigScreen {
         ui.heading("2. Select the item to update");
         ui.add_space(10.0);
         if self.group_action_id.is_some() {
-            ui.label("You are signing an existing group action so you are not allowed to edit the item.");
+            ui.label(
+                "You are signing an existing group action so you are not allowed to edit the item.",
+            );
             if self.group.is_none() {
                 // we need to initialize group based on the change item
                 self.update_group_based_on_change_item();
@@ -554,7 +556,7 @@ impl UpdateTokenConfigScreen {
                         self.update_group_based_on_change_item();
                     }
                 });
-    
+
 
         ui.add_space(10.0);
 

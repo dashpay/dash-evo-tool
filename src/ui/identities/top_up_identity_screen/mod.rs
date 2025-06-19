@@ -17,12 +17,12 @@ use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
 use crate::ui::identities::add_new_identity_screen::FundingMethod;
 use crate::ui::identities::funding_common::WalletFundedScreenStep;
 use crate::ui::{MessageType, ScreenLike};
-use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dashcore_rpc::dashcore::transaction::special_transaction::TransactionPayload;
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dpp::balances::credits::Duffs;
 use dash_sdk::dpp::dashcore::{OutPoint, Transaction, TxOut};
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::prelude::AssetLockProof;
 use eframe::egui::Context;
 use egui::{ComboBox, ScrollArea, Ui};
@@ -76,7 +76,7 @@ impl TopUpIdentityScreen {
             if wallets.len() > 1 {
                 // Get the current funding method
                 let funding_method = self.funding_method.read().unwrap().clone();
-                
+
                 // Retrieve the alias of the currently selected wallet, if any
                 let selected_wallet_alias = self
                     .wallet
@@ -91,15 +91,19 @@ impl TopUpIdentityScreen {
                         for wallet in wallets.values() {
                             let (wallet_alias, has_required_resources) = {
                                 let wallet_read = wallet.read().unwrap();
-                                let alias = wallet_read.alias.clone()
+                                let alias = wallet_read
+                                    .alias
+                                    .clone()
                                     .unwrap_or_else(|| "Unnamed Wallet".to_string());
-                                
+
                                 let has_resources = match funding_method {
                                     FundingMethod::UseWalletBalance => wallet_read.has_balance(),
-                                    FundingMethod::UseUnusedAssetLock => wallet_read.has_unused_asset_lock(),
+                                    FundingMethod::UseUnusedAssetLock => {
+                                        wallet_read.has_unused_asset_lock()
+                                    }
                                     _ => true,
                                 };
-                                
+
                                 (alias, has_resources)
                             };
 
@@ -121,17 +125,19 @@ impl TopUpIdentityScreen {
                 if self.wallet.is_none() {
                     // Get the current funding method
                     let funding_method = self.funding_method.read().unwrap().clone();
-                    
+
                     // Check if the wallet has the required resources
                     let has_required_resources = {
                         let wallet_read = wallet.read().unwrap();
                         match funding_method {
                             FundingMethod::UseWalletBalance => wallet_read.has_balance(),
-                            FundingMethod::UseUnusedAssetLock => wallet_read.has_unused_asset_lock(),
+                            FundingMethod::UseUnusedAssetLock => {
+                                wallet_read.has_unused_asset_lock()
+                            }
                             _ => true,
                         }
                     };
-                    
+
                     if has_required_resources {
                         // Automatically select the only available wallet from app_context
                         self.wallet = Some(wallet.clone());
@@ -155,7 +161,7 @@ impl TopUpIdentityScreen {
             let wallets = self.app_context.wallets.read().unwrap();
             let mut has_unused_asset_lock = false;
             let mut has_balance = false;
-            
+
             for wallet in wallets.values() {
                 let wallet = wallet.read().unwrap();
                 if wallet.has_unused_asset_lock() {
@@ -168,7 +174,7 @@ impl TopUpIdentityScreen {
                     break; // No need to check further
                 }
             }
-            
+
             (has_unused_asset_lock, has_balance)
         };
 
@@ -288,17 +294,12 @@ impl TopUpIdentityScreen {
     }
 
     fn top_up_funding_amount_input(&mut self, ui: &mut egui::Ui) {
-
         ui.horizontal(|ui| {
             ui.label("Amount (DASH):");
 
             // Render the text input field for the funding amount
             let amount_input = ui
-                .add(
-                    egui::TextEdit::singleline(&mut self.funding_amount)
-                        .hint_text("Enter amount (e.g., 0.1234)")
-                        .desired_width(100.0),
-                )
+                .add(egui::TextEdit::singleline(&mut self.funding_amount).desired_width(100.0))
                 .lost_focus();
 
             self.funding_amount_exact = self.funding_amount.parse::<f64>().ok().map(|f| {
@@ -313,7 +314,6 @@ impl TopUpIdentityScreen {
                     ui.label("Invalid amount. Please enter a valid number.");
                 }
             }
-
         });
 
         ui.add_space(10.0);
@@ -444,30 +444,30 @@ impl ScreenLike for TopUpIdentityScreen {
                 }
 
                 ui.add_space(10.0);
-                
+
                 // Display identity info
                 ui.horizontal(|ui| {
                     ui.label("Identity:");
-                    
+
                     // Show alias if available, otherwise show ID
                     if let Some(alias) = &self.identity.alias {
-                        ui.strong(alias);
+                        ui.label(alias);
                     } else {
-                        ui.strong(self.identity.identity.id().to_string(Encoding::Base58));
+                        ui.label(self.identity.identity.id().to_string(Encoding::Base58));
                     }
-                    
-                    ui.add_space(20.0);
-                    
-                    // Show current balance
-                    ui.label("Current Balance:");
-                    let balance_dash = self.identity.identity.balance() as f64 * 1e-11;
-                    ui.strong(format!("{:.4} DASH", balance_dash));
                 });
-                
+
+                // Show current balance
+                ui.horizontal(|ui| {
+                    ui.label("Balance:");
+                    let balance_dash = self.identity.identity.balance() as f64 * 1e-11;
+                    ui.label(format!("{:.4} DASH", balance_dash));
+                });
+
                 ui.add_space(10.0);
                 ui.separator();
                 ui.add_space(10.0);
-                
+
                 ui.heading("Follow these steps to top up your identity:");
                 ui.add_space(15.0);
 

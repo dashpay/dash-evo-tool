@@ -48,25 +48,11 @@ pub struct TopUpIdentityScreen {
 
 impl TopUpIdentityScreen {
     pub fn new(qualified_identity: QualifiedIdentity, app_context: &Arc<AppContext>) -> Self {
-        // Try to use the wallet from identity's associated_wallets first, but allow any wallet to be selected
-        let selected_wallet = qualified_identity
-            .associated_wallets
-            .first_key_value()
-            .map(|(_, wallet)| wallet.clone())
-            .or_else(|| {
-                // If no associated wallet, just pick the first available wallet
-                app_context
-                    .wallets
-                    .read()
-                    .ok()
-                    .and_then(|wallets| wallets.values().next().cloned())
-            });
-
         Self {
             identity: qualified_identity,
             step: Arc::new(RwLock::new(WalletFundedScreenStep::ChooseFundingMethod)),
             funding_asset_lock: None,
-            wallet: selected_wallet,
+            wallet: None,
             core_has_funding_address: None,
             funding_address: None,
             funding_method: Arc::new(RwLock::new(FundingMethod::NoSelection)),
@@ -112,6 +98,15 @@ impl TopUpIdentityScreen {
                             if ui.selectable_label(is_selected, wallet_alias).clicked() {
                                 // Update the selected wallet from app_context
                                 self.wallet = Some(wallet.clone());
+                                
+                                // If UseWalletBalance is selected and we just set the wallet, update the max amount
+                                let funding_method = self.funding_method.read().unwrap();
+                                if *funding_method == FundingMethod::UseWalletBalance {
+                                    let wallet = wallet.read().unwrap();
+                                    let max_amount = wallet.max_balance();
+                                    self.funding_amount = format!("{:.4}", max_amount as f64 * 1e-8);
+                                    self.funding_amount_exact = Some(max_amount);
+                                }
                             }
                         }
                     });
@@ -120,6 +115,15 @@ impl TopUpIdentityScreen {
                 if self.wallet.is_none() {
                     // Automatically select the only available wallet from app_context
                     self.wallet = Some(wallet.clone());
+                    
+                    // If UseWalletBalance is selected and we just set the wallet, update the max amount
+                    let funding_method = self.funding_method.read().unwrap();
+                    if *funding_method == FundingMethod::UseWalletBalance {
+                        let wallet = wallet.read().unwrap();
+                        let max_amount = wallet.max_balance();
+                        self.funding_amount = format!("{:.4}", max_amount as f64 * 1e-8);
+                        self.funding_amount_exact = Some(max_amount);
+                    }
                 }
                 false
             } else {
@@ -131,9 +135,6 @@ impl TopUpIdentityScreen {
     }
 
     fn render_funding_method(&mut self, ui: &mut egui::Ui) {
-        let Some(selected_wallet) = self.wallet.clone() else {
-            return;
-        };
         let funding_method_arc = self.funding_method.clone();
         let mut funding_method = funding_method_arc.write().unwrap();
 
@@ -146,40 +147,26 @@ impl TopUpIdentityScreen {
                     "Please select funding method",
                 );
 
-                let (has_unused_asset_lock, has_balance) = {
-                    let wallet = selected_wallet.read().unwrap();
-                    (wallet.has_unused_asset_lock(), wallet.has_balance())
-                };
-
-                if has_unused_asset_lock
-                    && ui
-                        .selectable_value(
-                            &mut *funding_method,
-                            FundingMethod::UseUnusedAssetLock,
-                            "Use Unused Evo Funding Locks (recommended)",
-                        )
-                        .changed()
+                if ui
+                    .selectable_value(
+                        &mut *funding_method,
+                        FundingMethod::UseUnusedAssetLock,
+                        "Use Unused Evo Funding Locks (recommended)",
+                    )
+                    .changed()
                 {
-                    let mut step = self.step.write().unwrap(); // Write lock on step
+                    let mut step = self.step.write().unwrap();
                     *step = WalletFundedScreenStep::ReadyToCreate;
                 }
 
-                if has_balance
-                    && ui
-                        .selectable_value(
-                            &mut *funding_method,
-                            FundingMethod::UseWalletBalance,
-                            "Use Wallet Balance",
-                        )
-                        .changed()
+                if ui
+                    .selectable_value(
+                        &mut *funding_method,
+                        FundingMethod::UseWalletBalance,
+                        "Use Wallet Balance",
+                    )
+                    .changed()
                 {
-                    if let Some(wallet) = &self.wallet {
-                        let wallet = wallet.read().unwrap();
-                        let max_amount = wallet.max_balance();
-                        self.funding_amount = format!("{:.4}", max_amount as f64 * 1e-8);
-                        self.funding_amount_exact =
-                            Some(self.funding_amount.parse::<f64>().unwrap() as u64);
-                    }
                     let mut step = self.step.write().unwrap();
                     *step = WalletFundedScreenStep::ReadyToCreate;
                 }

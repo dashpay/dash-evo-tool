@@ -175,6 +175,7 @@ impl TokensScreen {
             if let Some(token_info) = self.all_known_tokens.get(&token_id).cloned() {
                 let mut is_open = true;
                 let mut close_popup = false;
+                let dark_mode = ui.ctx().style().visuals.dark_mode;
 
                 egui::Window::new("Token Configuration Details")
                     .resizable(true)
@@ -183,9 +184,9 @@ impl TokensScreen {
                     .default_height(500.0)
                     .open(&mut is_open)
                     .show(ui.ctx(), |ui| {
-                        // Add white background frame
+                        // Add theme-aware background frame
                         egui::Frame::new()
-                            .fill(egui::Color32::WHITE)
+                            .fill(DashColors::surface(dark_mode))
                             .inner_margin(egui::Margin::same(10))
                             .show(ui, |ui| {
                                 egui::ScrollArea::vertical().show(ui, |ui| {

@@ -17,6 +17,8 @@ use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
 use crate::ui::identities::add_new_identity_screen::FundingMethod;
 use crate::ui::identities::funding_common::WalletFundedScreenStep;
 use crate::ui::{MessageType, ScreenLike};
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dashcore_rpc::dashcore::transaction::special_transaction::TransactionPayload;
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dpp::balances::credits::Duffs;
@@ -56,7 +58,7 @@ impl TopUpIdentityScreen {
             core_has_funding_address: None,
             funding_address: None,
             funding_method: Arc::new(RwLock::new(FundingMethod::NoSelection)),
-            funding_amount: "0.5".to_string(),
+            funding_amount: "".to_string(),
             funding_amount_exact: None,
             funding_utxo: None,
             copied_to_clipboard: None,
@@ -72,6 +74,9 @@ impl TopUpIdentityScreen {
         if self.app_context.has_wallet.load(Ordering::Relaxed) {
             let wallets = self.app_context.wallets.read().unwrap();
             if wallets.len() > 1 {
+                // Get the current funding method
+                let funding_method = self.funding_method.read().unwrap().clone();
+                
                 // Retrieve the alias of the currently selected wallet, if any
                 let selected_wallet_alias = self
                     .wallet
@@ -84,45 +89,52 @@ impl TopUpIdentityScreen {
                     .selected_text(selected_wallet_alias)
                     .show_ui(ui, |ui| {
                         for wallet in wallets.values() {
-                            let wallet_alias = wallet
-                                .read()
-                                .ok()
-                                .and_then(|w| w.alias.clone())
-                                .unwrap_or_else(|| "Unnamed Wallet".to_string());
+                            let (wallet_alias, has_required_resources) = {
+                                let wallet_read = wallet.read().unwrap();
+                                let alias = wallet_read.alias.clone()
+                                    .unwrap_or_else(|| "Unnamed Wallet".to_string());
+                                
+                                let has_resources = match funding_method {
+                                    FundingMethod::UseWalletBalance => wallet_read.has_balance(),
+                                    FundingMethod::UseUnusedAssetLock => wallet_read.has_unused_asset_lock(),
+                                    _ => true,
+                                };
+                                
+                                (alias, has_resources)
+                            };
 
                             let is_selected = self
                                 .wallet
                                 .as_ref()
                                 .is_some_and(|selected| Arc::ptr_eq(selected, wallet));
 
-                            if ui.selectable_label(is_selected, wallet_alias).clicked() {
-                                // Update the selected wallet from app_context
-                                self.wallet = Some(wallet.clone());
-                                
-                                // If UseWalletBalance is selected and we just set the wallet, update the max amount
-                                let funding_method = self.funding_method.read().unwrap();
-                                if *funding_method == FundingMethod::UseWalletBalance {
-                                    let wallet = wallet.read().unwrap();
-                                    let max_amount = wallet.max_balance();
-                                    self.funding_amount = format!("{:.4}", max_amount as f64 * 1e-8);
-                                    self.funding_amount_exact = Some(max_amount);
+                            ui.add_enabled_ui(has_required_resources, |ui| {
+                                if ui.selectable_label(is_selected, wallet_alias).clicked() {
+                                    // Update the selected wallet from app_context
+                                    self.wallet = Some(wallet.clone());
                                 }
-                            }
+                            });
                         }
                     });
                 true
             } else if let Some(wallet) = wallets.values().next() {
                 if self.wallet.is_none() {
-                    // Automatically select the only available wallet from app_context
-                    self.wallet = Some(wallet.clone());
+                    // Get the current funding method
+                    let funding_method = self.funding_method.read().unwrap().clone();
                     
-                    // If UseWalletBalance is selected and we just set the wallet, update the max amount
-                    let funding_method = self.funding_method.read().unwrap();
-                    if *funding_method == FundingMethod::UseWalletBalance {
-                        let wallet = wallet.read().unwrap();
-                        let max_amount = wallet.max_balance();
-                        self.funding_amount = format!("{:.4}", max_amount as f64 * 1e-8);
-                        self.funding_amount_exact = Some(max_amount);
+                    // Check if the wallet has the required resources
+                    let has_required_resources = {
+                        let wallet_read = wallet.read().unwrap();
+                        match funding_method {
+                            FundingMethod::UseWalletBalance => wallet_read.has_balance(),
+                            FundingMethod::UseUnusedAssetLock => wallet_read.has_unused_asset_lock(),
+                            _ => true,
+                        }
+                    };
+                    
+                    if has_required_resources {
+                        // Automatically select the only available wallet from app_context
+                        self.wallet = Some(wallet.clone());
                     }
                 }
                 false
@@ -138,6 +150,28 @@ impl TopUpIdentityScreen {
         let funding_method_arc = self.funding_method.clone();
         let mut funding_method = funding_method_arc.write().unwrap();
 
+        // Check if any wallet has unused asset locks or balance
+        let (has_any_unused_asset_lock, has_any_balance) = {
+            let wallets = self.app_context.wallets.read().unwrap();
+            let mut has_unused_asset_lock = false;
+            let mut has_balance = false;
+            
+            for wallet in wallets.values() {
+                let wallet = wallet.read().unwrap();
+                if wallet.has_unused_asset_lock() {
+                    has_unused_asset_lock = true;
+                }
+                if wallet.has_balance() {
+                    has_balance = true;
+                }
+                if has_unused_asset_lock && has_balance {
+                    break; // No need to check further
+                }
+            }
+            
+            (has_unused_asset_lock, has_balance)
+        };
+
         ComboBox::from_id_salt("funding_method")
             .selected_text(format!("{}", *funding_method))
             .show_ui(ui, |ui| {
@@ -147,29 +181,33 @@ impl TopUpIdentityScreen {
                     "Please select funding method",
                 );
 
-                if ui
-                    .selectable_value(
-                        &mut *funding_method,
-                        FundingMethod::UseUnusedAssetLock,
-                        "Use Unused Evo Funding Locks (recommended)",
-                    )
-                    .changed()
-                {
-                    let mut step = self.step.write().unwrap();
-                    *step = WalletFundedScreenStep::ReadyToCreate;
-                }
+                ui.add_enabled_ui(has_any_unused_asset_lock, |ui| {
+                    if ui
+                        .selectable_value(
+                            &mut *funding_method,
+                            FundingMethod::UseUnusedAssetLock,
+                            "Use Unused Asset Locks",
+                        )
+                        .changed()
+                    {
+                        let mut step = self.step.write().unwrap();
+                        *step = WalletFundedScreenStep::ReadyToCreate;
+                    }
+                });
 
-                if ui
-                    .selectable_value(
-                        &mut *funding_method,
-                        FundingMethod::UseWalletBalance,
-                        "Use Wallet Balance",
-                    )
-                    .changed()
-                {
-                    let mut step = self.step.write().unwrap();
-                    *step = WalletFundedScreenStep::ReadyToCreate;
-                }
+                ui.add_enabled_ui(has_any_balance, |ui| {
+                    if ui
+                        .selectable_value(
+                            &mut *funding_method,
+                            FundingMethod::UseWalletBalance,
+                            "Use Wallet Balance",
+                        )
+                        .changed()
+                    {
+                        let mut step = self.step.write().unwrap();
+                        *step = WalletFundedScreenStep::ReadyToCreate;
+                    }
+                });
 
                 if ui
                     .selectable_value(
@@ -250,7 +288,6 @@ impl TopUpIdentityScreen {
     }
 
     fn top_up_funding_amount_input(&mut self, ui: &mut egui::Ui) {
-        let funding_method = self.funding_method.read().unwrap(); // Read lock on funding_method
 
         ui.horizontal(|ui| {
             ui.label("Amount (DASH):");
@@ -277,18 +314,6 @@ impl TopUpIdentityScreen {
                 }
             }
 
-            // Check if the funding method is `UseWalletBalance`
-            if *funding_method == FundingMethod::UseWalletBalance {
-                // Safely access the selected wallet
-                if let Some(wallet) = &self.wallet {
-                    let wallet = wallet.read().unwrap();
-                    if ui.button("Max").clicked() {
-                        let max_amount = wallet.max_balance();
-                        self.funding_amount = format!("{:.4}", max_amount as f64 * 1e-8);
-                        self.funding_amount_exact = Some(max_amount);
-                    }
-                }
-            }
         });
 
         ui.add_space(10.0);
@@ -419,6 +444,30 @@ impl ScreenLike for TopUpIdentityScreen {
                 }
 
                 ui.add_space(10.0);
+                
+                // Display identity info
+                ui.horizontal(|ui| {
+                    ui.label("Identity:");
+                    
+                    // Show alias if available, otherwise show ID
+                    if let Some(alias) = &self.identity.alias {
+                        ui.strong(alias);
+                    } else {
+                        ui.strong(self.identity.identity.id().to_string(Encoding::Base58));
+                    }
+                    
+                    ui.add_space(20.0);
+                    
+                    // Show current balance
+                    ui.label("Current Balance:");
+                    let balance_dash = self.identity.identity.balance() as f64 * 1e-11;
+                    ui.strong(format!("{:.4} DASH", balance_dash));
+                });
+                
+                ui.add_space(10.0);
+                ui.separator();
+                ui.add_space(10.0);
+                
                 ui.heading("Follow these steps to top up your identity:");
                 ui.add_space(15.0);
 

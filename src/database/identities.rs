@@ -190,7 +190,7 @@ impl Database {
 
             while let Some(top_up_row) = rows.next()? {
                 let top_up_index: u32 = top_up_row.get(0)?;
-                let amount: u32 = top_up_row.get(1)?;
+                let amount: u64 = top_up_row.get(1)?;
                 top_ups.insert(top_up_index, amount);
             }
 
@@ -245,7 +245,7 @@ impl Database {
 
             while let Some(top_up_row) = rows.next()? {
                 let top_up_index: u32 = top_up_row.get(0)?;
-                let amount: u32 = top_up_row.get(1)?;
+                let amount: u64 = top_up_row.get(1)?;
                 top_ups.insert(top_up_index, amount);
             }
 
@@ -300,7 +300,7 @@ impl Database {
 
             while let Some(top_up_row) = rows.next()? {
                 let top_up_index: u32 = top_up_row.get(0)?;
-                let amount: u32 = top_up_row.get(1)?;
+                let amount: u64 = top_up_row.get(1)?;
                 top_ups.insert(top_up_index, amount);
             }
 

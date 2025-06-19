@@ -222,82 +222,22 @@ impl UpdateTokenConfigScreen {
         ui.heading("2. Select the item to update");
         ui.add_space(10.0);
         if self.group_action_id.is_some() {
-            ui.label("You are signing an existing group action. Make sure you construct the exact same item as the one in the group action, details of which can be found on the previous screen.");
+            ui.label(
+                "You are signing an existing group action so you are not allowed to edit the item.",
+            );
+            if self.group.is_none() {
+                // we need to initialize group based on the change item
+                self.update_group_based_on_change_item();
+            }
         }
 
         // Clone the token configuration to avoid borrowing issues
         let default_token_configuration = self.identity_token_info.token_config.clone();
 
         ui.horizontal(|ui| {
-            let label = match &self.change_item {
-                TokenConfigurationChangeItem::TokenConfigurationNoChange => "No Change",
-                TokenConfigurationChangeItem::Conventions(_) => "Conventions",
-                TokenConfigurationChangeItem::ConventionsControlGroup(_) => {
-                    "Conventions Control Group"
-                }
-                TokenConfigurationChangeItem::ConventionsAdminGroup(_) => "Conventions Admin Group",
-                TokenConfigurationChangeItem::MaxSupply(_) => "Max Supply",
-                TokenConfigurationChangeItem::MaxSupplyControlGroup(_) => {
-                    "Max Supply Control Group"
-                }
-                TokenConfigurationChangeItem::MaxSupplyAdminGroup(_) => "Max Supply Admin Group",
-                TokenConfigurationChangeItem::PerpetualDistribution(_) => "Perpetual Distribution",
-                TokenConfigurationChangeItem::PerpetualDistributionControlGroup(_) => {
-                    "Perpetual Distribution Control Group"
-                }
-                TokenConfigurationChangeItem::PerpetualDistributionAdminGroup(_) => {
-                    "Perpetual Distribution Admin Group"
-                }
-                TokenConfigurationChangeItem::NewTokensDestinationIdentity(_) => {
-                    "New‑Tokens Destination"
-                }
-                TokenConfigurationChangeItem::NewTokensDestinationIdentityControlGroup(_) => {
-                    "New‑Tokens Destination Control Group"
-                }
-                TokenConfigurationChangeItem::NewTokensDestinationIdentityAdminGroup(_) => {
-                    "New‑Tokens Destination Admin Group"
-                }
-                TokenConfigurationChangeItem::MintingAllowChoosingDestination(_) => {
-                    "Minting Allow Choosing Destination"
-                }
-                TokenConfigurationChangeItem::MintingAllowChoosingDestinationControlGroup(_) => {
-                    "Minting Allow Choosing Destination Control Group"
-                }
-                TokenConfigurationChangeItem::MintingAllowChoosingDestinationAdminGroup(_) => {
-                    "Minting Allow Choosing Destination Admin Group"
-                }
-                TokenConfigurationChangeItem::ManualMinting(_) => "Manual Minting",
-                TokenConfigurationChangeItem::ManualMintingAdminGroup(_) => {
-                    "Manual Minting Admin Group"
-                }
-                TokenConfigurationChangeItem::ManualBurning(_) => "Manual Burning",
-                TokenConfigurationChangeItem::ManualBurningAdminGroup(_) => {
-                    "Manual Burning Admin Group"
-                }
-                TokenConfigurationChangeItem::Freeze(_) => "Freeze",
-                TokenConfigurationChangeItem::FreezeAdminGroup(_) => "Freeze Admin Group",
-                TokenConfigurationChangeItem::Unfreeze(_) => "Unfreeze",
-                TokenConfigurationChangeItem::UnfreezeAdminGroup(_) => "Unfreeze Admin Group",
-                TokenConfigurationChangeItem::DestroyFrozenFunds(_) => "Destroy Frozen Funds",
-                TokenConfigurationChangeItem::DestroyFrozenFundsAdminGroup(_) => {
-                    "Destroy Frozen Funds Admin Group"
-                }
-                TokenConfigurationChangeItem::EmergencyAction(_) => "Emergency Action",
-                TokenConfigurationChangeItem::EmergencyActionAdminGroup(_) => {
-                    "Emergency Action Admin Group"
-                }
-                TokenConfigurationChangeItem::MainControlGroup(_) => "Main Control Group",
-                TokenConfigurationChangeItem::MarketplaceTradeModeControlGroup(_) => {
-                    "Marketplace Trade Mode Control Group"
-                }
-                TokenConfigurationChangeItem::MarketplaceTradeModeAdminGroup(_) => {
-                    "Marketplace Trade Mode Admin Group"
-                }
-                TokenConfigurationChangeItem::MarketplaceTradeMode(_) => {
-                    unimplemented!("marketplace settings not implemented yet")
-                }
-            };
-
+            let label = token_change_item_label(&self.change_item);
+            // user cannot change the item if it's part of a group action
+            ui.add_enabled_ui(self.group_action_id.is_none(), |ui| {
             egui::ComboBox::from_id_salt("cfg_item_type".to_string())
                 .selected_text(label)
                 .width(270.0)
@@ -616,7 +556,7 @@ impl UpdateTokenConfigScreen {
                         self.update_group_based_on_change_item();
                     }
                 });
-        });
+
 
         ui.add_space(10.0);
 
@@ -735,7 +675,8 @@ impl UpdateTokenConfigScreen {
                 unimplemented!("marketplace settings not implemented yet")
             }
         }
-
+        });
+        });
         ui.add_space(10.0);
         ui.separator();
         ui.add_space(10.0);
@@ -888,9 +829,15 @@ impl UpdateTokenConfigScreen {
                 authorized_identity_input.get_or_insert_with(String::new);
                 if let Some(ref mut id_str) = authorized_identity_input {
                     ui.horizontal(|ui| {
+                        let dark_mode = ui.ctx().style().visuals.dark_mode;
                         ui.add_sized(
                             [300.0, 22.0],
-                            egui::TextEdit::singleline(id_str).hint_text("Enter base58 identity"),
+                            egui::TextEdit::singleline(id_str)
+                                .hint_text("Enter base58 identity")
+                                .text_color(crate::ui::theme::DashColors::text_primary(dark_mode))
+                                .background_color(crate::ui::theme::DashColors::input_background(
+                                    dark_mode,
+                                )),
                         );
 
                         if !id_str.is_empty() {
@@ -1186,5 +1133,65 @@ impl ScreenWithWalletUnlock for UpdateTokenConfigScreen {
 
     fn error_message(&self) -> Option<&String> {
         self.error_message.as_ref()
+    }
+}
+
+/// Returns a simple label for UI display
+fn token_change_item_label(item: &TokenConfigurationChangeItem) -> &'static str {
+    match item {
+        TokenConfigurationChangeItem::TokenConfigurationNoChange => "No Change",
+        TokenConfigurationChangeItem::Conventions(_) => "Conventions",
+        TokenConfigurationChangeItem::ConventionsControlGroup(_) => "Conventions Control Group",
+        TokenConfigurationChangeItem::ConventionsAdminGroup(_) => "Conventions Admin Group",
+        TokenConfigurationChangeItem::MaxSupply(_) => "Max Supply",
+        TokenConfigurationChangeItem::MaxSupplyControlGroup(_) => "Max Supply Control Group",
+        TokenConfigurationChangeItem::MaxSupplyAdminGroup(_) => "Max Supply Admin Group",
+        TokenConfigurationChangeItem::PerpetualDistribution(_) => "Perpetual Distribution",
+        TokenConfigurationChangeItem::PerpetualDistributionControlGroup(_) => {
+            "Perpetual Distribution Control Group"
+        }
+        TokenConfigurationChangeItem::PerpetualDistributionAdminGroup(_) => {
+            "Perpetual Distribution Admin Group"
+        }
+        TokenConfigurationChangeItem::NewTokensDestinationIdentity(_) => "New‑Tokens Destination",
+        TokenConfigurationChangeItem::NewTokensDestinationIdentityControlGroup(_) => {
+            "New‑Tokens Destination Control Group"
+        }
+        TokenConfigurationChangeItem::NewTokensDestinationIdentityAdminGroup(_) => {
+            "New‑Tokens Destination Admin Group"
+        }
+        TokenConfigurationChangeItem::MintingAllowChoosingDestination(_) => {
+            "Minting Allow Choosing Destination"
+        }
+        TokenConfigurationChangeItem::MintingAllowChoosingDestinationControlGroup(_) => {
+            "Minting Allow Choosing Destination Control Group"
+        }
+        TokenConfigurationChangeItem::MintingAllowChoosingDestinationAdminGroup(_) => {
+            "Minting Allow Choosing Destination Admin Group"
+        }
+        TokenConfigurationChangeItem::ManualMinting(_) => "Manual Minting",
+        TokenConfigurationChangeItem::ManualMintingAdminGroup(_) => "Manual Minting Admin Group",
+        TokenConfigurationChangeItem::ManualBurning(_) => "Manual Burning",
+        TokenConfigurationChangeItem::ManualBurningAdminGroup(_) => "Manual Burning Admin Group",
+        TokenConfigurationChangeItem::Freeze(_) => "Freeze",
+        TokenConfigurationChangeItem::FreezeAdminGroup(_) => "Freeze Admin Group",
+        TokenConfigurationChangeItem::Unfreeze(_) => "Unfreeze",
+        TokenConfigurationChangeItem::UnfreezeAdminGroup(_) => "Unfreeze Admin Group",
+        TokenConfigurationChangeItem::DestroyFrozenFunds(_) => "Destroy Frozen Funds",
+        TokenConfigurationChangeItem::DestroyFrozenFundsAdminGroup(_) => {
+            "Destroy Frozen Funds Admin Group"
+        }
+        TokenConfigurationChangeItem::EmergencyAction(_) => "Emergency Action",
+        TokenConfigurationChangeItem::EmergencyActionAdminGroup(_) => {
+            "Emergency Action Admin Group"
+        }
+        TokenConfigurationChangeItem::MarketplaceTradeMode(_) => "Marketplace Trade Mode",
+        TokenConfigurationChangeItem::MarketplaceTradeModeControlGroup(_) => {
+            "Marketplace Trade Mode Control Group"
+        }
+        TokenConfigurationChangeItem::MarketplaceTradeModeAdminGroup(_) => {
+            "Marketplace Trade Mode Admin Group"
+        }
+        TokenConfigurationChangeItem::MainControlGroup(_) => "Main Control Group",
     }
 }

@@ -120,10 +120,10 @@ impl ScreenLike for PlatformInfoScreen {
 
     fn ui(&mut self, ctx: &Context) -> AppAction {
         let mut action = add_top_panel(
-            ctx, 
-            &self.app_context, 
-            vec![("Tools", AppAction::None)], 
-            vec![]
+            ctx,
+            &self.app_context,
+            vec![("Tools", AppAction::None)],
+            vec![],
         );
 
         action |= add_left_panel(
@@ -132,7 +132,7 @@ impl ScreenLike for PlatformInfoScreen {
             RootScreenType::RootScreenToolsPlatformInfoScreen,
         );
 
-        action |= add_tools_subscreen_chooser_panel(ctx, &self.app_context);
+        action |= add_tools_subscreen_chooser_panel(ctx, self.app_context.as_ref());
 
         let panel_action = island_central_panel(ctx, |ui| {
             ui.heading("Platform Information Tool");

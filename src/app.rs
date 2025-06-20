@@ -191,7 +191,7 @@ impl AppState {
         let mut document_visualizer_screen = DocumentVisualizerScreen::new(&mainnet_app_context);
         let mut contract_visualizer_screen = ContractVisualizerScreen::new(&mainnet_app_context);
         let mut proof_log_screen = ProofLogScreen::new(&mainnet_app_context);
-        let platform_info_screen = PlatformInfoScreen::new(&mainnet_app_context);
+        let mut platform_info_screen = PlatformInfoScreen::new(&mainnet_app_context);
         let mut document_query_screen = DocumentQueryScreen::new(&mainnet_app_context);
         let mut tokens_balances_screen =
             TokensScreen::new(&mainnet_app_context, TokensSubscreen::MyTokens);
@@ -251,6 +251,7 @@ impl AppState {
                 document_query_screen = DocumentQueryScreen::new(testnet_app_context);
                 wallets_balances_screen = WalletsBalancesScreen::new(testnet_app_context);
                 proof_log_screen = ProofLogScreen::new(testnet_app_context);
+                platform_info_screen = PlatformInfoScreen::new(testnet_app_context);
                 tokens_balances_screen =
                     TokensScreen::new(testnet_app_context, TokensSubscreen::MyTokens);
                 token_search_screen =
@@ -275,6 +276,7 @@ impl AppState {
                 contract_visualizer_screen = ContractVisualizerScreen::new(devnet_app_context);
                 wallets_balances_screen = WalletsBalancesScreen::new(devnet_app_context);
                 proof_log_screen = ProofLogScreen::new(devnet_app_context);
+                platform_info_screen = PlatformInfoScreen::new(devnet_app_context);
                 tokens_balances_screen =
                     TokensScreen::new(devnet_app_context, TokensSubscreen::MyTokens);
                 token_search_screen =
@@ -297,6 +299,7 @@ impl AppState {
                 document_query_screen = DocumentQueryScreen::new(local_app_context);
                 wallets_balances_screen = WalletsBalancesScreen::new(local_app_context);
                 proof_log_screen = ProofLogScreen::new(local_app_context);
+                platform_info_screen = PlatformInfoScreen::new(local_app_context);
                 tokens_balances_screen =
                     TokensScreen::new(local_app_context, TokensSubscreen::MyTokens);
                 token_search_screen =

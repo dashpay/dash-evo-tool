@@ -7,6 +7,7 @@ use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tools_subscreen_chooser_panel::add_tools_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
+use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::version::PlatformVersion;
 use eframe::egui::{self, Context, ScrollArea, Ui};
 use egui::Color32;
@@ -16,7 +17,7 @@ pub struct PlatformInfoScreen {
     pub(crate) app_context: Arc<AppContext>,
     platform_version: Option<&'static PlatformVersion>,
     core_chain_lock_height: Option<u32>,
-    network: Option<dash_sdk::dpp::dashcore::Network>,
+    network: Network,
     current_result: Option<String>,
     current_result_title: Option<String>,
     active_tasks: std::collections::HashSet<String>,
@@ -29,7 +30,7 @@ impl PlatformInfoScreen {
             app_context: app_context.clone(),
             platform_version: None,
             core_chain_lock_height: None,
-            network: None,
+            network: app_context.network,
             current_result: None,
             current_result_title: None,
             active_tasks: std::collections::HashSet::new(),
@@ -37,7 +38,11 @@ impl PlatformInfoScreen {
         }
     }
 
-    fn trigger_task(&mut self, task_type: PlatformInfoTaskRequestType, task_name: &str) -> AppAction {
+    fn trigger_task(
+        &mut self,
+        task_type: PlatformInfoTaskRequestType,
+        task_name: &str,
+    ) -> AppAction {
         if !self.active_tasks.contains(task_name) {
             self.active_tasks.insert(task_name.to_string());
             self.error_message = None;
@@ -47,37 +52,55 @@ impl PlatformInfoScreen {
         AppAction::None
     }
 
-
     fn render_action_buttons(&mut self, ui: &mut Ui) -> AppAction {
-        ui.heading("Platform Data Actions");
-        ui.separator();
-
         let button_tasks = vec![
-            ("basic_info", "Fetch Basic Platform Info", PlatformInfoTaskRequestType::BasicPlatformInfo),
-            ("epoch_info", "Fetch Current Epoch Info", PlatformInfoTaskRequestType::CurrentEpochInfo),
-            ("total_credits", "Fetch Total Credits on Platform", PlatformInfoTaskRequestType::TotalCreditsOnPlatform),
-            ("version_voting", "Fetch Version Voting State", PlatformInfoTaskRequestType::CurrentVersionVotingState),
-            ("validator_set", "Fetch Validator Set Info", PlatformInfoTaskRequestType::CurrentValidatorSetInfo),
-            ("withdrawals_queue", "Fetch Current Withdrawals in Queue", PlatformInfoTaskRequestType::CurrentWithdrawalsInQueue),
-            ("recent_withdrawals", "Fetch Recently Completed Withdrawals", PlatformInfoTaskRequestType::RecentlyCompletedWithdrawals),
+            (
+                "basic_info",
+                "Fetch Basic Platform Info",
+                PlatformInfoTaskRequestType::BasicPlatformInfo,
+            ),
+            (
+                "epoch_info",
+                "Fetch Current Epoch Info",
+                PlatformInfoTaskRequestType::CurrentEpochInfo,
+            ),
+            (
+                "total_credits",
+                "Fetch Total Credits on Platform",
+                PlatformInfoTaskRequestType::TotalCreditsOnPlatform,
+            ),
+            (
+                "version_voting",
+                "Fetch Version Voting State",
+                PlatformInfoTaskRequestType::CurrentVersionVotingState,
+            ),
+            (
+                "validator_set",
+                "Fetch Validator Set Info",
+                PlatformInfoTaskRequestType::CurrentValidatorSetInfo,
+            ),
+            (
+                "withdrawals_queue",
+                "Fetch Current Withdrawals in Queue",
+                PlatformInfoTaskRequestType::CurrentWithdrawalsInQueue,
+            ),
+            (
+                "recent_withdrawals",
+                "Fetch Recently Completed Withdrawals",
+                PlatformInfoTaskRequestType::RecentlyCompletedWithdrawals,
+            ),
         ];
 
         let mut action = AppAction::None;
 
         ui.vertical(|ui| {
             for (task_id, button_text, task_type) in button_tasks {
-                ui.horizontal(|ui| {
-                    let is_loading = self.active_tasks.contains(task_id);
-                    
-                    if is_loading {
-                        ui.spinner();
-                    }
-                    
-                    let button = ui.button(button_text);
-                    if button.clicked() && !is_loading {
-                        action = self.trigger_task(task_type, task_id);
-                    }
-                });
+                let is_loading = self.active_tasks.contains(task_id);
+
+                let button = ui.add_enabled(!is_loading, egui::Button::new(button_text));
+                if button.clicked() {
+                    action = self.trigger_task(task_type, task_id);
+                }
                 ui.add_space(5.0);
             }
         });
@@ -86,6 +109,36 @@ impl PlatformInfoScreen {
     }
 
     fn render_results(&self, ui: &mut Ui) {
+        // Check if any task is loading
+        if !self.active_tasks.is_empty() {
+            ui.vertical_centered(|ui| {
+                ui.add_space(50.0);
+
+                // Show spinner with theme-aware color
+                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                let spinner_color = if dark_mode {
+                    Color32::from_gray(200)
+                } else {
+                    Color32::from_gray(60)
+                };
+                ui.add(egui::widgets::Spinner::default().color(spinner_color));
+
+                ui.add_space(10.0);
+                ui.heading("Loading...");
+                ui.label("Fetching platform information from the network");
+            });
+            return;
+        }
+
+        // Check for errors and display them in the results area
+        if let Some(error) = &self.error_message {
+            ui.heading("Error");
+            ui.separator();
+            ui.colored_label(Color32::RED, error);
+            return;
+        }
+
+        // Display normal results
         if let Some(result) = &self.current_result {
             if let Some(title) = &self.current_result_title {
                 ui.heading(title);
@@ -107,7 +160,7 @@ impl ScreenLike for PlatformInfoScreen {
         // Clear all cached data
         self.platform_version = None;
         self.core_chain_lock_height = None;
-        self.network = None;
+        self.network = self.app_context.network;
         self.current_result = None;
         self.current_result_title = None;
         self.active_tasks.clear();
@@ -138,15 +191,10 @@ impl ScreenLike for PlatformInfoScreen {
             ui.heading("Platform Information Tool");
             ui.separator();
 
-            if let Some(error) = &self.error_message {
-                ui.colored_label(Color32::RED, format!("Error: {}", error));
-                ui.separator();
-            }
-
             let mut button_action = AppAction::None;
 
             let available_height = ui.available_height();
-            
+
             ui.horizontal(|ui| {
                 // Left column: Action buttons only (fixed width)
                 ui.allocate_ui_with_layout(
@@ -205,8 +253,8 @@ impl ScreenLike for PlatformInfoScreen {
                 } => {
                     self.platform_version = Some(platform_version);
                     self.core_chain_lock_height = core_chain_lock_height;
-                    self.network = Some(network);
-                    
+                    self.network = network;
+
                     // Format basic platform info for display
                     let basic_info = format!(
                         "Platform Version Information:\n\n\
@@ -228,9 +276,10 @@ impl ScreenLike for PlatformInfoScreen {
                         platform_version.system_data_contracts.dpns,
                         platform_version.system_data_contracts.withdrawals,
                         network,
-                        core_chain_lock_height.map_or("Not available".to_string(), |h| h.to_string())
+                        core_chain_lock_height
+                            .map_or("Not available".to_string(), |h| h.to_string())
                     );
-                    
+
                     self.current_result = Some(basic_info);
                     self.current_result_title = Some("Basic Platform Information".to_string());
                     self.active_tasks.remove("basic_info");

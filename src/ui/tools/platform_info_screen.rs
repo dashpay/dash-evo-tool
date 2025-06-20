@@ -145,14 +145,17 @@ impl ScreenLike for PlatformInfoScreen {
 
             let mut button_action = AppAction::None;
 
+            let available_height = ui.available_height();
+            
             ui.horizontal(|ui| {
                 // Left column: Action buttons only (fixed width)
                 ui.allocate_ui_with_layout(
-                    egui::vec2(280.0, ui.available_height()),
+                    egui::vec2(280.0, available_height),
                     egui::Layout::top_down(egui::Align::Min),
                     |ui| {
                         ScrollArea::vertical()
                             .id_salt("platform_buttons_scroll")
+                            .max_height(available_height)
                             .show(ui, |ui| {
                                 button_action = self.render_action_buttons(ui);
                             });
@@ -162,13 +165,18 @@ impl ScreenLike for PlatformInfoScreen {
                 ui.separator();
 
                 // Right column: Results (takes remaining space)
-                ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-                    ScrollArea::vertical()
-                        .id_salt("platform_results_scroll")
-                        .show(ui, |ui| {
-                            self.render_results(ui);
-                        });
-                });
+                ui.allocate_ui_with_layout(
+                    egui::vec2(ui.available_width(), available_height),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
+                        ScrollArea::vertical()
+                            .id_salt("platform_results_scroll")
+                            .max_height(available_height)
+                            .show(ui, |ui| {
+                                self.render_results(ui);
+                            });
+                    },
+                );
             });
 
             button_action

@@ -263,17 +263,17 @@ impl ScreenLike for RegisterDpnsNameScreen {
             let name = self.name_input.trim();
             if !name.is_empty() {
                 ui.add_space(10.0);
-                
+
                 // Validate the name
                 let validation_result = validate_dpns_name(name);
-                
+
                 match validation_result {
                     DpnsNameValidationResult::Valid => {
                         ui.colored_label(
                             egui::Color32::DARK_GREEN,
                             "Valid name format",
                         );
-                        
+
                         // Show contested status and cost if valid
                         if is_contested_name(&name.to_lowercase()) {
                             ui.colored_label(

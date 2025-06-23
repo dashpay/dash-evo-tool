@@ -175,6 +175,7 @@ impl TokensScreen {
             if let Some(token_info) = self.all_known_tokens.get(&token_id).cloned() {
                 let mut is_open = true;
                 let mut close_popup = false;
+                let dark_mode = ui.ctx().style().visuals.dark_mode;
 
                 egui::Window::new("Token Configuration Details")
                     .resizable(true)
@@ -183,9 +184,9 @@ impl TokensScreen {
                     .default_height(500.0)
                     .open(&mut is_open)
                     .show(ui.ctx(), |ui| {
-                        // Add white background frame
+                        // Add theme-aware background frame
                         egui::Frame::new()
-                            .fill(egui::Color32::WHITE)
+                            .fill(DashColors::surface(dark_mode))
                             .inner_margin(egui::Margin::same(10))
                             .show(ui, |ui| {
                                 egui::ScrollArea::vertical().show(ui, |ui| {
@@ -363,7 +364,7 @@ impl TokensScreen {
 
 
                         if shows_estimation_column {
-                            table = table.column(Column::initial(60.0).resizable(true)); // Estimated Rewards
+                            table = table.column(Column::initial(85.0).resizable(true)); // Estimated Rewards
                         }
 
                         table = table.column(Column::initial(200.0).resizable(true));// Actions
@@ -394,7 +395,7 @@ impl TokensScreen {
                         })
                             .body(|mut body| {
                                 for itb in &detail_list {
-                                    body.row(25.0, |mut row| {
+                                    body.row(30.0, |mut row| {
                                         row.col(|ui| {
                                             // Show identity alias or ID
                                             if let Some(alias) = self
@@ -444,7 +445,7 @@ impl TokensScreen {
                                                                 ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
                                                                     ui.add_space(-9.0);
                                                                     ui.horizontal(|ui| {
-                                                                        if StyledButton::primary("Estimate").show(ui).clicked() {
+                                                                        if ui.button("Estimate").clicked() {
                                                                             action = AppAction::BackendTask(BackendTask::TokenTask(Box::new(TokenTask::EstimatePerpetualTokenRewardsWithExplanation {
                                                                                 identity_id: itb.identity_id,
                                                                                 token_id: itb.token_id,
@@ -454,7 +455,10 @@ impl TokensScreen {
                                                                     })
                                                                 });
                                                             });
-                                                        } else if StyledButton::primary("Estimate").show(ui).clicked() {
+                                                        } else if ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                                                            ui.add_space(-3.0);
+                                                            ui.button("Estimate").clicked()
+                                                        }).inner {
                                                             action = AppAction::BackendTask(BackendTask::TokenTask(Box::new(TokenTask::EstimatePerpetualTokenRewardsWithExplanation {
                                                                 identity_id: itb.identity_id,
                                                                 token_id: itb.token_id,

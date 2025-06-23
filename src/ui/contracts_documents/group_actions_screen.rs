@@ -43,6 +43,7 @@ use dash_sdk::dpp::group::group_action::{GroupAction, GroupActionAccessors};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::prelude::TimestampMillis;
+use dash_sdk::dpp::tokens::emergency_action::TokenEmergencyAction;
 use dash_sdk::dpp::tokens::token_event::TokenEvent;
 use dash_sdk::platform::Identifier;
 use dash_sdk::query_types::IndexMap;
@@ -195,82 +196,7 @@ impl GroupActionsScreen {
                     })
                     .body(|mut body| {
                         for (id, group_action) in group_actions {
-                            let (typ, info, note): (&str, String, String) = match group_action {
-                                GroupAction::V0(action_v0) => match &action_v0.event {
-                                    GroupActionEvent::TokenEvent(token_event) => {
-                                        match token_event {
-                                            TokenEvent::Mint(amount, identifier, note_opt) => (
-                                                "Mint",
-                                                format!("{} to {}", amount, identifier),
-                                                note_opt.clone().unwrap_or_default().to_string(),
-                                            ),
-                                            TokenEvent::Burn(amount, burn_from, note_opt) => (
-                                                "Burn",
-                                                format!("{} from {}", amount, burn_from),
-                                                note_opt.clone().unwrap_or_default().to_string(),
-                                            ),
-                                            TokenEvent::Freeze(identifier, note_opt) => (
-                                                "Freeze",
-                                                format!("{}", identifier),
-                                                note_opt.clone().unwrap_or_default().to_string(),
-                                            ),
-                                            TokenEvent::Unfreeze(identifier, note_opt) => (
-                                                "Unfreeze",
-                                                format!("{}", identifier),
-                                                note_opt.clone().unwrap_or_default().to_string(),
-                                            ),
-                                            TokenEvent::DestroyFrozenFunds(
-                                                identifier,
-                                                amount,
-                                                note_opt,
-                                            ) => (
-                                                "DestroyFrozenFunds",
-                                                format!("{} from {}", amount, identifier),
-                                                note_opt.clone().unwrap_or_default().to_string(),
-                                            ),
-                                            TokenEvent::Transfer(
-                                                identifier,
-                                                public_note,
-                                                _,
-                                                _,
-                                                amount,
-                                            ) => (
-                                                "Transfer",
-                                                format!("{} to {}", amount, identifier),
-                                                public_note.clone().unwrap_or_default().to_string(),
-                                            ),
-                                            TokenEvent::Claim(dist_type, amount, note_opt) => (
-                                                "Claim",
-                                                format!("{} via {:?}", amount, dist_type),
-                                                note_opt.clone().unwrap_or_default().to_string(),
-                                            ),
-                                            TokenEvent::EmergencyAction(action, note_opt) => (
-                                                "Emergency",
-                                                format!("{:?}", action),
-                                                note_opt.clone().unwrap_or_default().to_string(),
-                                            ),
-                                            TokenEvent::ConfigUpdate(change_item, note_opt) => (
-                                                "ConfigUpdate",
-                                                format!("{:?}", change_item),
-                                                note_opt.clone().unwrap_or_default().to_string(),
-                                            ),
-                                            TokenEvent::ChangePriceForDirectPurchase(
-                                                schedule,
-                                                note_opt,
-                                            ) => (
-                                                "ChangePrice",
-                                                format!("{:?}", schedule),
-                                                note_opt.clone().unwrap_or_default().to_string(),
-                                            ),
-                                            TokenEvent::DirectPurchase(amount, credits) => (
-                                                "DirectPurchase",
-                                                format!("{} for {} credits", amount, credits),
-                                                "".to_string(),
-                                            ),
-                                        }
-                                    }
-                                },
-                            };
+                            let GroupActionEvent::TokenEvent(token_event) = group_action.event();
 
                             body.row(row_height, |mut row| {
                                 row.col(|ui| {
@@ -286,21 +212,19 @@ impl GroupActionsScreen {
                                 });
                                 row.col(|ui| {
                                     ui.horizontal(|ui| {
-                                        ui.label(typ);
+                                        ui.label(self.get_token_event_type(token_event));
                                         ui.add_space(30.0);
                                     });
                                 });
                                 row.col(|ui| {
-                                    let info_clone = info.clone();
                                     ui.horizontal(|ui| {
-                                        ui.label(info_clone);
+                                        ui.label(self.get_token_event_info(token_event));
                                         ui.add_space(30.0);
                                     });
                                 });
                                 row.col(|ui| {
-                                    let note_clone = note.clone();
                                     ui.horizontal(|ui| {
-                                        ui.label(note_clone);
+                                        ui.label(self.get_token_event_note(token_event));
                                         ui.add_space(30.0);
                                     });
                                 });
@@ -315,10 +239,7 @@ impl GroupActionsScreen {
                                         )
                                         .clicked()
                                     {
-                                        let token_contract_position = match group_action {
-                                            GroupAction::V0(action_v0) => action_v0
-                                                .token_contract_position(),
-                                        };
+                                        let token_contract_position = group_action.token_contract_position();
                                         let token_id = self.selected_contract.clone().expect("No contract selected").contract.token_id(token_contract_position).expect("No token ID found at the given position");
                                         let identity_token_balance = match self
                                             .identity_token_balances
@@ -350,182 +271,8 @@ impl GroupActionsScreen {
                                                 return;
                                             }
                                         };
-                                        match typ {
-                                            "Mint" => {
-                                                let mut mint_screen =
-                                                    MintTokensScreen::new(identity_token_info, &self.app_context);
 
-                                                mint_screen.group_action_id = Some(*id);
-                                                mint_screen.amount_to_mint = info
-                                                    .split_whitespace()
-                                                    .next()
-                                                    .unwrap_or("0")
-                                                    .to_string();
-                                                mint_screen.public_note = if !note.is_empty() {
-                                                    Some(note)
-                                                } else {
-                                                    None
-                                                };
-
-                                                action |= AppAction::AddScreen(
-                                                    Screen::MintTokensScreen(mint_screen),
-                                                );
-                                            }
-                                            "Burn" => {
-                                                let mut burn_screen =
-                                                    BurnTokensScreen::new(identity_token_info, &self.app_context);
-
-                                                burn_screen.group_action_id = Some(*id);
-                                                burn_screen.amount_to_burn = info
-                                                    .split_whitespace()
-                                                    .next()
-                                                    .unwrap_or("0")
-                                                    .to_string();
-                                                burn_screen.public_note = if !note.is_empty() {
-                                                    Some(note)
-                                                } else {
-                                                    None
-                                                };
-
-                                                action |= AppAction::AddScreen(
-                                                    Screen::BurnTokensScreen(burn_screen),
-                                                );
-                                            }
-                                            "Freeze" => {
-                                                let mut freeze_screen = FreezeTokensScreen::new(
-                                                    identity_token_info, &self.app_context,
-                                                );
-                                                freeze_screen.group_action_id = Some(*id);
-                                                freeze_screen.freeze_identity_id = info
-                                                    .split_whitespace()
-                                                    .next()
-                                                    .unwrap_or("")
-                                                    .to_string();
-                                                freeze_screen.public_note = if !note.is_empty() {
-                                                    Some(note)
-                                                } else {
-                                                    None
-                                                };
-
-                                                action |= AppAction::AddScreen(
-                                                    Screen::FreezeTokensScreen(freeze_screen),
-                                                );
-                                            }
-                                            "Unfreeze" => {
-                                                let mut unfreeze_screen = UnfreezeTokensScreen::new(
-                                                    identity_token_info, &self.app_context,
-                                                );
-                                                unfreeze_screen.group_action_id = Some(*id);
-                                                unfreeze_screen.unfreeze_identity_id = info
-                                                    .split_whitespace()
-                                                    .next()
-                                                    .unwrap_or("")
-                                                    .to_string();
-                                                unfreeze_screen.public_note = if !note.is_empty() {
-                                                    Some(note)
-                                                } else {
-                                                    None
-                                                };
-
-                                                action |= AppAction::AddScreen(
-                                                    Screen::UnfreezeTokensScreen(unfreeze_screen),
-                                                );
-                                            }
-                                            "DestroyFrozenFunds" => {
-                                                let mut destroy_screen =
-                                                    DestroyFrozenFundsScreen::new(
-                                                        identity_token_info, &self.app_context,
-                                                    );
-                                                destroy_screen.group_action_id = Some(*id);
-                                                destroy_screen.frozen_identity_id = info
-                                                    .split_whitespace()
-                                                    .nth(2)
-                                                    .unwrap_or("")
-                                                    .to_string();
-                                                destroy_screen.public_note = if !note.is_empty() {
-                                                    Some(note)
-                                                } else {
-                                                    None
-                                                };
-
-                                                action |= AppAction::AddScreen(
-                                                    Screen::DestroyFrozenFundsScreen(
-                                                        destroy_screen,
-                                                    ),
-                                                );
-                                            }
-                                            "Emergency" => match info.split_whitespace().nth(1) {
-                                                Some("Pause") => {
-                                                    let mut pause_screen = PauseTokensScreen::new(
-                                                        identity_token_info, &self.app_context,
-                                                    );
-                                                    pause_screen.group_action_id = Some(*id);
-                                                    pause_screen.public_note = if !note.is_empty() {
-                                                        Some(note)
-                                                    } else {
-                                                        None
-                                                    };
-                                                    action |= AppAction::AddScreen(
-                                                        Screen::PauseTokensScreen(pause_screen),
-                                                    );
-                                                }
-                                                Some("Resume") => {
-                                                    let mut resume_screen = ResumeTokensScreen::new(
-                                                        identity_token_info, &self.app_context,
-                                                    );
-                                                    resume_screen.group_action_id = Some(*id);
-                                                    resume_screen.public_note = if !note.is_empty() {
-                                                        Some(note)
-                                                    } else {
-                                                        None
-                                                    };
-                                                    action |= AppAction::AddScreen(
-                                                        Screen::ResumeTokensScreen(resume_screen),
-                                                    );
-                                                }
-                                                _ => {}
-                                            },
-                                            "ConfigUpdate" => {
-                                                let mut update_screen =
-                                                    UpdateTokenConfigScreen::new(
-                                                        identity_token_info, &self.app_context,
-                                                    );
-                                                update_screen.group_action_id = Some(*id);
-                                                update_screen.public_note = if !note.is_empty() {
-                                                    Some(note)
-                                                } else {
-                                                    None
-                                                };
-                                                action |= AppAction::AddScreen(
-                                                    Screen::UpdateTokenConfigScreen(Box::new(update_screen)),
-                                                );
-                                            }
-                                            "ChangePrice" => {
-                                                let mut change_price_screen =
-                                                    SetTokenPriceScreen::new(
-                                                        identity_token_info, &self.app_context,
-                                                    );
-                                                change_price_screen.group_action_id = Some(*id);
-                                                change_price_screen.token_pricing_schedule =
-                                                    info.split_whitespace()
-                                                        .next()
-                                                        .unwrap_or("")
-                                                        .to_string();
-                                                change_price_screen.public_note = if !note.is_empty() {
-                                                    Some(note)
-                                                } else {
-                                                    None
-                                                };
-                                                action |= AppAction::AddScreen(
-                                                    Screen::SetTokenPriceScreen(
-                                                        change_price_screen,
-                                                    ),
-                                                );
-                                            }
-                                            _ => {
-                                                action |= AppAction::None;
-                                            }
-                                        }
+                                        self.handle_token_event_action(token_event, *id, identity_token_info, &mut action);
                                     }
                                 });
                             });
@@ -534,6 +281,154 @@ impl GroupActionsScreen {
             });
 
         action
+    }
+
+    fn get_token_event_type(&self, token_event: &TokenEvent) -> &'static str {
+        match token_event {
+            TokenEvent::Mint(..) => "Mint",
+            TokenEvent::Burn(..) => "Burn",
+            TokenEvent::Freeze(..) => "Freeze",
+            TokenEvent::Unfreeze(..) => "Unfreeze",
+            TokenEvent::DestroyFrozenFunds(..) => "DestroyFrozenFunds",
+            TokenEvent::Transfer(..) => "Transfer",
+            TokenEvent::Claim(..) => "Claim",
+            TokenEvent::EmergencyAction(..) => "Emergency",
+            TokenEvent::ConfigUpdate(..) => "ConfigUpdate",
+            TokenEvent::ChangePriceForDirectPurchase(..) => "ChangePrice",
+            TokenEvent::DirectPurchase(..) => "DirectPurchase",
+        }
+    }
+
+    fn get_token_event_info(&self, token_event: &TokenEvent) -> String {
+        match token_event {
+            TokenEvent::Mint(amount, identifier, _) => format!("{} to {}", amount, identifier),
+            TokenEvent::Burn(amount, burn_from, _) => format!("{} from {}", amount, burn_from),
+            TokenEvent::Freeze(identifier, _) => format!("{}", identifier),
+            TokenEvent::Unfreeze(identifier, _) => format!("{}", identifier),
+            TokenEvent::DestroyFrozenFunds(identifier, amount, _) => {
+                format!("{} from {}", amount, identifier)
+            }
+            TokenEvent::Transfer(identifier, _, _, _, amount) => {
+                format!("{} to {}", amount, identifier)
+            }
+            TokenEvent::Claim(dist_type, amount, _) => format!("{} via {:?}", amount, dist_type),
+            TokenEvent::EmergencyAction(action, _) => format!("{:?}", action),
+            TokenEvent::ConfigUpdate(change_item, _) => format!("{:?}", change_item),
+            TokenEvent::ChangePriceForDirectPurchase(schedule, _) => format!("{:?}", schedule),
+            TokenEvent::DirectPurchase(amount, credits) => {
+                format!("{} for {} credits", amount, credits)
+            }
+        }
+    }
+
+    fn get_token_event_note(&self, token_event: &TokenEvent) -> String {
+        match token_event {
+            TokenEvent::Mint(_, _, note_opt)
+            | TokenEvent::Burn(_, _, note_opt)
+            | TokenEvent::Freeze(_, note_opt)
+            | TokenEvent::Unfreeze(_, note_opt)
+            | TokenEvent::DestroyFrozenFunds(_, _, note_opt)
+            | TokenEvent::Claim(_, _, note_opt)
+            | TokenEvent::EmergencyAction(_, note_opt)
+            | TokenEvent::ConfigUpdate(_, note_opt)
+            | TokenEvent::ChangePriceForDirectPurchase(_, note_opt) => {
+                note_opt.clone().unwrap_or_default().to_string()
+            }
+            TokenEvent::Transfer(_, public_note, _, _, _) => {
+                public_note.clone().unwrap_or_default().to_string()
+            }
+            TokenEvent::DirectPurchase(_, _) => String::new(),
+        }
+    }
+
+    /// On click of the "Take Action" button
+    fn handle_token_event_action(
+        &mut self,
+        token_event: &TokenEvent,
+        action_id: Identifier,
+        identity_token_info: IdentityTokenInfo,
+        action: &mut AppAction,
+    ) {
+        match token_event {
+            TokenEvent::Mint(amount, _identifier, note_opt) => {
+                let mut mint_screen = MintTokensScreen::new(identity_token_info, &self.app_context);
+                mint_screen.group_action_id = Some(action_id);
+                mint_screen.amount_to_mint = amount.to_string();
+                mint_screen.public_note = note_opt.clone();
+                *action |= AppAction::AddScreen(Screen::MintTokensScreen(mint_screen));
+            }
+            TokenEvent::Burn(amount, _burn_from, note_opt) => {
+                let mut burn_screen = BurnTokensScreen::new(identity_token_info, &self.app_context);
+                burn_screen.group_action_id = Some(action_id);
+                burn_screen.amount_to_burn = amount.to_string();
+                burn_screen.public_note = note_opt.clone();
+                *action |= AppAction::AddScreen(Screen::BurnTokensScreen(burn_screen));
+            }
+            TokenEvent::Freeze(identifier, note_opt) => {
+                let mut freeze_screen =
+                    FreezeTokensScreen::new(identity_token_info, &self.app_context);
+                freeze_screen.group_action_id = Some(action_id);
+                freeze_screen.freeze_identity_id = identifier.to_string(Encoding::Base58);
+                freeze_screen.public_note = note_opt.clone();
+                *action |= AppAction::AddScreen(Screen::FreezeTokensScreen(freeze_screen));
+            }
+            TokenEvent::Unfreeze(identifier, note_opt) => {
+                let mut unfreeze_screen =
+                    UnfreezeTokensScreen::new(identity_token_info, &self.app_context);
+                unfreeze_screen.group_action_id = Some(action_id);
+                unfreeze_screen.unfreeze_identity_id = identifier.to_string(Encoding::Base58);
+                unfreeze_screen.public_note = note_opt.clone();
+                *action |= AppAction::AddScreen(Screen::UnfreezeTokensScreen(unfreeze_screen));
+            }
+            TokenEvent::DestroyFrozenFunds(identifier, _amount, note_opt) => {
+                let mut destroy_screen =
+                    DestroyFrozenFundsScreen::new(identity_token_info, &self.app_context);
+                destroy_screen.group_action_id = Some(action_id);
+                destroy_screen.frozen_identity_id = identifier.to_string(Encoding::Base58);
+                destroy_screen.public_note = note_opt.clone();
+                *action |= AppAction::AddScreen(Screen::DestroyFrozenFundsScreen(destroy_screen));
+            }
+            TokenEvent::EmergencyAction(emergency_action, note_opt) => {
+                // Match against the debug representation to handle Pause/Resume
+                match emergency_action {
+                    TokenEmergencyAction::Pause => {
+                        let mut pause_screen =
+                            PauseTokensScreen::new(identity_token_info, &self.app_context);
+                        pause_screen.group_action_id = Some(action_id);
+                        pause_screen.public_note = note_opt.clone();
+                        *action |= AppAction::AddScreen(Screen::PauseTokensScreen(pause_screen));
+                    }
+                    TokenEmergencyAction::Resume => {
+                        let mut resume_screen =
+                            ResumeTokensScreen::new(identity_token_info, &self.app_context);
+                        resume_screen.group_action_id = Some(action_id);
+                        resume_screen.public_note = note_opt.clone();
+                        *action |= AppAction::AddScreen(Screen::ResumeTokensScreen(resume_screen));
+                    }
+                }
+            }
+            TokenEvent::ConfigUpdate(change_item, note_opt) => {
+                let mut update_screen =
+                    UpdateTokenConfigScreen::new(identity_token_info, &self.app_context);
+                update_screen.group_action_id = Some(action_id);
+                update_screen.public_note = note_opt.clone();
+                update_screen.change_item = change_item.clone();
+                *action |=
+                    AppAction::AddScreen(Screen::UpdateTokenConfigScreen(Box::new(update_screen)));
+            }
+            TokenEvent::ChangePriceForDirectPurchase(schedule, note_opt) => {
+                let mut change_price_screen =
+                    SetTokenPriceScreen::new(identity_token_info, &self.app_context);
+                change_price_screen.group_action_id = Some(action_id);
+                change_price_screen.token_pricing_schedule = format!("{:?}", schedule);
+                change_price_screen.public_note = note_opt.clone();
+                *action |= AppAction::AddScreen(Screen::SetTokenPriceScreen(change_price_screen));
+            }
+            _ => {
+                // For other token events that don't have specific screens
+                *action |= AppAction::None;
+            }
+        }
     }
 }
 

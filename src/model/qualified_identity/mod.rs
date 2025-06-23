@@ -220,7 +220,7 @@ pub struct QualifiedIdentity {
     pub associated_wallets: BTreeMap<WalletSeedHash, Arc<RwLock<Wallet>>>,
     /// The index used to register the identity
     pub wallet_index: Option<u32>,
-    pub top_ups: BTreeMap<u32, u32>,
+    pub top_ups: BTreeMap<u32, u64>,
     pub status: IdentityStatus,
 }
 

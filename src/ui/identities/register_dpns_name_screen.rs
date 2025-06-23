@@ -137,7 +137,7 @@ impl RegisterDpnsNameScreen {
             ui.add_space(50.0);
 
             ui.heading("🎉");
-            ui.heading("Successfully registered dpns name.");
+            ui.heading("Successfully registered DPNS name.");
 
             ui.add_space(20.0);
 

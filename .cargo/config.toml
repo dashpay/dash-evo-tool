@@ -1,3 +1,11 @@
+[build]
+rustflags = []
+
+[env]
+SDKROOT = "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk"
+CC = "clang"
+CFLAGS = "-isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk"
+
 [target.aarch64-unknown-linux-musl]
 rustflags = ["-C", "target-feature=-crt-static"]
 

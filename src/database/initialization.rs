@@ -4,7 +4,7 @@ use rusqlite::{params, Connection};
 use std::fs;
 use std::path::Path;
 
-pub const DEFAULT_DB_VERSION: u16 = 11;
+pub const DEFAULT_DB_VERSION: u16 = 13;
 
 pub const DEFAULT_NETWORK: &str = "dash";
 
@@ -33,6 +33,8 @@ impl Database {
 
     fn apply_version_changes(&self, version: u16, tx: &Connection) -> rusqlite::Result<()> {
         match version {
+            13 => self.create_network_connection_settings_table(tx)?,
+            12 => self.add_connection_type_column(tx)?,
             11 => self.rename_identity_column_is_in_creation_to_status(tx)?,
             10 => {
                 self.add_theme_preference_column(tx)?;
@@ -216,6 +218,7 @@ impl Database {
             custom_dash_qt_path TEXT,
             overwrite_dash_conf INTEGER,
             theme_preference TEXT DEFAULT 'System',
+            connection_type TEXT DEFAULT 'DashCore',
             database_version INTEGER NOT NULL
         )",
             [],
@@ -385,6 +388,20 @@ impl Database {
         self.initialize_identity_order_table(&conn)?;
         self.initialize_token_order_table(&conn)?;
         self.initialize_identity_token_balances_table(&conn)?;
+        self.create_network_connection_settings_table(&conn)?;
+
+        Ok(())
+    }
+
+    /// Creates the network_connection_settings table for per-network connection preferences
+    pub fn create_network_connection_settings_table(&self, conn: &Connection) -> rusqlite::Result<()> {
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS network_connection_settings (
+                network TEXT PRIMARY KEY,
+                connection_type TEXT NOT NULL DEFAULT 'DashCore'
+            )",
+            [],
+        )?;
 
         Ok(())
     }

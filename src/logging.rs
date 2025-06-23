@@ -6,9 +6,14 @@ use tracing_subscriber::EnvFilter;
 pub fn initialize_logger() {
     // Initialize log file, with improved error handling
     let log_file_path = app_user_data_file_path("det.log").expect("should create log file path");
-    let log_file = match std::fs::File::create(log_file_path) {
+    let log_file = match std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(log_file_path)
+    {
         Ok(file) => file,
-        Err(e) => panic!("Failed to create log file: {:?}", e),
+        Err(e) => panic!("Failed to open log file: {:?}", e),
     };
 
     let filter = EnvFilter::try_new(
@@ -48,5 +53,6 @@ pub fn initialize_logger() {
         default_panic_hook(panic_info);
     }));
 
+    info!("=== Dash Evo Tool Session Started ===");
     info!("Logger initialized successfully");
 }

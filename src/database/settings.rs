@@ -1,5 +1,6 @@
 use crate::database::initialization::DEFAULT_DB_VERSION;
 use crate::database::Database;
+use crate::model::connection_type::ConnectionType;
 use crate::model::password_info::PasswordInfo;
 use crate::ui::theme::ThemeMode;
 use crate::ui::RootScreenType;
@@ -112,6 +113,24 @@ impl Database {
         Ok(())
     }
 
+    pub fn add_connection_type_column(&self, conn: &rusqlite::Connection) -> Result<()> {
+        // Check if connection_type column exists
+        let connection_type_exists: bool = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('settings') WHERE name='connection_type'",
+            [],
+            |row| row.get::<_, i32>(0).map(|count| count > 0),
+        )?;
+
+        if !connection_type_exists {
+            conn.execute(
+                "ALTER TABLE settings ADD COLUMN connection_type TEXT DEFAULT 'DashCore';",
+                (),
+            )?;
+        }
+
+        Ok(())
+    }
+
     pub fn update_theme_preference(&self, theme_preference: ThemeMode) -> Result<()> {
         let theme_str = match theme_preference {
             ThemeMode::Light => "Light",
@@ -127,6 +146,68 @@ impl Database {
         )?;
 
         Ok(())
+    }
+
+    #[allow(dead_code)]
+    pub fn update_connection_type(&self, connection_type: ConnectionType) -> Result<()> {
+        let connection_str = match connection_type {
+            ConnectionType::DashCore => "DashCore",
+            ConnectionType::DashSpv => "DashSpv",
+        };
+
+        self.execute(
+            "UPDATE settings
+            SET connection_type = ?
+            WHERE id = 1",
+            rusqlite::params![connection_str],
+        )?;
+
+        Ok(())
+    }
+
+    /// Updates the connection type for a specific network
+    pub fn update_network_connection_type(&self, network: Network, connection_type: ConnectionType) -> Result<()> {
+        let network_str = network.to_string();
+        let connection_str = match connection_type {
+            ConnectionType::DashCore => "DashCore",
+            ConnectionType::DashSpv => "DashSpv",
+        };
+
+        self.execute(
+            "INSERT INTO network_connection_settings (network, connection_type)
+             VALUES (?, ?)
+             ON CONFLICT(network) DO UPDATE SET connection_type = excluded.connection_type",
+            rusqlite::params![network_str, connection_str],
+        )?;
+
+        Ok(())
+    }
+
+    /// Gets the connection type for a specific network
+    pub fn get_network_connection_type(&self, network: Network) -> Result<ConnectionType> {
+        let network_str = network.to_string();
+        let conn = self.conn.lock().unwrap();
+        
+        let result = conn.query_row(
+            "SELECT connection_type FROM network_connection_settings WHERE network = ?",
+            rusqlite::params![network_str],
+            |row| {
+                let connection_type: String = row.get(0)?;
+                Ok(match connection_type.as_str() {
+                    "DashSpv" => ConnectionType::DashSpv,
+                    _ => ConnectionType::DashCore, // Default to DashCore for unknown values
+                })
+            }
+        );
+
+        match result {
+            Ok(connection_type) => Ok(connection_type),
+            Err(rusqlite::Error::QueryReturnedNoRows) => {
+                // If no entry exists for this network, default to DashCore
+                Ok(ConnectionType::DashCore)
+            }
+            Err(e) => Err(e),
+        }
     }
 
     /// Updates the database version in the settings table.
@@ -154,12 +235,13 @@ impl Database {
             Option<String>,
             bool,
             ThemeMode,
+            ConnectionType,
         )>,
     > {
         // Query the settings row
         let conn = self.conn.lock().unwrap();
         let mut stmt =
-            conn.prepare("SELECT network, start_root_screen, password_check, main_password_salt, main_password_nonce, custom_dash_qt_path, overwrite_dash_conf, theme_preference FROM settings WHERE id = 1")?;
+            conn.prepare("SELECT network, start_root_screen, password_check, main_password_salt, main_password_nonce, custom_dash_qt_path, overwrite_dash_conf, theme_preference, connection_type FROM settings WHERE id = 1")?;
 
         let result = stmt.query_row([], |row| {
             let network: String = row.get(0)?;
@@ -170,6 +252,7 @@ impl Database {
             let custom_dash_qt_path: Option<String> = row.get(5)?;
             let overwrite_dash_conf: Option<bool> = row.get(6)?;
             let theme_preference: Option<String> = row.get(7)?;
+            let connection_type: Option<String> = row.get(8)?;
 
             // Combine the password-related fields if all are present, otherwise set to None
             let password_data = match (password_check, main_password_salt, main_password_nonce) {
@@ -197,6 +280,13 @@ impl Database {
                 _ => ThemeMode::System,                     // Default to System for unknown values
             };
 
+            // Parse connection type
+            let connection_type = match connection_type.as_deref() {
+                Some("DashSpv") => ConnectionType::DashSpv,
+                Some("DashCore") | None => ConnectionType::DashCore, // Default to DashCore if missing
+                _ => ConnectionType::DashCore, // Default to DashCore for unknown values
+            };
+
             Ok((
                 parsed_network,
                 root_screen_type,
@@ -204,6 +294,7 @@ impl Database {
                 custom_dash_qt_path,
                 overwrite_dash_conf.unwrap_or(true),
                 theme_mode,
+                connection_type,
             ))
         });
 

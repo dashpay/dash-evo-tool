@@ -4,6 +4,7 @@ use crate::backend_task::system_task::SystemTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::config::Config;
 use crate::context::AppContext;
+use crate::model::connection_type::ConnectionType;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::{island_central_panel, StyledCard, StyledCheckbox};
 use crate::ui::components::top_panel::add_top_panel;
@@ -14,7 +15,7 @@ use dash_sdk::dpp::identity::TimestampMillis;
 use eframe::egui::{self, Context, Ui};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub struct NetworkChooserScreen {
     pub mainnet_app_context: Arc<AppContext>,
@@ -34,6 +35,8 @@ pub struct NetworkChooserScreen {
     developer_mode: bool,
     theme_preference: ThemeMode,
     should_reset_collapsing_states: bool,
+    is_switching_connection: bool,
+    connection_switch_start_time: Option<Instant>,
 }
 
 impl NetworkChooserScreen {
@@ -70,7 +73,7 @@ impl NetworkChooserScreen {
             .get_settings()
             .ok()
             .flatten()
-            .map(|(_, _, _, _, _, theme)| theme)
+            .map(|(_, _, _, _, _, theme, _)| theme)
             .unwrap_or(ThemeMode::System);
 
         Self {
@@ -91,6 +94,8 @@ impl NetworkChooserScreen {
             developer_mode,
             theme_preference,
             should_reset_collapsing_states: true, // Start with collapsed state
+            is_switching_connection: false,
+            connection_switch_start_time: None,
         }
     }
 
@@ -212,7 +217,121 @@ impl NetworkChooserScreen {
                 // Advanced Settings Card Content
                 StyledCard::new().padding(20.0).show(ui, |ui| {
                     ui.vertical(|ui| {
+                        // Theme Selection Section
+                        ui.group(|ui| {
+                            ui.vertical(|ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        egui::RichText::new("Theme:")
+                                            .strong()
+                                            .color(DashColors::text_primary(dark_mode)),
+                                    );
+
+                                    egui::ComboBox::from_id_salt("theme_selection")
+                                        .selected_text(match self.theme_preference {
+                                            ThemeMode::Light => "Light",
+                                            ThemeMode::Dark => "Dark",
+                                            ThemeMode::System => "System",
+                                        })
+                                        .show_ui(ui, |ui| {
+                                            if ui.selectable_value(&mut self.theme_preference, ThemeMode::System, "System").clicked() {
+                                                app_action |= AppAction::BackendTask(BackendTask::SystemTask(
+                                                    SystemTask::UpdateThemePreference(ThemeMode::System)
+                                                ));
+                                            }
+                                            if ui.selectable_value(&mut self.theme_preference, ThemeMode::Light, "Light").clicked() {
+                                                app_action |= AppAction::BackendTask(BackendTask::SystemTask(
+                                                    SystemTask::UpdateThemePreference(ThemeMode::Light)
+                                                ));
+                                            }
+                                            if ui.selectable_value(&mut self.theme_preference, ThemeMode::Dark, "Dark").clicked() {
+                                                app_action |= AppAction::BackendTask(BackendTask::SystemTask(
+                                                    SystemTask::UpdateThemePreference(ThemeMode::Dark)
+                                                ));
+                                            }
+                                        });
+                                });
+                                ui.label(
+                                    egui::RichText::new(
+                                        "System: follows your OS theme • Light/Dark: force specific theme",
+                                    )
+                                    .color(DashColors::TEXT_SECONDARY),
+                                );
+                            });
+                        });
+
+                        // Connection Type Selection
+                        ui.add_space(16.0);
+                        ui.group(|ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    egui::RichText::new("Connection:")
+                                        .strong()
+                                        .color(DashColors::text_primary(dark_mode)),
+                                );
+
+                                // Get current connection type
+                                let current_connection_type = self.current_app_context().config.read().unwrap().connection_type.clone();
+                                let is_spv_supported = matches!(
+                                    self.current_network,
+                                    Network::Dash | Network::Testnet
+                                );
+
+                                egui::ComboBox::from_id_salt(format!("connection_type_selection_{}", current_connection_type.as_str()))
+                                    .selected_text(current_connection_type.as_str())
+                                    .show_ui(ui, |ui| {
+                                        if ui.selectable_label(current_connection_type == ConnectionType::DashCore, "Dash Core").clicked() && current_connection_type != ConnectionType::DashCore {
+                                            tracing::info!("User clicked to switch to Dash Core from {:?}", current_connection_type);
+                                            app_action |= AppAction::BackendTask(
+                                                BackendTask::SwitchConnectionType {
+                                                    connection_type: ConnectionType::DashCore,
+                                                }
+                                            );
+                                            self.is_switching_connection = true;
+                                            self.connection_switch_start_time = Some(Instant::now());
+                                        }
+
+                                        if is_spv_supported && ui.selectable_label(current_connection_type == ConnectionType::DashSpv, "SPV").clicked() && current_connection_type != ConnectionType::DashSpv {
+                                            tracing::info!("User clicked to switch to SPV from {:?}", current_connection_type);
+                                            app_action |= AppAction::BackendTask(
+                                                BackendTask::SwitchConnectionType {
+                                                    connection_type: ConnectionType::DashSpv,
+                                                }
+                                            );
+                                            self.is_switching_connection = true;
+                                            self.connection_switch_start_time = Some(Instant::now());
+                                        }
+                                    });
+
+                                if !is_spv_supported {
+                                    ui.colored_label(
+                                        DashColors::TEXT_SECONDARY,
+                                        "(SPV not available for this network)"
+                                    );
+                                }
+
+                                // Show loading indicator if switching connection
+                                if self.is_switching_connection {
+                                    ui.add_space(8.0);
+                                    ui.horizontal(|ui| {
+                                        ui.style_mut().visuals.widgets.inactive.fg_stroke = 
+                                            egui::Stroke::new(2.0, DashColors::DASH_BLUE);
+                                        ui.style_mut().visuals.widgets.hovered.fg_stroke = 
+                                            egui::Stroke::new(2.0, DashColors::DASH_BLUE);
+                                        ui.style_mut().visuals.widgets.active.fg_stroke = 
+                                            egui::Stroke::new(2.0, DashColors::DASH_BLUE);
+                                        ui.add(egui::Spinner::new());
+                                        ui.label(
+                                            egui::RichText::new("Switching connection type...")
+                                                .color(DashColors::text_secondary(dark_mode))
+                                        );
+                                    });
+                                }
+                            });
+                        });
+
                         // Dash-QT Path Section
+                        ui.add_space(16.0);
                         ui.group(|ui| {
                             ui.vertical(|ui| {
                                 ui.label(
@@ -394,50 +513,6 @@ impl NetworkChooserScreen {
                             });
                         });
 
-                        // Theme Selection Section
-                        ui.add_space(16.0);
-                        ui.group(|ui| {
-                            ui.vertical(|ui| {
-                                ui.horizontal(|ui| {
-                                    ui.label(
-                                        egui::RichText::new("Theme:")
-                                            .strong()
-                                            .color(DashColors::text_primary(dark_mode)),
-                                    );
-
-                                    egui::ComboBox::from_id_salt("theme_selection")
-                                        .selected_text(match self.theme_preference {
-                                            ThemeMode::Light => "Light",
-                                            ThemeMode::Dark => "Dark",
-                                            ThemeMode::System => "System",
-                                        })
-                                        .show_ui(ui, |ui| {
-                                            if ui.selectable_value(&mut self.theme_preference, ThemeMode::System, "System").clicked() {
-                                                app_action |= AppAction::BackendTask(BackendTask::SystemTask(
-                                                    SystemTask::UpdateThemePreference(ThemeMode::System)
-                                                ));
-                                            }
-                                            if ui.selectable_value(&mut self.theme_preference, ThemeMode::Light, "Light").clicked() {
-                                                app_action |= AppAction::BackendTask(BackendTask::SystemTask(
-                                                    SystemTask::UpdateThemePreference(ThemeMode::Light)
-                                                ));
-                                            }
-                                            if ui.selectable_value(&mut self.theme_preference, ThemeMode::Dark, "Dark").clicked() {
-                                                app_action |= AppAction::BackendTask(BackendTask::SystemTask(
-                                                    SystemTask::UpdateThemePreference(ThemeMode::Dark)
-                                                ));
-                                            }
-                                        });
-                                });
-                                ui.label(
-                                    egui::RichText::new(
-                                        "System: follows your OS theme • Light/Dark: force specific theme",
-                                    )
-                                    .color(DashColors::TEXT_SECONDARY),
-                                );
-                            });
-                        });
-
                         // Configuration Requirements Section (only show if not overwriting dash.conf)
                         if !self.overwrite_dash_conf {
                             ui.add_space(16.0);
@@ -513,16 +588,39 @@ impl NetworkChooserScreen {
         let dark_mode = ui.ctx().style().visuals.dark_mode;
         ui.label(name);
 
-        // Check network status
-        let is_working = self.check_network_status(network);
-        let status_color = if is_working {
-            DashColors::success_color(dark_mode) // Theme-aware green
+        // Check if this is the current network and if it's using SPV
+        let is_current_network = network == self.current_network;
+        let is_spv = if is_current_network {
+            self.current_app_context()
+                .db
+                .get_network_connection_type(network)
+                .ok()
+                .map(|ct| matches!(ct, ConnectionType::DashSpv))
+                .unwrap_or(false)
         } else {
-            DashColors::error_color(dark_mode) // Theme-aware red
+            false
+        };
+        
+        // Check network status - for SPV on current network, always consider it "working"
+        let is_working = if is_current_network && is_spv {
+            true // SPV doesn't use Core status
+        } else {
+            self.check_network_status(network)
+        };
+
+        // Determine status color and text
+        let (status_color, status_text) = if is_working {
+            if is_spv {
+                (DashColors::DASH_BLUE, "SPV")
+            } else {
+                (DashColors::success_color(dark_mode), "Online")
+            }
+        } else {
+            (DashColors::error_color(dark_mode), "Offline")
         };
 
         // Display status indicator
-        ui.colored_label(status_color, if is_working { "Online" } else { "Offline" });
+        ui.colored_label(status_color, status_text);
 
         if network == Network::Testnet && self.testnet_app_context.is_none() {
             ui.label("(No configs for testnet loaded)");
@@ -649,8 +747,12 @@ impl ScreenLike for NetworkChooserScreen {
         // This ensures dropdowns are closed when navigating back
         self.should_reset_collapsing_states = true;
 
+        // Clear any lingering loading state
+        self.is_switching_connection = false;
+        self.connection_switch_start_time = None;
+
         // Reload settings from database to ensure we have the latest values
-        if let Ok(Some((_, _, _, custom_dash_qt_path, overwrite_dash_conf, theme_preference))) =
+        if let Ok(Some((_, _, _, custom_dash_qt_path, overwrite_dash_conf, theme_preference, _))) =
             self.current_app_context().get_settings()
         {
             self.custom_dash_qt_path = custom_dash_qt_path;
@@ -667,36 +769,70 @@ impl ScreenLike for NetworkChooserScreen {
             self.devnet_core_status_online = false;
             self.local_core_status_online = false;
         }
+
+        // Clear loading state if connection switch failed
+        if message.contains("Failed to")
+            && (message.contains("connection")
+                || message.contains("SPV")
+                || message.contains("Core"))
+        {
+            self.is_switching_connection = false;
+            self.connection_switch_start_time = None;
+        }
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
-        if let BackendTaskSuccessResult::CoreItem(CoreItem::ChainLocks(
-            mainnet_chainlock,
-            testnet_chainlock,
-            devnet_chainlock,
-            local_chainlock,
-        )) = backend_task_success_result
-        {
-            match mainnet_chainlock {
-                Some(_) => self.mainnet_core_status_online = true,
-                None => self.mainnet_core_status_online = false,
+        match backend_task_success_result {
+            BackendTaskSuccessResult::CoreItem(CoreItem::ChainLocks(
+                mainnet_chainlock,
+                testnet_chainlock,
+                devnet_chainlock,
+                local_chainlock,
+            )) => {
+                match mainnet_chainlock {
+                    Some(_) => self.mainnet_core_status_online = true,
+                    None => self.mainnet_core_status_online = false,
+                }
+                match testnet_chainlock {
+                    Some(_) => self.testnet_core_status_online = true,
+                    None => self.testnet_core_status_online = false,
+                }
+                match devnet_chainlock {
+                    Some(_) => self.devnet_core_status_online = true,
+                    None => self.devnet_core_status_online = false,
+                }
+                match local_chainlock {
+                    Some(_) => self.local_core_status_online = true,
+                    None => self.local_core_status_online = false,
+                }
             }
-            match testnet_chainlock {
-                Some(_) => self.testnet_core_status_online = true,
-                None => self.testnet_core_status_online = false,
+            BackendTaskSuccessResult::Message(ref message) => {
+                // Check if this is a connection type switch message
+                if message.contains("Switched to Dash Core connection")
+                    || message.contains("Successfully switched to SPV connection")
+                {
+                    // Force UI refresh by reloading settings
+                    // This ensures the dropdown shows the correct connection type
+                    self.refresh_on_arrival();
+                    // Clear the loading state
+                    self.is_switching_connection = false;
+                    self.connection_switch_start_time = None;
+                }
             }
-            match devnet_chainlock {
-                Some(_) => self.devnet_core_status_online = true,
-                None => self.devnet_core_status_online = false,
-            }
-            match local_chainlock {
-                Some(_) => self.local_core_status_online = true,
-                None => self.local_core_status_online = false,
-            }
+            _ => {}
         }
     }
 
     fn ui(&mut self, ctx: &Context) -> AppAction {
+        // Check for connection switch timeout (5 seconds)
+        if let Some(start_time) = self.connection_switch_start_time {
+            if start_time.elapsed() > Duration::from_secs(5) {
+                // Clear the loading state after timeout
+                self.is_switching_connection = false;
+                self.connection_switch_start_time = None;
+            }
+        }
+
         let mut action = add_top_panel(
             ctx,
             self.current_app_context(),

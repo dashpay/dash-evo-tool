@@ -350,7 +350,10 @@ impl Wallet {
         let extended_private_key = derivation_path
             .derive_priv_ecdsa_for_master_seed(self.seed_bytes()?, Network::Dash)
             .map_err(|e| e.to_string())?;
-        Ok(extended_private_key.to_priv())
+        Ok(PrivateKey::new(
+            extended_private_key.private_key,
+            Network::Dash,
+        ))
     }
 
     pub fn private_key_for_address(
@@ -363,7 +366,9 @@ impl Wallet {
             .map(|derivation_path| {
                 derivation_path
                     .derive_priv_ecdsa_for_master_seed(self.seed_bytes()?, network)
-                    .map(|extended_private_key| extended_private_key.to_priv())
+                    .map(|extended_private_key| {
+                        PrivateKey::new(extended_private_key.private_key, network)
+                    })
                     .map_err(|e| e.to_string())
             })
             .transpose()
@@ -410,11 +415,11 @@ impl Wallet {
                     // We can use this address
                     found_unused_derivation_path = Some(derivation_path.clone());
                     let secp = Secp256k1::new();
-                    let public_key = self
+                    let extended_pub_key = self
                         .master_bip44_ecdsa_extended_public_key
                         .derive_pub(&secp, &derivation_path_extension)
-                        .map_err(|e| e.to_string())?
-                        .to_pub();
+                        .map_err(|e| e.to_string())?;
+                    let public_key = PublicKey::new(extended_pub_key.public_key);
                     known_public_key = Some(public_key);
                     break;
                 } else {
@@ -424,11 +429,11 @@ impl Wallet {
                 }
             } else {
                 let secp = Secp256k1::new();
-                let public_key = self
+                let extended_pub_key = self
                     .master_bip44_ecdsa_extended_public_key
                     .derive_pub(&secp, &derivation_path_extension)
-                    .map_err(|e| e.to_string())?
-                    .to_pub();
+                    .map_err(|e| e.to_string())?;
+                let public_key = PublicKey::new(extended_pub_key.public_key);
                 known_public_key = Some(public_key);
                 if let Some(app_context) = register {
                     let address = Address::p2pkh(&public_key, network);
@@ -483,7 +488,7 @@ impl Wallet {
         let extended_public_key = derivation_path
             .derive_pub_ecdsa_for_master_seed(self.seed_bytes()?, network)
             .map_err(|e| e.to_string())?;
-        Ok(extended_public_key.to_pub())
+        Ok(PublicKey::new(extended_public_key.public_key))
     }
 
     #[allow(clippy::type_complexity)]
@@ -507,7 +512,7 @@ impl Wallet {
                 .derive_pub_ecdsa_for_master_seed(self.seed_bytes()?, network)
                 .map_err(|e| e.to_string())?;
 
-            let public_key = extended_public_key.to_pub();
+            let public_key = PublicKey::new(extended_public_key.public_key);
             public_key_result_map.insert(
                 extended_public_key.public_key.serialize().to_vec(),
                 key_index,
@@ -540,11 +545,11 @@ impl Wallet {
             identity_index,
             key_index,
         );
-        let extended_public_key = derivation_path
+        let extended_private_key = derivation_path
             .derive_priv_ecdsa_for_master_seed(self.seed_bytes()?, network)
             .expect("derivation should not be able to fail");
 
-        let private_key = extended_public_key.to_priv();
+        let private_key = PrivateKey::new(extended_private_key.private_key, network);
         if let Some(app_context) = register_addresses {
             self.register_address_from_private_key(
                 &private_key,
@@ -654,7 +659,7 @@ impl Wallet {
         let extended_private_key = derivation_path
             .derive_priv_ecdsa_for_master_seed(self.seed_bytes()?, network)
             .expect("derivation should not be able to fail");
-        let private_key = extended_private_key.to_priv();
+        let private_key = PrivateKey::new(extended_private_key.private_key, network);
 
         if let Some(app_context) = register_addresses {
             self.register_address_from_private_key(
@@ -679,7 +684,7 @@ impl Wallet {
         let extended_private_key = derivation_path
             .derive_priv_ecdsa_for_master_seed(self.seed_bytes()?, network)
             .expect("derivation should not be able to fail");
-        let private_key = extended_private_key.to_priv();
+        let private_key = PrivateKey::new(extended_private_key.private_key, network);
 
         if let Some(app_context) = register_addresses {
             self.register_address_from_private_key(

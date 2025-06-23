@@ -7,6 +7,7 @@ use crate::backend_task::identity::IdentityTask;
 use crate::backend_task::platform_info::{PlatformInfoTaskRequestType, PlatformInfoTaskResult};
 use crate::backend_task::system_task::SystemTask;
 use crate::context::AppContext;
+use crate::model::connection_type::ConnectionType;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::tokens::tokens_screen::{
     ContractDescriptionInfo, IdentityTokenIdentifier, TokenInfo,
@@ -54,6 +55,7 @@ pub(crate) enum BackendTask {
     TokenTask(Box<TokenTask>),
     SystemTask(SystemTask),
     PlatformInfo(PlatformInfoTaskRequestType),
+    SwitchConnectionType { connection_type: ConnectionType },
     None,
 }
 
@@ -173,6 +175,10 @@ impl AppContext {
             BackendTask::SystemTask(system_task) => self.run_system_task(system_task, sender).await,
             BackendTask::PlatformInfo(platform_info_task) => {
                 self.run_platform_info_task(platform_info_task).await
+            }
+            BackendTask::SwitchConnectionType { connection_type } => {
+                // Switch the connection (this will update config and database)
+                self.switch_connection_type(connection_type).await
             }
             BackendTask::None => Ok(BackendTaskSuccessResult::None),
         }

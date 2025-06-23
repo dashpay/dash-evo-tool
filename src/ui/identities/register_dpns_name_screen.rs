@@ -461,25 +461,25 @@ pub fn validate_dpns_name(name: &str) -> DpnsNameValidationResult {
     if name.len() < 3 {
         return DpnsNameValidationResult::TooShort;
     }
-    
+
     if name.len() > 63 {
         return DpnsNameValidationResult::TooLong;
     }
-    
+
     if name.starts_with('-') {
         return DpnsNameValidationResult::StartsWithHyphen;
     }
-    
+
     if name.ends_with('-') {
         return DpnsNameValidationResult::EndsWithHyphen;
     }
-    
+
     for c in name.chars() {
         if !c.is_ascii_alphanumeric() && c != '-' {
             return DpnsNameValidationResult::InvalidCharacter(c);
         }
     }
-    
+
     DpnsNameValidationResult::Valid
 }
 
@@ -487,11 +487,22 @@ impl DpnsNameValidationResult {
     pub fn error_message(&self) -> Option<String> {
         match self {
             DpnsNameValidationResult::Valid => None,
-            DpnsNameValidationResult::TooShort => Some("Name must be at least 3 characters long".to_string()),
-            DpnsNameValidationResult::TooLong => Some("Name must be no more than 63 characters long".to_string()),
-            DpnsNameValidationResult::InvalidCharacter(c) => Some(format!("Invalid character '{}'. Only letters, numbers, and hyphens are allowed", c)),
-            DpnsNameValidationResult::StartsWithHyphen => Some("Name cannot start with a hyphen".to_string()),
-            DpnsNameValidationResult::EndsWithHyphen => Some("Name cannot end with a hyphen".to_string()),
+            DpnsNameValidationResult::TooShort => {
+                Some("Name must be at least 3 characters long".to_string())
+            }
+            DpnsNameValidationResult::TooLong => {
+                Some("Name must be no more than 63 characters long".to_string())
+            }
+            DpnsNameValidationResult::InvalidCharacter(c) => Some(format!(
+                "Invalid character '{}'. Only letters, numbers, and hyphens are allowed",
+                c
+            )),
+            DpnsNameValidationResult::StartsWithHyphen => {
+                Some("Name cannot start with a hyphen".to_string())
+            }
+            DpnsNameValidationResult::EndsWithHyphen => {
+                Some("Name cannot end with a hyphen".to_string())
+            }
         }
     }
 }

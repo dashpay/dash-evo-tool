@@ -40,6 +40,14 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
+#[derive(Debug, Clone)]
+pub struct SpvStatus {
+    pub is_running: bool,
+    pub header_height: Option<u32>,
+    pub filter_height: Option<u32>,
+    pub last_updated: std::time::Instant,
+}
+
 #[derive(Debug)]
 pub struct AppContext {
     pub(crate) network: Network,
@@ -63,6 +71,7 @@ pub struct AppContext {
     pub(crate) password_info: Option<PasswordInfo>,
     pub(crate) transactions_waiting_for_finality: Mutex<BTreeMap<Txid, Option<AssetLockProof>>>,
     pub(crate) spv_manager: Arc<SpvManager>,
+    pub(crate) spv_status: Mutex<SpvStatus>,
     pub(crate) provider: RwLock<Option<Arc<Provider>>>,
 }
 
@@ -164,11 +173,26 @@ impl AppContext {
             transactions_waiting_for_finality: Mutex::new(BTreeMap::new()),
             zmq_connection_status: Mutex::new(ZMQConnectionEvent::Disconnected),
             spv_manager,
+            spv_status: Mutex::new(SpvStatus {
+                is_running: false,
+                header_height: None,
+                filter_height: None,
+                last_updated: std::time::Instant::now(),
+            }),
             provider: RwLock::new(None),
         };
 
         let app_context = Arc::new(app_context);
         provider.bind_app_context(app_context.clone());
+
+        // Bind SPV manager to app context asynchronously
+        let spv_manager = app_context.spv_manager.clone();
+        let app_context_weak = Arc::downgrade(&app_context);
+        tokio::spawn(async move {
+            if let Some(app_ctx) = app_context_weak.upgrade() {
+                spv_manager.bind_app_context(app_ctx).await;
+            }
+        });
 
         // Store the provider reference in the AppContext
         {

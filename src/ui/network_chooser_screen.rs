@@ -344,7 +344,9 @@ impl NetworkChooserScreen {
                                 ui.horizontal(|ui| {
                                     if ui
                                         .add(
-                                            egui::Button::new("Select File")
+                                            egui::Button::new(egui::RichText::new("Select File")
+                                        .strong()
+                                        .color(DashColors::text_primary(dark_mode)))
                                                 .fill(DashColors::DASH_BLUE)
                                                 .stroke(egui::Stroke::NONE)
                                                 .corner_radius(egui::CornerRadius::same(6))
@@ -591,19 +593,20 @@ impl NetworkChooserScreen {
         // Check if this is the current network and if it's using SPV
         let is_current_network = network == self.current_network;
         let is_spv = if is_current_network {
-            self.current_app_context()
-                .db
-                .get_network_connection_type(network)
-                .ok()
-                .map(|ct| matches!(ct, ConnectionType::DashSpv))
-                .unwrap_or(false)
+            // Get connection type from config (cached) instead of DB query
+            let config = self.current_app_context().config.read().unwrap();
+            matches!(config.connection_type, ConnectionType::DashSpv)
         } else {
             false
         };
         
-        // Check network status - for SPV on current network, always consider it "working"
+        // Check network status - for SPV on current network, check cached status
         let is_working = if is_current_network && is_spv {
-            true // SPV doesn't use Core status
+            // For SPV, check cached status
+            self.current_app_context().spv_status
+                .lock()
+                .map(|status| status.is_running)
+                .unwrap_or(false)
         } else {
             self.check_network_status(network)
         };

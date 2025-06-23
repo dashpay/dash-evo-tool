@@ -100,22 +100,19 @@ fn add_location_view(ui: &mut Ui, location: Vec<(&str, AppAction)>, dark_mode: b
 fn add_connection_indicator(ui: &mut Ui, app_context: &Arc<AppContext>) -> AppAction {
     let mut action = AppAction::None;
 
-    // Check if we're using SPV
-    let connection_type = app_context
-        .db
-        .get_network_connection_type(app_context.network)
-        .ok();
-
-    let is_spv = connection_type
-        .as_ref()
-        .map(|ct| matches!(ct, ConnectionType::DashSpv))
-        .unwrap_or(false);
+    // Get connection type from config (cached) instead of DB query
+    let is_spv = {
+        let config = app_context.config.read().unwrap();
+        matches!(config.connection_type, ConnectionType::DashSpv)
+    };
 
     // Determine connection status based on connection type
     let connected = if is_spv {
-        // For SPV, we consider it connected when the connection type is set to SPV
-        // SPV doesn't use ZMQ, so we rely on the connection type being set
-        true
+        // For SPV, check cached status
+        app_context.spv_status
+            .lock()
+            .map(|status| status.is_running)
+            .unwrap_or(false)
     } else {
         // For Core, check ZMQ connection status
         app_context
@@ -193,15 +190,25 @@ fn add_connection_indicator(ui: &mut Ui, app_context: &Arc<AppContext>) -> AppAc
                     }
                     let tip = if connected {
                         if is_spv {
-                            "Connected via SPV Client"
+                            // Show sync progress from cached status
+                            if let Ok(status) = app_context.spv_status.lock() {
+                                match (status.header_height, status.filter_height) {
+                                    (Some(header), Some(filter)) => {
+                                        format!("SPV Client: Headers {}, Filters {}", header, filter)
+                                    }
+                                    _ => "Connected via SPV Client".to_string()
+                                }
+                            } else {
+                                "Connected via SPV Client".to_string()
+                            }
                         } else {
-                            "Connected to Dash Core Wallet"
+                            "Connected to Dash Core Wallet".to_string()
                         }
                     } else {
                         if is_spv {
-                            "SPV Client disconnected"
+                            "SPV Client disconnected".to_string()
                         } else {
-                            "Disconnected from Dash Core Wallet. Click to start it."
+                            "Disconnected from Dash Core Wallet. Click to start it.".to_string()
                         }
                     };
                     let resp = resp.on_hover_text(tip);

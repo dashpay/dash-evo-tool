@@ -17,7 +17,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-pub struct NetworkChooserScreen {
+pub struct SettingsScreen {
     pub mainnet_app_context: Arc<AppContext>,
     pub testnet_app_context: Option<Arc<AppContext>>,
     pub devnet_app_context: Option<Arc<AppContext>>,
@@ -39,7 +39,7 @@ pub struct NetworkChooserScreen {
     connection_switch_start_time: Option<Instant>,
 }
 
-impl NetworkChooserScreen {
+impl SettingsScreen {
     pub fn new(
         mainnet_app_context: &Arc<AppContext>,
         testnet_app_context: Option<&Arc<AppContext>>,
@@ -131,10 +131,99 @@ impl NetworkChooserScreen {
             )
             .map_err(|e| e.to_string())
     }
-    /// Render the network selection table
+    /// Render the connection type selector and network selection table
     fn render_network_table(&mut self, ui: &mut Ui) -> AppAction {
         let mut app_action = AppAction::None;
         let dark_mode = ui.ctx().style().visuals.dark_mode;
+
+        // Connection Type Selection Section (moved from advanced settings)
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new("Connection type:")
+                    .strong()
+                    .color(DashColors::text_primary(dark_mode)),
+            );
+
+            // Get current connection type
+            let current_connection_type = self
+                .current_app_context()
+                .config
+                .read()
+                .unwrap()
+                .connection_type
+                .clone();
+            let is_spv_supported = matches!(self.current_network, Network::Dash | Network::Testnet);
+
+            egui::ComboBox::from_id_salt(format!(
+                "connection_type_selection_{}",
+                current_connection_type.as_str()
+            ))
+            .selected_text(current_connection_type.as_str())
+            .show_ui(ui, |ui| {
+                if ui
+                    .selectable_label(
+                        current_connection_type == ConnectionType::DashCore,
+                        "Dash Core",
+                    )
+                    .clicked()
+                    && current_connection_type != ConnectionType::DashCore
+                {
+                    tracing::info!(
+                        "User clicked to switch to Dash Core from {:?}",
+                        current_connection_type
+                    );
+                    app_action |= AppAction::BackendTask(BackendTask::SwitchConnectionType {
+                        connection_type: ConnectionType::DashCore,
+                    });
+                    self.is_switching_connection = true;
+                    self.connection_switch_start_time = Some(Instant::now());
+                }
+
+                if is_spv_supported
+                    && ui
+                        .selectable_label(current_connection_type == ConnectionType::DashSpv, "SPV")
+                        .clicked()
+                    && current_connection_type != ConnectionType::DashSpv
+                {
+                    tracing::info!(
+                        "User clicked to switch to SPV from {:?}",
+                        current_connection_type
+                    );
+                    app_action |= AppAction::BackendTask(BackendTask::SwitchConnectionType {
+                        connection_type: ConnectionType::DashSpv,
+                    });
+                    self.is_switching_connection = true;
+                    self.connection_switch_start_time = Some(Instant::now());
+                }
+            });
+
+            if !is_spv_supported {
+                ui.colored_label(
+                    DashColors::TEXT_SECONDARY,
+                    "(SPV not available for this network)",
+                );
+            }
+
+            // Show loading indicator if switching connection
+            if self.is_switching_connection {
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    ui.style_mut().visuals.widgets.inactive.fg_stroke =
+                        egui::Stroke::new(2.0, DashColors::DASH_BLUE);
+                    ui.style_mut().visuals.widgets.hovered.fg_stroke =
+                        egui::Stroke::new(2.0, DashColors::DASH_BLUE);
+                    ui.style_mut().visuals.widgets.active.fg_stroke =
+                        egui::Stroke::new(2.0, DashColors::DASH_BLUE);
+                    ui.add(egui::Spinner::new());
+                    ui.label(
+                        egui::RichText::new("Switching connection type...")
+                            .color(DashColors::text_secondary(dark_mode)),
+                    );
+                });
+            }
+        });
+
+        ui.add_space(20.0);
 
         egui::Grid::new("network_grid")
             .striped(false)
@@ -260,75 +349,6 @@ impl NetworkChooserScreen {
                             });
                         });
 
-                        // Connection Type Selection
-                        ui.add_space(16.0);
-                        ui.group(|ui| {
-                            ui.horizontal(|ui| {
-                                ui.label(
-                                    egui::RichText::new("Connection:")
-                                        .strong()
-                                        .color(DashColors::text_primary(dark_mode)),
-                                );
-
-                                // Get current connection type
-                                let current_connection_type = self.current_app_context().config.read().unwrap().connection_type.clone();
-                                let is_spv_supported = matches!(
-                                    self.current_network,
-                                    Network::Dash | Network::Testnet
-                                );
-
-                                egui::ComboBox::from_id_salt(format!("connection_type_selection_{}", current_connection_type.as_str()))
-                                    .selected_text(current_connection_type.as_str())
-                                    .show_ui(ui, |ui| {
-                                        if ui.selectable_label(current_connection_type == ConnectionType::DashCore, "Dash Core").clicked() && current_connection_type != ConnectionType::DashCore {
-                                            tracing::info!("User clicked to switch to Dash Core from {:?}", current_connection_type);
-                                            app_action |= AppAction::BackendTask(
-                                                BackendTask::SwitchConnectionType {
-                                                    connection_type: ConnectionType::DashCore,
-                                                }
-                                            );
-                                            self.is_switching_connection = true;
-                                            self.connection_switch_start_time = Some(Instant::now());
-                                        }
-
-                                        if is_spv_supported && ui.selectable_label(current_connection_type == ConnectionType::DashSpv, "SPV").clicked() && current_connection_type != ConnectionType::DashSpv {
-                                            tracing::info!("User clicked to switch to SPV from {:?}", current_connection_type);
-                                            app_action |= AppAction::BackendTask(
-                                                BackendTask::SwitchConnectionType {
-                                                    connection_type: ConnectionType::DashSpv,
-                                                }
-                                            );
-                                            self.is_switching_connection = true;
-                                            self.connection_switch_start_time = Some(Instant::now());
-                                        }
-                                    });
-
-                                if !is_spv_supported {
-                                    ui.colored_label(
-                                        DashColors::TEXT_SECONDARY,
-                                        "(SPV not available for this network)"
-                                    );
-                                }
-
-                                // Show loading indicator if switching connection
-                                if self.is_switching_connection {
-                                    ui.add_space(8.0);
-                                    ui.horizontal(|ui| {
-                                        ui.style_mut().visuals.widgets.inactive.fg_stroke = 
-                                            egui::Stroke::new(2.0, DashColors::DASH_BLUE);
-                                        ui.style_mut().visuals.widgets.hovered.fg_stroke = 
-                                            egui::Stroke::new(2.0, DashColors::DASH_BLUE);
-                                        ui.style_mut().visuals.widgets.active.fg_stroke = 
-                                            egui::Stroke::new(2.0, DashColors::DASH_BLUE);
-                                        ui.add(egui::Spinner::new());
-                                        ui.label(
-                                            egui::RichText::new("Switching connection type...")
-                                                .color(DashColors::text_secondary(dark_mode))
-                                        );
-                                    });
-                                }
-                            });
-                        });
 
                         // Dash-QT Path Section
                         ui.add_space(16.0);
@@ -599,11 +619,12 @@ impl NetworkChooserScreen {
         } else {
             false
         };
-        
+
         // Check network status - for SPV on current network, check cached status
         let is_working = if is_current_network && is_spv {
             // For SPV, check cached status
-            self.current_app_context().spv_status
+            self.current_app_context()
+                .spv_status
                 .lock()
                 .map(|status| status.is_running)
                 .unwrap_or(false)
@@ -744,7 +765,7 @@ impl NetworkChooserScreen {
     }
 }
 
-impl ScreenLike for NetworkChooserScreen {
+impl ScreenLike for SettingsScreen {
     fn refresh_on_arrival(&mut self) {
         // Reset collapsing states when arriving at this screen
         // This ensures dropdowns are closed when navigating back
@@ -839,7 +860,7 @@ impl ScreenLike for NetworkChooserScreen {
         let mut action = add_top_panel(
             ctx,
             self.current_app_context(),
-            vec![("Networks", AppAction::None)],
+            vec![("Settings", AppAction::None)],
             vec![],
         );
 

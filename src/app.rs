@@ -15,7 +15,7 @@ use crate::ui::dpns::dpns_contested_names_screen::{
     DPNSScreen, DPNSSubscreen, ScheduledVoteCastingStatus,
 };
 use crate::ui::identities::identities_screen::IdentitiesScreen;
-use crate::ui::network_chooser_screen::NetworkChooserScreen;
+use crate::ui::network_chooser_screen::SettingsScreen;
 use crate::ui::theme::ThemeMode;
 use crate::ui::tokens::tokens_screen::{TokensScreen, TokensSubscreen};
 use crate::ui::tools::contract_visualizer_screen::ContractVisualizerScreen;
@@ -221,7 +221,7 @@ impl AppState {
             }
         };
 
-        let mut network_chooser_screen = NetworkChooserScreen::new(
+        let mut settings_screen = SettingsScreen::new(
             &mainnet_app_context,
             testnet_app_context.as_ref(),
             devnet_app_context.as_ref(),
@@ -240,7 +240,7 @@ impl AppState {
         if let Some((network, screen_type, _password_info, _, _, _, _)) = settings {
             selected_main_screen = screen_type;
             chosen_network = network;
-            network_chooser_screen.current_network = chosen_network;
+            settings_screen.current_network = chosen_network;
 
             if chosen_network == Network::Testnet && testnet_app_context.is_some() {
                 let testnet_app_context = testnet_app_context.as_ref().unwrap();
@@ -426,7 +426,7 @@ impl AppState {
                 ),
                 (
                     RootScreenType::RootScreenNetworkChooser,
-                    Screen::NetworkChooserScreen(network_chooser_screen),
+                    Screen::SettingsScreen(settings_screen),
                 ),
                 (
                     RootScreenType::RootScreenMyTokenBalances,

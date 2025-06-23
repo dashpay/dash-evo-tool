@@ -153,6 +153,9 @@ impl AppContext {
         let app_data_dir = app_user_data_dir_path().expect("Failed to get app user data directory");
         let spv_manager = Arc::new(SpvManager::new(app_data_dir, network));
 
+        // Save connection type before moving network_config
+        let connection_type = network_config.connection_type.clone();
+
         let app_context = AppContext {
             network,
             developer_mode: AtomicBool::new(config.developer_mode.unwrap_or(false)),
@@ -185,12 +188,30 @@ impl AppContext {
         let app_context = Arc::new(app_context);
         provider.bind_app_context(app_context.clone());
 
-        // Bind SPV manager to app context asynchronously
+        // Bind SPV manager to app context asynchronously and auto-start if needed
         let spv_manager = app_context.spv_manager.clone();
         let app_context_weak = Arc::downgrade(&app_context);
+        let should_start_spv = matches!(connection_type, crate::model::connection_type::ConnectionType::DashSpv);
         tokio::spawn(async move {
             if let Some(app_ctx) = app_context_weak.upgrade() {
-                spv_manager.bind_app_context(app_ctx).await;
+                spv_manager.bind_app_context(app_ctx.clone()).await;
+                
+                // Auto-start SPV if connection type is set to SPV
+                if should_start_spv {
+                    match spv_manager.start().await {
+                        Ok(_) => {
+                            tracing::info!("Auto-started SPV client on app initialization");
+                            
+                            // Pre-fetch quorum keys for SPV mode
+                            if let Err(e) = app_ctx.prefetch_quorum_keys_for_spv().await {
+                                tracing::warn!("Failed to pre-fetch quorum keys during auto-start: {}", e);
+                            }
+                        }
+                        Err(e) => {
+                            tracing::error!("Failed to auto-start SPV client: {}", e);
+                        }
+                    }
+                }
             }
         });
 

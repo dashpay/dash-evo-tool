@@ -299,7 +299,7 @@ impl ScreenLike for RegisterDpnsNameScreen {
                         if let Some(error_msg) = validation_result.error_message() {
                             ui.colored_label(
                                 egui::Color32::RED,
-                                format!("{}", error_msg),
+                                error_msg,
                             );
                         }
                     }

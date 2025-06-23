@@ -259,28 +259,50 @@ impl ScreenLike for RegisterDpnsNameScreen {
                 ui.text_edit_singleline(&mut self.name_input);
             });
 
-            // Display if the name is contested and the estimated cost
+            // Display validation status and cost information
             let name = self.name_input.trim();
-            if !name.is_empty() && name.len() >= 3 {
+            if !name.is_empty() {
                 ui.add_space(10.0);
-                if is_contested_name(&name.to_lowercase()) {
-                    ui.colored_label(
-                        egui::Color32::DARK_RED,
-                        "This is a contested name.",
-                    );
-                    ui.colored_label(
-                        egui::Color32::DARK_RED,
-                        "Cost ≈ 0.2006 Dash",
-                    );
-                } else {
-                    ui.colored_label(
-                        egui::Color32::DARK_GREEN,
-                        "This is not a contested name.",
-                    );
-                    ui.colored_label(
-                        egui::Color32::DARK_GREEN,
-                        "Cost ≈ 0.0006 Dash",
-                    );
+                
+                // Validate the name
+                let validation_result = validate_dpns_name(name);
+                
+                match validation_result {
+                    DpnsNameValidationResult::Valid => {
+                        ui.colored_label(
+                            egui::Color32::DARK_GREEN,
+                            "Valid name format",
+                        );
+                        
+                        // Show contested status and cost if valid
+                        if is_contested_name(&name.to_lowercase()) {
+                            ui.colored_label(
+                                egui::Color32::DARK_RED,
+                                "This is a contested name.",
+                            );
+                            ui.colored_label(
+                                egui::Color32::DARK_RED,
+                                "Cost ≈ 0.2006 Dash",
+                            );
+                        } else {
+                            ui.colored_label(
+                                egui::Color32::DARK_GREEN,
+                                "This is not a contested name.",
+                            );
+                            ui.colored_label(
+                                egui::Color32::DARK_GREEN,
+                                "Cost ≈ 0.0006 Dash",
+                            );
+                        }
+                    }
+                    _ => {
+                        if let Some(error_msg) = validation_result.error_message() {
+                            ui.colored_label(
+                                egui::Color32::RED,
+                                format!("{}", error_msg),
+                            );
+                        }
+                    }
                 }
             }
 
@@ -290,7 +312,8 @@ impl ScreenLike for RegisterDpnsNameScreen {
             let mut new_style = (**ui.style()).clone();
             new_style.spacing.button_padding = egui::vec2(10.0, 5.0);
             ui.set_style(new_style);
-            let button_enabled = self.selected_qualified_identity.is_some() && self.selected_key.is_some();
+            let name_is_valid = validate_dpns_name(self.name_input.trim()) == DpnsNameValidationResult::Valid;
+            let button_enabled = self.selected_qualified_identity.is_some() && self.selected_key.is_some() && name_is_valid;
             let button = egui::Button::new(RichText::new("Register Name").color(Color32::WHITE))
                 .fill(Color32::from_rgb(0, 128, 255))
                 .frame(true)
@@ -422,4 +445,53 @@ pub fn is_contested_name(name: &str) -> bool {
         }
     }
     true
+}
+
+#[derive(Debug, PartialEq)]
+pub enum DpnsNameValidationResult {
+    Valid,
+    TooShort,
+    TooLong,
+    InvalidCharacter(char),
+    StartsWithHyphen,
+    EndsWithHyphen,
+}
+
+pub fn validate_dpns_name(name: &str) -> DpnsNameValidationResult {
+    if name.len() < 3 {
+        return DpnsNameValidationResult::TooShort;
+    }
+    
+    if name.len() > 63 {
+        return DpnsNameValidationResult::TooLong;
+    }
+    
+    if name.starts_with('-') {
+        return DpnsNameValidationResult::StartsWithHyphen;
+    }
+    
+    if name.ends_with('-') {
+        return DpnsNameValidationResult::EndsWithHyphen;
+    }
+    
+    for c in name.chars() {
+        if !c.is_ascii_alphanumeric() && c != '-' {
+            return DpnsNameValidationResult::InvalidCharacter(c);
+        }
+    }
+    
+    DpnsNameValidationResult::Valid
+}
+
+impl DpnsNameValidationResult {
+    pub fn error_message(&self) -> Option<String> {
+        match self {
+            DpnsNameValidationResult::Valid => None,
+            DpnsNameValidationResult::TooShort => Some("Name must be at least 3 characters long".to_string()),
+            DpnsNameValidationResult::TooLong => Some("Name must be no more than 63 characters long".to_string()),
+            DpnsNameValidationResult::InvalidCharacter(c) => Some(format!("Invalid character '{}'. Only letters, numbers, and hyphens are allowed", c)),
+            DpnsNameValidationResult::StartsWithHyphen => Some("Name cannot start with a hyphen".to_string()),
+            DpnsNameValidationResult::EndsWithHyphen => Some("Name cannot end with a hyphen".to_string()),
+        }
+    }
 }

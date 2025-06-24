@@ -13,6 +13,7 @@ use crate::ui::{RootScreenType, ScreenLike};
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::TimestampMillis;
 use eframe::egui::{self, Context, Ui};
+use egui::Color32;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -366,7 +367,7 @@ impl SettingsScreen {
                                         .add(
                                             egui::Button::new(egui::RichText::new("Select File")
                                         .strong()
-                                        .color(DashColors::text_primary(dark_mode)))
+                                        .color(Color32::WHITE))
                                                 .fill(DashColors::DASH_BLUE)
                                                 .stroke(egui::Stroke::NONE)
                                                 .corner_radius(egui::CornerRadius::same(6))

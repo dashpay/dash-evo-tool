@@ -16,6 +16,7 @@ use dash_sdk::query_types::{CurrentQuorumsInfo, NoParamQuery};
 use rusqlite::Result;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
+use std::time::{Duration, Instant};
 
 /// Type alias for quorum key cache: (quorum_type, quorum_hash) -> public_key
 type QuorumKeyCache = Arc<RwLock<HashMap<(u32, [u8; 32]), [u8; 48]>>>;
@@ -27,7 +28,9 @@ pub(crate) struct Provider {
     pub core: Option<CoreClient>,
     connection_type: ConnectionType,
     /// Cache for quorum public keys: (quorum_type, quorum_hash) -> public_key
-    quorum_key_cache: QuorumKeyCache,
+    pub quorum_key_cache: QuorumKeyCache,
+    /// Track the last time we attempted to refresh quorum keys
+    last_refresh_attempt: Arc<Mutex<Option<Instant>>>,
 }
 
 impl Provider {
@@ -76,6 +79,7 @@ impl Provider {
             app_context: Default::default(),
             connection_type,
             quorum_key_cache: Arc::new(RwLock::new(HashMap::new())),
+            last_refresh_attempt: Arc::new(Mutex::new(None)),
         })
     }
     /// Set app context to the provider.
@@ -88,6 +92,11 @@ impl Provider {
 
         let sdk = app_context.sdk.write().expect("lock poisoned");
         sdk.set_context_provider(self.clone());
+    }
+
+    /// Set the quorum key cache to a specific cache instance (used when preserving cache across provider recreation)
+    pub fn set_quorum_key_cache(&mut self, cache: QuorumKeyCache) {
+        self.quorum_key_cache = cache;
     }
 
     /// Pre-fetch and cache current quorum keys for SPV mode
@@ -136,7 +145,7 @@ impl Provider {
                         100u32, 101u32, 102u32, 103u32, 104u32, 105u32, 106u32, // DIP24 types
                     ];
 
-                    tracing::debug!(
+                    tracing::info!(
                         "Validator set {}: hash={}, caching for {} types",
                         i,
                         hex::encode(quorum_hash),
@@ -156,10 +165,30 @@ impl Provider {
                     }
                 }
 
+                // Log all cached quorum hashes for debugging
+                let cached_hashes: Vec<String> = cache
+                    .keys()
+                    .map(|(t, h)| format!("type={}, hash={}", t, hex::encode(h)))
+                    .collect();
+                
                 tracing::info!(
                     "Successfully fetched and cached {} actual BLS quorum keys from DAPI",
                     count
                 );
+                
+                // Log a sample of cached keys for debugging
+                if !cached_hashes.is_empty() {
+                    tracing::info!("Sample of cached quorum keys (first 5):");
+                    for (i, key_info) in cached_hashes.iter().take(5).enumerate() {
+                        tracing::info!("  {}: {}", i + 1, key_info);
+                    }
+                }
+                
+                // Update last refresh attempt time
+                if let Ok(mut last_attempt) = self.last_refresh_attempt.lock() {
+                    *last_attempt = Some(Instant::now());
+                }
+                
                 Ok(())
             }
             Ok(None) => {
@@ -176,6 +205,22 @@ impl Provider {
                     e
                 ))
             }
+        }
+    }
+    
+    /// Check if we should attempt to refresh quorum keys
+    fn should_refresh_quorum_keys(&self) -> bool {
+        if let Ok(last_attempt) = self.last_refresh_attempt.lock() {
+            if let Some(last_time) = *last_attempt {
+                // Only refresh if it's been at least 30 seconds since last attempt
+                // This prevents rapid retry loops
+                last_time.elapsed() > Duration::from_secs(30)
+            } else {
+                // Never refreshed, allow it
+                true
+            }
+        } else {
+            false
         }
     }
 }
@@ -255,6 +300,38 @@ impl ContextProvider for Provider {
                     hex::encode(quorum_hash),
                     cache.len()
                 );
+                
+                // Log available quorum hashes for this type for debugging
+                let available_for_type: Vec<String> = cache
+                    .keys()
+                    .filter(|(t, _)| *t == quorum_type)
+                    .map(|(_, h)| hex::encode(h))
+                    .collect();
+                    
+                if !available_for_type.is_empty() {
+                    tracing::info!(
+                        "Available quorum hashes for type {}: {:?}",
+                        quorum_type,
+                        available_for_type
+                    );
+                    
+                    // Check if this looks like a historical quorum based on hash prefix
+                    // Newer quorums tend to have lower hash values (more leading zeros)
+                    let requested_hash_str = hex::encode(quorum_hash);
+                    if requested_hash_str.starts_with("00000") {
+                        tracing::info!(
+                            "The requested quorum hash {} appears to be from a recent epoch",
+                            requested_hash_str
+                        );
+                    } else {
+                        tracing::warn!(
+                            "The requested quorum hash {} may be from an older epoch (less leading zeros)",
+                            requested_hash_str
+                        );
+                    }
+                } else {
+                    tracing::warn!("No quorum hashes cached for type {}", quorum_type);
+                }
             }
         }
 
@@ -270,21 +347,54 @@ impl ContextProvider for Provider {
                 Ok(key)
             }
             None => {
-                // In SPV mode, if we don't have the quorum key cached,
-                // it means either:
-                // 1. SPV mode wasn't properly initialized with prefetch_quorum_keys()
-                // 2. The requested quorum type/hash combination wasn't available in DAPI response
-                // 3. There's a mismatch between what Core would provide vs what DAPI provides
+                // In SPV mode, if we don't have the quorum key cached, try to refresh
+                if self.should_refresh_quorum_keys() {
+                    tracing::info!(
+                        "SPV mode: Quorum key not found for type {} hash {}, attempting to refresh quorum keys...",
+                        quorum_type,
+                        hex::encode(quorum_hash)
+                    );
+                    
+                    // Try to refresh quorum keys
+                    if let Some(app_ctx) = self.app_context.lock().unwrap().as_ref() {
+                        // Use tokio::task::block_in_place to run async code in sync context
+                        let refresh_result = tokio::task::block_in_place(|| {
+                            let handle = tokio::runtime::Handle::current();
+                            handle.block_on(app_ctx.prefetch_quorum_keys_for_spv())
+                        });
+                        
+                        match refresh_result {
+                            Ok(_) => {
+                                tracing::info!("Successfully refreshed quorum keys, retrying lookup...");
+                                
+                                // Try again after refresh
+                                if let Ok(cache) = self.quorum_key_cache.read() {
+                                    if let Some(key) = cache.get(&cache_key) {
+                                        tracing::info!(
+                                            "Cache hit after refresh: Found quorum key for type {} hash {}",
+                                            quorum_type,
+                                            hex::encode(quorum_hash)
+                                        );
+                                        return Ok(*key);
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!("Failed to refresh quorum keys: {}", e);
+                            }
+                        }
+                    }
+                }
 
                 tracing::error!(
-                    "SPV mode: Quorum key not available for type {} hash {:?}. This indicates either SPV mode wasn't properly initialized or the quorum is not available from DAPI.",
+                    "SPV mode: Quorum key not available for type {} hash {} even after refresh attempt",
                     quorum_type,
                     hex::encode(quorum_hash)
                 );
 
                 Err(dash_sdk::error::ContextProviderError::Config(
                     format!(
-                        "SPV mode: Quorum key not available for type {} hash {}. Ensure SPV mode is properly initialized with prefetch_quorum_keys() and the quorum exists in the current validator sets.",
+                        "SPV mode: Quorum key not available for type {} hash {}. This may be from a validator set that's not currently active. Try switching to Dash Core mode for full access.",
                         quorum_type,
                         hex::encode(quorum_hash)
                     )
@@ -312,6 +422,7 @@ impl Clone for Provider {
             app_context: Mutex::new(app_guard.clone()),
             connection_type: self.connection_type.clone(),
             quorum_key_cache: self.quorum_key_cache.clone(),
+            last_refresh_attempt: self.last_refresh_attempt.clone(),
         }
     }
 }

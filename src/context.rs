@@ -100,8 +100,9 @@ impl AppContext {
         // we create provider, but we need to set app context to it later, as we have a circular dependency
         let provider =
             Provider::new(db.clone(), network, &network_config).expect("Failed to initialize SDK");
+        let provider = Arc::new(provider);
 
-        let sdk = initialize_sdk(&network_config, network, provider.clone());
+        let sdk = initialize_sdk(&network_config, network, (*provider).clone());
         let platform_version = sdk.version();
 
         let dpns_contract = load_system_data_contract(SystemDataContract::DPNS, platform_version)
@@ -186,7 +187,13 @@ impl AppContext {
         };
 
         let app_context = Arc::new(app_context);
-        provider.bind_app_context(app_context.clone());
+        (*provider).bind_app_context(app_context.clone());
+        
+        // Store the provider reference in the app context
+        {
+            let mut provider_lock = app_context.provider.write().unwrap();
+            *provider_lock = Some(provider);
+        }
 
         // Bind SPV manager to app context asynchronously and auto-start if needed
         let spv_manager = app_context.spv_manager.clone();
@@ -221,11 +228,6 @@ impl AppContext {
             }
         });
 
-        // Store the provider reference in the AppContext
-        {
-            let mut provider_lock = app_context.provider.write().unwrap();
-            *provider_lock = Some(Arc::new(provider));
-        }
 
         Some(app_context)
     }
@@ -261,8 +263,11 @@ impl AppContext {
 
         // Note: developer_mode is now global and managed separately
 
-        // 2. We can't access the old provider due to trait object limitations
-        // The new provider will have an empty cache, but it will be populated on demand
+        // 2. Preserve the quorum key cache from the old provider if it exists
+        let preserved_cache = {
+            let provider_lock = self.provider.read().unwrap();
+            provider_lock.as_ref().map(|provider| provider.quorum_key_cache.clone())
+        };
 
         // 3. Rebuild the RPC client with the new password (only if using DashCore)
         if cfg.connection_type == crate::model::connection_type::ConnectionType::DashCore {
@@ -283,8 +288,14 @@ impl AppContext {
         }
 
         // 4. Rebuild the Sdk with the updated config
-        let new_provider = Provider::new(self.db.clone(), self.network, &cfg)
+        let mut new_provider = Provider::new(self.db.clone(), self.network, &cfg)
             .map_err(|e| format!("Failed to init provider: {e}"))?;
+
+        // Restore the preserved cache if we had one
+        if let Some(preserved_cache) = preserved_cache {
+            new_provider.set_quorum_key_cache(preserved_cache);
+            tracing::info!("Preserved quorum key cache during SDK reinitialization");
+        }
 
         let new_sdk = initialize_sdk(&cfg, self.network, new_provider.clone());
 
@@ -897,9 +908,19 @@ impl AppContext {
                                     );
                                 }
 
-                                // Pre-fetch quorum keys for SPV mode
-                                if let Err(e) = self.prefetch_quorum_keys_for_spv().await {
-                                    tracing::warn!("Failed to pre-fetch quorum keys: {}", e);
+                                // Pre-fetch quorum keys for SPV mode after SDK is initialized
+                                tracing::info!("Pre-fetching quorum keys for SPV mode...");
+                                match self.prefetch_quorum_keys_for_spv().await {
+                                    Ok(_) => {
+                                        tracing::info!("Successfully pre-fetched quorum keys for SPV mode");
+                                    }
+                                    Err(e) => {
+                                        tracing::error!("Failed to pre-fetch quorum keys: {}", e);
+                                        return Err(format!(
+                                            "SPV initialization incomplete: {}. Some operations may fail.",
+                                            e
+                                        ));
+                                    }
                                 }
 
                                 Ok(crate::backend_task::BackendTaskSuccessResult::Message(

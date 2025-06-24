@@ -1,6 +1,7 @@
-use crate::app_dir::core_cookie_path;
+use crate::app_dir::{app_user_data_dir_path, core_cookie_path};
 use crate::backend_task::contested_names::ScheduledDPNSVote;
 use crate::components::core_zmq_listener::ZMQConnectionEvent;
+use crate::components::spv_manager::SpvManager;
 use crate::config::{Config, NetworkConfig};
 use crate::context_provider::Provider;
 use crate::database::Database;
@@ -39,6 +40,14 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
+#[derive(Debug, Clone)]
+pub struct SpvStatus {
+    pub is_running: bool,
+    pub header_height: Option<u32>,
+    pub filter_height: Option<u32>,
+    pub last_updated: std::time::Instant,
+}
+
 #[derive(Debug)]
 pub struct AppContext {
     pub(crate) network: Network,
@@ -61,6 +70,9 @@ pub struct AppContext {
     #[allow(dead_code)] // May be used for password validation
     pub(crate) password_info: Option<PasswordInfo>,
     pub(crate) transactions_waiting_for_finality: Mutex<BTreeMap<Txid, Option<AssetLockProof>>>,
+    pub(crate) spv_manager: Arc<SpvManager>,
+    pub(crate) spv_status: Mutex<SpvStatus>,
+    pub(crate) provider: RwLock<Option<Arc<Provider>>>,
 }
 
 impl AppContext {
@@ -77,14 +89,20 @@ impl AppContext {
             }
         };
 
-        let network_config = config.config_for_network(network).clone()?;
+        let mut network_config = config.config_for_network(network).clone()?;
+
+        // Override connection type with the per-network setting from database
+        if let Ok(saved_connection_type) = db.get_network_connection_type(network) {
+            network_config.connection_type = saved_connection_type;
+        }
         let (sx_zmq_status, rx_zmq_status) = crossbeam_channel::unbounded();
 
         // we create provider, but we need to set app context to it later, as we have a circular dependency
         let provider =
             Provider::new(db.clone(), network, &network_config).expect("Failed to initialize SDK");
+        let provider = Arc::new(provider);
 
-        let sdk = initialize_sdk(&network_config, network, provider.clone());
+        let sdk = initialize_sdk(&network_config, network, (*provider).clone());
         let platform_version = sdk.version();
 
         let dpns_contract = load_system_data_contract(SystemDataContract::DPNS, platform_version)
@@ -114,10 +132,6 @@ impl AppContext {
             Ok(client) => Ok(client),
             Err(_) => {
                 // If cookie auth fails, try user/password authentication
-                tracing::info!(
-                    "Failed to authenticate using .cookie file at {:?}, falling back to user/pass",
-                    cookie_path,
-                );
                 Client::new(
                     &addr,
                     Auth::UserPass(
@@ -135,6 +149,13 @@ impl AppContext {
             .into_iter()
             .map(|w| (w.seed_hash(), Arc::new(RwLock::new(w))))
             .collect();
+
+        // Initialize SPV manager
+        let app_data_dir = app_user_data_dir_path().expect("Failed to get app user data directory");
+        let spv_manager = Arc::new(SpvManager::new(app_data_dir, network));
+
+        // Save connection type before moving network_config
+        let connection_type = network_config.connection_type.clone();
 
         let app_context = AppContext {
             network,
@@ -155,10 +176,58 @@ impl AppContext {
             password_info,
             transactions_waiting_for_finality: Mutex::new(BTreeMap::new()),
             zmq_connection_status: Mutex::new(ZMQConnectionEvent::Disconnected),
+            spv_manager,
+            spv_status: Mutex::new(SpvStatus {
+                is_running: false,
+                header_height: None,
+                filter_height: None,
+                last_updated: std::time::Instant::now(),
+            }),
+            provider: RwLock::new(None),
         };
 
         let app_context = Arc::new(app_context);
-        provider.bind_app_context(app_context.clone());
+        (*provider).bind_app_context(app_context.clone());
+        
+        // Store the provider reference in the app context
+        {
+            let mut provider_lock = app_context.provider.write().unwrap();
+            *provider_lock = Some(provider);
+        }
+
+        // Bind SPV manager to app context asynchronously and auto-start if needed
+        let spv_manager = app_context.spv_manager.clone();
+        let app_context_weak = Arc::downgrade(&app_context);
+        let should_start_spv = matches!(
+            connection_type,
+            crate::model::connection_type::ConnectionType::DashSpv
+        );
+        tokio::spawn(async move {
+            if let Some(app_ctx) = app_context_weak.upgrade() {
+                spv_manager.bind_app_context(app_ctx.clone()).await;
+
+                // Auto-start SPV if connection type is set to SPV
+                if should_start_spv {
+                    match spv_manager.start().await {
+                        Ok(_) => {
+                            tracing::info!("Auto-started SPV client on app initialization");
+
+                            // Pre-fetch quorum keys for SPV mode
+                            if let Err(e) = app_ctx.prefetch_quorum_keys_for_spv().await {
+                                tracing::warn!(
+                                    "Failed to pre-fetch quorum keys during auto-start: {}",
+                                    e
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            tracing::error!("Failed to auto-start SPV client: {}", e);
+                        }
+                    }
+                }
+            }
+        });
+
 
         Some(app_context)
     }
@@ -194,34 +263,56 @@ impl AppContext {
 
         // Note: developer_mode is now global and managed separately
 
-        // 2. Rebuild the RPC client with the new password
-        let addr = format!("http://{}:{}", cfg.core_host, cfg.core_rpc_port);
-        let new_client = Client::new(
-            &addr,
-            Auth::UserPass(cfg.core_rpc_user.clone(), cfg.core_rpc_password.clone()),
-        )
-        .map_err(|e| format!("Failed to create new Core RPC client: {e}"))?;
+        // 2. Preserve the quorum key cache from the old provider if it exists
+        let preserved_cache = {
+            let provider_lock = self.provider.read().unwrap();
+            provider_lock.as_ref().map(|provider| provider.quorum_key_cache.clone())
+        };
 
-        // 3. Rebuild the Sdk with the updated config
-        let provider = Provider::new(self.db.clone(), self.network, &cfg)
-            .map_err(|e| format!("Failed to init provider: {e}"))?;
-        let new_sdk = initialize_sdk(&cfg, self.network, provider.clone());
+        // 3. Rebuild the RPC client with the new password (only if using DashCore)
+        if cfg.connection_type == crate::model::connection_type::ConnectionType::DashCore {
+            let addr = format!("http://{}:{}", cfg.core_host, cfg.core_rpc_port);
+            let new_client = Client::new(
+                &addr,
+                Auth::UserPass(cfg.core_rpc_user.clone(), cfg.core_rpc_password.clone()),
+            )
+            .map_err(|e| format!("Failed to create new Core RPC client: {e}"))?;
 
-        // 4. Swap them in
-        {
-            let mut client_lock = self
-                .core_client
-                .write()
-                .expect("Core client lock was poisoned");
-            *client_lock = new_client;
+            {
+                let mut client_lock = self
+                    .core_client
+                    .write()
+                    .expect("Core client lock was poisoned");
+                *client_lock = new_client;
+            }
         }
+
+        // 4. Rebuild the Sdk with the updated config
+        let mut new_provider = Provider::new(self.db.clone(), self.network, &cfg)
+            .map_err(|e| format!("Failed to init provider: {e}"))?;
+
+        // Restore the preserved cache if we had one
+        if let Some(preserved_cache) = preserved_cache {
+            new_provider.set_quorum_key_cache(preserved_cache);
+            tracing::info!("Preserved quorum key cache during SDK reinitialization");
+        }
+
+        let new_sdk = initialize_sdk(&cfg, self.network, new_provider.clone());
+
+        // 5. Swap the SDK
         {
             let mut sdk_lock = self.sdk.write().unwrap();
             *sdk_lock = new_sdk;
         }
 
         // Rebind the provider to the new app context
-        provider.bind_app_context(self.clone());
+        new_provider.bind_app_context(self.clone());
+
+        // Update the stored provider reference
+        {
+            let mut provider_lock = self.provider.write().unwrap();
+            *provider_lock = Some(Arc::new(new_provider));
+        }
 
         Ok(())
     }
@@ -418,6 +509,7 @@ impl AppContext {
             Option<String>,
             bool,
             crate::ui::theme::ThemeMode,
+            crate::model::connection_type::ConnectionType,
         )>,
     > {
         self.db.get_settings()
@@ -718,6 +810,133 @@ impl AppContext {
             .get_contract_id_by_token_id(token_id, self)?
             .ok_or(rusqlite::Error::QueryReturnedNoRows)?;
         self.db.get_contract_by_id(contract_id, self)
+    }
+
+    pub async fn prefetch_quorum_keys_for_spv(&self) -> Result<(), String> {
+        let sdk = {
+            let sdk_lock = self.sdk.read().unwrap();
+            sdk_lock.clone()
+        };
+
+        // Use the stored provider directly instead of creating a new one
+        let provider = {
+            let provider_lock = self.provider.read().unwrap();
+            provider_lock
+                .clone()
+                .ok_or("Provider not available".to_string())?
+        };
+
+        // Prefetch keys using the actual provider that's bound to the SDK
+        provider.prefetch_quorum_keys(&sdk).await?;
+
+        tracing::info!("✅ Prefetched quorum keys using the actual SDK provider");
+        Ok(())
+    }
+
+    pub async fn switch_connection_type(
+        self: &Arc<Self>,
+        connection_type: crate::model::connection_type::ConnectionType,
+    ) -> Result<crate::backend_task::BackendTaskSuccessResult, String> {
+        // Get current connection type from config
+        let current_connection_type = { self.config.read().unwrap().connection_type.clone() };
+
+        // If we're already using the requested connection type, no need to switch
+        if current_connection_type == connection_type {
+            return Ok(crate::backend_task::BackendTaskSuccessResult::Message(
+                format!("Already using {} connection", connection_type.as_str()),
+            ));
+        }
+
+        match connection_type {
+            crate::model::connection_type::ConnectionType::DashCore => {
+                // Stop SPV if it's running
+                self.spv_manager
+                    .stop()
+                    .await
+                    .map_err(|e| format!("Failed to stop SPV client: {}", e))?;
+
+                // Update the connection type in config
+                {
+                    let mut config = self.config.write().unwrap();
+                    config.connection_type = connection_type.clone();
+                }
+
+                // Reinitialize the SDK with the new connection type
+                self.clone().reinit_core_client_and_sdk()?;
+
+                // Update the database to match the config
+                if let Err(e) = self
+                    .db
+                    .update_network_connection_type(self.network, connection_type)
+                {
+                    tracing::warn!("Failed to update connection type in database: {}", e);
+                }
+
+                Ok(crate::backend_task::BackendTaskSuccessResult::Message(
+                    "Switched to Dash Core connection".to_string(),
+                ))
+            }
+            crate::model::connection_type::ConnectionType::DashSpv => {
+                // Check if SPV is supported for this network
+                match self.network {
+                    Network::Dash | Network::Testnet => {
+                        // Stop SPV if already running (clean restart)
+                        if let Err(e) = self.spv_manager.stop().await {
+                            tracing::warn!("Failed to stop existing SPV client: {}", e);
+                        }
+
+                        // Start SPV manager
+                        match self.spv_manager.start().await {
+                            Ok(_) => {
+                                // Update the connection type in config
+                                {
+                                    let mut config = self.config.write().unwrap();
+                                    config.connection_type = connection_type.clone();
+                                }
+
+                                // Reinitialize the SDK with the new connection type
+                                self.clone().reinit_core_client_and_sdk()?;
+
+                                // Update the database to match the config
+                                if let Err(e) = self
+                                    .db
+                                    .update_network_connection_type(self.network, connection_type)
+                                {
+                                    tracing::warn!(
+                                        "Failed to update connection type in database: {}",
+                                        e
+                                    );
+                                }
+
+                                // Pre-fetch quorum keys for SPV mode after SDK is initialized
+                                tracing::info!("Pre-fetching quorum keys for SPV mode...");
+                                match self.prefetch_quorum_keys_for_spv().await {
+                                    Ok(_) => {
+                                        tracing::info!("Successfully pre-fetched quorum keys for SPV mode");
+                                    }
+                                    Err(e) => {
+                                        tracing::error!("Failed to pre-fetch quorum keys: {}", e);
+                                        return Err(format!(
+                                            "SPV initialization incomplete: {}. Some operations may fail.",
+                                            e
+                                        ));
+                                    }
+                                }
+
+                                Ok(crate::backend_task::BackendTaskSuccessResult::Message(
+                                    "Successfully switched to SPV connection".to_string(),
+                                ))
+                            }
+                            Err(e) => Err(format!("Failed to start SPV client: {}", e)),
+                        }
+                    }
+                    Network::Devnet | Network::Regtest => {
+                        Err("SPV client only supports mainnet and testnet networks".to_string())
+                    }
+                    _ => Err("Unsupported network for SPV client".to_string()),
+                }
+            }
+        }
     }
 }
 

@@ -1,3 +1,4 @@
+pub mod connection_type;
 pub mod contested_name;
 pub mod password_info;
 pub mod proof_log_item;

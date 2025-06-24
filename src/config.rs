@@ -3,6 +3,7 @@ use std::io::Write;
 use std::str::FromStr;
 
 use crate::app_dir::app_user_data_file_path;
+use crate::model::connection_type::ConnectionType;
 use dash_sdk::dapi_client::AddressList;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::sdk::Uri;
@@ -46,6 +47,9 @@ pub struct NetworkConfig {
     pub wallet_private_key: Option<String>,
     /// Should this network be visible in the UI
     pub show_in_ui: bool,
+    /// Connection type (DashCore or DashSpv)
+    #[serde(default)]
+    pub connection_type: ConnectionType,
 }
 
 impl Config {
@@ -169,13 +173,13 @@ impl Config {
                 "Failed to load .env file. Continuing with environment variables."
             );
         } else {
-            tracing::info!("Successfully loaded .env file");
+            tracing::trace!("Successfully loaded .env file");
         }
 
         // Load individual network configs and log if they fail
         let mainnet_config = match envy::prefixed("MAINNET_").from_env::<NetworkConfig>() {
             Ok(config) => {
-                tracing::info!("Mainnet configuration loaded successfully");
+                tracing::trace!("Mainnet configuration loaded successfully");
                 Some(config)
             }
             Err(err) => {
@@ -186,7 +190,7 @@ impl Config {
 
         let testnet_config = match envy::prefixed("TESTNET_").from_env::<NetworkConfig>() {
             Ok(config) => {
-                tracing::info!("Testnet configuration loaded successfully");
+                tracing::trace!("Testnet configuration loaded successfully");
                 Some(config)
             }
             Err(err) => {
@@ -197,7 +201,7 @@ impl Config {
 
         let devnet_config = match envy::prefixed("DEVNET_").from_env::<NetworkConfig>() {
             Ok(config) => {
-                tracing::info!("Devnet configuration loaded successfully");
+                tracing::trace!("Devnet configuration loaded successfully");
                 Some(config)
             }
             Err(err) => {
@@ -208,7 +212,7 @@ impl Config {
 
         let local_config = match envy::prefixed("LOCAL_").from_env::<NetworkConfig>() {
             Ok(config) => {
-                tracing::info!("Local configuration loaded successfully");
+                tracing::trace!("Local configuration loaded successfully");
                 Some(config)
             }
             Err(err) => {

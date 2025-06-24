@@ -3,6 +3,7 @@ use crate::backend_task::core::CoreTask;
 use crate::backend_task::BackendTask;
 use crate::components::core_zmq_listener::ZMQConnectionEvent;
 use crate::context::AppContext;
+use crate::model::connection_type::ConnectionType;
 use crate::ui::theme::{DashColors, Shadow, Shape};
 use crate::ui::ScreenType;
 use dash_sdk::dashcore_rpc::dashcore::Network;
@@ -98,11 +99,29 @@ fn add_location_view(ui: &mut Ui, location: Vec<(&str, AppAction)>, dark_mode: b
 
 fn add_connection_indicator(ui: &mut Ui, app_context: &Arc<AppContext>) -> AppAction {
     let mut action = AppAction::None;
-    let connected = app_context
-        .zmq_connection_status
-        .lock()
-        .map(|status| matches!(*status, ZMQConnectionEvent::Connected))
-        .unwrap_or(false);
+
+    // Get connection type from config (cached) instead of DB query
+    let is_spv = {
+        let config = app_context.config.read().unwrap();
+        matches!(config.connection_type, ConnectionType::DashSpv)
+    };
+
+    // Determine connection status based on connection type
+    let connected = if is_spv {
+        // For SPV, check cached status
+        app_context
+            .spv_status
+            .lock()
+            .map(|status| status.is_running)
+            .unwrap_or(false)
+    } else {
+        // For Core, check ZMQ connection status
+        app_context
+            .zmq_connection_status
+            .lock()
+            .map(|status| matches!(*status, ZMQConnectionEvent::Connected))
+            .unwrap_or(false)
+    };
 
     // Get time for pulsating animation (only when connected)
     let pulse_scale = if connected {
@@ -113,11 +132,21 @@ fn add_connection_indicator(ui: &mut Ui, app_context: &Arc<AppContext>) -> AppAc
     };
 
     let dark_mode = ui.ctx().style().visuals.dark_mode;
-    let circle_size = 14.0;
-    let color = if connected {
-        DashColors::success_color(dark_mode)
+    let circle_size = 12.0;
+    let (color, glow_color) = if connected {
+        if is_spv {
+            // SPV: Use Dash Blue dot with darker blue glow
+            let darker_glow = Color32::from_rgb(0, 76, 170); // Darker blue for glow
+            (DashColors::DASH_BLUE, darker_glow)
+        } else {
+            // Core: Use green with lighter green glow
+            let green = DashColors::success_color(dark_mode);
+            (green, Color32::from_rgb(100, 220, 140))
+        }
     } else {
-        DashColors::error_color(dark_mode)
+        // Disconnected: Use red
+        let red = DashColors::error_color(dark_mode);
+        (red, red)
     };
 
     // Wrap in a container that can be positioned vertically
@@ -135,33 +164,61 @@ fn add_connection_indicator(ui: &mut Ui, app_context: &Arc<AppContext>) -> AppAc
                     );
                     let center = rect.center();
 
-                    // Draw the background circle with pulsating effect
-                    let bg_radius = if connected {
-                        (circle_size / 2.0 + 3.0) * pulse_scale
-                    } else {
-                        circle_size / 2.0 // Same size as main circle when disconnected
-                    };
-                    ui.painter()
-                        .circle_filled(center, bg_radius, color.linear_multiply(0.3));
+                    // Draw glow/background circle only when connected
+                    if connected {
+                        let bg_radius = (circle_size / 2.0 + 4.0) * pulse_scale;
+                        ui.painter().circle_filled(
+                            center,
+                            bg_radius,
+                            glow_color.linear_multiply(0.25),
+                        );
+                    }
 
-                    // Draw the main circle
+                    // Draw the main circle with subtle border
                     ui.painter().circle_filled(center, circle_size / 2.0, color);
+                    if connected {
+                        // Add subtle border for definition
+                        ui.painter().circle_stroke(
+                            center,
+                            circle_size / 2.0,
+                            egui::Stroke::new(1.0, color.linear_multiply(0.8)),
+                        );
+                    }
 
                     // Request repaint for animation (only when connected and pulsating)
                     if connected {
                         ui.ctx().request_repaint();
                     }
                     let tip = if connected {
-                        "Connected to Dash Core Wallet"
+                        if is_spv {
+                            // Show sync progress from cached status
+                            if let Ok(status) = app_context.spv_status.lock() {
+                                match (status.header_height, status.filter_height) {
+                                    (Some(header), Some(filter)) => {
+                                        format!(
+                                            "SPV Client: Headers {}, Filters {}",
+                                            header, filter
+                                        )
+                                    }
+                                    _ => "Connected via SPV Client".to_string(),
+                                }
+                            } else {
+                                "Connected via SPV Client".to_string()
+                            }
+                        } else {
+                            "Connected to Dash Core Wallet".to_string()
+                        }
+                    } else if is_spv {
+                        "SPV Client disconnected".to_string()
                     } else {
-                        "Disconnected from Dash Core Wallet. Click to start it."
+                        "Disconnected from Dash Core Wallet. Click to start it.".to_string()
                     };
                     let resp = resp.on_hover_text(tip);
 
-                    if resp.clicked() && !connected {
+                    if resp.clicked() && !connected && !is_spv {
                         let settings = app_context.db.get_settings().ok().flatten();
                         let (custom_path, overwrite) = settings
-                            .map(|(_, _, _, custom_path, overwrite, _)| (custom_path, overwrite))
+                            .map(|(_, _, _, custom_path, overwrite, _, _)| (custom_path, overwrite))
                             .unwrap_or((None, true));
                         action |= AppAction::BackendTask(BackendTask::CoreTask(
                             CoreTask::StartDashQT(app_context.network, custom_path, overwrite),

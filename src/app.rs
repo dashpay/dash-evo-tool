@@ -9,12 +9,13 @@ use crate::components::core_zmq_listener::{CoreZMQListener, ZMQMessage};
 use crate::context::AppContext;
 use crate::database::Database;
 use crate::logging::initialize_logger;
+use crate::model::connection_type::ConnectionType;
 use crate::ui::contracts_documents::contracts_documents_screen::DocumentQueryScreen;
 use crate::ui::dpns::dpns_contested_names_screen::{
     DPNSScreen, DPNSSubscreen, ScheduledVoteCastingStatus,
 };
 use crate::ui::identities::identities_screen::IdentitiesScreen;
-use crate::ui::network_chooser_screen::NetworkChooserScreen;
+use crate::ui::network_chooser_screen::SettingsScreen;
 use crate::ui::theme::ThemeMode;
 use crate::ui::tokens::tokens_screen::{TokensScreen, TokensSubscreen};
 use crate::ui::tools::contract_visualizer_screen::ContractVisualizerScreen;
@@ -153,12 +154,20 @@ impl AppState {
 
         let settings = db.get_settings().expect("expected to get settings");
 
-        let (password_info, theme_preference) =
-            if let Some((_, _, password_info, _, _, theme_pref)) = settings.clone() {
-                (password_info, theme_pref)
-            } else {
-                (None, ThemeMode::System) // Default values if no settings found
-            };
+        let (password_info, theme_preference, _saved_connection_type) = if let Some((
+            _,
+            _,
+            password_info,
+            _,
+            _,
+            theme_pref,
+            connection_type,
+        )) = settings.clone()
+        {
+            (password_info, theme_pref, connection_type)
+        } else {
+            (None, ThemeMode::System, ConnectionType::DashCore) // Default values if no settings found
+        };
 
         let mainnet_app_context =
             match AppContext::new(Network::Dash, db.clone(), password_info.clone()) {
@@ -201,7 +210,7 @@ impl AppState {
             TokensScreen::new(&mainnet_app_context, TokensSubscreen::TokenCreator);
 
         let (custom_dash_qt_path, overwrite_dash_conf) = match settings.clone() {
-            Some((.., custom_dash_qt_path, db_overwrite_dash_conf, _theme_pref)) => {
+            Some((.., custom_dash_qt_path, db_overwrite_dash_conf, _theme_pref, _)) => {
                 // Use the stored settings
                 // Note: if custom_dash_qt_path is None, the backend will use platform-specific defaults
                 (custom_dash_qt_path, db_overwrite_dash_conf)
@@ -212,7 +221,7 @@ impl AppState {
             }
         };
 
-        let mut network_chooser_screen = NetworkChooserScreen::new(
+        let mut settings_screen = SettingsScreen::new(
             &mainnet_app_context,
             testnet_app_context.as_ref(),
             devnet_app_context.as_ref(),
@@ -228,10 +237,10 @@ impl AppState {
 
         let mut chosen_network = Network::Dash;
 
-        if let Some((network, screen_type, _password_info, _, _, _)) = settings {
+        if let Some((network, screen_type, _password_info, _, _, _, _)) = settings {
             selected_main_screen = screen_type;
             chosen_network = network;
-            network_chooser_screen.current_network = chosen_network;
+            settings_screen.current_network = chosen_network;
 
             if chosen_network == Network::Testnet && testnet_app_context.is_some() {
                 let testnet_app_context = testnet_app_context.as_ref().unwrap();
@@ -308,6 +317,8 @@ impl AppState {
                     TokensScreen::new(local_app_context, TokensSubscreen::TokenCreator);
             }
         }
+
+        // Connection type is now handled automatically during AppContext creation
 
         // // Create a channel with a buffer size of 32 (adjust as needed)
         let (task_result_sender, task_result_receiver) = tokiompsc::channel(256);
@@ -415,7 +426,7 @@ impl AppState {
                 ),
                 (
                     RootScreenType::RootScreenNetworkChooser,
-                    Screen::NetworkChooserScreen(network_chooser_screen),
+                    Screen::SettingsScreen(settings_screen),
                 ),
                 (
                     RootScreenType::RootScreenMyTokenBalances,

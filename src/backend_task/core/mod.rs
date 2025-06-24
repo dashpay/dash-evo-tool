@@ -65,6 +65,8 @@ impl AppContext {
                 })
                 .map_err(|e| e.to_string()),
             CoreTask::GetBestChainLocks => {
+                tracing::trace!("Running GetBestChainLocks task");
+
                 // Load configs
                 let config = Config::load().map_err(|e| format!("Failed to load config: {}", e))?;
 

@@ -166,7 +166,11 @@ impl Database {
     }
 
     /// Updates the connection type for a specific network
-    pub fn update_network_connection_type(&self, network: Network, connection_type: ConnectionType) -> Result<()> {
+    pub fn update_network_connection_type(
+        &self,
+        network: Network,
+        connection_type: ConnectionType,
+    ) -> Result<()> {
         let network_str = network.to_string();
         let connection_str = match connection_type {
             ConnectionType::DashCore => "DashCore",
@@ -187,7 +191,7 @@ impl Database {
     pub fn get_network_connection_type(&self, network: Network) -> Result<ConnectionType> {
         let network_str = network.to_string();
         let conn = self.conn.lock().unwrap();
-        
+
         let result = conn.query_row(
             "SELECT connection_type FROM network_connection_settings WHERE network = ?",
             rusqlite::params![network_str],
@@ -197,7 +201,7 @@ impl Database {
                     "DashSpv" => ConnectionType::DashSpv,
                     _ => ConnectionType::DashCore, // Default to DashCore for unknown values
                 })
-            }
+            },
         );
 
         match result {

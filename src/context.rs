@@ -191,20 +191,26 @@ impl AppContext {
         // Bind SPV manager to app context asynchronously and auto-start if needed
         let spv_manager = app_context.spv_manager.clone();
         let app_context_weak = Arc::downgrade(&app_context);
-        let should_start_spv = matches!(connection_type, crate::model::connection_type::ConnectionType::DashSpv);
+        let should_start_spv = matches!(
+            connection_type,
+            crate::model::connection_type::ConnectionType::DashSpv
+        );
         tokio::spawn(async move {
             if let Some(app_ctx) = app_context_weak.upgrade() {
                 spv_manager.bind_app_context(app_ctx.clone()).await;
-                
+
                 // Auto-start SPV if connection type is set to SPV
                 if should_start_spv {
                     match spv_manager.start().await {
                         Ok(_) => {
                             tracing::info!("Auto-started SPV client on app initialization");
-                            
+
                             // Pre-fetch quorum keys for SPV mode
                             if let Err(e) = app_ctx.prefetch_quorum_keys_for_spv().await {
-                                tracing::warn!("Failed to pre-fetch quorum keys during auto-start: {}", e);
+                                tracing::warn!(
+                                    "Failed to pre-fetch quorum keys during auto-start: {}",
+                                    e
+                                );
                             }
                         }
                         Err(e) => {

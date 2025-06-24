@@ -109,7 +109,8 @@ fn add_connection_indicator(ui: &mut Ui, app_context: &Arc<AppContext>) -> AppAc
     // Determine connection status based on connection type
     let connected = if is_spv {
         // For SPV, check cached status
-        app_context.spv_status
+        app_context
+            .spv_status
             .lock()
             .map(|status| status.is_running)
             .unwrap_or(false)
@@ -194,9 +195,12 @@ fn add_connection_indicator(ui: &mut Ui, app_context: &Arc<AppContext>) -> AppAc
                             if let Ok(status) = app_context.spv_status.lock() {
                                 match (status.header_height, status.filter_height) {
                                     (Some(header), Some(filter)) => {
-                                        format!("SPV Client: Headers {}, Filters {}", header, filter)
+                                        format!(
+                                            "SPV Client: Headers {}, Filters {}",
+                                            header, filter
+                                        )
                                     }
-                                    _ => "Connected via SPV Client".to_string()
+                                    _ => "Connected via SPV Client".to_string(),
                                 }
                             } else {
                                 "Connected via SPV Client".to_string()
@@ -204,12 +208,10 @@ fn add_connection_indicator(ui: &mut Ui, app_context: &Arc<AppContext>) -> AppAc
                         } else {
                             "Connected to Dash Core Wallet".to_string()
                         }
+                    } else if is_spv {
+                        "SPV Client disconnected".to_string()
                     } else {
-                        if is_spv {
-                            "SPV Client disconnected".to_string()
-                        } else {
-                            "Disconnected from Dash Core Wallet. Click to start it.".to_string()
-                        }
+                        "Disconnected from Dash Core Wallet. Click to start it.".to_string()
                     };
                     let resp = resp.on_hover_text(tip);
 

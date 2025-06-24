@@ -41,7 +41,12 @@ impl SpvManager {
         *ctx_guard = Some(Arc::downgrade(&app_context));
     }
 
-    async fn update_status(&self, is_running: bool, header_height: Option<u32>, filter_height: Option<u32>) {
+    async fn update_status(
+        &self,
+        is_running: bool,
+        header_height: Option<u32>,
+        filter_height: Option<u32>,
+    ) {
         let ctx_guard = self.app_context.read().await;
         if let Some(weak_ctx) = ctx_guard.as_ref() {
             if let Some(app_context) = weak_ctx.upgrade() {
@@ -61,15 +66,15 @@ impl SpvManager {
             let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(10));
             loop {
                 interval.tick().await;
-                
+
                 // Check if SPV is still running
                 let is_running = *spv_manager.is_running.read().await;
                 if !is_running {
                     break;
                 }
-                
+
                 // Update sync progress
-                if let Ok(_) = spv_manager.get_sync_progress().await {
+                if spv_manager.get_sync_progress().await.is_ok() {
                     // Progress is automatically updated in get_sync_progress
                 }
             }
@@ -134,6 +139,7 @@ impl SpvManager {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub async fn sync_to_tip(&self) -> Result<(), String> {
         let mut client_guard = self.client.write().await;
         if let Some(client) = client_guard.as_mut() {
@@ -154,16 +160,22 @@ impl SpvManager {
                 .sync_progress()
                 .await
                 .map_err(|e| format!("Failed to get sync progress: {}", e))?;
-            
+
             // Update cached status with latest progress
-            self.update_status(true, Some(progress.header_height), Some(progress.filter_header_height)).await;
-            
+            self.update_status(
+                true,
+                Some(progress.header_height),
+                Some(progress.filter_header_height),
+            )
+            .await;
+
             Ok((progress.header_height, progress.filter_header_height))
         } else {
             Err("SPV client not started".to_string())
         }
     }
 
+    #[allow(dead_code)]
     pub async fn add_watch_address(&self, address: Address) -> Result<(), String> {
         let mut client_guard = self.client.write().await;
         if let Some(client) = client_guard.as_mut() {
@@ -180,6 +192,7 @@ impl SpvManager {
         }
     }
 
+    #[allow(dead_code)]
     pub async fn get_address_balance(&self, address: &Address) -> Result<u64, String> {
         let client_guard = self.client.read().await;
         if let Some(client) = client_guard.as_ref() {
@@ -193,6 +206,7 @@ impl SpvManager {
         }
     }
 
+    #[allow(dead_code)]
     pub async fn is_running(&self) -> bool {
         *self.is_running.read().await
     }

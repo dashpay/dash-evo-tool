@@ -394,7 +394,10 @@ impl Database {
     }
 
     /// Creates the network_connection_settings table for per-network connection preferences
-    pub fn create_network_connection_settings_table(&self, conn: &Connection) -> rusqlite::Result<()> {
+    pub fn create_network_connection_settings_table(
+        &self,
+        conn: &Connection,
+    ) -> rusqlite::Result<()> {
         conn.execute(
             "CREATE TABLE IF NOT EXISTS network_connection_settings (
                 network TEXT PRIMARY KEY,

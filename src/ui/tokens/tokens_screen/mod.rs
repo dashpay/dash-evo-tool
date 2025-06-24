@@ -2899,8 +2899,8 @@ mod tests {
         let db = Arc::new(Database::new(db_file_path).unwrap());
         db.initialize(Path::new(&db_file_path)).unwrap();
 
-        let app_context =
-            AppContext::new(Network::Regtest, db, None).expect("Expected to create AppContext");
+        let app_context = AppContext::new(Network::Regtest, db, None, Default::default())
+            .expect("Expected to create AppContext");
         let mut token_creator_ui = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
 
         // Identity selection
@@ -3197,8 +3197,8 @@ mod tests {
         let db = Arc::new(Database::new(db_file_path).unwrap());
         db.initialize(Path::new(&db_file_path)).unwrap();
 
-        let app_context =
-            AppContext::new(Network::Regtest, db, None).expect("Expected to create AppContext");
+        let app_context = AppContext::new(Network::Regtest, db, None, Default::default())
+            .expect("Expected to create AppContext");
         let mut token_creator_ui = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
 
         // Identity selection
@@ -3309,8 +3309,8 @@ mod tests {
         let db = Arc::new(Database::new(db_file_path).unwrap());
         db.initialize(Path::new(&db_file_path)).unwrap();
 
-        let app_context =
-            AppContext::new(Network::Regtest, db, None).expect("Expected to create AppContext");
+        let app_context = AppContext::new(Network::Regtest, db, None, Default::default())
+            .expect("Expected to create AppContext");
         let mut token_creator_ui = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
 
         // Identity selection

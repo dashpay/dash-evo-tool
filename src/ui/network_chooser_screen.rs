@@ -38,6 +38,11 @@ pub struct SettingsScreen {
     should_reset_collapsing_states: bool,
     is_switching_connection: bool,
     connection_switch_start_time: Option<Instant>,
+    show_spv_diagnostics: bool,
+    spv_diagnostics_text: String,
+    previous_header_height: Option<u32>,
+    previous_header_time: Option<Instant>,
+    estimated_blocks_per_second: f32,
 }
 
 impl SettingsScreen {
@@ -97,6 +102,11 @@ impl SettingsScreen {
             should_reset_collapsing_states: true, // Start with collapsed state
             is_switching_connection: false,
             connection_switch_start_time: None,
+            show_spv_diagnostics: false,
+            spv_diagnostics_text: String::new(),
+            previous_header_height: None,
+            previous_header_time: None,
+            estimated_blocks_per_second: 0.0,
         }
     }
 
@@ -187,8 +197,9 @@ impl SettingsScreen {
                     && current_connection_type != ConnectionType::DashSpv
                 {
                     tracing::info!(
-                        "User clicked to switch to SPV from {:?}",
-                        current_connection_type
+                        "User clicked to switch to SPV from {:?} on network {:?}",
+                        current_connection_type,
+                        self.current_network
                     );
                     app_action |= AppAction::BackendTask(BackendTask::SwitchConnectionType {
                         connection_type: ConnectionType::DashSpv,
@@ -221,6 +232,261 @@ impl SettingsScreen {
                             .color(DashColors::text_secondary(dark_mode)),
                     );
                 });
+            }
+
+            // Show SPV sync status if SPV is selected
+            if current_connection_type == ConnectionType::DashSpv && !self.is_switching_connection {
+                ui.add_space(12.0);
+                ui.separator();
+                ui.add_space(8.0);
+
+                ui.label(
+                    egui::RichText::new("SPV Sync Status")
+                        .strong()
+                        .color(DashColors::text_primary(dark_mode)),
+                );
+
+                let app_context = self.current_app_context();
+
+                // Get SPV status data and immediately release the lock
+                let (spv_is_running, header_height, filter_height, last_updated_elapsed) =
+                    if let Ok(spv_status) = app_context.spv_status.lock() {
+                        (
+                            spv_status.is_running,
+                            spv_status.header_height,
+                            spv_status.filter_height,
+                            spv_status.last_updated.elapsed(),
+                        )
+                    } else {
+                        (false, None, None, std::time::Duration::from_secs(0))
+                    };
+
+                if spv_is_running {
+                    // Calculate sync rate based on header height changes
+                    let current_time = Instant::now();
+                    let mut new_blocks_per_second = self.estimated_blocks_per_second;
+                    
+                    if let Some(height) = header_height {
+                        if let (Some(prev_height), Some(prev_time)) = (self.previous_header_height, self.previous_header_time) {
+                            if height > prev_height {
+                                let height_diff = height - prev_height;
+                                let time_diff = current_time.duration_since(prev_time).as_secs_f32();
+                                if time_diff > 0.5 { // Only update if enough time has passed
+                                    new_blocks_per_second = height_diff as f32 / time_diff;
+                                }
+                            }
+                        }
+                    }
+
+                    // Estimate current blockchain height (mainnet is around 2.29M as of June 2025)
+                    let estimated_chain_tip = match self.current_network {
+                        Network::Dash => 2_294_200, // Updated estimate based on logs
+                        Network::Testnet => 1_000_000, // Rough estimate for testnet
+                        _ => 0,
+                    };
+
+                    // Show enhanced sync progress
+                    ui.vertical(|ui| {
+                        ui.add_space(4.0);
+                        
+                        // Status indicator with visual styling
+                        ui.horizontal(|ui| {
+                            ui.add_space(20.0);
+                            
+                            // Animated status indicator
+                            let time = ui.input(|i| i.time);
+                            let pulse = (time * 2.0).sin() * 0.5 + 0.5;
+                            let status_color = Color32::from_rgb(
+                                (64.0 + pulse * 32.0) as u8,
+                                (192.0 + pulse * 63.0) as u8,
+                                (64.0 + pulse * 32.0) as u8,
+                            );
+                            
+                            ui.label(
+                                egui::RichText::new("SPV Connected & Syncing")
+                                    .color(DashColors::success_color(dark_mode))
+                                    .strong(),
+                            );
+                        });
+
+                        if let Some(height) = header_height {
+                            // Progress bar
+                            if estimated_chain_tip > 0 {
+                                let progress = (height as f32 / estimated_chain_tip as f32).min(1.0);
+                                ui.horizontal(|ui| {
+                                    ui.add_space(20.0);
+                                    ui.label("Sync Progress:");
+                                    
+                                    // Custom progress bar
+                                    let bar_width = 200.0;
+                                    let bar_height = 20.0;
+                                    let (rect, _) = ui.allocate_exact_size(
+                                        egui::Vec2::new(bar_width, bar_height),
+                                        egui::Sense::hover(),
+                                    );
+                                    
+                                    // Background
+                                    ui.painter().rect_filled(
+                                        rect,
+                                        5.0,
+                                        DashColors::surface_elevated(dark_mode),
+                                    );
+                                    
+                                    // Progress fill
+                                    let progress_width = bar_width * progress;
+                                    let progress_rect = egui::Rect::from_min_size(
+                                        rect.min,
+                                        egui::Vec2::new(progress_width, bar_height),
+                                    );
+                                    ui.painter().rect_filled(
+                                        progress_rect,
+                                        5.0,
+                                        DashColors::DASH_BLUE,
+                                    );
+                                    
+                                    // Text overlay
+                                    let text = format!("{:.1}%", progress * 100.0);
+                                    ui.painter().text(
+                                        rect.center(),
+                                        egui::Align2::CENTER_CENTER,
+                                        text,
+                                        egui::FontId::proportional(12.0),
+                                        Color32::WHITE,
+                                    );
+                                });
+                            }
+                            
+                            // Block height and sync rate
+                            ui.horizontal(|ui| {
+                                ui.add_space(20.0);
+                                ui.label("Block Height:");
+                                ui.label(
+                                    egui::RichText::new(format!("{}", height))
+                                        .color(DashColors::DASH_BLUE)
+                                        .monospace(),
+                                );
+                                
+                                if estimated_chain_tip > 0 {
+                                    ui.label(format!("/ {}", estimated_chain_tip));
+                                }
+                                
+                                if new_blocks_per_second > 0.1 {
+                                    ui.label(format!("({:.0} blocks/sec)", new_blocks_per_second));
+                                    
+                                    // ETA calculation
+                                    if estimated_chain_tip > height && new_blocks_per_second > 0.1 {
+                                        let remaining_blocks = estimated_chain_tip - height;
+                                        let eta_seconds = remaining_blocks as f32 / new_blocks_per_second;
+                                        let eta_minutes = eta_seconds / 60.0;
+                                        
+                                        if eta_minutes < 60.0 {
+                                            ui.label(format!("ETA: {:.1}min", eta_minutes));
+                                        } else {
+                                            ui.label(format!("ETA: {:.1}h", eta_minutes / 60.0));
+                                        }
+                                    }
+                                }
+                            });
+                        }
+
+                        if let Some(height) = filter_height {
+                            if height > 0 {
+                                ui.horizontal(|ui| {
+                                    ui.add_space(20.0);
+                                    ui.label("Filter Height:");
+                                    ui.label(
+                                        egui::RichText::new(format!("{}", height))
+                                            .color(DashColors::text_secondary(dark_mode))
+                                            .monospace(),
+                                    );
+                                });
+                            }
+                        }
+
+                        // Last update indicator
+                        ui.horizontal(|ui| {
+                            ui.add_space(20.0);
+                            ui.label("Last Updated:");
+                            let status_text = if last_updated_elapsed.as_secs() < 10 {
+                                format!("{:.1}s ago", last_updated_elapsed.as_secs_f32())
+                            } else if last_updated_elapsed.as_secs() < 60 {
+                                format!("{}s ago", last_updated_elapsed.as_secs())
+                            } else {
+                                format!("{}m ago", last_updated_elapsed.as_secs() / 60)
+                            };
+                            
+                            let status_color = if last_updated_elapsed.as_secs() < 30 {
+                                DashColors::success_color(dark_mode)
+                            } else if last_updated_elapsed.as_secs() < 120 {
+                                DashColors::warning_color(dark_mode)
+                            } else {
+                                DashColors::error_color(dark_mode)
+                            };
+                            
+                            ui.colored_label(status_color, status_text);
+                        });
+                    });
+
+                    // Sync button
+                    ui.add_space(8.0);
+                    // Track button clicks to handle mutations outside closure
+                    let mut show_diagnostics_clicked = false;
+                    let mut start_sync_clicked = false;
+
+                    ui.horizontal(|ui| {
+                        if ui.button("Show Diagnostics").clicked() {
+                            show_diagnostics_clicked = true;
+                        }
+                        
+                        // Add "Start SPV Sync" button when headers are at 0
+                        if header_height.unwrap_or(0) == 0 {
+                            if ui.button("Start SPV Sync").clicked() {
+                                start_sync_clicked = true;
+                            }
+                        }
+                    });
+
+                    // Handle button clicks outside the closure to avoid borrow issues
+                    if show_diagnostics_clicked {
+                        tracing::info!("User clicked Show Diagnostics");
+                        // Show basic diagnostics immediately to avoid blocking
+                        self.spv_diagnostics_text = format!(
+                            "SPV Diagnostics:\n\
+                            Block Height: {}\n\
+                            Filter Height: {}\n\
+                            Last Updated: {:.1}s ago\n\
+                            Status: {}\n\n\
+                            For detailed diagnostics, check det.log",
+                            header_height.unwrap_or(0),
+                            filter_height.unwrap_or(0),
+                            last_updated_elapsed.as_secs_f32(),
+                            if spv_is_running { "Running" } else { "Stopped" }
+                        );
+                        self.show_spv_diagnostics = true;
+                    }
+                    
+                    if start_sync_clicked {
+                        tracing::info!("User clicked Start SPV Sync");
+                        // Send the task to start SPV sync
+                        app_action = AppAction::BackendTask(BackendTask::StartSpvSync);
+                    }
+                    
+                    // Update sync rate tracking (after all borrowing is done)
+                    self.estimated_blocks_per_second = new_blocks_per_second;
+                    if let Some(height) = header_height {
+                        self.previous_header_height = Some(height);
+                        self.previous_header_time = Some(current_time);
+                    }
+                } else {
+                    ui.label(
+                        egui::RichText::new("SPV client is not running")
+                            .color(DashColors::error_color(dark_mode)),
+                    );
+                }
+
+                // Request repaint to update status
+                ui.ctx()
+                    .request_repaint_after(std::time::Duration::from_secs(1));
             }
         });
 
@@ -602,6 +868,7 @@ impl SettingsScreen {
                 });
             });
 
+
         app_action
     }
 
@@ -849,9 +1116,22 @@ impl ScreenLike for SettingsScreen {
     }
 
     fn ui(&mut self, ctx: &Context) -> AppAction {
-        // Check for connection switch timeout (5 seconds)
+        // Check for connection switch timeout (35 seconds for SPV, 5 for Core)
         if let Some(start_time) = self.connection_switch_start_time {
-            if start_time.elapsed() > Duration::from_secs(5) {
+            let timeout_duration = if self
+                .current_app_context()
+                .config
+                .read()
+                .unwrap()
+                .connection_type
+                == ConnectionType::DashCore
+            {
+                Duration::from_secs(5)
+            } else {
+                Duration::from_secs(35) // SPV can take longer
+            };
+
+            if start_time.elapsed() > timeout_duration {
                 // Clear the loading state after timeout
                 self.is_switching_connection = false;
                 self.connection_switch_start_time = None;
@@ -878,20 +1158,78 @@ impl ScreenLike for SettingsScreen {
                 .inner
         });
 
-        // Recheck both network status every 3 seconds
-        let recheck_time = Duration::from_secs(3);
-        if action == AppAction::None {
-            let current_time = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("Time went backwards");
-            if let Some(time) = self.recheck_time {
-                if current_time.as_millis() as u64 >= time {
-                    action =
-                        AppAction::BackendTask(BackendTask::CoreTask(CoreTask::GetBestChainLocks));
+        // Only check chain locks if we're NOT using SPV connection
+        let current_connection_type = {
+            let config = self.current_app_context().config.read().unwrap();
+            config.connection_type.clone()
+        };
+
+        if current_connection_type != ConnectionType::DashSpv {
+            // Recheck both network status every 3 seconds
+            let recheck_time = Duration::from_secs(3);
+            if action == AppAction::None {
+                let current_time = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .expect("Time went backwards");
+                if let Some(time) = self.recheck_time {
+                    if current_time.as_millis() as u64 >= time {
+                        action = AppAction::BackendTask(BackendTask::CoreTask(
+                            CoreTask::GetBestChainLocks,
+                        ));
+                        self.recheck_time = Some((current_time + recheck_time).as_millis() as u64);
+                    }
+                } else {
                     self.recheck_time = Some((current_time + recheck_time).as_millis() as u64);
                 }
-            } else {
-                self.recheck_time = Some((current_time + recheck_time).as_millis() as u64);
+            }
+        }
+
+        // Show SPV diagnostics popup if requested
+        if self.show_spv_diagnostics {
+            let mut is_open = true;
+            egui::Window::new("SPV Diagnostics")
+                .collapsible(false)
+                .resizable(true)
+                .default_width(600.0)
+                .default_height(400.0)
+                .open(&mut is_open)
+                .show(ctx, |ui| {
+                    ui.add_space(4.0);
+                    ui.label("SPV Client Diagnostic Information:");
+                    ui.add_space(8.0);
+
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false; 2])
+                        .show(ui, |ui| {
+                            ui.monospace(&self.spv_diagnostics_text);
+                        });
+
+                    ui.add_space(10.0);
+
+                    ui.horizontal(|ui| {
+                        if ui.button("Refresh").clicked() {
+                            tracing::info!("User clicked Refresh diagnostics");
+                            let spv_manager = self.current_app_context().spv_manager.clone();
+                            let diagnostics = tokio::task::block_in_place(|| {
+                                let handle = tokio::runtime::Handle::current();
+                                handle.block_on(async {
+                                    match spv_manager.get_diagnostics().await {
+                                        Ok(diag) => diag,
+                                        Err(e) => format!("Failed to get diagnostics: {}", e),
+                                    }
+                                })
+                            });
+                            self.spv_diagnostics_text = diagnostics;
+                        }
+
+                        if ui.button("Close").clicked() {
+                            self.show_spv_diagnostics = false;
+                        }
+                    });
+                });
+
+            if !is_open {
+                self.show_spv_diagnostics = false;
             }
         }
 

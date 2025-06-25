@@ -138,16 +138,30 @@ impl WalletsBalancesScreen {
     }
 
     fn add_receiving_address(&mut self) {
+        tracing::info!("add_receiving_address called");
         if let Some(wallet) = &self.selected_wallet {
+            tracing::info!("Found selected wallet");
             let result = {
                 let mut wallet = wallet.write().unwrap();
                 wallet.receive_address(self.app_context.network, true, Some(&self.app_context))
             };
 
             // Now the immutable borrow of `wallet` is dropped, and we can use `self` mutably
-            if let Err(e) = result {
-                self.display_message(&e, MessageType::Error);
+            match result {
+                Ok(address) => {
+                    tracing::info!("Successfully created address: {}", address);
+                    self.display_message(
+                        &format!("Successfully created new receiving address: {}", address),
+                        MessageType::Success,
+                    );
+                }
+                Err(e) => {
+                    tracing::error!("Failed to create address: {}", e);
+                    self.display_message(&e, MessageType::Error);
+                }
             }
+        } else {
+            tracing::warn!("No wallet selected");
         }
     }
 

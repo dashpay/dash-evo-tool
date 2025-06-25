@@ -475,6 +475,11 @@ impl AppState {
     pub fn handle_backend_task(&self, task: BackendTask) {
         let sender = self.task_result_sender.clone();
         let app_context = self.current_app_context().clone();
+        tracing::info!(
+            "handle_backend_task: Using app context for network: {:?}, task: {:?}",
+            self.chosen_network,
+            task
+        );
 
         tokio::spawn(async move {
             let result = app_context.run_backend_task(task, sender.clone()).await;

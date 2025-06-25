@@ -14,12 +14,9 @@ use dash_sdk::platform::DataContract;
 use dash_sdk::platform::FetchUnproved;
 use dash_sdk::query_types::{CurrentQuorumsInfo, NoParamQuery};
 use rusqlite::Result;
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex, RwLock};
-use std::time::{Duration, Instant};
+use std::sync::{Arc, Mutex};
 
-/// Type alias for quorum key cache: (quorum_type, quorum_hash) -> public_key
-type QuorumKeyCache = Arc<RwLock<HashMap<(u32, [u8; 32]), [u8; 48]>>>;
+// Removed QuorumKeyCache - no longer using key caching
 
 #[derive(Debug)]
 pub(crate) struct Provider {
@@ -27,10 +24,6 @@ pub(crate) struct Provider {
     app_context: Mutex<Option<Arc<AppContext>>>,
     pub core: Option<CoreClient>,
     connection_type: ConnectionType,
-    /// Cache for quorum public keys: (quorum_type, quorum_hash) -> public_key
-    pub quorum_key_cache: QuorumKeyCache,
-    /// Track the last time we attempted to refresh quorum keys
-    last_refresh_attempt: Arc<Mutex<Option<Instant>>>,
 }
 
 impl Provider {
@@ -78,8 +71,6 @@ impl Provider {
             core,
             app_context: Default::default(),
             connection_type,
-            quorum_key_cache: Arc::new(RwLock::new(HashMap::new())),
-            last_refresh_attempt: Arc::new(Mutex::new(None)),
         })
     }
     /// Set app context to the provider.
@@ -94,12 +85,10 @@ impl Provider {
         sdk.set_context_provider(self.clone());
     }
 
-    /// Set the quorum key cache to a specific cache instance (used when preserving cache across provider recreation)
-    pub fn set_quorum_key_cache(&mut self, cache: QuorumKeyCache) {
-        self.quorum_key_cache = cache;
-    }
+    // Removed set_quorum_key_cache - no longer using key caching
 
-    /// Pre-fetch and cache current quorum keys for SPV mode
+    // Removed prefetch_quorum_keys - no longer using key caching
+    /*
     pub async fn prefetch_quorum_keys(
         &self,
         sdk: &dash_sdk::Sdk,
@@ -170,12 +159,12 @@ impl Provider {
                     .keys()
                     .map(|(t, h)| format!("type={}, hash={}", t, hex::encode(h)))
                     .collect();
-                
+
                 tracing::info!(
                     "Successfully fetched and cached {} actual BLS quorum keys from DAPI",
                     count
                 );
-                
+
                 // Log a sample of cached keys for debugging
                 if !cached_hashes.is_empty() {
                     tracing::info!("Sample of cached quorum keys (first 5):");
@@ -183,12 +172,12 @@ impl Provider {
                         tracing::info!("  {}: {}", i + 1, key_info);
                     }
                 }
-                
+
                 // Update last refresh attempt time
                 if let Ok(mut last_attempt) = self.last_refresh_attempt.lock() {
                     *last_attempt = Some(Instant::now());
                 }
-                
+
                 Ok(())
             }
             Ok(None) => {
@@ -207,22 +196,9 @@ impl Provider {
             }
         }
     }
-    
-    /// Check if we should attempt to refresh quorum keys
-    fn should_refresh_quorum_keys(&self) -> bool {
-        if let Ok(last_attempt) = self.last_refresh_attempt.lock() {
-            if let Some(last_time) = *last_attempt {
-                // Only refresh if it's been at least 30 seconds since last attempt
-                // This prevents rapid retry loops
-                last_time.elapsed() > Duration::from_secs(30)
-            } else {
-                // Never refreshed, allow it
-                true
-            }
-        } else {
-            false
-        }
-    }
+    */
+
+    // Removed should_refresh_quorum_keys - no longer using key caching
 }
 
 impl ContextProvider for Provider {
@@ -283,118 +259,152 @@ impl ContextProvider for Provider {
             hex::encode(quorum_hash)
         );
 
-        // First check the cache
-        let cache_key = (quorum_type, quorum_hash);
-        if let Ok(cache) = self.quorum_key_cache.read() {
-            if let Some(key) = cache.get(&cache_key) {
-                tracing::debug!(
-                    "Cache hit: Using cached quorum public key for type {} hash {}",
-                    quorum_type,
-                    hex::encode(quorum_hash)
-                );
-                return Ok(*key);
-            } else {
-                tracing::warn!(
-                    "Cache miss: No cached key found for type {} hash {} (cache has {} keys)",
-                    quorum_type,
-                    hex::encode(quorum_hash),
-                    cache.len()
-                );
-                
-                // Log available quorum hashes for this type for debugging
-                let available_for_type: Vec<String> = cache
-                    .keys()
-                    .filter(|(t, _)| *t == quorum_type)
-                    .map(|(_, h)| hex::encode(h))
-                    .collect();
-                    
-                if !available_for_type.is_empty() {
-                    tracing::info!(
-                        "Available quorum hashes for type {}: {:?}",
-                        quorum_type,
-                        available_for_type
-                    );
-                    
-                    // Check if this looks like a historical quorum based on hash prefix
-                    // Newer quorums tend to have lower hash values (more leading zeros)
-                    let requested_hash_str = hex::encode(quorum_hash);
-                    if requested_hash_str.starts_with("00000") {
+        // TESTING: Only use MasternodeListEngine, no fallbacks
+        if self.connection_type == ConnectionType::DashSpv {
+            if let Ok(lock) = self.app_context.lock() {
+                if let Some(app_ctx) = lock.as_ref() {
+                    // Try to get masternode list engine from SPV manager
+                    let engine_result = tokio::task::block_in_place(|| {
+                        let handle = tokio::runtime::Handle::current();
+                        handle.block_on(app_ctx.spv_manager.masternode_list_engine())
+                    });
+
+                    if let Some(engine) = engine_result {
+                        tracing::info!("Got MasternodeListEngine, checking for quorum key");
+
+                        // Log engine state
+                        tracing::info!("MasternodeListEngine state:");
                         tracing::info!(
-                            "The requested quorum hash {} appears to be from a recent epoch",
-                            requested_hash_str
+                            "  - Number of masternode lists: {}",
+                            engine.masternode_lists.len()
                         );
+                        if let Some((first_height, _)) = engine.masternode_lists.first_key_value() {
+                            tracing::info!("  - First masternode list at height: {}", first_height);
+                        }
+                        if let Some((last_height, _)) = engine.masternode_lists.last_key_value() {
+                            tracing::info!("  - Last masternode list at height: {}", last_height);
+                        }
+
+                        // Log all available quorum types
+                        let available_types: Vec<u8> =
+                            engine.quorum_statuses.keys().map(|t| *t as u8).collect();
+                        tracing::info!("Available quorum types in engine: {:?}", available_types);
+
+                        // Check if the engine has this quorum in its quorum_statuses
+                        // Convert u32 to u8 for LLMQType
+                        let llmq_type = (quorum_type as u8).into();
+                        tracing::info!(
+                            "Looking for LLMQ type: {} (converted from u32: {})",
+                            (quorum_type as u8),
+                            quorum_type
+                        );
+
+                        if let Some(quorums_of_type) = engine.quorum_statuses.get(&llmq_type) {
+                            tracing::info!(
+                                "Found {} quorums for type {}",
+                                quorums_of_type.len(),
+                                quorum_type
+                            );
+
+                            // Log all available quorum hashes for this type
+                            let available_hashes: Vec<String> =
+                                quorums_of_type.keys().map(|h| hex::encode(h)).collect();
+                            tracing::info!(
+                                "Available quorum hashes for type {}: {:?}",
+                                quorum_type,
+                                available_hashes
+                            );
+
+                            let quorum_hash_key: dash_spv::BlockHash = quorum_hash.into();
+                            if let Some((heights, public_key, status)) =
+                                quorums_of_type.get(&quorum_hash_key)
+                            {
+                                tracing::info!(
+                                "MasternodeListEngine HIT: Found quorum public key for type {} hash {}",
+                                quorum_type,
+                                hex::encode(quorum_hash)
+                            );
+                                tracing::info!(
+                                    "Quorum appears at heights: {:?}, status: {:?}",
+                                    heights,
+                                    status
+                                );
+
+                                // Convert BLS public key to compressed format
+                                let compressed = public_key.to_compressed();
+                                return Ok(compressed);
+                            } else {
+                                tracing::warn!(
+                                "MasternodeListEngine MISS: Quorum hash {} not found in type {}",
+                                hex::encode(quorum_hash),
+                                quorum_type
+                            );
+
+                                // Check if this quorum exists in any masternode list
+                                tracing::info!("Checking masternode lists for the quorum...");
+                                for (height, mn_list) in
+                                    engine.masternode_lists.iter().rev().take(5)
+                                {
+                                    if let Some(quorums_map) = mn_list.quorums.get(&llmq_type) {
+                                        if quorums_map.contains_key(&quorum_hash_key) {
+                                            tracing::info!(
+                                                "Found quorum in masternode list at height {}",
+                                                height
+                                            );
+                                            if let Some(quorum_entry) =
+                                                quorums_map.get(&quorum_hash_key)
+                                            {
+                                                tracing::info!(
+                                                    "Quorum entry found! Extracting public key..."
+                                                );
+                                                let compressed = quorum_entry
+                                                    .quorum_entry
+                                                    .quorum_public_key
+                                                    .to_compressed();
+                                                return Ok(compressed);
+                                            }
+                                        }
+                                    }
+                                }
+                                tracing::info!("Quorum not found in recent masternode lists");
+                            }
+                        } else {
+                            tracing::warn!(
+                                "MasternodeListEngine: No quorums found for type {}",
+                                quorum_type
+                            );
+                        }
                     } else {
-                        tracing::warn!(
-                            "The requested quorum hash {} may be from an older epoch (less leading zeros)",
-                            requested_hash_str
-                        );
+                        tracing::error!("MasternodeListEngine not available from SPV manager");
                     }
-                } else {
-                    tracing::warn!("No quorum hashes cached for type {}", quorum_type);
                 }
             }
+
+            // TESTING: Return error instead of falling back
+            return Err(dash_sdk::error::ContextProviderError::Generic(format!(
+                "TESTING MODE: MasternodeListEngine doesn't have quorum key for type {} hash {}",
+                quorum_type,
+                hex::encode(quorum_hash)
+            )));
         }
+
+        // No longer using cache - removed caching functionality
 
         match &self.core {
             Some(core_client) => {
                 let key = core_client.get_quorum_public_key(quorum_type, quorum_hash)?;
-
-                // Cache the key for future use (including SPV mode)
-                if let Ok(mut cache) = self.quorum_key_cache.write() {
-                    cache.insert(cache_key, key);
-                }
-
                 Ok(key)
             }
             None => {
-                // In SPV mode, if we don't have the quorum key cached, try to refresh
-                if self.should_refresh_quorum_keys() {
-                    tracing::info!(
-                        "SPV mode: Quorum key not found for type {} hash {}, attempting to refresh quorum keys...",
-                        quorum_type,
-                        hex::encode(quorum_hash)
-                    );
-                    
-                    // Try to refresh quorum keys
-                    if let Some(app_ctx) = self.app_context.lock().unwrap().as_ref() {
-                        // Use tokio::task::block_in_place to run async code in sync context
-                        let refresh_result = tokio::task::block_in_place(|| {
-                            let handle = tokio::runtime::Handle::current();
-                            handle.block_on(app_ctx.prefetch_quorum_keys_for_spv())
-                        });
-                        
-                        match refresh_result {
-                            Ok(_) => {
-                                tracing::info!("Successfully refreshed quorum keys, retrying lookup...");
-                                
-                                // Try again after refresh
-                                if let Ok(cache) = self.quorum_key_cache.read() {
-                                    if let Some(key) = cache.get(&cache_key) {
-                                        tracing::info!(
-                                            "Cache hit after refresh: Found quorum key for type {} hash {}",
-                                            quorum_type,
-                                            hex::encode(quorum_hash)
-                                        );
-                                        return Ok(*key);
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                tracing::warn!("Failed to refresh quorum keys: {}", e);
-                            }
-                        }
-                    }
-                }
-
                 tracing::error!(
-                    "SPV mode: Quorum key not available for type {} hash {} even after refresh attempt",
+                    "SPV mode: Quorum key not available for type {} hash {} - no caching implemented",
                     quorum_type,
                     hex::encode(quorum_hash)
                 );
 
                 Err(dash_sdk::error::ContextProviderError::Config(
                     format!(
-                        "SPV mode: Quorum key not available for type {} hash {}. This may be from a validator set that's not currently active. Try switching to Dash Core mode for full access.",
+                        "SPV mode: Quorum key not available for type {} hash {}. Switch to Dash Core mode for full access.",
                         quorum_type,
                         hex::encode(quorum_hash)
                     )
@@ -421,8 +431,6 @@ impl Clone for Provider {
             db: self.db.clone(),
             app_context: Mutex::new(app_guard.clone()),
             connection_type: self.connection_type.clone(),
-            quorum_key_cache: self.quorum_key_cache.clone(),
-            last_refresh_attempt: self.last_refresh_attempt.clone(),
         }
     }
 }

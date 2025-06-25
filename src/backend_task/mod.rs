@@ -56,6 +56,7 @@ pub(crate) enum BackendTask {
     SystemTask(SystemTask),
     PlatformInfo(PlatformInfoTaskRequestType),
     SwitchConnectionType { connection_type: ConnectionType },
+    StartSpvSync,
     None,
 }
 
@@ -177,8 +178,21 @@ impl AppContext {
                 self.run_platform_info_task(platform_info_task).await
             }
             BackendTask::SwitchConnectionType { connection_type } => {
+                tracing::info!(
+                    "BackendTask::SwitchConnectionType handler called with: {:?}",
+                    connection_type
+                );
                 // Switch the connection (this will update config and database)
-                self.switch_connection_type(connection_type).await
+                let result = self.switch_connection_type(connection_type).await;
+                match &result {
+                    Ok(success) => tracing::info!("Connection switch succeeded: {:?}", success),
+                    Err(e) => tracing::error!("Connection switch failed: {}", e),
+                }
+                result
+            }
+            BackendTask::StartSpvSync => {
+                tracing::info!("BackendTask::StartSpvSync handler called");
+                self.start_spv_sync().await
             }
             BackendTask::None => Ok(BackendTaskSuccessResult::None),
         }

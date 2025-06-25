@@ -1,0 +1,1952 @@
+warning: unused import: `crate::consensus::basic::data_contract::RedundantDocumentPaidForByTokenWithContractId`
+  --> /Users/pauldelucia/Documents/Dash/platform/packages/rs-dpp/src/data_contract/document_type/class_methods/try_from_schema/v1/mod.rs:31:5
+   |
+31 | use crate::consensus::basic::data_contract::RedundantDocumentPaidForByTokenWithContractId;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` on by default
+
+warning: unused import: `crate::consensus::basic::token::InvalidTokenPositionError`
+  --> /Users/pauldelucia/Documents/Dash/platform/packages/rs-dpp/src/data_contract/document_type/class_methods/try_from_schema/v1/mod.rs:36:5
+   |
+36 | use crate::consensus::basic::token::InvalidTokenPositionError;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `platform_value::Value`
+  --> /Users/pauldelucia/Documents/Dash/platform/packages/rs-dpp/src/identity/identity_factory.rs:73:5
+   |
+73 | use platform_value::Value;
+   |     ^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `crate::state_transition::errors::StateTransitionError`
+  --> /Users/pauldelucia/Documents/Dash/platform/packages/rs-dpp/src/errors/protocol_error.rs:21:5
+   |
+21 | use crate::state_transition::errors::StateTransitionError;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused variable: `platform_version`
+   --> /Users/pauldelucia/Documents/Dash/platform/packages/rs-dpp/src/state_transition/mod.rs:298:9
+    |
+298 |         platform_version: &PlatformVersion,
+    |         ^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_platform_version`
+    |
+    = note: `#[warn(unused_variables)]` on by default
+
+warning: `dpp` (lib) generated 5 warnings (run `cargo fix --lib -p dpp` to apply 4 suggestions)
+warning: unused import: `crate::util::type_constants::DEFAULT_HASH_SIZE_U8`
+ --> /Users/pauldelucia/Documents/Dash/platform/packages/rs-drive/src/drive/document/paths.rs:2:5
+  |
+2 | use crate::util::type_constants::DEFAULT_HASH_SIZE_U8;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` on by default
+
+warning: unused import: `dpp::data_contract::document_type::accessors::DocumentTypeV0Getters`
+ --> /Users/pauldelucia/Documents/Dash/platform/packages/rs-drive/src/drive/document/paths.rs:3:5
+  |
+3 | use dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `dpp::data_contract::document_type::methods::DocumentTypeBasicMethods`
+ --> /Users/pauldelucia/Documents/Dash/platform/packages/rs-drive/src/drive/document/paths.rs:4:5
+  |
+4 | use dpp::data_contract::document_type::methods::DocumentTypeBasicMethods;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `dpp::data_contract::document_type::DocumentTypeRef`
+ --> /Users/pauldelucia/Documents/Dash/platform/packages/rs-drive/src/drive/document/paths.rs:5:5
+  |
+5 | use dpp::data_contract::document_type::DocumentTypeRef;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0`
+  --> /Users/pauldelucia/Documents/Dash/platform/packages/rs-drive/src/drive/identity/key/fetch/mod.rs:17:9
+   |
+17 |         identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0,
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `platform_version::version::PlatformVersion`
+  --> /Users/pauldelucia/Documents/Dash/platform/packages/rs-drive/src/drive/votes/resolved/vote_polls/contested_document_resource_vote_poll/resolve.rs:23:5
+   |
+23 | use platform_version::version::PlatformVersion;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `std::sync::Arc`
+  --> /Users/pauldelucia/Documents/Dash/platform/packages/rs-drive/src/drive/votes/resolved/vote_polls/contested_document_resource_vote_poll/resolve.rs:25:5
+   |
+25 | use std::sync::Arc;
+   |     ^^^^^^^^^^^^^^
+
+warning: unused import: `serialization_traits::DocumentPlatformConversionMethodsV0`
+  --> /Users/pauldelucia/Documents/Dash/platform/packages/rs-drive/src/query/mod.rs:29:13
+   |
+29 |             serialization_traits::DocumentPlatformConversionMethodsV0, Document, DocumentV0Getters,
+   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `crate::verify::RootHash`
+  --> /Users/pauldelucia/Documents/Dash/platform/packages/rs-drive/src/query/mod.rs:45:5
+   |
+45 | use crate::verify::RootHash;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `ContenderWithSerializedDocumentV0`
+  --> /Users/pauldelucia/Documents/Dash/platform/packages/rs-drive/src/query/vote_poll_vote_state_query.rs:23:38
+   |
+23 |     ContenderWithSerializedDocument, ContenderWithSerializedDocumentV0,
+   |                                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `ContestedDocumentVotePollStoredInfo`
+  --> /Users/pauldelucia/Documents/Dash/platform/packages/rs-drive/src/query/vote_poll_vote_state_query.rs:27:5
+   |
+27 |     ContestedDocumentVotePollStoredInfo, ContestedDocumentVotePollStoredInfoV0Getters,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `crate::drive::Drive`
+ --> /Users/pauldelucia/Documents/Dash/platform/packages/rs-drive/src/query/vote_polls_by_end_date_query.rs:2:5
+  |
+2 | use crate::drive::Drive;
+  |     ^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `crate::error::Error`
+ --> /Users/pauldelucia/Documents/Dash/platform/packages/rs-drive/src/query/vote_polls_by_end_date_query.rs:5:5
+  |
+5 | use crate::error::Error;
+  |     ^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `decode_u64`
+  --> /Users/pauldelucia/Documents/Dash/platform/packages/rs-drive/src/query/vote_polls_by_end_date_query.rs:11:35
+   |
+11 | use crate::util::common::encode::{decode_u64, encode_u64};
+   |                                   ^^^^^^^^^^
+
+warning: unused import: `ContestedDocumentVotePollStoredInfoV0Getters`
+  --> /Users/pauldelucia/Documents/Dash/platform/packages/rs-drive/src/query/vote_poll_vote_state_query.rs:27:42
+   |
+27 |     ContestedDocumentVotePollStoredInfo, ContestedDocumentVotePollStoredInfoV0Getters,
+   |                                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `contract_documents_primary_key_path` is never used
+  --> /Users/pauldelucia/Documents/Dash/platform/packages/rs-drive/src/drive/document/paths.rs:41:15
+   |
+41 | pub(crate) fn contract_documents_primary_key_path<'a>(
+   |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` on by default
+
+warning: method `construct_path_query` is never used
+   --> /Users/pauldelucia/Documents/Dash/platform/packages/rs-drive/src/query/vote_polls_by_document_type_query.rs:380:19
+    |
+265 | impl<'a> ResolvedVotePollsByDocumentTypeQuery<'a> {
+    | ------------------------------------------------- method in this implementation
+...
+380 |     pub(crate) fn construct_path_query(
+    |                   ^^^^^^^^^^^^^^^^^^^^
+
+warning: enum `DataContractInfo` is never used
+  --> /Users/pauldelucia/Documents/Dash/platform/packages/rs-drive/src/util/object_size_info/contract_info.rs:28:10
+   |
+28 | pub enum DataContractInfo<'a> {
+   |          ^^^^^^^^^^^^^^^^
+   |
+   = note: `DataContractInfo` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: enum `DocumentTypeInfo` is never used
+   --> /Users/pauldelucia/Documents/Dash/platform/packages/rs-drive/src/util/object_size_info/contract_info.rs:209:10
+    |
+209 | pub enum DocumentTypeInfo<'a> {
+    |          ^^^^^^^^^^^^^^^^
+    |
+    = note: `DocumentTypeInfo` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: method `resolve` is never used
+   --> /Users/pauldelucia/Documents/Dash/platform/packages/rs-drive/src/util/object_size_info/contract_info.rs:222:12
+    |
+220 | impl<'a> DocumentTypeInfo<'a> {
+    | ----------------------------- method in this implementation
+221 |     /// Resolve the data contract info into an object that contains the data contract
+222 |     pub fn resolve(self, contract: &'a DataContract) -> Result<DocumentTypeRef<'a>, ProtocolError> {
+    |            ^^^^^^^
+
+warning: constant `DEFAULT_HASH_160_SIZE_U8` is never used
+ --> /Users/pauldelucia/Documents/Dash/platform/packages/rs-drive/src/util/type_constants.rs:4:11
+  |
+4 | pub const DEFAULT_HASH_160_SIZE_U8: u8 = 20;
+  |           ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `DEFAULT_HASH_SIZE_U8` is never used
+ --> /Users/pauldelucia/Documents/Dash/platform/packages/rs-drive/src/util/type_constants.rs:6:11
+  |
+6 | pub const DEFAULT_HASH_SIZE_U8: u8 = 32;
+  |           ^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `DEFAULT_HASH_SIZE_U16` is never used
+ --> /Users/pauldelucia/Documents/Dash/platform/packages/rs-drive/src/util/type_constants.rs:8:11
+  |
+8 | pub const DEFAULT_HASH_SIZE_U16: u16 = 32;
+  |           ^^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `DEFAULT_HASH_SIZE_U32` is never used
+  --> /Users/pauldelucia/Documents/Dash/platform/packages/rs-drive/src/util/type_constants.rs:10:11
+   |
+10 | pub const DEFAULT_HASH_SIZE_U32: u32 = 32;
+   |           ^^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `DEFAULT_FLOAT_SIZE` is never used
+  --> /Users/pauldelucia/Documents/Dash/platform/packages/rs-drive/src/util/type_constants.rs:12:11
+   |
+12 | pub const DEFAULT_FLOAT_SIZE: u32 = 8;
+   |           ^^^^^^^^^^^^^^^^^^
+
+warning: constant `U64_SIZE_U32` is never used
+  --> /Users/pauldelucia/Documents/Dash/platform/packages/rs-drive/src/util/type_constants.rs:14:11
+   |
+14 | pub const U64_SIZE_U32: u32 = 8;
+   |           ^^^^^^^^^^^^
+
+warning: constant `U64_SIZE_U16` is never used
+  --> /Users/pauldelucia/Documents/Dash/platform/packages/rs-drive/src/util/type_constants.rs:16:11
+   |
+16 | pub const U64_SIZE_U16: u16 = 8;
+   |           ^^^^^^^^^^^^
+
+warning: constant `U64_SIZE_U8` is never used
+  --> /Users/pauldelucia/Documents/Dash/platform/packages/rs-drive/src/util/type_constants.rs:18:11
+   |
+18 | pub const U64_SIZE_U8: u8 = 8;
+   |           ^^^^^^^^^^^
+
+warning: constant `U32_SIZE_U16` is never used
+  --> /Users/pauldelucia/Documents/Dash/platform/packages/rs-drive/src/util/type_constants.rs:20:11
+   |
+20 | pub const U32_SIZE_U16: u16 = 4;
+   |           ^^^^^^^^^^^^
+
+warning: constant `U8_SIZE_U8` is never used
+  --> /Users/pauldelucia/Documents/Dash/platform/packages/rs-drive/src/util/type_constants.rs:22:11
+   |
+22 | pub const U8_SIZE_U8: u8 = 1;
+   |           ^^^^^^^^^^
+
+warning: constant `U8_SIZE_U32` is never used
+  --> /Users/pauldelucia/Documents/Dash/platform/packages/rs-drive/src/util/type_constants.rs:24:11
+   |
+24 | pub const U8_SIZE_U32: u32 = 1;
+   |           ^^^^^^^^^^^
+
+warning: constant `U32_SIZE_U8` is never used
+  --> /Users/pauldelucia/Documents/Dash/platform/packages/rs-drive/src/util/type_constants.rs:26:11
+   |
+26 | pub const U32_SIZE_U8: u8 = 4;
+   |           ^^^^^^^^^^^
+
+warning: constant `DEFAULT_FLOAT_SIZE_U8` is never used
+  --> /Users/pauldelucia/Documents/Dash/platform/packages/rs-drive/src/util/type_constants.rs:28:11
+   |
+28 | pub const DEFAULT_FLOAT_SIZE_U8: u8 = 8;
+   |           ^^^^^^^^^^^^^^^^^^^^^
+
+warning: `drive` (lib) generated 33 warnings (run `cargo fix --lib -p drive` to apply 14 suggestions)
+warning: unexpected `cfg` condition name: `bench`
+  --> /Users/pauldelucia/Documents/Dash/rust-dashcore/hashes/src/lib.rs:84:13
+   |
+84 | #![cfg_attr(bench, feature(test))]
+   |             ^^^^^
+   |
+   = help: expected names are: `clippy`, `debug_assertions`, `doc`, `docsrs`, `doctest`, `feature`, `fmt_debug`, `miri`, `overflow_checks`, `panic`, `proc_macro`, `relocation_model`, `rustfmt`, `sanitize`, `sanitizer_cfi_generalize_pointers`, `sanitizer_cfi_normalize_integers`, `target_abi`, `target_arch`, `target_endian`, `target_env`, `target_family`, `target_feature`, `target_has_atomic`, `target_has_atomic_equal_alignment`, `target_has_atomic_load_store`, `target_os`, `target_pointer_width`, `target_thread_local`, `target_vendor`, `test`, `ub_checks`, `unix`, and `windows`
+   = help: consider using a Cargo feature instead
+   = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+            [lints.rust]
+            unexpected_cfgs = { level = "warn", check-cfg = ['cfg(bench)'] }
+   = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(bench)");` to the top of the `build.rs`
+   = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+   = note: `#[warn(unexpected_cfgs)]` on by default
+
+warning: unexpected `cfg` condition name: `fuzzing`
+  --> /Users/pauldelucia/Documents/Dash/rust-dashcore/hashes/src/lib.rs:92:13
+   |
+92 | #![cfg_attr(fuzzing, allow(dead_code, unused_imports))]
+   |             ^^^^^^^
+   |
+   = help: consider using a Cargo feature instead
+   = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+            [lints.rust]
+            unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }
+   = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(fuzzing)");` to the top of the `build.rs`
+   = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `bench`
+   --> /Users/pauldelucia/Documents/Dash/rust-dashcore/hashes/src/lib.rs:104:7
+    |
+104 | #[cfg(bench)]
+    |       ^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(bench)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(bench)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `bench`
+  --> /Users/pauldelucia/Documents/Dash/rust-dashcore/hashes/src/cmp.rs:90:7
+   |
+90 | #[cfg(bench)]
+   |       ^^^^^
+   |
+   = help: consider using a Cargo feature instead
+   = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+            [lints.rust]
+            unexpected_cfgs = { level = "warn", check-cfg = ['cfg(bench)'] }
+   = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(bench)");` to the top of the `build.rs`
+   = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `bench`
+   --> /Users/pauldelucia/Documents/Dash/rust-dashcore/hashes/src/hash160.rs:127:7
+    |
+127 | #[cfg(bench)]
+    |       ^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(bench)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(bench)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unused import: `crate::Hash`
+   --> /Users/pauldelucia/Documents/Dash/rust-dashcore/hashes/src/internal_macros.rs:163:21
+    |
+163 |                   use crate::Hash;
+    |                       ^^^^^^^^^^^
+    |
+   ::: /Users/pauldelucia/Documents/Dash/rust-dashcore/hashes/src/hash160.rs:29:1
+    |
+29  | / crate::internal_macros::hash_type! {
+30  | |     160,
+31  | |     false,
+32  | |     "Output of the Bitcoin HASH160 hash function. (RIPEMD160(SHA256))",
+33  | |     "crate::util::json_hex_string::len_20"
+34  | | }
+    | |_- in this macro invocation
+    |
+    = note: `#[warn(unused_imports)]` on by default
+    = note: this warning originates in the macro `crate::internal_macros::hash_trait_impls` which comes from the expansion of the macro `crate::internal_macros::hash_type` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unused import: `crate::Hash`
+   --> /Users/pauldelucia/Documents/Dash/rust-dashcore/hashes/src/internal_macros.rs:163:21
+    |
+163 |                   use crate::Hash;
+    |                       ^^^^^^^^^^^
+    |
+   ::: /Users/pauldelucia/Documents/Dash/rust-dashcore/hashes/src/hash_x11.rs:36:1
+    |
+36  | / crate::internal_macros::hash_type! {
+37  | |     256,
+38  | |     true,
+39  | |     "Output of the X11 hash function.",
+40  | |     "crate::util::json_hex_string::len_32"
+41  | | }
+    | |_- in this macro invocation
+    |
+    = note: this warning originates in the macro `crate::internal_macros::hash_trait_impls` which comes from the expansion of the macro `crate::internal_macros::hash_type` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unexpected `cfg` condition name: `bench`
+   --> /Users/pauldelucia/Documents/Dash/rust-dashcore/hashes/src/hmac.rs:403:7
+    |
+403 | #[cfg(bench)]
+    |       ^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(bench)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(bench)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `fuzzing`
+  --> /Users/pauldelucia/Documents/Dash/rust-dashcore/hashes/src/ripemd160.rs:37:11
+   |
+37 | #[cfg(not(fuzzing))]
+   |           ^^^^^^^
+   |
+   = help: consider using a Cargo feature instead
+   = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+            [lints.rust]
+            unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }
+   = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(fuzzing)");` to the top of the `build.rs`
+   = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `fuzzing`
+  --> /Users/pauldelucia/Documents/Dash/rust-dashcore/hashes/src/ripemd160.rs:57:7
+   |
+57 | #[cfg(fuzzing)]
+   |       ^^^^^^^
+   |
+   = help: consider using a Cargo feature instead
+   = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+            [lints.rust]
+            unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }
+   = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(fuzzing)");` to the top of the `build.rs`
+   = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `bench`
+   --> /Users/pauldelucia/Documents/Dash/rust-dashcore/hashes/src/ripemd160.rs:524:7
+    |
+524 | #[cfg(bench)]
+    |       ^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(bench)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(bench)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unused import: `crate::Hash`
+   --> /Users/pauldelucia/Documents/Dash/rust-dashcore/hashes/src/internal_macros.rs:163:21
+    |
+163 |                   use crate::Hash;
+    |                       ^^^^^^^^^^^
+    |
+   ::: /Users/pauldelucia/Documents/Dash/rust-dashcore/hashes/src/ripemd160.rs:30:1
+    |
+30  | / crate::internal_macros::hash_type! {
+31  | |     160,
+32  | |     false,
+33  | |     "Output of the RIPEMD160 hash function.",
+34  | |     "crate::util::json_hex_string::len_20"
+35  | | }
+    | |_- in this macro invocation
+    |
+    = note: this warning originates in the macro `crate::internal_macros::hash_trait_impls` which comes from the expansion of the macro `crate::internal_macros::hash_type` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unexpected `cfg` condition name: `fuzzing`
+  --> /Users/pauldelucia/Documents/Dash/rust-dashcore/hashes/src/ripemd160.rs:87:15
+   |
+87 |     #[cfg(not(fuzzing))]
+   |               ^^^^^^^
+   |
+   = help: consider using a Cargo feature instead
+   = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+            [lints.rust]
+            unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }
+   = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(fuzzing)");` to the top of the `build.rs`
+   = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `fuzzing`
+  --> /Users/pauldelucia/Documents/Dash/rust-dashcore/hashes/src/ripemd160.rs:96:11
+   |
+96 |     #[cfg(fuzzing)]
+   |           ^^^^^^^
+   |
+   = help: consider using a Cargo feature instead
+   = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+            [lints.rust]
+            unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }
+   = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(fuzzing)");` to the top of the `build.rs`
+   = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `fuzzing`
+   --> /Users/pauldelucia/Documents/Dash/rust-dashcore/hashes/src/util.rs:83:19
+    |
+83  |         #[cfg(not(fuzzing))]
+    |                   ^^^^^^^
+    |
+   ::: /Users/pauldelucia/Documents/Dash/rust-dashcore/hashes/src/ripemd160.rs:109:5
+    |
+109 |     engine_input_impl!();
+    |     -------------------- in this macro invocation
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(fuzzing)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+    = note: this warning originates in the macro `engine_input_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unexpected `cfg` condition name: `fuzzing`
+   --> /Users/pauldelucia/Documents/Dash/rust-dashcore/hashes/src/util.rs:100:15
+    |
+100 |         #[cfg(fuzzing)]
+    |               ^^^^^^^
+    |
+   ::: /Users/pauldelucia/Documents/Dash/rust-dashcore/hashes/src/ripemd160.rs:109:5
+    |
+109 |     engine_input_impl!();
+    |     -------------------- in this macro invocation
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(fuzzing)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+    = note: this warning originates in the macro `engine_input_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unexpected `cfg` condition name: `bench`
+   --> /Users/pauldelucia/Documents/Dash/rust-dashcore/hashes/src/sha1.rs:236:7
+    |
+236 | #[cfg(bench)]
+    |       ^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(bench)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(bench)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unused import: `crate::Hash`
+   --> /Users/pauldelucia/Documents/Dash/rust-dashcore/hashes/src/internal_macros.rs:163:21
+    |
+163 |                   use crate::Hash;
+    |                       ^^^^^^^^^^^
+    |
+   ::: /Users/pauldelucia/Documents/Dash/rust-dashcore/hashes/src/sha1.rs:25:1
+    |
+25  | / crate::internal_macros::hash_type! {
+26  | |     160,
+27  | |     false,
+28  | |     "Output of the SHA1 hash function.",
+29  | |     "crate::util::json_hex_string::len_20"
+30  | | }
+    | |_- in this macro invocation
+    |
+    = note: this warning originates in the macro `crate::internal_macros::hash_trait_impls` which comes from the expansion of the macro `crate::internal_macros::hash_type` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unexpected `cfg` condition name: `fuzzing`
+  --> /Users/pauldelucia/Documents/Dash/rust-dashcore/hashes/src/sha1.rs:74:15
+   |
+74 |     #[cfg(not(fuzzing))]
+   |               ^^^^^^^
+   |
+   = help: consider using a Cargo feature instead
+   = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+            [lints.rust]
+            unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }
+   = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(fuzzing)");` to the top of the `build.rs`
+   = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `fuzzing`
+  --> /Users/pauldelucia/Documents/Dash/rust-dashcore/hashes/src/sha1.rs:83:11
+   |
+83 |     #[cfg(fuzzing)]
+   |           ^^^^^^^
+   |
+   = help: consider using a Cargo feature instead
+   = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+            [lints.rust]
+            unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }
+   = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(fuzzing)");` to the top of the `build.rs`
+   = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `fuzzing`
+  --> /Users/pauldelucia/Documents/Dash/rust-dashcore/hashes/src/util.rs:83:19
+   |
+83 |         #[cfg(not(fuzzing))]
+   |                   ^^^^^^^
+   |
+  ::: /Users/pauldelucia/Documents/Dash/rust-dashcore/hashes/src/sha1.rs:96:5
+   |
+96 |     engine_input_impl!();
+   |     -------------------- in this macro invocation
+   |
+   = help: consider using a Cargo feature instead
+   = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+            [lints.rust]
+            unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }
+   = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(fuzzing)");` to the top of the `build.rs`
+   = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+   = note: this warning originates in the macro `engine_input_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unexpected `cfg` condition name: `fuzzing`
+   --> /Users/pauldelucia/Documents/Dash/rust-dashcore/hashes/src/util.rs:100:15
+    |
+100 |         #[cfg(fuzzing)]
+    |               ^^^^^^^
+    |
+   ::: /Users/pauldelucia/Documents/Dash/rust-dashcore/hashes/src/sha1.rs:96:5
+    |
+96  |     engine_input_impl!();
+    |     -------------------- in this macro invocation
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(fuzzing)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+    = note: this warning originates in the macro `engine_input_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unexpected `cfg` condition name: `fuzzing`
+  --> /Users/pauldelucia/Documents/Dash/rust-dashcore/hashes/src/sha256.rs:32:11
+   |
+32 | #[cfg(not(fuzzing))]
+   |           ^^^^^^^
+   |
+   = help: consider using a Cargo feature instead
+   = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+            [lints.rust]
+            unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }
+   = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(fuzzing)");` to the top of the `build.rs`
+   = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `fuzzing`
+  --> /Users/pauldelucia/Documents/Dash/rust-dashcore/hashes/src/sha256.rs:52:7
+   |
+52 | #[cfg(fuzzing)]
+   |       ^^^^^^^
+   |
+   = help: consider using a Cargo feature instead
+   = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+            [lints.rust]
+            unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }
+   = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(fuzzing)");` to the top of the `build.rs`
+   = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `bench`
+   --> /Users/pauldelucia/Documents/Dash/rust-dashcore/hashes/src/sha256.rs:729:7
+    |
+729 | #[cfg(bench)]
+    |       ^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(bench)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(bench)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unused import: `crate::Hash`
+   --> /Users/pauldelucia/Documents/Dash/rust-dashcore/hashes/src/internal_macros.rs:163:21
+    |
+163 |                   use crate::Hash;
+    |                       ^^^^^^^^^^^
+    |
+   ::: /Users/pauldelucia/Documents/Dash/rust-dashcore/hashes/src/sha256.rs:25:1
+    |
+25  | / crate::internal_macros::hash_type! {
+26  | |     256,
+27  | |     false,
+28  | |     "Output of the SHA256 hash function.",
+29  | |     "crate::util::json_hex_string::len_32"
+30  | | }
+    | |_- in this macro invocation
+    |
+    = note: this warning originates in the macro `crate::internal_macros::hash_trait_impls` which comes from the expansion of the macro `crate::internal_macros::hash_type` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unexpected `cfg` condition name: `fuzzing`
+  --> /Users/pauldelucia/Documents/Dash/rust-dashcore/hashes/src/sha256.rs:89:15
+   |
+89 |     #[cfg(not(fuzzing))]
+   |               ^^^^^^^
+   |
+   = help: consider using a Cargo feature instead
+   = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+            [lints.rust]
+            unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }
+   = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(fuzzing)");` to the top of the `build.rs`
+   = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `fuzzing`
+  --> /Users/pauldelucia/Documents/Dash/rust-dashcore/hashes/src/sha256.rs:98:11
+   |
+98 |     #[cfg(fuzzing)]
+   |           ^^^^^^^
+   |
+   = help: consider using a Cargo feature instead
+   = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+            [lints.rust]
+            unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }
+   = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(fuzzing)");` to the top of the `build.rs`
+   = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `fuzzing`
+   --> /Users/pauldelucia/Documents/Dash/rust-dashcore/hashes/src/util.rs:83:19
+    |
+83  |         #[cfg(not(fuzzing))]
+    |                   ^^^^^^^
+    |
+   ::: /Users/pauldelucia/Documents/Dash/rust-dashcore/hashes/src/sha256.rs:111:5
+    |
+111 |     engine_input_impl!();
+    |     -------------------- in this macro invocation
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(fuzzing)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+    = note: this warning originates in the macro `engine_input_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unexpected `cfg` condition name: `fuzzing`
+   --> /Users/pauldelucia/Documents/Dash/rust-dashcore/hashes/src/util.rs:100:15
+    |
+100 |         #[cfg(fuzzing)]
+    |               ^^^^^^^
+    |
+   ::: /Users/pauldelucia/Documents/Dash/rust-dashcore/hashes/src/sha256.rs:111:5
+    |
+111 |     engine_input_impl!();
+    |     -------------------- in this macro invocation
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(fuzzing)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+    = note: this warning originates in the macro `engine_input_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unexpected `cfg` condition name: `bench`
+   --> /Users/pauldelucia/Documents/Dash/rust-dashcore/hashes/src/sha256d.rs:121:7
+    |
+121 | #[cfg(bench)]
+    |       ^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(bench)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(bench)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unused import: `crate::Hash`
+   --> /Users/pauldelucia/Documents/Dash/rust-dashcore/hashes/src/internal_macros.rs:163:21
+    |
+163 |                   use crate::Hash;
+    |                       ^^^^^^^^^^^
+    |
+   ::: /Users/pauldelucia/Documents/Dash/rust-dashcore/hashes/src/sha256d.rs:24:1
+    |
+24  | / crate::internal_macros::hash_type! {
+25  | |     256,
+26  | |     true,
+27  | |     "Output of the SHA256d hash function.",
+28  | |     "crate::util::json_hex_string::len_32"
+29  | | }
+    | |_- in this macro invocation
+    |
+    = note: this warning originates in the macro `crate::internal_macros::hash_trait_impls` which comes from the expansion of the macro `crate::internal_macros::hash_type` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unused import: `crate::Hash`
+   --> /Users/pauldelucia/Documents/Dash/rust-dashcore/hashes/src/internal_macros.rs:163:21
+    |
+163 |                 use crate::Hash;
+    |                     ^^^^^^^^^^^
+    |
+   ::: /Users/pauldelucia/Documents/Dash/rust-dashcore/hashes/src/sha256t.rs:88:1
+    |
+88  | crate::internal_macros::hash_trait_impls!(256, true, T: Tag);
+    | ------------------------------------------------------------ in this macro invocation
+    |
+    = note: this warning originates in the macro `crate::internal_macros::hash_trait_impls` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unexpected `cfg` condition name: `fuzzing`
+   --> /Users/pauldelucia/Documents/Dash/rust-dashcore/hashes/src/sha512.rs:106:11
+    |
+106 | #[cfg(not(fuzzing))]
+    |           ^^^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(fuzzing)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `fuzzing`
+   --> /Users/pauldelucia/Documents/Dash/rust-dashcore/hashes/src/sha512.rs:127:7
+    |
+127 | #[cfg(fuzzing)]
+    |       ^^^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(fuzzing)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `bench`
+   --> /Users/pauldelucia/Documents/Dash/rust-dashcore/hashes/src/sha512.rs:381:7
+    |
+381 | #[cfg(bench)]
+    |       ^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(bench)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(bench)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unused import: `crate::Hash`
+   --> /Users/pauldelucia/Documents/Dash/rust-dashcore/hashes/src/internal_macros.rs:163:21
+    |
+163 |                 use crate::Hash;
+    |                     ^^^^^^^^^^^
+    |
+   ::: /Users/pauldelucia/Documents/Dash/rust-dashcore/hashes/src/sha512.rs:30:1
+    |
+30  | crate::internal_macros::hash_trait_impls!(512, false);
+    | ----------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `crate::internal_macros::hash_trait_impls` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unexpected `cfg` condition name: `fuzzing`
+  --> /Users/pauldelucia/Documents/Dash/rust-dashcore/hashes/src/sha512.rs:59:15
+   |
+59 |     #[cfg(not(fuzzing))]
+   |               ^^^^^^^
+   |
+   = help: consider using a Cargo feature instead
+   = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+            [lints.rust]
+            unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }
+   = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(fuzzing)");` to the top of the `build.rs`
+   = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `fuzzing`
+  --> /Users/pauldelucia/Documents/Dash/rust-dashcore/hashes/src/sha512.rs:68:11
+   |
+68 |     #[cfg(fuzzing)]
+   |           ^^^^^^^
+   |
+   = help: consider using a Cargo feature instead
+   = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+            [lints.rust]
+            unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }
+   = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(fuzzing)");` to the top of the `build.rs`
+   = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `fuzzing`
+  --> /Users/pauldelucia/Documents/Dash/rust-dashcore/hashes/src/util.rs:83:19
+   |
+83 |         #[cfg(not(fuzzing))]
+   |                   ^^^^^^^
+   |
+  ::: /Users/pauldelucia/Documents/Dash/rust-dashcore/hashes/src/sha512.rs:81:5
+   |
+81 |     engine_input_impl!();
+   |     -------------------- in this macro invocation
+   |
+   = help: consider using a Cargo feature instead
+   = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+            [lints.rust]
+            unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }
+   = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(fuzzing)");` to the top of the `build.rs`
+   = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+   = note: this warning originates in the macro `engine_input_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unexpected `cfg` condition name: `fuzzing`
+   --> /Users/pauldelucia/Documents/Dash/rust-dashcore/hashes/src/util.rs:100:15
+    |
+100 |         #[cfg(fuzzing)]
+    |               ^^^^^^^
+    |
+   ::: /Users/pauldelucia/Documents/Dash/rust-dashcore/hashes/src/sha512.rs:81:5
+    |
+81  |     engine_input_impl!();
+    |     -------------------- in this macro invocation
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(fuzzing)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+    = note: this warning originates in the macro `engine_input_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unexpected `cfg` condition name: `bench`
+   --> /Users/pauldelucia/Documents/Dash/rust-dashcore/hashes/src/sha512_256.rs:176:7
+    |
+176 | #[cfg(bench)]
+    |       ^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(bench)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(bench)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unused import: `crate::Hash`
+   --> /Users/pauldelucia/Documents/Dash/rust-dashcore/hashes/src/internal_macros.rs:163:21
+    |
+163 |                   use crate::Hash;
+    |                       ^^^^^^^^^^^
+    |
+   ::: /Users/pauldelucia/Documents/Dash/rust-dashcore/hashes/src/sha512_256.rs:75:1
+    |
+75  | / crate::internal_macros::hash_type! {
+76  | |     256,
+77  | |     false,
+78  | |     "Output of the SHA512/256 hash function.\n\nSHA512/256 is a hash function that uses the sha512 alogrithm but it truncates the output ...
+79  | |     "crate::util::json_hex_string::len_32"
+80  | | }
+    | |_- in this macro invocation
+    |
+    = note: this warning originates in the macro `crate::internal_macros::hash_trait_impls` which comes from the expansion of the macro `crate::internal_macros::hash_type` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unexpected `cfg` condition name: `fuzzing`
+  --> /Users/pauldelucia/Documents/Dash/rust-dashcore/hashes/src/siphash24.rs:36:11
+   |
+36 | #[cfg(not(fuzzing))]
+   |           ^^^^^^^
+   |
+   = help: consider using a Cargo feature instead
+   = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+            [lints.rust]
+            unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }
+   = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(fuzzing)");` to the top of the `build.rs`
+   = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `fuzzing`
+  --> /Users/pauldelucia/Documents/Dash/rust-dashcore/hashes/src/siphash24.rs:41:7
+   |
+41 | #[cfg(fuzzing)]
+   |       ^^^^^^^
+   |
+   = help: consider using a Cargo feature instead
+   = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+            [lints.rust]
+            unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }
+   = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(fuzzing)");` to the top of the `build.rs`
+   = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `bench`
+   --> /Users/pauldelucia/Documents/Dash/rust-dashcore/hashes/src/siphash24.rs:371:7
+    |
+371 | #[cfg(bench)]
+    |       ^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(bench)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(bench)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unused import: `crate::Hash`
+   --> /Users/pauldelucia/Documents/Dash/rust-dashcore/hashes/src/internal_macros.rs:163:21
+    |
+163 |                   use crate::Hash;
+    |                       ^^^^^^^^^^^
+    |
+   ::: /Users/pauldelucia/Documents/Dash/rust-dashcore/hashes/src/siphash24.rs:29:1
+    |
+29  | / crate::internal_macros::hash_type! {
+30  | |     64,
+31  | |     false,
+32  | |     "Output of the SipHash24 hash function.",
+33  | |     "crate::util::json_hex_string::len_8"
+34  | | }
+    | |_- in this macro invocation
+    |
+    = note: this warning originates in the macro `crate::internal_macros::hash_trait_impls` which comes from the expansion of the macro `crate::internal_macros::hash_type` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning[E0133]: call to unsafe function `std::intrinsics::copy_nonoverlapping` is unsafe and requires unsafe block
+   --> /Users/pauldelucia/Documents/Dash/rust-dashcore/hashes/src/siphash24.rs:76:9
+    |
+76  | /         ptr::copy_nonoverlapping(
+77  | |             $buf.get_unchecked($i),
+78  | |             &mut data as *mut _ as *mut u8,
+79  | |             mem::size_of::<$int_ty>(),
+80  | |         );
+    | |_________^ call to unsafe function
+...
+264 |           out = u64::from(load_int_le!(buf, start + i, u32));
+    |                           --------------------------------- in this macro invocation
+    |
+    = note: for more information, see <https://doc.rust-lang.org/nightly/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+   --> /Users/pauldelucia/Documents/Dash/rust-dashcore/hashes/src/siphash24.rs:259:1
+    |
+259 | unsafe fn u8to64_le(buf: &[u8], start: usize, len: usize) -> u64 {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = note: `#[warn(unsafe_op_in_unsafe_fn)]` on by default
+    = note: this warning originates in the macro `load_int_le` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning[E0133]: call to unsafe function `core::slice::<impl [T]>::get_unchecked` is unsafe and requires unsafe block
+   --> /Users/pauldelucia/Documents/Dash/rust-dashcore/hashes/src/siphash24.rs:77:13
+    |
+77  |             $buf.get_unchecked($i),
+    |             ^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+...
+264 |         out = u64::from(load_int_le!(buf, start + i, u32));
+    |                         --------------------------------- in this macro invocation
+    |
+    = note: for more information, see <https://doc.rust-lang.org/nightly/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+    = note: this warning originates in the macro `load_int_le` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning[E0133]: call to unsafe function `std::intrinsics::copy_nonoverlapping` is unsafe and requires unsafe block
+   --> /Users/pauldelucia/Documents/Dash/rust-dashcore/hashes/src/siphash24.rs:76:9
+    |
+76  | /         ptr::copy_nonoverlapping(
+77  | |             $buf.get_unchecked($i),
+78  | |             &mut data as *mut _ as *mut u8,
+79  | |             mem::size_of::<$int_ty>(),
+80  | |         );
+    | |_________^ call to unsafe function
+...
+268 |           out |= u64::from(load_int_le!(buf, start + i, u16)) << (i * 8);
+    |                            --------------------------------- in this macro invocation
+    |
+    = note: for more information, see <https://doc.rust-lang.org/nightly/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+    = note: this warning originates in the macro `load_int_le` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning[E0133]: call to unsafe function `core::slice::<impl [T]>::get_unchecked` is unsafe and requires unsafe block
+   --> /Users/pauldelucia/Documents/Dash/rust-dashcore/hashes/src/siphash24.rs:77:13
+    |
+77  |             $buf.get_unchecked($i),
+    |             ^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+...
+268 |         out |= u64::from(load_int_le!(buf, start + i, u16)) << (i * 8);
+    |                          --------------------------------- in this macro invocation
+    |
+    = note: for more information, see <https://doc.rust-lang.org/nightly/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+    = note: this warning originates in the macro `load_int_le` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning[E0133]: call to unsafe function `core::slice::<impl [T]>::get_unchecked` is unsafe and requires unsafe block
+   --> /Users/pauldelucia/Documents/Dash/rust-dashcore/hashes/src/siphash24.rs:272:27
+    |
+272 |         out |= u64::from(*buf.get_unchecked(start + i)) << (i * 8);
+    |                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: for more information, see <https://doc.rust-lang.org/nightly/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+
+For more information about this error, try `rustc --explain E0133`.
+warning: `dashcore_hashes` (lib) generated 52 warnings (run `cargo fix --lib -p dashcore_hashes` to apply 11 suggestions)
+warning: unexpected `cfg` condition name: `bench`
+  --> /Users/pauldelucia/Documents/Dash/rust-dashcore/dash/src/lib.rs:48:13
+   |
+48 | #![cfg_attr(bench, feature(test))]
+   |             ^^^^^
+   |
+   = help: expected names are: `clippy`, `debug_assertions`, `doc`, `docsrs`, `doctest`, `feature`, `fmt_debug`, `miri`, `overflow_checks`, `panic`, `proc_macro`, `relocation_model`, `rustfmt`, `sanitize`, `sanitizer_cfi_generalize_pointers`, `sanitizer_cfi_normalize_integers`, `target_abi`, `target_arch`, `target_endian`, `target_env`, `target_family`, `target_feature`, `target_has_atomic`, `target_has_atomic_equal_alignment`, `target_has_atomic_load_store`, `target_os`, `target_pointer_width`, `target_thread_local`, `target_vendor`, `test`, `ub_checks`, `unix`, and `windows`
+   = help: consider using a Cargo feature instead
+   = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+            [lints.rust]
+            unexpected_cfgs = { level = "warn", check-cfg = ['cfg(bench)'] }
+   = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(bench)");` to the top of the `build.rs`
+   = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+   = note: `#[warn(unexpected_cfgs)]` on by default
+
+warning: unexpected `cfg` condition name: `fuzzing`
+  --> /Users/pauldelucia/Documents/Dash/rust-dashcore/dash/src/lib.rs:53:13
+   |
+53 | #![cfg_attr(fuzzing, allow(dead_code, unused_imports))]
+   |             ^^^^^^^
+   |
+   = help: consider using a Cargo feature instead
+   = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+            [lints.rust]
+            unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }
+   = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(fuzzing)");` to the top of the `build.rs`
+   = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `bench`
+  --> /Users/pauldelucia/Documents/Dash/rust-dashcore/dash/src/lib.rs:65:7
+   |
+65 | #[cfg(bench)]
+   |       ^^^^^
+   |
+   = help: consider using a Cargo feature instead
+   = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+            [lints.rust]
+            unexpected_cfgs = { level = "warn", check-cfg = ['cfg(bench)'] }
+   = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(bench)");` to the top of the `build.rs`
+   = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `bench`
+   --> /Users/pauldelucia/Documents/Dash/rust-dashcore/dash/src/lib.rs:225:7
+    |
+225 | #[cfg(bench)]
+    |       ^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(bench)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(bench)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `bench`
+   --> /Users/pauldelucia/Documents/Dash/rust-dashcore/dash/src/lib.rs:228:7
+    |
+228 | #[cfg(bench)]
+    |       ^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(bench)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(bench)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unused import: `core::str::FromStr`
+  --> /Users/pauldelucia/Documents/Dash/rust-dashcore/dash/src/network/constants.rs:41:5
+   |
+41 | use core::str::FromStr;
+   |     ^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` on by default
+
+warning: unused import: `internals::write_err`
+  --> /Users/pauldelucia/Documents/Dash/rust-dashcore/dash/src/network/constants.rs:45:5
+   |
+45 | use internals::write_err;
+   |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `String` and `ToOwned`
+  --> /Users/pauldelucia/Documents/Dash/rust-dashcore/dash/src/network/constants.rs:50:22
+   |
+50 | use crate::prelude::{String, ToOwned};
+   |                      ^^^^^^  ^^^^^^^
+
+warning: unexpected `cfg` condition name: `kani`
+    --> /Users/pauldelucia/Documents/Dash/rust-dashcore/dash/src/amount.rs:1493:7
+     |
+1493 | #[cfg(kani)]
+     |       ^^^^
+     |
+     = help: consider using a Cargo feature instead
+     = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+              [lints.rust]
+              unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
+     = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(kani)");` to the top of the `build.rs`
+     = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `bench`
+   --> /Users/pauldelucia/Documents/Dash/rust-dashcore/dash/src/blockdata/block.rs:672:7
+    |
+672 | #[cfg(bench)]
+    |       ^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(bench)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(bench)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `mutate`
+  --> /Users/pauldelucia/Documents/Dash/rust-dashcore/dash/src/blockdata/locktime/absolute.rs:14:17
+   |
+14 | #[cfg(all(test, mutate))]
+   |                 ^^^^^^
+   |
+   = help: consider using a Cargo feature instead
+   = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+            [lints.rust]
+            unexpected_cfgs = { level = "warn", check-cfg = ['cfg(mutate)'] }
+   = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(mutate)");` to the top of the `build.rs`
+   = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `mutate`
+   --> /Users/pauldelucia/Documents/Dash/rust-dashcore/dash/src/blockdata/locktime/absolute.rs:200:26
+    |
+200 |     #[cfg_attr(all(test, mutate), mutate)]
+    |                          ^^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(mutate)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(mutate)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `mutate`
+   --> /Users/pauldelucia/Documents/Dash/rust-dashcore/dash/src/blockdata/locktime/absolute.rs:230:26
+    |
+230 |     #[cfg_attr(all(test, mutate), mutate)]
+    |                          ^^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(mutate)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(mutate)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `mutate`
+  --> /Users/pauldelucia/Documents/Dash/rust-dashcore/dash/src/blockdata/locktime/relative.rs:13:17
+   |
+13 | #[cfg(all(test, mutate))]
+   |                 ^^^^^^
+   |
+   = help: consider using a Cargo feature instead
+   = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+            [lints.rust]
+            unexpected_cfgs = { level = "warn", check-cfg = ['cfg(mutate)'] }
+   = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(mutate)");` to the top of the `build.rs`
+   = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `mutate`
+  --> /Users/pauldelucia/Documents/Dash/rust-dashcore/dash/src/blockdata/locktime/relative.rs:61:26
+   |
+61 |     #[cfg_attr(all(test, mutate), mutate)]
+   |                          ^^^^^^
+   |
+   = help: consider using a Cargo feature instead
+   = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+            [lints.rust]
+            unexpected_cfgs = { level = "warn", check-cfg = ['cfg(mutate)'] }
+   = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(mutate)");` to the top of the `build.rs`
+   = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `mutate`
+  --> /Users/pauldelucia/Documents/Dash/rust-dashcore/dash/src/blockdata/locktime/relative.rs:96:26
+   |
+96 |     #[cfg_attr(all(test, mutate), mutate)]
+   |                          ^^^^^^
+   |
+   = help: consider using a Cargo feature instead
+   = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+            [lints.rust]
+            unexpected_cfgs = { level = "warn", check-cfg = ['cfg(mutate)'] }
+   = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(mutate)");` to the top of the `build.rs`
+   = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `mutate`
+   --> /Users/pauldelucia/Documents/Dash/rust-dashcore/dash/src/blockdata/locktime/relative.rs:123:26
+    |
+123 |     #[cfg_attr(all(test, mutate), mutate)]
+    |                          ^^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(mutate)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(mutate)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `mutate`
+   --> /Users/pauldelucia/Documents/Dash/rust-dashcore/dash/src/blockdata/locktime/relative.rs:149:26
+    |
+149 |     #[cfg_attr(all(test, mutate), mutate)]
+    |                          ^^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(mutate)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(mutate)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `rust_v_1_60`
+  --> /Users/pauldelucia/Documents/Dash/rust-dashcore/dash/src/blockdata/script/mod.rs:52:15
+   |
+52 | #[cfg(any(not(rust_v_1_60), target_has_atomic = "ptr"))]
+   |               ^^^^^^^^^^^
+   |
+   = help: consider using a Cargo feature instead
+   = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+            [lints.rust]
+            unexpected_cfgs = { level = "warn", check-cfg = ['cfg(rust_v_1_60)'] }
+   = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(rust_v_1_60)");` to the top of the `build.rs`
+   = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `rust_v_1_60`
+   --> /Users/pauldelucia/Documents/Dash/rust-dashcore/dash/src/blockdata/script/mod.rs:297:15
+    |
+297 | #[cfg(any(not(rust_v_1_60), target_has_atomic = "ptr"))]
+    |               ^^^^^^^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(rust_v_1_60)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(rust_v_1_60)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition value: `bitcoinconsensus-std`
+   --> /Users/pauldelucia/Documents/Dash/rust-dashcore/dash/src/blockdata/script/mod.rs:769:62
+    |
+769 | #[cfg(all(feature = "std", feature = "bitcoinconsensus", not(feature = "bitcoinconsensus-std")))]
+    |                                                              ^^^^^^^^^^----------------------
+    |                                                                        |
+    |                                                                        help: there is a expected value with a similar name: `"bitcoinconsensus"`
+    |
+    = note: expected values for `feature` are: `actual-serde`, `base64`, `base64-compat`, `bincode`, `bitcoinconsensus`, `bls`, `bls-signatures`, `blsful`, `core-block-hash-use-x11`, `core2`, `default`, `ed25519-dalek`, `eddsa`, `message_verification`, `no-std`, `quorum_validation`, `rand`, `rand-std`, `secp-lowmemory`, `secp-recovery`, `serde`, `signer`, and `std`
+    = help: consider adding `bitcoinconsensus-std` as a feature in `Cargo.toml`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition value: `bitcoinconsensus-std`
+   --> /Users/pauldelucia/Documents/Dash/rust-dashcore/dash/src/blockdata/script/mod.rs:802:9
+    |
+802 |     not(feature = "bitcoinconsensus-std")
+    |         ^^^^^^^^^^----------------------
+    |                   |
+    |                   help: there is a expected value with a similar name: `"bitcoinconsensus"`
+    |
+    = note: expected values for `feature` are: `actual-serde`, `base64`, `base64-compat`, `bincode`, `bitcoinconsensus`, `bls`, `bls-signatures`, `blsful`, `core-block-hash-use-x11`, `core2`, `default`, `ed25519-dalek`, `eddsa`, `message_verification`, `no-std`, `quorum_validation`, `rand`, `rand-std`, `secp-lowmemory`, `secp-recovery`, `serde`, `signer`, and `std`
+    = help: consider adding `bitcoinconsensus-std` as a feature in `Cargo.toml`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `rust_v_1_53`
+ --> /Users/pauldelucia/Documents/Dash/rust-dashcore/dash/src/blockdata/script/borrowed.rs:6:7
+  |
+6 | #[cfg(rust_v_1_53)]
+  |       ^^^^^^^^^^^
+  |
+  = help: consider using a Cargo feature instead
+  = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+           [lints.rust]
+           unexpected_cfgs = { level = "warn", check-cfg = ['cfg(rust_v_1_53)'] }
+  = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(rust_v_1_53)");` to the top of the `build.rs`
+  = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `rust_v_1_53`
+   --> /Users/pauldelucia/Documents/Dash/rust-dashcore/dash/src/blockdata/script/borrowed.rs:559:7
+    |
+559 | #[cfg(rust_v_1_53)]
+    |       ^^^^^^^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(rust_v_1_53)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(rust_v_1_53)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition value: `unstable`
+    --> /Users/pauldelucia/Documents/Dash/rust-dashcore/dash/src/blockdata/transaction/mod.rs:1309:17
+     |
+1309 | #[cfg(all(test, feature = "unstable"))]
+     |                 ^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: expected values for `feature` are: `actual-serde`, `base64`, `base64-compat`, `bincode`, `bitcoinconsensus`, `bls`, `bls-signatures`, `blsful`, `core-block-hash-use-x11`, `core2`, `default`, `ed25519-dalek`, `eddsa`, `message_verification`, `no-std`, `quorum_validation`, `rand`, `rand-std`, `secp-lowmemory`, `secp-recovery`, `serde`, `signer`, and `std`
+     = help: consider adding `unstable` as a feature in `Cargo.toml`
+     = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unused import: `hashes::Hash`
+  --> /Users/pauldelucia/Documents/Dash/rust-dashcore/dash/src/blockdata/transaction/special_transaction/mnhf_signal.rs:14:5
+   |
+14 | use hashes::Hash;
+   |     ^^^^^^^^^^^^
+
+warning: unexpected `cfg` condition name: `bench`
+   --> /Users/pauldelucia/Documents/Dash/rust-dashcore/dash/src/blockdata/witness.rs:710:7
+    |
+710 | #[cfg(bench)]
+    |       ^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(bench)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(bench)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `mutate`
+  --> /Users/pauldelucia/Documents/Dash/rust-dashcore/dash/src/pow.rs:14:17
+   |
+14 | #[cfg(all(test, mutate))]
+   |                 ^^^^^^
+   |
+   = help: consider using a Cargo feature instead
+   = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+            [lints.rust]
+            unexpected_cfgs = { level = "warn", check-cfg = ['cfg(mutate)'] }
+   = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(mutate)");` to the top of the `build.rs`
+   = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `kani`
+   --> /Users/pauldelucia/Documents/Dash/rust-dashcore/dash/src/pow.rs:957:7
+    |
+957 | #[cfg(kani)]
+    |       ^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(kani)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `kani`
+    --> /Users/pauldelucia/Documents/Dash/rust-dashcore/dash/src/pow.rs:1785:7
+     |
+1785 | #[cfg(kani)]
+     |       ^^^^
+     |
+     = help: consider using a Cargo feature instead
+     = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+              [lints.rust]
+              unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
+     = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(kani)");` to the top of the `build.rs`
+     = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `mutate`
+   --> /Users/pauldelucia/Documents/Dash/rust-dashcore/dash/src/pow.rs:215:26
+    |
+215 |     #[cfg_attr(all(test, mutate), mutate)]
+    |                          ^^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(mutate)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(mutate)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `mutate`
+   --> /Users/pauldelucia/Documents/Dash/rust-dashcore/dash/src/pow.rs:251:26
+    |
+251 |     #[cfg_attr(all(test, mutate), mutate)]
+    |                          ^^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(mutate)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(mutate)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `mutate`
+   --> /Users/pauldelucia/Documents/Dash/rust-dashcore/dash/src/pow.rs:262:26
+    |
+262 |     #[cfg_attr(all(test, mutate), mutate)]
+    |                          ^^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(mutate)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(mutate)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `mutate`
+   --> /Users/pauldelucia/Documents/Dash/rust-dashcore/dash/src/pow.rs:337:26
+    |
+337 |     #[cfg_attr(all(test, mutate), mutate)]
+    |                          ^^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(mutate)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(mutate)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `mutate`
+   --> /Users/pauldelucia/Documents/Dash/rust-dashcore/dash/src/pow.rs:346:26
+    |
+346 |     #[cfg_attr(all(test, mutate), mutate)]
+    |                          ^^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(mutate)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(mutate)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `mutate`
+   --> /Users/pauldelucia/Documents/Dash/rust-dashcore/dash/src/pow.rs:355:26
+    |
+355 |     #[cfg_attr(all(test, mutate), mutate)]
+    |                          ^^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(mutate)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(mutate)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `mutate`
+   --> /Users/pauldelucia/Documents/Dash/rust-dashcore/dash/src/pow.rs:364:26
+    |
+364 |     #[cfg_attr(all(test, mutate), mutate)]
+    |                          ^^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(mutate)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(mutate)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `mutate`
+   --> /Users/pauldelucia/Documents/Dash/rust-dashcore/dash/src/pow.rs:396:26
+    |
+396 |     #[cfg_attr(all(test, mutate), mutate)]
+    |                          ^^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(mutate)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(mutate)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `mutate`
+   --> /Users/pauldelucia/Documents/Dash/rust-dashcore/dash/src/pow.rs:401:26
+    |
+401 |     #[cfg_attr(all(test, mutate), mutate)]
+    |                          ^^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(mutate)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(mutate)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `mutate`
+   --> /Users/pauldelucia/Documents/Dash/rust-dashcore/dash/src/pow.rs:406:26
+    |
+406 |     #[cfg_attr(all(test, mutate), mutate)]
+    |                          ^^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(mutate)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(mutate)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `mutate`
+   --> /Users/pauldelucia/Documents/Dash/rust-dashcore/dash/src/pow.rs:437:26
+    |
+437 |     #[cfg_attr(all(test, mutate), mutate)]
+    |                          ^^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(mutate)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(mutate)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `mutate`
+   --> /Users/pauldelucia/Documents/Dash/rust-dashcore/dash/src/pow.rs:481:26
+    |
+481 |     #[cfg_attr(all(test, mutate), mutate)]
+    |                          ^^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(mutate)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(mutate)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `mutate`
+   --> /Users/pauldelucia/Documents/Dash/rust-dashcore/dash/src/pow.rs:521:26
+    |
+521 |     #[cfg_attr(all(test, mutate), mutate)]
+    |                          ^^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(mutate)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(mutate)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `mutate`
+   --> /Users/pauldelucia/Documents/Dash/rust-dashcore/dash/src/pow.rs:546:26
+    |
+546 |     #[cfg_attr(all(test, mutate), mutate)]
+    |                          ^^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(mutate)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(mutate)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `mutate`
+   --> /Users/pauldelucia/Documents/Dash/rust-dashcore/dash/src/pow.rs:559:26
+    |
+559 |     #[cfg_attr(all(test, mutate), mutate)]
+    |                          ^^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(mutate)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(mutate)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `mutate`
+   --> /Users/pauldelucia/Documents/Dash/rust-dashcore/dash/src/pow.rs:607:26
+    |
+607 |     #[cfg_attr(all(test, mutate), mutate)]
+    |                          ^^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(mutate)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(mutate)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `mutate`
+   --> /Users/pauldelucia/Documents/Dash/rust-dashcore/dash/src/pow.rs:627:26
+    |
+627 |     #[cfg_attr(all(test, mutate), mutate)]
+    |                          ^^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(mutate)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(mutate)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `mutate`
+   --> /Users/pauldelucia/Documents/Dash/rust-dashcore/dash/src/pow.rs:654:26
+    |
+654 |     #[cfg_attr(all(test, mutate), mutate)]
+    |                          ^^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(mutate)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(mutate)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unused import: `crate::Network`
+  --> /Users/pauldelucia/Documents/Dash/rust-dashcore/dash/src/psbt/mod.rs:15:5
+   |
+15 | use crate::Network;
+   |     ^^^^^^^^^^^^^^
+
+warning: unexpected `cfg` condition name: `rust_v_1_60`
+   --> /Users/pauldelucia/Documents/Dash/rust-dashcore/dash/src/lib.rs:202:56
+    |
+202 |     #[cfg(all(not(feature = "std"), not(test), any(not(rust_v_1_60), target_has_atomic = "ptr")))]
+    |                                                        ^^^^^^^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(rust_v_1_60)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(rust_v_1_60)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unused import: `slice`
+   --> /Users/pauldelucia/Documents/Dash/rust-dashcore/dash/src/lib.rs:206:101
+    |
+206 |     pub use std::{string::{String, ToString}, vec::Vec, boxed::Box, borrow::{Borrow, Cow, ToOwned}, slice, rc, sync};
+    |                                                                                                     ^^^^^
+
+warning: use of deprecated method `blockdata::transaction::Transaction::encode_signing_data_to`: Use SighashCache::legacy_encode_signing_data_to instead
+   --> /Users/pauldelucia/Documents/Dash/rust-dashcore/dash/src/blockdata/transaction/mod.rs:353:22
+    |
+353 |         let _ = self.encode_signing_data_to(&mut engine, input_index, script_pubkey, sighash_u32);
+    |                      ^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(deprecated)]` on by default
+
+warning: use of deprecated associated function `secp256k1::Message::from_slice`: use from_digest instead
+  --> /Users/pauldelucia/Documents/Dash/rust-dashcore/dash/src/signer.rs:22:24
+   |
+22 |     let msg = Message::from_slice(&data_hash).map_err(anyhow::Error::msg)?;
+   |                        ^^^^^^^^^^
+
+warning: use of deprecated associated function `secp256k1::Message::from_slice`: use from_digest instead
+  --> /Users/pauldelucia/Documents/Dash/rust-dashcore/dash/src/signer.rs:43:24
+   |
+43 |     let msg = Message::from_slice(data_hash).map_err(anyhow::Error::msg)?;
+   |                        ^^^^^^^^^^
+
+warning: use of deprecated associated function `secp256k1::Message::from_slice`: use from_digest instead
+  --> /Users/pauldelucia/Documents/Dash/rust-dashcore/dash/src/signer.rs:70:24
+   |
+70 |     let msg = Message::from_slice(data_hash).map_err(anyhow::Error::msg)?;
+   |                        ^^^^^^^^^^
+
+warning: unused variable: `hash`
+  --> /Users/pauldelucia/Documents/Dash/rust-dashcore/dash/src/sml/masternode_list/debug_helpers.rs:42:63
+   |
+42 |             let s = map.iter().fold(String::new(), |mut acc, (hash, q)| {
+   |                                                               ^^^^ help: if this is intentional, prefix it with an underscore: `_hash`
+   |
+   = note: `#[warn(unused_variables)]` on by default
+
+warning: unused variable: `i`
+   --> /Users/pauldelucia/Documents/Dash/rust-dashcore/dash/src/sml/masternode_list_engine/rotated_quorum_construction.rs:430:31
+    |
+430 |                         .map(|i| {
+    |                               ^ help: if this is intentional, prefix it with an underscore: `_i`
+
+warning: unused variable: `can_verify_previous`
+   --> /Users/pauldelucia/Documents/Dash/rust-dashcore/dash/src/sml/masternode_list_engine/mod.rs:420:13
+    |
+420 |         let can_verify_previous = quorum_snapshot_and_mn_list_diff_at_h_minus_4c.is_some();
+    |             ^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_can_verify_previous`
+
+warning: unused variable: `h_height`
+   --> /Users/pauldelucia/Documents/Dash/rust-dashcore/dash/src/sml/masternode_list_engine/mod.rs:422:13
+    |
+422 |         let h_height = self.block_container.get_height(&mn_list_diff_h.block_hash).ok_or(
+    |             ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_h_height`
+
+warning: unused variable: `tip_height`
+   --> /Users/pauldelucia/Documents/Dash/rust-dashcore/dash/src/sml/masternode_list_engine/mod.rs:428:13
+    |
+428 |         let tip_height = self.block_container.get_height(&mn_list_diff_tip.block_hash).ok_or(
+    |             ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_tip_height`
+
+warning: unused variable: `rotation_quorum_type`
+   --> /Users/pauldelucia/Documents/Dash/rust-dashcore/dash/src/sml/masternode_list_engine/mod.rs:434:13
+    |
+434 |         let rotation_quorum_type = last_commitment_per_index
+    |             ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_rotation_quorum_type`
+
+warning: unused variable: `qualified_last_commitment_per_index`
+   --> /Users/pauldelucia/Documents/Dash/rust-dashcore/dash/src/sml/masternode_list_engine/mod.rs:470:13
+    |
+470 |         let qualified_last_commitment_per_index = last_commitment_per_index
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_qualified_last_commitment_per_index`
+
+warning: unused variable: `previous_chain_lock_sigs`
+   --> /Users/pauldelucia/Documents/Dash/rust-dashcore/dash/src/sml/masternode_list_engine/mod.rs:686:9
+    |
+686 |         previous_chain_lock_sigs: Option<[BLSSignature; 3]>,
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_previous_chain_lock_sigs`
+
+warning: method `split_anyonecanpay_flag` is never used
+   --> /Users/pauldelucia/Documents/Dash/rust-dashcore/dash/src/blockdata/transaction/hash_type.rs:104:19
+    |
+102 | impl EcdsaSighashType {
+    | --------------------- method in this implementation
+103 |     /// Splits the sighash flag into the "real" sighash flag and the ANYONECANPAY boolean.
+104 |     pub(crate) fn split_anyonecanpay_flag(self) -> (EcdsaSighashType, bool) {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` on by default
+
+warning: methods `masternode_list_and_height_for_block_hash_8_blocks_ago` and `find_non_rotated_masternodes_for_quorum` are never used
+  --> /Users/pauldelucia/Documents/Dash/rust-dashcore/dash/src/sml/masternode_list_engine/non_rotated_quorum_construction.rs:13:19
+   |
+12 | impl MasternodeListEngine {
+   | ------------------------- methods in this implementation
+13 |     pub(crate) fn masternode_list_and_height_for_block_hash_8_blocks_ago(
+   |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+33 |     pub(in crate::sml::masternode_list_engine) fn find_non_rotated_masternodes_for_quorum(
+   |                                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: associated items `find_rotated_masternodes_for_quorum`, `find_rotated_masternodes_for_quorums`, `masternode_list_entry_members_for_rotated_quorum`, `add_quorum_members_from_quarter`, `quorum_quarter_members_by_reconstruction_type`, and `apply_skip_strategy_of_type` are never used
+   --> /Users/pauldelucia/Documents/Dash/rust-dashcore/dash/src/sml/masternode_list_engine/rotated_quorum_construction.rs:29:51
+    |
+18  | impl MasternodeListEngine {
+    | ------------------------- associated items in this implementation
+...
+29  |     pub(in crate::sml::masternode_list_engine) fn find_rotated_masternodes_for_quorum<'a>(
+    |                                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+73  |     pub(in crate::sml::masternode_list_engine) fn find_rotated_masternodes_for_quorums<'a>(
+    |                                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+198 |     fn masternode_list_entry_members_for_rotated_quorum(
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+263 |     fn add_quorum_members_from_quarter<'a>(
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+286 |     fn quorum_quarter_members_by_reconstruction_type<'a: 'b, 'b>(
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+367 |     fn apply_skip_strategy_of_type<'a>(
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `dashcore` (lib) generated 66 warnings (run `cargo fix --lib -p dashcore` to apply 6 suggestions)
+warning: multiple methods are never used
+    --> /Users/pauldelucia/Documents/Dash/rust-dashcore/dash-spv/src/client/mod.rs:93:14
+     |
+57   | impl DashSpvClient {
+     | ------------------ methods in this implementation
+...
+93   |     async fn get_block_height_or_default(&self, block_hash: dashcore::BlockHash) -> u32 {
+     |              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+980  |     async fn handle_inventory(
+     |              ^^^^^^^^^^^^^^^^
+...
+989  |     async fn process_new_headers(&mut self, headers: Vec<dashcore::block::Header>) -> Result<()> {
+     |              ^^^^^^^^^^^^^^^^^^^
+...
+1071 |     async fn process_new_block_hash(&mut self, block_hash: dashcore::BlockHash) -> Result<()> {
+     |              ^^^^^^^^^^^^^^^^^^^^^^
+...
+1077 |     async fn process_filter_headers(
+     |              ^^^^^^^^^^^^^^^^^^^^^^
+...
+1101 |     async fn find_height_for_block_hash(&self, block_hash: dashcore::BlockHash) -> Option<u32> {
+     |              ^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+1107 |     async fn process_new_block(&mut self, block: dashcore::Block) -> Result<()> {
+     |              ^^^^^^^^^^^^^^^^^
+...
+1113 |     async fn process_block_transactions(
+     |              ^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+1265 |     async fn report_balance_changes(
+     |              ^^^^^^^^^^^^^^^^^^^^^^
+...
+2037 |     async fn safe_add_utxo(&self, utxo: crate::wallet::Utxo) -> Result<()> {
+     |              ^^^^^^^^^^^^^
+...
+2073 |     async fn safe_remove_utxo(
+     |              ^^^^^^^^^^^^^^^^
+...
+2112 |     async fn safe_get_wallet_balance(&self) -> Result<crate::wallet::Balance> {
+     |              ^^^^^^^^^^^^^^^^^^^^^^^
+...
+2153 |     async fn handle_post_sync_headers(
+     |              ^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(dead_code)]` on by default
+
+warning: method `find_height_for_block_hash` is never used
+   --> /Users/pauldelucia/Documents/Dash/rust-dashcore/dash-spv/src/client/filter_sync.rs:174:14
+    |
+23  | impl<'a> FilterSyncCoordinator<'a> {
+    | ---------------------------------- method in this implementation
+...
+174 |     async fn find_height_for_block_hash(&self, block_hash: dashcore::BlockHash) -> Option<u32> {
+    |              ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: field `message_receiver` is never read
+  --> /Users/pauldelucia/Documents/Dash/rust-dashcore/dash-spv/src/network/mod.rs:81:5
+   |
+75 | pub struct TcpNetworkManager {
+   |            ----------------- field in this struct
+...
+81 |     message_receiver: mpsc::Receiver<NetworkMessage>,
+   |     ^^^^^^^^^^^^^^^^
+
+warning: methods `select_peer` and `send_to_peer` are never used
+   --> /Users/pauldelucia/Documents/Dash/rust-dashcore/dash-spv/src/network/multi_peer.rs:695:14
+    |
+59  | impl MultiPeerNetworkManager {
+    | ---------------------------- methods in this implementation
+...
+695 |     async fn select_peer(&self) -> Option<SocketAddr> {
+    |              ^^^^^^^^^^^
+...
+712 |     async fn send_to_peer(&self, peer: SocketAddr, message: NetworkMessage) -> Result<(), Error> {
+    |              ^^^^^^^^^^^^
+
+warning: method `recover_sync_requests` is never used
+   --> /Users/pauldelucia/Documents/Dash/rust-dashcore/dash-spv/src/sync/mod.rs:570:14
+    |
+40  | impl SyncManager {
+    | ---------------- method in this implementation
+...
+570 |     async fn recover_sync_requests(
+    |              ^^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `RECEIVE_TIMEOUT_MILLIS` is never used
+  --> /Users/pauldelucia/Documents/Dash/rust-dashcore/dash-spv/src/sync/filters.rs:24:7
+   |
+24 | const RECEIVE_TIMEOUT_MILLIS: u64 = 100;
+   |       ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `MAX_TIMEOUTS` is never used
+  --> /Users/pauldelucia/Documents/Dash/rust-dashcore/dash-spv/src/sync/filters.rs:28:7
+   |
+28 | const MAX_TIMEOUTS: u32 = 10;
+   |       ^^^^^^^^^^^^
+
+warning: constant `FILTER_REQUEST_DELAY_MS` is never used
+  --> /Users/pauldelucia/Documents/Dash/rust-dashcore/dash-spv/src/sync/filters.rs:32:7
+   |
+32 | const FILTER_REQUEST_DELAY_MS: u64 = 0; // No delay for normal requests
+   |       ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `COMPLETION_CHECK_INTERVAL_MS` is never used
+  --> /Users/pauldelucia/Documents/Dash/rust-dashcore/dash-spv/src/sync/filters.rs:35:7
+   |
+35 | const COMPLETION_CHECK_INTERVAL_MS: u64 = 100; // How often to check for completions
+   |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: field `request_time` is never read
+  --> /Users/pauldelucia/Documents/Dash/rust-dashcore/dash-spv/src/sync/filters.rs:47:5
+   |
+43 | struct FilterRequest {
+   |        ------------- field in this struct
+...
+47 |     request_time: std::time::Instant,
+   |     ^^^^^^^^^^^^
+   |
+   = note: `FilterRequest` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: field `request` is never read
+  --> /Users/pauldelucia/Documents/Dash/rust-dashcore/dash-spv/src/sync/filters.rs:54:5
+   |
+53 | struct ActiveRequest {
+   |        ------------- field in this struct
+54 |     request: FilterRequest,
+   |     ^^^^^^^
+   |
+   = note: `ActiveRequest` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `expected_stop_hash` is never read
+  --> /Users/pauldelucia/Documents/Dash/rust-dashcore/dash-spv/src/sync/filters.rs:66:5
+   |
+59 | pub struct FilterSyncManager {
+   |            ----------------- field in this struct
+...
+66 |     expected_stop_hash: Option<BlockHash>,
+   |     ^^^^^^^^^^^^^^^^^^
+
+   Compiling dash-evo-tool v0.9.0-preview.4 (/Users/pauldelucia/Documents/dash-evo-tool)
+warning: `dash-spv` (lib) generated 12 warnings
+warning: unused variable: `mn_engine_status`
+   --> src/ui/network_chooser_screen.rs:261:25
+    |
+261 |                     let mn_engine_status: Option<(usize, usize)> =
+    |                         ^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_mn_engine_status`
+    |
+    = note: `#[warn(unused_variables)]` on by default
+
+warning: methods `wait_for_masternode_lists` and `add_watch_address` are never used
+   --> src/components/spv_manager.rs:492:18
+    |
+29  | impl SpvManager {
+    | --------------- methods in this implementation
+...
+492 |     pub async fn wait_for_masternode_lists(&self, timeout_secs: u64) -> Result<(), String> {
+    |                  ^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+555 |     pub async fn add_watch_address(
+    |                  ^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` on by default
+
+warning: creating a shared reference to mutable static is discouraged
+  --> src/components/spv_manager.rs:84:28
+   |
+84 |                         if LAST_LOG.is_none()
+   |                            ^^^^^^^^^^^^^^^^^^ shared reference to mutable static
+   |
+   = note: for more information, see <https://doc.rust-lang.org/nightly/edition-guide/rust-2024/static-mut-references.html>
+   = note: shared references to mutable statics are dangerous; it's undefined behavior if the static is mutated or if a mutable reference is created for it while the shared reference lives
+   = note: `#[warn(static_mut_refs)]` on by default
+
+warning: `dash-evo-tool` (bin "dash-evo-tool") generated 3 warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 14.25s
+     Running `target/debug/dash-evo-tool`
+running v0.9.0-preview.4
+Subscribed to ZMQ at tcp://127.0.0.1:23708
+Subscribed to ZMQ at tcp://127.0.0.1:23710
+Subscribed to ZMQ at tcp://127.0.0.1:23709
+Subscribed to ZMQ at tcp://127.0.0.1:20302

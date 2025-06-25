@@ -155,7 +155,7 @@ impl AppContext {
         let spv_manager = Arc::new(SpvManager::new(app_data_dir, network));
 
         // Save connection type before moving network_config
-        let connection_type = network_config.connection_type.clone();
+        let _connection_type = network_config.connection_type.clone();
 
         let app_context = AppContext {
             network,
@@ -188,7 +188,7 @@ impl AppContext {
 
         let app_context = Arc::new(app_context);
         (*provider).bind_app_context(app_context.clone());
-        
+
         // Store the provider reference in the app context
         {
             let mut provider_lock = app_context.provider.write().unwrap();
@@ -197,37 +197,15 @@ impl AppContext {
 
         // Bind SPV manager to app context asynchronously and auto-start if needed
         let spv_manager = app_context.spv_manager.clone();
+        // Bind SPV manager to app context but don't auto-start it
+        // Auto-starting SPV on initialization can cause the app to freeze
         let app_context_weak = Arc::downgrade(&app_context);
-        let should_start_spv = matches!(
-            connection_type,
-            crate::model::connection_type::ConnectionType::DashSpv
-        );
         tokio::spawn(async move {
             if let Some(app_ctx) = app_context_weak.upgrade() {
                 spv_manager.bind_app_context(app_ctx.clone()).await;
-
-                // Auto-start SPV if connection type is set to SPV
-                if should_start_spv {
-                    match spv_manager.start().await {
-                        Ok(_) => {
-                            tracing::info!("Auto-started SPV client on app initialization");
-
-                            // Pre-fetch quorum keys for SPV mode
-                            if let Err(e) = app_ctx.prefetch_quorum_keys_for_spv().await {
-                                tracing::warn!(
-                                    "Failed to pre-fetch quorum keys during auto-start: {}",
-                                    e
-                                );
-                            }
-                        }
-                        Err(e) => {
-                            tracing::error!("Failed to auto-start SPV client: {}", e);
-                        }
-                    }
-                }
+                tracing::info!("SPV manager bound to app context");
             }
         });
-
 
         Some(app_context)
     }
@@ -263,11 +241,7 @@ impl AppContext {
 
         // Note: developer_mode is now global and managed separately
 
-        // 2. Preserve the quorum key cache from the old provider if it exists
-        let preserved_cache = {
-            let provider_lock = self.provider.read().unwrap();
-            provider_lock.as_ref().map(|provider| provider.quorum_key_cache.clone())
-        };
+        // 2. No longer preserving quorum key cache - removed functionality
 
         // 3. Rebuild the RPC client with the new password (only if using DashCore)
         if cfg.connection_type == crate::model::connection_type::ConnectionType::DashCore {
@@ -288,14 +262,8 @@ impl AppContext {
         }
 
         // 4. Rebuild the Sdk with the updated config
-        let mut new_provider = Provider::new(self.db.clone(), self.network, &cfg)
+        let new_provider = Provider::new(self.db.clone(), self.network, &cfg)
             .map_err(|e| format!("Failed to init provider: {e}"))?;
-
-        // Restore the preserved cache if we had one
-        if let Some(preserved_cache) = preserved_cache {
-            new_provider.set_quorum_key_cache(preserved_cache);
-            tracing::info!("Preserved quorum key cache during SDK reinitialization");
-        }
 
         let new_sdk = initialize_sdk(&cfg, self.network, new_provider.clone());
 
@@ -812,36 +780,21 @@ impl AppContext {
         self.db.get_contract_by_id(contract_id, self)
     }
 
-    pub async fn prefetch_quorum_keys_for_spv(&self) -> Result<(), String> {
-        let sdk = {
-            let sdk_lock = self.sdk.read().unwrap();
-            sdk_lock.clone()
-        };
-
-        // Use the stored provider directly instead of creating a new one
-        let provider = {
-            let provider_lock = self.provider.read().unwrap();
-            provider_lock
-                .clone()
-                .ok_or("Provider not available".to_string())?
-        };
-
-        // Prefetch keys using the actual provider that's bound to the SDK
-        provider.prefetch_quorum_keys(&sdk).await?;
-
-        tracing::info!("✅ Prefetched quorum keys using the actual SDK provider");
-        Ok(())
-    }
+    // Removed prefetch_quorum_keys_for_spv - no longer using key caching
 
     pub async fn switch_connection_type(
         self: &Arc<Self>,
         connection_type: crate::model::connection_type::ConnectionType,
     ) -> Result<crate::backend_task::BackendTaskSuccessResult, String> {
+        tracing::info!("switch_connection_type called with: {:?}", connection_type);
+
         // Get current connection type from config
         let current_connection_type = { self.config.read().unwrap().connection_type.clone() };
+        tracing::info!("Current connection type: {:?}", current_connection_type);
 
         // If we're already using the requested connection type, no need to switch
         if current_connection_type == connection_type {
+            tracing::info!("Already using the requested connection type");
             return Ok(crate::backend_task::BackendTaskSuccessResult::Message(
                 format!("Already using {} connection", connection_type.as_str()),
             ));
@@ -877,17 +830,22 @@ impl AppContext {
                 ))
             }
             crate::model::connection_type::ConnectionType::DashSpv => {
+                tracing::info!("Switching to SPV connection");
                 // Check if SPV is supported for this network
                 match self.network {
                     Network::Dash | Network::Testnet => {
+                        tracing::info!("SPV is supported for network: {:?}", self.network);
+
                         // Stop SPV if already running (clean restart)
                         if let Err(e) = self.spv_manager.stop().await {
                             tracing::warn!("Failed to stop existing SPV client: {}", e);
                         }
 
                         // Start SPV manager
+                        tracing::info!("Starting SPV manager...");
                         match self.spv_manager.start().await {
                             Ok(_) => {
+                                tracing::info!("SPV manager started successfully");
                                 // Update the connection type in config
                                 {
                                     let mut config = self.config.write().unwrap();
@@ -895,7 +853,17 @@ impl AppContext {
                                 }
 
                                 // Reinitialize the SDK with the new connection type
-                                self.clone().reinit_core_client_and_sdk()?;
+                                tracing::info!("Reinitializing SDK for SPV...");
+                                if let Err(e) = self.clone().reinit_core_client_and_sdk() {
+                                    tracing::error!("Failed to reinitialize SDK: {}", e);
+                                    // Try to stop SPV and revert
+                                    let _ = self.spv_manager.stop().await;
+                                    return Err(format!(
+                                        "Failed to reinitialize SDK for SPV: {}",
+                                        e
+                                    ));
+                                }
+                                tracing::info!("SDK reinitialized successfully");
 
                                 // Update the database to match the config
                                 if let Err(e) = self
@@ -908,20 +876,7 @@ impl AppContext {
                                     );
                                 }
 
-                                // Pre-fetch quorum keys for SPV mode after SDK is initialized
-                                tracing::info!("Pre-fetching quorum keys for SPV mode...");
-                                match self.prefetch_quorum_keys_for_spv().await {
-                                    Ok(_) => {
-                                        tracing::info!("Successfully pre-fetched quorum keys for SPV mode");
-                                    }
-                                    Err(e) => {
-                                        tracing::error!("Failed to pre-fetch quorum keys: {}", e);
-                                        return Err(format!(
-                                            "SPV initialization incomplete: {}. Some operations may fail.",
-                                            e
-                                        ));
-                                    }
-                                }
+                                // No longer pre-fetching quorum keys - removed functionality
 
                                 Ok(crate::backend_task::BackendTaskSuccessResult::Message(
                                     "Successfully switched to SPV connection".to_string(),
@@ -937,6 +892,25 @@ impl AppContext {
                 }
             }
         }
+    }
+
+    pub async fn start_spv_sync(
+        self: &Arc<Self>,
+    ) -> Result<crate::backend_task::BackendTaskSuccessResult, String> {
+        tracing::info!("start_spv_sync called");
+
+        // Check if we're in SPV mode
+        let connection_type = { self.config.read().unwrap().connection_type.clone() };
+        if connection_type != crate::model::connection_type::ConnectionType::DashSpv {
+            return Err("SPV sync can only be started when using SPV connection".to_string());
+        }
+
+        // Call the start_sync method on the SPV manager
+        self.spv_manager.start_sync().await?;
+
+        Ok(crate::backend_task::BackendTaskSuccessResult::Message(
+            "SPV sync started - monitor_network is now running".to_string(),
+        ))
     }
 }
 

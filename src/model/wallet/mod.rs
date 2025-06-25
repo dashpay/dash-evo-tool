@@ -437,23 +437,34 @@ impl Wallet {
                 known_public_key = Some(public_key);
                 if let Some(app_context) = register {
                     let address = Address::p2pkh(&public_key, network);
-                    app_context
-                        .core_client
-                        .read()
-                        .expect("Core client lock was poisoned")
-                        .import_address(
-                            &address,
-                            Some(
-                                format!(
-                                    "Managed by Dash Evo Tool {} {}",
-                                    self.alias.clone().unwrap_or_default(),
-                                    derivation_path
+
+                    // Only import address to Core if we're using DashCore connection
+                    // SPV doesn't support import_address RPC method
+                    if let Ok(config) = app_context.config.read() {
+                        if config.connection_type
+                            == crate::model::connection_type::ConnectionType::DashCore
+                        {
+                            app_context
+                                .core_client
+                                .read()
+                                .expect("Core client lock was poisoned")
+                                .import_address(
+                                    &address,
+                                    Some(
+                                        format!(
+                                            "Managed by Dash Evo Tool {} {}",
+                                            self.alias.clone().unwrap_or_default(),
+                                            derivation_path
+                                        )
+                                        .as_str(),
+                                    ),
+                                    Some(false),
                                 )
-                                .as_str(),
-                            ),
-                            Some(false),
-                        )
-                        .map_err(|e| e.to_string())?;
+                                .map_err(|e| e.to_string())?;
+                        } else {
+                            tracing::info!("Skipping import_address for SPV connection type, address: {}", address);
+                        }
+                    }
 
                     self.register_address(
                         address,

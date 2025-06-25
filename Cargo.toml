@@ -17,7 +17,7 @@ rfd = "0.15.3"
 qrcode = "0.14.1"
 eframe = { version = "0.31.1", features = ["persistence"] }
 base64 = "0.22.1"
-dash-sdk = { git = "https://github.com/dashpay/platform", rev = "5b8b29df2d0f58f52ae75b8d0672378df4b9e154" }
+dash-sdk = { git = "https://github.com/dashpay/platform", rev = "bab21b3b2b55439389d4bfeb9dd87fcfb805c21b" }
 thiserror = "2.0.12"
 serde = "1.0.219"
 serde_json = "1.0.140"

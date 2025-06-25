@@ -1,3 +1,4 @@
+use core::{cmp::Ord, fmt::Debug, prelude::v1::derive};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, io::Write, ops::Deref, path::PathBuf, sync::Arc, sync::RwLock};
 
@@ -13,13 +14,26 @@ use super::KVStore;
 /// Keys are stored in plaintext.
 ///
 /// Data is base64 encoded before storing and decoded after retrieving.
-pub(super) struct JsonStore<K, V>
-where
-    K: Clone + std::fmt::Debug + Serialize + for<'de> Deserialize<'de> + Ord,
-    V: Clone + Serialize + for<'de> Deserialize<'de>,
-{
+///
+///
+/// ## Cloning
+///
+/// The `JsonStore` is designed to be cloneable, allowing multiple instances to share the same underlying data.
+#[derive(Clone)]
+pub(super) struct JsonStore<K: Ord, V> {
+    // where
+    // K: Clone + std::fmt::Debug + Serialize + for<'de> Deserialize<'de> + Ord,
+    // V: Clone + Serialize + for<'de> Deserialize<'de>,
     path: PathBuf,
     db: Arc<RwLock<Database<K, V>>>,
+}
+
+impl<K: Ord, V> Debug for JsonStore<K, V> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("JsonStore")
+            .field("path", &self.path)
+            .finish()
+    }
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]

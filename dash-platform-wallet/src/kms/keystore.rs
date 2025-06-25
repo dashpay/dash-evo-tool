@@ -1,9 +1,13 @@
-use std::{collections::BTreeMap, ops::DerefMut};
-
+use core::{fmt::Debug, todo};
 use dash_sdk::{
-    dapi_client::mock::Key, dpp::dashcore::bip32::DerivationPath, platform::IdentityPublicKey,
+    dpp::{
+        ProtocolError, dashcore::bip32::DerivationPath, identity::signer::Signer,
+        platform_value::BinaryData,
+    },
+    platform::IdentityPublicKey,
 };
 use serde::{Deserialize, Serialize};
+use std::ops::DerefMut;
 use thiserror::Error;
 use zeroize::{ZeroizeOnDrop, Zeroizing};
 
@@ -62,7 +66,12 @@ impl Kms for SimpleKms {
         password: &Secret,
     ) -> Result<impl UnlockedKMS<KeyHandle = Self::KeyHandle, Error = Self::Error>, Self::Error>
     {
-        todo!("move code from DET");
+        Ok(SimpleUnlockedKms {
+            kms: self,
+            store: self.store.clone(),
+            user_id,
+            password: Zeroizing::new(password.clone()),
+        })
     }
 
     fn get(&self, key: &Self::KeyHandle) -> Result<Option<super::PublicKey>, Self::Error> {
@@ -90,4 +99,78 @@ fn derive_storage_key(
             KmsError::EncryptionError(format!("Failed to derive encryption key: {}", e))
         })?;
     Ok(output_key_material)
+}
+
+/// SimpleUnlockedKms is an unlocked KMS that allows operations on keys without requiring a password.
+pub struct SimpleUnlockedKms<'a> {
+    kms: &'a SimpleKms,
+    store: JsonStore<KeyHandle, KeyRecord>,
+    user_id: Vec<u8>,
+    password: Zeroizing<Secret>,
+}
+
+impl Debug for SimpleUnlockedKms<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SimpleUnlockedKms")
+            .field("user_id", &self.user_id)
+            .field("store", &self.store)
+            .finish()
+    }
+}
+
+// Delegate Kms trait methods to SimpleUnlockedKms.kms
+impl<'a> Kms for SimpleUnlockedKms<'a> {
+    type KeyHandle = KeyHandle;
+    type Error = KmsError;
+
+    /// Unlocks the KMS for operations that require access to private keys.
+    fn unlock(
+        &self,
+        user_id: Vec<u8>,
+        password: &Secret,
+    ) -> Result<impl UnlockedKMS<KeyHandle = Self::KeyHandle, Error = Self::Error>, Self::Error>
+    {
+        self.kms.unlock(user_id, password)
+    }
+
+    fn get(&self, key: &Self::KeyHandle) -> Result<Option<super::PublicKey>, Self::Error> {
+        self.kms.get(key)
+    }
+
+    fn keys(&self) -> Result<impl Iterator<Item = Self::KeyHandle>, Self::Error> {
+        self.kms.keys()
+    }
+}
+
+impl<'a> Signer for SimpleUnlockedKms<'a> {
+    fn sign(
+        &self,
+        identity_public_key: &IdentityPublicKey,
+        data: &[u8],
+    ) -> Result<BinaryData, ProtocolError> {
+        todo!();
+    }
+
+    fn can_sign_with(&self, identity_public_key: &IdentityPublicKey) -> bool {
+        todo!();
+    }
+}
+
+impl<'a> UnlockedKMS for SimpleUnlockedKms<'a> {
+    fn decrypt(
+        &self,
+        key: &Self::KeyHandle,
+        encrypted_data: &super::EncryptedData,
+    ) -> Result<super::PlainData, Self::Error> {
+        todo!();
+    }
+    fn derive_key_pair(&self, seed: &[u8]) -> Result<Self::KeyHandle, Self::Error> {
+        todo!();
+    }
+    fn export(&self, encryption_key: Secret) -> Result<Vec<u8>, Self::Error> {
+        todo!();
+    }
+    fn generate_key_pair(&self) -> Result<Self::KeyHandle, Self::Error> {
+        todo!();
+    }
 }

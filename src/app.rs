@@ -19,11 +19,13 @@ use crate::ui::theme::ThemeMode;
 use crate::ui::tokens::tokens_screen::{TokensScreen, TokensSubscreen};
 use crate::ui::tools::contract_visualizer_screen::ContractVisualizerScreen;
 use crate::ui::tools::document_visualizer_screen::DocumentVisualizerScreen;
+use crate::ui::tools::platform_info_screen::PlatformInfoScreen;
 use crate::ui::tools::proof_log_screen::ProofLogScreen;
 use crate::ui::tools::proof_visualizer_screen::ProofVisualizerScreen;
 use crate::ui::tools::transition_visualizer_screen::TransitionVisualizerScreen;
 use crate::ui::wallets::wallets_screen::WalletsBalancesScreen;
 use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike, ScreenType};
+use crate::utils::tasks::TaskManager;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use derive_more::From;
@@ -73,6 +75,7 @@ pub struct AppState {
     pub task_result_receiver: tokiompsc::Receiver<TaskResult>, // Channel receiver for receiving task results
     pub theme_preference: ThemeMode,                           // Current theme preference
     last_scheduled_vote_check: Instant, // Last time we checked if there are scheduled masternode votes to cast
+    pub subtasks: Arc<TaskManager>,     // Subtasks manager for graceful shutdown
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -159,21 +162,39 @@ impl AppState {
                 (None, ThemeMode::System) // Default values if no settings found
             };
 
-        let mainnet_app_context =
-            match AppContext::new(Network::Dash, db.clone(), password_info.clone()) {
-                Some(context) => context,
-                None => {
-                    eprintln!(
-                        "Error: Failed to create the AppContext. Expected Dash config for mainnet."
-                    );
-                    std::process::exit(1);
-                }
-            };
-        let testnet_app_context =
-            AppContext::new(Network::Testnet, db.clone(), password_info.clone());
-        let devnet_app_context =
-            AppContext::new(Network::Devnet, db.clone(), password_info.clone());
-        let local_app_context = AppContext::new(Network::Regtest, db.clone(), password_info);
+        let subtasks = Arc::new(TaskManager::new());
+        let mainnet_app_context = match AppContext::new(
+            Network::Dash,
+            db.clone(),
+            password_info.clone(),
+            subtasks.clone(),
+        ) {
+            Some(context) => context,
+            None => {
+                eprintln!(
+                    "Error: Failed to create the AppContext. Expected Dash config for mainnet."
+                );
+                std::process::exit(1);
+            }
+        };
+        let testnet_app_context = AppContext::new(
+            Network::Testnet,
+            db.clone(),
+            password_info.clone(),
+            subtasks.clone(),
+        );
+        let devnet_app_context = AppContext::new(
+            Network::Devnet,
+            db.clone(),
+            password_info.clone(),
+            subtasks.clone(),
+        );
+        let local_app_context = AppContext::new(
+            Network::Regtest,
+            db.clone(),
+            password_info,
+            subtasks.clone(),
+        );
 
         let mut identities_screen = IdentitiesScreen::new(&mainnet_app_context);
         let mut dpns_active_contests_screen =
@@ -190,6 +211,7 @@ impl AppState {
         let mut document_visualizer_screen = DocumentVisualizerScreen::new(&mainnet_app_context);
         let mut contract_visualizer_screen = ContractVisualizerScreen::new(&mainnet_app_context);
         let mut proof_log_screen = ProofLogScreen::new(&mainnet_app_context);
+        let mut platform_info_screen = PlatformInfoScreen::new(&mainnet_app_context);
         let mut document_query_screen = DocumentQueryScreen::new(&mainnet_app_context);
         let mut tokens_balances_screen =
             TokensScreen::new(&mainnet_app_context, TokensSubscreen::MyTokens);
@@ -249,6 +271,7 @@ impl AppState {
                 document_query_screen = DocumentQueryScreen::new(testnet_app_context);
                 wallets_balances_screen = WalletsBalancesScreen::new(testnet_app_context);
                 proof_log_screen = ProofLogScreen::new(testnet_app_context);
+                platform_info_screen = PlatformInfoScreen::new(testnet_app_context);
                 tokens_balances_screen =
                     TokensScreen::new(testnet_app_context, TokensSubscreen::MyTokens);
                 token_search_screen =
@@ -273,6 +296,7 @@ impl AppState {
                 contract_visualizer_screen = ContractVisualizerScreen::new(devnet_app_context);
                 wallets_balances_screen = WalletsBalancesScreen::new(devnet_app_context);
                 proof_log_screen = ProofLogScreen::new(devnet_app_context);
+                platform_info_screen = PlatformInfoScreen::new(devnet_app_context);
                 tokens_balances_screen =
                     TokensScreen::new(devnet_app_context, TokensSubscreen::MyTokens);
                 token_search_screen =
@@ -295,6 +319,7 @@ impl AppState {
                 document_query_screen = DocumentQueryScreen::new(local_app_context);
                 wallets_balances_screen = WalletsBalancesScreen::new(local_app_context);
                 proof_log_screen = ProofLogScreen::new(local_app_context);
+                platform_info_screen = PlatformInfoScreen::new(local_app_context);
                 tokens_balances_screen =
                     TokensScreen::new(local_app_context, TokensSubscreen::MyTokens);
                 token_search_screen =
@@ -401,6 +426,10 @@ impl AppState {
                     Screen::ProofLogScreen(proof_log_screen),
                 ),
                 (
+                    RootScreenType::RootScreenToolsPlatformInfoScreen,
+                    Screen::PlatformInfoScreen(platform_info_screen),
+                ),
+                (
                     RootScreenType::RootScreenDocumentQuery,
                     Screen::DocumentQueryScreen(document_query_screen),
                 ),
@@ -438,6 +467,7 @@ impl AppState {
             task_result_receiver,
             theme_preference,
             last_scheduled_vote_check: Instant::now(),
+            subtasks,
         }
     }
 
@@ -455,7 +485,6 @@ impl AppState {
     pub fn handle_backend_task(&self, task: BackendTask) {
         let sender = self.task_result_sender.clone();
         let app_context = self.current_app_context().clone();
-
         tokio::spawn(async move {
             let result = app_context.run_backend_task(task, sender.clone()).await;
 
@@ -814,5 +843,20 @@ impl App for AppState {
             }
             AppAction::Custom(_) => {}
         }
+    }
+
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        // Signal all background tasks to cancel
+        tracing::debug!("App received on_exit event, cancelling all background tasks");
+
+        // if ctx.input(|i| i.viewport().close_requested()) {
+        if !self.subtasks.cancellation_token.is_cancelled() {
+            self.subtasks.shutdown().unwrap_or_else(|e| {
+                tracing::debug!("Failed to shutdown subtasks: {}", e);
+            });
+        } else {
+            tracing::debug!("Shutdown already in progress, ignoring close request");
+        }
+        // }
     }
 }

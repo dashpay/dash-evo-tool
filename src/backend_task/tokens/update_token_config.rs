@@ -26,6 +26,12 @@ impl AppContext {
         group_info: Option<GroupStateTransitionInfoStatus>,
         sdk: &Sdk,
     ) -> Result<BackendTaskSuccessResult, String> {
+        tracing::trace!(
+            ?group_info,
+            ?identity_token_info,
+            ?change_item,
+            "Updating token config for a token",
+        );
         // Get the existing contract and identity for building the state transition
         // First, fetch the contract from the local database
         let existing_data_contract = &self

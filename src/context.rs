@@ -37,6 +37,7 @@ use dash_sdk::query_types::IndexMap;
 use dash_sdk::Sdk;
 use rusqlite::Result;
 use std::collections::{BTreeMap, HashMap};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -420,7 +421,7 @@ impl AppContext {
             Network,
             RootScreenType,
             Option<PasswordInfo>,
-            Option<String>,
+            Option<PathBuf>,
             bool,
             crate::ui::theme::ThemeMode,
         )>,

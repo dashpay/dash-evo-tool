@@ -3,22 +3,6 @@ use dash_evo_tool::*;
 use crate::app_dir::{app_user_data_dir_path, create_app_user_data_directory_if_not_exists};
 use crate::cpu_compatibility::check_cpu_compatibility;
 
-mod app;
-mod app_dir;
-mod backend_task;
-mod bundled;
-mod components;
-mod config;
-mod context;
-mod context_provider;
-mod cpu_compatibility;
-mod database;
-mod logging;
-mod model;
-mod sdk_wrapper;
-mod ui;
-mod utils;
-
 fn main() -> eframe::Result<()> {
     create_app_user_data_directory_if_not_exists()
         .expect("Failed to create app user_data directory");

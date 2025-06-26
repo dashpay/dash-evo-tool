@@ -3,10 +3,9 @@ use crate::backend_task::BackendTaskSuccessResult;
 use crate::context::AppContext;
 use crate::ui::theme::ThemeMode;
 use std::sync::Arc;
-use tokio::sync::mpsc;
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) enum SystemTask {
+pub enum SystemTask {
     WipePlatformData,
     UpdateThemePreference(ThemeMode),
 }
@@ -15,7 +14,7 @@ impl AppContext {
     pub async fn run_system_task(
         self: &Arc<Self>,
         task: SystemTask,
-        _sender: mpsc::Sender<TaskResult>,
+        _sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, String> {
         match task {
             SystemTask::WipePlatformData => self.wipe_devnet(),

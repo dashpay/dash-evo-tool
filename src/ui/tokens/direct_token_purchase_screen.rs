@@ -1,5 +1,4 @@
 use std::collections::HashSet;
-use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -391,7 +390,7 @@ impl ScreenLike for PurchaseTokenScreen {
             ui.add_space(10.0);
 
             // Check if user has any auth keys
-            let has_keys = if self.app_context.developer_mode.load(Ordering::Relaxed) {
+            let has_keys = if self.app_context.is_developer_mode() {
                 !self
                     .identity_token_info
                     .identity

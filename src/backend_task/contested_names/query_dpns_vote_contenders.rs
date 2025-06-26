@@ -11,14 +11,13 @@ use dash_sdk::drive::query::vote_poll_vote_state_query::{
 };
 use dash_sdk::platform::FetchMany;
 use dash_sdk::Sdk;
-use tokio::sync::mpsc;
 
 impl AppContext {
     pub(super) async fn query_dpns_vote_contenders(
         &self,
         name: &str,
         sdk: &Sdk,
-        _sender: mpsc::Sender<TaskResult>,
+        _sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<(), String> {
         let data_contract = self.dpns_contract.as_ref();
         let document_type = data_contract

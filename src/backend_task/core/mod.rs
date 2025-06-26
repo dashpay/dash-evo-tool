@@ -13,7 +13,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 #[derive(Debug, Clone)]
-pub(crate) enum CoreTask {
+pub enum CoreTask {
     #[allow(dead_code)] // May be used for getting single chain lock
     GetBestChainLock,
     GetBestChainLocks,
@@ -39,7 +39,7 @@ impl PartialEq for CoreTask {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) enum CoreItem {
+pub enum CoreItem {
     ReceivedAvailableUTXOTransaction(Transaction, Vec<(OutPoint, TxOut, Address)>),
     ChainLock(ChainLock, Network),
     ChainLocks(

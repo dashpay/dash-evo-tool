@@ -34,16 +34,19 @@ use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::platform::{DataContract, Identifier};
 use dash_sdk::query_types::IndexMap;
 use dash_sdk::Sdk;
+use egui::Context;
 use rusqlite::Result;
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
+const ANIMATION_REFRESH_TIME: std::time::Duration = std::time::Duration::from_millis(100);
+
 #[derive(Debug)]
 pub struct AppContext {
     pub(crate) network: Network,
-    pub(crate) developer_mode: AtomicBool,
+    developer_mode: AtomicBool,
     #[allow(dead_code)] // May be used for devnet identification
     pub(crate) devnet_name: Option<String>,
     pub(crate) db: Arc<Database>,
@@ -62,6 +65,11 @@ pub struct AppContext {
     #[allow(dead_code)] // May be used for password validation
     pub(crate) password_info: Option<PasswordInfo>,
     pub(crate) transactions_waiting_for_finality: Mutex<BTreeMap<Txid, Option<AssetLockProof>>>,
+    /// Whether to animate the UI elements.
+    ///
+    /// This is used to control animations in the UI, such as loading spinners or transitions.
+    /// Disable for automated tests.
+    animate: AtomicBool,
     // subtasks started by the app context, used for graceful shutdown
     pub(crate) subtasks: Arc<TaskManager>,
 }
@@ -140,6 +148,14 @@ impl AppContext {
             .map(|w| (w.seed_hash(), Arc::new(RwLock::new(w))))
             .collect();
 
+        let animate = match config.developer_mode.unwrap_or(false) {
+            true => {
+                tracing::debug!("developer_mode is enabled, disabling animations");
+                AtomicBool::new(false)
+            }
+            false => AtomicBool::new(true), // Animations are enabled by default
+        };
+
         let app_context = AppContext {
             network,
             developer_mode: AtomicBool::new(config.developer_mode.unwrap_or(false)),
@@ -159,6 +175,7 @@ impl AppContext {
             password_info,
             transactions_waiting_for_finality: Mutex::new(BTreeMap::new()),
             zmq_connection_status: Mutex::new(ZMQConnectionEvent::Disconnected),
+            animate,
             subtasks,
         };
 
@@ -168,12 +185,39 @@ impl AppContext {
         Some(app_context)
     }
 
+    /// Enables animations in the UI.
+    ///
+    /// This is used to control whether UI elements should animate, such as loading spinners or transitions.
+    pub fn enable_animations(&self, animate: bool) {
+        self.animate.store(animate, Ordering::Relaxed);
+    }
+
+    pub fn enable_developer_mode(&self, enable: bool) {
+        self.developer_mode.store(enable, Ordering::Relaxed);
+        // Animations are reverse of developer mode
+        self.enable_animations(!enable);
+    }
+
+    pub fn is_developer_mode(&self) -> bool {
+        self.developer_mode.load(Ordering::Relaxed)
+    }
+
+    /// Repaints the UI if animations are enabled.
+    ///
+    /// Called by UI elements that need to trigger a repaint, such as loading spinners or animated icons.
+    pub(super) fn repaint_animation(&self, ctx: &Context) {
+        if self.animate.load(Ordering::Relaxed) {
+            // Request a repaint after a short delay to allow for animations
+            ctx.request_repaint_after(ANIMATION_REFRESH_TIME);
+        }
+    }
+
     pub fn platform_version(&self) -> &'static PlatformVersion {
         default_platform_version(&self.network)
     }
 
     pub fn state_transition_options(&self) -> Option<StateTransitionCreationOptions> {
-        if self.developer_mode.load(Ordering::Relaxed) {
+        if self.is_developer_mode() {
             Some(StateTransitionCreationOptions {
                 signing_options: StateTransitionSigningOptions {
                     allow_signing_with_any_security_level: true,

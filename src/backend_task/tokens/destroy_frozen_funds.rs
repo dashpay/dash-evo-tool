@@ -11,7 +11,6 @@ use dash_sdk::platform::transition::broadcast::BroadcastStateTransition;
 use dash_sdk::platform::{DataContract, Identifier, IdentityPublicKey};
 use dash_sdk::{Error, Sdk};
 use std::sync::Arc;
-use tokio::sync::mpsc;
 
 impl AppContext {
     #[allow(clippy::too_many_arguments)]
@@ -25,7 +24,7 @@ impl AppContext {
         frozen_identity: Identifier,
         group_info: Option<GroupStateTransitionInfoStatus>,
         sdk: &Sdk,
-        _sender: mpsc::Sender<TaskResult>,
+        _sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, String> {
         let mut builder = TokenDestroyFrozenFundsTransitionBuilder::new(
             data_contract.clone(),

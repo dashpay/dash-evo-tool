@@ -7,12 +7,11 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::Value;
 use dash_sdk::drive::query::{WhereClause, WhereOperator};
 use dash_sdk::platform::{Document, DocumentQuery, FetchMany};
-use tokio::sync::mpsc;
 
 impl AppContext {
     pub(super) async fn refresh_loaded_identities_dpns_names(
         &self,
-        sender: mpsc::Sender<TaskResult>,
+        sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, String> {
         let qualified_identities = self
             .load_local_qualified_identities()

@@ -3,7 +3,6 @@ use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
 use crate::ui::helpers::{add_identity_key_chooser, TransactionType};
 use std::collections::HashSet;
-use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -312,7 +311,7 @@ impl ScreenLike for ClaimTokensScreen {
             ui.add_space(10.0);
 
             // Check if user has any auth keys
-            let has_keys = if self.app_context.developer_mode.load(Ordering::Relaxed) {
+            let has_keys = if self.app_context.is_developer_mode() {
                 !self.identity.identity.public_keys().is_empty()
             } else {
                 match self.identity.identity_type {

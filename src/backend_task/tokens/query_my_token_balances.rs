@@ -8,7 +8,6 @@ use dash_sdk::platform::tokens::identity_token_balances::{
 };
 use dash_sdk::platform::{FetchMany, Identifier};
 use dash_sdk::{dpp::balances::credits::TokenAmount, Sdk};
-use tokio::sync::mpsc;
 
 use crate::app::TaskResult;
 
@@ -16,7 +15,7 @@ impl AppContext {
     pub async fn query_my_token_balances(
         &self,
         sdk: &Sdk,
-        sender: mpsc::Sender<TaskResult>,
+        sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, String> {
         let identities = self
             .load_local_qualified_identities()
@@ -96,7 +95,7 @@ impl AppContext {
         sdk: &Sdk,
         identity_id: Identifier,
         token_id: Identifier,
-        sender: mpsc::Sender<TaskResult>,
+        sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, String> {
         let query = IdentityTokenBalancesQuery {
             identity_id,

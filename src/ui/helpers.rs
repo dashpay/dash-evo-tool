@@ -240,9 +240,7 @@ pub fn add_identity_key_chooser_with_doc_type<'a, T>(
 ) where
     T: Iterator<Item = &'a QualifiedIdentity>,
 {
-    let is_dev_mode = app_context
-        .developer_mode
-        .load(std::sync::atomic::Ordering::Relaxed);
+    let is_dev_mode = app_context.is_developer_mode();
 
     egui::Grid::new("identity_key_chooser_grid")
         .num_columns(2)

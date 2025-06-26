@@ -13,7 +13,6 @@ use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::TimestampMillis;
 use eframe::egui::{self, Context, Ui};
 use std::path::PathBuf;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -64,7 +63,7 @@ impl NetworkChooserScreen {
             Network::Regtest => local_app_context.unwrap_or(mainnet_app_context),
             _ => mainnet_app_context,
         };
-        let developer_mode = current_context.developer_mode.load(Ordering::Relaxed);
+        let developer_mode = current_context.is_developer_mode();
 
         // Load theme preference from settings
         let theme_preference = current_context
@@ -362,26 +361,22 @@ impl NetworkChooserScreen {
 
                                             // Update developer mode for all contexts
                                             self.mainnet_app_context
-                                                .developer_mode
-                                                .store(self.developer_mode, Ordering::Relaxed);
+                                                .enable_developer_mode(self.developer_mode);
 
                                             if let Some(ref testnet_ctx) = self.testnet_app_context
                                             {
                                                 testnet_ctx
-                                                    .developer_mode
-                                                    .store(self.developer_mode, Ordering::Relaxed);
+                                                    .enable_developer_mode(self.developer_mode);
                                             }
 
                                             if let Some(ref devnet_ctx) = self.devnet_app_context {
                                                 devnet_ctx
-                                                    .developer_mode
-                                                    .store(self.developer_mode, Ordering::Relaxed);
+                                                    .enable_developer_mode(self.developer_mode);
                                             }
 
                                             if let Some(ref local_ctx) = self.local_app_context {
                                                 local_ctx
-                                                    .developer_mode
-                                                    .store(self.developer_mode, Ordering::Relaxed);
+                                                    .enable_developer_mode(self.developer_mode);
                                             }
                                         }
                                     }

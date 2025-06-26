@@ -12,7 +12,6 @@ use dash_sdk::platform::transition::broadcast::BroadcastStateTransition;
 use dash_sdk::platform::{DataContract, IdentityPublicKey};
 use dash_sdk::{Error, Sdk};
 use std::sync::Arc;
-use tokio::sync::mpsc;
 
 impl AppContext {
     #[allow(clippy::too_many_arguments)]
@@ -25,7 +24,7 @@ impl AppContext {
         amount: TokenAmount,
         total_agreed_price: Credits,
         sdk: &Sdk,
-        _sender: mpsc::Sender<TaskResult>,
+        _sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, String> {
         let mut builder = TokenDirectPurchaseTransitionBuilder::new(
             data_contract.clone(),

@@ -567,8 +567,8 @@ impl QualifiedIdentity {
     ///
     /// ## Returns
     /// A tuple containing the wallet seed hash and the index of the identity in the wallet.
-    pub fn determine_wallet_info(&self) -> Result<(WalletSeedHash, u32), String> {
-        self
+    pub fn determine_wallet_info(&self) -> Result<Option<(WalletSeedHash, u32)>, String> {
+        let wallet_info = self
             .private_keys
             .identity_public_keys()
             .into_iter()
@@ -584,21 +584,30 @@ impl QualifiedIdentity {
                     let wallet_index = match derivation_path[derivation_path.len() - 2] {
                         ChildNumber::Hardened { index } => Some(index),
                         ChildNumber::Normal { index } => Some(index),
-                        _ => { tracing::debug!(
-                            ?derivation_path,
-                            "determine wallet: unexpected derivation path format, skipping key"); None},
+                        _ => {
+                            tracing::debug!(
+                                ?derivation_path,
+                                "determine wallet: unexpected derivation path format, skipping key"
+                            );
+                            None
+                        }
                     }?;
-                    // consistency check
+                    // consistency check; if we get a different index here, this is non-recoverable error and we should panic
+                    // to avoid unexpected behavior and loss of access to private keys
                     if self.wallet_index.is_some_and(|v| v != wallet_index) {
-                        panic!("Inconsistent wallet index found: {:?} vs {:?}", self.wallet_index, wallet_index);
+                        panic!(
+                            "Inconsistent wallet index found: {:?} vs {:?}",
+                            self.wallet_index, wallet_index
+                        );
                     };
                     Some((seed_hash, wallet_index))
                 } else {
                     None
-                }})
-            .next()
-            .ok_or(
-                "Cannot derive keys for this identity using any of the loaded wallets. This is not supported yet.".to_string())
+                }
+            })
+            .next();
+
+        Ok(wallet_info)
     }
 }
 impl From<Identity> for QualifiedIdentity {

@@ -9,6 +9,7 @@ use crate::model::wallet::Wallet;
 use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dashcore_rpc::{Auth, Client};
 use dash_sdk::dpp::dashcore::{Address, ChainLock, Network, OutPoint, Transaction, TxOut};
+use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 #[derive(Debug, Clone)]
@@ -17,7 +18,7 @@ pub enum CoreTask {
     GetBestChainLock,
     GetBestChainLocks,
     RefreshWalletInfo(Arc<RwLock<Wallet>>),
-    StartDashQT(Network, Option<String>, bool),
+    StartDashQT(Network, PathBuf, bool),
 }
 impl PartialEq for CoreTask {
     fn eq(&self, other: &Self) -> bool {

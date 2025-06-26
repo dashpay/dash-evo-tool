@@ -37,6 +37,7 @@ use dash_sdk::Sdk;
 use egui::Context;
 use rusqlite::Result;
 use std::collections::{BTreeMap, HashMap};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -278,7 +279,7 @@ impl AppContext {
     pub fn insert_local_qualified_identity(
         &self,
         qualified_identity: &QualifiedIdentity,
-        wallet_and_identity_id_info: Option<(&[u8], u32)>,
+        wallet_and_identity_id_info: &Option<(WalletSeedHash, u32)>,
     ) -> Result<()> {
         self.db.insert_local_qualified_identity(
             qualified_identity,
@@ -484,7 +485,7 @@ impl AppContext {
             Network,
             RootScreenType,
             Option<PasswordInfo>,
-            Option<String>,
+            Option<PathBuf>,
             bool,
             crate::ui::theme::ThemeMode,
         )>,

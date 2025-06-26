@@ -5,7 +5,6 @@ license = "MIT"
 edition = "2021"
 default-run = "dash-evo-tool"
 rust-version = "1.85"
-build = "build.rs"
 
 [dependencies]
 tokio-util = { version = "0.7.15" }
@@ -55,7 +54,7 @@ crossbeam-channel = "0.5.15"
 regex = "1.11.1"
 humantime = "2.2.0"
 which = { version = "7.0.3" }
-tz-rs = { version = "0.7.0"}
+tz-rs = { version = "0.7.0" }
 
 [target.'cfg(not(target_os = "windows"))'.dependencies]
 zmq = "0.10.0"

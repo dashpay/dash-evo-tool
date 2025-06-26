@@ -13,3 +13,5 @@ pub mod model;
 pub mod sdk_wrapper;
 pub mod ui;
 pub mod utils;
+
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");

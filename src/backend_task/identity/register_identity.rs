@@ -356,7 +356,7 @@ impl AppContext {
 
         self.insert_local_qualified_identity(
             &qualified_identity,
-            Some((wallet_id.as_slice(), wallet_identity_index)),
+            &Some((wallet_id, wallet_identity_index)),
         )
         .map_err(|e| e.to_string())?;
         self.db
@@ -388,7 +388,7 @@ impl AppContext {
 
                 self.insert_local_qualified_identity(
                     &qualified_identity,
-                    Some((wallet_id.as_slice(), wallet_identity_index)),
+                    &Some((wallet_id, wallet_identity_index)),
                 )
                 .map_err(|e| e.to_string())?;
 
@@ -398,7 +398,7 @@ impl AppContext {
 
         self.insert_local_qualified_identity(
             &qualified_identity,
-            Some((&wallet_id, wallet_identity_index)),
+            &Some((wallet_id, wallet_identity_index)),
         )
         .map_err(|e| e.to_string())?;
         {

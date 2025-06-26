@@ -44,7 +44,7 @@ impl Database {
     pub fn insert_local_qualified_identity(
         &self,
         qualified_identity: &QualifiedIdentity,
-        wallet_and_identity_id_info: Option<(&[u8], u32)>,
+        wallet_and_identity_id_info: &Option<(WalletSeedHash, u32)>,
         app_context: &AppContext,
     ) -> rusqlite::Result<()> {
         let id = qualified_identity.identity.id().to_vec();

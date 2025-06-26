@@ -14,4 +14,7 @@ fn test_app_startup() {
 
     // Run one frame to ensure the app initializes
     harness.run();
+
+    // snapshot the ui
+    harness.snapshot("app_startup");
 }

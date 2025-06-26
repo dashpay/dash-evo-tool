@@ -18,14 +18,18 @@ mod sdk_wrapper;
 mod ui;
 mod utils;
 
-include!(concat!(env!("OUT_DIR"), "/version.rs"));
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 fn main() -> eframe::Result<()> {
     create_app_user_data_directory_if_not_exists()
         .expect("Failed to create app user_data directory");
     let app_data_dir =
         app_user_data_dir_path().expect("Failed to get app user_data directory path");
-    println!("running v{}", VERSION);
+    println!(
+        "Starting dash-evo-tool, version: {}, data dir: {}",
+        VERSION,
+        app_data_dir.display()
+    );
     check_cpu_compatibility();
     // Initialize the Tokio runtime
     let runtime = tokio::runtime::Builder::new_multi_thread()

@@ -355,9 +355,9 @@ impl TokensScreen {
                                             .unwrap_or("<Token Name>");
 
                                         let message = if self.decimals_input == "0" {
-                                            format!("Non Fractional Token (i.e 0, 1, 2 or 10 {})", token_name)
+                                            format!("Non Fractional Token (i.e. 0, 1, 2 or 10 {})", token_name)
                                         } else {
-                                            format!("Fractional Token (i.e 0.2 {})", token_name)
+                                            format!("Fractional Token (i.e. 0.2 {})", token_name)
                                         };
 
                                         ui.label(RichText::new(message).color(Color32::GRAY));

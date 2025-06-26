@@ -24,7 +24,11 @@ pub fn initialize_logger() {
 
     // Set global subscriber with proper error handling
     if let Err(e) = tracing::subscriber::set_global_default(subscriber) {
-        panic!("Unable to set global default subscriber: {:?}", e);
+        // log to stderr and ignore the error
+        eprintln!(
+            "WARNING: cannot initialize logging, logging might not work correctly: {:?}",
+            e
+        );
     }
 
     // Log panic events

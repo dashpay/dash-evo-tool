@@ -30,3 +30,6 @@ test_db
 **/.DS_Store
 explorer.log
 .gitaipconfig
+
+# Ignore egui kittest snapshots
+tests/snapshots/

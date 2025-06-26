@@ -1,6 +1,7 @@
 use crate::app::AppAction;
 use crate::context::AppContext;
 use crate::ui::components::styled::GradientButton;
+use crate::ui::components::test_label::TestableWidget;
 use crate::ui::theme::{DashColors, Shadow, Shape, Spacing};
 use crate::ui::RootScreenType;
 use dash_sdk::dashcore_rpc::dashcore::Network;
@@ -56,7 +57,8 @@ pub fn add_left_panel(
     let mut action = AppAction::None;
 
     // Define the button details directly in this function
-    let buttons = [
+    // Contains (label, screen type, icon path)
+    let buttons: [(&'static str, RootScreenType, &'static str); 7] = [
         ("I", RootScreenType::RootScreenIdentities, "identity.png"),
         ("Q", RootScreenType::RootScreenDocumentQuery, "doc.png"),
         ("O", RootScreenType::RootScreenMyTokenBalances, "tokens.png"),
@@ -112,10 +114,13 @@ pub fn add_left_panel(
 
                             // Add icon-based button if texture is loaded
                             if let Some(ref texture) = texture {
-                                let button =
-                                    ImageButton::new(texture).frame(false).tint(button_color);
+                                let button = ImageButton::new(texture)
+                                    .frame(false)
+                                    .tint(button_color)
+                                    .test_label(label);
 
                                 let added = ui.add(button);
+
                                 if added.clicked() {
                                     action =
                                         AppAction::SetMainScreenThenGoToMainScreen(*screen_type);

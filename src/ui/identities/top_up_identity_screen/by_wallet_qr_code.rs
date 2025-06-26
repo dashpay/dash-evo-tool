@@ -129,7 +129,7 @@ impl TopUpIdentityScreen {
 
         self.top_up_funding_amount_input(ui);
 
-        ui.vertical_centered(|ui| {
+        let response = ui.vertical_centered(|ui| {
             if let Err(e) = self.render_qr_code(ui, amount_dash) {
                 self.error_message = Some(e);
             }
@@ -202,6 +202,7 @@ impl TopUpIdentityScreen {
         });
 
         ui.add_space(40.0);
-        AppAction::None
+
+        response.inner
     }
 }

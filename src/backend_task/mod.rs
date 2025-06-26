@@ -4,6 +4,7 @@ use crate::backend_task::contract::ContractTask;
 use crate::backend_task::core::{CoreItem, CoreTask};
 use crate::backend_task::document::DocumentTask;
 use crate::backend_task::identity::IdentityTask;
+use crate::backend_task::platform_info::{PlatformInfoTaskRequestType, PlatformInfoTaskResult};
 use crate::backend_task::system_task::SystemTask;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
@@ -33,6 +34,7 @@ pub mod contract;
 pub mod core;
 pub mod document;
 pub mod identity;
+pub mod platform_info;
 pub mod register_contract;
 pub mod system_task;
 pub mod tokens;
@@ -51,6 +53,7 @@ pub enum BackendTask {
     BroadcastStateTransition(StateTransition),
     TokenTask(Box<TokenTask>),
     SystemTask(SystemTask),
+    PlatformInfo(PlatformInfoTaskRequestType),
     None,
 }
 
@@ -95,6 +98,7 @@ pub enum BackendTaskSuccessResult {
         prices: Option<dash_sdk::dpp::tokens::token_pricing_schedule::TokenPricingSchedule>,
     },
     UpdatedThemePreference(crate::ui::theme::ThemeMode),
+    PlatformInfo(PlatformInfoTaskResult),
 }
 
 impl BackendTaskSuccessResult {}
@@ -167,6 +171,9 @@ impl AppContext {
                 self.run_token_task(*token_task, &sdk, sender).await
             }
             BackendTask::SystemTask(system_task) => self.run_system_task(system_task, sender).await,
+            BackendTask::PlatformInfo(platform_info_task) => {
+                self.run_platform_info_task(platform_info_task).await
+            }
             BackendTask::None => Ok(BackendTaskSuccessResult::None),
         }
     }

@@ -14,6 +14,8 @@ pub use groups::*;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, RwLock};
 
+use serde_json;
+
 use chrono::{DateTime, Duration, Utc};
 use dash_sdk::dpp::balances::credits::TokenAmount;
 use dash_sdk::dpp::dashcore::Network;
@@ -307,18 +309,22 @@ impl ChangeControlRulesUI {
                             self.authorized_identity.get_or_insert_with(String::new);
                             if let Some(ref mut id_str) = self.authorized_identity {
                                 ui.horizontal(|ui| {
+                                    let dark_mode = ui.ctx().style().visuals.dark_mode;
                                     ui.add_sized(
                                         [300.0, 22.0],
-                                        TextEdit::singleline(id_str).hint_text("Enter base58 id"),
+                                        TextEdit::singleline(id_str)
+                                            .hint_text("Enter base58 id")
+                                            .text_color(crate::ui::theme::DashColors::text_primary(dark_mode))
+                                            .background_color(crate::ui::theme::DashColors::input_background(dark_mode)),
                                     );
 
                                     if !id_str.is_empty() {
                                         let is_valid = Identifier::from_string(id_str.as_str(), Encoding::Base58).is_ok();
 
                                         let (symbol, color) = if is_valid {
-                                            ("✔", Color32::GREEN)
+                                            ("✔", Color32::DARK_GREEN)
                                         } else {
-                                            ("×", Color32::RED)
+                                            ("×", Color32::DARK_RED)
                                         };
 
                                         ui.label(RichText::new(symbol).color(color).strong());
@@ -386,18 +392,22 @@ impl ChangeControlRulesUI {
                             self.admin_identity.get_or_insert_with(String::new);
                             if let Some(ref mut id_str) = self.admin_identity {
                                 ui.horizontal(|ui| {
+                                    let dark_mode = ui.ctx().style().visuals.dark_mode;
                                     ui.add_sized(
                                         [300.0, 22.0],
-                                        TextEdit::singleline(id_str).hint_text("Enter base58 id"),
+                                        TextEdit::singleline(id_str)
+                                            .hint_text("Enter base58 id")
+                                            .text_color(crate::ui::theme::DashColors::text_primary(dark_mode))
+                                            .background_color(crate::ui::theme::DashColors::input_background(dark_mode)),
                                     );
 
                                     if !id_str.is_empty() {
                                         let is_valid = Identifier::from_string(id_str.as_str(), Encoding::Base58).is_ok();
 
                                         let (symbol, color) = if is_valid {
-                                            ("✔", Color32::GREEN)
+                                            ("✔", Color32::DARK_GREEN)
                                         } else {
-                                            ("×", Color32::RED)
+                                            ("×", Color32::DARK_RED)
                                         };
 
                                         ui.label(RichText::new(symbol).color(color).strong());
@@ -530,18 +540,22 @@ impl ChangeControlRulesUI {
                             self.authorized_identity.get_or_insert_with(String::new);
                             if let Some(ref mut id_str) = self.authorized_identity {
                                 ui.horizontal(|ui| {
+                                    let dark_mode = ui.ctx().style().visuals.dark_mode;
                                     ui.add_sized(
                                         [300.0, 22.0],
-                                        TextEdit::singleline(id_str).hint_text("Enter base58 id"),
+                                        TextEdit::singleline(id_str)
+                                            .hint_text("Enter base58 id")
+                                            .text_color(crate::ui::theme::DashColors::text_primary(dark_mode))
+                                            .background_color(crate::ui::theme::DashColors::input_background(dark_mode)),
                                     );
 
                                     if !id_str.is_empty() {
                                         let is_valid = Identifier::from_string(id_str.as_str(), Encoding::Base58).is_ok();
 
                                         let (symbol, color) = if is_valid {
-                                            ("✔", Color32::GREEN)
+                                            ("✔", Color32::DARK_GREEN)
                                         } else {
-                                            ("×", Color32::RED)
+                                            ("×", Color32::DARK_RED)
                                         };
 
                                         ui.label(RichText::new(symbol).color(color).strong());
@@ -609,18 +623,22 @@ impl ChangeControlRulesUI {
                             self.admin_identity.get_or_insert_with(String::new);
                             if let Some(ref mut id_str) = self.admin_identity {
                                 ui.horizontal(|ui| {
+                                    let dark_mode = ui.ctx().style().visuals.dark_mode;
                                     ui.add_sized(
                                         [300.0, 22.0],
-                                        TextEdit::singleline(id_str).hint_text("Enter base58 id"),
+                                        TextEdit::singleline(id_str)
+                                            .hint_text("Enter base58 id")
+                                            .text_color(crate::ui::theme::DashColors::text_primary(dark_mode))
+                                            .background_color(crate::ui::theme::DashColors::input_background(dark_mode)),
                                     );
 
                                     if !id_str.is_empty() {
                                         let is_valid = Identifier::from_string(id_str.as_str(), Encoding::Base58).is_ok();
 
                                         let (symbol, color) = if is_valid {
-                                            ("✔", Color32::GREEN)
+                                            ("✔", Color32::DARK_GREEN)
                                         } else {
-                                            ("×", Color32::RED)
+                                            ("×", Color32::DARK_RED)
                                         };
 
                                         ui.label(RichText::new(symbol).color(color).strong());
@@ -916,6 +934,7 @@ pub struct TokenBuildArgs {
 
     pub distribution_rules: TokenDistributionRules,
     pub groups: BTreeMap<u16, Group>,
+    pub document_schemas: Option<BTreeMap<String, serde_json::Value>>,
 }
 
 pub type TokenSearchable = bool;
@@ -1118,6 +1137,11 @@ pub struct TokensScreen {
     // Token adding status
     adding_token_start_time: Option<DateTime<Utc>>,
     adding_token_name: Option<String>,
+
+    // Document Schemas
+    document_schemas_input: String,
+    parsed_document_schemas: Option<BTreeMap<String, serde_json::Value>>,
+    document_schemas_error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1458,6 +1482,11 @@ impl TokensScreen {
             // Token adding status
             adding_token_start_time: None,
             adding_token_name: None,
+
+            // Document Schemas
+            document_schemas_input: String::new(),
+            parsed_document_schemas: None,
+            document_schemas_error: None,
         };
 
         if let Ok(saved_ids) = screen.app_context.db.load_token_order() {
@@ -1968,10 +1997,7 @@ impl TokensScreen {
             pre_programmed_distribution: if self.enable_pre_programmed_distribution {
                 let distributions: BTreeMap<u64, BTreeMap<Identifier, u64>> =
                     match self.parse_pre_programmed_distributions() {
-                        Ok(distributions) => distributions
-                            .into_iter()
-                            .map(|(k, v)| (k, std::iter::once(v).collect()))
-                            .collect(),
+                        Ok(distributions) => distributions,
                         Err(err) => {
                             self.token_creator_error_message = Some(err.clone());
                             return Err(err.to_string());
@@ -2022,10 +2048,11 @@ impl TokensScreen {
 
     /// Attempts to parse the `pre_programmed_distributions` into a BTreeMap.
     /// Returns an error string if any row fails.
+    /// Now supports multiple identities per timestamp.
     pub fn parse_pre_programmed_distributions(
         &mut self,
-    ) -> Result<BTreeMap<u64, (Identifier, u64)>, String> {
-        let mut map = BTreeMap::new();
+    ) -> Result<BTreeMap<u64, BTreeMap<Identifier, u64>>, String> {
+        let mut map: BTreeMap<u64, BTreeMap<Identifier, u64>> = BTreeMap::new();
 
         let now = Utc::now();
 
@@ -2055,8 +2082,8 @@ impl TokensScreen {
                 )
             })?;
 
-            // Insert into the map
-            map.insert(timestamp, (id, amount));
+            // Insert into the map, supporting multiple identities per timestamp
+            map.entry(timestamp).or_default().insert(id, amount);
         }
         Ok(map)
     }
@@ -2166,6 +2193,11 @@ impl TokensScreen {
 
         self.show_token_creator_confirmation_popup = false;
         self.token_creator_error_message = None;
+
+        // Reset document schemas
+        self.document_schemas_input = String::new();
+        self.parsed_document_schemas = None;
+        self.document_schemas_error = None;
     }
 
     fn add_token_to_tracked_tokens(&mut self, token_info: TokenInfo) -> Result<AppAction, String> {
@@ -2528,96 +2560,105 @@ impl ScreenLike for TokensScreen {
 
         // Main panel
         action |= island_central_panel(ctx, |ui| {
-            let mut inner_action = AppAction::None;
+            egui::ScrollArea::vertical()
+                .show(ui, |ui| {
+                    let mut inner_action = AppAction::None;
 
-            if self.app_context.network == Network::Dash {
-                ui.add_space(50.0);
-                ui.vertical_centered(|ui| {
-                    ui.heading(
-                        RichText::new("Tokens not supported on Mainnet yet. Testnet only.")
-                            .strong(),
-                    );
-                });
-                return inner_action;
-            }
-
-            match self.tokens_subscreen {
-                TokensSubscreen::MyTokens => {
-                    inner_action |= self.render_my_tokens_subscreen(ui);
-                }
-                TokensSubscreen::SearchTokens => {
-                    if self.selected_contract_id.is_some() {
-                        inner_action |=
-                            self.render_contract_details(ui, &self.selected_contract_id.unwrap());
-                        // Render the JSON popup if needed
-                        if self.show_json_popup {
-                            self.render_data_contract_json_popup(ui);
-                        }
-                    } else {
-                        inner_action |= self.render_keyword_search(ui);
-                    }
-                }
-                TokensSubscreen::TokenCreator => {
-                    inner_action |= self.render_token_creator(ctx, ui);
-                }
-            }
-
-            // Show either refreshing indicator or message, but not both
-            if let RefreshingStatus::Refreshing(start_time) = self.refreshing_status {
-                ui.add_space(25.0); // Space above
-                let now = Utc::now().timestamp() as u64;
-                let elapsed = now - start_time;
-                ui.horizontal(|ui| {
-                    ui.add_space(10.0);
-                    ui.label(format!("Refreshing... Time so far: {}", elapsed));
-                    ui.add(egui::widgets::Spinner::default().color(Color32::from_rgb(0, 128, 255)));
-                });
-                ui.add_space(2.0); // Space below
-            } else if let Some((msg, msg_type, timestamp)) = self.backend_message.clone() {
-                ui.add_space(25.0); // Same space as refreshing indicator
-                let color = match msg_type {
-                    MessageType::Error => Color32::DARK_RED,
-                    MessageType::Info => Color32::BLACK,
-                    MessageType::Success => Color32::DARK_GREEN,
-                };
-                ui.horizontal(|ui| {
-                    // Calculate remaining seconds
-                    let now = Utc::now();
-                    let elapsed = now.signed_duration_since(timestamp);
-                    let remaining = (10 - elapsed.num_seconds()).max(0);
-
-                    // Add the message with auto-dismiss countdown
-                    let full_msg = format!("{} ({}s)", msg, remaining);
-                    ui.label(egui::RichText::new(full_msg).color(color));
-                });
-                ui.add_space(2.0); // Same space below as refreshing indicator
-            }
-
-            if self.confirm_remove_identity_token_balance_popup {
-                self.show_remove_identity_token_balance_popup(ui);
-            }
-            if self.confirm_remove_token_popup {
-                self.show_remove_token_popup(ui);
-            }
-
-            // If we have info text, open a pop-up window to show it
-            if let Some(info_text) = self.show_pop_up_info.clone() {
-                egui::Window::new("Distribution Type Info")
-                    .collapsible(false)
-                    .resizable(true)
-                    .show(ui.ctx(), |ui| {
-                        egui::ScrollArea::vertical().show(ui, |ui| {
-                            let mut cache = CommonMarkCache::default();
-                            CommonMarkViewer::new().show(ui, &mut cache, &info_text);
+                    if self.app_context.network == Network::Dash {
+                        ui.add_space(50.0);
+                        ui.vertical_centered(|ui| {
+                            ui.heading(
+                                RichText::new("Tokens not supported on Mainnet yet. Testnet only.")
+                                    .strong(),
+                            );
                         });
+                        return inner_action;
+                    }
 
-                        if ui.button("Close").clicked() {
-                            self.show_pop_up_info = None;
+                    match self.tokens_subscreen {
+                        TokensSubscreen::MyTokens => {
+                            inner_action |= self.render_my_tokens_subscreen(ui);
                         }
-                    });
-            }
+                        TokensSubscreen::SearchTokens => {
+                            if self.selected_contract_id.is_some() {
+                                inner_action |= self.render_contract_details(
+                                    ui,
+                                    &self.selected_contract_id.unwrap(),
+                                );
+                                // Render the JSON popup if needed
+                                if self.show_json_popup {
+                                    self.render_data_contract_json_popup(ui);
+                                }
+                            } else {
+                                inner_action |= self.render_keyword_search(ui);
+                            }
+                        }
+                        TokensSubscreen::TokenCreator => {
+                            inner_action |= self.render_token_creator(ctx, ui);
+                        }
+                    }
 
-            inner_action
+                    // Show either refreshing indicator or message, but not both
+                    if let RefreshingStatus::Refreshing(start_time) = self.refreshing_status {
+                        ui.add_space(25.0); // Space above
+                        let now = Utc::now().timestamp() as u64;
+                        let elapsed = now - start_time;
+                        ui.horizontal(|ui| {
+                            ui.add_space(10.0);
+                            ui.label(format!("Refreshing... Time so far: {}", elapsed));
+                            ui.add(
+                                egui::widgets::Spinner::default()
+                                    .color(Color32::from_rgb(0, 128, 255)),
+                            );
+                        });
+                        ui.add_space(2.0); // Space below
+                    } else if let Some((msg, msg_type, timestamp)) = self.backend_message.clone() {
+                        ui.add_space(25.0); // Same space as refreshing indicator
+                        let color = match msg_type {
+                            MessageType::Error => Color32::DARK_RED,
+                            MessageType::Info => Color32::BLACK,
+                            MessageType::Success => Color32::DARK_GREEN,
+                        };
+                        ui.horizontal(|ui| {
+                            // Calculate remaining seconds
+                            let now = Utc::now();
+                            let elapsed = now.signed_duration_since(timestamp);
+                            let remaining = (10 - elapsed.num_seconds()).max(0);
+
+                            // Add the message with auto-dismiss countdown
+                            let full_msg = format!("{} ({}s)", msg, remaining);
+                            ui.label(egui::RichText::new(full_msg).color(color));
+                        });
+                        ui.add_space(2.0); // Same space below as refreshing indicator
+                    }
+
+                    if self.confirm_remove_identity_token_balance_popup {
+                        self.show_remove_identity_token_balance_popup(ui);
+                    }
+                    if self.confirm_remove_token_popup {
+                        self.show_remove_token_popup(ui);
+                    }
+
+                    // If we have info text, open a pop-up window to show it
+                    if let Some(info_text) = self.show_pop_up_info.clone() {
+                        egui::Window::new("Distribution Type Info")
+                            .collapsible(false)
+                            .resizable(true)
+                            .show(ui.ctx(), |ui| {
+                                egui::ScrollArea::vertical().show(ui, |ui| {
+                                    let mut cache = CommonMarkCache::default();
+                                    CommonMarkViewer::new().show(ui, &mut cache, &info_text);
+                                });
+
+                                if ui.button("Close").clicked() {
+                                    self.show_pop_up_info = None;
+                                }
+                            });
+                    }
+
+                    inner_action
+                })
+                .inner
         });
 
         // Post-processing on user actions
@@ -2821,6 +2862,7 @@ mod tests {
 
     use crate::database::Database;
     use crate::model::qualified_identity::encrypted_key_storage::KeyStorage;
+    use crate::model::qualified_identity::IdentityStatus;
 
     use super::*; use dash_sdk::dpp::dashcore::Network;
     use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::TokenConfigurationConvention;
@@ -2856,8 +2898,8 @@ mod tests {
         let db = Arc::new(Database::new(db_file_path).unwrap());
         db.initialize(Path::new(&db_file_path)).unwrap();
 
-        let app_context =
-            AppContext::new(Network::Regtest, db, None).expect("Expected to create AppContext");
+        let app_context = AppContext::new(Network::Regtest, db, None, Default::default())
+            .expect("Expected to create AppContext");
         let mut token_creator_ui = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
 
         // Identity selection
@@ -2883,6 +2925,7 @@ mod tests {
             associated_wallets: BTreeMap::new(),
             wallet_index: None,
             top_ups: BTreeMap::new(),
+            status: IdentityStatus::Active,
         };
 
         token_creator_ui.selected_identity = Some(mock_identity);
@@ -3020,6 +3063,7 @@ mod tests {
                 build_args.main_control_group_change_authorized,
                 build_args.distribution_rules,
                 build_args.groups,
+                build_args.document_schemas,
             )
             .expect("Contract build failed");
 
@@ -3152,8 +3196,8 @@ mod tests {
         let db = Arc::new(Database::new(db_file_path).unwrap());
         db.initialize(Path::new(&db_file_path)).unwrap();
 
-        let app_context =
-            AppContext::new(Network::Regtest, db, None).expect("Expected to create AppContext");
+        let app_context = AppContext::new(Network::Regtest, db, None, Default::default())
+            .expect("Expected to create AppContext");
         let mut token_creator_ui = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
 
         // Identity selection
@@ -3179,6 +3223,7 @@ mod tests {
             associated_wallets: BTreeMap::new(),
             wallet_index: None,
             top_ups: BTreeMap::new(),
+            status: IdentityStatus::Active,
         };
 
         token_creator_ui.selected_identity = Some(mock_identity);
@@ -3230,6 +3275,7 @@ mod tests {
                 build_args.main_control_group_change_authorized,
                 build_args.distribution_rules,
                 build_args.groups,
+                build_args.document_schemas,
             )
             .expect("Should build successfully");
         let contract_v1 = data_contract.as_v1().expect("Expected DataContract::V1");
@@ -3262,8 +3308,8 @@ mod tests {
         let db = Arc::new(Database::new(db_file_path).unwrap());
         db.initialize(Path::new(&db_file_path)).unwrap();
 
-        let app_context =
-            AppContext::new(Network::Regtest, db, None).expect("Expected to create AppContext");
+        let app_context = AppContext::new(Network::Regtest, db, None, Default::default())
+            .expect("Expected to create AppContext");
         let mut token_creator_ui = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
 
         // Identity selection
@@ -3289,6 +3335,7 @@ mod tests {
             associated_wallets: BTreeMap::new(),
             wallet_index: None,
             top_ups: BTreeMap::new(),
+            status: IdentityStatus::Active,
         };
 
         token_creator_ui.selected_identity = Some(mock_identity);

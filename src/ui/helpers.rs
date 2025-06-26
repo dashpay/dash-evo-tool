@@ -20,9 +20,39 @@ use dash_sdk::{
     },
     platform::{Identifier, IdentityPublicKey},
 };
-use egui::{Color32, ComboBox, Ui};
+use egui::{Color32, ComboBox, Response, Ui};
 
 use super::tokens::tokens_screen::IdentityTokenInfo;
+
+/// Helper function to create a styled info icon button
+pub fn info_icon_button(ui: &mut egui::Ui, hover_text: &str) -> Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::click());
+
+    if ui.is_rect_visible(rect) {
+        // Draw circle background
+        ui.painter().circle(
+            rect.center(),
+            8.0,
+            if response.hovered() {
+                Color32::from_rgb(0, 100, 200)
+            } else {
+                Color32::from_rgb(100, 100, 100)
+            },
+            egui::Stroke::NONE,
+        );
+
+        // Draw "i" text
+        ui.painter().text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            "i",
+            egui::FontId::proportional(12.0),
+            Color32::WHITE,
+        );
+    }
+
+    response.on_hover_text(hover_text)
+}
 
 /// Returns the newly selected identity (if changed), otherwise the existing one.
 pub fn render_identity_selector(
@@ -218,128 +248,145 @@ pub fn add_identity_key_chooser_with_doc_type<'a, T>(
         .striped(false)
         .show(ui, |ui| {
             ui.label("Identity:");
-            ComboBox::from_id_salt("identity_combo")
-                .width(220.0)
-                .selected_text(match selected_identity {
-                    Some(qi) => qi
-                        .alias
-                        .clone()
-                        .unwrap_or_else(|| qi.identity.id().to_string(Encoding::Base58)),
-                    None => "Select Identity…".into(),
-                })
-                .show_ui(ui, |iui| {
-                    for qi in identities {
-                        let label = qi
+            ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                ComboBox::from_id_salt("identity_combo")
+                    .width(220.0)
+                    .selected_text(match selected_identity {
+                        Some(qi) => qi
                             .alias
                             .clone()
-                            .unwrap_or_else(|| qi.identity.id().to_string(Encoding::Base58));
-                        if iui
-                            .selectable_label(selected_identity.as_ref() == Some(qi), label.clone())
-                            .clicked()
-                        {
-                            *selected_identity = Some(qi.clone());
-                            *selected_key = None; // Clear key selection when identity changes
+                            .unwrap_or_else(|| qi.identity.id().to_string(Encoding::Base58)),
+                        None => "Select Identity…".into(),
+                    })
+                    .show_ui(ui, |iui| {
+                        for qi in identities {
+                            let label = qi
+                                .alias
+                                .clone()
+                                .unwrap_or_else(|| qi.identity.id().to_string(Encoding::Base58));
+                            if iui
+                                .selectable_label(
+                                    selected_identity.as_ref() == Some(qi),
+                                    label.clone(),
+                                )
+                                .clicked()
+                            {
+                                *selected_identity = Some(qi.clone());
+                                *selected_key = None; // Clear key selection when identity changes
+                            }
                         }
-                    }
-                });
+                    });
+            });
 
             ui.end_row();
 
             ui.label("Key:");
-            ComboBox::from_id_salt("key_combo")
-                .width(220.0)
-                .selected_text(
-                    selected_key
-                        .as_ref()
-                        .map(|k| {
-                            format!(
-                                "Key {} Type {} Security {}",
-                                k.id(),
-                                k.key_type(),
-                                k.security_level()
-                            )
-                        })
-                        .unwrap_or_else(|| "Select Key…".into()),
-                )
-                .show_ui(ui, |kui| {
-                    if let Some(qi) = selected_identity {
-                        let allowed_purposes = transaction_type.allowed_purposes();
-                        let allowed_security_levels = if transaction_type
-                            == TransactionType::DocumentAction
-                            && document_type.is_some()
-                        {
-                            // For document actions with a specific document type, use its security requirement
-                            let required_level =
-                                document_type.unwrap().security_level_requirement();
-                            let allowed_levels =
-                                SecurityLevel::CRITICAL as u8..=required_level as u8;
-                            let allowed_levels: Vec<SecurityLevel> = [
-                                SecurityLevel::CRITICAL,
-                                SecurityLevel::HIGH,
-                                SecurityLevel::MEDIUM,
-                            ]
-                            .iter()
-                            .cloned()
-                            .filter(|level| allowed_levels.contains(&(*level as u8)))
-                            .collect();
-                            allowed_levels
-                        } else {
-                            transaction_type.allowed_security_levels()
-                        };
 
-                        for key_ref in qi.private_keys.identity_public_keys() {
-                            let key = &key_ref.1.identity_public_key;
-
-                            // In dev mode, show all keys
-                            // In production mode, filter by transaction requirements
-                            let is_allowed = if is_dev_mode {
-                                true
+            ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                ComboBox::from_id_salt("key_combo")
+                    .width(220.0)
+                    .selected_text(
+                        selected_key
+                            .as_ref()
+                            .map(|k| {
+                                format!(
+                                    "Key {} Type {} Security {}",
+                                    k.id(),
+                                    k.key_type(),
+                                    k.security_level()
+                                )
+                            })
+                            .unwrap_or_else(|| "Select Key…".into()),
+                    )
+                    .show_ui(ui, |kui| {
+                        if let Some(qi) = selected_identity {
+                            let allowed_purposes = transaction_type.allowed_purposes();
+                            let allowed_security_levels = if transaction_type
+                                == TransactionType::DocumentAction
+                                && document_type.is_some()
+                            {
+                                // For document actions with a specific document type, use its security requirement
+                                let required_level =
+                                    document_type.unwrap().security_level_requirement();
+                                let allowed_levels =
+                                    SecurityLevel::CRITICAL as u8..=required_level as u8;
+                                let allowed_levels: Vec<SecurityLevel> = [
+                                    SecurityLevel::CRITICAL,
+                                    SecurityLevel::HIGH,
+                                    SecurityLevel::MEDIUM,
+                                ]
+                                .iter()
+                                .cloned()
+                                .filter(|level| allowed_levels.contains(&(*level as u8)))
+                                .collect();
+                                allowed_levels
                             } else {
-                                allowed_purposes.contains(&key.purpose())
-                                    && allowed_security_levels.contains(&key.security_level())
+                                transaction_type.allowed_security_levels()
                             };
 
-                            if is_allowed {
-                                let label = if is_dev_mode
-                                    && (!allowed_purposes.contains(&key.purpose())
-                                        || !allowed_security_levels.contains(&key.security_level()))
-                                {
-                                    // In dev mode, mark keys that wouldn't normally be allowed
-                                    format!(
-                                        "Key {} Security {} [DEV]",
-                                        key.id(),
-                                        key.security_level()
-                                    )
+                            for key_ref in qi.private_keys.identity_public_keys() {
+                                let key = &key_ref.1.identity_public_key;
+
+                                // In dev mode, show all keys
+                                // In production mode, filter by transaction requirements
+                                let is_allowed = if is_dev_mode {
+                                    true
                                 } else {
-                                    format!("Key {} Security {}", key.id(), key.security_level())
+                                    allowed_purposes.contains(&key.purpose())
+                                        && allowed_security_levels.contains(&key.security_level())
                                 };
 
-                                if kui
-                                    .selectable_label(selected_key.as_ref() == Some(key), label)
-                                    .clicked()
-                                {
-                                    *selected_key = Some(key.clone());
+                                if is_allowed {
+                                    let label = if is_dev_mode
+                                        && (!allowed_purposes.contains(&key.purpose())
+                                            || !allowed_security_levels
+                                                .contains(&key.security_level()))
+                                    {
+                                        // In dev mode, mark keys that wouldn't normally be allowed
+                                        format!(
+                                            "Key {} Security {} [DEV]",
+                                            key.id(),
+                                            key.security_level()
+                                        )
+                                    } else {
+                                        format!(
+                                            "Key {} Security {}",
+                                            key.id(),
+                                            key.security_level()
+                                        )
+                                    };
+
+                                    if kui
+                                        .selectable_label(selected_key.as_ref() == Some(key), label)
+                                        .clicked()
+                                    {
+                                        *selected_key = Some(key.clone());
+                                    }
                                 }
                             }
-                        }
 
-                        if !is_dev_mode
-                            && qi
-                                .private_keys
-                                .identity_public_keys()
-                                .iter()
-                                .all(|key_ref| {
-                                    let key = &key_ref.1.identity_public_key;
-                                    !allowed_purposes.contains(&key.purpose())
-                                        || !allowed_security_levels.contains(&key.security_level())
-                                })
-                        {
-                            kui.label(format!("No suitable keys for {}", transaction_type.label()));
+                            if !is_dev_mode
+                                && qi
+                                    .private_keys
+                                    .identity_public_keys()
+                                    .iter()
+                                    .all(|key_ref| {
+                                        let key = &key_ref.1.identity_public_key;
+                                        !allowed_purposes.contains(&key.purpose())
+                                            || !allowed_security_levels
+                                                .contains(&key.security_level())
+                                    })
+                            {
+                                kui.label(format!(
+                                    "No suitable keys for {}",
+                                    transaction_type.label()
+                                ));
+                            }
+                        } else {
+                            kui.label("Pick an identity first");
                         }
-                    } else {
-                        kui.label("Pick an identity first");
-                    }
-                });
+                    });
+            });
             ui.end_row();
         });
 }
@@ -394,62 +441,69 @@ pub fn add_contract_doc_type_chooser_pre_filtered<'a, T>(
             ui.end_row();
 
             ui.label("Contract:");
-            ComboBox::from_id_salt("contract_combo")
-                .width(220.0)
-                .selected_text(match selected_contract {
-                    Some(qc) => qc
-                        .alias
-                        .clone()
-                        .unwrap_or_else(|| qc.contract.id().to_string(Encoding::Base58)),
-                    None => "Select Contract…".into(),
-                })
-                .show_ui(ui, |cui| {
-                    for qc in filtered_contracts {
-                        let label = qc
+            ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                ComboBox::from_id_salt("contract_combo")
+                    .width(220.0)
+                    .selected_text(match selected_contract {
+                        Some(qc) => qc
                             .alias
                             .clone()
-                            .unwrap_or_else(|| qc.contract.id().to_string(Encoding::Base58));
-                        if cui
-                            .selectable_label(selected_contract.as_ref() == Some(qc), label.clone())
-                            .clicked()
-                        {
-                            *selected_contract = Some(qc.clone());
+                            .unwrap_or_else(|| qc.contract.id().to_string(Encoding::Base58)),
+                        None => "Select Contract…".into(),
+                    })
+                    .show_ui(ui, |cui| {
+                        for qc in filtered_contracts {
+                            let label = qc
+                                .alias
+                                .clone()
+                                .unwrap_or_else(|| qc.contract.id().to_string(Encoding::Base58));
+                            if cui
+                                .selectable_label(
+                                    selected_contract.as_ref() == Some(qc),
+                                    label.clone(),
+                                )
+                                .clicked()
+                            {
+                                *selected_contract = Some(qc.clone());
+                            }
                         }
-                    }
-                });
+                    });
+            });
 
             ui.end_row();
 
             ui.label("Doc Type:");
-            ComboBox::from_id_salt("doctype_combo")
-                .width(220.0)
-                .selected_text(
-                    selected_doc_type
-                        .as_ref()
-                        .map(|d| d.name().to_owned())
-                        .unwrap_or_else(|| "Select Doc Type…".into()),
-                )
-                .show_ui(ui, |dui| {
-                    if let Some(qc) = selected_contract {
-                        for name in qc.contract.document_types().keys() {
-                            if dui
-                                .selectable_label(
-                                    selected_doc_type
-                                        .as_ref()
-                                        .map(|cur| cur.name() == name)
-                                        .unwrap_or(false),
-                                    name,
-                                )
-                                .clicked()
-                            {
-                                *selected_doc_type =
-                                    qc.contract.document_type_cloned_for_name(name).ok();
+            ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                ComboBox::from_id_salt("doctype_combo")
+                    .width(220.0)
+                    .selected_text(
+                        selected_doc_type
+                            .as_ref()
+                            .map(|d| d.name().to_owned())
+                            .unwrap_or_else(|| "Select Doc Type…".into()),
+                    )
+                    .show_ui(ui, |dui| {
+                        if let Some(qc) = selected_contract {
+                            for name in qc.contract.document_types().keys() {
+                                if dui
+                                    .selectable_label(
+                                        selected_doc_type
+                                            .as_ref()
+                                            .map(|cur| cur.name() == name)
+                                            .unwrap_or(false),
+                                        name,
+                                    )
+                                    .clicked()
+                                {
+                                    *selected_doc_type =
+                                        qc.contract.document_type_cloned_for_name(name).ok();
+                                }
                             }
+                        } else {
+                            dui.label("Pick a contract first");
                         }
-                    } else {
-                        dui.label("Pick a contract first");
-                    }
-                });
+                    });
+            });
             ui.end_row();
         });
 }

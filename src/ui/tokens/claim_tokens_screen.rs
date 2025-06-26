@@ -410,7 +410,7 @@ impl ScreenLike for ClaimTokensScreen {
                 ui.add_space(10.0);
 
                 if self.distribution_type == Some(TokenDistributionType::Perpetual) {
-                    ui.heading("!Understanding Claim Limitations!");
+                    ui.heading("Understanding Claim Limitations");
                     ui.add_space(5.0);
                     let extra_info = if let Some(perpetual_distribution) = self
                         .token_configuration

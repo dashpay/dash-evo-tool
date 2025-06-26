@@ -136,7 +136,11 @@ fn add_connection_indicator(ui: &mut Ui, app_context: &Arc<AppContext>) -> AppAc
                     let center = rect.center();
 
                     // Draw the background circle with pulsating effect
-                    let bg_radius = (circle_size / 2.0 + 3.0) * pulse_scale;
+                    let bg_radius = if connected {
+                        (circle_size / 2.0 + 3.0) * pulse_scale
+                    } else {
+                        circle_size / 2.0 // Same size as main circle when disconnected
+                    };
                     ui.painter()
                         .circle_filled(center, bg_radius, color.linear_multiply(0.3));
 

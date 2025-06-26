@@ -36,25 +36,6 @@ use egui::{RichText, Ui};
 use egui_extras::{Column, TableBuilder};
 use std::ops::Range;
 
-fn format_token_amount(amount: u64, decimals: u8) -> String {
-    if decimals == 0 {
-        return amount.to_string();
-    }
-
-    let divisor = 10u64.pow(decimals as u32);
-    let whole = amount / divisor;
-    let fraction = amount % divisor;
-
-    if fraction == 0 {
-        whole.to_string()
-    } else {
-        // Format with the appropriate number of decimal places, removing trailing zeros
-        let fraction_str = format!("{:0width$}", fraction, width = decimals as usize);
-        let trimmed = fraction_str.trim_end_matches('0');
-        format!("{}.{}", whole, trimmed)
-    }
-}
-
 /// Get the minimum price for purchasing one token from a pricing schedule
 fn get_min_token_price(pricing_schedule: &TokenPricingSchedule) -> u64 {
     match pricing_schedule {
@@ -172,7 +153,7 @@ impl TokensScreen {
     pub(super) fn render_my_tokens_subscreen(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
         if self.all_known_tokens.is_empty() {
-            // If no tokens, show a “no tokens found” message
+            // If no tokens, show a "no tokens found" message
             action |= self.render_no_owned_tokens(ui);
         } else {
             // Are we showing details for a selected token?
@@ -193,6 +174,7 @@ impl TokensScreen {
             if let Some(token_info) = self.all_known_tokens.get(&token_id).cloned() {
                 let mut is_open = true;
                 let mut close_popup = false;
+                let dark_mode = ui.ctx().style().visuals.dark_mode;
 
                 egui::Window::new("Token Configuration Details")
                     .resizable(true)
@@ -201,9 +183,9 @@ impl TokensScreen {
                     .default_height(500.0)
                     .open(&mut is_open)
                     .show(ui.ctx(), |ui| {
-                        // Add white background frame
+                        // Add theme-aware background frame
                         egui::Frame::new()
-                            .fill(egui::Color32::WHITE)
+                            .fill(DashColors::surface(dark_mode))
                             .inner_margin(egui::Margin::same(10))
                             .show(ui, |ui| {
                                 egui::ScrollArea::vertical().show(ui, |ui| {
@@ -369,6 +351,8 @@ impl TokensScreen {
         // A simple table with columns: [Token Name | Token ID | Total Balance]
         egui::ScrollArea::both()
             .show(ui, |ui| {
+                ui.set_min_width(ui.available_width());
+                ui.set_max_width(ui.available_width());
                 let mut table = TableBuilder::new(ui)
                             .striped(false)
                             .resizable(true)
@@ -379,7 +363,7 @@ impl TokensScreen {
 
 
                         if shows_estimation_column {
-                            table = table.column(Column::initial(60.0).resizable(true)); // Estimated Rewards
+                            table = table.column(Column::initial(85.0).resizable(true)); // Estimated Rewards
                         }
 
                         table = table.column(Column::initial(200.0).resizable(true));// Actions
@@ -401,7 +385,7 @@ impl TokensScreen {
                             });
                             if shows_estimation_column {
                                 header.col(|ui| {
-                                    ui.label("Estimated Unclaimed Rewards");
+                                    ui.label("Rewards");
                                 });
                             }
                             header.col(|ui| {
@@ -410,7 +394,7 @@ impl TokensScreen {
                         })
                             .body(|mut body| {
                                 for itb in &detail_list {
-                                    body.row(25.0, |mut row| {
+                                    body.row(30.0, |mut row| {
                                         row.col(|ui| {
                                             // Show identity alias or ID
                                             if let Some(alias) = self
@@ -435,8 +419,7 @@ impl TokensScreen {
                                         });
                                         row.col(|ui| {
                                             if let Some(balance) = itb.balance {
-                                                let decimals = token_info.token_configuration.conventions().decimals();
-                                                let formatted_balance = format_token_amount(balance, decimals);
+                                                let formatted_balance = balance.to_string();
                                                 ui.label(formatted_balance);
                                             } else if ui.button("Check").clicked() {
                                                 action = AppAction::BackendTask(BackendTask::TokenTask(Box::new(TokenTask::QueryIdentityTokenBalance(itb.clone().into()))));
@@ -447,8 +430,7 @@ impl TokensScreen {
                                                 if itb.available_actions.can_estimate {
                                                         if let Some(known_rewards) = itb.estimated_unclaimed_rewards  {
                                                             ui.horizontal(|ui| {
-                                                                let decimals = token_info.token_configuration.conventions().decimals();
-                                                                let formatted_rewards = format_token_amount(known_rewards, decimals);
+                                                                let formatted_rewards = known_rewards.to_string();
                                                                 ui.label(formatted_rewards);
 
                                                                 // Info button to show explanation
@@ -456,19 +438,26 @@ impl TokensScreen {
                                                                     identity_id: itb.identity_id,
                                                                     token_id: itb.token_id,
                                                                 };
-                                                                if ui.button("ℹ").on_hover_text("Show reward calculation explanation").clicked() {
+                                                                if crate::ui::helpers::info_icon_button(ui, "Show reward calculation explanation").clicked() {
                                                                     self.show_explanation_popup = Some(identity_token_id);
                                                                 }
-
-                                                                if StyledButton::primary("Estimate").show(ui).clicked() {
-                                                                    action = AppAction::BackendTask(BackendTask::TokenTask(Box::new(TokenTask::EstimatePerpetualTokenRewardsWithExplanation {
-                                                                        identity_id: itb.identity_id,
-                                                                        token_id: itb.token_id,
-                                                                    })));
-                                                                    self.refreshing_status = RefreshingStatus::Refreshing(Utc::now().timestamp() as u64);
-                                                                }
+                                                                ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                                                                    ui.add_space(-9.0);
+                                                                    ui.horizontal(|ui| {
+                                                                        if ui.button("Estimate").clicked() {
+                                                                            action = AppAction::BackendTask(BackendTask::TokenTask(Box::new(TokenTask::EstimatePerpetualTokenRewardsWithExplanation {
+                                                                                identity_id: itb.identity_id,
+                                                                                token_id: itb.token_id,
+                                                                            })));
+                                                                            self.refreshing_status = RefreshingStatus::Refreshing(Utc::now().timestamp() as u64);
+                                                                        }
+                                                                    })
+                                                                });
                                                             });
-                                                        } else if StyledButton::primary("Estimate").show(ui).clicked() {
+                                                        } else if ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                                                            ui.add_space(-3.0);
+                                                            ui.button("Estimate").clicked()
+                                                        }).inner {
                                                             action = AppAction::BackendTask(BackendTask::TokenTask(Box::new(TokenTask::EstimatePerpetualTokenRewardsWithExplanation {
                                                                 identity_id: itb.identity_id,
                                                                 token_id: itb.token_id,
@@ -524,9 +513,7 @@ impl TokensScreen {
                             ui.heading("Reward Estimation Details");
                             ui.separator();
 
-                            let decimals = token_info.token_configuration.conventions().decimals();
-                            let formatted_total =
-                                format_token_amount(explanation.total_amount, decimals);
+                            let formatted_total = explanation.total_amount.to_string();
                             ui.label(format!(
                                 "Total Estimated Rewards: {} tokens",
                                 formatted_total
@@ -594,325 +581,175 @@ impl TokensScreen {
     ) -> AppAction {
         let mut pos = 0;
         let mut action = AppAction::None;
-        ui.spacing_mut().item_spacing.x = 3.0;
 
-        if range.contains(&pos) {
-            if itb.available_actions.can_transfer {
-                if let Some(balance) = itb.balance {
-                    // Transfer
-                    if ui.button("Transfer").clicked() {
-                        action = AppAction::AddScreen(Screen::TransferTokensScreen(
-                            TransferTokensScreen::new(
-                                itb.to_token_balance(balance),
+        ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
+            ui.add_space(-9.0);
+            ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 5.0;
+
+            if range.contains(&pos) {
+                if itb.available_actions.can_transfer {
+                    if let Some(balance) = itb.balance {
+                        // Transfer
+                        if ui.button("Transfer").clicked() {
+                            action = AppAction::AddScreen(Screen::TransferTokensScreen(
+                                TransferTokensScreen::new(
+                                    itb.to_token_balance(balance),
+                                    &self.app_context,
+                                ),
+                            ));
+                        }
+                    }
+                } else {
+                    // Disabled, grayed-out Transfer button
+                    ui.add_enabled(
+                        false,
+                        egui::Button::new(RichText::new("Transfer").color(Color32::GRAY)),
+                    )
+                    .on_hover_text("Transfer not available");
+                }
+            }
+
+            pos += 1;
+
+            // Claim
+            if itb.available_actions.can_claim {
+                if range.contains(&pos) && ui.button("Claim").clicked() {
+                    match self.app_context.get_contract_by_token_id(&itb.token_id) {
+                        Ok(Some(contract)) => {
+                            action = AppAction::AddScreen(Screen::ClaimTokensScreen(ClaimTokensScreen::new(
+                                itb.into(),
+                                contract,
+                                token_info.token_configuration.clone(),
                                 &self.app_context,
-                            ),
-                        ));
-                    }
-                }
-            } else {
-                // Disabled, grayed-out Transfer button
-                ui.add_enabled(
-                    false,
-                    egui::Button::new(RichText::new("Transfer").color(Color32::GRAY)),
-                )
-                .on_hover_text("Transfer not available");
-            }
-        }
-
-        pos += 1;
-
-        // Claim
-        if itb.available_actions.can_claim {
-            if range.contains(&pos) && ui.button("Claim").clicked() {
-                let token_contract = match self.app_context.get_contract_by_token_id(&itb.token_id)
-                {
-                    Ok(Some(contract)) => contract,
-                    Ok(None) => {
-                        self.set_error_message(Some("Token contract not found".to_string()));
-                        return action;
-                    }
-                    Err(e) => {
-                        self.set_error_message(Some(format!("Error fetching token contract: {e}")));
-                        return action;
-                    }
-                };
-
-                action = AppAction::AddScreen(Screen::ClaimTokensScreen(ClaimTokensScreen::new(
-                    itb.into(),
-                    token_contract,
-                    token_info.token_configuration.clone(),
-                    &self.app_context,
-                )));
-                ui.close_menu();
-            }
-            pos += 1;
-        }
-
-        if itb.available_actions.can_mint {
-            if range.contains(&pos) && ui.button("Mint").clicked() {
-                match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
-                            Ok(info) => {
-                                action = AppAction::AddScreen(
-                                    Screen::MintTokensScreen(
-                                        MintTokensScreen::new(
-                                            info,
-                                            &self.app_context,
-                                        ),
-                                    ),
-                                );
-                            }
-                            Err(e) => {
-                                self.set_error_message(Some(e));
-                            }
-                        };
-
-                ui.close_menu();
-            }
-            pos += 1;
-        }
-        if itb.available_actions.can_burn {
-            if range.contains(&pos) && ui.button("Burn").clicked() {
-                match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
-                            Ok(info) => {
-                                action = AppAction::AddScreen(
-                                    Screen::BurnTokensScreen(
-                                        BurnTokensScreen::new(
-                                            info,
-                                            &self.app_context,
-                                        ),
-                                    ),
-                                );
-                            }
-                            Err(e) => {
-                                self.set_error_message(Some(e));
-                            }
-                        };
-                ui.close_menu();
-            }
-            pos += 1;
-        }
-        if itb.available_actions.can_freeze {
-            if range.contains(&pos) && ui.button("Freeze").clicked() {
-                match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
-                            Ok(info) => {
-                                action = AppAction::AddScreen(
-                                    Screen::FreezeTokensScreen(
-                                        FreezeTokensScreen::new(
-                                            info,
-                                            &self.app_context,
-                                        ),
-                                    ),
-                                );
-                            }
-                            Err(e) => {
-                                self.set_error_message(Some(e));
-                            }
-                        };
-                ui.close_menu();
-            }
-            pos += 1;
-        }
-        if itb.available_actions.can_destroy {
-            if range.contains(&pos) && ui.button("Destroy Frozen Identity Tokens").clicked() {
-                match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
-                            Ok(info) => {
-                                action = AppAction::AddScreen(
-                                    Screen::DestroyFrozenFundsScreen(
-                                        DestroyFrozenFundsScreen::new(
-                                            info,
-                                            &self.app_context,
-                                        ),
-                                    ),
-                                );
-                            }
-                            Err(e) => {
-                                self.set_error_message(Some(e));
-                            }
-                        };
-                ui.close_menu();
-            }
-            pos += 1;
-        }
-        if itb.available_actions.can_unfreeze {
-            if range.contains(&pos) && ui.button("Unfreeze").clicked() {
-                match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
-                            Ok(info) => {
-                                action = AppAction::AddScreen(
-                                    Screen::UnfreezeTokensScreen(
-                                        UnfreezeTokensScreen::new(
-                                            info,
-                                            &self.app_context,
-                                        ),
-                                    ),
-                                );
-                            }
-                            Err(e) => {
-                                self.set_error_message(Some(e));
-                            }
-                        };
-                ui.close_menu();
-            }
-            pos += 1;
-        }
-        if itb.available_actions.can_do_emergency_action {
-            if range.contains(&pos) {
-                if ui.button("Pause").clicked() {
-                    match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
-                                Ok(info) => {
-                                    action = AppAction::AddScreen(
-                                        Screen::PauseTokensScreen(
-                                            PauseTokensScreen::new(
-                                                info,
-                                                &self.app_context,
-                                            ),
-                                        ),
-                                    );
-                                }
-                                Err(e) => {
-                                    self.set_error_message(Some(e));
-                                }
-                            };
-                    ui.close_menu();
-                }
-                pos += 1;
-            }
-
-            if range.contains(&pos) {
-                if ui.button("Resume").clicked() {
-                    match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
-                                Ok(info) => {
-                                    action = AppAction::AddScreen(
-                                        Screen::ResumeTokensScreen(
-                                            ResumeTokensScreen::new(
-                                                info,
-                                                &self.app_context,
-                                            ),
-                                        ),
-                                    );
-                                }
-                                Err(e) => {
-                                    self.set_error_message(Some(e));
-                                }
-                            };
-                    ui.close_menu();
-                }
-                pos += 1;
-            }
-        }
-        if itb.available_actions.can_claim {
-            if range.contains(&pos) && ui.button("View Claims").clicked() {
-                let decimals = token_info.token_configuration.conventions().decimals();
-                action = AppAction::AddScreen(Screen::ViewTokenClaimsScreen(
-                    ViewTokenClaimsScreen::new(itb.into(), decimals, &self.app_context),
-                ));
-                ui.close_menu();
-            }
-            pos += 1;
-        }
-        if itb.available_actions.can_update_config {
-            if range.contains(&pos) && ui.button("Update Config").clicked() {
-                match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
-                            Ok(info) => {
-                                action = AppAction::AddScreen(
-                                    Screen::UpdateTokenConfigScreen(Box::new(
-                                        UpdateTokenConfigScreen::new(
-                                            info,
-                                            &self.app_context,
-                                        ),
-                                    )),
-                                );
-                            }
-                            Err(e) => {
-                                self.set_error_message(Some(e));
-                            }
-                        };
-                ui.close_menu();
-            }
-            pos += 1;
-        }
-        if itb.available_actions.can_maybe_purchase {
-            if range.contains(&pos) {
-                // Check if we have pricing data
-                let has_pricing_data = self.token_pricing_data.contains_key(&itb.token_id);
-                let is_loading = self
-                    .pricing_loading_state
-                    .get(&itb.token_id)
-                    .copied()
-                    .unwrap_or(false);
-
-                if is_loading {
-                    // Show loading spinner
-                    ui.add(egui::Spinner::new());
-                } else if has_pricing_data {
-                    // Check if identity has enough credits for at least one token
-                    let has_credits = self
-                        .app_context
-                        .get_identity_by_id(&itb.identity_id)
-                        .map(|identity_opt| {
-                            identity_opt
-                                .map(|identity| {
-                                    use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-                                    // Check if identity has enough credits for the minimum token price
-                                    if let Some(Some(pricing)) =
-                                        self.token_pricing_data.get(&itb.token_id)
-                                    {
-                                        let min_price = get_min_token_price(pricing);
-                                        identity.identity.balance() >= min_price
-                                    } else {
-                                        false
-                                    }
-                                })
-                                .unwrap_or(false)
-                        })
-                        .unwrap_or(false);
-
-                    if has_credits {
-                        // Purchase button enabled
-                        if ui.button("Purchase").clicked() {
-                            match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
-                                Ok(info) => {
-                                    action = AppAction::AddScreen(
-                                        Screen::PurchaseTokenScreen(
-                                            PurchaseTokenScreen::new(
-                                                info,
-                                                &self.app_context,
-                                            ),
-                                        ),
-                                    );
-                                }
-                                Err(e) => {
-                                    self.set_error_message(Some(e));
-                                }
-                            };
+                            )));
                             ui.close_menu();
                         }
-                    } else {
-                        // Disabled, grayed-out Purchase button
-                        ui.add_enabled(
-                            false,
-                            egui::Button::new(RichText::new("Purchase").color(egui::Color32::GRAY)),
-                        )
-                        .on_hover_text({
-                            if let Some(Some(pricing)) = self.token_pricing_data.get(&itb.token_id) {
-                                let min_price = get_min_token_price(pricing);
-                                format!("Insufficient credits. Need at least {} credits to purchase one token", min_price)
-                            } else {
-                                "No credits available for purchase".to_string()
-                            }
-                        });
+                        Ok(None) => {
+                            self.set_error_message(Some("Token contract not found".to_string()));
+                        }
+                        Err(e) => {
+                            self.set_error_message(Some(format!("Error fetching token contract: {e}")));
+                        }
                     }
                 }
+                pos += 1;
             }
-            pos += 1;
-        }
-        if itb.available_actions.can_set_price && range.contains(&pos) {
-            // Set Price
-            if ui.button("Set Price").clicked() {
-                match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
+
+            if itb.available_actions.can_mint {
+                if range.contains(&pos) && ui.button("Mint").clicked() {
+                    match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
+                        Ok(info) => {
+                            action = AppAction::AddScreen(
+                                Screen::MintTokensScreen(
+                                    MintTokensScreen::new(
+                                        info,
+                                        &self.app_context,
+                                    ),
+                                ),
+                            );
+                        }
+                        Err(e) => {
+                            self.set_error_message(Some(e));
+                        }
+                    };
+
+                    ui.close_menu();
+                }
+                pos += 1;
+            }
+            if itb.available_actions.can_burn {
+                if range.contains(&pos) && ui.button("Burn").clicked() {
+                    match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
+                        Ok(info) => {
+                            action = AppAction::AddScreen(
+                                Screen::BurnTokensScreen(
+                                    BurnTokensScreen::new(
+                                        info,
+                                        &self.app_context,
+                                    ),
+                                ),
+                            );
+                        }
+                        Err(e) => {
+                            self.set_error_message(Some(e));
+                        }
+                    };
+                    ui.close_menu();
+                }
+                pos += 1;
+            }
+            if itb.available_actions.can_freeze {
+                if range.contains(&pos) && ui.button("Freeze").clicked() {
+                    match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
+                        Ok(info) => {
+                            action = AppAction::AddScreen(
+                                Screen::FreezeTokensScreen(
+                                    FreezeTokensScreen::new(
+                                        info,
+                                        &self.app_context,
+                                    ),
+                                ),
+                            );
+                        }
+                        Err(e) => {
+                            self.set_error_message(Some(e));
+                        }
+                    };
+                    ui.close_menu();
+                }
+                pos += 1;
+            }
+            if itb.available_actions.can_destroy {
+                if range.contains(&pos) && ui.button("Destroy Frozen Identity Tokens").clicked() {
+                    match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
+                        Ok(info) => {
+                            action = AppAction::AddScreen(
+                                Screen::DestroyFrozenFundsScreen(
+                                    DestroyFrozenFundsScreen::new(
+                                        info,
+                                        &self.app_context,
+                                    ),
+                                ),
+                            );
+                        }
+                        Err(e) => {
+                            self.set_error_message(Some(e));
+                        }
+                    };
+                    ui.close_menu();
+                }
+                pos += 1;
+            }
+            if itb.available_actions.can_unfreeze {
+                if range.contains(&pos) && ui.button("Unfreeze").clicked() {
+                    match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
+                        Ok(info) => {
+                            action = AppAction::AddScreen(
+                                Screen::UnfreezeTokensScreen(
+                                    UnfreezeTokensScreen::new(
+                                        info,
+                                        &self.app_context,
+                                    ),
+                                ),
+                            );
+                        }
+                        Err(e) => {
+                            self.set_error_message(Some(e));
+                        }
+                    };
+                    ui.close_menu();
+                }
+                pos += 1;
+            }
+            if itb.available_actions.can_do_emergency_action {
+                if range.contains(&pos) {
+                    if ui.button("Pause").clicked() {
+                        match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
                             Ok(info) => {
                                 action = AppAction::AddScreen(
-                                    Screen::SetTokenPriceScreen(
-                                        SetTokenPriceScreen::new(
+                                    Screen::PauseTokensScreen(
+                                        PauseTokensScreen::new(
                                             info,
                                             &self.app_context,
                                         ),
@@ -923,10 +760,164 @@ impl TokensScreen {
                                 self.set_error_message(Some(e));
                             }
                         };
+                        ui.close_menu();
+                    }
+                    pos += 1;
+                }
 
-                ui.close_menu();
+                if range.contains(&pos) {
+                    if ui.button("Resume").clicked() {
+                        match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
+                            Ok(info) => {
+                                action = AppAction::AddScreen(
+                                    Screen::ResumeTokensScreen(
+                                        ResumeTokensScreen::new(
+                                            info,
+                                            &self.app_context,
+                                        ),
+                                    ),
+                                );
+                            }
+                            Err(e) => {
+                                self.set_error_message(Some(e));
+                            }
+                        };
+                        ui.close_menu();
+                    }
+                    pos += 1;
+                }
             }
-        }
+            if itb.available_actions.can_claim {
+                if range.contains(&pos) && ui.button("View Claims").clicked() {
+                    action = AppAction::AddScreen(Screen::ViewTokenClaimsScreen(
+                        ViewTokenClaimsScreen::new(itb.into(), &self.app_context),
+                    ));
+                    ui.close_menu();
+                }
+                pos += 1;
+            }
+            if itb.available_actions.can_update_config {
+                if range.contains(&pos) && ui.button("Update Config").clicked() {
+                    match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
+                        Ok(info) => {
+                            action = AppAction::AddScreen(
+                                Screen::UpdateTokenConfigScreen(Box::new(
+                                    UpdateTokenConfigScreen::new(
+                                        info,
+                                        &self.app_context,
+                                    ),
+                                )),
+                            );
+                        }
+                        Err(e) => {
+                            self.set_error_message(Some(e));
+                        }
+                    };
+                    ui.close_menu();
+                }
+                pos += 1;
+            }
+            if itb.available_actions.can_maybe_purchase {
+                if range.contains(&pos) {
+                    // Check if we have pricing data
+                    let has_pricing_data = self.token_pricing_data.contains_key(&itb.token_id);
+                    let is_loading = self
+                        .pricing_loading_state
+                        .get(&itb.token_id)
+                        .copied()
+                        .unwrap_or(false);
+
+                    if is_loading {
+                        // Show loading spinner
+                        ui.add(egui::Spinner::new());
+                    } else if has_pricing_data {
+                        // Check if identity has enough credits for at least one token
+                        let has_credits = self
+                            .app_context
+                            .get_identity_by_id(&itb.identity_id)
+                            .map(|identity_opt| {
+                                identity_opt
+                                    .map(|identity| {
+                                        use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+                                        // Check if identity has enough credits for the minimum token price
+                                        if let Some(Some(pricing)) =
+                                            self.token_pricing_data.get(&itb.token_id)
+                                        {
+                                            let min_price = get_min_token_price(pricing);
+                                            identity.identity.balance() >= min_price
+                                        } else {
+                                            false
+                                        }
+                                    })
+                                    .unwrap_or(false)
+                            })
+                            .unwrap_or(false);
+
+                        if has_credits {
+                            // Purchase button enabled
+                            if ui.button("Purchase").clicked() {
+                                match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
+                                    Ok(info) => {
+                                        action = AppAction::AddScreen(
+                                            Screen::PurchaseTokenScreen(
+                                                PurchaseTokenScreen::new(
+                                                    info,
+                                                    &self.app_context,
+                                                ),
+                                            ),
+                                        );
+                                    }
+                                    Err(e) => {
+                                        self.set_error_message(Some(e));
+                                    }
+                                };
+                                ui.close_menu();
+                            }
+                        } else {
+                            // Disabled, grayed-out Purchase button
+                            ui.add_enabled(
+                                false,
+                                egui::Button::new(RichText::new("Purchase").color(egui::Color32::GRAY)),
+                            )
+                            .on_hover_text({
+                                if let Some(Some(pricing)) = self.token_pricing_data.get(&itb.token_id) {
+                                    let min_price = get_min_token_price(pricing);
+                                    format!("Insufficient credits. Need at least {} credits to purchase one token", min_price)
+                                } else {
+                                    "No credits available for purchase".to_string()
+                                }
+                            });
+                        }
+                    }
+                }
+                pos += 1;
+            }
+            if itb.available_actions.can_set_price && range.contains(&pos) {
+                // Set Price
+                if ui.button("Set Price").clicked() {
+                    match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
+                        Ok(info) => {
+                            action = AppAction::AddScreen(
+                                Screen::SetTokenPriceScreen(
+                                    SetTokenPriceScreen::new(
+                                        info,
+                                        &self.app_context,
+                                    ),
+                                ),
+                            );
+                        }
+                        Err(e) => {
+                            self.set_error_message(Some(e));
+                        }
+                    };
+
+                    ui.close_menu();
+                }
+            }
+        });
+
+            });
+
         action
     }
 
@@ -938,6 +929,9 @@ impl TokensScreen {
 
         // A simple table with columns: [Token Name | Token ID | Total Balance]
         egui::ScrollArea::both().show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            ui.set_max_width(ui.available_width());
+
             TableBuilder::new(ui)
                 .striped(false)
                 .resizable(true)
@@ -968,49 +962,54 @@ impl TokensScreen {
                             description,
                             ..
                         } = token_info;
-                        body.row(25.0, |mut row| {
+                        body.row(30.0, |mut row| {
                             row.col(|ui| {
-                                // By making the label into a button or using `ui.selectable_label`,
-                                // we can respond to clicks.
-                                if ui.button(token_name).clicked() {
-                                    self.selected_token = Some(*token_id);
-                                    // Check if we need to fetch pricing data for this token
-                                    if !self.token_pricing_data.contains_key(token_id) {
-                                        // Mark as loading
-                                        self.pricing_loading_state.insert(*token_id, true);
-                                        // Trigger backend task to fetch pricing
-                                        action = AppAction::BackendTask(BackendTask::TokenTask(
-                                            Box::new(TokenTask::QueryTokenPricing(*token_id)),
-                                        ));
+                                ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                                    ui.add_space(-1.0);
+                                    // By making the label into a button or using `ui.selectable_label`,
+                                    // we can respond to clicks.
+                                    if ui.button(token_name).clicked() {
+                                        self.selected_token = Some(*token_id);
+                                        // Check if we need to fetch pricing data for this token
+                                        if !self.token_pricing_data.contains_key(token_id) {
+                                            // Mark as loading
+                                            self.pricing_loading_state.insert(*token_id, true);
+                                            // Trigger backend task to fetch pricing
+                                            action = AppAction::BackendTask(
+                                                BackendTask::TokenTask(Box::new(
+                                                    TokenTask::QueryTokenPricing(*token_id),
+                                                )),
+                                            );
+                                        }
                                     }
-                                }
+                                });
                             });
                             row.col(|ui| {
                                 ui.label(token_id.to_string(Encoding::Base58));
                             });
                             row.col(|ui| {
-                                ui.label(description.as_ref().unwrap_or(&String::new()));
+                                ui.label(description.as_ref().unwrap_or(&"None".to_string()));
                             });
                             row.col(|ui| {
-                                ui.horizontal(|ui| {
-                                    // Info button
-                                    if ui
-                                        .button("ℹ")
-                                        .on_hover_text("View token configuration details")
-                                        .clicked()
-                                    {
-                                        self.show_token_info_popup = Some(*token_id);
-                                    }
+                                // Info button
+                                if ui.button("More Info").clicked() {
+                                    self.show_token_info_popup = Some(*token_id);
+                                }
 
-                                    // Remove button
-                                    if ui
-                                        .button("X")
-                                        .on_hover_text("Remove token from DET")
-                                        .clicked()
-                                    {
-                                        self.confirm_remove_token_popup = true;
-                                        self.token_to_remove = Some(*token_id);
-                                    }
+                                ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                                    ui.add_space(-1.0);
+
+                                    ui.horizontal(|ui| {
+                                        // Remove button
+                                        if ui
+                                            .button("X")
+                                            .on_hover_text("Remove token from DET")
+                                            .clicked()
+                                        {
+                                            self.confirm_remove_token_popup = true;
+                                            self.token_to_remove = Some(*token_id);
+                                        }
+                                    });
                                 });
                             });
                         });

@@ -517,14 +517,18 @@ impl Default for AnimatedGradientCard {
 }
 
 /// Helper function to style a TextEdit with consistent theme
-pub fn styled_text_edit_singleline(text: &mut String) -> TextEdit<'_> {
-    TextEdit::singleline(text).background_color(DashColors::INPUT_BACKGROUND)
+pub fn styled_text_edit_singleline(text: &mut String, dark_mode: bool) -> TextEdit<'_> {
+    TextEdit::singleline(text)
+        .text_color(DashColors::text_primary(dark_mode))
+        .background_color(DashColors::input_background(dark_mode))
 }
 
 /// Helper function to style a multiline TextEdit with consistent theme
-// #[allow(dead_code)]
-pub fn styled_text_edit_multiline(text: &mut String) -> TextEdit<'_> {
-    TextEdit::multiline(text).background_color(DashColors::INPUT_BACKGROUND)
+#[allow(dead_code)]
+pub fn styled_text_edit_multiline(text: &mut String, dark_mode: bool) -> TextEdit<'_> {
+    TextEdit::multiline(text)
+        .text_color(DashColors::text_primary(dark_mode))
+        .background_color(DashColors::input_background(dark_mode))
 }
 
 /// Helper function to create an island-style central panel

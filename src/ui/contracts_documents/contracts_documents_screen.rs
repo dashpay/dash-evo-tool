@@ -4,7 +4,9 @@ use crate::backend_task::document::DocumentTask::{self, FetchDocumentsPage}; // 
 use crate::backend_task::BackendTask;
 use crate::context::AppContext;
 use crate::model::qualified_contract::QualifiedContract;
-use crate::ui::components::contract_chooser_panel::add_contract_chooser_panel;
+use crate::ui::components::contract_chooser_panel::{
+    add_contract_chooser_panel, ContractChooserState,
+};
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::theme::{DashColors, Shadow, Shape};
@@ -64,6 +66,8 @@ pub struct DocumentQueryScreen {
     pub next_cursors: Vec<Start>,
     has_next_page: bool,
     previous_cursors: Vec<Start>,
+    // Contract chooser state
+    contract_chooser_state: ContractChooserState,
 }
 
 #[derive(PartialEq, Eq, Clone)]
@@ -127,6 +131,7 @@ impl DocumentQueryScreen {
             next_cursors: vec![],
             has_next_page: false,
             previous_cursors: Vec::new(),
+            contract_chooser_state: ContractChooserState::default(),
         }
     }
 
@@ -176,7 +181,13 @@ impl DocumentQueryScreen {
             let available = ui.available_width();
             let text_width = (available - button_width - spacing).max(100.0); // Ensure minimum width
 
-            ui.add(egui::TextEdit::singleline(&mut self.document_query).desired_width(text_width));
+            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            ui.add(
+                egui::TextEdit::singleline(&mut self.document_query)
+                    .desired_width(text_width)
+                    .text_color(crate::ui::theme::DashColors::text_primary(dark_mode))
+                    .background_color(crate::ui::theme::DashColors::input_background(dark_mode)),
+            );
 
             ui.add_space(spacing);
 
@@ -463,10 +474,13 @@ impl DocumentQueryScreen {
         let mut combined_string = doc_strings.join("\n\n");
 
         // 3) Display in multiline text
+        let dark_mode = ui.ctx().style().visuals.dark_mode;
         ui.add(
             egui::TextEdit::multiline(&mut combined_string)
                 .desired_rows(10)
                 // Remove desired_width to respect parent container margins
+                .text_color(crate::ui::theme::DashColors::text_primary(dark_mode))
+                .background_color(crate::ui::theme::DashColors::input_background(dark_mode))
                 .font(egui::TextStyle::Monospace),
         );
     }
@@ -688,6 +702,7 @@ impl ScreenLike for DocumentQueryScreen {
             &mut self.document_query,
             &mut self.pending_document_type,
             &mut self.pending_fields_selection,
+            &mut self.contract_chooser_state,
         );
 
         if let AppAction::BackendTask(BackendTask::ContractTask(contract_task)) = &action {

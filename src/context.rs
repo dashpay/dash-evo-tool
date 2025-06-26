@@ -12,6 +12,7 @@ use crate::model::wallet::{Wallet, WalletSeedHash};
 use crate::sdk_wrapper::initialize_sdk;
 use crate::ui::tokens::tokens_screen::{IdentityTokenBalance, IdentityTokenIdentifier};
 use crate::ui::RootScreenType;
+use crate::utils::tasks::TaskManager;
 use bincode::config;
 use crossbeam_channel::{Receiver, Sender};
 use dash_sdk::dashcore_rpc::dashcore::{InstantLock, Transaction};
@@ -68,6 +69,8 @@ pub struct AppContext {
     /// This is used to control animations in the UI, such as loading spinners or transitions.
     /// Disable for automated tests.
     animate: AtomicBool,
+    // subtasks started by the app context, used for graceful shutdown
+    pub(crate) subtasks: Arc<TaskManager>,
 }
 
 impl AppContext {
@@ -75,6 +78,7 @@ impl AppContext {
         network: Network,
         db: Arc<Database>,
         password_info: Option<PasswordInfo>,
+        subtasks: Arc<TaskManager>,
     ) -> Option<Arc<Self>> {
         let config = match Config::load() {
             Ok(config) => config,
@@ -171,6 +175,7 @@ impl AppContext {
             transactions_waiting_for_finality: Mutex::new(BTreeMap::new()),
             zmq_connection_status: Mutex::new(ZMQConnectionEvent::Disconnected),
             animate,
+            subtasks,
         };
 
         let app_context = Arc::new(app_context);
@@ -311,21 +316,6 @@ impl AppContext {
     /// Gets the alias for an identity
     pub fn get_identity_alias(&self, identifier: &Identifier) -> Result<Option<String>> {
         self.db.get_identity_alias(identifier)
-    }
-
-    /// This is for before we know if Platform will accept the identity
-    pub fn insert_local_qualified_identity_in_creation(
-        &self,
-        qualified_identity: &QualifiedIdentity,
-        wallet_id: &[u8],
-        identity_index: u32,
-    ) -> Result<()> {
-        self.db.insert_local_qualified_identity_in_creation(
-            qualified_identity,
-            wallet_id,
-            identity_index,
-            self,
-        )
     }
 
     /// Fetches all local qualified identities from the database

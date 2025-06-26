@@ -6,7 +6,9 @@ use crate::model::qualified_identity::qualified_identity_public_key::QualifiedId
 use crate::model::qualified_identity::PrivateKeyTarget::{
     self, PrivateKeyOnMainIdentity, PrivateKeyOnVoterIdentity,
 };
-use crate::model::qualified_identity::{DPNSNameInfo, IdentityType, QualifiedIdentity};
+use crate::model::qualified_identity::{
+    DPNSNameInfo, IdentityStatus, IdentityType, QualifiedIdentity,
+};
 use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
 use dash_sdk::dashcore_rpc::dashcore::PrivateKey;
 use dash_sdk::dpp::dashcore::hashes::Hash;
@@ -301,6 +303,7 @@ impl AppContext {
                 .collect(),
             wallet_index: None, //todo
             top_ups: Default::default(),
+            status: IdentityStatus::Active,
         };
         let (wallet_seed_hash, identity_id) = qualified_identity.determine_wallet_info()?;
 

@@ -11,6 +11,7 @@ pub enum ToolsSubscreen {
     DocumentViewer,
     ProofViewer,
     ContractViewer,
+    PlatformInfo,
 }
 
 impl ToolsSubscreen {
@@ -21,6 +22,7 @@ impl ToolsSubscreen {
             Self::ProofViewer => "Proof deserializer",
             Self::DocumentViewer => "Document deserializer",
             Self::ContractViewer => "Contract deserializer",
+            Self::PlatformInfo => "Platform info",
         }
     }
 }
@@ -35,6 +37,7 @@ pub fn add_tools_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext
         ToolsSubscreen::TransactionViewer,
         ToolsSubscreen::DocumentViewer,
         ToolsSubscreen::ContractViewer,
+        ToolsSubscreen::PlatformInfo,
     ];
 
     let active_screen = match app_context.get_settings() {
@@ -50,6 +53,7 @@ pub fn add_tools_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext
             ui::RootScreenType::RootScreenToolsContractVisualizerScreen => {
                 ToolsSubscreen::ContractViewer
             }
+            ui::RootScreenType::RootScreenToolsPlatformInfoScreen => ToolsSubscreen::PlatformInfo,
             _ => ToolsSubscreen::ProofLog,
         },
         _ => ToolsSubscreen::ProofLog, // Fallback to Active screen if settings unavailable
@@ -137,6 +141,11 @@ pub fn add_tools_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext
                             ToolsSubscreen::ContractViewer => {
                                 action = AppAction::SetMainScreen(
                                     RootScreenType::RootScreenToolsContractVisualizerScreen,
+                                )
+                            }
+                            ToolsSubscreen::PlatformInfo => {
+                                action = AppAction::SetMainScreen(
+                                    RootScreenType::RootScreenToolsPlatformInfoScreen,
                                 )
                             }
                         }

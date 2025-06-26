@@ -31,7 +31,7 @@ use chrono::{prelude::*, LocalResult};
 use chrono_humanize::{Accuracy, HumanTime, Tense};
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) enum PlatformInfoTaskRequestType {
+pub enum PlatformInfoTaskRequestType {
     CurrentEpochInfo,
     TotalCreditsOnPlatform,
     CurrentVersionVotingState,
@@ -42,7 +42,7 @@ pub(crate) enum PlatformInfoTaskRequestType {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) enum PlatformInfoTaskResult {
+pub enum PlatformInfoTaskResult {
     BasicPlatformInfo {
         platform_version: &'static PlatformVersion,
         core_chain_lock_height: Option<u32>,

@@ -6,12 +6,14 @@ use crate::config::Config;
 use crate::context::AppContext;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::{island_central_panel, StyledCard, StyledCheckbox};
+use crate::ui::components::test_label::TestableWidget;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::theme::{DashColors, ThemeMode};
 use crate::ui::{RootScreenType, ScreenLike};
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::TimestampMillis;
 use eframe::egui::{self, Context, Ui};
+use egui::Widget;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -538,7 +540,11 @@ impl NetworkChooserScreen {
 
         // Network selection
         let mut is_selected = self.current_network == network;
-        if StyledCheckbox::new(&mut is_selected, "").show(ui).clicked() && is_selected {
+
+        let checkbox = StyledCheckbox::new(&mut is_selected, "")
+            .test_label(&format!("select_network_{}", network.magic()));
+
+        if checkbox.ui(ui).clicked() && is_selected {
             self.current_network = network;
             app_action = AppAction::SwitchNetwork(network);
             // Recheck in 1 second

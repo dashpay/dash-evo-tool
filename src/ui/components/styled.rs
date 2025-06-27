@@ -6,7 +6,7 @@ use crate::{
 };
 use egui::{
     Button, CentralPanel, Color32, Context, Frame, Margin, Response, RichText, Stroke, TextEdit,
-    Ui, Vec2,
+    Ui, Vec2, Widget,
 };
 
 /// Styled button variants
@@ -214,6 +214,12 @@ impl<'a> StyledCheckbox<'a> {
         }
 
         response
+    }
+}
+
+impl Widget for StyledCheckbox<'_> {
+    fn ui(self, ui: &mut Ui) -> Response {
+        self.show(ui)
     }
 }
 

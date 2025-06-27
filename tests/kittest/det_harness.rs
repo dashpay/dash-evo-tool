@@ -1,10 +1,15 @@
 use dash_evo_tool::app::AppState;
-use egui_kittest::Harness;
+use dash_sdk::dpp::dashcore::Network;
+use egui::accesskit::Role;
+use egui_kittest::{
+    kittest::{Node, Queryable},
+    Harness,
+};
 
 /// Test helper and tools for running egui tests of the Dash Evo Tool app
 pub struct DETHarness<'a> {
     pub kittest: Harness<'a, AppState>,
-    pub name: String,
+    name: String,
 }
 
 impl DETHarness<'_> {
@@ -24,7 +29,8 @@ impl DETHarness<'_> {
         };
 
         // Set the window size for the test
-        me.kittest.set_size(egui::vec2(800.0, 600.0));
+        // Fixme: find out how to scroll the window
+        me.kittest.set_size(egui::vec2(800.0, 3000.0));
         // Run one frame to ensure the app initializes
         me.kittest.run();
 
@@ -89,10 +95,120 @@ impl DETHarness<'_> {
         }
     }
 
+    /// Connect to a selected network
+    pub fn connect_to_network(&mut self, network: Network) {
+        let index = match network {
+            Network::Dash => 0,
+            Network::Testnet => 1,
+            Network::Devnet => 2,
+            Network::Regtest => 3,
+            _ => panic!("Unsupported network"),
+        };
+        self.click_by_label("N");
+        self.run();
+
+        self.click_by_label(&format!("select_network_{}", network.magic()));
+
+        // start dash-qt
+        let start = self
+            .kittest
+            .kittest_state()
+            .get_all_by_role_and_label(Role::Button, "Start")
+            .nth(index)
+            .expect("Button for the network not found");
+        start.click();
+        self.run();
+
+        // We need to wait for dash-qt to start and sync
+        std::thread::sleep(std::time::Duration::from_secs(6));
+
+        self.snapshot("network_connected");
+    }
+}
+
+impl<'a> DETHarness<'a> {
     /// Run the test harness, executing all registered operations.
     ///
     /// See [Harness::run] for more details.
     pub fn run(&mut self) {
         self.kittest.run();
+    }
+    /// Click a button by label
+    pub fn click_by_label(&mut self, label: &str) {
+        let btn = self.kittest.kittest_state().get_by_label(label);
+        btn.click();
+        self.run();
+    }
+
+    /// Click a button by value
+    pub fn click_by_value(&mut self, value: &str) {
+        let btn = self.kittest.kittest_state().get_by_value(value);
+        btn.click();
+        self.run();
+    }
+
+    /// Set text in a field by label
+    pub fn set_text_by_label(&mut self, label: &str, text: &str) {
+        let field = self.kittest.kittest_state().get_by_label(label);
+        field.type_text(text);
+        self.run();
+    }
+
+    /// Get a node by label
+    ///
+    /// ## Panics
+    ///
+    /// All get_ functions will panic if the node is not found.
+    pub fn get_by_label(&'a self, button: &'a str) -> Node<'a> {
+        self.kittest.kittest_state().get_by_label(button)
+    }
+
+    /// Query all nodes by label
+    pub fn query_all_by_label(&'a self, label: &'a str) -> Vec<egui_kittest::kittest::Node<'a>> {
+        self.kittest
+            .kittest_state()
+            .query_all_by_label(label)
+            .collect()
+    }
+
+    /// Take a snapshot
+    pub fn snapshot(&mut self, name: &str) {
+        self.kittest.snapshot(name);
+    }
+    /// Wait until label is present or timeout occurs
+    pub fn wait_all_by_label<'b>(
+        &'b mut self,
+        label: &'a str,
+        timeout: std::time::Duration,
+    ) -> Result<Vec<Node<'b>>, String> {
+        let start = std::time::Instant::now();
+
+        while start.elapsed() < timeout {
+            self.kittest.run();
+
+            if !self.query_all_by_label(label).is_empty() {
+                break;
+            }
+            // let mut labels = self.kittest.kittest_state().query_all_by_label(label);
+            // if let Some(next) = labels.next() {
+            //     tracing::trace!(?next, "Found label: {}", label);
+            //     return Ok(next);
+            // }
+            // drop(labels);
+
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+
+        // query again to avoid borrow checker issues
+        let nodes = self.query_all_by_label(label);
+        if !nodes.is_empty() {
+            tracing::trace!(?nodes, "Found label: {}", label);
+            Ok(nodes)
+        } else {
+            Err(format!(
+                "Label '{}' not found after waiting for {:?}",
+                label, timeout
+            ))
+        }
     }
 }

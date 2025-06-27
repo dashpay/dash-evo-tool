@@ -1,5 +1,3 @@
-use egui_kittest::kittest::Queryable;
-
 use crate::det_harness::DETHarness;
 
 /// Start the Dash Evo Tool app and click on all icons in the left panel
@@ -21,15 +19,11 @@ fn test_left_panel() {
                 ("N", "Networks"),
             ];
             for (button, text) in buttons {
-                let icon = det.kittest.kittest_state().get_by_label(button);
+                let icon = det.get_by_label(button);
                 icon.click();
-                det.kittest.run();
-                det.kittest.snapshot(&format!("app_startup.{}", button));
-                let nodes: Vec<_> = det
-                    .kittest
-                    .kittest_state()
-                    .query_all_by_label(text)
-                    .collect();
+                det.run();
+                det.snapshot(&format!("app_startup.{}", button));
+                let nodes: Vec<_> = det.query_all_by_label(text);
                 tracing::debug!(count = nodes.len(), ?nodes, "Clicked on icon: {}", button);
             }
         })

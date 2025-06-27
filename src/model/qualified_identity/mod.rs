@@ -290,6 +290,20 @@ impl Signer for QualifiedIdentity {
         identity_public_key: &IdentityPublicKey,
         data: &[u8],
     ) -> Result<BinaryData, ProtocolError> {
+        // Detect network from wallet's known addresses
+        let network = self
+            .associated_wallets
+            .values()
+            .find_map(|wallet| {
+                let wallet = wallet.read().unwrap();
+                wallet
+                    .known_addresses
+                    .keys()
+                    .next()
+                    .map(|addr| *addr.network())
+            })
+            .unwrap_or(Network::Dash); // Default to mainnet if no addresses found
+
         let (_, private_key) = self
             .private_keys
             .get_resolve(
@@ -302,6 +316,7 @@ impl Signer for QualifiedIdentity {
                     .cloned()
                     .collect::<Vec<_>>()
                     .as_slice(),
+                network,
             )
             .map_err(ProtocolError::Generic)?
             .ok_or(ProtocolError::Generic(format!(

@@ -334,6 +334,7 @@ impl ScreenLike for KeyInfoScreen {
                                         self.selected_wallet.as_ref().unwrap().read().unwrap();
                                     match wallet.private_key_at_derivation_path(
                                         &derivation_path.derivation_path,
+                                        self.app_context.network,
                                     ) {
                                         Ok(private_key) => {
                                             let private_key_wif = private_key.to_wif();
@@ -365,6 +366,7 @@ impl ScreenLike for KeyInfoScreen {
                                         self.selected_wallet.as_ref().unwrap().read().unwrap();
                                     match wallet.private_key_at_derivation_path(
                                         &derivation_path.derivation_path,
+                                        self.app_context.network,
                                     ) {
                                         Ok(private_key) => {
                                             let private_key_wif = private_key.to_wif();

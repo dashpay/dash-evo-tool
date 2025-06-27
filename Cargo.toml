@@ -69,3 +69,11 @@ raw-cpuid = "11.5.0"
 [dev-dependencies]
 
 tempfile = { version = "3.20.0" }
+
+[[bin]]
+name = "inject_checkpoint"
+path = "src/bin/inject_checkpoint.rs"
+
+[[bin]]
+name = "debug_spv_headers"
+path = "src/bin/debug_spv_headers.rs"

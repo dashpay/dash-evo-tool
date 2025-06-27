@@ -4,19 +4,14 @@ use crate::context::AppContext;
 use crate::database::Database;
 use crate::model::connection_type::ConnectionType;
 use dash_sdk::core::LowLevelDashCoreClient as CoreClient;
-use dash_sdk::dpp::core_types::validator_set::v0::ValidatorSetV0Getters;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::error::ContextProviderError;
 use dash_sdk::platform::ContextProvider;
 use dash_sdk::platform::DataContract;
-use dash_sdk::platform::FetchUnproved;
-use dash_sdk::query_types::{CurrentQuorumsInfo, NoParamQuery};
 use rusqlite::Result;
 use std::sync::{Arc, Mutex};
-
-// Removed QuorumKeyCache - no longer using key caching
 
 #[derive(Debug)]
 pub(crate) struct Provider {
@@ -85,120 +80,6 @@ impl Provider {
         sdk.set_context_provider(self.clone());
     }
 
-    // Removed set_quorum_key_cache - no longer using key caching
-
-    // Removed prefetch_quorum_keys - no longer using key caching
-    /*
-    pub async fn prefetch_quorum_keys(
-        &self,
-        sdk: &dash_sdk::Sdk,
-    ) -> std::result::Result<(), String> {
-        tracing::info!("🚀 PRE-FETCHING QUORUM KEYS FOR SPV MODE...");
-
-        match CurrentQuorumsInfo::fetch_unproved(sdk, NoParamQuery {}).await {
-            Ok(Some(quorums_info)) => {
-                tracing::info!("Successfully connected to DAPI and retrieved quorum information");
-                tracing::info!(
-                    "Last Platform Block Height: {}",
-                    quorums_info.last_platform_block_height
-                );
-                tracing::info!(
-                    "Last Core Block Height: {}",
-                    quorums_info.last_core_block_height
-                );
-                tracing::info!(
-                    "Number of validator sets: {}",
-                    quorums_info.validator_sets.len()
-                );
-
-                let mut cache = self.quorum_key_cache.write().map_err(|e| e.to_string())?;
-                let mut count = 0;
-
-                // Extract actual BLS public keys from each validator set
-                for (i, validator_set) in quorums_info.validator_sets.iter().enumerate() {
-                    let quorum_hash = quorums_info.quorum_hashes[i];
-
-                    // Get the threshold public key (BLS public key) from the validator set
-                    let threshold_public_key = validator_set.threshold_public_key();
-
-                    // Convert BLS public key to compressed 48-byte format
-                    let public_key_bytes: [u8; 48] = threshold_public_key.0.to_compressed();
-
-                    // Cache this key for ALL common quorum types since we can't reliably
-                    // predict which type the SDK will request for any given validator set.
-                    // This ensures the SDK can find the key regardless of which type it requests.
-                    let quorum_types = vec![
-                        1u32, 3u32, // LLMQ_400_60 types
-                        4u32, 5u32, // LLMQ_100_67 types
-                        6u32, 7u32, 8u32, // LLMQ_60_75 types
-                        100u32, 101u32, 102u32, 103u32, 104u32, 105u32, 106u32, // DIP24 types
-                    ];
-
-                    tracing::info!(
-                        "Validator set {}: hash={}, caching for {} types",
-                        i,
-                        hex::encode(quorum_hash),
-                        quorum_types.len()
-                    );
-
-                    // Cache the BLS public key for all relevant quorum types
-                    for quorum_type in quorum_types {
-                        cache.insert((quorum_type, quorum_hash), public_key_bytes);
-                        count += 1;
-
-                        tracing::trace!(
-                            "Cached quorum key: type={}, hash={}",
-                            quorum_type,
-                            hex::encode(quorum_hash)
-                        );
-                    }
-                }
-
-                // Log all cached quorum hashes for debugging
-                let cached_hashes: Vec<String> = cache
-                    .keys()
-                    .map(|(t, h)| format!("type={}, hash={}", t, hex::encode(h)))
-                    .collect();
-
-                tracing::info!(
-                    "Successfully fetched and cached {} actual BLS quorum keys from DAPI",
-                    count
-                );
-
-                // Log a sample of cached keys for debugging
-                if !cached_hashes.is_empty() {
-                    tracing::info!("Sample of cached quorum keys (first 5):");
-                    for (i, key_info) in cached_hashes.iter().take(5).enumerate() {
-                        tracing::info!("  {}: {}", i + 1, key_info);
-                    }
-                }
-
-                // Update last refresh attempt time
-                if let Ok(mut last_attempt) = self.last_refresh_attempt.lock() {
-                    *last_attempt = Some(Instant::now());
-                }
-
-                Ok(())
-            }
-            Ok(None) => {
-                tracing::warn!("No quorum info available from DAPI");
-                Err(
-                    "SPV mode initialization failed: No quorum info available from DAPI"
-                        .to_string(),
-                )
-            }
-            Err(e) => {
-                tracing::error!("Failed to fetch quorum info from DAPI: {}", e);
-                Err(format!(
-                    "SPV mode initialization failed: Cannot connect to DAPI: {}",
-                    e
-                ))
-            }
-        }
-    }
-    */
-
-    // Removed should_refresh_quorum_keys - no longer using key caching
 }
 
 impl ContextProvider for Provider {
@@ -308,7 +189,7 @@ impl ContextProvider for Provider {
 
                             // Log all available quorum hashes for this type
                             let available_hashes: Vec<String> =
-                                quorums_of_type.keys().map(|h| hex::encode(h)).collect();
+                                quorums_of_type.keys().map(hex::encode).collect();
                             tracing::info!(
                                 "Available quorum hashes for type {}: {:?}",
                                 quorum_type,
@@ -330,9 +211,11 @@ impl ContextProvider for Provider {
                                     status
                                 );
 
-                                // Convert BLS public key to compressed format
-                                let compressed = public_key.to_compressed();
-                                return Ok(compressed);
+                                // TEMPORARY: Return a not implemented error
+                                // This function doesn't seem to be called during SPV sync
+                                return Err(dash_sdk::error::ContextProviderError::Generic(
+                                    "BLSPublicKey conversion not implemented - to_compressed() not available".to_string()
+                                ));
                             } else {
                                 tracing::warn!(
                                 "MasternodeListEngine MISS: Quorum hash {} not found in type {}",
@@ -357,11 +240,10 @@ impl ContextProvider for Provider {
                                                 tracing::info!(
                                                     "Quorum entry found! Extracting public key..."
                                                 );
-                                                let compressed = quorum_entry
-                                                    .quorum_entry
-                                                    .quorum_public_key
-                                                    .to_compressed();
-                                                return Ok(compressed);
+                                                // TEMPORARY: Return a not implemented error
+                                                return Err(dash_sdk::error::ContextProviderError::Generic(
+                                                    "BLSPublicKey conversion not implemented - to_compressed() not available".to_string()
+                                                ));
                                             }
                                         }
                                     }

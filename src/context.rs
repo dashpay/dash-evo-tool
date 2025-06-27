@@ -71,6 +71,7 @@ pub struct AppContext {
     pub(crate) password_info: Option<PasswordInfo>,
     pub(crate) transactions_waiting_for_finality: Mutex<BTreeMap<Txid, Option<AssetLockProof>>>,
     pub(crate) spv_manager: Arc<SpvManager>,
+    pub(crate) spv_initialized: AtomicBool,
     pub(crate) spv_status: Mutex<SpvStatus>,
     pub(crate) provider: RwLock<Option<Arc<Provider>>>,
 }
@@ -177,6 +178,7 @@ impl AppContext {
             transactions_waiting_for_finality: Mutex::new(BTreeMap::new()),
             zmq_connection_status: Mutex::new(ZMQConnectionEvent::Disconnected),
             spv_manager,
+            spv_initialized: AtomicBool::new(false),
             spv_status: Mutex::new(SpvStatus {
                 is_running: false,
                 header_height: None,
@@ -195,16 +197,15 @@ impl AppContext {
             *provider_lock = Some(provider);
         }
 
-        // Bind SPV manager to app context asynchronously and auto-start if needed
+        // Bind SPV manager to app context synchronously to ensure it's ready when needed
         let spv_manager = app_context.spv_manager.clone();
-        // Bind SPV manager to app context but don't auto-start it
-        // Auto-starting SPV on initialization can cause the app to freeze
-        let app_context_weak = Arc::downgrade(&app_context);
-        tokio::spawn(async move {
-            if let Some(app_ctx) = app_context_weak.upgrade() {
-                spv_manager.bind_app_context(app_ctx.clone()).await;
+        let app_context_for_binding = app_context.clone();
+        tokio::task::block_in_place(|| {
+            let handle = tokio::runtime::Handle::current();
+            handle.block_on(async move {
+                spv_manager.bind_app_context(app_context_for_binding).await;
                 tracing::info!("SPV manager bound to app context");
-            }
+            });
         });
 
         Some(app_context)
@@ -894,6 +895,28 @@ impl AppContext {
         }
     }
 
+    pub async fn initialize_spv(
+        self: &Arc<Self>,
+    ) -> Result<crate::backend_task::BackendTaskSuccessResult, String> {
+        tracing::info!("initialize_spv called");
+
+        // Check if we're in SPV mode
+        let connection_type = { self.config.read().unwrap().connection_type.clone() };
+        if connection_type != crate::model::connection_type::ConnectionType::DashSpv {
+            return Err("SPV can only be initialized when using SPV connection".to_string());
+        }
+
+        // Initialize the SPV client and add watch addresses
+        self.spv_manager.initialize_client().await?;
+        
+        // Mark as initialized
+        self.spv_initialized.store(true, Ordering::Relaxed);
+
+        Ok(crate::backend_task::BackendTaskSuccessResult::Message(
+            "SPV client initialized successfully".to_string(),
+        ))
+    }
+
     pub async fn start_spv_sync(
         self: &Arc<Self>,
     ) -> Result<crate::backend_task::BackendTaskSuccessResult, String> {
@@ -903,6 +926,11 @@ impl AppContext {
         let connection_type = { self.config.read().unwrap().connection_type.clone() };
         if connection_type != crate::model::connection_type::ConnectionType::DashSpv {
             return Err("SPV sync can only be started when using SPV connection".to_string());
+        }
+
+        // Check if SPV is initialized
+        if !self.spv_initialized.load(Ordering::Relaxed) {
+            return Err("SPV must be initialized before starting sync".to_string());
         }
 
         // Call the start_sync method on the SPV manager

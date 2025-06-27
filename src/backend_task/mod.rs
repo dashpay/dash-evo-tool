@@ -56,6 +56,7 @@ pub(crate) enum BackendTask {
     SystemTask(SystemTask),
     PlatformInfo(PlatformInfoTaskRequestType),
     SwitchConnectionType { connection_type: ConnectionType },
+    InitializeSpv,
     StartSpvSync,
     None,
 }
@@ -189,6 +190,10 @@ impl AppContext {
                     Err(e) => tracing::error!("Connection switch failed: {}", e),
                 }
                 result
+            }
+            BackendTask::InitializeSpv => {
+                tracing::info!("BackendTask::InitializeSpv handler called");
+                self.initialize_spv().await
             }
             BackendTask::StartSpvSync => {
                 tracing::info!("BackendTask::StartSpvSync handler called");

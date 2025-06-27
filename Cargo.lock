@@ -952,6 +952,33 @@ dependencies = [
 
 [[package]]
 name = "blsful"
+version = "2.5.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a676ce0f93ae20ca6defc223b5ac459a6f071bd88c03100a14cb93604a5e994c"
+dependencies = [
+ "anyhow",
+ "arrayref",
+ "blstrs_plus",
+ "hex",
+ "hkdf",
+ "merlin",
+ "pairing",
+ "rand 0.8.5",
+ "rand_chacha 0.3.1",
+ "rand_core 0.6.4",
+ "serde",
+ "serde_bare",
+ "sha2",
+ "sha3",
+ "subtle",
+ "thiserror 1.0.69",
+ "uint-zigzag",
+ "vsss-rs 4.3.8",
+ "zeroize",
+]
+
+[[package]]
+name = "blsful"
 version = "3.0.0-pre8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "384e5e9866cb7f830f06a6633ba998697d5a826e99e8c78376deaadd33cda7be"
@@ -972,7 +999,7 @@ dependencies = [
  "subtle",
  "thiserror 2.0.12",
  "uint-zigzag",
- "vsss-rs",
+ "vsss-rs 5.1.0",
  "zeroize",
 ]
 
@@ -1758,10 +1785,13 @@ dependencies = [
  "anyhow",
  "async-trait",
  "bincode 1.3.3",
+ "blsful 2.5.7",
  "clap",
  "crossterm",
  "dashcore 0.39.6",
  "dashcore_hashes 0.39.6",
+ "hex",
+ "indexmap 2.9.0",
  "log",
  "rand 0.8.5",
  "serde",
@@ -1782,8 +1812,9 @@ dependencies = [
  "bincode 2.0.0-rc.3",
  "bincode_derive",
  "bitflags 2.9.1",
+ "bitvec",
  "blake3",
- "blsful",
+ "blsful 3.0.0-pre8",
  "dash-network 0.39.6",
  "dashcore-private 0.39.6",
  "dashcore_hashes 0.39.6",
@@ -1806,7 +1837,7 @@ dependencies = [
  "bech32",
  "bitflags 2.9.1",
  "blake3",
- "blsful",
+ "blsful 3.0.0-pre8",
  "dash-network 0.39.6 (git+https://github.com/dashpay/rust-dashcore?rev=63cd03eb5587ddf86a5d13e7c0d655cd04ff1645)",
  "dashcore-private 0.39.6 (git+https://github.com/dashpay/rust-dashcore?rev=63cd03eb5587ddf86a5d13e7c0d655cd04ff1645)",
  "dashcore_hashes 0.39.6 (git+https://github.com/dashpay/rust-dashcore?rev=63cd03eb5587ddf86a5d13e7c0d655cd04ff1645)",
@@ -6917,6 +6948,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "thiserror-impl-no-std"
+version = "2.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "58e6318948b519ba6dc2b442a6d0b904ebfb8d411a3ad3e07843615a72249758"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 1.0.109",
+]
+
+[[package]]
+name = "thiserror-no-std"
+version = "2.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a3ad459d94dd517257cc96add8a43190ee620011bb6e6cdc82dafd97dfafafea"
+dependencies = [
+ "thiserror-impl-no-std",
+]
+
+[[package]]
 name = "thread_local"
 version = "1.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7640,6 +7691,22 @@ name = "virtue"
 version = "0.0.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7302ac74a033bf17b6e609ceec0f891ca9200d502d31f02dc7908d3d98767c9d"
+
+[[package]]
+name = "vsss-rs"
+version = "4.3.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8fabeca519a296f0b39428cfe496b600c0179c9498687986449d61fa40e60806"
+dependencies = [
+ "crypto-bigint",
+ "elliptic-curve",
+ "generic-array 1.2.0",
+ "rand_core 0.6.4",
+ "serde",
+ "sha3",
+ "subtle",
+ "thiserror-no-std",
+]
 
 [[package]]
 name = "vsss-rs"

@@ -186,7 +186,7 @@ impl SettingsScreen {
                     app_action |= AppAction::BackendTask(BackendTask::SwitchConnectionType {
                         connection_type: ConnectionType::DashCore,
                     });
-                    self.is_switching_connection = true;
+                    // self.is_switching_connection = true;
                     self.connection_switch_start_time = Some(Instant::now());
                 }
 
@@ -204,7 +204,7 @@ impl SettingsScreen {
                     app_action |= AppAction::BackendTask(BackendTask::SwitchConnectionType {
                         connection_type: ConnectionType::DashSpv,
                     });
-                    self.is_switching_connection = true;
+                    // self.is_switching_connection = true;
                     self.connection_switch_start_time = Some(Instant::now());
                 }
             });
@@ -249,16 +249,15 @@ impl SettingsScreen {
                 let app_context = self.current_app_context();
 
                 // Get SPV status data and immediately release the lock
-                let (spv_is_running, header_height, filter_height, last_updated_elapsed) =
+                let (spv_is_running, header_height, filter_height) =
                     if let Ok(spv_status) = app_context.spv_status.lock() {
                         (
                             spv_status.is_running,
                             spv_status.header_height,
                             spv_status.filter_height,
-                            spv_status.last_updated.elapsed(),
                         )
                     } else {
-                        (false, None, None, std::time::Duration::from_secs(0))
+                        (false, None, None)
                     };
 
                 if spv_is_running {
@@ -296,7 +295,7 @@ impl SettingsScreen {
                             // Animated status indicator
                             let time = ui.input(|i| i.time);
                             let pulse = (time * 2.0).sin() * 0.5 + 0.5;
-                            let status_color = Color32::from_rgb(
+                            let _status_color = Color32::from_rgb(
                                 (64.0 + pulse * 32.0) as u8,
                                 (192.0 + pulse * 63.0) as u8,
                                 (64.0 + pulse * 32.0) as u8,
@@ -403,28 +402,6 @@ impl SettingsScreen {
                             }
                         }
 
-                        // Last update indicator
-                        ui.horizontal(|ui| {
-                            ui.add_space(20.0);
-                            ui.label("Last Updated:");
-                            let status_text = if last_updated_elapsed.as_secs() < 10 {
-                                format!("{:.1}s ago", last_updated_elapsed.as_secs_f32())
-                            } else if last_updated_elapsed.as_secs() < 60 {
-                                format!("{}s ago", last_updated_elapsed.as_secs())
-                            } else {
-                                format!("{}m ago", last_updated_elapsed.as_secs() / 60)
-                            };
-                            
-                            let status_color = if last_updated_elapsed.as_secs() < 30 {
-                                DashColors::success_color(dark_mode)
-                            } else if last_updated_elapsed.as_secs() < 120 {
-                                DashColors::warning_color(dark_mode)
-                            } else {
-                                DashColors::error_color(dark_mode)
-                            };
-                            
-                            ui.colored_label(status_color, status_text);
-                        });
                     });
 
                     // Sync button
@@ -433,16 +410,25 @@ impl SettingsScreen {
                     let mut show_diagnostics_clicked = false;
                     let mut start_sync_clicked = false;
 
+                    // Track button clicks
+                    let mut initialize_clicked = false;
+                    
                     ui.horizontal(|ui| {
                         if ui.button("Show Diagnostics").clicked() {
                             show_diagnostics_clicked = true;
                         }
                         
-                        // Add "Start SPV Sync" button when headers are at 0
-                        if header_height.unwrap_or(0) == 0 {
-                            if ui.button("Start SPV Sync").clicked() {
-                                start_sync_clicked = true;
+                        // Add Initialize button if SPV is not initialized
+                        let spv_initialized = app_context.spv_initialized.load(Ordering::Relaxed);
+                        if !spv_initialized {
+                            if ui.button("Initialize SPV").clicked() {
+                                initialize_clicked = true;
                             }
+                        }
+                        
+                        // Add "Start SPV Sync" button only after initialization
+                        if spv_initialized && ui.button("Start SPV Sync").clicked() {
+                            start_sync_clicked = true;
                         }
                     });
 
@@ -454,15 +440,19 @@ impl SettingsScreen {
                             "SPV Diagnostics:\n\
                             Block Height: {}\n\
                             Filter Height: {}\n\
-                            Last Updated: {:.1}s ago\n\
                             Status: {}\n\n\
                             For detailed diagnostics, check det.log",
                             header_height.unwrap_or(0),
                             filter_height.unwrap_or(0),
-                            last_updated_elapsed.as_secs_f32(),
                             if spv_is_running { "Running" } else { "Stopped" }
                         );
                         self.show_spv_diagnostics = true;
+                    }
+                    
+                    if initialize_clicked {
+                        tracing::info!("User clicked Initialize SPV");
+                        // Send the task to initialize SPV
+                        app_action = AppAction::BackendTask(BackendTask::InitializeSpv);
                     }
                     
                     if start_sync_clicked {
@@ -1116,28 +1106,6 @@ impl ScreenLike for SettingsScreen {
     }
 
     fn ui(&mut self, ctx: &Context) -> AppAction {
-        // Check for connection switch timeout (35 seconds for SPV, 5 for Core)
-        if let Some(start_time) = self.connection_switch_start_time {
-            let timeout_duration = if self
-                .current_app_context()
-                .config
-                .read()
-                .unwrap()
-                .connection_type
-                == ConnectionType::DashCore
-            {
-                Duration::from_secs(5)
-            } else {
-                Duration::from_secs(35) // SPV can take longer
-            };
-
-            if start_time.elapsed() > timeout_duration {
-                // Clear the loading state after timeout
-                self.is_switching_connection = false;
-                self.connection_switch_start_time = None;
-            }
-        }
-
         let mut action = add_top_panel(
             ctx,
             self.current_app_context(),

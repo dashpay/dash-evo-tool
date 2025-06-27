@@ -149,7 +149,7 @@ fn add_connection_indicator(ui: &mut Ui, app_context: &Arc<AppContext>) -> AppAc
 
                     // Request repaint for animation (only when connected and pulsating)
                     if connected {
-                        ui.ctx().request_repaint();
+                        app_context.repaint_animation(ui.ctx());
                     }
                     let tip = if connected {
                         "Connected to Dash Core Wallet"
@@ -163,9 +163,15 @@ fn add_connection_indicator(ui: &mut Ui, app_context: &Arc<AppContext>) -> AppAc
                         let (custom_path, overwrite) = settings
                             .map(|(_, _, _, custom_path, overwrite, _)| (custom_path, overwrite))
                             .unwrap_or((None, true));
-                        action |= AppAction::BackendTask(BackendTask::CoreTask(
-                            CoreTask::StartDashQT(app_context.network, custom_path, overwrite),
-                        ));
+                        if let Some(dash_qt_path) = custom_path {
+                            action |= AppAction::BackendTask(BackendTask::CoreTask(
+                                CoreTask::StartDashQT(app_context.network, dash_qt_path, overwrite),
+                            ));
+                        } else {
+                            tracing::debug!(
+                                "Dash-Qt path not set in settings, not starting Dash-Qt from connection indicator."
+                            );
+                        }
                     }
                 });
             },

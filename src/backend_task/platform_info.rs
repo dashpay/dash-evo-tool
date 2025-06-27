@@ -31,7 +31,7 @@ use chrono::{prelude::*, LocalResult};
 use chrono_humanize::{Accuracy, HumanTime, Tense};
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) enum PlatformInfoTaskRequestType {
+pub enum PlatformInfoTaskRequestType {
     CurrentEpochInfo,
     TotalCreditsOnPlatform,
     CurrentVersionVotingState,
@@ -42,7 +42,7 @@ pub(crate) enum PlatformInfoTaskRequestType {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) enum PlatformInfoTaskResult {
+pub enum PlatformInfoTaskResult {
     BasicPlatformInfo {
         platform_version: &'static PlatformVersion,
         core_chain_lock_height: Option<u32>,
@@ -217,8 +217,9 @@ fn format_withdrawal_documents_with_daily_limit(
                 .get_bytes(OUTPUT_SCRIPT)
                 .expect("expected output script");
             let output_script = ScriptBuf::from_bytes(address_bytes);
-            let address =
-                Address::from_script(&output_script, network).expect("expected an address");
+            let address = Address::from_script(&output_script, network)
+                .map(|addr| addr.to_string())
+                .unwrap_or_else(|e| format!("Invalid Address: {}", e));
             format!(
                 "{}: {:.8} Dash for {} towards {} ({})",
                 local_datetime.format("%Y-%m-%d %H:%M:%S"),

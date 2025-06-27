@@ -9,15 +9,16 @@ use crate::model::wallet::Wallet;
 use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dashcore_rpc::{Auth, Client};
 use dash_sdk::dpp::dashcore::{Address, ChainLock, Network, OutPoint, Transaction, TxOut};
+use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 #[derive(Debug, Clone)]
-pub(crate) enum CoreTask {
+pub enum CoreTask {
     #[allow(dead_code)] // May be used for getting single chain lock
     GetBestChainLock,
     GetBestChainLocks,
     RefreshWalletInfo(Arc<RwLock<Wallet>>),
-    StartDashQT(Network, Option<String>, bool),
+    StartDashQT(Network, PathBuf, bool),
 }
 impl PartialEq for CoreTask {
     fn eq(&self, other: &Self) -> bool {
@@ -38,7 +39,7 @@ impl PartialEq for CoreTask {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) enum CoreItem {
+pub enum CoreItem {
     ReceivedAvailableUTXOTransaction(Transaction, Vec<(OutPoint, TxOut, Address)>),
     ChainLock(ChainLock, Network),
     ChainLocks(

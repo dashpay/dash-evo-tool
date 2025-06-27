@@ -12,7 +12,7 @@ use crate::ui::{RootScreenType, ScreenLike};
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::TimestampMillis;
 use eframe::egui::{self, Context, Ui};
-use std::sync::atomic::Ordering;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -28,7 +28,7 @@ pub struct NetworkChooserScreen {
     pub devnet_core_status_online: bool,
     pub local_core_status_online: bool,
     pub recheck_time: Option<TimestampMillis>,
-    custom_dash_qt_path: Option<String>,
+    custom_dash_qt_path: Option<PathBuf>,
     custom_dash_qt_error_message: Option<String>,
     overwrite_dash_conf: bool,
     developer_mode: bool,
@@ -43,7 +43,7 @@ impl NetworkChooserScreen {
         devnet_app_context: Option<&Arc<AppContext>>,
         local_app_context: Option<&Arc<AppContext>>,
         current_network: Network,
-        custom_dash_qt_path: Option<String>,
+        custom_dash_qt_path: Option<PathBuf>,
         overwrite_dash_conf: bool,
     ) -> Self {
         let local_network_dashmate_password = if let Ok(config) = Config::load() {
@@ -63,7 +63,7 @@ impl NetworkChooserScreen {
             Network::Regtest => local_app_context.unwrap_or(mainnet_app_context),
             _ => mainnet_app_context,
         };
-        let developer_mode = current_context.developer_mode.load(Ordering::Relaxed);
+        let developer_mode = current_context.is_developer_mode();
 
         // Load theme preference from settings
         let theme_preference = current_context
@@ -248,10 +248,10 @@ impl NetworkChooserScreen {
                                                         //linux
                                                         String::from("dash-qt")
                                                     };
-                                                if file_name.ends_with(required_file_name.as_str())
+                                                if file_name.to_ascii_lowercase().ends_with(required_file_name.as_str())
                                                 {
                                                     self.custom_dash_qt_path =
-                                                        Some(path.display().to_string());
+                                                        Some(path);
                                                     self.custom_dash_qt_error_message = None;
                                                     self.save()
                                                         .expect("Expected to save db settings");
@@ -290,7 +290,7 @@ impl NetworkChooserScreen {
                                     ui.horizontal(|ui| {
                                         ui.label("Selected:");
                                         ui.label(
-                                            egui::RichText::new(file).color(DashColors::SUCCESS),
+                                            egui::RichText::new(file.display().to_string()).color(DashColors::SUCCESS),
                                         );
                                     });
                                 } else if let Some(ref error) = self.custom_dash_qt_error_message {
@@ -301,7 +301,7 @@ impl NetworkChooserScreen {
                                 } else {
                                     ui.label(
                                         egui::RichText::new(
-                                            "No custom path selected (using system default)",
+                                            "dash-qt not found, click 'Select File' to choose.",
                                         )
                                         .color(DashColors::TEXT_SECONDARY)
                                         .italics(),
@@ -361,26 +361,22 @@ impl NetworkChooserScreen {
 
                                             // Update developer mode for all contexts
                                             self.mainnet_app_context
-                                                .developer_mode
-                                                .store(self.developer_mode, Ordering::Relaxed);
+                                                .enable_developer_mode(self.developer_mode);
 
                                             if let Some(ref testnet_ctx) = self.testnet_app_context
                                             {
                                                 testnet_ctx
-                                                    .developer_mode
-                                                    .store(self.developer_mode, Ordering::Relaxed);
+                                                    .enable_developer_mode(self.developer_mode);
                                             }
 
                                             if let Some(ref devnet_ctx) = self.devnet_app_context {
                                                 devnet_ctx
-                                                    .developer_mode
-                                                    .store(self.developer_mode, Ordering::Relaxed);
+                                                    .enable_developer_mode(self.developer_mode);
                                             }
 
                                             if let Some(ref local_ctx) = self.local_app_context {
                                                 local_ctx
-                                                    .developer_mode
-                                                    .store(self.developer_mode, Ordering::Relaxed);
+                                                    .enable_developer_mode(self.developer_mode);
                                             }
                                         }
                                     }
@@ -556,17 +552,25 @@ impl NetworkChooserScreen {
         }
 
         // Add a button to start the network
-
         if network != Network::Regtest {
-            if ui.button("Start").clicked() {
-                app_action = AppAction::BackendTask(BackendTask::CoreTask(CoreTask::StartDashQT(
-                    network,
-                    self.custom_dash_qt_path.clone(),
-                    self.overwrite_dash_conf,
-                )));
-            }
-        } else {
-            ui.label("");
+            ui.add_enabled_ui(self.custom_dash_qt_path.is_some(), |ui| {
+                if ui
+                    .button("Start")
+                    .on_disabled_hover_text(
+                        "Configure dash-qt binary using Advanced Settings below",
+                    )
+                    .clicked()
+                {
+                    app_action =
+                        AppAction::BackendTask(BackendTask::CoreTask(CoreTask::StartDashQT(
+                            network,
+                            self.custom_dash_qt_path
+                                .clone()
+                                .expect("Some() checked above"),
+                            self.overwrite_dash_conf,
+                        )));
+                }
+            });
         }
 
         // Add a text field for the dashmate password

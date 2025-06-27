@@ -12,7 +12,6 @@ pub use structs::*;
 pub use groups::*;
 
 use std::collections::BTreeMap;
-use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, RwLock};
 
 use serde_json;
@@ -1232,7 +1231,7 @@ fn my_tokens(
         Option<dash_sdk::dpp::tokens::token_pricing_schedule::TokenPricingSchedule>,
     >,
 ) -> IndexMap<IdentityTokenIdentifier, IdentityTokenBalanceWithActions> {
-    let in_dev_mode = app_context.developer_mode.load(Ordering::Relaxed);
+    let in_dev_mode = app_context.is_developer_mode();
 
     app_context
         .identity_token_balances()
@@ -2899,8 +2898,8 @@ mod tests {
         let db = Arc::new(Database::new(db_file_path).unwrap());
         db.initialize(Path::new(&db_file_path)).unwrap();
 
-        let app_context =
-            AppContext::new(Network::Regtest, db, None).expect("Expected to create AppContext");
+        let app_context = AppContext::new(Network::Regtest, db, None, Default::default())
+            .expect("Expected to create AppContext");
         let mut token_creator_ui = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
 
         // Identity selection
@@ -3197,8 +3196,8 @@ mod tests {
         let db = Arc::new(Database::new(db_file_path).unwrap());
         db.initialize(Path::new(&db_file_path)).unwrap();
 
-        let app_context =
-            AppContext::new(Network::Regtest, db, None).expect("Expected to create AppContext");
+        let app_context = AppContext::new(Network::Regtest, db, None, Default::default())
+            .expect("Expected to create AppContext");
         let mut token_creator_ui = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
 
         // Identity selection
@@ -3309,8 +3308,8 @@ mod tests {
         let db = Arc::new(Database::new(db_file_path).unwrap());
         db.initialize(Path::new(&db_file_path)).unwrap();
 
-        let app_context =
-            AppContext::new(Network::Regtest, db, None).expect("Expected to create AppContext");
+        let app_context = AppContext::new(Network::Regtest, db, None, Default::default())
+            .expect("Expected to create AppContext");
         let mut token_creator_ui = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
 
         // Identity selection

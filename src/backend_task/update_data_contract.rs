@@ -26,7 +26,7 @@ use dash_sdk::{
     Error, Sdk,
 };
 use std::time::Duration;
-use tokio::{sync::mpsc, time::sleep};
+use tokio::time::sleep;
 
 /// Extracts the contract ID from a formatted error message string that contains:
 /// "... with id <contract_id>: ..."
@@ -59,7 +59,7 @@ impl AppContext {
         identity: QualifiedIdentity,
         signing_key: IdentityPublicKey,
         sdk: &Sdk,
-        sender: mpsc::Sender<TaskResult>,
+        sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, String> {
         // Increment the version of the data contract
         data_contract.increment_version();

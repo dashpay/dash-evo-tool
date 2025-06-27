@@ -14,7 +14,6 @@ use dash_sdk::platform::tokens::transitions::BurnResult;
 use dash_sdk::platform::{DataContract, Identifier, IdentityPublicKey};
 use dash_sdk::{Error, Sdk};
 use std::sync::Arc;
-use tokio::sync::mpsc;
 
 impl AppContext {
     #[allow(clippy::too_many_arguments)]
@@ -28,7 +27,7 @@ impl AppContext {
         amount: u64,
         group_info: Option<GroupStateTransitionInfoStatus>,
         sdk: &Sdk,
-        _sender: mpsc::Sender<TaskResult>,
+        _sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, String> {
         let mut builder = TokenBurnTransitionBuilder::new(
             data_contract.clone(),

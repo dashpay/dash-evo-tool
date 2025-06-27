@@ -1,4 +1,9 @@
-use crate::ui::theme::{DashColors, MessageType, Shadow, Shape, Spacing, Typography};
+use std::sync::Arc;
+
+use crate::{
+    context::AppContext,
+    ui::theme::{DashColors, Shadow, Shape, Spacing, Typography},
+};
 use egui::{
     Button, CentralPanel, Color32, Context, Frame, Margin, Response, RichText, Stroke, TextEdit,
     Ui, Vec2,
@@ -6,7 +11,7 @@ use egui::{
 
 /// Styled button variants
 #[allow(dead_code)]
-pub enum ButtonVariant {
+pub(crate) enum ButtonVariant {
     Primary,
     Secondary,
     Danger,
@@ -14,7 +19,7 @@ pub enum ButtonVariant {
 }
 
 /// A styled button that follows Dash design guidelines
-pub struct StyledButton {
+pub(crate) struct StyledButton {
     text: String,
     variant: ButtonVariant,
     size: ButtonSize,
@@ -23,7 +28,7 @@ pub struct StyledButton {
 }
 
 #[allow(dead_code)]
-pub enum ButtonSize {
+pub(crate) enum ButtonSize {
     Small,
     Medium,
     Large,
@@ -43,39 +48,6 @@ impl StyledButton {
     pub fn primary(text: impl Into<String>) -> Self {
         Self::new(text)
     }
-
-    // Unused methods commented out to eliminate warnings
-    // pub fn secondary(text: impl Into<String>) -> Self {
-    //     Self::new(text).variant(ButtonVariant::Secondary)
-    // }
-
-    // pub fn danger(text: impl Into<String>) -> Self {
-    //     Self::new(text).variant(ButtonVariant::Danger)
-    // }
-
-    // pub fn ghost(text: impl Into<String>) -> Self {
-    //     Self::new(text).variant(ButtonVariant::Ghost)
-    // }
-
-    // pub fn size(mut self, size: ButtonSize) -> Self {
-    //     self.size = size;
-    //     self
-    // }
-
-    // pub fn enabled(mut self, enabled: bool) -> Self {
-    //     self.enabled = enabled;
-    //     self
-    // }
-
-    // pub fn min_width(mut self, width: f32) -> Self {
-    //     self.min_width = Some(width);
-    //     self
-    // }
-
-    // pub fn variant(mut self, variant: ButtonVariant) -> Self {
-    //     self.variant = variant;
-    //     self
-    // }
 
     pub fn show(self, ui: &mut Ui) -> Response {
         let dark_mode = ui.ctx().style().visuals.dark_mode;
@@ -150,10 +122,16 @@ impl StyledButton {
 }
 
 /// Styled card component
-pub struct StyledCard {
+pub(crate) struct StyledCard {
     title: Option<String>,
     padding: f32,
     show_border: bool,
+}
+
+impl Default for StyledCard {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl StyledCard {
@@ -210,167 +188,13 @@ impl StyledCard {
     }
 }
 
-// Styled text input with Dash theme - commented out as it's not currently used
-// #[allow(dead_code)]
-// pub struct StyledTextInput {
-//     hint: Option<String>,
-//     multiline: bool,
-//     desired_width: Option<f32>,
-//     desired_rows: Option<usize>,
-// }
-//
-// impl StyledTextInput {
-//     pub fn new() -> Self {
-//         Self {
-//             hint: None,
-//             multiline: false,
-//             desired_width: None,
-//             desired_rows: None,
-//         }
-//     }
-//
-//     pub fn hint(mut self, hint: impl Into<String>) -> Self {
-//         self.hint = Some(hint.into());
-//         self
-//     }
-//
-//     pub fn multiline(mut self) -> Self {
-//         self.multiline = true;
-//         self
-//     }
-//
-//     pub fn desired_width(mut self, width: f32) -> Self {
-//         self.desired_width = Some(width);
-//         self
-//     }
-//
-//     pub fn desired_rows(mut self, rows: usize) -> Self {
-//         self.desired_rows = Some(rows);
-//         self
-//     }
-//
-//     pub fn show(self, ui: &mut Ui, text: &mut String) -> Response {
-//         let mut text_edit = if self.multiline {
-//             egui::TextEdit::multiline(text)
-//         } else {
-//             egui::TextEdit::singleline(text)
-//         };
-//
-//         // Explicitly set the background color to INPUT_BACKGROUND
-//         text_edit = text_edit.background_color(DashColors::INPUT_BACKGROUND);
-//
-//         if let Some(hint) = self.hint {
-//             text_edit = text_edit.hint_text(hint);
-//         }
-//
-//         if let Some(width) = self.desired_width {
-//             text_edit = text_edit.desired_width(width);
-//         }
-//
-//         if let Some(rows) = self.desired_rows {
-//             text_edit = text_edit.desired_rows(rows);
-//         }
-//
-//         ui.add(text_edit)
-//     }
-// }
-
-/// Styled message component for notifications
-pub struct StyledMessage {
-    text: String,
-    message_type: MessageType,
-    show_icon: bool,
-}
-
-#[allow(dead_code)]
-impl StyledMessage {
-    pub fn new(text: impl Into<String>, message_type: MessageType) -> Self {
-        Self {
-            text: text.into(),
-            message_type,
-            show_icon: true,
-        }
-    }
-
-    pub fn show_icon(mut self, show: bool) -> Self {
-        self.show_icon = show;
-        self
-    }
-
-    pub fn show(self, ui: &mut Ui) {
-        let color = self.message_type.color();
-        let bg_color = self.message_type.background_color();
-
-        egui::Frame::new()
-            .fill(bg_color)
-            .stroke(Stroke::new(1.0, color))
-            .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
-            .inner_margin(egui::Margin::same(Spacing::SM_I8))
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    if self.show_icon {
-                        let icon = match self.message_type {
-                            MessageType::Success => "✓",
-                            MessageType::Error => "✗",
-                            MessageType::Warning => "!",
-                            MessageType::Info => "i",
-                        };
-                        ui.label(RichText::new(icon).color(color).strong());
-                    }
-                    ui.label(RichText::new(self.text).color(color));
-                });
-            });
-    }
-}
-
-/// Scrollable container with consistent styling
-pub struct ScrollableContainer {
-    max_height: Option<f32>,
-    show_scrollbar: bool,
-}
-
-#[allow(dead_code)]
-impl ScrollableContainer {
-    pub fn new() -> Self {
-        Self {
-            max_height: None,
-            show_scrollbar: true,
-        }
-    }
-
-    pub fn max_height(mut self, height: f32) -> Self {
-        self.max_height = Some(height);
-        self
-    }
-
-    pub fn show_scrollbar(mut self, show: bool) -> Self {
-        self.show_scrollbar = show;
-        self
-    }
-
-    pub fn show<R>(self, ui: &mut Ui, content: impl FnOnce(&mut Ui) -> R) -> R {
-        let mut scroll = egui::ScrollArea::vertical();
-
-        if let Some(height) = self.max_height {
-            scroll = scroll.max_height(height);
-        }
-
-        if !self.show_scrollbar {
-            scroll =
-                scroll.scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden);
-        }
-
-        scroll.show(ui, content).inner
-    }
-}
-
 /// Styled checkbox with Dash theme
-pub struct StyledCheckbox<'a> {
+pub(crate) struct StyledCheckbox<'a> {
     checked: &'a mut bool,
     text: String,
 }
 
-#[allow(dead_code)]
+// #[allow(dead_code)]
 impl<'a> StyledCheckbox<'a> {
     pub fn new(checked: &'a mut bool, text: impl Into<String>) -> Self {
         Self {
@@ -394,18 +218,20 @@ impl<'a> StyledCheckbox<'a> {
 }
 
 /// Gradient button with animated effects
-pub struct GradientButton {
+pub(crate) struct GradientButton {
     text: String,
     min_width: Option<f32>,
     glow: bool,
+    app_context: Arc<AppContext>,
 }
 
 impl GradientButton {
-    pub fn new(text: impl Into<String>) -> Self {
+    pub fn new(text: impl Into<String>, app_context: &Arc<AppContext>) -> Self {
         Self {
             text: text.into(),
             min_width: None,
             glow: false,
+            app_context: Arc::clone(app_context),
         }
     }
 
@@ -439,7 +265,7 @@ impl GradientButton {
         let response = ui.add(button);
 
         // Request repaint for animation
-        ui.ctx().request_repaint();
+        self.app_context.repaint_animation(ui.ctx());
 
         response
     }
@@ -494,6 +320,11 @@ impl GlassCard {
     }
 }
 
+impl Default for GlassCard {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 /// Hero section with gradient background
 pub struct HeroSection {
     title: String,
@@ -676,6 +507,12 @@ impl AnimatedGradientCard {
                 content(ui)
             })
             .inner
+    }
+}
+
+impl Default for AnimatedGradientCard {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

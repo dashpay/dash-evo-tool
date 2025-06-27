@@ -25,12 +25,15 @@ use crate::ui::tools::proof_visualizer_screen::ProofVisualizerScreen;
 use crate::ui::tools::transition_visualizer_screen::TransitionVisualizerScreen;
 use crate::ui::wallets::wallets_screen::WalletsBalancesScreen;
 use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike, ScreenType};
+use crate::utils::egui_mpsc::{self, EguiMpscAsync, EguiMpscSync};
+use crate::utils::tasks::TaskManager;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use derive_more::From;
 use eframe::{egui, App};
 use std::collections::BTreeMap;
 use std::ops::BitOrAssign;
+use std::path::PathBuf;
 use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant, SystemTime};
 use std::vec;
@@ -70,10 +73,11 @@ pub struct AppState {
     #[allow(dead_code)] // Kept alive for the lifetime of the app
     pub local_core_zmq_listener: CoreZMQListener,
     pub core_message_receiver: mpsc::Receiver<(ZMQMessage, Network)>,
-    pub task_result_sender: tokiompsc::Sender<TaskResult>, // Channel sender for sending task results
+    pub task_result_sender: egui_mpsc::SenderAsync<TaskResult>, // Channel sender for sending task results
     pub task_result_receiver: tokiompsc::Receiver<TaskResult>, // Channel receiver for receiving task results
     pub theme_preference: ThemeMode,                           // Current theme preference
     last_scheduled_vote_check: Instant, // Last time we checked if there are scheduled masternode votes to cast
+    pub subtasks: Arc<TaskManager>,     // Subtasks manager for graceful shutdown
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -142,7 +146,7 @@ impl BitOrAssign for AppAction {
     }
 }
 impl AppState {
-    pub fn new() -> Self {
+    pub fn new(ctx: egui::Context) -> Self {
         create_app_user_data_directory_if_not_exists()
             .expect("Failed to create app user_data directory");
         copy_env_file_if_not_exists();
@@ -160,22 +164,44 @@ impl AppState {
                 (None, ThemeMode::System) // Default values if no settings found
             };
 
-        let mainnet_app_context =
-            match AppContext::new(Network::Dash, db.clone(), password_info.clone()) {
-                Some(context) => context,
-                None => {
-                    eprintln!(
-                        "Error: Failed to create the AppContext. Expected Dash config for mainnet."
-                    );
-                    std::process::exit(1);
-                }
-            };
-        let testnet_app_context =
-            AppContext::new(Network::Testnet, db.clone(), password_info.clone());
-        let devnet_app_context =
-            AppContext::new(Network::Devnet, db.clone(), password_info.clone());
-        let local_app_context = AppContext::new(Network::Regtest, db.clone(), password_info);
+        let subtasks = Arc::new(TaskManager::new());
+        let mainnet_app_context = match AppContext::new(
+            Network::Dash,
+            db.clone(),
+            password_info.clone(),
+            subtasks.clone(),
+        ) {
+            Some(context) => context,
+            None => {
+                eprintln!(
+                    "Error: Failed to create the AppContext. Expected Dash config for mainnet."
+                );
+                std::process::exit(1);
+            }
+        };
+        let testnet_app_context = AppContext::new(
+            Network::Testnet,
+            db.clone(),
+            password_info.clone(),
+            subtasks.clone(),
+        );
+        let devnet_app_context = AppContext::new(
+            Network::Devnet,
+            db.clone(),
+            password_info.clone(),
+            subtasks.clone(),
+        );
+        let local_app_context = AppContext::new(
+            Network::Regtest,
+            db.clone(),
+            password_info,
+            subtasks.clone(),
+        );
 
+        // load fonts
+        ctx.set_fonts(crate::bundled::fonts().expect("failed to load fonts"));
+
+        // create screens
         let mut identities_screen = IdentitiesScreen::new(&mainnet_app_context);
         let mut dpns_active_contests_screen =
             DPNSScreen::new(&mainnet_app_context, DPNSSubscreen::Active);
@@ -203,7 +229,7 @@ impl AppState {
         let (custom_dash_qt_path, overwrite_dash_conf) = match settings.clone() {
             Some((.., custom_dash_qt_path, db_overwrite_dash_conf, _theme_pref)) => {
                 // Use the stored settings
-                // Note: if custom_dash_qt_path is None, the backend will use platform-specific defaults
+                let custom_dash_qt_path = custom_dash_qt_path.or_else(detect_dash_qt_path);
                 (custom_dash_qt_path, db_overwrite_dash_conf)
             }
             None => {
@@ -310,10 +336,12 @@ impl AppState {
         }
 
         // // Create a channel with a buffer size of 32 (adjust as needed)
-        let (task_result_sender, task_result_receiver) = tokiompsc::channel(256);
+        let (task_result_sender, task_result_receiver) =
+            tokiompsc::channel(256).with_egui_ctx(ctx.clone());
 
         // Create a channel for communication with the InstantSendListener
-        let (core_message_sender, core_message_receiver) = mpsc::channel();
+        let (core_message_sender, core_message_receiver) =
+            mpsc::channel().with_egui_ctx(ctx.clone());
 
         let mainnet_core_zmq_listener = CoreZMQListener::spawn_listener(
             Network::Dash,
@@ -447,7 +475,26 @@ impl AppState {
             task_result_receiver,
             theme_preference,
             last_scheduled_vote_check: Instant::now(),
+            subtasks,
         }
+    }
+
+    /// Allows enabling or disabling animations globally for the app.
+    ///
+    /// Default is enabled.
+    pub fn with_animations(self, enabled: bool) -> Self {
+        self.mainnet_app_context.enable_animations(enabled);
+        if let Some(context) = self.devnet_app_context.as_ref() {
+            context.enable_animations(enabled)
+        }
+        if let Some(context) = self.testnet_app_context.as_ref() {
+            context.enable_animations(enabled)
+        }
+        if let Some(context) = self.local_app_context.as_ref() {
+            context.enable_animations(enabled)
+        }
+
+        self
     }
 
     pub fn current_app_context(&self) -> &Arc<AppContext> {
@@ -461,10 +508,9 @@ impl AppState {
     }
 
     // Handle the backend task and send the result through the channel
-    pub fn handle_backend_task(&self, task: BackendTask) {
+    fn handle_backend_task(&self, task: BackendTask) {
         let sender = self.task_result_sender.clone();
         let app_context = self.current_app_context().clone();
-
         tokio::spawn(async move {
             let result = app_context.run_backend_task(task, sender.clone()).await;
 
@@ -476,7 +522,7 @@ impl AppState {
     }
 
     /// Handle the backend tasks and send the results through the channel
-    pub fn handle_backend_tasks(&self, tasks: Vec<BackendTask>, mode: BackendTasksExecutionMode) {
+    fn handle_backend_tasks(&self, tasks: Vec<BackendTask>, mode: BackendTasksExecutionMode) {
         let sender = self.task_result_sender.clone();
         let app_context = self.current_app_context().clone();
 
@@ -748,9 +794,6 @@ impl App for AppState {
             }
         }
 
-        // Use a timer to repaint the UI every 0.05 seconds
-        ctx.request_repaint_after(std::time::Duration::from_millis(50));
-
         let action = self.visible_screen_mut().ui(ctx);
 
         match action {
@@ -823,5 +866,48 @@ impl App for AppState {
             }
             AppAction::Custom(_) => {}
         }
+    }
+
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        // Signal all background tasks to cancel
+        tracing::debug!("App received on_exit event, cancelling all background tasks");
+
+        // if ctx.input(|i| i.viewport().close_requested()) {
+        if !self.subtasks.cancellation_token.is_cancelled() {
+            self.subtasks.shutdown().unwrap_or_else(|e| {
+                tracing::debug!("Failed to shutdown subtasks: {}", e);
+            });
+        } else {
+            tracing::debug!("Shutdown already in progress, ignoring close request");
+        }
+        // }
+    }
+}
+
+pub(crate) fn detect_dash_qt_path() -> Option<PathBuf> {
+    let path = which::which("dash-qt")
+        .map(|path| path.to_string_lossy().to_string())
+        .inspect_err(|e| tracing::warn!("failed to find dash-qt: {}", e))
+        .ok()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            // Fallback to default paths based on the operating system
+            if cfg!(target_os = "macos") {
+                PathBuf::from("/Applications/Dash-Qt.app/Contents/MacOS/Dash-Qt")
+            } else if cfg!(target_os = "windows") {
+                // Retrieve the PROGRAMFILES environment variable or default to "C:\\Program Files"
+                let program_files = std::env::var("PROGRAMFILES")
+                    .unwrap_or_else(|_| "C:\\Program Files".to_string());
+                PathBuf::from(program_files).join("DashCore\\dash-qt.exe")
+            } else {
+                PathBuf::from("/usr/local/bin/dash-qt") // Default Linux path
+            }
+        });
+
+    if path.is_file() {
+        Some(path)
+    } else {
+        tracing::warn!("Dash-Qt binary not found at: {:?}", path);
+        None
     }
 }

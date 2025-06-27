@@ -12,6 +12,7 @@ use crate::model::wallet::{Wallet, WalletSeedHash};
 use crate::sdk_wrapper::initialize_sdk;
 use crate::ui::tokens::tokens_screen::{IdentityTokenBalance, IdentityTokenIdentifier};
 use crate::ui::RootScreenType;
+use crate::utils::tasks::TaskManager;
 use bincode::config;
 use crossbeam_channel::{Receiver, Sender};
 use dash_sdk::dashcore_rpc::dashcore::{InstantLock, Transaction};
@@ -23,7 +24,6 @@ use dash_sdk::dpp::data_contract::TokenConfiguration;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::state_transition::asset_lock_proof::chain::ChainAssetLockProof;
 use dash_sdk::dpp::identity::state_transition::asset_lock_proof::InstantAssetLockProof;
-use dash_sdk::dpp::identity::Identity;
 use dash_sdk::dpp::prelude::{AssetLockProof, CoreBlockHeight};
 use dash_sdk::dpp::state_transition::batch_transition::methods::StateTransitionCreationOptions;
 use dash_sdk::dpp::state_transition::StateTransitionSigningOptions;
@@ -34,15 +34,19 @@ use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::platform::{DataContract, Identifier};
 use dash_sdk::query_types::IndexMap;
 use dash_sdk::Sdk;
+use egui::Context;
 use rusqlite::Result;
 use std::collections::{BTreeMap, HashMap};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
+
+const ANIMATION_REFRESH_TIME: std::time::Duration = std::time::Duration::from_millis(100);
 
 #[derive(Debug)]
 pub struct AppContext {
     pub(crate) network: Network,
-    pub(crate) developer_mode: AtomicBool,
+    developer_mode: AtomicBool,
     #[allow(dead_code)] // May be used for devnet identification
     pub(crate) devnet_name: Option<String>,
     pub(crate) db: Arc<Database>,
@@ -61,6 +65,13 @@ pub struct AppContext {
     #[allow(dead_code)] // May be used for password validation
     pub(crate) password_info: Option<PasswordInfo>,
     pub(crate) transactions_waiting_for_finality: Mutex<BTreeMap<Txid, Option<AssetLockProof>>>,
+    /// Whether to animate the UI elements.
+    ///
+    /// This is used to control animations in the UI, such as loading spinners or transitions.
+    /// Disable for automated tests.
+    animate: AtomicBool,
+    // subtasks started by the app context, used for graceful shutdown
+    pub(crate) subtasks: Arc<TaskManager>,
 }
 
 impl AppContext {
@@ -68,6 +79,7 @@ impl AppContext {
         network: Network,
         db: Arc<Database>,
         password_info: Option<PasswordInfo>,
+        subtasks: Arc<TaskManager>,
     ) -> Option<Arc<Self>> {
         let config = match Config::load() {
             Ok(config) => config,
@@ -136,6 +148,14 @@ impl AppContext {
             .map(|w| (w.seed_hash(), Arc::new(RwLock::new(w))))
             .collect();
 
+        let animate = match config.developer_mode.unwrap_or(false) {
+            true => {
+                tracing::debug!("developer_mode is enabled, disabling animations");
+                AtomicBool::new(false)
+            }
+            false => AtomicBool::new(true), // Animations are enabled by default
+        };
+
         let app_context = AppContext {
             network,
             developer_mode: AtomicBool::new(config.developer_mode.unwrap_or(false)),
@@ -155,6 +175,8 @@ impl AppContext {
             password_info,
             transactions_waiting_for_finality: Mutex::new(BTreeMap::new()),
             zmq_connection_status: Mutex::new(ZMQConnectionEvent::Disconnected),
+            animate,
+            subtasks,
         };
 
         let app_context = Arc::new(app_context);
@@ -163,12 +185,39 @@ impl AppContext {
         Some(app_context)
     }
 
+    /// Enables animations in the UI.
+    ///
+    /// This is used to control whether UI elements should animate, such as loading spinners or transitions.
+    pub fn enable_animations(&self, animate: bool) {
+        self.animate.store(animate, Ordering::Relaxed);
+    }
+
+    pub fn enable_developer_mode(&self, enable: bool) {
+        self.developer_mode.store(enable, Ordering::Relaxed);
+        // Animations are reverse of developer mode
+        self.enable_animations(!enable);
+    }
+
+    pub fn is_developer_mode(&self) -> bool {
+        self.developer_mode.load(Ordering::Relaxed)
+    }
+
+    /// Repaints the UI if animations are enabled.
+    ///
+    /// Called by UI elements that need to trigger a repaint, such as loading spinners or animated icons.
+    pub(super) fn repaint_animation(&self, ctx: &Context) {
+        if self.animate.load(Ordering::Relaxed) {
+            // Request a repaint after a short delay to allow for animations
+            ctx.request_repaint_after(ANIMATION_REFRESH_TIME);
+        }
+    }
+
     pub fn platform_version(&self) -> &'static PlatformVersion {
         default_platform_version(&self.network)
     }
 
     pub fn state_transition_options(&self) -> Option<StateTransitionCreationOptions> {
-        if self.developer_mode.load(Ordering::Relaxed) {
+        if self.is_developer_mode() {
             Some(StateTransitionCreationOptions {
                 signing_options: StateTransitionSigningOptions {
                     allow_signing_with_any_security_level: true,
@@ -226,17 +275,11 @@ impl AppContext {
         Ok(())
     }
 
-    #[allow(dead_code)] // May be used for storing identities
-    pub fn insert_local_identity(&self, identity: &Identity) -> Result<()> {
-        self.db
-            .insert_local_qualified_identity(&identity.clone().into(), None, self)
-    }
-
     /// Inserts a local qualified identity into the database
     pub fn insert_local_qualified_identity(
         &self,
         qualified_identity: &QualifiedIdentity,
-        wallet_and_identity_id_info: Option<(&[u8], u32)>,
+        wallet_and_identity_id_info: &Option<(WalletSeedHash, u32)>,
     ) -> Result<()> {
         self.db.insert_local_qualified_identity(
             qualified_identity,
@@ -310,27 +353,54 @@ impl AppContext {
     pub fn load_local_user_identities(&self) -> Result<Vec<QualifiedIdentity>> {
         let identities = self.db.get_local_user_identities(self)?;
 
-        let wallets = self.wallets.read().unwrap();
-        identities
+        Ok(identities
             .into_iter()
-            .map(|(mut identity, wallet_id)| {
-                if let Some(wallet_id) = wallet_id {
-                    // For each identity, we need to set the wallet information
-                    if let Some(wallet) = wallets.get(&wallet_id) {
-                        identity
-                            .associated_wallets
-                            .insert(wallet_id, wallet.clone());
-                    } else {
+            .map(|(mut identity, wallet_hash)| {
+                if let Some(wallet_id) = wallet_hash {
+                    // Load wallets for each identity
+                    self.load_wallet_for_identity(
+                        &mut identity,
+                        &[wallet_id],
+                    )
+                    .unwrap_or_else(|e| {
                         tracing::warn!(
-                            wallet = %hex::encode(wallet_id),
                             identity = %identity.identity.id(),
-                            "wallet not found for identity when loading local user identities",
-                        );
-                    }
+                            error = ?e,
+                            "cannot load wallet for identity when loading local user identities",
+                        )
+                    })
+                } else {
+                    tracing::debug!(
+                        identity = %identity.identity.id(),
+                        "no wallet hash found for identity when loading local user identities",
+                    );
                 }
-                Ok(identity)
+                identity
             })
-            .collect()
+            .collect())
+    }
+
+    fn load_wallet_for_identity(
+        &self,
+        identity: &mut QualifiedIdentity,
+        wallet_hashes: &[WalletSeedHash],
+    ) -> Result<()> {
+        let wallets = self.wallets.read().unwrap();
+        for wallet_hash in wallet_hashes {
+            if let Some(wallet) = wallets.get(wallet_hash) {
+                identity
+                    .associated_wallets
+                    .insert(*wallet_hash, wallet.clone());
+            } else {
+                tracing::warn!(
+                    wallet = %hex::encode(wallet_hash),
+                    identity = %identity.identity.id(),
+                    "wallet not found for identity when loading local user identities",
+                );
+            }
+        }
+
+        Ok(())
     }
 
     /// Fetches all contested names from the database including past and active ones
@@ -415,7 +485,7 @@ impl AppContext {
             Network,
             RootScreenType,
             Option<PasswordInfo>,
-            Option<String>,
+            Option<PathBuf>,
             bool,
             crate::ui::theme::ThemeMode,
         )>,

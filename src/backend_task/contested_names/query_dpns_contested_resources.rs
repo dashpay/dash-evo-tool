@@ -10,13 +10,13 @@ use dash_sdk::platform::FetchMany;
 use dash_sdk::query_types::ContestedResource;
 use dash_sdk::Sdk;
 use std::sync::Arc;
-use tokio::sync::{mpsc, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 impl AppContext {
     pub(super) async fn query_dpns_contested_resources(
         self: &Arc<Self>,
         sdk: &Sdk,
-        sender: mpsc::Sender<TaskResult>,
+        sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<(), String> {
         let data_contract = self.dpns_contract.as_ref();
         let document_type = data_contract

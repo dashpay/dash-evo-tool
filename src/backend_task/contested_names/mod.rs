@@ -12,10 +12,9 @@ use dash_sdk::platform::Identifier;
 use dash_sdk::Sdk;
 use futures::future::join_all;
 use std::sync::Arc;
-use tokio::sync::mpsc;
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) enum ContestedResourceTask {
+pub enum ContestedResourceTask {
     QueryDPNSContests,
     VoteOnDPNSNames(Vec<(String, ResourceVoteChoice)>, Vec<QualifiedIdentity>),
     ScheduleDPNSVotes(Vec<ScheduledDPNSVote>),
@@ -39,7 +38,7 @@ impl AppContext {
         self: &Arc<Self>,
         task: ContestedResourceTask,
         sdk: &Sdk,
-        sender: mpsc::Sender<TaskResult>,
+        sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, String> {
         match &task {
             ContestedResourceTask::QueryDPNSContests => self

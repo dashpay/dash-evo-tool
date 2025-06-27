@@ -8,7 +8,6 @@ use dash_sdk::dpp::version::v9::PROTOCOL_VERSION_9;
 use eframe::epaint::Margin;
 use egui::{Color32, Context, Frame, ImageButton, RichText, SidePanel, TextureHandle};
 use rust_embed::RustEmbed;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 #[derive(RustEmbed)]
@@ -116,14 +115,17 @@ pub fn add_left_panel(
                                 let button =
                                     ImageButton::new(texture).frame(false).tint(button_color);
 
-                                if ui.add(button).clicked() {
+                                let added = ui.add(button);
+                                if added.clicked() {
                                     action =
                                         AppAction::SetMainScreenThenGoToMainScreen(*screen_type);
+                                } else if added.hovered() {
+                                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                                 }
                             } else {
                                 // Fallback to a modern gradient button if texture loading fails
                                 if is_selected {
-                                    if GradientButton::new(*label)
+                                    if GradientButton::new(*label, app_context)
                                         .min_width(60.0)
                                         .glow()
                                         .show(ui)
@@ -152,7 +154,7 @@ pub fn add_left_panel(
 
                         // Push content to the top and dev label + logo to the bottom
                         ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
-                            if app_context.developer_mode.load(Ordering::Relaxed) {
+                            if app_context.is_developer_mode() {
                                 ui.add_space(Spacing::MD);
                                 let dev_label = egui::RichText::new("🔧 Dev mode")
                                     .color(DashColors::GRADIENT_PURPLE)

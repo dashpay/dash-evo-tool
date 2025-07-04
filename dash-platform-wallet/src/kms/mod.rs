@@ -1,7 +1,19 @@
-pub mod json_store;
-pub mod keystore;
-use dash_sdk::{dpp::identity::signer::Signer, platform::IdentityPublicKey};
-use std::fmt::Debug;
+mod encryption;
+pub mod file_store;
+pub mod generic_kms;
+pub mod generic_unlocked_kms;
+use dash_sdk::{
+    dpp::{
+        dashcore::bip32::DerivationPath,
+        identity::{KeyType, signer::Signer},
+    },
+    platform::IdentityPublicKey,
+};
+use std::{fmt::Debug, ptr::copy};
+use zeroize::Zeroize;
+mod wallet_seed;
+
+use crate::{kms::generic_kms::GenericKeyHandle, secret::Secret};
 
 /// Key Management Service (KMS) trait for managing cryptographic keys.
 
@@ -26,9 +38,6 @@ pub type PlainData = Vec<u8>;
 pub type Signature = Vec<u8>;
 pub type Digest = Vec<u8>;
 
-/// Secret (eg. a password) to use for unlocking the KMS.
-pub type Secret = zeroize::Zeroizing<Vec<u8>>;
-
 /// Represents a public key in the KMS context.
 pub type PublicKey = IdentityPublicKey;
 
@@ -51,10 +60,12 @@ pub trait Kms {
     // ) -> Result<bool, Self::Error>;
 
     /// Unlocks the KMS for operations that require access to private keys.
+    ///
+    /// Consumes the password to ensure it is not stored in memory after unlocking.
     fn unlock(
         &self,
-        user_id: Vec<u8>,
-        password: &Secret,
+        user_id: &[u8],
+        password: Secret,
         // ) -> Result<Box<dyn UnlockedKMS<KeyHandle = Self::KeyHandle, Error = Self::Error>>, Self::Error>;
     ) -> Result<impl UnlockedKMS<KeyHandle = Self::KeyHandle, Error = Self::Error>, Self::Error>;
 
@@ -64,7 +75,7 @@ pub trait Kms {
     fn keys(&self) -> Result<impl Iterator<Item = Self::KeyHandle>, Self::Error>;
 
     /// Retrieves a public key associated with the provided key handle.
-    fn get(&self, key: &Self::KeyHandle) -> Result<Option<PublicKey>, Self::Error>;
+    fn public_key(&self, key: &Self::KeyHandle) -> Result<Option<PublicKey>, Self::Error>;
 }
 
 /// This trait extends the Kms trait for operations that require access to private keys.
@@ -75,10 +86,18 @@ pub trait Kms {
 /// and all sensitive data is cleared from memory to prevent unauthorized access.
 pub trait UnlockedKMS: Kms + Signer {
     /// Generates a new key pair.
-    fn generate_key_pair(&self) -> Result<Self::KeyHandle, Self::Error>;
+    fn generate_key_pair(
+        &mut self,
+        key_type: KeyType,
+        seed: Secret,
+    ) -> Result<Self::KeyHandle, Self::Error>;
 
-    /// Derives a key pair from a given seed.
-    fn derive_key_pair(&self, seed: &[u8]) -> Result<Self::KeyHandle, Self::Error>;
+    /// Derives a key pair for a given derivation path from a master key.
+    fn derive_key_pair(
+        &mut self,
+        master_key: &Self::KeyHandle,
+        path: &DerivationPath,
+    ) -> Result<Self::KeyHandle, Self::Error>;
 
     /// Decrypts data using private key associated with the provided key ID.
     fn decrypt(
@@ -86,6 +105,8 @@ pub trait UnlockedKMS: Kms + Signer {
         key: &Self::KeyHandle,
         encrypted_data: &EncryptedData,
     ) -> Result<PlainData, Self::Error>;
+
+    fn sign(&self, key: &Self::KeyHandle, digest: &Digest) -> Result<Signature, Self::Error>;
 
     /// Exports a backup of the KMS.
     ///

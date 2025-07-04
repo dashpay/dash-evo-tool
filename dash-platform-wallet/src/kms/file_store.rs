@@ -1,6 +1,12 @@
 use core::{cmp::Ord, fmt::Debug, prelude::v1::derive};
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, io::Write, ops::Deref, path::PathBuf, sync::Arc, sync::RwLock};
+use std::{
+    collections::BTreeMap,
+    io::Write,
+    ops::Deref,
+    path::{Path, PathBuf},
+    sync::{Arc, RwLock},
+};
 
 use super::KVStore;
 
@@ -20,7 +26,7 @@ use super::KVStore;
 ///
 /// The `JsonStore` is designed to be cloneable, allowing multiple instances to share the same underlying data.
 #[derive(Clone)]
-pub(super) struct JsonStore<K: Ord, V> {
+pub(super) struct FileStore<K: Ord, V> {
     // where
     // K: Clone + std::fmt::Debug + Serialize + for<'de> Deserialize<'de> + Ord,
     // V: Clone + Serialize + for<'de> Deserialize<'de>,
@@ -28,7 +34,7 @@ pub(super) struct JsonStore<K: Ord, V> {
     db: Arc<RwLock<Database<K, V>>>,
 }
 
-impl<K: Ord, V> Debug for JsonStore<K, V> {
+impl<K: Ord, V> Debug for FileStore<K, V> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("JsonStore")
             .field("path", &self.path)
@@ -55,7 +61,7 @@ impl From<std::io::Error> for JsonStoreError {
     }
 }
 
-impl<K, V> KVStore<K, V> for JsonStore<K, V>
+impl<K, V> KVStore<K, V> for FileStore<K, V>
 where
     K: Clone + std::fmt::Debug + Serialize + for<'de> Deserialize<'de> + Ord,
     V: Clone + Serialize + for<'de> Deserialize<'de>,
@@ -71,7 +77,7 @@ where
     fn set(&mut self, key: K, value: V) -> Result<(), Self::Error> {
         let mut db = self.db.write().unwrap();
         db.records.insert(key, value);
-        self.save()?;
+        self.save(db.deref())?;
         Ok(())
     }
 
@@ -79,7 +85,7 @@ where
         let mut db = self.db.write().unwrap();
         let removed = db.records.remove(key).is_some();
         if removed {
-            self.save()?;
+            self.save(db.deref())?;
         }
         Ok(removed)
     }
@@ -97,20 +103,20 @@ where
     fn clear(&mut self) -> Result<(), Self::Error> {
         let mut db = self.db.write().unwrap();
         db.records.clear();
-        self.save()?;
+        self.save(db.deref())?;
         Ok(())
     }
 }
 
-impl<K, V> JsonStore<K, V>
+impl<K, V> FileStore<K, V>
 where
     K: Clone + std::fmt::Debug + Serialize + for<'de> Deserialize<'de> + Ord,
     V: Clone + Serialize + for<'de> Deserialize<'de>,
 {
     /// Creates a new instance of `JsonStore`.
-    pub fn new(path: PathBuf) -> Result<Self, JsonStoreError> {
+    pub fn new(path: &Path) -> Result<Self, JsonStoreError> {
         let me = Self {
-            path: path.clone(),
+            path: path.to_path_buf(),
             db: Arc::new(RwLock::new(Database {
                 records: BTreeMap::new(),
             })),
@@ -119,7 +125,8 @@ where
             me.load()?;
         } else {
             // Create the file if it does not exist. We do this here to fail early if the file cannot be created.
-            me.save()?;
+            let db = me.db.read().unwrap();
+            me.save(db.deref())?;
         }
 
         Ok(me)
@@ -143,9 +150,7 @@ where
     }
 
     /// Save current database to the JSON store.
-    fn save(&self) -> Result<(), JsonStoreError> {
-        let db_guard = self.db.read().unwrap();
-        let db = db_guard.deref();
+    fn save(&self, db: &Database<K, V>) -> Result<(), JsonStoreError> {
         let json = serde_json::to_vec_pretty(db)?;
 
         let mut file = std::fs::OpenOptions::new()

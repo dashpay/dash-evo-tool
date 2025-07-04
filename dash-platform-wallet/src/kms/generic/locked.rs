@@ -5,11 +5,10 @@ use zeroize::ZeroizeOnDrop;
 
 use crate::{
     kms::{
-        KVStore, Kms, UnlockedKMS,
+        KVStore, Kms, PublicKey, UnlockedKMS,
         encryption::NONCE_SIZE,
         file_store::{FileStore, JsonStoreError},
-        generic::key_handle::GenericKeyHandle,
-        generic::unlocked::GenericUnlockedKms,
+        generic::{key_handle::KeyHandle, unlocked::GenericUnlockedKms},
     },
     secret::{Secret, SecretError},
 };
@@ -17,7 +16,7 @@ use crate::{
 /// Simple Key Management Service (KMS) implementation for managing wallet keys.
 #[derive(Clone)]
 pub struct GenericKms {
-    store: FileStore<GenericKeyHandle, KeyRecord>,
+    store: FileStore<KeyHandle, KeyRecord>,
 }
 
 impl Debug for GenericKms {
@@ -77,7 +76,7 @@ impl GenericKms {
 }
 
 impl Kms for GenericKms {
-    type KeyHandle = GenericKeyHandle;
+    type KeyHandle = KeyHandle;
     type Error = KmsError;
 
     /// Unlocks the KMS for operations that require access to private keys.
@@ -90,7 +89,7 @@ impl Kms for GenericKms {
         GenericUnlockedKms::new(self, self.store.clone(), user_id, password)
     }
 
-    fn public_key(&self, key: &Self::KeyHandle) -> Result<Option<super::PublicKey>, Self::Error> {
+    fn public_key(&self, key: &Self::KeyHandle) -> Result<Option<PublicKey>, Self::Error> {
         todo!();
         // let record = self.store.get(key)?;
         // Ok(record.map(|_| IdentityPublicKey::default())) // Placeholder for actual key retrieval logic

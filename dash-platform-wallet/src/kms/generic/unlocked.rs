@@ -3,6 +3,15 @@ use std::{
     ops::{Deref, DerefMut},
 };
 
+use crate::kms::{
+    Digest, EncryptedData, KVStore, Kms, PlainData, PublicKey, Secret, Signature, UnlockedKMS,
+    encryption::NONCE_SIZE,
+    file_store::FileStore,
+    generic::{
+        key_handle::KeyHandle,
+        locked::{GenericKms, KeyRecord, KmsError},
+    },
+};
 use aes_gcm::{
     Aes256Gcm, AesGcm, Key, KeyInit, Nonce,
     aead::{AeadMutInPlace, OsRng},
@@ -21,15 +30,6 @@ use dash_sdk::{
     platform::IdentityPublicKey,
 };
 use sha2::digest::generic_array::GenericArray;
-use zeroize::{Zeroize, Zeroizing};
-
-use crate::kms::{
-    Digest, EncryptedData, Error, KVStore, Kms, PlainData, PublicKey, Secret, Signature,
-    UnlockedKMS,
-    encryption::{NONCE_SIZE, decrypt_message},
-    file_store::{FileStore, JsonStoreError},
-    generic_kms::{GenericKeyHandle, GenericKms, KeyRecord, KmsError},
-};
 
 /// AAD (Additional Authenticated Data) used for encrypting wallet seed.
 /// This is used to ensure that the encrypted data can be verified and decrypted correctly.
@@ -38,7 +38,7 @@ pub(crate) const AAD: &[u8; 20] = b"dash_platform_wallet";
 /// SimpleUnlockedKms is an unlocked KMS that allows operations on keys without requiring a password.
 pub struct GenericUnlockedKms<'a> {
     kms: &'a GenericKms,
-    store: FileStore<GenericKeyHandle, KeyRecord>,
+    store: FileStore<KeyHandle, KeyRecord>,
     user_id: Vec<u8>,
     storage_key: Secret, // Derived key for encrypting/decrypting store
     platform_version: &'a PlatformVersion,
@@ -46,7 +46,7 @@ pub struct GenericUnlockedKms<'a> {
 impl<'a> GenericUnlockedKms<'a> {
     pub(crate) fn new(
         kms: &'a GenericKms,
-        store: FileStore<GenericKeyHandle, KeyRecord>,
+        store: FileStore<KeyHandle, KeyRecord>,
         user_id: &[u8],
         password: Secret,
     ) -> Result<Self, KmsError> {
@@ -157,7 +157,7 @@ impl Debug for GenericUnlockedKms<'_> {
 
 // Delegate Kms trait methods to SimpleUnlockedKms.kms
 impl Kms for GenericUnlockedKms<'_> {
-    type KeyHandle = GenericKeyHandle;
+    type KeyHandle = KeyHandle;
     type Error = KmsError;
 
     /// Unlocks the KMS for operations that require access to private keys.
@@ -227,7 +227,7 @@ impl<'a> UnlockedKMS for GenericUnlockedKms<'a> {
                 KmsError::KeyGenerationError(format!("Failed to generate key pair: {}", e))
             })?;
 
-        let handle = GenericKeyHandle::PublicKeyBytes(pubkey);
+        let handle = KeyHandle::PublicKeyBytes(pubkey);
         let (encrypted_key, nonce) = self.storage_encrypt(Secret::new(privkey)?)?;
 
         let record = KeyRecord::EncryptedPrivateKey {

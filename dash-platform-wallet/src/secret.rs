@@ -1,9 +1,8 @@
-use std::ops::Deref;
-
 pub use aes_gcm::aead::heapless::Vec as HeaplessVec;
-use dash_sdk::dpp::bls_signatures::vsss_rs::elliptic_curve::bigint::Zero;
+use sha2::{Digest, Sha256};
+use std::ops::Deref;
 use thiserror::Error;
-use zeroize::{Zeroize, ZeroizeOnDrop};
+use zeroize::Zeroize;
 /// Secret (eg. a password) used in KMS operations.
 ///
 /// Maximum size is 127 bytes, which is the maximum size of a `heapless::Vec<u8>`.
@@ -13,6 +12,7 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 /// preventing sensitive data from lingering in memory after use.
 pub struct Secret {
     data: HeaplessVec<u8, 4096>,
+    #[allow(unused)]
     guard: region::LockGuard,
 }
 
@@ -31,6 +31,11 @@ impl Secret {
             region::lock(data.as_ptr(), data.capacity()).expect("Failed to lock memory for Secret");
 
         Ok(Self { data, guard })
+    }
+
+    pub fn sha256(&self) -> [u8; 32] {
+        // TODO: Check if sha256 is not leaving sensitive data in memory
+        Sha256::digest(&self.data).into()
     }
 }
 

@@ -6,11 +6,13 @@ mod wallet_seed;
 use crate::secret::Secret;
 use dash_sdk::{
     dpp::{
+        consensus::state::identity,
         dashcore::bip32::DerivationPath,
-        identity::{KeyType, signer::Signer},
+        identity::{KeyType as IdentityKeyType, signer::Signer},
     },
     platform::IdentityPublicKey,
 };
+use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 
 /// Key Management Service (KMS) trait for managing cryptographic keys.
@@ -74,6 +76,22 @@ pub trait Kms {
 
     /// Retrieves a public key associated with the provided key handle.
     fn public_key(&self, key: &Self::KeyHandle) -> Result<Option<PublicKey>, Self::Error>;
+}
+
+/// Represents the type of key used in the KMS.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum KeyType {
+    Identity(IdentityKeyType),
+    /// Master key for deriving other ECDSA keys.
+    DerivationSeedECDSA {
+        network: dash_sdk::dpp::dashcore::Network,
+    },
+}
+
+impl From<IdentityKeyType> for KeyType {
+    fn from(key_type: IdentityKeyType) -> Self {
+        KeyType::Identity(key_type)
+    }
 }
 
 /// This trait extends the Kms trait for operations that require access to private keys.

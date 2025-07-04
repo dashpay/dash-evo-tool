@@ -10,7 +10,7 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 use crate::kms::{
     Secret,
     encryption::{derive_password_key, encrypt_message},
-    generic_unlocked_kms::AAD,
+    generic::unlocked::AAD,
 };
 
 pub type WalletSeedHash = [u8; 32];

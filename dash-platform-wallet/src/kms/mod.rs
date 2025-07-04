@@ -1,7 +1,9 @@
 mod encryption;
 pub mod file_store;
-pub mod generic_kms;
-pub mod generic_unlocked_kms;
+pub mod generic;
+mod wallet_seed;
+
+use crate::secret::Secret;
 use dash_sdk::{
     dpp::{
         dashcore::bip32::DerivationPath,
@@ -9,11 +11,7 @@ use dash_sdk::{
     },
     platform::IdentityPublicKey,
 };
-use std::{fmt::Debug, ptr::copy};
-use zeroize::Zeroize;
-mod wallet_seed;
-
-use crate::{kms::generic_kms::GenericKeyHandle, secret::Secret};
+use std::fmt::Debug;
 
 /// Key Management Service (KMS) trait for managing cryptographic keys.
 
@@ -33,7 +31,7 @@ pub enum KMSError {
 
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
 
-pub type EncryptedData = Vec<u8>;
+pub type EncryptedData = Secret;
 pub type PlainData = Vec<u8>;
 pub type Signature = Vec<u8>;
 pub type Digest = Vec<u8>;

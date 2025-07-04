@@ -24,7 +24,8 @@ use sha2::digest::generic_array::GenericArray;
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::kms::{
-    Error, KVStore, Kms, Secret, UnlockedKMS,
+    Digest, EncryptedData, Error, KVStore, Kms, PlainData, PublicKey, Secret, Signature,
+    UnlockedKMS,
     encryption::{NONCE_SIZE, decrypt_message},
     file_store::{FileStore, JsonStoreError},
     generic_kms::{GenericKeyHandle, GenericKms, KeyRecord, KmsError},
@@ -169,7 +170,7 @@ impl Kms for GenericUnlockedKms<'_> {
         self.kms.unlock(user_id, password)
     }
 
-    fn public_key(&self, key: &Self::KeyHandle) -> Result<Option<super::PublicKey>, Self::Error> {
+    fn public_key(&self, key: &Self::KeyHandle) -> Result<Option<PublicKey>, Self::Error> {
         self.kms.public_key(key)
     }
 
@@ -193,19 +194,15 @@ impl Signer for GenericUnlockedKms<'_> {
 }
 
 impl<'a> UnlockedKMS for GenericUnlockedKms<'a> {
-    fn sign(
-        &self,
-        key: &Self::KeyHandle,
-        digest: &super::Digest,
-    ) -> Result<super::Signature, Self::Error> {
+    fn sign(&self, key: &Self::KeyHandle, digest: &Digest) -> Result<Signature, Self::Error> {
         todo!();
     }
 
     fn decrypt(
         &self,
         key: &Self::KeyHandle,
-        encrypted_data: &super::EncryptedData,
-    ) -> Result<super::PlainData, Self::Error> {
+        encrypted_data: &EncryptedData,
+    ) -> Result<PlainData, Self::Error> {
         todo!();
     }
 
@@ -295,7 +292,7 @@ fn derive_storage_key(user_id: Vec<u8>, password: &Secret) -> Result<Secret, Kms
 mod tests {
     use dash_sdk::dpp::dashcore::bip32::DerivationPath;
 
-    use crate::kms::{Kms, UnlockedKMS, generic_kms::GenericKms};
+    use crate::kms::{Kms, UnlockedKMS, generic::locked::GenericKms};
 
     use super::*;
 

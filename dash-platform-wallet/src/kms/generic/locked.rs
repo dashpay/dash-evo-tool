@@ -1,13 +1,5 @@
 use core::{fmt::Debug, todo};
-use dash_sdk::{
-    dpp::{
-        ProtocolError, consensus::basic::json_schema_error::error, dashcore::bip32::DerivationPath,
-        identity::signer::Signer, platform_value::BinaryData,
-    },
-    platform::IdentityPublicKey,
-};
 use serde::{Deserialize, Serialize};
-use serde_with::serde_as;
 use thiserror::Error;
 use zeroize::ZeroizeOnDrop;
 
@@ -16,22 +8,11 @@ use crate::{
         KVStore, Kms, UnlockedKMS,
         encryption::NONCE_SIZE,
         file_store::{FileStore, JsonStoreError},
-        generic_unlocked_kms::GenericUnlockedKms,
+        generic::key_handle::GenericKeyHandle,
+        generic::unlocked::GenericUnlockedKms,
     },
     secret::{Secret, SecretError},
 };
-
-/// Generic key handle used in the [GenericKms], used to identify keys in the KMS.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, PartialOrd, Eq, Ord)]
-#[serde_as]
-pub enum GenericKeyHandle {
-    PublicKeyBytes(#[serde_as(as = "serde_with::hex::Hex")] Vec<u8>), // Public key bytes, used for encryption and verification
-    Derived {
-        #[serde_as(as = "serde_with::hex::Hex")]
-        seed_hash: Vec<u8>, // Hash of the seed to use to derive the key
-        derivation_path: DerivationPath, // Derivation path for the key; TODO:
-    },
-}
 
 /// Simple Key Management Service (KMS) implementation for managing wallet keys.
 #[derive(Clone)]

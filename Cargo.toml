@@ -55,6 +55,7 @@ regex = "1.11.1"
 humantime = "2.2.0"
 which = { version = "7.0.3" }
 tz-rs = { version = "0.7.0" }
+dash-platform-wallet = { path = "dash-platform-wallet" }
 
 [target.'cfg(not(target_os = "windows"))'.dependencies]
 zmq = "0.10.0"

@@ -1103,6 +1103,11 @@ impl DocumentActionScreen {
                 .get(name)
                 .ok_or_else(|| format!("Unknown property {}", name))?;
 
+            // Skip empty optional fields
+            if !schema.required && input_str.trim().is_empty() {
+                continue;
+            }
+
             let value = match &schema.property_type {
                 DocumentPropertyType::U128 => {
                     let n = input_str
@@ -1273,6 +1278,11 @@ impl DocumentActionScreen {
                 .properties()
                 .get(name)
                 .ok_or_else(|| format!("Unknown property {}", name))?;
+
+            // Skip empty optional fields
+            if !schema.required && input_str.trim().is_empty() {
+                continue;
+            }
 
             let value = match &schema.property_type {
                 DocumentPropertyType::U128 => {

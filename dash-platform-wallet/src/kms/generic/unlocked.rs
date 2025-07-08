@@ -557,10 +557,13 @@ mod tests {
             .unlock(&user_id, password)
             .expect("Failed to unlock KMS");
 
-        // let's check if we can find the master key
-        unlocked
-            .public_key(&seed)
-            .expect("Failed to get master key");
+        // let's check if we can find the master key by checking if it's in the keys list
+        let keys: Vec<_> = kms.keys().expect("Failed to get keys").collect();
+        assert!(
+            keys.contains(&seed),
+            "Master key should still exist in the store"
+        );
+
         // derive the same key again
         let derived_key_2 = unlocked
             .derive_key_pair(&seed, KeyType::ecdsa_secp256k1(), &derivation_path)

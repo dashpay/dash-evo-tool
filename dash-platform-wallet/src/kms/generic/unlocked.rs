@@ -13,7 +13,7 @@ use crate::kms::{
     },
 };
 use aes_gcm::{
-    Aes256Gcm, Key, KeyInit, Nonce,
+    Aes256Gcm, Key, Nonce,
     aead::{AeadMutInPlace, OsRng},
 };
 use argon2::MIN_SALT_LEN;
@@ -25,13 +25,14 @@ use dash_sdk::{
             bip32::{DerivationPath, ExtendedPrivKey},
             secp256k1,
         },
-        identity::signer::Signer,
+        identity::{identity_public_key::v0::IdentityPublicKeyV0, signer::Signer},
         platform_value::BinaryData,
-        version::PlatformVersion,
+        serialization::PlatformSerializable,
+        version::{IntoPlatformVersioned, PlatformVersion},
     },
     platform::IdentityPublicKey,
 };
-use sha2::{Digest as _, Sha256, digest::generic_array::GenericArray};
+use sha2::{Sha256, digest::generic_array::GenericArray};
 
 /// AAD (Additional Authenticated Data) used for encrypting wallet seed.
 /// This is used to ensure that the encrypted data can be verified and decrypted correctly.
@@ -171,7 +172,9 @@ where
         encrypted_data: &Vec<u8>,
         nonce: &[u8; NONCE_SIZE],
     ) -> Result<Secret, KmsError> {
+        use aes_gcm::KeyInit;
         let key = self.storage_key()?;
+
         let mut cipher = Aes256Gcm::new(key);
 
         let mut ciphertext = Secret::new(encrypted_data.clone())?;
@@ -198,6 +201,8 @@ where
         &self,
         mut message: Secret,
     ) -> Result<(Vec<u8>, [u8; NONCE_SIZE]), KmsError> {
+        use aes_gcm::KeyInit;
+
         // Generate a random nonce
         let mut nonce = [0u8; NONCE_SIZE];
         OsRng.fill_bytes(&mut nonce);
@@ -313,21 +318,38 @@ where
         let mut rng = bip39::rand::prelude::StdRng::from_seed(*seed_bytes);
 
         let (handle, record) = match key_type {
-            KeyType::Identity(identity_key_type) => {
-                // FIXME: private key should be put into mlocked buffer, not simply returned here
-                let (pubkey, privkey) = identity_key_type
-                    .random_public_and_private_key_data(&mut rng, self.platform_version)
-                    .map_err(|e| {
-                        KmsError::KeyGenerationError(format!("Failed to generate key pair: {}", e))
-                    })?;
+            KeyType::Identity {
+                id,
 
-                let handle = KeyHandle::PublicKeyBytes(pubkey.clone());
+                purpose,
+                security_level,
+                key_type,
+                contract_bounds,
+            } => {
+                // FIXME: private key should be put into [Secret], not simply returned by a function
+                let (pubkey, privkey) = IdentityPublicKey::random_key_with_known_attributes(
+                    id,
+                    &mut rng,
+                    purpose,
+                    security_level,
+                    key_type,
+                    contract_bounds,
+                    self.platform_version,
+                )
+                .map_err(|e| {
+                    KmsError::KeyGenerationError(format!("Failed to generate key pair: {}", e))
+                })?;
+
+                let bz = pubkey.serialize_to_bytes().map_err(|e| {
+                    KmsError::KeyGenerationError(format!("Failed to serialize public key: {}", e))
+                })?;
+                let handle = KeyHandle::PublicKeyBytes(bz.clone());
                 let (encrypted_key, nonce) = self.storage_encrypt(Secret::new(privkey)?)?;
 
                 let record = KeyRecord::PrivateKey {
                     encrypted_key,
                     nonce,
-                    public_key: pubkey,
+                    public_key: bz,
                 };
 
                 (handle, record)
@@ -460,6 +482,7 @@ fn derive_storage_key(user_id: Vec<u8>, password: &Secret) -> Result<Secret, Kms
 
 // Calulates the hash of the seed using SHA-256.
 fn compute_seed_hash(seed: &Secret) -> [u8; 32] {
+    use sha2::Digest;
     let mut hasher = Sha256::new();
     hasher.update(seed);
     let result = hasher.finalize();
@@ -549,12 +572,13 @@ mod tests {
         let mut unlocked = kms
             .unlock(&user_id, password)
             .expect("Failed to unlock KMS");
+
         // generate master key
+        let requested_key = KeyType::DerivationSeedECDSA {
+            network: Network::Testnet,
+        };
         let master_key = unlocked
-            .generate_key_pair(
-                dash_sdk::dpp::identity::KeyType::EDDSA_25519_HASH160.into(),
-                seed,
-            )
+            .generate_key_pair(requested_key, seed)
             .expect("Failed to generate master key");
         // derive a key pair from the master key
         let derived_key = unlocked

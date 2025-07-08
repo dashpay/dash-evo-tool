@@ -1,15 +1,12 @@
-use std::{
-    fmt::Debug,
-    ops::{Deref, DerefMut},
-};
+use std::fmt::Debug;
 
 use crate::kms::{
     Digest, EncryptedData, KVStore, KeyType, Kms, PlainData, PublicKey, Secret, Signature,
     UnlockedKMS,
     encryption::NONCE_SIZE,
     generic::{
-        key_handle::{self, KeyHandle},
-        locked::{GenericKms, KeyRecord, KmsError},
+        key_handle::KeyHandle,
+        locked::{GenericKms, KmsError, StoredKeyRecord},
     },
 };
 use aes_gcm::{
@@ -21,14 +18,10 @@ use bip39::rand::{RngCore, SeedableRng};
 use dash_sdk::{
     dpp::{
         ProtocolError,
-        dashcore::{
-            bip32::{DerivationPath, ExtendedPrivKey},
-            secp256k1,
-        },
-        identity::{identity_public_key::v0::IdentityPublicKeyV0, signer::Signer},
+        dashcore::bip32::{DerivationPath, ExtendedPrivKey},
+        identity::signer::Signer,
         platform_value::BinaryData,
-        serialization::PlatformSerializable,
-        version::{IntoPlatformVersioned, PlatformVersion},
+        version::PlatformVersion,
     },
     platform::IdentityPublicKey,
 };
@@ -39,14 +32,14 @@ use sha2::{Sha256, digest::generic_array::GenericArray};
 pub(crate) const AAD: &[u8; 20] = b"dash_platform_wallet";
 
 /// SimpleUnlockedKms is an unlocked KMS that allows operations on keys without requiring a password.
-pub struct GenericUnlockedKms<'a, S> {
+pub(super) struct GenericUnlockedKms<'a, S> {
     kms: &'a GenericKms,
     store: S,
     user_id: Vec<u8>,
     storage_key: Secret, // Derived key for encrypting/decrypting store
     platform_version: &'a PlatformVersion,
 }
-impl<'a, S: KVStore<KeyHandle, KeyRecord>> GenericUnlockedKms<'a, S>
+impl<'a, S: KVStore<KeyHandle, StoredKeyRecord>> GenericUnlockedKms<'a, S>
 where
     KmsError: From<S::Error>,
 {
@@ -77,29 +70,29 @@ where
     fn get_from_store_with_metadata(
         &self,
         key: &KeyHandle,
-    ) -> Result<Option<(Secret, KeyRecord)>, KmsError> {
+    ) -> Result<Option<(Secret, StoredKeyRecord)>, KmsError> {
         let Some(record) = self.store.get(key)? else {
             return Ok(None);
         };
 
         let ciphertext = match &record {
-            KeyRecord::PrivateKey {
+            StoredKeyRecord::RawKey {
                 encrypted_key,
                 nonce,
                 ..
             } => (encrypted_key, nonce),
-            KeyRecord::WalletSeed {
+            StoredKeyRecord::DerivationSeed {
                 encrypted_seed,
                 nonce,
                 ..
             } => (encrypted_seed, nonce),
-            KeyRecord::DerivedKey {
-                encrypted_seed,
-                nonce,
-                ..
-            } => (encrypted_seed, nonce),
+            StoredKeyRecord::DerivedKey { .. } => (&Vec::new(), &[0u8; NONCE_SIZE]),
         };
-        let secret = self.storage_decrypt(ciphertext.0, ciphertext.1)?;
+        let secret = if !ciphertext.0.is_empty() {
+            self.storage_decrypt(ciphertext.0, ciphertext.1)?
+        } else {
+            Secret::new([])?
+        };
 
         record.verify_handle(key)?;
 
@@ -111,7 +104,7 @@ where
     ///
     /// If the store is empty, it returns `Ok(())`.
     fn verify_storage_key(&self) -> Result<(), KmsError> {
-        if let Some(handle) = self.store.keys()?.iter().next() {
+        if let Some(handle) = self.store.keys()?.first() {
             // any error means that the password is incorrect, or we have some internal error
             self.get_from_store_with_metadata(handle).map_err(|e| {
                 tracing::error!(
@@ -137,7 +130,10 @@ where
     ///
     /// * `handle`: The key handle for which to derive the key pair.
     ///   It MUST be a `KeyHandle::Derived` variant.
-    fn get_derived_ecdsa_key(&mut self, handle: &KeyHandle) -> Result<ExtendedPrivKey, KmsError> {
+    fn get_derived_ecdsa_priv_key(
+        &mut self,
+        handle: &KeyHandle,
+    ) -> Result<ExtendedPrivKey, KmsError> {
         let KeyHandle::Derived {
             derivation_path,
             network,
@@ -169,7 +165,7 @@ where
     /// Decrypts the encrypted data using the derived storage key and nonce.
     fn storage_decrypt(
         &self,
-        encrypted_data: &Vec<u8>,
+        encrypted_data: &[u8],
         nonce: &[u8; NONCE_SIZE],
     ) -> Result<Secret, KmsError> {
         use aes_gcm::KeyInit;
@@ -177,7 +173,7 @@ where
 
         let mut cipher = Aes256Gcm::new(key);
 
-        let mut ciphertext = Secret::new(encrypted_data.clone())?;
+        let mut ciphertext = Secret::new(encrypted_data.to_vec())?;
         let buffer = ciphertext.as_mut();
         // Decrypt the data
         cipher
@@ -197,7 +193,7 @@ where
     ///
     /// Panics if the encrypted data is bigger than 4096 bytes,
     /// which is the maximum size of a [`Secret`].
-    pub fn storage_encrypt<'msg, 'aad>(
+    pub fn storage_encrypt(
         &self,
         mut message: Secret,
     ) -> Result<(Vec<u8>, [u8; NONCE_SIZE]), KmsError> {
@@ -269,7 +265,7 @@ impl<S> Kms for GenericUnlockedKms<'_, S> {
 
 impl<S> Signer for GenericUnlockedKms<'_, S>
 where
-    S: KVStore<KeyHandle, KeyRecord> + Debug + Send + Sync,
+    S: KVStore<KeyHandle, StoredKeyRecord> + Debug + Send + Sync,
     KmsError: From<S::Error>,
 {
     fn sign(
@@ -287,7 +283,7 @@ where
 
 impl<S> UnlockedKMS for GenericUnlockedKms<'_, S>
 where
-    S: KVStore<KeyHandle, KeyRecord> + Debug + Send + Sync,
+    S: KVStore<KeyHandle, StoredKeyRecord> + Debug + Send + Sync,
     KmsError: From<S::Error>,
 {
     fn sign(&self, key: &Self::KeyHandle, digest: &Digest) -> Result<Signature, Self::Error> {
@@ -318,53 +314,39 @@ where
         let mut rng = bip39::rand::prelude::StdRng::from_seed(*seed_bytes);
 
         let (handle, record) = match key_type {
-            KeyType::Identity {
-                id,
-
-                purpose,
-                security_level,
-                key_type,
-                contract_bounds,
+            KeyType::Raw {
+                alogirhm: algorithm,
             } => {
-                // FIXME: private key should be put into [Secret], not simply returned by a function
-                let (pubkey, privkey) = IdentityPublicKey::random_key_with_known_attributes(
-                    id,
-                    &mut rng,
-                    purpose,
-                    security_level,
-                    key_type,
-                    contract_bounds,
-                    self.platform_version,
-                )
-                .map_err(|e| {
-                    KmsError::KeyGenerationError(format!("Failed to generate key pair: {}", e))
-                })?;
+                // FIXME: private key should be put into [Secret] or at least impl zeroize, not simply returned by a function
+                let (pubkey, privkey) = algorithm
+                    .random_public_and_private_key_data(&mut rng, self.platform_version)
+                    .map_err(|e| {
+                        KmsError::KeyGenerationError(format!("Failed to generate key pair: {}", e))
+                    })?;
 
-                let bz = pubkey.serialize_to_bytes().map_err(|e| {
-                    KmsError::KeyGenerationError(format!("Failed to serialize public key: {}", e))
-                })?;
-                let handle = KeyHandle::PublicKeyBytes(bz.clone());
+                let handle = KeyHandle::RawKey(pubkey.clone(), key_type);
                 let (encrypted_key, nonce) = self.storage_encrypt(Secret::new(privkey)?)?;
 
-                let record = KeyRecord::PrivateKey {
+                let record = StoredKeyRecord::RawKey {
                     encrypted_key,
                     nonce,
-                    public_key: bz,
+                    public_key: pubkey,
                 };
 
                 (handle, record)
             }
-            KeyType::DerivationSeedECDSA { network } => {
+            KeyType::DerivationSeed { network } => {
                 // Derived ECDSA keys are not generated here, they are derived from master keys
                 let seed_hash = compute_seed_hash(&seed);
                 // we need temporary handle to derive the key pair
                 let handle = KeyHandle::DerivationSeed { seed_hash, network };
 
                 let encrypted_seed = self.storage_encrypt(seed)?;
-                let record = KeyRecord::WalletSeed {
+                let record = StoredKeyRecord::DerivationSeed {
                     encrypted_seed: encrypted_seed.0,
                     nonce: encrypted_seed.1,
                     seed_hash,
+                    network,
                 };
 
                 (handle, record)
@@ -382,37 +364,73 @@ where
     ///
     /// ## Arguments
     ///
-    /// * `master`: The master key handle from which to derive the new key pair.
+    /// * `seed_handle`: Key handle of derivation seed to use; use [`UnlockedKMS::generate_key_pair`] to generate.
+    /// * `key_type`: The type of key to derive; currently only [`KeyType::Raw`] is supported.
     /// * `path`: The derivation path to use for deriving the new key pair.
     fn derive_key_pair(
         &mut self,
-        master: &Self::KeyHandle,
+        seed_handle: &Self::KeyHandle,
+        key_type: KeyType,
         path: &DerivationPath,
     ) -> Result<Self::KeyHandle, Self::Error> {
         // parse the master key handle to get seed_hash and network
         let KeyHandle::DerivationSeed {
             seed_hash, network, ..
-        } = master
+        } = seed_handle
         else {
             return Err(KmsError::KeyRecordNotSupported(format!(
-                "Invalid derived key handle type: {}",
-                master
+                "Invalid derivation seed handle type: {}",
+                seed_handle
+            )));
+        };
+
+        let KeyType::Raw { alogirhm } = key_type else {
+            return Err(KmsError::KeyRecordNotSupported(format!(
+                "Invalid key type for deriving key pair: {:?}, only KeyType::Raw is supported",
+                key_type
             )));
         };
 
         // ensure the wallet seed exists for this master key
-        let (seed, record) = self
-            .get_from_store_with_metadata(master)?
-            .ok_or(KmsError::PrivateKeyNotFound(master.clone()))?;
+        let (seed, _record) = self
+            .get_from_store_with_metadata(seed_handle)?
+            .ok_or(KmsError::PrivateKeyNotFound(seed_handle.clone()))?;
 
         // now, define handle of the derived key
         let derived_key_handle = KeyHandle::Derived {
-            seed_hash: seed_hash.clone(),
+            seed_hash: *seed_hash,
             derivation_path: path.clone(),
             network: *network,
         };
 
         // derive the actual key to get the public key
+        match alogirhm {
+            dash_sdk::dpp::identity::KeyType::ECDSA_SECP256K1 => {
+                let extended_pub_key = path
+                    .derive_pub_ecdsa_for_master_seed(seed.as_ref(), *network)
+                    .map_err(|e| {
+                        KmsError::KeyGenerationError(format!(
+                            "Failed to derive key pair from seed: {}",
+                            e
+                        ))
+                    })?;
+                let public_key = extended_pub_key.to_pub().to_bytes();
+
+                let key_record = StoredKeyRecord::DerivedKey {
+                    derivation_path: path.clone(),
+                    seed_hash: seed_hash.clone(),
+                    public_key: public_key.to_vec(),
+                    network: *network,
+                };
+                self.store.set(derived_key_handle.clone(), key_record)?;
+            }
+            _ => {
+                return Err(KmsError::KeyRecordNotSupported(format!(
+                    "Unsupported key type for deriving key pair: {:?}",
+                    alogirhm
+                )));
+            }
+        }
         let extended_key = path
             .derive_pub_ecdsa_for_master_seed(seed.as_ref(), *network)
             .map_err(|e| {
@@ -426,13 +444,11 @@ where
 
         // define key record for the derived key; note we don't store actual private keys for derived keys, just some metadata
         // so we can derive them later when needed
-        let encrypted_seed = self.storage_encrypt(seed)?;
-        let key_record = KeyRecord::DerivedKey {
+        let key_record = StoredKeyRecord::DerivedKey {
             derivation_path: path.clone(),
-            encrypted_seed: encrypted_seed.0,
-            nonce: encrypted_seed.1,
             seed_hash: seed_hash.clone(),
             public_key: public_key.to_vec(),
+            network: *network,
         };
 
         self.store.set(derived_key_handle.clone(), key_record)?;
@@ -513,10 +529,10 @@ mod tests {
         let mut unlocked = kms
             .unlock(&user_id, password.clone())
             .expect("Failed to unlock KMS");
-        // generate master key
-        let master_key = unlocked
+        // generate seed key
+        let seed = unlocked
             .generate_key_pair(
-                super::KeyType::DerivationSeedECDSA {
+                super::KeyType::DerivationSeed {
                     network: Network::Testnet,
                 },
                 seed,
@@ -524,7 +540,7 @@ mod tests {
             .expect("Failed to generate master key");
         // derive a key pair from the master key
         let derived_key = unlocked
-            .derive_key_pair(&master_key, &derivation_path)
+            .derive_key_pair(&seed, KeyType::ecdsa_secp256k1(), &derivation_path)
             .expect("Failed to derive key pair from master key");
 
         let derived_pubkey = kms
@@ -543,11 +559,11 @@ mod tests {
 
         // let's check if we can find the master key
         unlocked
-            .public_key(&master_key)
+            .public_key(&seed)
             .expect("Failed to get master key");
         // derive the same key again
         let derived_key_2 = unlocked
-            .derive_key_pair(&master_key, &derivation_path)
+            .derive_key_pair(&seed, KeyType::ecdsa_secp256k1(), &derivation_path)
             .expect("Failed to derive key pair from master key");
         let derived_pubkey_2 = kms
             .public_key(&derived_key_2)
@@ -574,7 +590,7 @@ mod tests {
             .expect("Failed to unlock KMS");
 
         // generate master key
-        let requested_key = KeyType::DerivationSeedECDSA {
+        let requested_key = KeyType::DerivationSeed {
             network: Network::Testnet,
         };
         let master_key = unlocked
@@ -582,7 +598,7 @@ mod tests {
             .expect("Failed to generate master key");
         // derive a key pair from the master key
         let derived_key = unlocked
-            .derive_key_pair(&master_key, &derivation_path)
+            .derive_key_pair(&master_key, KeyType::ecdsa_secp256k1(), &derivation_path)
             .expect("Failed to derive key pair from master key");
 
         let _ = kms

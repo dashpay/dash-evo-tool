@@ -1,7 +1,6 @@
 use core::fmt::Debug;
-use dash_sdk::dpp::{dashcore::bip32::DerivationPath, serialization::PlatformDeserializable};
+use dash_sdk::dpp::dashcore::bip32::DerivationPath;
 use serde::{Deserialize, Serialize};
-
 use thiserror::Error;
 
 use crate::{
@@ -17,7 +16,7 @@ use crate::{
 /// Simple Key Management Service (KMS) implementation for managing wallet keys.
 #[derive(Clone)]
 pub struct GenericKms {
-    store: FileStore<KeyHandle, KeyRecord>,
+    store: FileStore<KeyHandle, StoredKeyRecord>,
 }
 
 impl Debug for GenericKms {
@@ -30,43 +29,39 @@ impl Debug for GenericKms {
 
 pub type Nonce = [u8; NONCE_SIZE];
 #[derive(Serialize, Deserialize, Clone)]
-pub(super) enum KeyRecord {
-    PrivateKey {
+pub(super) enum StoredKeyRecord {
+    /// Represents a private key stored in the KMS. See [`KeyHandle::RawKey`].
+    RawKey {
         encrypted_key: Vec<u8>,
         nonce: Nonce,
         public_key: Vec<u8>,
     },
-    WalletSeed {
+    DerivationSeed {
         encrypted_seed: Vec<u8>,
         nonce: Nonce,
         seed_hash: [u8; 32],
+        network: dash_sdk::dpp::dashcore::Network,
     },
-    /// Represents a derived key that can be used to derive subkeys.
-    ///
-    /// This information is not really needed as it can be derived from the KeyHandle,
-    /// but it is stored to allow tracking of the genereated keys.
-    ///
-    /// We encrypt the derivation path to increase privacy a bit; it doesn't increase security.
+    /// Represents a key derived from some seed.
     DerivedKey {
         derivation_path: DerivationPath,
-        nonce: Nonce,
         seed_hash: [u8; 32],
-        encrypted_seed: Vec<u8>,
         public_key: Vec<u8>,
+        network: dash_sdk::dpp::dashcore::Network,
     },
 }
-impl KeyRecord {
+impl StoredKeyRecord {
     /// Verifies that the key record matches the provided key handle.
     pub fn verify_handle(&self, key_handle: &KeyHandle) -> Result<(), KmsError> {
         match (self, key_handle) {
             // PrivateKey record: verify the public key bytes match the derived public key from the private key
             (
-                KeyRecord::PrivateKey {
+                StoredKeyRecord::RawKey {
                     encrypted_key: _,
                     nonce: _,
                     public_key,
                 },
-                KeyHandle::PublicKeyBytes(public_key_bytes),
+                KeyHandle::RawKey(public_key_bytes, _typ),
             ) => {
                 if !public_key.eq(public_key_bytes) {
                     return Err(KmsError::KeyIntegrityError(format!(
@@ -78,12 +73,22 @@ impl KeyRecord {
             }
             // WalletSeed record: verify the seed_hash matches
             (
-                KeyRecord::WalletSeed { seed_hash, .. },
-                KeyHandle::Derived {
-                    seed_hash: requested_seed_hash,
+                StoredKeyRecord::DerivationSeed {
+                    seed_hash,
+                    network: stored_network,
                     ..
                 },
+                KeyHandle::DerivationSeed {
+                    seed_hash: requested_seed_hash,
+                    network,
+                },
             ) => {
+                if network != stored_network {
+                    return Err(KmsError::KeyIntegrityError(format!(
+                        "Network mismatch: requested: {}, stored: {}",
+                        network, stored_network,
+                    )));
+                }
                 if seed_hash != requested_seed_hash {
                     return Err(KmsError::KeyIntegrityError(format!(
                         "Seed hash mismatch: requested: {}, stored: {}",
@@ -94,7 +99,7 @@ impl KeyRecord {
             }
             // DerivedKey record: verify the derivation path matches (if possible)
             (
-                KeyRecord::DerivedKey {
+                StoredKeyRecord::DerivedKey {
                     derivation_path,
                     seed_hash,
                     ..
@@ -112,22 +117,6 @@ impl KeyRecord {
                     )));
                 }
 
-                if seed_hash != requested_seed_hash {
-                    return Err(KmsError::KeyIntegrityError(format!(
-                        "Seed hash mismatch: requested: {}, stored: {}",
-                        hex::encode(requested_seed_hash),
-                        hex::encode(seed_hash),
-                    )));
-                }
-            }
-            // WalletSeed record: verify the seed_hash matches for DerivationSeed
-            (
-                KeyRecord::WalletSeed { seed_hash, .. },
-                KeyHandle::DerivationSeed {
-                    seed_hash: requested_seed_hash,
-                    ..
-                },
-            ) => {
                 if seed_hash != requested_seed_hash {
                     return Err(KmsError::KeyIntegrityError(format!(
                         "Seed hash mismatch: requested: {}, stored: {}",
@@ -223,22 +212,19 @@ impl Kms for GenericKms {
         record.verify_handle(key_handle)?;
 
         let pubkey = match key_handle {
-            KeyHandle::PublicKeyBytes(public_key_bytes) => {
+            KeyHandle::RawKey(public_key_bytes, _typ) => {
                 // This is a public key, we can return it directly
-                PublicKey::deserialize_from_bytes(public_key_bytes)
-                    .map_err(|e| KmsError::KeyIntegrityError(e.to_string()))?
+                public_key_bytes.clone()
             }
             KeyHandle::Derived { .. } => {
                 // For derived keys, we need to get the public key from the stored record
-                match &record {
-                    KeyRecord::DerivedKey { public_key, .. } => {
-                        PublicKey::deserialize_from_bytes(public_key)
-                            .map_err(|e| KmsError::KeyIntegrityError(e.to_string()))?
-                    }
+                match record {
+                    StoredKeyRecord::DerivedKey { public_key, .. } => public_key.clone(),
                     _ => {
-                        return Err(KmsError::KeyRecordNotSupported(
-                            "Expected DerivedKey record for Derived key handle".to_string(),
-                        ));
+                        return Err(KmsError::KeyRecordNotSupported(format!(
+                            "Unexpected key record type retrieved for handle {}",
+                            key_handle
+                        )));
                     }
                 }
             }

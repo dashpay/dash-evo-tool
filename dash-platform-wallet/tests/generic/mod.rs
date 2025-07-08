@@ -10,7 +10,7 @@ use dash_platform_wallet::{
 };
 use dash_sdk::dpp::{
     dashcore::{Network, bip32::DerivationPath},
-    identity::{KeyType as IdentityKeyType, Purpose, SecurityLevel},
+    identity::KeyType as IdentityKeyType,
 };
 use tempfile::TempDir;
 
@@ -70,12 +70,8 @@ fn test_kms_unlock_wrong_password() {
             .unlock(&user_id, password.clone())
             .expect("Failed to unlock KMS");
 
-        let requested_key = KeyType::Identity {
-            id: 1,
-            purpose: dash_sdk::dpp::identity::Purpose::AUTHENTICATION,
-            security_level: dash_sdk::dpp::identity::SecurityLevel::CRITICAL,
-            key_type: dash_sdk::dpp::identity::KeyType::ECDSA_HASH160,
-            contract_bounds: None,
+        let requested_key = KeyType::Raw {
+            alogirhm: dash_sdk::dpp::identity::KeyType::ECDSA_HASH160,
         };
         let _key = unlocked
             .generate_key_pair(requested_key, seed)
@@ -103,12 +99,8 @@ fn test_generate_identity_key_ecdsa() {
     let mut unlocked = kms
         .unlock(&user_id, password)
         .expect("Failed to unlock KMS");
-    let requested_key = KeyType::Identity {
-        id: 1,
-        purpose: dash_sdk::dpp::identity::Purpose::AUTHENTICATION,
-        security_level: dash_sdk::dpp::identity::SecurityLevel::CRITICAL,
-        key_type: dash_sdk::dpp::identity::KeyType::ECDSA_HASH160,
-        contract_bounds: None,
+    let requested_key = KeyType::Raw {
+        alogirhm: dash_sdk::dpp::identity::KeyType::ECDSA_HASH160,
     };
     let key_handle = unlocked
         .generate_key_pair(requested_key, seed)
@@ -132,12 +124,8 @@ fn test_generate_identity_key_eddsa() {
     let mut unlocked = kms
         .unlock(&user_id, password)
         .expect("Failed to unlock KMS");
-    let requested_key = KeyType::Identity {
-        id: 1,
-        purpose: dash_sdk::dpp::identity::Purpose::AUTHENTICATION,
-        security_level: dash_sdk::dpp::identity::SecurityLevel::CRITICAL,
-        key_type: dash_sdk::dpp::identity::KeyType::ECDSA_HASH160,
-        contract_bounds: None,
+    let requested_key = KeyType::Raw {
+        alogirhm: dash_sdk::dpp::identity::KeyType::EDDSA_25519_HASH160,
     };
     let key_handle = unlocked
         .generate_key_pair(requested_key, seed)
@@ -164,7 +152,7 @@ fn test_generate_derivation_seed() {
 
     let key_handle = unlocked
         .generate_key_pair(
-            KeyType::DerivationSeedECDSA {
+            KeyType::DerivationSeed {
                 network: Network::Testnet,
             },
             seed,
@@ -192,7 +180,7 @@ fn test_derive_key_pair() {
     // First generate a master key
     let master_key = unlocked
         .generate_key_pair(
-            KeyType::DerivationSeedECDSA {
+            KeyType::DerivationSeed {
                 network: Network::Testnet,
             },
             seed,
@@ -203,7 +191,7 @@ fn test_derive_key_pair() {
     let derivation_path = DerivationPath::bip_44_payment_path(Network::Testnet, 0, false, 0);
 
     let derived_key = unlocked
-        .derive_key_pair(&master_key, &derivation_path)
+        .derive_key_pair(&master_key, KeyType::ecdsa_secp256k1(), &derivation_path)
         .expect("Failed to derive key pair");
 
     // Verify the derived key is in the keys list
@@ -229,7 +217,7 @@ fn test_derive_multiple_keys_same_path() {
     // Generate master key
     let master_key = unlocked
         .generate_key_pair(
-            KeyType::DerivationSeedECDSA {
+            KeyType::DerivationSeed {
                 network: Network::Testnet,
             },
             seed,
@@ -240,11 +228,11 @@ fn test_derive_multiple_keys_same_path() {
 
     // Derive the same key twice
     let derived_key1 = unlocked
-        .derive_key_pair(&master_key, &derivation_path)
+        .derive_key_pair(&master_key, KeyType::ecdsa_secp256k1(), &derivation_path)
         .expect("Failed to derive key pair 1");
 
     let derived_key2 = unlocked
-        .derive_key_pair(&master_key, &derivation_path)
+        .derive_key_pair(&master_key, KeyType::ecdsa_secp256k1(), &derivation_path)
         .expect("Failed to derive key pair 2");
 
     // Both should produce the same key handle
@@ -269,7 +257,7 @@ fn test_derive_different_paths() {
     // Generate master key
     let master_key = unlocked
         .generate_key_pair(
-            KeyType::DerivationSeedECDSA {
+            KeyType::DerivationSeed {
                 network: Network::Testnet,
             },
             seed,
@@ -280,11 +268,11 @@ fn test_derive_different_paths() {
     let path2 = DerivationPath::bip_44_payment_path(Network::Testnet, 0, false, 1);
 
     let derived_key1 = unlocked
-        .derive_key_pair(&master_key, &path1)
+        .derive_key_pair(&master_key, KeyType::ecdsa_secp256k1(), &path1)
         .expect("Failed to derive key pair 1");
 
     let derived_key2 = unlocked
-        .derive_key_pair(&master_key, &path2)
+        .derive_key_pair(&master_key, KeyType::ecdsa_secp256k1(), &path2)
         .expect("Failed to derive key pair 2");
 
     // Different paths should produce different keys
@@ -324,23 +312,15 @@ fn test_list_keys_with_content() {
         .expect("Failed to unlock KMS");
 
     // Generate multiple keys
-    let requested_key = KeyType::Identity {
-        id: 1,
-        purpose: dash_sdk::dpp::identity::Purpose::AUTHENTICATION,
-        security_level: dash_sdk::dpp::identity::SecurityLevel::CRITICAL,
-        key_type: dash_sdk::dpp::identity::KeyType::ECDSA_HASH160,
-        contract_bounds: None,
+    let requested_key = KeyType::Raw {
+        alogirhm: dash_sdk::dpp::identity::KeyType::ECDSA_HASH160,
     };
     let key1 = unlocked
         .generate_key_pair(requested_key, seed.clone())
         .expect("Failed to generate key 1");
 
-    let requested_key = KeyType::Identity {
-        id: 2,
-        purpose: dash_sdk::dpp::identity::Purpose::AUTHENTICATION,
-        security_level: dash_sdk::dpp::identity::SecurityLevel::CRITICAL,
-        key_type: dash_sdk::dpp::identity::KeyType::ECDSA_HASH160,
-        contract_bounds: None,
+    let requested_key = KeyType::Raw {
+        alogirhm: dash_sdk::dpp::identity::KeyType::EDDSA_25519_HASH160,
     };
     let key2 = unlocked
         .generate_key_pair(requested_key, seed.clone())
@@ -348,7 +328,7 @@ fn test_list_keys_with_content() {
 
     let master_key = unlocked
         .generate_key_pair(
-            KeyType::DerivationSeedECDSA {
+            KeyType::DerivationSeed {
                 network: Network::Testnet,
             },
             seed,
@@ -379,12 +359,8 @@ fn test_persistence_across_sessions() {
             .unlock(&user_id, password.clone())
             .expect("Failed to unlock KMS");
 
-        let requested_key = KeyType::Identity {
-            id: 1,
-            purpose: dash_sdk::dpp::identity::Purpose::AUTHENTICATION,
-            security_level: dash_sdk::dpp::identity::SecurityLevel::CRITICAL,
-            key_type: dash_sdk::dpp::identity::KeyType::ECDSA_HASH160,
-            contract_bounds: None,
+        let requested_key = KeyType::Raw {
+            alogirhm: dash_sdk::dpp::identity::KeyType::ECDSA_HASH160,
         };
         key_handle = unlocked
             .generate_key_pair(requested_key, seed)
@@ -424,27 +400,18 @@ fn test_invalid_seed_size() {
         .unlock(&user_id, password)
         .expect("Failed to unlock KMS");
 
-    // Test with too short seed
-    let short_seed = Secret::new(vec![42u8; 16]).expect("Failed to create short seed");
-    let requested_key = KeyType::Identity {
-        id: 1,
-        purpose: dash_sdk::dpp::identity::Purpose::AUTHENTICATION,
-        security_level: dash_sdk::dpp::identity::SecurityLevel::CRITICAL,
-        key_type: dash_sdk::dpp::identity::KeyType::ECDSA_HASH160,
-        contract_bounds: None,
+    let requested_key = KeyType::Raw {
+        alogirhm: dash_sdk::dpp::identity::KeyType::ECDSA_HASH160,
     };
+    let short_seed = Secret::new(vec![42u8; 16]).expect("Failed to create short seed");
     let result = unlocked.generate_key_pair(requested_key, short_seed);
 
     assert!(result.is_err(), "Short seed should be rejected");
 
     // Test with too long seed
     let long_seed = Secret::new(vec![42u8; 64]).expect("Failed to create long seed");
-    let requested_key = KeyType::Identity {
-        id: 2,
-        purpose: dash_sdk::dpp::identity::Purpose::AUTHENTICATION,
-        security_level: dash_sdk::dpp::identity::SecurityLevel::CRITICAL,
-        key_type: dash_sdk::dpp::identity::KeyType::ECDSA_HASH160,
-        contract_bounds: None,
+    let requested_key = KeyType::Raw {
+        alogirhm: dash_sdk::dpp::identity::KeyType::ECDSA_HASH160,
     };
     let result = unlocked.generate_key_pair(requested_key, long_seed);
 
@@ -462,12 +429,8 @@ fn test_derive_from_invalid_master() {
         .expect("Failed to unlock KMS");
 
     // Generate a regular identity key (not a derivation seed)
-    let requested_key = KeyType::Identity {
-        id: 1,
-        purpose: dash_sdk::dpp::identity::Purpose::AUTHENTICATION,
-        security_level: dash_sdk::dpp::identity::SecurityLevel::CRITICAL,
-        key_type: dash_sdk::dpp::identity::KeyType::ECDSA_HASH160,
-        contract_bounds: None,
+    let requested_key = KeyType::Raw {
+        alogirhm: dash_sdk::dpp::identity::KeyType::ECDSA_HASH160,
     };
     let identity_key = unlocked
         .generate_key_pair(requested_key, seed)
@@ -476,7 +439,8 @@ fn test_derive_from_invalid_master() {
     let derivation_path = DerivationPath::bip_44_payment_path(Network::Testnet, 0, false, 0);
 
     // Try to derive from the identity key (should fail)
-    let result = unlocked.derive_key_pair(&identity_key, &derivation_path);
+    let result =
+        unlocked.derive_key_pair(&identity_key, KeyType::ecdsa_secp256k1(), &derivation_path);
     assert!(
         result.is_err(),
         "Should not be able to derive from identity key"
@@ -500,7 +464,8 @@ fn test_derive_from_nonexistent_master() {
 
     let derivation_path = DerivationPath::bip_44_payment_path(Network::Testnet, 0, false, 0);
 
-    let result = unlocked.derive_key_pair(&fake_master, &derivation_path);
+    let result =
+        unlocked.derive_key_pair(&fake_master, KeyType::ecdsa_secp256k1(), &derivation_path);
     assert!(
         result.is_err(),
         "Should fail to derive from nonexistent master"
@@ -522,7 +487,7 @@ fn test_get_public_key_nonexistent() {
         .expect("Failed to unlock KMS");
 
     // Try to get public key for nonexistent key
-    let fake_key = KeyHandle::PublicKeyBytes(vec![1, 2, 3, 4]);
+    let fake_key = KeyHandle::RawKey(vec![1, 2, 3, 4], KeyType::ecdsa_secp256k1());
     let result = kms
         .public_key(&fake_key)
         .expect("Should succeed but return None");
@@ -548,12 +513,8 @@ fn test_multiple_users_same_credentials() {
 
         unlocked
             .generate_key_pair(
-                KeyType::Identity {
-                    id: 1,
-                    purpose: Purpose::AUTHENTICATION,
-                    security_level: SecurityLevel::CRITICAL,
-                    key_type: IdentityKeyType::ECDSA_SECP256K1,
-                    contract_bounds: None,
+                KeyType::Raw {
+                    alogirhm: IdentityKeyType::ECDSA_SECP256K1,
                 },
                 seed.clone(),
             )
@@ -568,12 +529,8 @@ fn test_multiple_users_same_credentials() {
 
         unlocked
             .generate_key_pair(
-                KeyType::Identity {
-                    id: 2,
-                    purpose: Purpose::AUTHENTICATION,
-                    security_level: SecurityLevel::CRITICAL,
-                    key_type: IdentityKeyType::EDDSA_25519_HASH160,
-                    contract_bounds: None,
+                KeyType::Raw {
+                    alogirhm: IdentityKeyType::EDDSA_25519_HASH160,
                 },
                 seed,
             )
@@ -629,12 +586,8 @@ fn test_different_users_different_stores() {
 
         unlocked
             .generate_key_pair(
-                KeyType::Identity {
-                    id: 1,
-                    purpose: Purpose::AUTHENTICATION,
-                    security_level: SecurityLevel::CRITICAL,
-                    key_type: IdentityKeyType::ECDSA_SECP256K1,
-                    contract_bounds: None,
+                KeyType::Raw {
+                    alogirhm: IdentityKeyType::ECDSA_SECP256K1,
                 },
                 seed.clone(),
             )
@@ -649,12 +602,8 @@ fn test_different_users_different_stores() {
 
         unlocked
             .generate_key_pair(
-                KeyType::Identity {
-                    id: 1,
-                    purpose: Purpose::AUTHENTICATION,
-                    security_level: SecurityLevel::CRITICAL,
-                    key_type: IdentityKeyType::EDDSA_25519_HASH160,
-                    contract_bounds: None,
+                KeyType::Raw {
+                    alogirhm: IdentityKeyType::EDDSA_25519_HASH160,
                 },
                 seed,
             )
@@ -698,11 +647,11 @@ fn test_different_users_different_stores() {
 
 #[test]
 fn test_key_handle_display_and_parsing() {
-    // Test PublicKeyBytes
+    // Test RawKey
     let pubkey_bytes = vec![1, 2, 3, 4, 5];
-    let pubkey_handle = KeyHandle::PublicKeyBytes(pubkey_bytes.clone());
+    let pubkey_handle = KeyHandle::RawKey(pubkey_bytes.clone(), KeyType::ecdsa_secp256k1());
     let display_str = pubkey_handle.to_string();
-    assert!(display_str.contains("PublicKeyBytes"));
+    assert!(display_str.contains("RawKey"));
     assert!(display_str.contains(&hex::encode_upper(&pubkey_bytes)));
 
     // Test DerivationSeed
@@ -741,12 +690,8 @@ fn test_key_record_verification() {
     // Generate a key and verify that it can be listed
     let key_handle = unlocked
         .generate_key_pair(
-            KeyType::Identity {
-                id: 1,
-                purpose: Purpose::AUTHENTICATION,
-                security_level: SecurityLevel::CRITICAL,
-                key_type: IdentityKeyType::ECDSA_SECP256K1,
-                contract_bounds: None,
+            KeyType::Raw {
+                alogirhm: IdentityKeyType::ECDSA_SECP256K1,
             },
             seed,
         )
@@ -778,12 +723,8 @@ fn test_concurrent_access_simulation() {
     // Both should be able to generate keys
     let key1 = unlocked1
         .generate_key_pair(
-            KeyType::Identity {
-                id: 1,
-                purpose: Purpose::AUTHENTICATION,
-                security_level: SecurityLevel::CRITICAL,
-                key_type: IdentityKeyType::ECDSA_SECP256K1,
-                contract_bounds: None,
+            KeyType::Raw {
+                alogirhm: IdentityKeyType::ECDSA_SECP256K1,
             },
             seed.clone(),
         )
@@ -791,12 +732,8 @@ fn test_concurrent_access_simulation() {
 
     let key2 = unlocked2
         .generate_key_pair(
-            KeyType::Identity {
-                id: 2,
-                purpose: Purpose::AUTHENTICATION,
-                security_level: SecurityLevel::CRITICAL,
-                key_type: IdentityKeyType::EDDSA_25519_HASH160,
-                contract_bounds: None,
+            KeyType::Raw {
+                alogirhm: IdentityKeyType::EDDSA_25519_HASH160,
             },
             seed,
         )

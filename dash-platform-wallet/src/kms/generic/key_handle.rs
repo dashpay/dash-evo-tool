@@ -3,15 +3,20 @@ use std::fmt::Display;
 use dash_sdk::dpp::dashcore::{Network, bip32::DerivationPath};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+use crate::kms::KeyType;
+
 pub type SeedHash = [u8; 32];
 /// Generic key handle used in the [GenericKms], used to identify keys in the KMS.
 #[derive(Debug, Clone, PartialEq, PartialOrd, Eq, Ord)]
 pub enum KeyHandle {
-    PublicKeyBytes(Vec<u8>), // Public key bytes, used for encryption and verification
+    /// Represents a raw public key
+    RawKey(Vec<u8>, KeyType),
+    /// Represents a seed used for key derivation.
     DerivationSeed {
         seed_hash: SeedHash,
         network: Network,
     },
+    /// Key derived from a seed using a derivation path.
     Derived {
         seed_hash: SeedHash,             // Hash of the seed to use to derive the key
         derivation_path: DerivationPath, // Derivation path for the key; TODO:
@@ -22,8 +27,12 @@ pub enum KeyHandle {
 impl Display for KeyHandle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let key_string = match self {
-            KeyHandle::PublicKeyBytes(bytes) => {
-                format!("PublicKeyBytes({})", hex::encode_upper(bytes))
+            KeyHandle::RawKey(bytes, key_type) => {
+                format!(
+                    "RawKey(bytes={}, type={:?})",
+                    hex::encode_upper(bytes),
+                    key_type
+                )
             }
             KeyHandle::DerivationSeed { seed_hash, network } => {
                 format!(
@@ -66,13 +75,46 @@ impl<'de> Deserialize<'de> for KeyHandle {
         let s = String::deserialize(deserializer)?;
 
         match s {
-            // Match PublicKeyBytes(HEX)
-            s if s.starts_with("PublicKeyBytes(") && s.ends_with(")") => {
-                let hex_str = &s[15..s.len() - 1]; // Remove "PublicKeyBytes(" and ")"
-                let bytes = hex::decode(hex_str).map_err(|e| {
-                    serde::de::Error::custom(format!("Invalid hex in PublicKeyBytes: {}", e))
-                })?;
-                Ok(KeyHandle::PublicKeyBytes(bytes))
+            // Match RawKey(bytes=HEX, type=TYPE)
+            s if s.starts_with("RawKey(bytes=") && s.contains(", type=") && s.ends_with(")") => {
+                let inner = &s[13..s.len() - 1]; // Remove "RawKey(" and ")"
+
+                // Find the split point between bytes and type
+                if let Some(type_pos) = inner.find(", type=") {
+                    let hex_str = &inner[0..type_pos];
+                    let type_str = &inner[type_pos + 7..]; // Skip ", type="
+
+                    let bytes = hex::decode(hex_str).map_err(|e| {
+                        serde::de::Error::custom(format!("Invalid hex in RawKey: {}", e))
+                    })?;
+
+                    // Parse KeyType from debug format
+                    let key_type = match type_str {
+                        s if s.contains("ECDSA_SECP256K1") => KeyType::ecdsa_secp256k1(),
+                        s if s.contains("EDDSA_25519_HASH160") => KeyType::Raw {
+                            alogirhm: crate::kms::IdentityKeyType::EDDSA_25519_HASH160,
+                        },
+                        s if s.contains("BLS12_381") => KeyType::Raw {
+                            alogirhm: crate::kms::IdentityKeyType::BLS12_381,
+                        },
+                        s if s.contains("BIP13_SCRIPT_HASH") => KeyType::Raw {
+                            alogirhm: crate::kms::IdentityKeyType::BIP13_SCRIPT_HASH,
+                        },
+                        s if s.contains("ECDSA_HASH160") => KeyType::Raw {
+                            alogirhm: crate::kms::IdentityKeyType::ECDSA_HASH160,
+                        },
+                        _ => {
+                            // Default to ECDSA_SECP256K1 for unknown types
+                            KeyType::ecdsa_secp256k1()
+                        }
+                    };
+
+                    Ok(KeyHandle::RawKey(bytes, key_type))
+                } else {
+                    Err(serde::de::Error::custom(
+                        "Invalid RawKey format: missing type",
+                    ))
+                }
             }
             // Match Derived(seed_hash=HEX, derivation_path=PATH, network=NETWORK)
             s if s.starts_with("Derived(") && s.ends_with(")") => {

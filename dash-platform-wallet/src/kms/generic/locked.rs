@@ -49,6 +49,14 @@ pub(super) enum StoredKeyRecord {
         public_key: Vec<u8>,
         network: dash_sdk::dpp::dashcore::Network,
     },
+    /// Represents a user's encrypted copy of the master key.
+    UserRecord {
+        user_id: Vec<u8>,
+        encrypted_master_key: Vec<u8>,
+        nonce: Nonce,
+        salt: Vec<u8>,   // For key derivation
+        created_at: u64, // Timestamp
+    },
 }
 impl StoredKeyRecord {
     /// Verifies that the key record matches the provided key handle.
@@ -125,6 +133,22 @@ impl StoredKeyRecord {
                     )));
                 }
             }
+            // UserRecord: verify the user_id matches
+            (
+                StoredKeyRecord::UserRecord {
+                    user_id: stored_user_id,
+                    ..
+                },
+                KeyHandle::User(requested_user_id),
+            ) => {
+                if stored_user_id != requested_user_id {
+                    return Err(KmsError::KeyIntegrityError(format!(
+                        "User ID mismatch: requested: {}, stored: {}",
+                        hex::encode(requested_user_id),
+                        hex::encode(stored_user_id),
+                    )));
+                }
+            }
             _ => {
                 return Err(KmsError::KeyRecordNotSupported(
                     "KeyRecord does not match KeyHandle".to_string(),
@@ -161,6 +185,21 @@ pub enum KmsError {
 
     #[error("Invalid username or password")]
     InvalidCredentials,
+
+    #[error("User already exists")]
+    UserAlreadyExists,
+
+    #[error("User not found")]
+    UserNotFound,
+
+    #[error("Cannot remove the last user")]
+    CannotRemoveLastUser,
+
+    #[error("Master key not found")]
+    MasterKeyNotFound,
+
+    #[error("Migration error: {0}")]
+    MigrationError(String),
 
     #[error("Signing error: {0}")]
     SigningError(String),
@@ -231,6 +270,11 @@ impl Kms for GenericKms {
             KeyHandle::DerivationSeed { .. } => {
                 return Err(KmsError::KeyRecordNotSupported(
                     "Derivation seed does not have a public key".to_string(),
+                ));
+            }
+            KeyHandle::User(_) => {
+                return Err(KmsError::KeyRecordNotSupported(
+                    "User record does not have a public key".to_string(),
                 ));
             }
         };

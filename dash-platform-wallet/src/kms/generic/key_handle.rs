@@ -22,6 +22,8 @@ pub enum KeyHandle {
         derivation_path: DerivationPath, // Derivation path for the key; TODO:
         network: Network, // Network for which the key is derived (e.g., Dash, Devnet)
     },
+    /// Represents a user record containing encrypted master key.
+    User(Vec<u8>), // User ID
 }
 
 impl Display for KeyHandle {
@@ -50,8 +52,11 @@ impl Display for KeyHandle {
                     "Derived(seed_hash={}, derivation_path={}, network={})",
                     hex::encode_upper(seed_hash),
                     derivation_path,
-                    network
+                    network,
                 )
+            }
+            KeyHandle::User(user_id) => {
+                format!("User(user_id={})", hex::encode_upper(user_id))
             }
         };
         write!(f, "{}", key_string)
@@ -205,6 +210,15 @@ impl<'de> Deserialize<'de> for KeyHandle {
                     .map_err(|e| serde::de::Error::custom(format!("Invalid network: {}", e)))?;
 
                 Ok(KeyHandle::DerivationSeed { seed_hash, network })
+            }
+            // Match User(user_id=HEX)
+            s if s.starts_with("User(user_id=") && s.ends_with(")") => {
+                let inner = &s[13..s.len() - 1]; // Remove "User(user_id=" and ")"
+
+                let bytes = hex::decode(inner)
+                    .map_err(|e| serde::de::Error::custom(format!("Invalid hex in User: {}", e)))?;
+
+                Ok(KeyHandle::User(bytes))
             }
             // Unknown format
             _ => Err(serde::de::Error::custom("Unknown GenericKeyHandle format")),

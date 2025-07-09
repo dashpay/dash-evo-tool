@@ -87,6 +87,11 @@ where
                 ..
             } => (encrypted_seed, nonce),
             StoredKeyRecord::DerivedKey { .. } => (&Vec::new(), &[0u8; NONCE_SIZE]),
+            StoredKeyRecord::UserRecord {
+                encrypted_master_key,
+                nonce,
+                ..
+            } => (encrypted_master_key, nonce),
         };
         let secret = if !ciphertext.0.is_empty() {
             self.storage_decrypt(ciphertext.0, ciphertext.1)?
@@ -396,13 +401,6 @@ where
             .get_from_store_with_metadata(seed_handle)?
             .ok_or(KmsError::PrivateKeyNotFound(seed_handle.clone()))?;
 
-        // now, define handle of the derived key
-        let derived_key_handle = KeyHandle::Derived {
-            seed_hash: *seed_hash,
-            derivation_path: path.clone(),
-            network: *network,
-        };
-
         // derive the actual key to get the public key
         match alogirhm {
             dash_sdk::dpp::identity::KeyType::ECDSA_SECP256K1 => {
@@ -416,44 +414,28 @@ where
                     })?;
                 let public_key = extended_pub_key.to_pub().to_bytes();
 
+                // now, define handle of the derived key
+                let derived_key_handle = KeyHandle::Derived {
+                    seed_hash: *seed_hash,
+                    derivation_path: path.clone(),
+                    network: *network,
+                };
+
                 let key_record = StoredKeyRecord::DerivedKey {
                     derivation_path: path.clone(),
-                    seed_hash: seed_hash.clone(),
+                    seed_hash: *seed_hash,
                     public_key: public_key.to_vec(),
                     network: *network,
                 };
                 self.store.set(derived_key_handle.clone(), key_record)?;
+
+                Ok(derived_key_handle)
             }
-            _ => {
-                return Err(KmsError::KeyRecordNotSupported(format!(
-                    "Unsupported key type for deriving key pair: {:?}",
-                    alogirhm
-                )));
-            }
+            _ => Err(KmsError::KeyRecordNotSupported(format!(
+                "Unsupported key type for deriving key pair: {:?}",
+                alogirhm
+            ))),
         }
-        let extended_key = path
-            .derive_pub_ecdsa_for_master_seed(seed.as_ref(), *network)
-            .map_err(|e| {
-                KmsError::KeyGenerationError(format!(
-                    "Failed to derive key pair from master key: {}",
-                    e
-                ))
-            })?;
-
-        let public_key = extended_key.public_key.serialize();
-
-        // define key record for the derived key; note we don't store actual private keys for derived keys, just some metadata
-        // so we can derive them later when needed
-        let key_record = StoredKeyRecord::DerivedKey {
-            derivation_path: path.clone(),
-            seed_hash: seed_hash.clone(),
-            public_key: public_key.to_vec(),
-            network: *network,
-        };
-
-        self.store.set(derived_key_handle.clone(), key_record)?;
-
-        Ok(derived_key_handle)
     }
 
     fn export(&self, encryption_key: Secret) -> Result<Vec<u8>, Self::Error> {

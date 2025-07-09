@@ -13,7 +13,7 @@ use crate::{
     secret::{Secret, SecretError},
 };
 
-pub(super) type Store = FileStore<KeyHandle, StoredKeyRecord>;
+pub type Store = FileStore<KeyHandle, StoredKeyRecord>;
 /// Simple Key Management Service (KMS) implementation for managing wallet keys.
 #[derive(Clone)]
 pub struct GenericKms {
@@ -30,7 +30,7 @@ impl Debug for GenericKms {
 
 pub type Nonce = [u8; NONCE_SIZE];
 #[derive(Serialize, Deserialize, Clone)]
-pub(super) enum StoredKeyRecord {
+pub enum StoredKeyRecord {
     /// Represents a private key stored in the KMS. See [`KeyHandle::RawKey`].
     RawKey {
         encrypted_key: Vec<u8>,
@@ -1014,5 +1014,213 @@ mod tests {
         assert_eq!(keys.len(), 2, "Should see both keys");
         assert!(keys.contains(&key1), "Should contain key1");
         assert!(keys.contains(&key2), "Should contain key2");
+    }
+
+    #[test]
+    fn test_login_method_user_management() {
+        let (kms, _temp_dir) = create_test_kms();
+        let (admin_id, admin_password) = test_credentials();
+        let user_id = b"new_user".to_vec();
+        let user_password = Secret::new(b"user_password".to_vec()).unwrap();
+        let seed = test_seed();
+
+        // Create initial key and user through login
+        let initial_key = {
+            let mut admin_unlocked = kms
+                .login(&admin_id, admin_password.clone())
+                .expect("Failed to login as admin");
+            let key = admin_unlocked
+                .generate_key_pair(
+                    KeyType::DerivationSeed {
+                        network: Network::Testnet,
+                    },
+                    seed,
+                )
+                .expect("Failed to generate initial key");
+
+            // Add new user
+            admin_unlocked
+                .add_user(&user_id, user_password.clone())
+                .expect("Failed to add user");
+
+            // Verify user list
+            let users = admin_unlocked.list_users().expect("Failed to list users");
+            assert_eq!(users.len(), 2, "Should have 2 users");
+            assert!(users.contains(&admin_id), "Should contain admin");
+            assert!(users.contains(&user_id), "Should contain new user");
+
+            key
+        };
+
+        // New user should be able to login and see the same keys
+        {
+            let user_unlocked = kms
+                .login(&user_id, user_password.clone())
+                .expect("Failed to login as new user");
+            let keys: Vec<_> = user_unlocked.keys().expect("Failed to get keys").collect();
+            assert_eq!(keys.len(), 1, "New user should see the same key");
+            assert_eq!(keys[0], initial_key, "Key should match");
+
+            let users = user_unlocked.list_users().expect("Failed to list users");
+            assert_eq!(users.len(), 2, "New user should see both users");
+        }
+
+        // Test password change through login
+        let new_password = Secret::new(b"new_password".to_vec()).unwrap();
+        {
+            let mut user_unlocked = kms
+                .login(&user_id, user_password.clone())
+                .expect("Failed to login as user");
+            user_unlocked
+                .change_user_password(&user_id, new_password.clone())
+                .expect("Failed to change password");
+        }
+
+        // Old password should no longer work
+        let result = kms.login(&user_id, user_password);
+        assert!(result.is_err(), "Old password should not work");
+
+        // New password should work
+        {
+            let _user_unlocked = kms
+                .login(&user_id, new_password)
+                .expect("Failed to login with new password");
+        }
+    }
+
+    #[test]
+    fn test_login_method_error_handling() {
+        let (kms, _temp_dir) = create_test_kms();
+        let (user_id, password) = test_credentials();
+        let seed = test_seed();
+
+        // Create initial setup
+        {
+            let mut unlocked = kms
+                .login(&user_id, password.clone())
+                .expect("Failed to login");
+            let _key = unlocked
+                .generate_key_pair(
+                    KeyType::DerivationSeed {
+                        network: Network::Testnet,
+                    },
+                    seed,
+                )
+                .expect("Failed to generate key");
+        }
+
+        // Test invalid credentials
+        let wrong_password = Secret::new(b"wrong_password".to_vec()).unwrap();
+        let result = kms.login(&user_id, wrong_password);
+        assert!(result.is_err(), "Wrong password should fail");
+        match result.err().unwrap() {
+            KmsError::InvalidCredentials => {}
+            other => panic!("Expected InvalidCredentials, got: {:?}", other),
+        }
+
+        // Test non-existent user
+        let nonexistent_user = b"nonexistent".to_vec();
+        let result = kms.login(&nonexistent_user, password);
+        assert!(result.is_err(), "Non-existent user should fail");
+        match result.err().unwrap() {
+            KmsError::InvalidCredentials => {}
+            other => panic!("Expected InvalidCredentials, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_login_method_duplicate_user_error() {
+        let (kms, _temp_dir) = create_test_kms();
+        let (admin_id, admin_password) = test_credentials();
+        let user_id = b"duplicate_user".to_vec();
+        let user_password = Secret::new(b"user_password".to_vec()).unwrap();
+
+        // Create initial setup and add user
+        {
+            let mut admin_unlocked = kms
+                .login(&admin_id, admin_password.clone())
+                .expect("Failed to login as admin");
+            admin_unlocked
+                .add_user(&user_id, user_password.clone())
+                .expect("Failed to add user");
+        }
+
+        // Try to add the same user again - should fail
+        {
+            let mut admin_unlocked = kms
+                .login(&admin_id, admin_password)
+                .expect("Failed to login as admin");
+            let result = admin_unlocked.add_user(&user_id, user_password);
+            assert!(result.is_err(), "Adding duplicate user should fail");
+        }
+    }
+
+    #[test]
+    fn test_login_method_user_isolation_different_stores() {
+        let temp_dir = tempfile::tempdir().expect("Failed to create temp directory");
+        let user1_id = b"user1".to_vec();
+        let user1_password = Secret::new(b"password1".to_vec()).unwrap();
+        let user2_id = b"user2".to_vec();
+        let user2_password = Secret::new(b"password2".to_vec()).unwrap();
+        let seed = test_seed();
+
+        // Create separate KMS instances for different users
+        let kms1 =
+            GenericKms::new(&temp_dir.path().join("user1.json")).expect("Failed to create KMS1");
+        let kms2 =
+            GenericKms::new(&temp_dir.path().join("user2.json")).expect("Failed to create KMS2");
+
+        // User 1 creates a key
+        let user1_key = {
+            let mut unlocked = kms1
+                .login(&user1_id, user1_password.clone())
+                .expect("Failed to login as user1");
+            unlocked
+                .generate_key_pair(
+                    KeyType::DerivationSeed {
+                        network: Network::Testnet,
+                    },
+                    seed.clone(),
+                )
+                .expect("Failed to generate key for user1")
+        };
+
+        // User 2 creates a key with different seed
+        let seed2 = Secret::new([99u8; 32]).expect("Failed to create test seed 2");
+        let user2_key = {
+            let mut unlocked = kms2
+                .login(&user2_id, user2_password.clone())
+                .expect("Failed to login as user2");
+            unlocked
+                .generate_key_pair(
+                    KeyType::DerivationSeed {
+                        network: Network::Testnet,
+                    },
+                    seed2,
+                )
+                .expect("Failed to generate key for user2")
+        };
+
+        // Keys should be different (different seeds)
+        assert_ne!(user1_key, user2_key, "Keys should be different");
+
+        // Each user should only see their own keys
+        {
+            let unlocked1 = kms1
+                .login(&user1_id, user1_password)
+                .expect("Failed to login as user1");
+            let keys1: Vec<_> = unlocked1.keys().expect("Failed to get keys").collect();
+            assert_eq!(keys1.len(), 1, "User1 should see only 1 key");
+            assert_eq!(keys1[0], user1_key, "Should be user1's key");
+        }
+
+        {
+            let unlocked2 = kms2
+                .login(&user2_id, user2_password)
+                .expect("Failed to login as user2");
+            let keys2: Vec<_> = unlocked2.keys().expect("Failed to get keys").collect();
+            assert_eq!(keys2.len(), 1, "User2 should see only 1 key");
+            assert_eq!(keys2[0], user2_key, "Should be user2's key");
+        }
     }
 }

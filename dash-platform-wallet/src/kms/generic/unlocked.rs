@@ -39,7 +39,7 @@ pub struct GenericUnlockedKms<'a, S> {
     storage_key: Secret, // Derived key for encrypting/decrypting store
     platform_version: &'a PlatformVersion,
 }
-#[allow(private_bounds)]
+
 impl<'a, S: KVStore<KeyHandle, StoredKeyRecord>> GenericUnlockedKms<'a, S>
 where
     KmsError: From<S::Error>,

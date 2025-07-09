@@ -26,7 +26,7 @@ use super::KVStore;
 ///
 /// The `JsonStore` is designed to be cloneable, allowing multiple instances to share the same underlying data.
 #[derive(Clone)]
-pub(super) struct FileStore<K: Ord, V> {
+pub struct FileStore<K: Ord, V> {
     // where
     // K: Clone + std::fmt::Debug + Serialize + for<'de> Deserialize<'de> + Ord,
     // V: Clone + Serialize + for<'de> Deserialize<'de>,

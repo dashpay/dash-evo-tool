@@ -146,6 +146,8 @@ pub trait KVStore<K: Clone + std::fmt::Debug, V: Clone> {
     fn set(&mut self, key: K, value: V) -> Result<(), Self::Error>;
 
     /// Removes a key-value pair.
+    ///
+    /// Returns `true` if the key was found and removed, or `false` if the key was not found.
     fn delete(&mut self, key: &K) -> Result<bool, Self::Error>;
 
     /// Lists all keys in the store.

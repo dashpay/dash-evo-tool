@@ -13,10 +13,11 @@ use crate::{
     secret::{Secret, SecretError},
 };
 
+pub(super) type Store = FileStore<KeyHandle, StoredKeyRecord>;
 /// Simple Key Management Service (KMS) implementation for managing wallet keys.
 #[derive(Clone)]
 pub struct GenericKms {
-    store: FileStore<KeyHandle, StoredKeyRecord>,
+    store: Store,
 }
 
 impl Debug for GenericKms {
@@ -183,14 +184,10 @@ pub enum KmsError {
     #[error("Cannot determine storage encryption key: {0}")]
     StorageKeyError(String),
 
+    /// Invalid username or password; note we don't distinguish between these two
+    /// errors to ensure we don't leak information about user existence.
     #[error("Invalid username or password")]
     InvalidCredentials,
-
-    #[error("User already exists")]
-    UserAlreadyExists,
-
-    #[error("User not found")]
-    UserNotFound,
 
     #[error("Cannot remove the last user")]
     CannotRemoveLastUser,
@@ -224,6 +221,16 @@ impl GenericKms {
             store: FileStore::new(path)?,
         })
     }
+
+    /// Unlocks the KMS for operations that require access to private keys.
+    #[allow(private_interfaces)]
+    pub fn login(
+        &self,
+        user_id: &[u8],
+        password: Secret,
+    ) -> Result<GenericUnlockedKms<'_, Store>, KmsError> {
+        GenericUnlockedKms::new(self, self.store.clone(), user_id, password)
+    }
 }
 
 impl Kms for GenericKms {
@@ -237,7 +244,7 @@ impl Kms for GenericKms {
         password: Secret,
     ) -> Result<impl UnlockedKMS<KeyHandle = Self::KeyHandle, Error = Self::Error>, Self::Error>
     {
-        GenericUnlockedKms::new(self, self.store.clone(), user_id, password)
+        self.login(user_id, password)
     }
 
     fn public_key(&self, key_handle: &Self::KeyHandle) -> Result<Option<PublicKey>, Self::Error> {
@@ -283,7 +290,11 @@ impl Kms for GenericKms {
     }
 
     fn keys(&self) -> Result<impl Iterator<Item = Self::KeyHandle>, Self::Error> {
-        let i = self.store.keys()?.into_iter();
+        let i = self
+            .store
+            .keys()?
+            .into_iter()
+            .filter(|k| !matches!(k, KeyHandle::User(_)));
         Ok(i)
     }
 }

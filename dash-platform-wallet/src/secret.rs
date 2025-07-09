@@ -1,5 +1,5 @@
 pub use aes_gcm::aead::heapless::Vec as HeaplessVec;
-use sha2::{Digest, Sha256};
+use sha2::{Digest, Sha256, digest::generic_array::GenericArray};
 use std::ops::Deref;
 use thiserror::Error;
 use zeroize::Zeroize;
@@ -71,6 +71,13 @@ impl AsRef<[u8; 32]> for Secret {
         }
         // Convert the heapless Vec to a slice of 32 bytes
         unsafe { &*(self.data.as_ptr() as *const [u8; 32]) }
+    }
+}
+
+impl AsRef<aes_gcm::Key<aes_gcm::Aes256Gcm>> for Secret {
+    fn as_ref(&self) -> &aes_gcm::Key<aes_gcm::Aes256Gcm> {
+        let key_bytes: &[u8; 32] = self.as_ref();
+        GenericArray::from_slice(key_bytes)
     }
 }
 

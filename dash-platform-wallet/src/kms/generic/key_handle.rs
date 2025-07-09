@@ -3,14 +3,14 @@ use std::fmt::Display;
 use dash_sdk::dpp::dashcore::{Network, bip32::DerivationPath};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::kms::KeyType;
+use crate::kms::PublicKey;
 
 pub type SeedHash = [u8; 32];
 /// Generic key handle used in the [GenericKms], used to identify keys in the KMS.
 #[derive(Debug, Clone, PartialEq, PartialOrd, Eq, Ord)]
 pub enum KeyHandle {
     /// Represents a raw public key
-    RawKey(Vec<u8>, KeyType),
+    RawKey(PublicKey),
     /// Represents a seed used for key derivation.
     DerivationSeed {
         seed_hash: SeedHash,
@@ -29,11 +29,11 @@ pub enum KeyHandle {
 impl Display for KeyHandle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let key_string = match self {
-            KeyHandle::RawKey(bytes, key_type) => {
+            KeyHandle::RawKey(pk) => {
                 format!(
                     "RawKey(bytes={}, type={:?})",
-                    hex::encode_upper(bytes),
-                    key_type
+                    hex::encode_upper(pk.data().as_slice()),
+                    pk.key_type()
                 )
             }
             KeyHandle::DerivationSeed { seed_hash, network } => {
@@ -95,26 +95,30 @@ impl<'de> Deserialize<'de> for KeyHandle {
 
                     // Parse KeyType from debug format
                     let key_type = match type_str {
-                        s if s.contains("ECDSA_SECP256K1") => KeyType::ecdsa_secp256k1(),
-                        s if s.contains("EDDSA_25519_HASH160") => KeyType::Raw {
-                            alogirhm: crate::kms::IdentityKeyType::EDDSA_25519_HASH160,
-                        },
-                        s if s.contains("BLS12_381") => KeyType::Raw {
-                            alogirhm: crate::kms::IdentityKeyType::BLS12_381,
-                        },
-                        s if s.contains("BIP13_SCRIPT_HASH") => KeyType::Raw {
-                            alogirhm: crate::kms::IdentityKeyType::BIP13_SCRIPT_HASH,
-                        },
-                        s if s.contains("ECDSA_HASH160") => KeyType::Raw {
-                            alogirhm: crate::kms::IdentityKeyType::ECDSA_HASH160,
-                        },
+                        s if s.contains("ECDSA_SECP256K1") => {
+                            crate::kms::IdentityKeyType::ECDSA_SECP256K1
+                        }
+                        s if s.contains("EDDSA_25519_HASH160") => {
+                            crate::kms::IdentityKeyType::EDDSA_25519_HASH160
+                        }
+
+                        s if s.contains("BLS12_381") => crate::kms::IdentityKeyType::BLS12_381,
+
+                        s if s.contains("BIP13_SCRIPT_HASH") => {
+                            crate::kms::IdentityKeyType::BIP13_SCRIPT_HASH
+                        }
+
+                        s if s.contains("ECDSA_HASH160") => {
+                            crate::kms::IdentityKeyType::ECDSA_HASH160
+                        }
+
                         _ => {
                             // Default to ECDSA_SECP256K1 for unknown types
-                            KeyType::ecdsa_secp256k1()
+                            return Err(serde::de::Error::custom("Unknown key type in RawKey"));
                         }
                     };
 
-                    Ok(KeyHandle::RawKey(bytes, key_type))
+                    Ok(KeyHandle::RawKey(PublicKey(bytes.into(), key_type)))
                 } else {
                     Err(serde::de::Error::custom(
                         "Invalid RawKey format: missing type",

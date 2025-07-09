@@ -10,7 +10,7 @@ use crate::kms::{
     },
 };
 use aes_gcm::{
-    Aes256Gcm, Key, Nonce,
+    Aes256Gcm, Nonce,
     aead::{AeadMutInPlace, OsRng},
 };
 use argon2::MIN_SALT_LEN;
@@ -19,7 +19,11 @@ use dash_sdk::{
     dpp::{
         ProtocolError,
         dashcore::bip32::{DerivationPath, ExtendedPrivKey},
-        identity::signer::Signer,
+        ed25519_dalek::Signer as EDDSASigner,
+        identity::{
+            KeyType as IdentityKeyType,
+            identity_public_key::accessors::v0::IdentityPublicKeyGettersV0, signer::Signer,
+        },
         platform_value::BinaryData,
         version::PlatformVersion,
     },
@@ -419,13 +423,11 @@ where
     ///
     /// * `handle`: The key handle for which to derive the key pair.
     ///   It MUST be a `KeyHandle::Derived` variant.
-    fn get_derived_ecdsa_priv_key(
-        &mut self,
-        handle: &KeyHandle,
-    ) -> Result<ExtendedPrivKey, KmsError> {
+    fn get_derived_ecdsa_priv_key(&self, handle: &KeyHandle) -> Result<ExtendedPrivKey, KmsError> {
         let KeyHandle::Derived {
             derivation_path,
             network,
+            seed_hash,
             ..
         } = handle
         else {
@@ -435,9 +437,15 @@ where
             )));
         };
 
+        // Find the derivation seed handle that matches this derived key
+        let seed_handle = KeyHandle::DerivationSeed {
+            seed_hash: *seed_hash,
+            network: *network,
+        };
+
         let (seed, _) = self
-            .get_from_store_with_metadata(handle)?
-            .ok_or(KmsError::PrivateKeyNotFound(handle.clone()))?;
+            .get_from_store_with_metadata(&seed_handle)?
+            .ok_or(KmsError::PrivateKeyNotFound(seed_handle.clone()))?;
 
         // TODO: priv_key should be at least zeroized
         let priv_key = derivation_path
@@ -492,6 +500,134 @@ where
         // Now the message contains the ciphertext, which is safe to be retrieved as a vector.
         Ok(((message.as_ref() as &[u8]).to_vec(), nonce))
     }
+
+    /// Find a key handle that matches the given identity public key
+    fn find_key_handle_for_identity_public_key(
+        &self,
+        identity_public_key: &IdentityPublicKey,
+    ) -> Option<KeyHandle> {
+        let public_key: PublicKey = identity_public_key.clone().into();
+
+        let raw_key_handle = KeyHandle::RawKey(public_key.clone());
+
+        // Check if this key exists in our store
+        if let Ok(keys) = self.store.keys() {
+            if keys.contains(&raw_key_handle) {
+                return Some(raw_key_handle);
+            }
+
+            // If not found as raw key, try to find among derived keys
+            for key_handle in keys {
+                if let KeyHandle::Derived { .. } = key_handle {
+                    // Check if the public key matches
+                    if let Ok(Some(stored_pubkey)) = self.kms.public_key(&key_handle) {
+                        if stored_pubkey == public_key {
+                            return Some(key_handle);
+                        }
+                    }
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Sign data with an ECDSA key
+    fn sign_with_ecdsa_key(
+        &self,
+        key_handle: &KeyHandle,
+        data: &[u8],
+    ) -> Result<BinaryData, ProtocolError> {
+        // Get the private key for this handle
+        let private_key = match key_handle {
+            KeyHandle::RawKey(_) => {
+                // For raw keys, we need to get the private key from the store
+                let (secret, _) = self
+                    .get_from_store_with_metadata(key_handle)
+                    .map_err(|e| {
+                        ProtocolError::Generic(format!("Failed to get private key: {}", e))
+                    })?
+                    .ok_or_else(|| ProtocolError::Generic("Private key not found".to_string()))?;
+                secret
+            }
+            KeyHandle::Derived { .. } => {
+                // For derived keys, we need to derive the private key
+                let extended_priv_key =
+                    self.get_derived_ecdsa_priv_key(key_handle).map_err(|e| {
+                        ProtocolError::Generic(format!("Failed to derive private key: {}", e))
+                    })?;
+                Secret::new(extended_priv_key.private_key.secret_bytes()).map_err(|e| {
+                    ProtocolError::Generic(format!("Failed to create secret: {}", e))
+                })?
+            }
+            _ => {
+                return Err(ProtocolError::Generic(
+                    "Invalid key handle for ECDSA".to_string(),
+                ));
+            }
+        };
+
+        // Use the dashcore signer to sign the data
+        let signature = dash_sdk::dpp::dashcore::signer::sign(data, private_key.as_ref())
+            .map_err(|e| ProtocolError::Generic(format!("ECDSA signing failed: {}", e)))?;
+
+        Ok(signature.to_vec().into())
+    }
+
+    /// Sign data with a BLS key
+    fn sign_with_bls_key(
+        &self,
+        key_handle: &KeyHandle,
+        data: &[u8],
+    ) -> Result<BinaryData, ProtocolError> {
+        // Get the private key for this handle
+        let (secret, _) = self
+            .get_from_store_with_metadata(key_handle)
+            .map_err(|e| ProtocolError::Generic(format!("Failed to get private key: {}", e)))?
+            .ok_or_else(|| ProtocolError::Generic("Private key not found".to_string()))?;
+
+        // Use BLS signing
+        let private_key_bytes: &[u8] = secret.as_ref();
+        let key_array: [u8; 32] = private_key_bytes
+            .try_into()
+            .map_err(|_| ProtocolError::Generic("Invalid BLS private key length".to_string()))?;
+
+        let pk = dash_sdk::dpp::bls_signatures::SecretKey::<
+            dash_sdk::dpp::bls_signatures::Bls12381G2Impl,
+        >::from_be_bytes(&key_array)
+        .into_option()
+        .ok_or_else(|| ProtocolError::Generic("Invalid BLS private key".to_string()))?;
+
+        let signature = pk
+            .sign(dash_sdk::dpp::bls_signatures::SignatureSchemes::Basic, data)
+            .map_err(|e| ProtocolError::Generic(format!("BLS signing failed: {}", e)))?;
+
+        Ok(signature.as_raw_value().to_compressed().to_vec().into())
+    }
+
+    /// Sign data with an EdDSA key
+    fn sign_with_eddsa_key(
+        &self,
+        key_handle: &KeyHandle,
+        data: &[u8],
+    ) -> Result<BinaryData, ProtocolError> {
+        // Get the private key for this handle
+        let (secret, _) = self
+            .get_from_store_with_metadata(key_handle)
+            .map_err(|e| ProtocolError::Generic(format!("Failed to get private key: {}", e)))?
+            .ok_or_else(|| ProtocolError::Generic("Private key not found".to_string()))?;
+
+        // Use EdDSA signing
+        let private_key_bytes: &[u8] = secret.as_ref();
+        let key: [u8; 32] = private_key_bytes
+            .try_into()
+            .map_err(|_| ProtocolError::Generic("Invalid EdDSA private key length".to_string()))?;
+
+        let signing_key = dash_sdk::dpp::ed25519_dalek::SigningKey::from(&key);
+
+        let signature = signing_key.sign(data);
+        Ok(signature.to_vec().into())
+    }
 }
 
 impl<S: Debug> Debug for GenericUnlockedKms<'_, S> {
@@ -537,11 +673,22 @@ where
         identity_public_key: &IdentityPublicKey,
         data: &[u8],
     ) -> Result<BinaryData, ProtocolError> {
-        todo!();
+        let key_handle = self
+            .find_key_handle_for_identity_public_key(identity_public_key)
+            .ok_or_else(|| {
+                ProtocolError::Generic(format!(
+                    "No key found for identity public key: {}",
+                    identity_public_key.id()
+                ))
+            })?;
+        self.sign_digest(&key_handle, &data)
+            .map(|signature| signature.into())
+            .map_err(|e| ProtocolError::Generic(format!("Failed to sign data: {}", e)))
     }
 
     fn can_sign_with(&self, identity_public_key: &IdentityPublicKey) -> bool {
-        todo!();
+        self.find_key_handle_for_identity_public_key(identity_public_key)
+            .is_some()
     }
 }
 
@@ -550,14 +697,69 @@ where
     S: KVStore<KeyHandle, StoredKeyRecord> + Debug + Send + Sync,
     KmsError: From<S::Error>,
 {
-    fn sign(&self, key: &Self::KeyHandle, digest: &Digest) -> Result<Signature, Self::Error> {
-        todo!();
+    fn sign_digest(
+        &self,
+        key: &Self::KeyHandle,
+        digest: &Digest,
+    ) -> Result<Signature, Self::Error> {
+        let key_type = match key {
+            KeyHandle::RawKey(PublicKey(_, key_type)) => key_type,
+            KeyHandle::DerivationSeed { .. } => {
+                return Err(KmsError::KeyRecordNotSupported(format!(
+                    "Cannot sign with derivation seed directly: {}",
+                    key
+                )));
+            }
+            KeyHandle::Derived { .. } => {
+                &crate::kms::IdentityKeyType::ECDSA_SECP256K1 // Assuming ECDSA for derived keys
+            }
+            KeyHandle::User(..) => {
+                return Err(KmsError::KeyRecordNotSupported(format!(
+                    "Cannot sign with user key: {}",
+                    key
+                )));
+            }
+        };
+
+        // Convert the key type and handle the signing based on the key type
+        let signature_result = match key_type {
+            dash_sdk::dpp::identity::KeyType::ECDSA_SECP256K1
+            | dash_sdk::dpp::identity::KeyType::ECDSA_HASH160 => {
+                // For ECDSA keys, we need to get the private key and sign directly
+                self.sign_with_ecdsa_key(key, digest).map_err(|e| {
+                    KmsError::SigningError(format!("Failed to sign with ECDSA key: {}", e))
+                })
+            }
+            dash_sdk::dpp::identity::KeyType::BLS12_381 => {
+                // For BLS keys, we need to get the private key and sign directly
+                self.sign_with_bls_key(key, digest).map_err(|e| {
+                    KmsError::SigningError(format!("Failed to sign with BLS key: {}", e))
+                })
+            }
+            dash_sdk::dpp::identity::KeyType::EDDSA_25519_HASH160 => {
+                // For EdDSA keys, we need to get the private key and sign directly
+                self.sign_with_eddsa_key(key, digest).map_err(|e| {
+                    KmsError::SigningError(format!("Failed to sign with EdDSA key: {}", e))
+                })
+            }
+            dash_sdk::dpp::identity::KeyType::BIP13_SCRIPT_HASH => {
+                Err(KmsError::KeyRecordNotSupported(format!(
+                    "Cannot sign with BIP13_SCRIPT_HASH key type: {}",
+                    key
+                )))
+            }
+        };
+
+        signature_result.map(|sig| {
+            // Convert the signature to BinaryData
+            Signature::from(sig)
+        })
     }
 
     fn decrypt(
         &self,
-        key: &Self::KeyHandle,
-        encrypted_data: &EncryptedData,
+        _key: &Self::KeyHandle,
+        _encrypted_data: &EncryptedData,
     ) -> Result<PlainData, Self::Error> {
         todo!();
     }
@@ -579,16 +781,21 @@ where
 
         let (handle, record) = match key_type {
             KeyType::Raw {
-                alogirhm: algorithm,
+                algorithm: algorithm,
             } => {
                 // FIXME: private key should be put into [Secret] or at least impl zeroize, not simply returned by a function
                 let (pubkey, privkey) = algorithm
                     .random_public_and_private_key_data(&mut rng, self.platform_version)
                     .map_err(|e| {
                         KmsError::KeyGenerationError(format!("Failed to generate key pair: {}", e))
+                    })
+                    .map(|(pubkey, privkey)| {
+                        // Convert public key to PublicKey type
+                        let pubkey = PublicKey::new(pubkey, algorithm);
+                        (pubkey, privkey)
                     })?;
 
-                let handle = KeyHandle::RawKey(pubkey.clone(), key_type);
+                let handle = KeyHandle::RawKey(pubkey.clone());
                 let (encrypted_key, nonce) = self.storage_encrypt(Secret::new(privkey)?)?;
 
                 let record = StoredKeyRecord::RawKey {
@@ -648,7 +855,7 @@ where
             )));
         };
 
-        let KeyType::Raw { alogirhm } = key_type else {
+        let KeyType::Raw { algorithm } = key_type else {
             return Err(KmsError::KeyRecordNotSupported(format!(
                 "Invalid key type for deriving key pair: {:?}, only KeyType::Raw is supported",
                 key_type
@@ -661,7 +868,7 @@ where
             .ok_or(KmsError::PrivateKeyNotFound(seed_handle.clone()))?;
 
         // derive the actual key to get the public key
-        match alogirhm {
+        match algorithm {
             dash_sdk::dpp::identity::KeyType::ECDSA_SECP256K1 => {
                 let extended_pub_key = path
                     .derive_pub_ecdsa_for_master_seed(seed.as_ref(), *network)
@@ -671,7 +878,7 @@ where
                             e
                         ))
                     })?;
-                let public_key = extended_pub_key.to_pub().to_bytes();
+                let public_key = PublicKey::new(extended_pub_key.to_pub().to_bytes(), algorithm);
 
                 // now, define handle of the derived key
                 let derived_key_handle = KeyHandle::Derived {
@@ -683,7 +890,7 @@ where
                 let key_record = StoredKeyRecord::DerivedKey {
                     derivation_path: path.clone(),
                     seed_hash: *seed_hash,
-                    public_key: public_key.to_vec(),
+                    public_key,
                     network: *network,
                 };
                 self.store.set(derived_key_handle.clone(), key_record)?;
@@ -692,12 +899,12 @@ where
             }
             _ => Err(KmsError::KeyRecordNotSupported(format!(
                 "Unsupported key type for deriving key pair: {:?}",
-                alogirhm
+                algorithm
             ))),
         }
     }
 
-    fn export(&self, encryption_key: Secret) -> Result<Vec<u8>, Self::Error> {
+    fn export(&self, _encryption_key: Secret) -> Result<Vec<u8>, Self::Error> {
         todo!();
     }
 }
@@ -750,7 +957,11 @@ fn compute_seed_hash(seed: &Secret) -> [u8; 32] {
 
 #[cfg(test)]
 mod tests {
-    use dash_sdk::dpp::dashcore::{Network, bip32::DerivationPath};
+    use bip39::rand_core::le;
+    use dash_sdk::dpp::{
+        dashcore::{Network, bip32::DerivationPath},
+        identity::{Purpose, identity_public_key::v0::IdentityPublicKeyV0},
+    };
 
     use crate::kms::{Kms, UnlockedKMS, generic::locked::GenericKms};
 
@@ -861,5 +1072,73 @@ mod tests {
         let _unlocked = kms
             .unlock(&user_id, wrong_password)
             .expect_err("Invalid password accepted");
+    }
+
+    #[test]
+    fn test_signer_sign_with_identity_public_key() {
+        use dash_sdk::dpp::identity::IdentityPublicKey;
+        use dash_sdk::dpp::identity::signer::Signer;
+
+        let user_id = b"user123".to_vec();
+        let password: Secret =
+            Secret::new(b"securepassword".to_vec()).expect("Failed to create Secret");
+
+        let kms_db_dir =
+            tempfile::tempdir().expect("Failed to create temporary file for KMS database");
+        let kms_db = kms_db_dir.path().join("wallet.json");
+        let kms = GenericKms::new(&kms_db).expect("Failed to create KMS instance");
+        let mut unlocked = kms
+            .unlock(&user_id, password)
+            .expect("Failed to unlock KMS");
+
+        // Generate a raw ECDSA key directly
+        let seed2 = Secret::new([43u8; 32]).expect("Failed to generate seed");
+        let _raw_key = unlocked
+            .generate_key_pair(KeyType::ecdsa_secp256k1(), seed2)
+            .expect("Failed to generate raw key");
+
+        // Get the public key (we're not using it for matching, just ensuring it works)
+        let public_key_data = kms
+            .public_key(&_raw_key)
+            .expect("Failed to get public key")
+            .expect("Public key should exist");
+
+        // Create an IdentityPublicKey from the public key data
+        let identity_public_key_v0 = IdentityPublicKeyV0 {
+            data: public_key_data.into(),
+            id: 1,
+            purpose: Purpose::AUTHENTICATION,
+            key_type: dash_sdk::dpp::identity::KeyType::ECDSA_SECP256K1,
+            read_only: false,
+            contract_bounds: None,
+            disabled_at: None,
+            security_level: dash_sdk::dpp::identity::SecurityLevel::CRITICAL,
+        };
+
+        let identity_public_key = IdentityPublicKey::from(identity_public_key_v0);
+
+        assert!(
+            unlocked.can_sign_with(&identity_public_key),
+            "Should  be able to sign with the correct key"
+        );
+
+        // Test signing with an unknown key (should fail)
+        let data_to_sign = b"test message to sign";
+        let signature: Signature = Signer::sign(&unlocked, &identity_public_key, data_to_sign)
+            .expect("Failed to sign data with the correct key")
+            .into();
+
+        // Verify the signature
+        signature
+            .verify(identity_public_key.clone(), data_to_sign)
+            .expect("Failed to verify signature");
+
+        // modify the signature and ensure it's wrong
+        let mut modified_signature = signature.signature.clone();
+        modified_signature[5] ^= 1; // flip some byte to modify the signature
+        let invalid_signature = Signature::new(modified_signature, signature.key_type);
+        invalid_signature
+            .verify(identity_public_key, data_to_sign)
+            .expect_err("Modified signature validation should fail");
     }
 }

@@ -35,7 +35,7 @@ pub enum StoredKeyRecord {
     RawKey {
         encrypted_key: Vec<u8>,
         nonce: Nonce,
-        public_key: Vec<u8>,
+        public_key: PublicKey,
     },
     DerivationSeed {
         encrypted_seed: Vec<u8>,
@@ -47,7 +47,7 @@ pub enum StoredKeyRecord {
     DerivedKey {
         derivation_path: DerivationPath,
         seed_hash: [u8; 32],
-        public_key: Vec<u8>,
+        public_key: PublicKey,
         network: dash_sdk::dpp::dashcore::Network,
     },
     /// Represents a user's encrypted copy of the master key.
@@ -70,13 +70,12 @@ impl StoredKeyRecord {
                     nonce: _,
                     public_key,
                 },
-                KeyHandle::RawKey(public_key_bytes, _typ),
+                KeyHandle::RawKey(requested_public_key),
             ) => {
-                if !public_key.eq(public_key_bytes) {
+                if !public_key.eq(requested_public_key) {
                     return Err(KmsError::KeyIntegrityError(format!(
-                        "Public key mismatch: requested: {}, stored: {}",
-                        hex::encode(public_key_bytes),
-                        hex::encode(public_key),
+                        "Public key mismatch: requested: {:?}, stored: {:?}",
+                        requested_public_key, public_key,
                     )));
                 }
             }
@@ -258,14 +257,11 @@ impl Kms for GenericKms {
         record.verify_handle(key_handle)?;
 
         let pubkey = match key_handle {
-            KeyHandle::RawKey(public_key_bytes, _typ) => {
-                // This is a public key, we can return it directly
-                public_key_bytes.clone()
-            }
+            KeyHandle::RawKey(public_key) => public_key.clone(),
             KeyHandle::Derived { .. } => {
                 // For derived keys, we need to get the public key from the stored record
                 match record {
-                    StoredKeyRecord::DerivedKey { public_key, .. } => public_key.clone(),
+                    StoredKeyRecord::DerivedKey { public_key, .. } => public_key,
                     _ => {
                         return Err(KmsError::KeyRecordNotSupported(format!(
                             "Unexpected key record type retrieved for handle {}",
@@ -369,7 +365,7 @@ mod tests {
                 .expect("Failed to unlock KMS");
 
             let requested_key = KeyType::Raw {
-                alogirhm: dash_sdk::dpp::identity::KeyType::ECDSA_HASH160,
+                algorithm: dash_sdk::dpp::identity::KeyType::ECDSA_HASH160,
             };
             let _key = unlocked
                 .generate_key_pair(requested_key, seed)
@@ -398,7 +394,7 @@ mod tests {
             .unlock(&user_id, password)
             .expect("Failed to unlock KMS");
         let requested_key = KeyType::Raw {
-            alogirhm: dash_sdk::dpp::identity::KeyType::ECDSA_HASH160,
+            algorithm: dash_sdk::dpp::identity::KeyType::ECDSA_HASH160,
         };
         let key_handle = unlocked
             .generate_key_pair(requested_key, seed)
@@ -423,7 +419,7 @@ mod tests {
             .unlock(&user_id, password)
             .expect("Failed to unlock KMS");
         let requested_key = KeyType::Raw {
-            alogirhm: dash_sdk::dpp::identity::KeyType::EDDSA_25519_HASH160,
+            algorithm: dash_sdk::dpp::identity::KeyType::EDDSA_25519_HASH160,
         };
         let key_handle = unlocked
             .generate_key_pair(requested_key, seed)
@@ -611,14 +607,14 @@ mod tests {
 
         // Generate multiple keys
         let requested_key = KeyType::Raw {
-            alogirhm: dash_sdk::dpp::identity::KeyType::ECDSA_HASH160,
+            algorithm: dash_sdk::dpp::identity::KeyType::ECDSA_HASH160,
         };
         let key1 = unlocked
             .generate_key_pair(requested_key, seed.clone())
             .expect("Failed to generate key 1");
 
         let requested_key = KeyType::Raw {
-            alogirhm: dash_sdk::dpp::identity::KeyType::EDDSA_25519_HASH160,
+            algorithm: dash_sdk::dpp::identity::KeyType::EDDSA_25519_HASH160,
         };
         let key2 = unlocked
             .generate_key_pair(requested_key, seed.clone())
@@ -658,7 +654,7 @@ mod tests {
                 .expect("Failed to unlock KMS");
 
             let requested_key = KeyType::Raw {
-                alogirhm: dash_sdk::dpp::identity::KeyType::ECDSA_HASH160,
+                algorithm: dash_sdk::dpp::identity::KeyType::ECDSA_HASH160,
             };
             key_handle = unlocked
                 .generate_key_pair(requested_key, seed)
@@ -699,7 +695,7 @@ mod tests {
             .expect("Failed to unlock KMS");
 
         let requested_key = KeyType::Raw {
-            alogirhm: dash_sdk::dpp::identity::KeyType::ECDSA_HASH160,
+            algorithm: dash_sdk::dpp::identity::KeyType::ECDSA_HASH160,
         };
         let short_seed = Secret::new(vec![42u8; 16]).expect("Failed to create short seed");
         let result = unlocked.generate_key_pair(requested_key, short_seed);
@@ -709,7 +705,7 @@ mod tests {
         // Test with too long seed
         let long_seed = Secret::new(vec![42u8; 64]).expect("Failed to create long seed");
         let requested_key = KeyType::Raw {
-            alogirhm: dash_sdk::dpp::identity::KeyType::ECDSA_HASH160,
+            algorithm: dash_sdk::dpp::identity::KeyType::ECDSA_HASH160,
         };
         let result = unlocked.generate_key_pair(requested_key, long_seed);
 
@@ -728,7 +724,7 @@ mod tests {
 
         // Generate a regular identity key (not a derivation seed)
         let requested_key = KeyType::Raw {
-            alogirhm: dash_sdk::dpp::identity::KeyType::ECDSA_HASH160,
+            algorithm: dash_sdk::dpp::identity::KeyType::ECDSA_HASH160,
         };
         let identity_key = unlocked
             .generate_key_pair(requested_key, seed)
@@ -785,7 +781,10 @@ mod tests {
             .expect("Failed to unlock KMS");
 
         // Try to get public key for nonexistent key
-        let fake_key = KeyHandle::RawKey(vec![1, 2, 3, 4], KeyType::ecdsa_secp256k1());
+        let fake_key = KeyHandle::RawKey(PublicKey::new(
+            vec![1, 2, 3, 4],
+            dash_sdk::dpp::identity::KeyType::ECDSA_HASH160,
+        ));
         let result = kms
             .public_key(&fake_key)
             .expect("Should succeed but return None");
@@ -812,7 +811,7 @@ mod tests {
             unlocked
                 .generate_key_pair(
                     KeyType::Raw {
-                        alogirhm: IdentityKeyType::ECDSA_SECP256K1,
+                        algorithm: IdentityKeyType::ECDSA_SECP256K1,
                     },
                     seed.clone(),
                 )
@@ -828,7 +827,7 @@ mod tests {
             unlocked
                 .generate_key_pair(
                     KeyType::Raw {
-                        alogirhm: IdentityKeyType::EDDSA_25519_HASH160,
+                        algorithm: IdentityKeyType::EDDSA_25519_HASH160,
                     },
                     seed,
                 )
@@ -885,7 +884,7 @@ mod tests {
             unlocked
                 .generate_key_pair(
                     KeyType::Raw {
-                        alogirhm: IdentityKeyType::ECDSA_SECP256K1,
+                        algorithm: IdentityKeyType::ECDSA_SECP256K1,
                     },
                     seed.clone(),
                 )
@@ -901,7 +900,7 @@ mod tests {
             unlocked
                 .generate_key_pair(
                     KeyType::Raw {
-                        alogirhm: IdentityKeyType::EDDSA_25519_HASH160,
+                        algorithm: IdentityKeyType::EDDSA_25519_HASH160,
                     },
                     seed,
                 )
@@ -957,7 +956,7 @@ mod tests {
         let key_handle = unlocked
             .generate_key_pair(
                 KeyType::Raw {
-                    alogirhm: IdentityKeyType::ECDSA_SECP256K1,
+                    algorithm: IdentityKeyType::ECDSA_SECP256K1,
                 },
                 seed,
             )
@@ -990,7 +989,7 @@ mod tests {
         let key1 = unlocked1
             .generate_key_pair(
                 KeyType::Raw {
-                    alogirhm: IdentityKeyType::ECDSA_SECP256K1,
+                    algorithm: IdentityKeyType::ECDSA_SECP256K1,
                 },
                 seed.clone(),
             )
@@ -999,7 +998,7 @@ mod tests {
         let key2 = unlocked2
             .generate_key_pair(
                 KeyType::Raw {
-                    alogirhm: IdentityKeyType::EDDSA_25519_HASH160,
+                    algorithm: IdentityKeyType::EDDSA_25519_HASH160,
                 },
                 seed,
             )

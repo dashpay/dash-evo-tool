@@ -9,6 +9,7 @@ use dash_sdk::dpp::dashcore::{
     Address, InstantLock, Network, OutPoint, PrivateKey, PublicKey, Transaction, TxOut,
 };
 use std::collections::{BTreeMap, HashMap};
+use std::fmt::Debug;
 use std::ops::Range;
 use std::sync::{Arc, RwLock};
 
@@ -148,10 +149,19 @@ pub enum WalletSeed {
     Open(OpenWalletSeed),
     Closed(ClosedWalletSeed),
 }
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct OpenKeyItem<const N: usize> {
     pub seed: [u8; N],
     pub wallet_info: ClosedKeyItem,
+}
+
+impl<const N: usize> Debug for OpenKeyItem<N> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let hash = ClosedKeyItem::compute_seed_hash(&self.seed);
+        f.debug_struct("OpenKeyItem")
+            .field("seed_hash", &hex::encode(hash))
+            .finish()
+    }
 }
 
 // Type alias for OpenWalletSeed with a fixed seed size of 64 bytes

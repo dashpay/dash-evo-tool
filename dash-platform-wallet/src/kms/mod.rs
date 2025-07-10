@@ -1,8 +1,6 @@
-mod encryption;
 pub mod file_store;
 pub mod generic;
 pub mod signature;
-mod wallet_seed;
 
 use crate::secret::Secret;
 use dash_sdk::{
@@ -110,9 +108,10 @@ pub trait Kms {
         // ) -> Result<Box<dyn UnlockedKMS<KeyHandle = Self::KeyHandle, Error = Self::Error>>, Self::Error>;
     ) -> Result<impl UnlockedKMS<KeyHandle = Self::KeyHandle, Error = Self::Error>, Self::Error>;
 
-    /// List all keys managed by the KMS.
+    /// List keys managed by the KMS.
     ///
     /// Returns a vector of key handles representing the keys managed by the KMS.
+    /// Only keys that are not internal (e.g., user password records) should be returned.
     fn keys(&self) -> Result<impl Iterator<Item = Self::KeyHandle>, Self::Error>;
 
     /// Retrieves a public key associated with the provided key handle.

@@ -6,9 +6,8 @@ use thiserror::Error;
 use crate::{
     kms::{
         KVStore, Kms, PublicKey, UnlockedKMS,
-        encryption::NONCE_SIZE,
         file_store::{FileStore, JsonStoreError},
-        generic::{key_handle::KeyHandle, unlocked::GenericUnlockedKms},
+        generic::{NONCE_SIZE, key_handle::KeyHandle, unlocked::GenericUnlockedKms},
     },
     secret::{Secret, SecretError},
 };
@@ -285,6 +284,9 @@ impl Kms for GenericKms {
         Ok(Some(pubkey))
     }
 
+    /// Returns list of all public key handles in the KMS.
+    ///
+    /// Filters out internal keys (e.g. user password records).
     fn keys(&self) -> Result<impl Iterator<Item = Self::KeyHandle>, Self::Error> {
         let i = self
             .store

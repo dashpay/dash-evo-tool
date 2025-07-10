@@ -3,8 +3,8 @@ use std::fmt::Debug;
 use crate::kms::{
     Digest, EncryptedData, KVStore, KeyType, Kms, PlainData, PublicKey, Secret, Signature,
     UnlockedKMS,
-    encryption::NONCE_SIZE,
     generic::{
+        NONCE_SIZE,
         key_handle::KeyHandle,
         locked::{GenericKms, KmsError, StoredKeyRecord},
     },
@@ -21,7 +21,6 @@ use dash_sdk::{
         dashcore::bip32::{DerivationPath, ExtendedPrivKey},
         ed25519_dalek::Signer as EDDSASigner,
         identity::{
-            KeyType as IdentityKeyType,
             identity_public_key::accessors::v0::IdentityPublicKeyGettersV0, signer::Signer,
         },
         platform_value::BinaryData,
@@ -146,23 +145,18 @@ where
     }
 
     /// Verify that the master key works by trying to decrypt any existing key
+    ///
+    /// If no keys are found, it assumes the master key is valid.
     fn verify_master_key(&self) -> Result<(), KmsError> {
-        // Try to decrypt any non-user key to verify master key works
-        for key_handle in self.store.keys()? {
-            if !matches!(key_handle, KeyHandle::User(_)) {
-                // Try to decrypt this key - if it fails, master key is wrong
-                self.get_from_store_with_metadata(&key_handle)
-                    .map_err(|e| {
-                        tracing::error!(
-                            "Cannot decrypt key {:?} with master key: {}",
-                            key_handle,
-                            e
-                        );
-                        KmsError::InvalidCredentials
-                    })?;
-                break; // Only need to verify one key
-            }
+        // Try to decrypt any non-user key to verify master key works; if it doesn't, it will return an error.
+        if let Some(key_handle) = self.keys()?.next() {
+            self.get_from_store_with_metadata(&key_handle)
+                .map_err(|e| {
+                    tracing::error!("Cannot decrypt key {:?} with master key: {}", key_handle, e);
+                    KmsError::InvalidCredentials
+                })?;
         }
+
         Ok(())
     }
 
@@ -390,26 +384,6 @@ where
         record.verify_handle(key)?;
 
         Ok(Some((secret, record.clone())))
-    }
-    /// Verifies if the storage key works correctly.
-    ///
-    /// We do this by trying to decrypt any secret stored in the store.
-    ///
-    /// If the store is empty, it returns `Ok(())`.
-    fn verify_storage_key(&self) -> Result<(), KmsError> {
-        if let Some(handle) = self.store.keys()?.first() {
-            // any error means that the password is incorrect, or we have some internal error
-            self.get_from_store_with_metadata(handle).map_err(|e| {
-                tracing::error!(
-                    "cannot fetch key {:?} when trying to verify KMS password: {}",
-                    handle,
-                    e
-                );
-                KmsError::InvalidCredentials
-            })?;
-        };
-
-        Ok(())
     }
 
     /// Get derived key pair for some handle.
@@ -780,9 +754,7 @@ where
         let mut rng = bip39::rand::prelude::StdRng::from_seed(*seed_bytes);
 
         let (handle, record) = match key_type {
-            KeyType::Raw {
-                algorithm: algorithm,
-            } => {
+            KeyType::Raw { algorithm } => {
                 // FIXME: private key should be put into [Secret] or at least impl zeroize, not simply returned by a function
                 let (pubkey, privkey) = algorithm
                     .random_public_and_private_key_data(&mut rng, self.platform_version)
@@ -957,7 +929,6 @@ fn compute_seed_hash(seed: &Secret) -> [u8; 32] {
 
 #[cfg(test)]
 mod tests {
-    use bip39::rand_core::le;
     use dash_sdk::dpp::{
         dashcore::{Network, bip32::DerivationPath},
         identity::{Purpose, identity_public_key::v0::IdentityPublicKeyV0},

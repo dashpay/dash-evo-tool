@@ -1,10 +1,4 @@
-use dash_sdk::{
-    dpp::{
-        identity::{KeyType, identity_public_key::accessors::v0::IdentityPublicKeyGettersV0},
-        platform_value::BinaryData,
-    },
-    platform::IdentityPublicKey,
-};
+use dash_sdk::dpp::{identity::KeyType, platform_value::BinaryData};
 
 use crate::kms::PublicKey;
 

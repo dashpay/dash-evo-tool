@@ -624,9 +624,8 @@ impl IdentitiesScreen {
                                                     let actions_response = ui.add(actions_button).on_hover_text("Manage identity credits");
 
                                                     let actions_popup_id = ui.make_persistent_id(format!("actions_popup_{}", qualified_identity.identity.id().to_string(Encoding::Base58)));
-
-                                                    egui::Popup::new(actions_popup_id, ui.ctx().clone(), &actions_response, actions_response.layer_id)
-                                                        .open_memory(actions_response.clicked().then_some(egui::SetOpenCommand::Toggle))
+                                                        egui::Popup::from_toggle_button_response(&actions_response).id(actions_popup_id)
+                                                        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
                                                         .show(|ui| {
                                                         ui.set_min_width(150.0);
 
@@ -679,12 +678,10 @@ impl IdentitiesScreen {
                                                         .corner_radius(3.0)
                                                         .min_size(egui::vec2(50.0, 20.0));
 
-                                                    let response = ui.add(button).on_hover_text("View and manage keys for this identity");
+                                                    let button_response = ui.add(button).on_hover_text("View and manage keys for this identity");
 
                                                     let popup_id = ui.make_persistent_id(format!("keys_popup_{}", qualified_identity.identity.id().to_string(Encoding::Base58)));
-
-                                                    egui::Popup::new(popup_id, ui.ctx().clone(), &response, response.layer_id)
-                                                        .open_memory(response.clicked().then_some(egui::SetOpenCommand::Toggle))
+                                                    egui::Popup::from_toggle_button_response(&button_response).id(popup_id)
                                                         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
                                                         .show(|ui| {
                                                             ui.set_min_width(200.0);

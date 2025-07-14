@@ -8,11 +8,12 @@ use crate::database::contracts::InsertTokensToo::NoTokensShouldBeAdded;
 use crate::model::qualified_contract::QualifiedContract;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::tokens::tokens_screen::{ContractDescriptionInfo, TokenInfo};
+use dash_sdk::Sdk;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
-use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::accessors::v0::TokenConfigurationConventionV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::TokenConfigurationConvention;
+use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::accessors::v0::TokenConfigurationConventionV0Getters;
 use dash_sdk::dpp::data_contract::group::accessors::v0::GroupV0Getters;
 use dash_sdk::dpp::document::DocumentV0Getters;
 use dash_sdk::dpp::group::group_action::GroupAction;
@@ -25,7 +26,6 @@ use dash_sdk::platform::{
     DataContract, Document, DocumentQuery, Fetch, FetchMany, Identifier, IdentityPublicKey,
 };
 use dash_sdk::query_types::IndexMap;
-use dash_sdk::Sdk;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ContractTask {

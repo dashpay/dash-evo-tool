@@ -164,7 +164,7 @@ impl AppContext {
                 _ => {
                     return Err(
                         "Expected epoch-based moment for evonode participation rewards".into(),
-                    )
+                    );
                 }
             };
 
@@ -173,7 +173,7 @@ impl AppContext {
                 _ => {
                     return Err(
                         "Expected epoch-based moment for evonode participation rewards".into(),
-                    )
+                    );
                 }
             };
 

@@ -5,8 +5,8 @@ use dash_sdk::dpp::prelude::CoreBlockHeight;
 use std::error::Error;
 use std::io::Cursor;
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
     Arc,
+    atomic::{AtomicBool, Ordering},
 };
 use std::thread;
 use std::time::Duration;

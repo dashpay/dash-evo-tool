@@ -1,7 +1,7 @@
 use aes_gcm::aead::Aead;
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
 use argon2::{self, Argon2};
-use bip39::rand::{rngs::OsRng, RngCore};
+use bip39::rand::{RngCore, rngs::OsRng};
 
 const SALT_SIZE: usize = 16; // 128-bit salt
 const NONCE_SIZE: usize = 12; // 96-bit nonce for AES-GCM

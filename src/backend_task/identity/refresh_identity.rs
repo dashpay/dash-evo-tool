@@ -1,10 +1,10 @@
 use crate::app::TaskResult;
 use crate::context::AppContext;
 use crate::model::qualified_identity::{IdentityStatus, QualifiedIdentity};
+use dash_sdk::Sdk;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::{Fetch, Identity};
-use dash_sdk::Sdk;
 
 use super::BackendTaskSuccessResult;
 

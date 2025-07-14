@@ -9,12 +9,12 @@ use dash_sdk::{
     dpp::{
         data_contract::{
             accessors::v0::DataContractV0Getters,
-            document_type::{accessors::DocumentTypeV0Getters, DocumentType},
-            group::{accessors::v0::GroupV0Getters, Group},
+            document_type::{DocumentType, accessors::DocumentTypeV0Getters},
+            group::{Group, accessors::v0::GroupV0Getters},
         },
         identity::{
-            accessors::IdentityGettersV0,
-            identity_public_key::accessors::v0::IdentityPublicKeyGettersV0, Purpose, SecurityLevel,
+            Purpose, SecurityLevel, accessors::IdentityGettersV0,
+            identity_public_key::accessors::v0::IdentityPublicKeyGettersV0,
         },
         platform_value::string_encoding::Encoding,
     },

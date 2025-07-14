@@ -1,6 +1,6 @@
 use crate::app::AppAction;
-use crate::backend_task::contract::ContractTask;
 use crate::backend_task::BackendTask;
+use crate::backend_task::contract::ContractTask;
 use crate::context::AppContext;
 use crate::model::qualified_contract::QualifiedContract;
 use crate::model::qualified_identity::QualifiedIdentity;
@@ -9,7 +9,7 @@ use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
-use crate::ui::helpers::{add_identity_key_chooser, TransactionType};
+use crate::ui::helpers::{TransactionType, add_identity_key_chooser};
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::{BackendTaskSuccessResult, MessageType, ScreenLike};
 use dash_sdk::dpp::data_contract::accessors::v0::{DataContractV0Getters, DataContractV0Setters};

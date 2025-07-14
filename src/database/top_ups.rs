@@ -1,5 +1,5 @@
 use crate::database::Database;
-use rusqlite::{params, OptionalExtension};
+use rusqlite::{OptionalExtension, params};
 
 impl Database {
     pub fn initialize_top_up_table(&self, conn: &rusqlite::Connection) -> rusqlite::Result<()> {

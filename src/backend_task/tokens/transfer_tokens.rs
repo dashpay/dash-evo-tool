@@ -120,14 +120,20 @@ impl AppContext {
                                     &sender_id,
                                     *sender_amount,
                                 ) {
-                                    eprintln!("Failed to update sender token balance from historical document: {}", e);
+                                    eprintln!(
+                                        "Failed to update sender token balance from historical document: {}",
+                                        e
+                                    );
                                 }
                                 if let Err(e) = self.insert_token_identity_balance(
                                     &token_id,
                                     &recipient_id,
                                     *recipient_amount,
                                 ) {
-                                    eprintln!("Failed to update recipient token balance from historical document: {}", e);
+                                    eprintln!(
+                                        "Failed to update recipient token balance from historical document: {}",
+                                        e
+                                    );
                                 }
                             }
                         }
@@ -167,14 +173,20 @@ impl AppContext {
                                     &sender_id,
                                     *sender_amount,
                                 ) {
-                                    eprintln!("Failed to update sender token balance from group action document: {}", e);
+                                    eprintln!(
+                                        "Failed to update sender token balance from group action document: {}",
+                                        e
+                                    );
                                 }
                                 if let Err(e) = self.insert_token_identity_balance(
                                     &token_id,
                                     &recipient_id,
                                     *recipient_amount,
                                 ) {
-                                    eprintln!("Failed to update recipient token balance from group action document: {}", e);
+                                    eprintln!(
+                                        "Failed to update recipient token balance from group action document: {}",
+                                        e
+                                    );
                                 }
                             }
                         }

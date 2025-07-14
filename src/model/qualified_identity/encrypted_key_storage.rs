@@ -1,5 +1,5 @@
-use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
 use crate::model::qualified_identity::PrivateKeyTarget;
+use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
 use crate::model::wallet::{Wallet, WalletSeedHash};
 use bincode::de::{BorrowDecoder, Decoder};
 use bincode::enc::Encoder;

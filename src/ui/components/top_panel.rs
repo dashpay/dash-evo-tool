@@ -1,10 +1,10 @@
 use crate::app::{AppAction, DesiredAppAction};
-use crate::backend_task::core::CoreTask;
 use crate::backend_task::BackendTask;
+use crate::backend_task::core::CoreTask;
 use crate::components::core_zmq_listener::ZMQConnectionEvent;
 use crate::context::AppContext;
-use crate::ui::theme::{DashColors, Shadow, Shape};
 use crate::ui::ScreenType;
+use crate::ui::theme::{DashColors, Shadow, Shape};
 use dash_sdk::dashcore_rpc::dashcore::Network;
 use egui::{
     Align, Color32, Context, Frame, Margin, RichText, Stroke, TextureHandle, TopBottomPanel, Ui,

@@ -1,7 +1,7 @@
 use crate::ui::tokens::tokens_screen::TokensScreen;
+use dash_sdk::dpp::data_contract::GroupContractPosition;
 use dash_sdk::dpp::data_contract::group::v0::GroupV0;
 use dash_sdk::dpp::data_contract::group::{Group, GroupMemberPower, GroupRequiredPower};
-use dash_sdk::dpp::data_contract::GroupContractPosition;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::Identifier;

@@ -5,7 +5,7 @@ use crate::model::wallet::{Wallet, WalletSeedHash};
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::platform::Identifier;
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 

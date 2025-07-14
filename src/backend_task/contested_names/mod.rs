@@ -7,9 +7,9 @@ use crate::app::TaskResult;
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
+use dash_sdk::Sdk;
 use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
 use dash_sdk::platform::Identifier;
-use dash_sdk::Sdk;
 use futures::future::join_all;
 use std::sync::Arc;
 

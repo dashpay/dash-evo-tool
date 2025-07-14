@@ -24,7 +24,8 @@ use dash_sdk::{
                 token_distribution_rules::TokenDistributionRules,
                 token_keeps_history_rules::TokenKeepsHistoryRules,
                 token_marketplace_rules::{
-                    TokenMarketplaceRules, v0::{TokenMarketplaceRulesV0, TokenTradeMode}
+                    TokenMarketplaceRules,
+                    v0::{TokenMarketplaceRulesV0, TokenTradeMode},
                 },
             },
             change_control_rules::{

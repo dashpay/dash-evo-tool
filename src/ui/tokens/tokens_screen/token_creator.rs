@@ -380,8 +380,8 @@ impl TokensScreen {
                                                 );
                                                 // Future trade modes can be added here when SDK supports them
                                             });
-                                        
-                                        crate::ui::helpers::info_icon_button(ui, 
+
+                                        crate::ui::helpers::info_icon_button(ui,
                                             "Currently, all tokens are created as 'Not Tradeable'. \
                                             Future updates will add more trade mode options.\n\n\
                                             IMPORTANT: If you want to enable marketplace trading in the future, \
@@ -870,10 +870,14 @@ impl TokensScreen {
         let groups = self.parse_groups()?;
 
         // 6) Marketplace rules
-        let marketplace_rules = self.marketplace_rules.extract_change_control_rules("Marketplace Trade Mode")?;
-        
+        let marketplace_rules = self
+            .marketplace_rules
+            .extract_change_control_rules("Marketplace Trade Mode")?;
+
         // 7) Direct purchase pricing rules
-        let change_direct_purchase_pricing_rules = self.change_direct_purchase_pricing_rules.extract_change_control_rules("Direct Purchase Pricing Change")?;
+        let change_direct_purchase_pricing_rules = self
+            .change_direct_purchase_pricing_rules
+            .extract_change_control_rules("Direct Purchase Pricing Change")?;
 
         // 8) Put it all in a struct
         Ok(TokenBuildArgs {
@@ -960,34 +964,36 @@ impl TokensScreen {
         self.minting_allow_choosing_destination_rules = basic_rules.clone().into();
         self.authorized_main_control_group_change =
             preset.default_main_control_group_can_be_modified();
-        
+
         // Marketplace settings
         self.marketplace_trade_mode = 0; // Always NotTradeable for now
-        self.marketplace_rules = if preset.features == TokenConfigurationPresetFeatures::MostRestrictive {
-            // Most restrictive = no one can change marketplace rules
-            ChangeControlRulesUI::from(ChangeControlRulesV0 {
-                authorized_to_make_change: AuthorizedActionTakers::NoOne,
-                admin_action_takers: AuthorizedActionTakers::NoOne,
-                changing_authorized_action_takers_to_no_one_allowed: false,
-                changing_admin_action_takers_to_no_one_allowed: false,
-                self_changing_admin_action_takers_allowed: false,
-            })
-        } else {
-            advanced_rules.clone().into()
-        };
-        
+        self.marketplace_rules =
+            if preset.features == TokenConfigurationPresetFeatures::MostRestrictive {
+                // Most restrictive = no one can change marketplace rules
+                ChangeControlRulesUI::from(ChangeControlRulesV0 {
+                    authorized_to_make_change: AuthorizedActionTakers::NoOne,
+                    admin_action_takers: AuthorizedActionTakers::NoOne,
+                    changing_authorized_action_takers_to_no_one_allowed: false,
+                    changing_admin_action_takers_to_no_one_allowed: false,
+                    self_changing_admin_action_takers_allowed: false,
+                })
+            } else {
+                advanced_rules.clone().into()
+            };
+
         // Direct purchase pricing rules follow the same pattern as marketplace rules
-        self.change_direct_purchase_pricing_rules = if preset.features == TokenConfigurationPresetFeatures::MostRestrictive {
-            ChangeControlRulesUI::from(ChangeControlRulesV0 {
-                authorized_to_make_change: AuthorizedActionTakers::NoOne,
-                admin_action_takers: AuthorizedActionTakers::NoOne,
-                changing_authorized_action_takers_to_no_one_allowed: false,
-                changing_admin_action_takers_to_no_one_allowed: false,
-                self_changing_admin_action_takers_allowed: false,
-            })
-        } else {
-            advanced_rules.clone().into()
-        };
+        self.change_direct_purchase_pricing_rules =
+            if preset.features == TokenConfigurationPresetFeatures::MostRestrictive {
+                ChangeControlRulesUI::from(ChangeControlRulesV0 {
+                    authorized_to_make_change: AuthorizedActionTakers::NoOne,
+                    admin_action_takers: AuthorizedActionTakers::NoOne,
+                    changing_authorized_action_takers_to_no_one_allowed: false,
+                    changing_admin_action_takers_to_no_one_allowed: false,
+                    self_changing_admin_action_takers_allowed: false,
+                })
+            } else {
+                advanced_rules.clone().into()
+            };
 
         // Reset optional identity/group inputs related to control group modification
         self.main_control_group_change_authorized_identity = None;
@@ -1220,7 +1226,6 @@ impl TokensScreen {
             }
         }
     }
-
 
     /// Once the contract creation is done (status=Complete),
     /// render a simple "Success" screen

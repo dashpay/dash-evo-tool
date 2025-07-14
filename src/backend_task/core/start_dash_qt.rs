@@ -122,4 +122,5 @@ fn signal_term(child: &Child) -> Result<(), String> {
     tracing::warn!(
         "SIGTERM signal is not supported on Windows. Dash-Qt process will not be gracefully terminated."
     );
+    Ok(())
 }

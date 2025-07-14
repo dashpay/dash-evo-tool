@@ -62,6 +62,7 @@ mod unfreeze_tokens;
 mod update_token_config;
 
 #[derive(Debug, Clone, PartialEq)]
+#[allow(clippy::large_enum_variant)]
 pub enum TokenTask {
     RegisterTokenContract {
         identity: QualifiedIdentity,

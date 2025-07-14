@@ -935,6 +935,8 @@ pub struct TokenBuildArgs {
     pub distribution_rules: TokenDistributionRules,
     pub groups: BTreeMap<u16, Group>,
     pub document_schemas: Option<BTreeMap<String, serde_json::Value>>,
+    pub marketplace_rules: ChangeControlRules,
+    pub change_direct_purchase_pricing_rules: ChangeControlRules,
 }
 
 pub type TokenSearchable = bool;
@@ -1034,6 +1036,11 @@ pub struct TokensScreen {
     authorized_main_control_group_change: AuthorizedActionTakers,
     main_control_group_change_authorized_identity: Option<String>,
     main_control_group_change_authorized_group: Option<String>,
+
+    // Marketplace rules
+    marketplace_trade_mode: u8, // 0 = NotTradeable, future values for other modes
+    marketplace_rules: ChangeControlRulesUI,
+    change_direct_purchase_pricing_rules: ChangeControlRulesUI,
 
     // Perpetual Distribution
     pub enable_perpetual_distribution: bool,
@@ -1387,6 +1394,11 @@ impl TokensScreen {
             authorized_main_control_group_change: AuthorizedActionTakers::NoOne,
             main_control_group_change_authorized_identity: None,
             main_control_group_change_authorized_group: None,
+
+            // Marketplace rules
+            marketplace_trade_mode: 0, // NotTradeable
+            marketplace_rules: ChangeControlRulesUI::default(),
+            change_direct_purchase_pricing_rules: ChangeControlRulesUI::default(),
 
             // Distribution (perpetual) toggles/fields
             enable_perpetual_distribution: false,
@@ -2039,7 +2051,7 @@ impl TokensScreen {
                 .minting_allow_choosing_destination_rules
                 .extract_change_control_rules("Minting Allow Choosing Destination")?,
             change_direct_purchase_pricing_rules: self
-                .minting_allow_choosing_destination_rules // TODO!
+                .change_direct_purchase_pricing_rules
                 .extract_change_control_rules("Change Direct Purchase Pricing")?,
         };
 
@@ -2119,6 +2131,9 @@ impl TokensScreen {
         self.authorized_main_control_group_change = AuthorizedActionTakers::NoOne;
         self.main_control_group_change_authorized_identity = None;
         self.main_control_group_change_authorized_group = None;
+        self.marketplace_trade_mode = 0;
+        self.marketplace_rules = ChangeControlRulesUI::default();
+        self.change_direct_purchase_pricing_rules = ChangeControlRulesUI::default();
         self.main_control_group_input = "".to_string();
         self.groups_ui = vec![];
 
@@ -2737,6 +2752,8 @@ impl ScreenLike for TokensScreen {
                     }
                     self.backend_message = Some((msg.to_string(), msg_type, Utc::now()));
                     self.refreshing_status = RefreshingStatus::NotRefreshing;
+                } else if msg.contains("Failed to query token pricing") {
+                    self.backend_message = Some((msg.to_string(), MessageType::Error, Utc::now()));
                 } else {
                     tracing::debug!(
                         ?msg,
@@ -3064,6 +3081,7 @@ mod tests {
                 build_args.distribution_rules,
                 build_args.groups,
                 build_args.document_schemas,
+                build_args.marketplace_rules,
             )
             .expect("Contract build failed");
 
@@ -3276,6 +3294,7 @@ mod tests {
                 build_args.distribution_rules,
                 build_args.groups,
                 build_args.document_schemas,
+                build_args.marketplace_rules,
             )
             .expect("Should build successfully");
         let contract_v1 = data_contract.as_v1().expect("Expected DataContract::V1");

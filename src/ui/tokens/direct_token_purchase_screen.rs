@@ -119,13 +119,6 @@ impl PurchaseTokenScreen {
 
             // Fetch pricing button
             if ui.button("Fetch Token Price").clicked() {
-                // We need to fetch the current pricing schedule from the contract
-                self.status = PurchaseTokensStatus::WaitingForResult(
-                    SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .expect("Time went backwards")
-                        .as_secs(),
-                );
                 let token_id_opt = self
                     .identity_token_info
                     .data_contract

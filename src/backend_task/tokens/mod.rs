@@ -20,6 +20,9 @@ use dash_sdk::{
                 token_distribution_key::TokenDistributionType,
                 token_distribution_rules::TokenDistributionRules,
                 token_keeps_history_rules::TokenKeepsHistoryRules,
+                token_marketplace_rules::{
+                    TokenMarketplaceRules, v0::{TokenMarketplaceRulesV0, TokenTradeMode}
+                },
             },
             change_control_rules::{
                 authorized_action_takers::AuthorizedActionTakers, ChangeControlRules,
@@ -90,6 +93,7 @@ pub enum TokenTask {
         distribution_rules: TokenDistributionRules,
         groups: BTreeMap<GroupContractPosition, Group>,
         document_schemas: Option<BTreeMap<String, serde_json::Value>>,
+        marketplace_rules: ChangeControlRules,
     },
     QueryMyTokenBalances,
     QueryIdentityTokenBalance(IdentityTokenIdentifier),
@@ -241,6 +245,7 @@ impl AppContext {
                 distribution_rules,
                 groups,
                 document_schemas,
+                marketplace_rules,
             } => {
                 let data_contract = self
                     .build_data_contract_v1_with_one_token(
@@ -268,6 +273,7 @@ impl AppContext {
                         distribution_rules.clone(),
                         groups.clone(),
                         document_schemas.clone(),
+                        marketplace_rules.clone(),
                     )
                     .map_err(|e| format!("Error building contract V1: {e}"))?;
 
@@ -675,6 +681,7 @@ impl AppContext {
         distribution_rules: TokenDistributionRules,
         groups: BTreeMap<u16, Group>,
         document_schemas: Option<BTreeMap<String, serde_json::Value>>,
+        marketplace_rules: ChangeControlRules,
     ) -> Result<DataContract, ProtocolError> {
         // 1) Create the V1 struct first to get the contract ID
         let contract_id = Identifier::random();
@@ -762,6 +769,13 @@ impl AppContext {
         token_config_v0.main_control_group_can_be_modified = main_control_group_change_authorized;
         token_config_v0.distribution_rules = distribution_rules;
         token_config_v0.description = token_description;
+
+        // Set marketplace rules
+        // Currently SDK only supports NotTradeable, but the change rules determine who can change it later
+        token_config_v0.marketplace_rules = TokenMarketplaceRules::V0(TokenMarketplaceRulesV0 {
+            trade_mode: TokenTradeMode::NotTradeable,
+            trade_mode_change_rules: marketplace_rules,
+        });
 
         let token_config = TokenConfiguration::V0(token_config_v0);
 

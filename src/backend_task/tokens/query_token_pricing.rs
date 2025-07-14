@@ -15,6 +15,8 @@ impl AppContext {
         // Query token pricing schedule using fetch_many
         match TokenPricingSchedule::fetch_many(sdk, &[token_id][..]).await {
             Ok(pricing_data) => {
+                tracing::info!("Fetched token pricing data for token ID: {}", token_id);
+                tracing::info!("Token pricing data: {:?}", pricing_data);
                 // Check if we got any pricing data for this token
                 if let Some((_, pricing_option)) = pricing_data.into_iter().next() {
                     Ok(BackendTaskSuccessResult::TokenPricing {

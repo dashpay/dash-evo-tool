@@ -1,6 +1,7 @@
 use crate::ui::tokens::tokens_screen::{
-    sanitize_i64, sanitize_u64, DistributionEntry, DistributionFunctionUI, IntervalTimeUnit,
-    PerpetualDistributionIntervalTypeUI, TokenDistributionRecipientUI, TokensScreen,
+    DistributionEntry, DistributionFunctionUI, IntervalTimeUnit,
+    PerpetualDistributionIntervalTypeUI, TokenDistributionRecipientUI, TokensScreen, sanitize_i64,
+    sanitize_u64,
 };
 use eframe::epaint::Color32;
 use egui::{ComboBox, Context, RichText, TextEdit};

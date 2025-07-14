@@ -10,8 +10,8 @@ use dash_sdk::platform::DataContract;
 use dash_sdk::platform::Identifier;
 use eframe::egui::{self, Color32, Context, RichText, Ui};
 
-use crate::backend_task::contract::ContractTask;
 use crate::backend_task::BackendTaskSuccessResult;
+use crate::backend_task::contract::ContractTask;
 use crate::database::contracts::InsertTokensToo;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
@@ -19,9 +19,9 @@ use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_
 use crate::ui::tokens::tokens_screen::TokenInfo;
 use crate::{
     app::AppAction,
-    backend_task::{tokens::TokenTask, BackendTask},
+    backend_task::{BackendTask, tokens::TokenTask},
     context::AppContext,
-    ui::{components::top_panel::add_top_panel, theme::DashColors, MessageType, ScreenLike},
+    ui::{MessageType, ScreenLike, components::top_panel::add_top_panel, theme::DashColors},
 };
 
 /// UI state during the add-token flow.

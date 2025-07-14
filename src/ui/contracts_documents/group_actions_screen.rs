@@ -32,12 +32,12 @@ use crate::ui::tokens::tokens_screen::{
 use crate::ui::tokens::unfreeze_tokens_screen::UnfreezeTokensScreen;
 use crate::ui::tokens::update_token_config::UpdateTokenConfigScreen;
 use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike};
+use dash_sdk::dpp::data_contract::TokenContractPosition;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
-use dash_sdk::dpp::data_contract::change_control_rules::authorized_action_takers::AuthorizedActionTakers;
 use dash_sdk::dpp::data_contract::change_control_rules::ChangeControlRules;
-use dash_sdk::dpp::data_contract::TokenContractPosition;
+use dash_sdk::dpp::data_contract::change_control_rules::authorized_action_takers::AuthorizedActionTakers;
 use dash_sdk::dpp::group::action_event::GroupActionEvent;
 use dash_sdk::dpp::group::group_action::{GroupAction, GroupActionAccessors};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;

@@ -1,6 +1,6 @@
 use crate::app::AppAction;
-use crate::backend_task::contract::ContractTask;
 use crate::backend_task::BackendTask;
+use crate::backend_task::contract::ContractTask;
 use crate::context::AppContext;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
@@ -142,7 +142,7 @@ impl AddContractsScreen {
             // Clone the options to avoid borrowing self.add_contracts_status during the UI closure
             let options = self.maybe_found_contracts.clone();
 
-            use egui::{vec2, Grid};
+            use egui::{Grid, vec2};
 
             let mut clicked_idx: Option<usize> = None; // remember which row’s button was hit
 

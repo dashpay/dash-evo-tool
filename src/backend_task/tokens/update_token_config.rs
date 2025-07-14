@@ -11,8 +11,8 @@ use dash_sdk::platform::tokens::builders::config_update::TokenConfigUpdateTransi
 use dash_sdk::platform::transition::broadcast::BroadcastStateTransition;
 use dash_sdk::platform::{DataContract, Fetch, IdentityPublicKey};
 use dash_sdk::{
-    dpp::data_contract::associated_token::token_configuration_item::TokenConfigurationChangeItem,
     Error, Sdk,
+    dpp::data_contract::associated_token::token_configuration_item::TokenConfigurationChangeItem,
 };
 use std::sync::Arc;
 

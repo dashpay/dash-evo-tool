@@ -1,6 +1,7 @@
 use crate::app::AppAction;
-use crate::backend_task::tokens::TokenTask;
 use crate::backend_task::BackendTask;
+use crate::backend_task::tokens::TokenTask;
+use crate::ui::Screen;
 use crate::ui::components::styled::StyledButton;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
 use crate::ui::theme::DashColors;
@@ -14,15 +15,14 @@ use crate::ui::tokens::pause_tokens_screen::PauseTokensScreen;
 use crate::ui::tokens::resume_tokens_screen::ResumeTokensScreen;
 use crate::ui::tokens::set_token_price_screen::SetTokenPriceScreen;
 use crate::ui::tokens::tokens_screen::{
-    get_available_token_actions_for_identity, IdentityTokenIdentifier, IdentityTokenInfo,
-    IdentityTokenMaybeBalanceWithActions, RefreshingStatus, SortColumn, TokenInfoWithDataContract,
-    TokensScreen, TokensSubscreen,
+    IdentityTokenIdentifier, IdentityTokenInfo, IdentityTokenMaybeBalanceWithActions,
+    RefreshingStatus, SortColumn, TokenInfoWithDataContract, TokensScreen, TokensSubscreen,
+    get_available_token_actions_for_identity,
 };
 use crate::ui::tokens::transfer_tokens_screen::TransferTokensScreen;
 use crate::ui::tokens::unfreeze_tokens_screen::UnfreezeTokensScreen;
 use crate::ui::tokens::update_token_config::UpdateTokenConfigScreen;
 use crate::ui::tokens::view_token_claims_screen::ViewTokenClaimsScreen;
-use crate::ui::Screen;
 use chrono::{Local, Utc};
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;

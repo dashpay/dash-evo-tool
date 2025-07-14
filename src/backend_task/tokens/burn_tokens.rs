@@ -5,8 +5,8 @@ use crate::model::proof_log_item::{ProofLogItem, RequestType};
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
 use dash_sdk::dpp::document::DocumentV0Getters;
-use dash_sdk::dpp::group::group_action_status::GroupActionStatus;
 use dash_sdk::dpp::group::GroupStateTransitionInfoStatus;
+use dash_sdk::dpp::group::group_action_status::GroupActionStatus;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::Value;
 use dash_sdk::platform::tokens::builders::burn::TokenBurnTransitionBuilder;
@@ -97,7 +97,10 @@ impl AppContext {
                                 if let Err(e) = self
                                     .insert_token_identity_balance(&token_id, &owner_id, *amount)
                                 {
-                                    eprintln!("Failed to update token balance from historical document: {}", e);
+                                    eprintln!(
+                                        "Failed to update token balance from historical document: {}",
+                                        e
+                                    );
                                 }
                             }
                         }
@@ -116,7 +119,10 @@ impl AppContext {
                                 if let Err(e) = self
                                     .insert_token_identity_balance(&token_id, &owner_id, *amount)
                                 {
-                                    eprintln!("Failed to update token balance from group action document: {}", e);
+                                    eprintln!(
+                                        "Failed to update token balance from group action document: {}",
+                                        e
+                                    );
                                 }
                             }
                         }

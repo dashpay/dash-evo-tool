@@ -1,8 +1,8 @@
 use crate::context::AppContext;
 use crate::model::proof_log_item::{ProofLogItem, RequestType};
 use chrono::{DateTime, Duration, Utc};
-use dash_sdk::dpp::voting::vote_polls::contested_document_resource_vote_poll::ContestedDocumentResourceVotePoll;
 use dash_sdk::dpp::voting::vote_polls::VotePoll;
+use dash_sdk::dpp::voting::vote_polls::contested_document_resource_vote_poll::ContestedDocumentResourceVotePoll;
 use dash_sdk::drive::query::VotePollsByEndDateDriveQuery;
 use dash_sdk::platform::FetchMany;
 use std::collections::BTreeMap;

@@ -13,7 +13,7 @@ use dash_sdk::dpp::serialization::{
     PlatformDeserializableWithPotentialValidationFromVersionedStructure,
     PlatformSerializableWithPlatformVersion,
 };
-use rusqlite::{params, params_from_iter, Connection, Result};
+use rusqlite::{Connection, Result, params, params_from_iter};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[allow(clippy::enum_variant_names)]

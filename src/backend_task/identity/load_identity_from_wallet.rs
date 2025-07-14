@@ -8,6 +8,7 @@ use crate::model::qualified_identity::{
     DPNSNameInfo, IdentityStatus, IdentityType, PrivateKeyTarget, QualifiedIdentity,
 };
 use crate::model::wallet::WalletArcRef;
+use dash_sdk::Sdk;
 use dash_sdk::dpp::dashcore::bip32::{DerivationPath, KeyDerivationType};
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::document::DocumentV0Getters;
@@ -18,7 +19,6 @@ use dash_sdk::dpp::platform_value::Value;
 use dash_sdk::drive::query::{WhereClause, WhereOperator};
 use dash_sdk::platform::types::identity::PublicKeyHash;
 use dash_sdk::platform::{Document, DocumentQuery, Fetch, FetchMany, Identity};
-use dash_sdk::Sdk;
 use std::collections::BTreeMap;
 
 impl AppContext {

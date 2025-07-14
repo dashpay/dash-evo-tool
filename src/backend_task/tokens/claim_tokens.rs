@@ -107,7 +107,10 @@ impl AppContext {
                                     &claimer_id,
                                     *amount,
                                 ) {
-                                    eprintln!("Failed to update token balance from group action document: {}", e);
+                                    eprintln!(
+                                        "Failed to update token balance from group action document: {}",
+                                        e
+                                    );
                                 }
                             }
                         }

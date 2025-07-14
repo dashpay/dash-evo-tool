@@ -5,7 +5,7 @@ use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::config::Config;
 use crate::context::AppContext;
 use crate::ui::components::left_panel::add_left_panel;
-use crate::ui::components::styled::{island_central_panel, StyledCard, StyledCheckbox};
+use crate::ui::components::styled::{StyledCard, StyledCheckbox, island_central_panel};
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::theme::{DashColors, ThemeMode};
 use crate::ui::{RootScreenType, ScreenLike};

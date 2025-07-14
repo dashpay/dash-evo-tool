@@ -1,10 +1,10 @@
-use crate::database::initialization::DEFAULT_DB_VERSION;
 use crate::database::Database;
+use crate::database::initialization::DEFAULT_DB_VERSION;
 use crate::model::password_info::PasswordInfo;
-use crate::ui::theme::ThemeMode;
 use crate::ui::RootScreenType;
+use crate::ui::theme::ThemeMode;
 use dash_sdk::dpp::dashcore::Network;
-use rusqlite::{params, Connection, Result};
+use rusqlite::{Connection, Result, params};
 use std::{path::PathBuf, str::FromStr};
 
 impl Database {

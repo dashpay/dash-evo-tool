@@ -1,6 +1,7 @@
 use crate::app::TaskResult;
 use crate::context::AppContext;
 use crate::model::proof_log_item::{ProofLogItem, RequestType};
+use dash_sdk::Sdk;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
 use dash_sdk::dpp::platform_value::Value;
@@ -10,7 +11,6 @@ use dash_sdk::drive::query::vote_poll_vote_state_query::{
     ContestedDocumentVotePollDriveQuery, ContestedDocumentVotePollDriveQueryResultType,
 };
 use dash_sdk::platform::FetchMany;
-use dash_sdk::Sdk;
 
 impl AppContext {
     pub(super) async fn query_dpns_vote_contenders(

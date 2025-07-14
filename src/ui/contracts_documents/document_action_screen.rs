@@ -1,24 +1,24 @@
 use crate::app::AppAction;
 use crate::backend_task::BackendTaskSuccessResult;
-use crate::backend_task::{document::DocumentTask, BackendTask};
+use crate::backend_task::{BackendTask, document::DocumentTask};
 use crate::context::AppContext;
 use crate::model::qualified_contract::QualifiedContract;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
+use crate::ui::ScreenLike;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::{island_central_panel, styled_text_edit_singleline};
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
 use crate::ui::helpers::{
-    add_contract_doc_type_chooser_with_filtering, add_identity_key_chooser_with_doc_type,
-    show_success_screen, TransactionType,
+    TransactionType, add_contract_doc_type_chooser_with_filtering,
+    add_identity_key_chooser_with_doc_type, show_success_screen,
 };
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::theme::DashColors;
-use crate::ui::ScreenLike;
-use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
-use bip39::rand::{rngs::StdRng, Rng, SeedableRng};
+use base64::engine::general_purpose::STANDARD;
+use bip39::rand::{Rng, SeedableRng, rngs::StdRng};
 use dash_sdk::dpp::balances::credits::Credits;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
@@ -32,13 +32,13 @@ use dash_sdk::dpp::data_contract::document_type::{DocumentPropertyType, Document
 use dash_sdk::dpp::document::property_names::PRICE;
 use dash_sdk::dpp::document::{Document, DocumentV0, DocumentV0Getters};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::dpp::platform_value::Value;
 use dash_sdk::dpp::platform_value::btreemap_extensions::BTreeValueMapHelper;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
-use dash_sdk::dpp::platform_value::Value;
 use dash_sdk::dpp::tokens::gas_fees_paid_by::GasFeesPaidBy;
 use dash_sdk::dpp::tokens::token_amount_on_contract_token::DocumentActionTokenEffect;
-use dash_sdk::dpp::tokens::token_payment_info::v0::TokenPaymentInfoV0;
 use dash_sdk::dpp::tokens::token_payment_info::TokenPaymentInfo;
+use dash_sdk::dpp::tokens::token_payment_info::v0::TokenPaymentInfoV0;
 use dash_sdk::drive::query::WhereClause;
 use dash_sdk::platform::{DocumentQuery, Identifier, IdentityPublicKey};
 use dash_sdk::query_types::IndexMap;
@@ -1217,7 +1217,7 @@ impl DocumentActionScreen {
         }
 
         let mut rng = StdRng::from_entropy();
-        let entropy: [u8; 32] = rng.gen();
+        let entropy: [u8; 32] = rng.r#gen();
 
         let owner_id = qi.identity.id();
         let id = Document::generate_document_id_v0(
@@ -1388,7 +1388,7 @@ impl DocumentActionScreen {
         }
 
         let mut rng = StdRng::from_entropy();
-        let entropy: [u8; 32] = rng.gen();
+        let entropy: [u8; 32] = rng.r#gen();
 
         let new_revision = if let Some(current_revision) = original_doc.revision() {
             Some(current_revision + 1)

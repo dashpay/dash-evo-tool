@@ -1,8 +1,8 @@
 use crate::app::AppAction;
 use crate::context::AppContext;
+use crate::ui::RootScreenType;
 use crate::ui::components::styled::GradientButton;
 use crate::ui::theme::{DashColors, Shadow, Shape, Spacing};
-use crate::ui::RootScreenType;
 use dash_sdk::dashcore_rpc::dashcore::Network;
 use dash_sdk::dpp::version::v9::PROTOCOL_VERSION_9;
 use eframe::epaint::Margin;

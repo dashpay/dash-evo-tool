@@ -1,6 +1,6 @@
 use crate::context::AppContext;
-use crate::ui::theme::{DashColors, Shadow, Shape, Spacing, Typography};
 use crate::ui::RootScreenType;
+use crate::ui::theme::{DashColors, Shadow, Shape, Spacing, Typography};
 use crate::{app::AppAction, ui};
 use egui::{Context, Frame, Margin, RichText, SidePanel};
 

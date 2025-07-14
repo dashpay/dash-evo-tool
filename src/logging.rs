@@ -1,4 +1,4 @@
-use crate::{app_dir::app_user_data_file_path, VERSION};
+use crate::{VERSION, app_dir::app_user_data_file_path};
 use std::panic;
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;

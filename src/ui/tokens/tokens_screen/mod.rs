@@ -2861,8 +2861,8 @@ mod tests {
     use std::path::Path;
 
     use crate::database::Database;
-    use crate::model::qualified_identity::encrypted_key_storage::KeyStorage;
     use crate::model::qualified_identity::IdentityStatus;
+    use crate::model::qualified_identity::encrypted_key_storage::KeyStorage;
 
     use super::*; use dash_sdk::dpp::dashcore::Network;
     use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::TokenConfigurationConvention;

@@ -1,9 +1,11 @@
 use std::collections::{BTreeMap, HashSet};
 use chrono::Utc;
-use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationPreset;
+use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::{TokenConfigurationPreset, TokenConfigurationPresetFeatures};
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationPresetFeatures::{MostRestrictive, WithAllAdvancedActions, WithExtremeActions, WithMintingAndBurningActions, WithOnlyEmergencyAction};
 use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::TokenDistributionRules;
 use dash_sdk::dpp::data_contract::change_control_rules::authorized_action_takers::AuthorizedActionTakers;
+use dash_sdk::dpp::data_contract::change_control_rules::v0::ChangeControlRulesV0;
+use dash_sdk::dpp::data_contract::change_control_rules::ChangeControlRules;
 use dash_sdk::dpp::data_contract::conversion::json::DataContractJsonConversionMethodsV0;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
@@ -16,7 +18,7 @@ use crate::backend_task::tokens::TokenTask;
 use crate::ui::components::styled::{StyledCheckbox};
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
 use crate::ui::helpers::{add_identity_key_chooser, TransactionType};
-use crate::ui::tokens::tokens_screen::{TokenBuildArgs, TokenCreatorStatus, TokenNameLanguage, TokensScreen};
+use crate::ui::tokens::tokens_screen::{TokenBuildArgs, TokenCreatorStatus, TokenNameLanguage, TokensScreen, ChangeControlRulesUI};
 
 impl TokensScreen {
     pub(super) fn render_token_creator(&mut self, context: &Context, ui: &mut Ui) -> AppAction {
@@ -365,6 +367,30 @@ impl TokensScreen {
                                         crate::ui::helpers::info_icon_button(ui, "The decimal places of the token, for example Dash and Bitcoin use 8. The minimum indivisible amount is a Duff or a Satoshi respectively. If you put a value greater than 0 this means that it is indicated that the consensus is that 10^(number entered) is what represents 1 full unit of the token.");
                                     });
                                     ui.end_row();
+
+                                    // Marketplace Trade Mode
+                                    ui.horizontal(|ui| {
+                                        ui.label("Marketplace Trade Mode:");
+                                        ComboBox::from_id_salt("marketplace_trade_mode_selector")
+                                            .selected_text("Not Tradeable")
+                                            .show_ui(ui, |ui| {
+                                                ui.selectable_value(
+                                                    &mut self.marketplace_trade_mode,
+                                                    0,
+                                                    "Not Tradeable",
+                                                );
+                                                // Future trade modes can be added here when SDK supports them
+                                            });
+
+                                        crate::ui::helpers::info_icon_button(ui,
+                                            "Currently, all tokens are created as 'Not Tradeable'. \
+                                            Future updates will add more trade mode options.\n\n\
+                                            IMPORTANT: If you want to enable marketplace trading in the future, \
+                                            make sure to set the 'Marketplace Trade Mode Change' rules in the Action Rules \
+                                            section to something other than 'No One'. Otherwise, trading can never be enabled."
+                                        );
+                                    });
+                                    ui.end_row();
                                 });
                         });
 
@@ -393,7 +419,7 @@ impl TokensScreen {
                                 ComboBox::from_id_salt("preset_selector")
                                     .selected_text(
                                         self.selected_token_preset
-                                            .map(|p|                                         match p {
+                                            .map(|p| match p {
                                                 MostRestrictive => "Most Restrictive",
                                                 WithOnlyEmergencyAction => "Only Emergency Action",
                                                 WithMintingAndBurningActions => "Minting And Burning",
@@ -439,8 +465,6 @@ impl TokensScreen {
                                     });
                             });
 
-                            ui.add_space(3.0);
-
                             self.manual_minting_rules.render_mint_control_change_rules_ui(ui, &self.groups_ui, &mut self.new_tokens_destination_identity_should_default_to_contract_owner, &mut self.new_tokens_destination_other_identity_enabled, &mut self.minting_allow_choosing_destination, &mut self.new_tokens_destination_identity_rules, &mut self.new_tokens_destination_other_identity, &mut self.minting_allow_choosing_destination_rules);
                             self.manual_burning_rules.render_control_change_rules_ui(ui, &self.groups_ui,"Manual Burn", None);
                             self.freeze_rules.render_control_change_rules_ui(ui, &self.groups_ui, "Freeze", Some(&mut self.allow_transfers_to_frozen_identities));
@@ -449,8 +473,11 @@ impl TokensScreen {
                             self.emergency_action_rules.render_control_change_rules_ui(ui, &self.groups_ui, "Emergency Action", None);
                             self.max_supply_change_rules.render_control_change_rules_ui(ui, &self.groups_ui, "Max Supply Change", None);
                             self.conventions_change_rules.render_control_change_rules_ui(ui, &self.groups_ui, "Conventions Change", None);
+                            self.marketplace_rules.render_control_change_rules_ui(ui, &self.groups_ui, "Marketplace Trade Mode Change", None);
+                            self.change_direct_purchase_pricing_rules.render_control_change_rules_ui(ui, &self.groups_ui, "Direct Purchase Pricing Change", None);
 
                             // Main control group change is slightly different so do this one manually.
+                            ui.add_space(6.0);
                             let mut main_control_state = egui::collapsing_header::CollapsingState::load_with_default_open(
                                 ui.ctx(),
                                 ui.make_persistent_id("token_creator_main_control_group"),
@@ -584,6 +611,8 @@ impl TokensScreen {
                                             args.distribution_rules,
                                             args.groups,
                                             args.document_schemas,
+                                            args.marketplace_trade_mode,
+                                            args.marketplace_rules,
                                         ) {
                                             Ok(dc) => dc,
                                             Err(e) => {
@@ -842,7 +871,17 @@ impl TokensScreen {
         // 5) Groups
         let groups = self.parse_groups()?;
 
-        // 6) Put it all in a struct
+        // 6) Marketplace rules
+        let marketplace_rules = self
+            .marketplace_rules
+            .extract_change_control_rules("Marketplace Trade Mode")?;
+
+        // 7) Direct purchase pricing rules
+        let change_direct_purchase_pricing_rules = self
+            .change_direct_purchase_pricing_rules
+            .extract_change_control_rules("Direct Purchase Pricing Change")?;
+
+        // 8) Put it all in a struct
         Ok(TokenBuildArgs {
             identity_id,
             token_names,
@@ -870,6 +909,9 @@ impl TokensScreen {
             distribution_rules: TokenDistributionRules::V0(distribution_rules),
             groups,
             document_schemas: self.parsed_document_schemas.clone(),
+            marketplace_trade_mode: self.marketplace_trade_mode,
+            marketplace_rules,
+            change_direct_purchase_pricing_rules,
         })
     }
 
@@ -926,6 +968,35 @@ impl TokensScreen {
         self.authorized_main_control_group_change =
             preset.default_main_control_group_can_be_modified();
 
+        // Marketplace settings
+        self.marketplace_rules =
+            if preset.features == TokenConfigurationPresetFeatures::MostRestrictive {
+                // Most restrictive = no one can change marketplace rules
+                ChangeControlRulesUI::from(ChangeControlRulesV0 {
+                    authorized_to_make_change: AuthorizedActionTakers::NoOne,
+                    admin_action_takers: AuthorizedActionTakers::NoOne,
+                    changing_authorized_action_takers_to_no_one_allowed: false,
+                    changing_admin_action_takers_to_no_one_allowed: false,
+                    self_changing_admin_action_takers_allowed: false,
+                })
+            } else {
+                advanced_rules.clone().into()
+            };
+
+        // Direct purchase pricing rules follow the same pattern as marketplace rules
+        self.change_direct_purchase_pricing_rules =
+            if preset.features == TokenConfigurationPresetFeatures::MostRestrictive {
+                ChangeControlRulesUI::from(ChangeControlRulesV0 {
+                    authorized_to_make_change: AuthorizedActionTakers::NoOne,
+                    admin_action_takers: AuthorizedActionTakers::NoOne,
+                    changing_authorized_action_takers_to_no_one_allowed: false,
+                    changing_admin_action_takers_to_no_one_allowed: false,
+                    self_changing_admin_action_takers_allowed: false,
+                })
+            } else {
+                advanced_rules.clone().into()
+            };
+
         // Reset optional identity/group inputs related to control group modification
         self.main_control_group_change_authorized_identity = None;
         self.main_control_group_change_authorized_group = None;
@@ -962,6 +1033,29 @@ impl TokensScreen {
                     "Estimated cost to register this token is {} Dash",
                     self.estimate_registration_cost() as f64 / 100_000_000_000.0
                 ));
+
+                ui.add_space(10.0);
+
+                // Check if marketplace is locked to NotTradeable forever
+                if let Some(args) = &self.cached_build_args {
+                    let is_not_tradeable = args.marketplace_trade_mode == 0;
+                    let marketplace_rules_locked = matches!(
+                        args.marketplace_rules,
+                        ChangeControlRules::V0(ChangeControlRulesV0 {
+                            authorized_to_make_change: AuthorizedActionTakers::NoOne,
+                            admin_action_takers: AuthorizedActionTakers::NoOne,
+                            ..
+                        })
+                    );
+
+                    if is_not_tradeable && marketplace_rules_locked {
+                        ui.colored_label(
+                            Color32::DARK_RED,
+                            "WARNING: This token will be permanently set to NotTradeable and can NEVER be made tradeable in the future!"
+                        );
+                        ui.add_space(10.0);
+                    }
+                }
 
                 ui.add_space(10.0);
 
@@ -1015,6 +1109,8 @@ impl TokensScreen {
                             distribution_rules: args.distribution_rules,
                             groups: args.groups,
                             document_schemas: args.document_schemas,
+                            marketplace_trade_mode: args.marketplace_trade_mode,
+                            marketplace_rules: args.marketplace_rules,
                         })),
                         BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances)),
                     ];
